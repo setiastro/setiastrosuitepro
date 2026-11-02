@@ -9,7 +9,6 @@ import os
 import re
 import sys
 import time
-import psutil
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -51,6 +50,8 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
 
 from setiastro.saspro.star_metrics import measure_stars_sep
+from setiastro.saspro.blink_fast_read import read_downsampled, probe_header
+from setiastro.saspro.blink_stream import FrameCache, prefetch_window
 
 def _try_raise_fd_limit() -> None:
     """Silently raise RLIMIT_NOFILE soft limit to the hard cap (Unix only)."""
@@ -140,6 +141,140 @@ def _blink_wait_for_numba_layer(timeout: float = 20.0) -> None:
                 pass
     except Exception:
         pass
+
+
+def _blink_fast_read_enabled() -> bool:
+    """Kill switch for the strided FITS/XISF reader (QSettings 'blink/fast_read').
+
+    On by default. It only ever changes 1:4 and 1:8 loads; the reader declines
+    anything it cannot reproduce faithfully, so turning this off should only
+    ever cost speed. Exposed so a user hitting something odd on their own data
+    can rule it out without a rebuild.
+    """
+    try:
+        return bool(QSettings().value("blink/fast_read", True, type=bool))
+    except Exception:
+        return True
+
+
+def _blink_cfa_mode() -> str:
+    """How the strided reader should treat one-shot-colour frames.
+
+    "color" (the default) keeps Blink's core behaviour -- CFA frames stay
+    colour -- by reading a quad-aligned subsample and debayering the small
+    mosaic instead of the full frame. "luminance" skips the debayer entirely
+    and hands back a balanced grey plane.
+    """
+    try:
+        keep = bool(QSettings().value("blink/cfa_color", True, type=bool))
+    except Exception:
+        keep = True
+    return "color" if keep else "luminance"
+
+
+def _blink_stream_enabled() -> bool:
+    """PreLoad (False) or Stream (True), from QSettings 'blink/stream'.
+
+    PreLoad is the historical behaviour: decode every frame on open and hold
+    it. Stream scans headers only and decodes a frame when you look at it.
+    """
+    try:
+        return bool(QSettings().value("blink/stream", False, type=bool))
+    except Exception:
+        return False
+
+
+def _blink_stream_budget_bytes() -> int:
+    """How much decoded imagery Stream mode keeps resident, in bytes."""
+    try:
+        mb = int(QSettings().value("blink/stream_budget_mb", 1024, type=int))
+    except Exception:
+        mb = 1024
+    return max(64, mb) << 20
+
+
+def _blink_storage_dtype():
+    """Blink stores stretched, clipped display data -- uint16, always.
+
+    The old RAM tier picked float32 above 32 GB and uint8 below 16 GB. Both
+    ends were wrong, and for the same reason: the array has already been
+    stretched and clipped to [0,1], and the only thing that re-expands it is
+    _aggressive_display_boost, whose steepest slope is k/arcsinh(k) = 2.07x
+    at k = 3.7 * 1.25.
+
+      float32  16.7M levels -> ~8.1M surviving the boost, for an 8-bit
+               display. Measured against uint16 on a stretched frame, the
+               final 8-bit display frame differs by at most 1 LSB on 0.4% of
+               pixels, with the same count of distinct levels. Two bytes a
+               pixel for nothing anyone can see.
+
+      uint8    255 levels -> ~123 surviving the boost, which is BELOW the 255
+               the display wants. Measured: 65% of pixels differ from the
+               float32 reference, and the frame carries 73 distinct levels
+               where float32 carries 136 -- visible banding. The low-RAM tier
+               was quietly degrading the exact stretch people turn on to
+               inspect faint detail, on the machines least able to spare the
+               quality.
+
+    uint16 is the only width that is neither lossy nor wasteful, and it halves
+    Blink's footprint on any machine that used to get float32 (a 6000x4000
+    frame goes 96 MB -> 48 MB; 500 of them, 48 GB -> 24 GB). The real memory
+    lever is the 1:2 / 1:4 / 1:8 buttons, which cut 4x / 16x / 64x.
+    """
+    return np.uint16
+
+
+def _clamp(v, lo, hi):
+    return lo if v < lo else (hi if v > hi else v)
+
+
+def _zoom_box_rect(pix_w, pix_h, disp_x, disp_y, disp_w, disp_h,
+                   norm_cx, norm_cy, crop_w_src, crop_h_src,
+                   hscroll, vscroll):
+    """Viewport rect for the zoom-box overlay, as (x, y, w, h) or None.
+
+    Everything is mapped through the rect the scaled pixmap ACTUALLY occupies
+    (disp_*), not through the label. The scroll area is widgetResizable, so
+    once the image is smaller than the viewport Qt stretches the label out to
+    the viewport and centres the pixmap in it. Label space and image space
+    then disagree on both scale and origin, which is what made the box drift
+    off the image and turn into a tall thin sliver: the old code divided the
+    label's width by the image's width for the x scale and the label's height
+    by the image's height for the y scale, and with a letterboxed image those
+    two ratios are nothing alike.
+
+    crop_*_src is the zoom panel's view size in SOURCE pixels, so the box
+    shrinks as you zoom out -- that is correct, the panel really is showing
+    that much less of the frame relative to what you can see. It is capped at
+    the image so a far-out zoom cannot draw a box bigger than the picture.
+    """
+    if pix_w <= 0 or pix_h <= 0 or disp_w <= 0 or disp_h <= 0:
+        return None
+    sx = disp_w / float(pix_w)
+    sy = disp_h / float(pix_h)
+    bw = min(float(crop_w_src) * sx, disp_w)
+    bh = min(float(crop_h_src) * sy, disp_h)
+    cx = disp_x + _clamp(norm_cx, 0.0, 1.0) * disp_w
+    cy = disp_y + _clamp(norm_cy, 0.0, 1.0) * disp_h
+    x = _clamp(cx - bw / 2.0, disp_x, disp_x + disp_w - bw)
+    y = _clamp(cy - bh / 2.0, disp_y, disp_y + disp_h - bh)
+    return (x - hscroll, y - vscroll, bw, bh)
+
+
+def _norm_from_viewport_pos(vx, vy, disp_x, disp_y, disp_w, disp_h,
+                            hscroll, vscroll):
+    """Viewport point -> normalized image coords, through the displayed rect.
+
+    Inverse of the mapping in _zoom_box_rect. A click in the letterbox around
+    a zoomed-out image clamps to the nearest edge of the image rather than
+    reporting a position outside it.
+    """
+    if disp_w <= 0 or disp_h <= 0:
+        return 0.5, 0.5
+    lx = vx + hscroll
+    ly = vy + vscroll
+    return (_clamp((lx - disp_x) / float(disp_w), 0.0, 1.0),
+            _clamp((ly - disp_y) / float(disp_h), 0.0, 1.0))
 
 
 def _percentile_scale(arr, lo=0.5, hi=99.5):
@@ -271,6 +406,12 @@ class MetricsPanel(QWidget):
         layout = QVBoxLayout(self)
         grid = QGridLayout()
         layout.addLayout(grid)
+
+        # Stream-mode hooks, injected by BlinkTab.show_metrics. pixel_loader
+        # is idx -> ndarray|None and decodes a frame just in time; shape_hint
+        # is idx -> (h, w) for the worker heuristic. Both None in PreLoad.
+        self.pixel_loader = None
+        self.shape_hint = None
 
         # caching slots
         self._orig_images = None       # last list passed
@@ -464,9 +605,22 @@ class MetricsPanel(QWidget):
         import numpy as np
         import math
 
-        idx, entry = i_entry
-        load_scale = int(entry.get("load_scale", 1))
+        # (idx, entry) in PreLoad; (idx, entry, loader) in Stream, where
+        # loader(idx) -> ndarray|None decodes the frame just in time and is
+        # expected to have already folded header/bit_depth/orig_background
+        # back onto the entry before it returns.
+        if len(i_entry) == 3:
+            idx, entry, loader = i_entry
+        else:
+            (idx, entry), loader = i_entry, None
         img = entry.get("image_data", None)
+        if img is None and loader is not None:
+            try:
+                img = loader(idx)
+            except Exception as e:
+                print(f"[Blink] metrics load failed for index {idx}: {e}")
+                img = None
+        load_scale = int(entry.get("load_scale", 1))
 
         BAD_FWHM = 30.0
         BAD_ECC  = 1.0
@@ -641,18 +795,30 @@ class MetricsPanel(QWidget):
 
 
 
-    def compute_all_metrics(self, loaded_images) -> bool:
+    def compute_all_metrics(self, loaded_images, loader=None,
+                            shape_hint=None) -> bool:
         """
         Run SEP over the full list in parallel using threads and cache results.
         Uses *downsampled* SEP for speed + lower RAM.
         Returns True if metrics were computed, False if user canceled.
+
+        ``loader`` is Stream mode's just-in-time decoder, loader(idx) ->
+        ndarray|None. When given, frames are loaded, measured and released one
+        at a time instead of having to be resident up front; the measurements
+        are what persist. ``shape_hint`` is a callable idx -> (h, w) used for
+        the worker-count heuristic, since in Stream mode there is no frame to
+        measure before the run starts.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import os
         import numpy as np
-        import psutil
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QProgressDialog, QApplication
+
+        if loader is None:
+            loader = self.pixel_loader
+        if shape_hint is None:
+            shape_hint = self.shape_hint
 
         n = len(loaded_images)
         if n == 0:
@@ -677,7 +843,10 @@ class MetricsPanel(QWidget):
         # ----------------------------
         # 2) Progress dialog (Cancel)
         # ----------------------------
-        prog = QProgressDialog(self.tr("Computing frame metrics…"), self.tr("Cancel"), 0, n, self)
+        prog = QProgressDialog(
+            self.tr("Loading and measuring frames…") if loader is not None
+            else self.tr("Computing frame metrics…"),
+            self.tr("Cancel"), 0, n, self)
         prog.setWindowModality(Qt.WindowModality.WindowModal)
         prog.setMinimumDuration(0)
         prog.setValue(0)
@@ -693,7 +862,13 @@ class MetricsPanel(QWidget):
         # threading on large images — more workers = more contention = slower
         # wall time. RAM is not the constraint; allocator lock contention is.
         # Empirically 4-6 workers is the sweet spot for bin-2 downsampled frames.
-        h0, w0 = loaded_images[0]["image_data"].shape[:2]
+        _first = loaded_images[0].get("image_data")
+        if _first is not None:
+            h0, w0 = _first.shape[:2]
+        elif shape_hint is not None:
+            h0, w0 = shape_hint(0)
+        else:
+            h0, w0 = 2048, 2048
         ds_pixels = (h0 // 2) * (w0 // 2)
 
         if ds_pixels > 8_000_000:       # >8MP downsampled (e.g. 5644x8288 -> ~11.7MP)
@@ -707,7 +882,14 @@ class MetricsPanel(QWidget):
 
         workers = max(1, workers)
 
-        tasks = [(i, loaded_images[i]) for i in range(n)]
+        if loader is not None:
+            # Streaming: decoding dominates, and every in-flight frame is a
+            # full-resolution array held at once. Keep the fan-out tight so
+            # peak memory stays near workers x frame size rather than n x it.
+            workers = max(1, min(workers, 4))
+            tasks = [(i, loaded_images[i], loader) for i in range(n)]
+        else:
+            tasks = [(i, loaded_images[i]) for i in range(n)]
         done = 0
         canceled = False
 
@@ -929,7 +1111,11 @@ class MetricsPanel(QWidget):
             if mods & Qt.KeyboardModifier.ShiftModifier:
                 # preview the correct global frame
                 entry  = self._orig_images[gi]
-                img    = entry['image_data']
+                img    = entry.get('image_data')
+                if img is None and self.pixel_loader is not None:
+                    img = self.pixel_loader(gi)
+                if img is None:
+                    continue
                 is_mono= entry.get('is_mono', False)
                 dlg = ImagePreviewDialog(img, is_mono)
                 dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -1557,6 +1743,18 @@ class BlinkTab(QWidget):
         self._pending_preview_timer.timeout.connect(self._do_preview_update)
         self._view_center_norm = None
         self._zoom_pinned_norm = None  # (norm_cx, norm_cy) set by right-click
+
+        # --- Stream mode state -------------------------------------------
+        # In Stream mode entries carry header/metrics but image_data is None;
+        # pixels live in this cache, keyed by file path. None in PreLoad mode.
+        self._stream_cache: Optional[FrameCache] = None
+        self._stream_dir = 1            # +1 forward, -1 back; drives prefetch
+        try:
+            self._stream_mode = bool(
+                _s.value("blink/stream", False, type=bool))
+        except Exception:
+            self._stream_mode = False
+
         self.initUI()
         self.init_shortcuts()
 
@@ -1570,6 +1768,174 @@ class BlinkTab(QWidget):
             pass
 
         self._geom_restored = False  # <- NEW
+
+    # ------------------------------------------------------------------
+    # Stream mode: demand loading
+    # ------------------------------------------------------------------
+    def _ensure_stream_cache(self):
+        """The FrameCache for Stream mode, created on first use."""
+        if self._stream_cache is None:
+            self._stream_cache = FrameCache(
+                self._stream_load_payload,
+                budget_bytes=_blink_stream_budget_bytes(),
+            )
+        return self._stream_cache
+
+    def _stream_load_payload(self, path):
+        """Decode one frame for the cache. Runs on a cache worker thread.
+
+        Returns ``(stored, meta)``. Only ``stored`` is big; the meta is small
+        and gets folded back into the entry permanently, so a frame that has
+        been looked at once keeps its header, bit depth and background even
+        after its pixels are evicted.
+        """
+        _p, hdr, bit_depth, is_mono, stored, back = self._load_one_image(
+            path, _blink_storage_dtype(), self._load_scale)
+        return stored, {
+            "header": hdr or {},
+            "bit_depth": bit_depth,
+            "is_mono": is_mono,
+            "orig_background": back,
+            "load_scale": self._load_scale,
+        }
+
+    def _absorb_stream_meta(self, idx, meta):
+        """Fold a freshly loaded frame's small metadata into its entry."""
+        if not (0 <= idx < len(self.loaded_images)) or not meta:
+            return
+        entry = self.loaded_images[idx]
+        for key in ("header", "bit_depth", "is_mono", "orig_background",
+                    "load_scale"):
+            if key in meta:
+                entry[key] = meta[key]
+
+    def _pixels_for(self, idx, *, prefetch=True):
+        """Decoded pixels for a frame, in either mode. None if unavailable.
+
+        PreLoad just hands back what is already held. Stream goes to the cache,
+        blocking on a decode if this frame is not resident, and queues the next
+        few in the current travel direction so playback does not stall.
+        """
+        if not (0 <= idx < len(self.loaded_images)):
+            return None
+        entry = self.loaded_images[idx]
+        stored = entry.get("image_data")
+        if stored is not None:
+            return stored
+        if not self._stream_mode:
+            return None
+
+        cache = self._ensure_stream_cache()
+        path = entry.get("file_path")
+        if not path:
+            return None
+
+        ahead = ()
+        if prefetch:
+            ahead = tuple(prefetch_window(self.image_paths, idx, self._stream_dir))
+        try:
+            payload = cache.get(path, prefetch=ahead)
+        except Exception as e:
+            print(f"[Blink] stream load failed for {path}: {e}")
+            return None
+        if payload is None:
+            return None
+        stored, meta = payload
+        self._absorb_stream_meta(idx, meta)
+        return stored
+
+    def _metrics_pixels(self, idx):
+        """Pixels for a metrics worker. Decodes on the calling thread.
+
+        Deliberately NOT routed through the FrameCache: its pool is two
+        threads wide, so every metrics worker would funnel through it, and a
+        measurement sweep would evict the frames the user is actually looking
+        at in favour of frames measured and dropped a moment later. A resident
+        frame is still reused.
+        """
+        if not (0 <= idx < len(self.loaded_images)):
+            return None
+        entry = self.loaded_images[idx]
+        stored = entry.get("image_data")
+        if stored is not None:
+            return stored
+        path = entry.get("file_path")
+        if not path:
+            return None
+        cache = self._stream_cache
+        if cache is not None:
+            payload = cache.peek(path)
+            if payload is not None:
+                self._absorb_stream_meta(idx, payload[1])
+                return payload[0]
+        stored, meta = self._stream_load_payload(path)
+        self._absorb_stream_meta(idx, meta)
+        return stored
+
+    def _frame_shape_hint(self, idx):
+        """(height, width) of the STORED frame, without decoding it.
+
+        Used where code needs the display geometry but not the pixels -- the
+        metrics worker heuristic and the satellite overlay mask. Falls back
+        through: resident pixels, the probed header, then a mid-size guess.
+        """
+        if not (0 <= idx < len(self.loaded_images)):
+            return (2048, 2048)
+        entry = self.loaded_images[idx]
+        stored = entry.get("image_data")
+        if stored is not None:
+            return tuple(int(v) for v in stored.shape[:2])
+        wh = entry.get("probe_wh")
+        scale = max(1, int(entry.get("load_scale", self._load_scale) or 1))
+        if wh:
+            w, h = wh
+            return (max(1, int(h) // scale), max(1, int(w) // scale))
+        hdr = entry.get("header") or {}
+        try:
+            w = int(hdr["NAXIS1"]); h = int(hdr["NAXIS2"])
+            return (max(1, h // scale), max(1, w // scale))
+        except Exception:
+            pass
+        return (2048, 2048)
+
+    def _set_stream_mode(self, on: bool):
+        """Switch PreLoad <-> Stream.
+
+        Asymmetric on purpose, so neither direction surprises anyone:
+        switching TO Stream drops resident pixels immediately (instant memory
+        back, frames reload on demand), while switching to PreLoad applies on
+        the next load rather than silently decoding hundreds of frames.
+        """
+        on = bool(on)
+        if on == self._stream_mode:
+            return
+        self._stream_mode = on
+        try:
+            QSettings().setValue("blink/stream", on)
+        except Exception:
+            pass
+
+        if on and self.loaded_images:
+            for entry in self.loaded_images:
+                entry["image_data"] = None
+            self._ensure_stream_cache()
+            self.loading_label.setText(self.tr(
+                "Streaming: frames load when you select them."))
+            cur = self.fileTree.currentItem()
+            if cur is not None and cur.childCount() == 0:
+                self._last_preview_name = None
+                self.on_item_clicked(cur, 0)
+        elif not on and self.loaded_images:
+            self.loading_label.setText(self.tr(
+                "PreLoad applies on the next load."))
+
+    def _shutdown_stream_cache(self):
+        if self._stream_cache is not None:
+            try:
+                self._stream_cache.shutdown()
+            except Exception:
+                pass
+            self._stream_cache = None
 
     # --- NEW ---
     def _top_level_window(self):
@@ -1674,6 +2040,7 @@ class BlinkTab(QWidget):
         self._save_window_geometry()
         self._save_main_splitter_state()
         self._save_tree_header_state()
+        self._shutdown_stream_cache()
 
         try:
             if self.metrics_window is not None:
@@ -1765,6 +2132,66 @@ class BlinkTab(QWidget):
         )
         res_layout.addStretch(1)
         left_layout.addLayout(res_layout)
+
+        # PreLoad | Stream
+        mode_row = QHBoxLayout()
+        mode_lbl = QLabel(self.tr("Frames:"), self)
+        mode_lbl.setStyleSheet("font-size: 11px;")
+        mode_row.addWidget(mode_lbl)
+
+        self._mode_group = QButtonGroup(self)
+        self.rb_preload = QRadioButton(self.tr("PreLoad"), self)
+        self.rb_stream = QRadioButton(self.tr("Stream"), self)
+        self.rb_preload.setToolTip(self.tr(
+            "PreLoad: decode every frame when the folder is opened and keep it\n"
+            "in memory. Slowest to open, instant to blink. This is how Blink\n"
+            "has always worked."))
+        self.rb_stream.setToolTip(self.tr(
+            "Stream: scan headers only on open, then decode a frame when you\n"
+            "select it. The folder appears immediately and memory stays flat\n"
+            "no matter how many subs there are; each frame costs one read the\n"
+            "first time you look at it. Recently viewed frames stay cached and\n"
+            "the next few in your direction of travel are fetched ahead, so\n"
+            "playback stays smooth.\n"
+            "\n"
+            "Interactive Metrics streams too: it loads, measures and releases\n"
+            "each frame in turn rather than needing them all resident.\n"
+            "\n"
+            "Switching to Stream frees memory immediately. Switching back to\n"
+            "PreLoad takes effect on the next load."))
+        self._mode_group.addButton(self.rb_preload)
+        self._mode_group.addButton(self.rb_stream)
+        self.rb_preload.setChecked(not self._stream_mode)
+        self.rb_stream.setChecked(self._stream_mode)
+        self.rb_stream.toggled.connect(self._set_stream_mode)
+        mode_row.addWidget(self.rb_preload)
+        mode_row.addWidget(self.rb_stream)
+        mode_row.addStretch(1)
+        left_layout.addLayout(mode_row)
+
+        # CFA handling for the strided 1:4 / 1:8 reader.
+        self.chk_cfa_color = QCheckBox(self.tr("Keep color on CFA frames"), self)
+        self.chk_cfa_color.setToolTip(self.tr(
+            "Checked (default): one-shot color frames stay in color at 1:4 and\n"
+            "1:8. Blink reads a quad-aligned subsample straight off disk and\n"
+            "debayers the small frame instead of the full one.\n"
+            "\n"
+            "Unchecked: CFA frames are averaged to a grey luminance preview and\n"
+            "the debayer never runs. This is the slower of the two -- it reads\n"
+            "twice as many rows to build the same size frame -- but it is the\n"
+            "option that touches no numba code at all, so it is worth trying if\n"
+            "you hit a threading problem during loads.\n"
+            "\n"
+            "Mono frames are unaffected either way. Takes effect on the next\n"
+            "load, like the resolution buttons above."))
+        try:
+            self.chk_cfa_color.setChecked(
+                bool(QSettings().value("blink/cfa_color", True, type=bool)))
+        except Exception:
+            self.chk_cfa_color.setChecked(True)
+        self.chk_cfa_color.toggled.connect(
+            lambda on: QSettings().setValue("blink/cfa_color", bool(on)))
+        left_layout.addWidget(self.chk_cfa_color)
 
         self.metrics_button = QPushButton(self.tr("Interactive Metrics && Culling"), self)
         self.metrics_button.clicked.connect(self.show_metrics)
@@ -2649,7 +3076,10 @@ class BlinkTab(QWidget):
                     break
 
                 entry = self.loaded_images[idx]
-                f = self._make_display_frame(entry)  # uint8, gray or RGB
+                f = self._make_display_frame(
+                    entry, stored=self._pixels_for(idx, prefetch=False))
+                if f is None:
+                    continue                      # unreadable frame: skip it
 
                 # Ensure 3-channel RGB
                 if f.ndim == 2:
@@ -2741,8 +3171,13 @@ class BlinkTab(QWidget):
 
 
 
-    def _make_display_frame(self, entry):
-        stored = entry['image_data']
+    def _make_display_frame(self, entry, stored=None):
+        # `stored` lets a caller pass pixels that are not held on the entry,
+        # which is the normal case in Stream mode.
+        if stored is None:
+            stored = entry.get('image_data')
+        if stored is None:
+            return None
         use_aggr = bool(self.aggressive_stretch_enabled)
 
         if not use_aggr:
@@ -3727,11 +4162,11 @@ class BlinkTab(QWidget):
 
         job_specs = []
         for idx in sorted(survivors):
-            stored = self.loaded_images[idx].get("image_data", None)
-            if stored is None:
-                continue
+            # The overlay mask is stored at DISPLAY size. In Stream mode the
+            # pixels may not be resident, so take the geometry from the header
+            # rather than forcing a decode we do not otherwise need.
             job_specs.append((idx, self.loaded_images[idx]["file_path"],
-                              tuple(stored.shape[:2])))
+                              self._frame_shape_hint(idx)))
 
         def _worker(idx: int, file_path, stored_hw):
             """Removal for one surviving frame. Returns (idx, mask_display)."""
@@ -3893,14 +4328,14 @@ class BlinkTab(QWidget):
 
     def _appendImages(self, file_paths):
         # decide dtype exactly as in loadImages
-        mem = psutil.virtual_memory()
-        avail = mem.available / (1024**3)
-        if avail <= 16:
-            target_dtype = np.uint8
-        elif avail <= 32:
-            target_dtype = np.uint16
-        else:
-            target_dtype = np.float32
+        target_dtype = _blink_storage_dtype()
+
+        if self._stream_mode:
+            self._stream_scan(
+                sorted(file_paths,
+                       key=lambda p: self._natural_key(os.path.basename(p))),
+                append=True)
+            return
 
         total_new = len(file_paths)
         self.progress_bar.setRange(0, total_new)
@@ -3966,6 +4401,13 @@ class BlinkTab(QWidget):
             # threshold line re-evaluates flags for all frames against it.
             mp.pointClicked.connect(self.on_metrics_point)
             mp.thresholdChanged.connect(self.on_threshold_change)
+
+        # In Stream mode the panel has to be able to pull pixels itself:
+        # measuring streams frame by frame, and shift-click previews a frame
+        # whose pixels may have been evicted.
+        mp = self.metrics_window.metrics_panel
+        mp.pixel_loader = self._metrics_pixels if self._stream_mode else None
+        mp.shape_hint = self._frame_shape_hint if self._stream_mode else None
 
         order = self._tree_order_indices()
         self.metrics_window.set_images(self.loaded_images, order=order)
@@ -4149,6 +4591,8 @@ class BlinkTab(QWidget):
 
 
     def _after_list_changed(self, removed_indices: List[int] | None = None):
+        if self._stream_cache is not None:
+            self._stream_cache.retain(self.image_paths)
         self._rebuild_tree_from_loaded()
         self.imagesChanged.emit(len(self.loaded_images))
 
@@ -4186,7 +4630,11 @@ class BlinkTab(QWidget):
             return entry.get('orig_background', np.nan)
 
         # otherwise rebuild a float32 [0..1] array from whatever dtype we stored
-        img = entry['image_data']
+        # (no callers today, but it must not be a trap in Stream mode, where
+        # an entry legitimately carries no pixels)
+        img = entry.get('image_data')
+        if img is None:
+            return np.nan
         if img.dtype == np.uint8:
             data = img.astype(np.float32)/255.0
         elif img.dtype == np.uint16:
@@ -4269,6 +4717,8 @@ class BlinkTab(QWidget):
             self.loaded_images.clear()
             self.image_labels.clear()
             self.fileTree.clear()
+            if self._stream_cache is not None:
+                self._stream_cache.clear()
             self.preview_label.clear()
             self.preview_label.setText(self.tr('No image selected.'))
             self.current_pixmap = None
@@ -4299,27 +4749,53 @@ class BlinkTab(QWidget):
    
     @staticmethod
     def _load_one_image(file_path: str, target_dtype, load_scale: int = 1):
-        # 1) load
-        image, header, bit_depth, is_mono = load_image(file_path)
-        if image is None or image.size == 0:
-            msg = QCoreApplication.translate("BlinkTab", "Empty image")
-            raise ValueError(msg)
+        # 1) Fast path: plain FITS / XISF at 1:4 or 1:8 is read strided,
+        #    straight to the downsampled frame -- no full-resolution read, no
+        #    full-resolution debayer, no cv2.resize. A CFA frame comes back as
+        #    a quad-aligned MOSAIC in colour mode, which still goes through the
+        #    normal debayer, just on a frame 16x or 64x smaller.
+        #
+        #    read_downsampled returns None for anything it cannot reproduce
+        #    exactly as load_image would (compressed or gzipped containers,
+        #    the FITS dtypes load_image min-max normalizes, 1:1 and 1:2,
+        #    BOTTOM-UP CFA in colour mode), and we fall through below.
+        fast = None
+        if load_scale > 1 and _blink_fast_read_enabled():
+            try:
+                fast = read_downsampled(file_path, load_scale,
+                                        cfa_mode=_blink_cfa_mode())
+            except Exception as e:
+                print(f"[Blink] strided read failed for {file_path}: {e}")
+                fast = None
 
-        # 2) optional debayer
-        if is_mono:
-            image = BlinkTab.debayer_image(image, file_path, header)
+        if fast is not None:
+            image, header, bit_depth, needs_debayer = fast
+            if needs_debayer:
+                # Same debayer the full-resolution path uses, on the small
+                # mosaic. BAYERPAT and the CFA phase were preserved by the
+                # reader precisely so this call stays correct.
+                image = BlinkTab.debayer_image(image, file_path, header)
+            is_color_after_debayer = (image.ndim == 3 and image.shape[2] >= 3)
+        else:
+            # 1b) load
+            image, header, bit_depth, is_mono = load_image(file_path)
+            if image is None or image.size == 0:
+                msg = QCoreApplication.translate("BlinkTab", "Empty image")
+                raise ValueError(msg)
 
-        is_color_after_debayer = (image.ndim == 3 and image.shape[2] >= 3)
+            # 2) optional debayer
+            if is_mono:
+                image = BlinkTab.debayer_image(image, file_path, header)
 
-        # 3) optional downsample BEFORE stretch (cheaper to stretch small)
-        if load_scale > 1:
-            h, w = image.shape[:2]
-            new_h = max(1, h // load_scale)
-            new_w = max(1, w // load_scale)
-            if image.ndim == 2:
-                image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
-            else:
-                image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            is_color_after_debayer = (image.ndim == 3 and image.shape[2] >= 3)
+
+            # 3) optional downsample BEFORE stretch (cheaper to stretch small)
+            if load_scale > 1:
+                h, w = image.shape[:2]
+                new_h = max(1, h // load_scale)
+                new_w = max(1, w // load_scale)
+                image = cv2.resize(image, (new_w, new_h),
+                                   interpolation=cv2.INTER_AREA)
 
         # 4) measure pre-stretch background on (possibly downsampled) mono plane
         data = np.asarray(image, dtype=np.float32)
@@ -4344,14 +4820,6 @@ class BlinkTab(QWidget):
             stored = (clipped * 65535).astype(np.uint16)
         else:
             stored = clipped.astype(np.float32)
-
-        if stored.ndim == 3:
-            for c, name in enumerate(['R','G','B']):
-                ch = stored[:,:,c].astype(np.float32)
-                if stored.dtype == np.uint8:
-                    ch /= 255.0
-                elif stored.dtype == np.uint16:
-                    ch /= 65535.0
 
         is_mono_final = not is_color_after_debayer
         return file_path, header, bit_depth, is_mono_final, stored, global_back
@@ -4413,15 +4881,12 @@ class BlinkTab(QWidget):
         # ---------- NEW: natural sort the list of filenames ----------
         file_paths = sorted(file_paths, key=lambda p: self._natural_key(os.path.basename(p)))
 
-        # 1) pick dtype based on RAM
-        mem = psutil.virtual_memory()
-        avail = mem.available / (1024**3)
-        if avail <= 16:
-            target_dtype = np.uint8
-        elif avail <= 32:
-            target_dtype = np.uint16
-        else:
-            target_dtype = np.float32
+        # 1) pick storage dtype (see _blink_storage_dtype: always uint16)
+        target_dtype = _blink_storage_dtype()
+
+        if self._stream_mode:
+            self._stream_scan(file_paths, append=False)
+            return
 
         total = len(file_paths)
         self.progress_bar.setRange(0, 100)
@@ -4582,6 +5047,70 @@ class BlinkTab(QWidget):
             QTimer.singleShot(0, self._auto_select_first_leaf_after_load)
 
 
+    def _stream_scan(self, file_paths, *, append: bool):
+        """Stream mode's open: read headers, build the tree, decode nothing.
+
+        Entries are created with image_data=None. Everything the tree and the
+        metric columns need before a frame is viewed comes from probe_header;
+        a format with no cheap header lands under "Object: Unknown" until it
+        is first opened, at which point its real header replaces the blank.
+        """
+        if not append:
+            self.image_paths.clear()
+            self.loaded_images.clear()
+            self.fileTree.clear()
+            if self._stream_cache is not None:
+                self._stream_cache.clear()
+
+        # The cache decodes on worker threads, so the same numba threading
+        # guard the parallel PreLoad path uses applies here too.
+        _blink_wait_for_numba_layer()
+        _blink_apply_thread_safety()
+        self._ensure_stream_cache()
+
+        total = len(file_paths)
+        self.progress_bar.setRange(0, max(1, total))
+        self.progress_bar.setValue(0)
+        QApplication.processEvents()
+        step = max(1, total // 100)
+
+        added = 0
+        for i, path in enumerate(file_paths):
+            if append and path in self.image_paths:
+                continue
+            hdr, wh = probe_header(path)
+            self.image_paths.append(path)
+            self.loaded_images.append({
+                'file_path':       path,
+                'image_data':      None,      # decoded on demand
+                'header':          hdr or {},
+                'probe_wh':        wh,        # (w, h) before load_scale
+                'bit_depth':       None,
+                'is_mono':         None,
+                'flagged':         False,
+                'orig_background': np.nan,
+                'load_scale':      self._load_scale,
+            })
+            added += 1
+            done = i + 1
+            if done == total or (done % step) == 0:
+                self.progress_bar.setValue(done)
+                QApplication.processEvents()
+
+        self.progress_bar.setValue(max(1, total))
+        self._rebuild_tree_from_loaded()
+        self.imagesChanged.emit(len(self.loaded_images))
+        self.loading_label.setText(self.tr(
+            "Streaming {0} frame{1} — frames load when you select them.").format(
+                len(self.loaded_images), 's' if len(self.loaded_images) != 1 else ''))
+
+        if self.metrics_window and self.metrics_window.isVisible():
+            self.metrics_window.update_metrics(
+                self.loaded_images, order=self._tree_order_indices())
+
+        if getattr(self, "_auto_fit", False) or added:
+            QTimer.singleShot(0, self._auto_select_first_leaf_after_load)
+
     def findTopLevelItemByName(self, name):
         """Find a top-level item in the tree by its name."""
         for index in range(self.fileTree.topLevelItemCount()):
@@ -4641,6 +5170,7 @@ class BlinkTab(QWidget):
 
     def previous_item(self):
         """Select the previous item in the TreeWidget."""
+        self._stream_dir = -1
         current_item = self.fileTree.currentItem()
         if current_item:
             all_items = self.get_all_leaf_items()
@@ -4654,6 +5184,7 @@ class BlinkTab(QWidget):
 
     def next_item(self):
         """Select the next item in the TreeWidget, looping back to the first item if at the end."""
+        self._stream_dir = 1
         current_item = self.fileTree.currentItem()
         if current_item:
             # Get all leaf items
@@ -4928,8 +5459,22 @@ class BlinkTab(QWidget):
 
         entry = self.loaded_images[idx]
 
+        # Stream mode decodes here, on demand. Say so before blocking: on a
+        # big frame this is a visible pause, and silence reads as a hang.
+        stored = entry.get('image_data')
+        if stored is None and self._stream_mode:
+            self.loading_label.setText(self.tr("Loading {0}…").format(
+                os.path.basename(file_path)))
+            QApplication.processEvents()
+            stored = self._pixels_for(idx)
+            self._update_loaded_count_label(len(self.loaded_images))
+
         # ✅ single source of truth (handles aggressive + mono + color)
-        disp8 = self._make_display_frame(entry)
+        disp8 = self._make_display_frame(entry, stored=stored)
+        if disp8 is None:
+            self.preview_label.setText(self.tr("Could not load this frame."))
+            self.current_pixmap = None
+            return
 
         qimage = self.convert_to_qimage(disp8)
         self.current_pixmap = QPixmap.fromImage(qimage)
@@ -5296,7 +5841,12 @@ class BlinkTab(QWidget):
         # --- Build the swapped payload (image replaced, metadata preserved) ---
         # Whatever you're storing as entry['image_data'] (uint16/float/etc), normalize to float01 for display pipeline.
         # If your DocManager expects native dtype instead, swap _as_float01 for your native image.
-        np_image_f01 = self._as_float01(entry["image_data"]).astype(np.float32, copy=False)
+        _px = self._pixels_for(idx, prefetch=False)
+        if _px is None:
+            QMessageBox.warning(self, self.tr("Document Manager"),
+                                self.tr("Could not load the pixels for this frame."))
+            return
+        np_image_f01 = self._as_float01(_px).astype(np.float32, copy=False)
 
         # Preserve your full load_image return structure as much as possible:
         # load_image returns: image, original_header, bit_depth, is_mono, meta
@@ -5424,6 +5974,8 @@ class BlinkTab(QWidget):
             return
 
         # Update internal structures
+        if self._stream_cache is not None:
+            self._stream_cache.invalidate(old_path)
         self.image_paths[idx] = new_path
         self.loaded_images[idx]['file_path'] = new_path
 
@@ -5515,6 +6067,8 @@ class BlinkTab(QWidget):
                 continue
 
             # Update internal paths
+            if self._stream_cache is not None:
+                self._stream_cache.invalidate(old_path)
             self.image_paths[idx] = new_path
             self.loaded_images[idx]["file_path"] = new_path
 
@@ -5621,6 +6175,8 @@ class BlinkTab(QWidget):
                 continue
 
             # Update internal lists
+            if self._stream_cache is not None:
+                self._stream_cache.invalidate(old_path)
             self.image_paths[idx] = new_path
             self.loaded_images[idx]["file_path"] = new_path
 
@@ -5989,6 +6545,27 @@ class BlinkTab(QWidget):
         self.apply_zoom()
         event.accept()
 
+    def _display_rect(self):
+        """Where the scaled pixmap actually sits inside preview_label.
+
+        Returns (x, y, w, h) in label coordinates, or None. QLabel centres a
+        pixmap smaller than itself (AlignCenter), and because the scroll area
+        is widgetResizable the label is never smaller than the viewport -- so
+        as soon as you zoom out past "fills the viewport", the image occupies
+        a centred sub-rectangle of the label rather than the whole thing.
+        """
+        pix = self.preview_label.pixmap()
+        if pix is None or pix.isNull():
+            return None
+        dpr = float(pix.devicePixelRatio() or 1.0) or 1.0
+        pw = pix.width() / dpr
+        ph = pix.height() / dpr
+        lw = float(self.preview_label.width())
+        lh = float(self.preview_label.height())
+        x0 = max(0.0, (lw - pw) / 2.0)
+        y0 = max(0.0, (lh - ph) / 2.0)
+        return (x0, y0, pw, ph)
+
     def _apply_zoom_at_norm(self, norm_cx, norm_cy):
         """Push normalized coords to zoom panel and update overlay rect."""
         # If zoom panel is hidden, clear overlay and bail
@@ -6012,8 +6589,12 @@ class BlinkTab(QWidget):
         if not hasattr(self, "_zoom_rect_overlay"):
             return
 
-        label_w = max(1, self.preview_label.width())
-        label_h = max(1, self.preview_label.height())
+        disp = self._display_rect()
+        if disp is None:
+            self._zoom_rect_overlay.set_rect(None)
+            return
+        disp_x, disp_y, disp_w, disp_h = disp
+
         hbar = self.scroll_area.horizontalScrollBar()
         vbar = self.scroll_area.verticalScrollBar()
 
@@ -6024,26 +6605,16 @@ class BlinkTab(QWidget):
         crop_w_src = max(16, int(panel_w / factor))
         crop_h_src = max(16, int(panel_h / factor))
 
-        scale_x = label_w / max(1, self.current_pixmap.width())
-        scale_y = label_h / max(1, self.current_pixmap.height())
-
-        crop_w_label = crop_w_src * scale_x
-        crop_h_label = crop_h_src * scale_y
-
-        cx_label = norm_cx * label_w
-        cy_label = norm_cy * label_h
-
-        x0_label = cx_label - crop_w_label / 2.0
-        y0_label = cy_label - crop_h_label / 2.0
-        x0_label = max(0.0, min(x0_label, label_w - crop_w_label))
-        y0_label = max(0.0, min(y0_label, label_h - crop_h_label))
-
-        vp_x = x0_label - hbar.value()
-        vp_y = y0_label - vbar.value()
-
-        self._zoom_rect_overlay.set_rect(
-            QRectF(vp_x, vp_y, crop_w_label, crop_h_label)
+        rect = _zoom_box_rect(
+            self.current_pixmap.width(), self.current_pixmap.height(),
+            disp_x, disp_y, disp_w, disp_h,
+            norm_cx, norm_cy, crop_w_src, crop_h_src,
+            hbar.value(), vbar.value(),
         )
+        if rect is None:
+            self._zoom_rect_overlay.set_rect(None)
+            return
+        self._zoom_rect_overlay.set_rect(QRectF(*rect))
 
     def _center_zoom_to_viewport_pos(self, viewport_pos):
         """Right-click: pin the zoom box to this position and lock it there."""
@@ -6052,18 +6623,19 @@ class BlinkTab(QWidget):
         if not hasattr(self, "_zoom_panel"):
             return
 
-        label = self.preview_label
-        label_w = max(1, label.width())
-        label_h = max(1, label.height())
+        disp = self._display_rect()
+        if disp is None:
+            return
+        disp_x, disp_y, disp_w, disp_h = disp
 
         hbar = self.scroll_area.horizontalScrollBar()
         vbar = self.scroll_area.verticalScrollBar()
 
-        lx = viewport_pos.x() + hbar.value()
-        ly = viewport_pos.y() + vbar.value()
-
-        norm_cx = max(0.0, min(1.0, lx / label_w))
-        norm_cy = max(0.0, min(1.0, ly / label_h))
+        norm_cx, norm_cy = _norm_from_viewport_pos(
+            viewport_pos.x(), viewport_pos.y(),
+            disp_x, disp_y, disp_w, disp_h,
+            hbar.value(), vbar.value(),
+        )
 
         # Store the pin in normalized image coords
         self._zoom_pinned_norm = (norm_cx, norm_cy)
@@ -6084,17 +6656,20 @@ class BlinkTab(QWidget):
             # Use pinned position — same spot across image switches
             norm_cx, norm_cy = self._zoom_pinned_norm
         else:
-            # Default: center of current viewport
+            # Default: whatever the centre of the viewport is sitting over.
+            # Mapped through the displayed image rect, so a zoomed-out image
+            # reports its own centre instead of the label's.
+            disp = self._display_rect()
+            if disp is None:
+                return
             sa = self.scroll_area
             vp = sa.viewport()
-            hbar = sa.horizontalScrollBar()
-            vbar = sa.verticalScrollBar()
-            cx_label = hbar.value() + vp.width() / 2.0
-            cy_label = vbar.value() + vp.height() / 2.0
-            label_w = max(1, self.preview_label.width())
-            label_h = max(1, self.preview_label.height())
-            norm_cx = max(0.0, min(1.0, cx_label / label_w))
-            norm_cy = max(0.0, min(1.0, cy_label / label_h))
+            norm_cx, norm_cy = _norm_from_viewport_pos(
+                vp.width() / 2.0, vp.height() / 2.0,
+                disp[0], disp[1], disp[2], disp[3],
+                sa.horizontalScrollBar().value(),
+                sa.verticalScrollBar().value(),
+            )
 
         self._apply_zoom_at_norm(norm_cx, norm_cy)
 

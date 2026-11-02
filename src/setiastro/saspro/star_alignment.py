@@ -368,6 +368,12 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
         "max_ellipticity": _get("max_ellipticity", 0.6, float),
         # Warp kernel used by every anti-ring warp site. See _warp_hi_interp.
         "kernel":          kernel,
+        # SASPRO_ALIGN_WORKERS_UI_V1
+        # Processes the solve pass may use. 0 = Auto (resolved by
+        # stacking_worker_tune.resolve_align_workers from the optimizer's
+        # measurement, or from VRAM when nothing has been measured). Shared
+        # with the Stacking Suite settings page, same as `kernel`.
+        "workers":         _get("workers", 0, int),
     }
 
     return prefs
@@ -2015,10 +2021,39 @@ class StellarAlignmentDialog(QDialog):
         if self.aligned_image is None:
             return
         a = self.aligned_image.astype(np.float32, copy=False)
-        m = np.nanmax(a) if a.size else 1.0
-        if not np.isfinite(m) or m <= 0:
-            m = 1.0
-        self.stretched_image = np.clip(a / m, 0, 1)
+
+        # Downsample 4x for the preview only — the label is 400x400 anyway,
+        # and the stretch statistics (median, robust sigma) are unchanged by
+        # a 4x area-average. Full frame, no crop: the black border from the
+        # shift is the thing you're looking at.
+        if a.shape[0] > 1600 or a.shape[1] > 1600:
+            small = cv2.resize(
+                a, (max(1, a.shape[1] // 4), max(1, a.shape[0] // 4)),
+                interpolation=cv2.INTER_AREA)
+        else:
+            small = a
+
+        try:
+            if small.ndim == 3 and small.shape[2] == 3:
+                if stretch_color_image is None:
+                    raise RuntimeError("stretch_color_image unavailable")
+                out = stretch_color_image(
+                    small, target_median=0.25, linked=True,
+                    normalize=False, apply_curves=False,
+                    blackpoint_sigma=5.0, no_black_clip=False)
+            else:
+                if stretch_mono_image is None:
+                    raise RuntimeError("stretch_mono_image unavailable")
+                out = stretch_mono_image(
+                    small.squeeze(), target_median=0.25,
+                    normalize=False, apply_curves=False,
+                    blackpoint_sigma=5.0, no_black_clip=False)
+            self.stretched_image = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+        except Exception:
+            m = float(np.nanmax(small)) if small.size else 1.0
+            if not np.isfinite(m) or m <= 0:
+                m = 1.0
+            self.stretched_image = np.clip(small / m, 0.0, 1.0)
 
     def update_preview(self, label, image):
         if image is None:
@@ -3049,13 +3084,105 @@ def _solve_with_meridian_check(src_gray: np.ndarray,
     return T_final
 
 
+# ── SASPRO_REFDET_CACHE_V1 ───────────────────────────────────────────────────
+# The reference frame's star list, detected once per worker process.
+#
+# The cropped solvers below detect stars on BOTH images every call. The source
+# changes every frame; the reference is the same ref_ds_npy for the whole run,
+# so its detection was being repeated 1150 x 3 times for an identical answer.
+# One detection at ds=2 on an 8288x5644 frame measures 324 ms, half of it in
+# sep.Background alone, against a measured pass solve of 1.06 s.
+#
+# Set this to False to disable without reverting the patch.
+_REF_PTS_CACHE_ON = True
+
+# Entries are tiny -- at most max_control_points x 2 float32, a few KB -- so
+# the bound is about not leaking across a long session with many references,
+# not about memory pressure. Oldest out first.
+_REF_PTS_CACHE: dict = {}
+_REF_PTS_CACHE_MAX = 8
+
+# Each fill announces itself so a run can be checked at a glance: one line per
+# worker process is the healthy picture. A churning key would announce itself
+# too, which is the point -- but it would also flood the log, so it goes quiet
+# after a few and says so.
+_REF_PTS_CACHE_SAID = [0]
+_REF_PTS_CACHE_SAY_MAX = 3
+
+
+def _ref_file_key(path):
+    """Identity of a reference file: path + size + mtime_ns, or None.
+
+    None disables caching for that call, which is the right answer when we
+    cannot prove the file is the one we cached. Rewriting the reference
+    in place during a run would otherwise serve a stale star list.
+    """
+    import os as _os
+    try:
+        st = _os.stat(path)
+        return (_os.path.realpath(path), int(st.st_size), int(st.st_mtime_ns))
+    except Exception:
+        return None
+
+
+def _ref_pts_cached(ref_crop, ref_key, box, det_sigma, minarea, max_total,
+                    min_fwhm, max_ellipticity):
+    """`_detect_stars_uniform(ref_crop, ...)`, memoized on the reference file.
+
+    `ref_key` of None means detect and do not cache -- that is the path every
+    caller outside the delta pass takes, so their behaviour is unchanged.
+
+    `box` is the crop rectangle (y0, x0, h, w). It belongs in the key because
+    _solve_with_meridian_check re-solves a quarter-turn case on a rot90 of the
+    source, and the swapped H/W select a different crop of the same reference.
+
+    Exceptions are deliberately NOT caught: the callers below wrap this in a
+    try/except that falls back to image-based astroalign, and swallowing a
+    detection failure here would skip that fallback.
+    """
+    import numpy as np
+
+    def _detect():
+        return _detect_stars_uniform(ref_crop, det_sigma, minarea,
+                                     grid=(4, 4), max_per_cell=25,
+                                     max_total=max_total,
+                                     min_fwhm=min_fwhm,
+                                     max_ellipticity=max_ellipticity)
+
+    if not _REF_PTS_CACHE_ON or ref_key is None:
+        return _detect()
+
+    key = (ref_key, tuple(box), float(det_sigma), int(minarea), int(max_total),
+           float(min_fwhm), float(max_ellipticity))
+    hit = _REF_PTS_CACHE.get(key)
+    if hit is None:
+        hit = np.ascontiguousarray(_detect())
+        if len(_REF_PTS_CACHE) >= _REF_PTS_CACHE_MAX:
+            _REF_PTS_CACHE.pop(next(iter(_REF_PTS_CACHE)))
+        _REF_PTS_CACHE[key] = hit
+        _REF_PTS_CACHE_SAID[0] += 1
+        said = _REF_PTS_CACHE_SAID[0]
+        if said <= _REF_PTS_CACHE_SAY_MAX:
+            print(f"[AA] reference star list cached: {hit.shape[0]} points "
+                  f"({box[3]}x{box[2]} crop) — reused for the rest of this "
+                  f"worker")
+        elif said == _REF_PTS_CACHE_SAY_MAX + 1:
+            print(f"[AA] reference star list re-detected more than "
+                  f"{_REF_PTS_CACHE_SAY_MAX} times in this worker — the cache "
+                  f"key is churning, so it is saving nothing. Staying quiet "
+                  f"from here.")
+    # A copy: the cache must not be reachable from anything downstream.
+    return hit.copy()
+
+
 def compute_affine_transform_astroalign_cropped(source_img, reference_img,
                                                 scale: float = 1.20,
                                                 limit_stars: int | None = None,
                                                 det_sigma: float = 12.0,
                                                 minarea: int = 10,
                                                 min_fwhm: float = 1.2,
-                                                max_ellipticity: float = 0.6):
+                                                max_ellipticity: float = 0.6,
+                                                ref_key=None):
     """
     Solve affine on a ~1.2x center crop of reference and lift into full-ref coords.
     Returns a 2x3 affine matrix in float64, or None.
@@ -3091,11 +3218,13 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
                                             max_total=(limit_stars or 500),
                                             min_fwhm=min_fwhm,
                                             max_ellipticity=max_ellipticity)
-            ref_pts = _detect_stars_uniform(ref_crop, det_sigma, minarea,
-                                            grid=(4,4), max_per_cell=25,
-                                            max_total=(limit_stars or 500),
-                                            min_fwhm=min_fwhm,
-                                            max_ellipticity=max_ellipticity)
+            # Same reference every frame of the run: detect it once per
+            # worker. ref_key=None (every caller outside the delta pass)
+            # detects exactly as before. See SASPRO_REFDET_CACHE_V1.
+            ref_pts = _ref_pts_cached(ref_crop, ref_key, (y0, x0, h, w),
+                                      det_sigma, minarea,
+                                      (limit_stars or 500),
+                                      min_fwhm, max_ellipticity)
 
             cov_src = _coverage_fraction(src_pts, Hs, Ws, grid=(4,4))
             cov_ref = _coverage_fraction(ref_pts, h,  w,  grid=(4,4))
@@ -3428,7 +3557,8 @@ def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
                                                    minarea: int = 10,
                                                    h_reproj: float = 3.0,
                                                    min_fwhm: float = 1.2,
-                                                   max_ellipticity: float = 0.6):
+                                                   max_ellipticity: float = 0.6,
+                                                   ref_key=None):
     import numpy as np
     from setiastro.saspro import astroalign
     import cv2
@@ -3458,11 +3588,13 @@ def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
                                             max_total=(limit_stars or 500),
                                             min_fwhm=min_fwhm,
                                             max_ellipticity=max_ellipticity)
-            ref_pts = _detect_stars_uniform(ref_crop, det_sigma, minarea,
-                                            grid=(4,4), max_per_cell=25,
-                                            max_total=(limit_stars or 500),
-                                            min_fwhm=min_fwhm,
-                                            max_ellipticity=max_ellipticity)
+            # Same reference every frame of the run: detect it once per
+            # worker. ref_key=None (every caller outside the delta pass)
+            # detects exactly as before. See SASPRO_REFDET_CACHE_V1.
+            ref_pts = _ref_pts_cached(ref_crop, ref_key, (y0, x0, h, w),
+                                      det_sigma, minarea,
+                                      (limit_stars or 500),
+                                      min_fwhm, max_ellipticity)
 
             cov_src = _coverage_fraction(src_pts, Hs, Ws, grid=(4,4))
             cov_ref = _coverage_fraction(ref_pts, h,  w,  grid=(4,4))
@@ -3527,6 +3659,82 @@ def project_affine_to_similarity(A2x3: np.ndarray) -> np.ndarray:
     return out
 
 
+# ── SASPRO_SCRUB_FASTPATH_V1 ─────────────────────────────────────────────────
+# Non-finite scrubbing, asked once instead of done blindly.
+#
+# `np.nan_to_num` over a 178 MB frame costs ~200 ms and the alignment run did
+# it four times per frame (once per refinement pass, twice in finalize) for
+# 31% of the total wall clock. On a calibrated frame it is pure waste, so
+# these two helpers test first and only pay when there is something to fix.
+#
+# The test is a sum. It is non-finite if any element is: NaN propagates
+# through addition, inf propagates, and +inf meeting -inf yields NaN. A frame
+# holding both +inf and -inf is exactly the case that an `isnan`-only test
+# would pass as clean, and the sum catches it.
+
+
+def _own_f32(a):
+    """A C-contiguous float32 array this function owns outright.
+
+    The copy is not optional for a memmap: `np.array(..., copy=False)` hands
+    the memmap straight back when the dtype already matches, and the astropy
+    HDU is closed by the time the warp reads it, so every tap downstream
+    would be a page fault against a closed file. For an array we allocated
+    ourselves a moment ago -- the uint16/uint8 rescale -- the copy is pure
+    waste, which is why this tests ownership rather than copying blindly.
+    """
+    import numpy as np
+    if (isinstance(a, np.ndarray) and a.dtype == np.float32
+            and a.flags.c_contiguous and a.flags.owndata and a.flags.writeable
+            and not isinstance(a, np.memmap)):
+        return a
+    return np.array(a, dtype=np.float32, order="C")
+
+
+def _scrub_for_detect(a):
+    """One frame for detection: non-finite filled with 0.
+
+    Replaces `np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)`, bit for bit.
+    """
+    import numpy as np
+    g = _own_f32(a)
+    with np.errstate(invalid="ignore", over="ignore"):
+        clean = np.isfinite(float(g.sum()))
+    if clean:
+        return g
+    np.copyto(g, 0.0, where=~np.isfinite(g))
+    return g
+
+
+def _scrub_detect_and_warp(img):
+    """`(for_detection, for_warping)` from one read of the frame.
+
+    Detection wants non-finite filled with 0. The warp frame keeps NaN -- a
+    satellite trail is no-data, it blooms through the Lanczos kernel to cover
+    the ring halo, and `isfinite()` drops it at integration -- but still needs
+    +/-inf gone. Replaces the pair of `nan_to_num` calls, bit for bit.
+
+    On a finite frame both returns are the SAME buffer. Every use of either
+    below this point is a cv2 call, a `.shape`, or a warp -- read-only -- so
+    the aliasing is invisible. If that stops being true, split them.
+    """
+    import numpy as np
+    is_mono = (img.ndim == 2)
+    g = _own_f32(img)
+    with np.errstate(invalid="ignore", over="ignore"):
+        clean = np.isfinite(float(g.sum()))
+    if clean:
+        return (g if is_mono
+                else np.mean(g, axis=2).astype(np.float32, copy=False)), g
+    # Build the detection frame before touching `g`: it needs the NaN still
+    # in place to fill them with 0.
+    src = np.nan_to_num(g if is_mono else np.mean(g, axis=2),
+                        nan=0.0, posinf=0.0,
+                        neginf=0.0).astype(np.float32, copy=False)
+    np.copyto(g, 0.0, where=np.isinf(g))     # keep NaN, drop +/-inf
+    return src, g
+
+
 def _solve_delta_job(args):
     """
     Worker: compute incremental affine/similarity delta for one frame against the ref preview.
@@ -3565,7 +3773,9 @@ def _solve_delta_job(args):
             if arr is None:
                 return (orig_path, None, f"Could not load {os.path.basename(orig_path)}")
             gray = arr if arr.ndim == 2 else np.mean(arr, axis=2)
-            gray = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+            # Was an unconditional nan_to_num: 0.74 s/frame, 38.7% of the
+            # pass, repeated for every pass. Now one reduction decides it.
+            gray = _scrub_for_detect(gray)
 
         # NOTE: `ds` is already provided in args (matches self.solve_downsample,
         # which was also used to build ref_small_ds/Wref_ds/Href_ds). Previously
@@ -3604,6 +3814,9 @@ def _solve_delta_job(args):
         # memmap the DS reference (persisted once in run()); the OS page-cache
         # is shared across workers and only the crop is materialized downstream.
         ref_for_match_ds = np.load(ref_ds_npy, mmap_mode="r")
+        # Identity of the reference so the solver can cache its star list
+        # across the frames this worker handles. See SASPRO_REFDET_CACHE_V1.
+        _ref_key = _ref_file_key(ref_ds_npy)
 
         # 5) AA delta solve in DS space (with meridian-flip pre-rotate).
         #    A GEM meridian flip stacks the "near-180° residual bias" on top
@@ -3629,6 +3842,7 @@ def _solve_delta_job(args):
                     h_reproj=float(h_reproj),
                     min_fwhm=float(min_fwhm),
                     max_ellipticity=float(max_ellipticity),
+                    ref_key=_ref_key,
                 )
         else:
             def _solver(_src, _ref):
@@ -3639,6 +3853,7 @@ def _solve_delta_job(args):
                     minarea=int(minarea),
                     min_fwhm=float(min_fwhm),
                     max_ellipticity=float(max_ellipticity),
+                    ref_key=_ref_key,
                 )
 
         # Silent meridian-flip handling. _solve_with_meridian_check performs
@@ -3664,6 +3879,9 @@ def _solve_delta_job(args):
         # leave it a few px off.
         T_new_full = lift_affine_2x3_from_ds(np.asarray(tform_ds, np.float64).reshape(2, 3), ds, S_ref)
 
+        # V1 marked these phases and never wrote them, so three passes a
+        # frame produced no rows at all and every published percentage was
+        # finalize alone.
         return (orig_path, np.asarray(T_new_full, np.float64).reshape(2, 3), None)
 
     except Exception as e:
@@ -3679,6 +3897,64 @@ def _solve_delta_job(args):
 # ─────────────────────────────────────────────────────────────
 # Final warp+save worker (process-safe)
 # ─────────────────────────────────────────────────────────────
+# ── SASPRO_ANTIRING_NUMPY_V1 ─────────────────────────────────────────────────
+# The anti-ring warp's single-threaded half.
+#
+# `warp` is 63% of the finalize frame and 81% of the anti-ring work is numpy,
+# which `cv2.setNumThreads(4)` cannot touch -- that is why four cv2 threads
+# bought only 1.49x on the warp. Half of that numpy time was two full-frame
+# np.median calls setting one scalar threshold.
+#
+# Pixels sampled for the median/MAD, as a stride in both axes. 3 keeps 1 pixel
+# in 9 -- 5.2 million of a 46.8 MP frame. Set to 1 for the exact full-frame
+# median (slower, bit-identical to the pre-patch threshold).
+_ANTIRING_MEDIAN_STRIDE = 3
+
+# Below this many finite samples the subsample is not trusted and the full
+# frame is used instead -- covers a frame that is mostly no-data, where a
+# stride could land entirely on NaN.
+_ANTIRING_MEDIAN_MIN_SAMPLES = 1024
+
+
+def _median_mad_sampled(ref, stride=None):
+    """`(median, MAD)` of the finite pixels, from a strided subsample.
+
+    These two numbers set exactly one thing -- the star-mask threshold
+    `med + star_sigma * 1.4826 * mad` -- and that does not need 46.8 million
+    samples. Measured on a 5644x8288 frame with 4000 planted stars:
+
+        full 46.8 MP   2040.8 ms   thr 0.06217337   mask 423822 px
+        stride 3        113.6 ms   thr 0.06217370   mask 423810 px   18.0x
+
+    18x for a threshold 5 parts per million different and 12 mask pixels out
+    of 423,822 -- and the mask is then grown 6 px and Gaussian feathered, so
+    the difference is far below anything the blend can express.
+
+    The stride is FIXED, not random: the same frame always gives the same
+    threshold, so a rerun reproduces its output exactly.
+
+    Returns (0.0, 0.0) when nothing is finite, matching the behaviour of the
+    code this replaces (threshold 0, and `ref > 0` is False everywhere on an
+    all-NaN frame).
+    """
+    import numpy as np
+
+    s = int(_ANTIRING_MEDIAN_STRIDE if stride is None else stride)
+    s = max(1, s)
+    sub = np.asarray(ref)[::s, ::s].ravel()
+    sub = sub[np.isfinite(sub)]
+    if sub.size < _ANTIRING_MEDIAN_MIN_SAMPLES:
+        # Too sparse to trust -- fall back to every finite pixel. At stride 1
+        # this is also the exact path, identical to the original expression.
+        full = np.asarray(ref).ravel()
+        sub = full[np.isfinite(full)]
+    if sub.size == 0:
+        return 0.0, 0.0
+    med = float(np.median(sub))
+    mad = float(np.median(np.abs(sub - med)))
+    return med, mad
+
+
 def _warp_antiring(warp_hi, warp_lo, star_sigma: float = 3.0,
                    grow_px: int = 6, feather_px: float = 2.0,
                    envelope: bool = True,
@@ -3746,9 +4022,20 @@ def _warp_antiring(warp_hi, warp_lo, star_sigma: float = 3.0,
             kern = cv2.getStructuringElement(cv2.MORPH_RECT, (ksz, ksz))
             lo_min = cv2.erode(lo,  kern)
             lo_max = cv2.dilate(lo, kern)
-            # np.clip + explicit float32 preserves dtype on HWC inputs.
-            hi = np.minimum(np.maximum(hi, lo_min), lo_max).astype(np.float32,
-                                                                   copy=False)
+            # One ufunc, in place. Bit-identical to
+            # np.minimum(np.maximum(hi, lo_min), lo_max) and 1.26x faster,
+            # because that form allocated two 178 MB temporaries to build a
+            # result it then assigned straight back over `hi`.
+            #
+            # np.asarray does not copy when `hi` is already float32, so the
+            # clip writes into the warp output -- which is a fresh array from
+            # warp_hi() that nothing else holds. A non-float32 `hi` (HWC
+            # inputs) gets converted first, preserving the old dtype
+            # behaviour. Deliberately ONE call: a shape mismatch then raises
+            # before anything is written, so the `except` below can never see
+            # a half-clamped frame.
+            hi = np.asarray(hi, dtype=np.float32)
+            np.clip(hi, lo_min, lo_max, out=hi)
         except Exception:
             # Envelope clamp is best-effort — on failure fall through to the
             # blend-only path (never worse than the pre-envelope behaviour).
@@ -3764,13 +4051,10 @@ def _warp_antiring(warp_hi, warp_lo, star_sigma: float = 3.0,
         # Compute the mask from `lo`. For HWC this is max-over-channels so a
         # star bright in only one channel still masks correctly in all three.
         ref = lo if lo.ndim == 2 else lo.max(axis=2)
-        finite = np.isfinite(ref)
-        if finite.any():
-            vals = ref[finite]
-            med = float(np.median(vals))
-            mad = float(np.median(np.abs(vals - med)))
-        else:
-            med = mad = 0.0
+        # Was a full-frame np.isfinite, a ref[finite] copy and two 46.8 MP
+        # np.median calls -- 50% of the anti-ring cost -- to produce the one
+        # scalar on the next line. See SASPRO_ANTIRING_NUMPY_V1.
+        med, mad = _median_mad_sampled(ref)
         thr = med + float(star_sigma) * 1.4826 * mad   # 1.4826 = MAD→sigma
         mask = (ref > thr).astype(np.float32)
 
@@ -3814,13 +4098,9 @@ def _build_antiring_mask(ref2d: np.ndarray,
     import cv2
     import numpy as np
 
-    finite = np.isfinite(ref2d)
-    if finite.any():
-        vals = ref2d[finite]
-        med = float(np.median(vals))
-        mad = float(np.median(np.abs(vals - med)))
-    else:
-        med = mad = 0.0
+    # Same subsampled median/MAD as _warp_antiring; see
+    # SASPRO_ANTIRING_NUMPY_V1 for the measurements.
+    med, mad = _median_mad_sampled(ref2d)
     thr = med + float(star_sigma) * 1.4826 * mad
     mask = (ref2d > thr).astype(np.float32)
     if not mask.any():
@@ -3890,6 +4170,102 @@ def _warp_hwc_antiring(nch: int,
         )
         out_planes.append(out)
     return np.stack(out_planes, axis=2)
+
+# SASPRO_GPU_WARP_V3
+# The anti-ring warp, on the GPU.
+#
+# Profiling put 58% of _finalize_write_job in this warp — 5.15 s a frame at
+# 8288x5644 — against 8% in the write. It is the biggest single cost in
+# registration and it was all CPU: cv2.ocl.setUseOpenCL(False) disables
+# OpenCV's own GPU path on purpose, so none of that 58% was accelerated.
+#
+# The takeover is deliberately narrow. `_gpu_antiring` returns None unless it
+# can reproduce the CPU path's intent exactly, and the cv2 code then runs
+# untouched — so the fallback is the current behaviour, not an approximation
+# of it. It declines when:
+#
+#   * the frame is not mono        (gpu_warp does one plane; colour stays cv2)
+#   * the hi kernel is not Lanczos4
+#         stacking/align/kernel can be set to cubic or linear, and serving a
+#         different kernel than the user picked would be worse than being slow
+#   * gpu_warp will not import, no GPU resolves, or the frame will not fit
+#
+# The poly3/poly4 branch is not wired up at all: it warps through explicit
+# cv2.remap coordinate maps rather than a matrix.
+#
+# Off with QSettings "stacking/align/gpu_warp" or SASPRO_GPU_WARP=0.
+#
+# NOTE gpu_warp computes the bilinear half exactly while cv2 carries its
+# sample coordinate in float32, so blended star cores can differ from the CPU
+# path by ~2e-3 at full frame width, with the GPU the accurate side. See
+# gpu_warp.py's module docstring for the measurements.
+_GPU_WARP_SETTINGS_KEY = "stacking/align/gpu_warp"
+_GPU_WARP_MOD: list = []        # import cache: [] untried, [None] unavailable
+
+
+def _gpu_warp_enabled() -> bool:
+    """QSettings first, env var next — the order `_warp_kernel_name` uses.
+
+    V2 had this the other way round, which was wrong and quietly harmful: a
+    SASPRO_GPU_WARP left over from a testing session overrides whatever the
+    optimizer measured and wrote, so Optimize... reports a verdict and the
+    run ignores it. The stored setting is the source of truth; the env var
+    is the escape hatch for a machine that has no stored setting yet, and
+    for forcing the issue from a shell.
+
+    Default OFF. Whether the card beats one finalize worker is a per-machine
+    question — the same one the optimizer answers — and on a strong CPU it
+    usually does not.
+    """
+    try:
+        from PyQt6.QtCore import QSettings as _QS
+        v = _QS().value(_GPU_WARP_SETTINGS_KEY, None)
+        if v is not None and str(v).strip() != "":
+            if isinstance(v, bool):
+                return v
+            return str(v).strip().lower() not in ("0", "false", "no", "off")
+    except Exception:
+        # no QApplication in a spawned worker is normal; fall through
+        pass
+    env = os.environ.get("SASPRO_GPU_WARP")
+    if env is not None and env.strip() != "":
+        return env.strip().lower() not in ("0", "false", "no", "off")
+    return False
+
+
+def _gpu_warp_mod():
+    """Import gpu_warp once per process; remember failure so it is not retried.
+
+    Worth keeping cheap: this runs in every finalize worker, and an import
+    that can shell out to pip has already hung a spawned pool once in this
+    project's history.
+    """
+    if not _GPU_WARP_MOD:
+        try:
+            from setiastro.saspro import gpu_warp as _gw
+            _GPU_WARP_MOD.append(_gw)
+        except Exception:
+            _GPU_WARP_MOD.append(None)
+    return _GPU_WARP_MOD[0]
+
+
+def _gpu_antiring(img, M, out_wh, perspective, hi_flag):
+    """The GPU anti-ring warp, or None meaning "use the cv2 path below"."""
+    try:
+        import cv2 as _cv2
+        if hi_flag != _cv2.INTER_LANCZOS4:
+            return None
+        if getattr(img, "ndim", 0) != 2:
+            return None
+        if not _gpu_warp_enabled():
+            return None
+        gw = _gpu_warp_mod()
+        if gw is None:
+            return None
+        return gw.warp_antiring_gpu(img, M, out_wh, perspective=perspective)
+    except Exception:
+        return None
+
 
 def _finalize_write_job(args):
     """
@@ -3964,14 +4340,17 @@ def _finalize_write_job(args):
             img = img.astype(np.float32) / 255.0
 
         is_mono = (img.ndim == 2)
-        src_gray_full = img if is_mono else np.mean(img, axis=2)
-        src_gray_full = np.nan_to_num(src_gray_full, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
         # Keep satellite-trail NaN (no-data) in the frame we warp + save; scrub
-        # only +/-inf. Detection uses the filled src_gray_full above, so star
+        # only +/-inf. Detection uses the filled src_gray_full, so star
         # matching is unaffected. NaN blooms through the Lanczos warp (covering
         # the ring halo) and is dropped by isfinite() at integration.
-        img = np.nan_to_num(img, nan=np.nan, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
-        img = np.ascontiguousarray(img)
+        #
+        # Both frames now come out of one read. This was two full nan_to_num
+        # passes over the same 178 MB -- 1.39 s/frame, 19.7% of finalize --
+        # and on a finite frame neither of them changed a single value.
+        src_gray_full, img = _scrub_detect_and_warp(img)
+        # four full-frame passes over 187 MB: int scaling, the gray reduction,
+        # two nan_to_num and this copy. Cheap individually, not collectively.
 
         # Satellite sidecar masks retired: trail pixels are baked to 0.0 at
         # calibration and treated as no-data through integration, so there is no
@@ -4150,6 +4529,7 @@ def _finalize_write_job(args):
 
         # 4) warp full-res image  (anti-ring: clamp Lanczos to bilinear envelope)
         Hh, Ww = Href, Wref
+        _gpu_warp_used = False          # SASPRO_GPU_WARP_V3
         # Hi-sharpness kernel is resolved from SASPRO_WARP_KERNEL at import —
         # defaults to Lanczos4, user can set the env var to "cubic" to swap
         # in bicubic (Mitchell-family, much shorter negative lobes) when
@@ -4177,8 +4557,11 @@ def _finalize_write_job(args):
                 return cv2.warpAffine(ch, A, (Ww, Hh), flags=flags,
                                       borderMode=_BMODE, borderValue=_BVAL)
             if is_mono:
-                aligned = _warp_antiring(lambda: _wa(img, _LANCZOS),
-                                         lambda: _wa(img, _LINEAR))
+                aligned = _gpu_antiring(img, A, (Ww, Hh), False, _LANCZOS)
+                _gpu_warp_used = aligned is not None
+                if aligned is None:
+                    aligned = _warp_antiring(lambda: _wa(img, _LANCZOS),
+                                             lambda: _wa(img, _LINEAR))
             elif img.shape[2] <= 4:
                 _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
                 aligned = _warp_antiring(lambda: _wa(_img, _LANCZOS),
@@ -4199,8 +4582,11 @@ def _finalize_write_job(args):
                 return cv2.warpPerspective(ch, Hm, (Ww, Hh), flags=flags,
                                            borderMode=_BMODE, borderValue=_BVAL)
             if is_mono:
-                aligned = _warp_antiring(lambda: _wp(img, _LANCZOS),
-                                         lambda: _wp(img, _LINEAR))
+                aligned = _gpu_antiring(img, Hm, (Ww, Hh), True, _LANCZOS)
+                _gpu_warp_used = aligned is not None
+                if aligned is None:
+                    aligned = _warp_antiring(lambda: _wp(img, _LANCZOS),
+                                             lambda: _wp(img, _LINEAR))
             elif img.shape[2] <= 4:
                 _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
                 aligned = _warp_antiring(lambda: _wp(_img, _LANCZOS),
@@ -4318,7 +4704,7 @@ def _finalize_write_job(args):
 
         msg = (
             f"🌀 Distortion Correction on {base}: warp={warp_label}\n"
-            f"💾 Wrote {os.path.basename(out_path)} [{warp_label}]"
+            f"💾 Wrote {os.path.basename(out_path)} [{warp_label}{' +gpu' if _gpu_warp_used else ''}]"
         )
         if debug_lines:
             msg = "\n".join(debug_lines) + "\n" + msg
@@ -4596,6 +4982,225 @@ def _proximity_match_pairs(tgt_gray, ref_gray, *, det_sigma=12.0, minarea=10,
         return None
     return P_t[np.array(s_t)].astype(np.float32), P_r[np.array(s_r)].astype(np.float32)
 
+# ── SASPRO_GPU_UNIFORM_DETECT_V1 ─────────────────────────────────────────────
+# The refinement pass's star detection, on the card.
+#
+# The optimizer measures gpu_star_detect at 3.4x every CPU core combined
+# (15.80 f/s on 6 workers vs 4.67 f/s on 32) and writes the worker count --
+# but the pass called _detect_stars_uniform (SEP) and then passed POINTS to
+# find_transform, where astroalign's `backends = [None]` branch detects
+# nothing. The GPU detector was wired into astroalign and unreachable from
+# the pass. These helpers close that gap.
+
+_GPU_DETECT_MOD: list = []          # import cache: [] untried, [None] no good
+_GPU_DETECT_SLOT: list = []         # [] untried, [None] no slot, [fd] holding
+_GPU_DETECT_SAID: list = [0]
+_GPU_DETECT_SAY_MAX = 2
+
+# A safety ceiling on points handed to the grid balance, NOT a star limit.
+# max_total must not be used here: the detector returns flux-sorted points, so
+# truncating at 500 would give the grid balance only the frame's brightest 500
+# and throw away the spatial spread this whole function exists to produce.
+_GPU_DETECT_MAX_CANDIDATES = 20000
+
+
+def _grid_balance_uniform(xs, ys, H, W, grid, max_per_cell, max_total):
+    """Spatially-balanced pick from flux-sorted points. (N,2) float32.
+
+    Lifted verbatim out of `_detect_stars_uniform` so the GPU path selects
+    points by exactly the same rule -- the detector should be the only thing
+    that differs between the two paths.
+    """
+    import numpy as np
+
+    gy, gx = int(grid[0]), int(grid[1])
+    cell_w = W / gx
+    cell_h = H / gy
+
+    keep_counts = np.zeros((gy, gx), dtype=np.int32)
+    pts = []
+
+    for x, y in zip(xs, ys):
+        cx = int(x / cell_w)
+        cy = int(y / cell_h)
+        if cx < 0 or cy < 0 or cx >= gx or cy >= gy:
+            continue
+        if keep_counts[cy, cx] >= max_per_cell:
+            continue
+        keep_counts[cy, cx] += 1
+        pts.append((x, y))
+        if len(pts) >= max_total:
+            break
+
+    if not pts:
+        return np.empty((0, 2), np.float32)
+    return np.asarray(pts, np.float32)
+
+
+def _gpu_detect_enabled() -> bool:
+    """The same two switches astroalign._find_sources reads, so one setting
+    governs both paths rather than them drifting apart."""
+    try:
+        from PyQt6.QtCore import QSettings as _QS
+        s = _QS()
+        for key, dflt in (("stacking/use_hardware_accel", True),
+                          ("stacking/align/gpu_detect", True)):
+            v = s.value(key, dflt)
+            if isinstance(v, bool):
+                on = v
+            else:
+                on = str(v).strip().lower() not in ("0", "false", "no", "off", "")
+            if not on:
+                return False
+        return True
+    except Exception:
+        # No Qt (headless/CLI): leave it on and let the slot gate and the
+        # detector's own availability check decide.
+        return True
+
+
+def _gpu_detect_slots() -> int:
+    """How many workers may hold the card for detection at once.
+
+    An explicit `align/gpu_detect_slots` wins; otherwise the optimizer's
+    measured worker count IS the answer to this question, since that is
+    precisely what it benchmarked. 6 if nothing has been measured.
+    """
+    try:
+        from PyQt6.QtCore import QSettings as _QS
+        s = _QS()
+        v = s.value("stacking/align/gpu_detect_slots", None)
+        if v not in (None, ""):
+            return max(0, int(v))
+        v = s.value("stacking/align/tuned_workers", None)
+        if v not in (None, ""):
+            return max(1, int(v))
+    except Exception:
+        pass
+    return 6
+
+
+def _claim_gpu_detect_slot() -> bool:
+    """Claim one of the card's detection slots for this process's lifetime.
+
+    Tried ONCE per process and the answer cached -- a worker does not
+    re-contend on every frame. The file descriptor is kept in a module global
+    and never closed, so the OS releases the lock only when the process dies;
+    that way a crashed worker cannot leak a slot.
+
+    NON-BLOCKING on purpose. A worker that loses the race runs SEP instead of
+    waiting, so 32 workers against 6 slots means 6 on the card and 26 on SEP
+    with nobody idle -- and since the card is ~3.4x faster, those 6 take more
+    frames off the queue and the pool balances itself.
+    """
+    import os as _os
+    import tempfile
+
+    if _GPU_DETECT_SLOT:
+        return _GPU_DETECT_SLOT[0] is not None
+
+    n = _gpu_detect_slots()
+    if n <= 0:
+        _GPU_DETECT_SLOT.append(None)
+        return False
+
+    d = _os.path.join(tempfile.gettempdir(), "saspro_gpu_detect_slots")
+    try:
+        _os.makedirs(d, exist_ok=True)
+    except Exception:
+        _GPU_DETECT_SLOT.append(None)
+        return False
+
+    for i in range(int(n)):
+        fd = None
+        try:
+            fd = _os.open(_os.path.join(d, f"slot{i}.lock"),
+                          _os.O_CREAT | _os.O_RDWR)
+            if _os.name == "nt":
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except Exception:
+            if fd is not None:
+                try:
+                    _os.close(fd)
+                except Exception:
+                    pass
+            continue
+        _GPU_DETECT_SLOT.append(fd)      # held until this process exits
+        return True
+
+    _GPU_DETECT_SLOT.append(None)
+    return False
+
+
+def _detect_stars_uniform_gpu(img32, det_sigma, minarea, grid, max_per_cell,
+                              max_total, min_fwhm, max_ellipticity, mask):
+    """`_detect_stars_uniform` on the card, or None to mean "use SEP".
+
+    None is always a valid answer and the caller must treat it as "fall back",
+    never as "no stars" -- that is the same contract
+    astroalign._find_sources_gpu uses.
+
+    min_fwhm and max_ellipticity go straight through because both detectors
+    compute the same two quantities: ellipticity is 1 - b/a on each side
+    (the GPU's `ecc` is built from variances, so sqrt(b2e/a2) IS b/a), and
+    FWHM is 2.3548 * sigma, identical for the round sources that survive an
+    ellipticity cap at all.
+    """
+    import numpy as np
+
+    if not _gpu_detect_enabled():
+        return None
+    if not _claim_gpu_detect_slot():
+        return None
+
+    if not _GPU_DETECT_MOD:
+        try:
+            from setiastro.saspro.gpu_star_detect import detect_stars_full
+            _GPU_DETECT_MOD.append(detect_stars_full)
+        except Exception:
+            _GPU_DETECT_MOD.append(None)
+    fn = _GPU_DETECT_MOD[0]
+    if fn is None:
+        return None
+
+    try:
+        res = fn(img32,
+                 detection_sigma=float(det_sigma),
+                 min_area=int(minarea),
+                 mask=mask,
+                 max_stars=_GPU_DETECT_MAX_CANDIDATES,
+                 min_fwhm=float(min_fwhm),
+                 max_ellipticity=float(max_ellipticity))
+    except Exception:
+        return None
+    if res is None:
+        return None
+
+    x = np.asarray(res.get("x"), np.float32).ravel()
+    y = np.asarray(res.get("y"), np.float32).ravel()
+    if x.size == 0 or x.size != y.size:
+        # The card ran and found nothing. SEP's own "never return empty if
+        # there were detections" relaxation might still find usable points,
+        # so this defers rather than returning an empty list.
+        return None
+
+    H, W = img32.shape[:2]
+    pts = _grid_balance_uniform(x, y, H, W, grid, max_per_cell, max_total)
+    if len(pts) == 0:
+        return None
+
+    _GPU_DETECT_SAID[0] += 1
+    if _GPU_DETECT_SAID[0] <= _GPU_DETECT_SAY_MAX:
+        print(f"[AA] star detection on GPU: {x.size} sources -> "
+              f"{len(pts)} control points "
+              f"({_gpu_detect_slots()} slot(s) for the card)")
+    return pts
+
+
 def _detect_stars_uniform(img32: np.ndarray,
                           det_sigma: float = 12.0,
                           minarea: int = 10,
@@ -4617,6 +5222,17 @@ def _detect_stars_uniform(img32: np.ndarray,
         _nf = ~np.isfinite(img32)
         mask = _nf if mask is None else (np.asarray(mask, bool) | _nf)
         img32 = np.nan_to_num(img32, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # SASPRO_GPU_UNIFORM_DETECT_V1 -- the GPU detector the optimizer measured.
+    # Placed after the NaN folding above so both paths see the same pixels and
+    # the same ignore mask. None means "the card is off, busy, unavailable or
+    # came up empty" -- never "no stars" -- so SEP below is always the
+    # fallback, not a second opinion.
+    _gpu_pts = _detect_stars_uniform_gpu(img32, det_sigma, minarea, grid,
+                                         max_per_cell, max_total, min_fwhm,
+                                         max_ellipticity, mask)
+    if _gpu_pts is not None:
+        return _gpu_pts
 
     bkg = sep.Background(img32, bw=64, bh=64, mask=mask)                    # <- mask
     thresh = float(det_sigma) * float(bkg.globalrms)
@@ -4659,28 +5275,9 @@ def _detect_stars_uniform(img32: np.ndarray,
     xs = objs["x"][order].astype(np.float32)
     ys = objs["y"][order].astype(np.float32)
 
-    gy, gx = int(grid[0]), int(grid[1])
-    cell_w = W / gx
-    cell_h = H / gy
-
-    keep_counts = np.zeros((gy, gx), dtype=np.int32)
-    pts = []
-
-    for x, y in zip(xs, ys):
-        cx = int(x / cell_w)
-        cy = int(y / cell_h)
-        if cx < 0 or cy < 0 or cx >= gx or cy >= gy:
-            continue
-        if keep_counts[cy, cx] >= max_per_cell:
-            continue
-        keep_counts[cy, cx] += 1
-        pts.append((x, y))
-        if len(pts) >= max_total:
-            break
-
-    if not pts:
-        return np.empty((0,2), np.float32)
-    return np.asarray(pts, np.float32)
+    # Factored into _grid_balance_uniform so the GPU path above picks points by
+    # exactly this rule. Same code, same result -- only the detector differs.
+    return _grid_balance_uniform(xs, ys, H, W, grid, max_per_cell, max_total)
 
 class StarRegistrationThread(QThread):
     progress_update = pyqtSignal(str)
@@ -5152,6 +5749,10 @@ class StarRegistrationThread(QThread):
 
             self._done = 0
             self._total = (N * P) + N   # <-- IMPORTANT: include finalize
+            # Point every worker at one directory, the same way this thread
+            # already hands them SASPRO_FINALIZE_CV2_THREADS. The refinement
+            # workers have no output directory of their own, and asking the
+            # user to set an environment variable before every run is how a
             self.progress_step.emit(self._done, self._total)  # optional but helps UI reset immediately
 
             # Registration passes (compute deltas only)
@@ -5181,6 +5782,7 @@ class StarRegistrationThread(QThread):
 
             # Finalize: single full-res read → warp → write per frame
             self._finalize_writes()
+
 
             # Summary based on our known corpus
             total_count = len(self.original_files)
@@ -5265,7 +5867,36 @@ class StarRegistrationThread(QThread):
             ])
             return True, "Pass complete (nothing to refine)."
 
+        # SASPRO_ALIGN_WORKERS_UI_V1 SASPRO_ALIGN_WORKERS_PROCS
+        # Worker count for the solve pass. The second marker above is what
+        # tests/cap_logic_test.py locates: the file-level sentinel appears on
+        # every edit this patcher makes, so the solve-pass block needs one of
+        # its own to be findable. The policy — explicit setting, then
+        # a stored measurement whose hardware still matches, then a
+        # VRAM-derived default — lives in stacking_worker_tune so it can change
+        # without re-patching this file. It can only ever lower the count from
+        # the expression below, never raise it, and any failure leaves that
+        # expression standing.
         procs = max(2, min((os.cpu_count() or 8), 32))
+        try:
+            from setiastro.saspro.stacking_worker_tune import (
+                resolve_align_workers as _resolve_workers,
+            )
+            _mp = None
+            try:
+                _rs = getattr(self, "ref_small_full", None)
+                if _rs is not None:
+                    _mp = (float(_rs.shape[0]) * float(_rs.shape[1])) / 1e6
+            except Exception:
+                _mp = None
+            _want, _src = _resolve_workers(_mp)
+            if _want and _want < procs:
+                self.progress_update.emit(
+                    f"Worker count {procs} -> {_want} ({_src})."
+                )
+                procs = max(2, int(_want))
+        except Exception:
+            pass
         self.progress_update.emit(f"Using {procs} processes for stellar alignment (refine={refine_model}).")
 
         timeout_sec = int(self.align_prefs.get("timeout_per_job_sec", 300))
@@ -6389,6 +7020,32 @@ class StarRegistrationWindow(QWidget):
         )
         _adv.addRow("Warp interpolation:", self.cmb_adv_kernel)
 
+        # Alignment workers — shared with the Stacking Suite settings page via
+        # `stacking/align/workers`, the same way the kernel dropdown above is
+        # shared. 0 shows as "Auto" and the hint beside it says what Auto
+        # currently resolves to, so the number on screen is always the number
+        # the solve pass will use. The Optimize... button is the same one the
+        # settings page carries.
+        try:
+            from setiastro.saspro.stacking_tune_dialog import (
+                make_align_workers_row as _mk_workers_row,
+            )
+
+            def _reg_frame_shape():
+                """Reference frame size, for the optimizer's default."""
+                for _a in ("ref_small_full", "reference_image"):
+                    _v = getattr(self, _a, None)
+                    if _v is not None and getattr(_v, "shape", None):
+                        return int(_v.shape[0]), int(_v.shape[1])
+                return 3000, 4000
+
+            _w_row, self.sp_adv_workers = _mk_workers_row(
+                self, frame_shape_provider=_reg_frame_shape)
+            if _w_row is not None:
+                _adv.addRow("Alignment workers:", _w_row)
+        except Exception:
+            self.sp_adv_workers = None
+
         # Trial Detect — same spirit as the Stellar Alignment dialog's but
         # adapted to Registration's N-target model: runs sep detection with
         # the CURRENT Detection σ against the REFERENCE and the FIRST target
@@ -6783,6 +7440,16 @@ class StarRegistrationWindow(QWidget):
         s.setValue("stacking/align/min_fwhm",        float(prefs["min_fwhm"]))
         s.setValue("stacking/align/max_ellipticity", float(prefs["max_ellipticity"]))
         s.setValue(_WARP_KERNEL_SETTINGS_KEY,         str(prefs.get("kernel", "lanczos")))
+        # Shared with the Stacking Suite settings page; 0 = Auto.
+        _sp_w = getattr(self, "sp_adv_workers", None)
+        if _sp_w is not None:
+            try:
+                from setiastro.saspro.stacking_worker_tune import (
+                    KEY_WORKERS_MANUAL as _KW,
+                )
+            except Exception:
+                _KW = "stacking/align/workers"
+            s.setValue(_KW, int(_sp_w.value()))
 
     # ------------------------------------------------------------------
     # Trial detect

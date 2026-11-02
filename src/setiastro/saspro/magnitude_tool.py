@@ -55,6 +55,7 @@ from matplotlib.figure import Figure
 # IMPORTANT: use the centralized one (adjust import path to where you moved it)
 from setiastro.saspro.sfcc import pickles_match_for_simbad
 from setiastro.saspro import magnitude_regions as mreg
+from setiastro.saspro import cds_health
 
 # Reuse useful SFCC pieces
 from setiastro.saspro.sfcc import non_blocking_sleep  # already used in SFCC; optional
@@ -200,10 +201,20 @@ def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg
     except Exception:
         simbad_conf = None
 
-    try:
-        Simbad.TIMEOUT = _timeout_i
-    except Exception:
-        pass
+    # Bound the timeout under every name astroquery has used. `TIMEOUT` was
+    # renamed to `timeout` in astroquery 0.4.8, and Simbad reads its OWN
+    # `astroquery.simbad.conf`, not the global `astroquery.conf` set above --
+    # so setting just one of these can leave the call effectively unbounded
+    # on some versions. Each assignment is guarded independently.
+    for _setter in (
+        lambda: setattr(Simbad, "TIMEOUT", _timeout_i),
+        lambda: setattr(Simbad, "timeout", _timeout_i),
+        lambda: setattr(simbad_conf, "timeout", _timeout_i),
+    ):
+        try:
+            _setter()
+        except Exception:
+            pass
 
     center = SkyCoord(center_ra_deg * u.deg, center_dec_deg * u.deg, frame="icrs")
 
@@ -251,12 +262,19 @@ def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg
                 last_err = RuntimeError(f"{host}: query returned no table")
                 continue
 
+            cds_health.note_success()
             return {
                 "colnames": list(tab.colnames),
                 "rows": [{c: tab[i][c] for c in tab.colnames} for i in range(len(tab))],
             }
         except Exception as e:
             last_err = e
+            # Record the failure in the shared breaker so SFCC, SSSC, WIMI
+            # and the exoplanet tool all learn about this outage without
+            # each rediscovering it. note_failure only trips on
+            # connection-class errors, so a bad field name or a 5xx does
+            # not disable SIMBAD for the rest of the session.
+            cds_health.note_failure(e, context=f"magnitude/query_region/{host}")
             continue
 
     raise RuntimeError(_classify_simbad_error(last_err))
@@ -296,10 +314,20 @@ def _simbad_query_direct(center_ra_deg: float, center_dec_deg: float, radius_deg
     except Exception:
         simbad_conf = None
 
-    try:
-        Simbad.TIMEOUT = _timeout_i
-    except Exception:
-        pass
+    # Bound the timeout under every name astroquery has used. `TIMEOUT` was
+    # renamed to `timeout` in astroquery 0.4.8, and Simbad reads its OWN
+    # `astroquery.simbad.conf`, not the global `astroquery.conf` set above --
+    # so setting just one of these can leave the call effectively unbounded
+    # on some versions. Each assignment is guarded independently.
+    for _setter in (
+        lambda: setattr(Simbad, "TIMEOUT", _timeout_i),
+        lambda: setattr(Simbad, "timeout", _timeout_i),
+        lambda: setattr(simbad_conf, "timeout", _timeout_i),
+    ):
+        try:
+            _setter()
+        except Exception:
+            pass
 
     center = SkyCoord(center_ra_deg * u.deg, center_dec_deg * u.deg, frame="icrs")
 
@@ -348,12 +376,19 @@ def _simbad_query_direct(center_ra_deg: float, center_dec_deg: float, radius_deg
                 last_err = RuntimeError(f"{host}: query returned no table")
                 continue
 
+            cds_health.note_success()
             return {
                 "colnames": list(tab.colnames),
                 "rows": [{c: tab[i][c] for c in tab.colnames} for i in range(len(tab))],
             }
         except Exception as e:
             last_err = e
+            # Record the failure in the shared breaker so SFCC, SSSC, WIMI
+            # and the exoplanet tool all learn about this outage without
+            # each rediscovering it. note_failure only trips on
+            # connection-class errors, so a bad field name or a 5xx does
+            # not disable SIMBAD for the rest of the session.
+            cds_health.note_failure(e, context=f"magnitude/query_region/{host}")
             continue
 
     raise RuntimeError(_classify_simbad_error(last_err))
@@ -380,6 +415,26 @@ def _simbad_via_vizier(center_ra_deg: float, center_dec_deg: float, radius_deg: 
     _timeout_i = int(round(float(hard_timeout_s)))
 
     center = SkyCoord(center_ra_deg * u.deg, center_dec_deg * u.deg, frame="icrs")
+
+    # Same fast reachability check the SIMBAD leg does. Without it a
+    # Strasbourg-wide outage costs a full `timeout` here on every attempt,
+    # which is the bulk of the wait once the SIMBAD leg has been
+    # short-circuited by the breaker. DNS-broken or refused comes back in
+    # ~3 s instead.
+    _vizier_host = "vizier.cds.unistra.fr"
+    try:
+        from astroquery.vizier import conf as _vz_conf
+        _srv = str(getattr(_vz_conf, "server", "") or "")
+        if _srv:
+            _vizier_host = _srv.replace("https://", "").replace(
+                "http://", "").split("/")[0]
+    except Exception:
+        pass
+
+    if not _tcp_reachable(_vizier_host, 443, timeout_s=3.0):
+        raise RuntimeError(
+            f"VizieR SIMBAD mirror unreachable: {_vizier_host} "
+            f"not reachable (DNS/connect failed)")
 
     v = Vizier(
         columns=["Main_ID", "RAJ2000", "DEJ2000", "OTypes", "SpType",
@@ -4078,6 +4133,19 @@ class MagnitudeToolDialog(QDialog):
         # Ask for several likely “red” columns; VizieR will ignore unknown ones
         Vizier.columns = ["RAJ2000", "DEJ2000", "Bmag", "Vmag", "r'mag", "rmag", "Rmag"]
 
+        # Bound it. This call had no timeout at all, so a degraded CDS made
+        # the APASS augmentation hang on the GUI thread even after the
+        # SIMBAD legs had correctly given up. Both spellings, since the
+        # attribute was renamed across astroquery versions.
+        for _setter in (
+            lambda: setattr(Vizier, "TIMEOUT", 30),
+            lambda: setattr(Vizier, "timeout", 30),
+        ):
+            try:
+                _setter()
+            except Exception:
+                pass
+
         self.lbl_info.setText("Querying APASS (VizieR)…")
         QApplication.processEvents()
 
@@ -4195,7 +4263,13 @@ class MagnitudeToolDialog(QDialog):
         #                            query_region always fails.
         # Retries + backoff (see _do_simbad_query) cover transient blips on
         # unistra.  Add mirrors back only after end-to-end probing them.
-        servers = ["simbad.cds.unistra.fr"]
+        #
+        # Sourced from cds_health.MIRRORS so this list lives in exactly one
+        # place across SFCC, SSSC, WIMI, the exoplanet tool and here. The
+        # harvard-is-broken finding documented above is what pruned that
+        # tuple down to a single entry, so the two agree by construction
+        # rather than by someone remembering to edit both.
+        servers = list(cds_health.MIRRORS)
         HARD_TIMEOUT_S = 15.0
         ROW_LIMIT = 10000
 
@@ -4232,17 +4306,26 @@ class MagnitudeToolDialog(QDialog):
             _simbad_err = None
             _payload = None
             # 1) primary: SIMBAD TAP endpoint (in-process astroquery)
-            try:
-                _payload = _simbad_query_direct(
-                    center_ra, center_dec, radius_deg,
-                    servers,
-                    HARD_TIMEOUT_S,
-                    ROW_LIMIT,
-                )
-                if list(_payload.get("rows", []) or []):
-                    return _payload
-            except Exception as e:
-                _simbad_err = e
+            #
+            # The cds_health gate here skips ONLY this leg. That distinction
+            # matters: VizieR below is separate CDS infrastructure, and the
+            # breaker tracks the SIMBAD TAP endpoint specifically. Gating the
+            # whole function would throw away a fallback that still works
+            # during a SIMBAD-only fault, which is the common case.
+            if cds_health.simbad_available():
+                try:
+                    _payload = _simbad_query_direct(
+                        center_ra, center_dec, radius_deg,
+                        servers,
+                        HARD_TIMEOUT_S,
+                        ROW_LIMIT,
+                    )
+                    if list(_payload.get("rows", []) or []):
+                        return _payload
+                except Exception as e:
+                    _simbad_err = e
+            else:
+                _simbad_err = RuntimeError(cds_health.status_text())
 
             # 2) fallback: VizieR's SIMBAD mirror (separate infrastructure)
             try:
@@ -4269,10 +4352,31 @@ class MagnitudeToolDialog(QDialog):
         def _on_simbad_retry(attempt, wait_s, err):
             try:
                 first_line = str(err).splitlines()[0] if str(err) else type(err).__name__
+                # Attempt count is derived, not hardcoded: the schedule
+                # shrinks when cds_health already knows CDS is down.
+                _n = len(_sleeps) + 1
                 self.lbl_info.setText(
-                    f"SIMBAD attempt {attempt}/5 failed "
+                    f"SIMBAD attempt {attempt}/{_n} failed "
                     f"({first_line}) — retrying in {int(wait_s)}s…"
                 )
+                QApplication.processEvents()
+            except Exception:
+                pass
+
+        # Retry budget depends on what we already know. The full
+        # (2,4,8,12) schedule is 5 attempts plus 26 s of sleeps, which is
+        # right for a transient blip. But if the breaker is already open --
+        # because another SASpro tool hit the outage, or because the
+        # preflight probe failed -- then CDS is down, and spending 5
+        # attempts plus 26 s re-proving that is just dead time in front of
+        # the user. One shot at the VizieR fallback is the useful part.
+        if cds_health.simbad_available():
+            _sleeps = (2, 4, 8, 12)
+        else:
+            _sleeps = (2,)
+            try:
+                self.lbl_info.setText(
+                    f"{cds_health.status_text()} — trying VizieR mirror…")
                 QApplication.processEvents()
             except Exception:
                 pass
@@ -4280,7 +4384,7 @@ class MagnitudeToolDialog(QDialog):
         try:
             payload = _retry_with_backoff(
                 _do_simbad_query,
-                sleeps=(2, 4, 8, 12),
+                sleeps=_sleeps,
                 sleep_fn=non_blocking_sleep,
                 on_retry=_on_simbad_retry,
             )

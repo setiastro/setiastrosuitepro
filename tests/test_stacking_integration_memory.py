@@ -60,6 +60,13 @@ class MMImageReadOnlyMapTests(unittest.TestCase):
         self.assertEqual(full.dtype, np.float32)
         np.testing.assert_array_equal(full, expected)
         np.testing.assert_array_equal(img.read_tile(2, 6, 1, 5), expected[2:6, 1:5])
+        channels = expected.shape[2] if expected.ndim == 3 else 1
+        direct = np.empty((4, 4, channels), np.float32)
+        img.read_tile_into(direct, 2, 6, 1, 5, channels)
+        reference = expected[2:6, 1:5]
+        if reference.ndim == 2:
+            reference = reference[..., None]
+        np.testing.assert_array_equal(direct, reference)
 
     def test_float32_color_cube(self):
         data = self.rng.random((3, H, W), dtype=np.float32)
@@ -84,6 +91,12 @@ class MMImageReadOnlyMapTests(unittest.TestCase):
         p = self._path("i16.fit")
         fits.PrimaryHDU(data).writeto(p)
         self._assert_reads(p, data.astype(np.float32) / 65535.0)
+
+    def test_int32_scaled_by_uint32_range(self):
+        data = self.rng.integers(0, 2**31 - 1, (H, W), dtype=np.int32)
+        p = self._path("i32.fit")
+        fits.PrimaryHDU(data).writeto(p)
+        self._assert_reads(p, data.astype(np.float32) / 4294967295.0)
 
     def test_uint16_bzero_scaled_by_65535(self):
         data = self.rng.integers(0, 65535, (H, W)).astype(np.uint16)
@@ -344,6 +357,32 @@ class IntegrationMemoryErrorFallbackTests(unittest.TestCase):
         self.assertEqual(self.low_ram_calls, [])
         self.assertEqual(img.shape, (40, 24, 3))
         self.assertTrue(np.isfinite(img).all())
+
+    def test_seek_reader_matches_direct_memmap_integration(self):
+        expected, _, _ = self._integrate()
+        actual, _, _ = stacking_suite.StackingSuiteDialog._normal_integration_low_ram(
+            self.stub, "g", self.paths, self.weights, status_cb=lambda *_: None)
+        np.testing.assert_array_equal(actual, expected)
+
+    def test_disabled_masks_are_not_uploaded_and_maps_are_compact(self):
+        calls = []
+
+        def reducer(ts, weights, **kwargs):
+            calls.append(kwargs)
+            out, rej = stacking_suite.windsorized_sigma_clip_weighted_np(ts, weights)
+            rej = rej.any(axis=-1)
+            return out, (rej.any(axis=0), rej.sum(axis=0).astype(np.int32))
+
+        self._enable_gpu(reducer)
+        self._integrate()
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(call['forced_reject_mask_np'] is None for call in calls))
+        self.assertTrue(all(call['collapse_rej_channels'] for call in calls))
+
+    def test_normal_reader_avoids_allocating_read_tile(self):
+        with mock.patch.object(_MMImage, 'read_tile', side_effect=AssertionError("temporary copy")):
+            image, _, _ = self._integrate()
+        self.assertTrue(np.isfinite(image).all())
 
     def test_sources_closed_before_low_ram_rerun(self):
         self._patch("_MMImage", self._recording_mmimage())

@@ -1843,9 +1843,30 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
 def _is_fits_image_hdu(hdu) -> bool:
     """
     True only for actual image HDUs, not tables.
+
+    Decided from the header, never from `hdu.data`. Touching .data here asks
+    astropy to materialize the entire pixel block just to answer "is there
+    one", and since get_valid_header() opens with memmap=False that is a full
+    read of the file: 39.6 ms against 0.5 ms on a 48 MB frame. load_image()
+    calls get_valid_header() and then reopens the file and reads the pixels
+    again, so every FITS load was reading the data block twice.
+
+    NAXIS plus non-zero NAXISn is exactly the FITS definition of "this HDU has
+    pixels", and CompImageHDU presents the decompressed image's NAXIS values
+    on its header, so tile-compressed files answer correctly too. Verified to
+    return the same answer AND select the same extension index as the old
+    data-based test across: plain 2D, empty primary + ImageHDU, tile
+    compressed, 3D cube, bintable-only, no-data-at-all, and table-before-image.
     """
     try:
-        return isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU, fits.CompImageHDU)) and hdu.data is not None
+        if not isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU, fits.CompImageHDU)):
+            return False
+        h = hdu.header
+        naxis = int(h.get("NAXIS", 0) or 0)
+        if naxis < 1:
+            return False
+        return all(int(h.get(f"NAXIS{i}", 0) or 0) > 0
+                   for i in range(1, naxis + 1))
     except Exception:
         return False
 

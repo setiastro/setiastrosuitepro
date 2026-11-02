@@ -64,7 +64,7 @@ SASpro changes © Franklin Marek | www.setiastro.com
 
 from __future__ import annotations
 
-__version__ = "2.0.0-saspro"
+__version__ = "2.1.0-saspro"   # SASPRO_GPU_DETECT_PATCH_V1
 
 __all__ = [
     "MIN_MATCHES_FRACTION",
@@ -72,6 +72,7 @@ __all__ = [
     "NUM_NEAREST_NEIGHBORS",
     "PIXEL_TOL",
     "apply_transform",
+    "detect_backend_available",
     "estimate_transform",
     "find_transform",
     "matrix_transform",
@@ -140,6 +141,15 @@ MIN_FINAL_MATCHES = 6
 # ─────────────────────────────────────────────────────────────────────────────
 # skimage shims (same lazy-loader pattern as upstream)
 # ─────────────────────────────────────────────────────────────────────────────
+def detect_backend_available():
+    """True if the GPU star detector is usable in this process."""
+    try:
+        from setiastro.saspro.gpu_star_detect import gpu_available
+        return bool(gpu_available())
+    except Exception:
+        return False
+
+
 def estimate_transform(*args, **kwargs):
     from skimage.transform import estimate_transform as _et
     return _et(*args, **kwargs)
@@ -180,8 +190,29 @@ def _shape(image):
 # ─────────────────────────────────────────────────────────────────────────────
 # SEP-based star detector (same as upstream _find_sources)
 # ─────────────────────────────────────────────────────────────────────────────
-def _find_sources(img, detection_sigma=5, min_area=5, mask=None):
-    """Return (x, y) star positions sorted by flux descending."""
+
+def _align_setting(key, default, cast=float):
+    """
+    Read a stacking/align/* QSettings value, falling back to `default` when Qt
+    is unavailable (keeps `python astroalign.py` selftest standalone) or the
+    stored value is unusable.
+    """
+    try:
+        from PyQt6.QtCore import QSettings
+        v = QSettings().value("stacking/" + key, None)
+        if v is None:
+            return default
+        if cast is bool:
+            if isinstance(v, bool):
+                return v
+            return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+        return cast(v)
+    except Exception:
+        return default
+
+
+def _find_sources_sep(img, detection_sigma=5, min_area=5, mask=None):
+    """Return (x, y) star positions sorted by flux descending. (SEP backend.)"""
     import sep
     sep.set_extract_pixstack(20000000)
     image = np.ascontiguousarray(img.astype(np.float32))
@@ -190,6 +221,63 @@ def _find_sources(img, detection_sigma=5, min_area=5, mask=None):
     sources = sep.extract(image - bkg.back(), thresh, minarea=min_area, mask=mask)
     sources.sort(order="flux")
     return np.array([[s["x"], s["y"]] for s in sources[::-1]])
+
+
+def _find_sources_gpu(img, detection_sigma=5, min_area=5, mask=None,
+                      max_stars=None):
+    """
+    torch star detector (gpu_star_detect). Returns the same (N,2) flux-sorted
+    array as the SEP backend, or None if the GPU path is unavailable/failed —
+    None means "fall back to SEP", never "no stars".
+    """
+    try:
+        from setiastro.saspro.gpu_star_detect import detect_stars
+    except Exception:
+        return None
+    try:
+        return detect_stars(
+            img,
+            detection_sigma=float(detection_sigma),
+            min_area=int(min_area),
+            mask=mask,
+            max_stars=(int(max_stars) if max_stars else None),
+            min_separation=int(_align_setting("align/min_separation", 3, int)),
+            min_fwhm=float(_align_setting("align/min_fwhm", 0.0, float)),
+            max_ellipticity=float(_align_setting("align/max_ellipticity", 1.0, float)),
+        )
+    except Exception:
+        return None
+
+
+def _find_sources(img, detection_sigma=5, min_area=5, mask=None,
+                  backend="auto", max_stars=None):
+    """
+    Star detection for the matcher.
+
+    backend:
+      "auto" (default) - try the GPU detector, fall back to SEP on failure
+      "gpu"            - GPU only (returns None if unavailable)
+      "sep"            - SEP only (the original behaviour)
+
+    Existing external callers that omit `backend` keep working and simply gain
+    the GPU fast path, which is gated by the usual hardware-accel switches.
+    """
+    bk = (backend or "auto").lower()
+    if bk in ("auto", "gpu"):
+        want_gpu = (
+            _align_setting("use_hardware_accel", True, bool)
+            and _align_setting("align/gpu_detect", True, bool)
+        )
+        if want_gpu:
+            out = _find_sources_gpu(img, detection_sigma, min_area, mask,
+                                    max_stars=max_stars)
+            if out is not None and len(out) >= 3:
+                return out
+        if bk == "gpu":
+            return None
+    return _find_sources_sep(img, detection_sigma, min_area, mask)
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -317,7 +405,8 @@ def _tri_invariants_numpy(coords, triples, min_short, max_aspect):
     Ss = np.take_along_axis(S, order, axis=1)
     V = np.take_along_axis(triples, order, axis=1)
     denom = np.maximum(Ss[:, 0], 1e-9)
-    good = (Ss[:, 0] > min_short) & (Ss[:, 2] / denom < max_aspect)
+    # >= (not >) so the numpy path matches the numba kernel's `if la < min_short: continue`
+    good = (Ss[:, 0] >= min_short) & (Ss[:, 2] / denom < max_aspect)
     inv = np.column_stack([Ss[:, 2] / denom, Ss[:, 1] / denom])
     return inv[good], V[good]
 
@@ -444,37 +533,135 @@ def _fit_similarity_ls(P, Q, reflect):
     return L, np.array([tx, ty])
 
 
+
 def _similarity_ransac(P, Q, tol, iters=400, seed=0):
     """
     RANSAC over correspondences using minimal 2-point samples, trying both
     handedness conventions per sample. Returns (L, t, reflect, inlier_mask).
+
+    Vectorised: all `iters` 2-point hypotheses x 2 parities are built and
+    scored in one batched pass instead of 800 Python-loop iterations. The
+    similarity from two points is the complex ratio
+        non-reflected  w = dq / dp        -> L = [[a,-b],[b, a]]
+        reflected      w = dq / conj(dp)  -> L = [[a, b],[b,-a]]
+    which expands to pure real arithmetic over the whole hypothesis stack.
+
+    NOTE: the hypothesis draw differs from the previous per-iteration
+    rng.choice, so the coarse seed transform may differ in the last decimals.
+    It is still deterministic for a given seed, and _rematch_full refits over
+    ALL control points afterwards, so the final transform is set by the
+    full-set fit rather than the RANSAC draw.
     """
+    P = np.asarray(P, dtype=np.float64)
+    Q = np.asarray(Q, dtype=np.float64)
     n = len(P)
     if n < 2:
         return None
+
     rng = np.random.default_rng(seed)
-    tol2 = tol * tol
-    best_mask = None
-    best_reflect = False
+    tol2 = float(tol) * float(tol)
     # no point running more trials than there are distinct 2-point samples
-    iters = int(min(iters, max(1, n * (n - 1) // 2)))
-    for _ in range(iters):
-        i, j = rng.choice(n, 2, replace=False)
-        for reflect in (False, True):
-            r = _sim_from_2pt(P[i], P[j], Q[i], Q[j], reflect)
-            if r is None:
-                continue
-            L, t = r
-            pred = P @ L.T + t
-            d2 = np.sum((pred - Q) ** 2, axis=1)
-            mask = d2 < tol2
-            if best_mask is None or mask.sum() > best_mask.sum():
-                best_mask = mask
-                best_reflect = reflect
-    if best_mask is None or best_mask.sum() < 2:
+    K = int(min(iters, max(1, n * (n - 1) // 2)))
+
+    i = rng.integers(0, n, size=K)
+    j = (i + 1 + rng.integers(0, n - 1, size=K)) % n   # guarantees j != i
+
+    dp = P[j] - P[i]
+    dq = Q[j] - Q[i]
+    dpx, dpy = dp[:, 0], dp[:, 1]
+    dqx, dqy = dq[:, 0], dq[:, 1]
+    den = dpx * dpx + dpy * dpy
+    ok = den > 1e-18
+    den_s = np.where(ok, den, 1.0)
+
+    a_n = (dqx * dpx + dqy * dpy) / den_s
+    b_n = (dqy * dpx - dqx * dpy) / den_s
+    a_r = (dqx * dpx - dqy * dpy) / den_s
+    b_r = (dqx * dpy + dqy * dpx) / den_s
+
+    M = 2 * K
+    L = np.empty((M, 2, 2), dtype=np.float64)
+    L[:K, 0, 0] = a_n;  L[:K, 0, 1] = -b_n
+    L[:K, 1, 0] = b_n;  L[:K, 1, 1] = a_n
+    L[K:, 0, 0] = a_r;  L[K:, 0, 1] = b_r
+    L[K:, 1, 0] = b_r;  L[K:, 1, 1] = -a_r
+
+    base = np.concatenate([i, i])
+    Pb = P[base]
+    t = np.empty((M, 2), dtype=np.float64)
+    t[:, 0] = Q[base][:, 0] - (L[:, 0, 0] * Pb[:, 0] + L[:, 0, 1] * Pb[:, 1])
+    t[:, 1] = Q[base][:, 1] - (L[:, 1, 0] * Pb[:, 0] + L[:, 1, 1] * Pb[:, 1])
+    valid = np.concatenate([ok, ok])
+
+    # Score every hypothesis against every control point with two real GEMMs
+    # instead of an (M, n, 2) einsum: row m of `Cx @ P.T` is the predicted x
+    # for hypothesis m over all n points, and likewise for y. np.einsum's
+    # "mij,nj->mni" path is a generic nested loop with two (M, n, 2)
+    # temporaries, which made the vectorised form slower than the loop it
+    # replaced on a typical control-point count.
+    Cx = np.ascontiguousarray(L[:, 0, :])     # (M, 2)
+    Cy = np.ascontiguousarray(L[:, 1, :])     # (M, 2)
+    PT = np.ascontiguousarray(P.T)            # (2, n)
+    Qx = np.ascontiguousarray(Q[:, 0])
+    Qy = np.ascontiguousarray(Q[:, 1])
+
+    # chunk the hypothesis axis so a large control-point set cannot blow up
+    # the (M, n) distance tensor
+    counts = np.full(M, -1, dtype=np.int64)
+    step = max(1, int(4_000_000 // max(1, n)))
+    for s0 in range(0, M, step):
+        s1 = min(M, s0 + step)
+        dx = Cx[s0:s1] @ PT
+        dx += t[s0:s1, 0:1]
+        dx -= Qx[None, :]
+        dy = Cy[s0:s1] @ PT
+        dy += t[s0:s1, 1:2]
+        dy -= Qy[None, :]
+        dx *= dx
+        dy *= dy
+        dx += dy
+        c = (dx < tol2).sum(axis=1)
+        counts[s0:s1] = np.where(valid[s0:s1], c, -1)
+
+    best = int(np.argmax(counts))
+    if counts[best] < 2:
         return None
-    L, t = _fit_similarity_ls(P[best_mask], Q[best_mask], best_reflect)
-    return L, t, best_reflect, best_mask
+
+    best_reflect = bool(best >= K)
+    pred = P @ L[best].T + t[best]
+    best_mask = np.sum((pred - Q) ** 2, axis=1) < tol2
+    if best_mask.sum() < 2:
+        return None
+
+    Lf, tf = _fit_similarity_ls(P[best_mask], Q[best_mask], best_reflect)
+    return Lf, tf, best_reflect, best_mask
+
+
+
+
+# SASPRO_KD_WORKERS_V1
+# How many threads a scipy KD-tree query should use, by query size.
+#
+# Measured on a 36-core box (tests/delta_bench.py):
+#
+#     _rematch_full,        388 points:  workers=-1 42.19 ms,  workers=1 1.01 ms
+#     _vote_correspondences, 54k points: workers=-1 41.46 ms,  workers=1 75.19 ms
+#
+# so the answer flips with size, and `workers=-1` everywhere was costing 45%
+# of the delta solve. Thread start-up is a fixed cost per call and the
+# rematch pays it four times for a query it could answer in a millisecond.
+#
+# The crossover is somewhere between those two counts; this sits inside the
+# bracket rather than pretending to know where. _rematch_full is normally
+# called with at most a few hundred points (capped by max_control_points),
+# so the common path takes the 42x, and a caller that passes tens of
+# thousands still gets the cores.
+_KD_PARALLEL_MIN = 4096
+
+
+def _kd_workers(n: int) -> int:
+    """-1 (all cores) for a big query, 1 for a small one."""
+    return -1 if int(n) >= _KD_PARALLEL_MIN else 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -490,14 +677,14 @@ def _rematch_full(all_src, all_ref, L, t, tol0, min_keep=MIN_FINAL_MATCHES, roun
     reflect = np.linalg.det(L) < 0
     tol = float(tol0)
     pred = all_src @ L.T + t
-    dists, idxs = rtree.query(pred, k=1, workers=-1)
+    dists, idxs = rtree.query(pred, k=1, workers=_kd_workers(len(pred)))
     for _ in range(rounds):
         mask = dists < tol
         if int(mask.sum()) < min_keep:
             break
         L, t = _fit_similarity_ls(all_src[mask], all_ref[idxs[mask]], reflect)
         pred = all_src @ L.T + t
-        dists, idxs = rtree.query(pred, k=1, workers=-1)
+        dists, idxs = rtree.query(pred, k=1, workers=_kd_workers(len(pred)))
         core = dists[dists < tol]
         if len(core) == 0:
             break
@@ -513,40 +700,65 @@ def _rematch_full(all_src, all_ref, L, t, tol0, min_keep=MIN_FINAL_MATCHES, roun
 # ══════════════════════════════════════════════════════════════════════════════
 #  STAGE 5 — Hough (dx,dy) translation-vote fallback
 # ══════════════════════════════════════════════════════════════════════════════
+
 def _hough_translation_match(src, ref, w, h, tol, max_off=0.5):
     """
-    Vote on (dx,dy) offsets, take the peak bin + 3×3 neighbourhood as a
+    Vote on (dx,dy) offsets, take the peak bin + 3x3 neighbourhood as a
     candidate pool, then fit a similarity via RANSAC. Returns
     (L, t, reflect, inlier_mask) or None.
+
+    Vectorised: the former O(n_src * n_ref) Python loop building a
+    dict-of-lists is replaced by one broadcast difference plus np.unique over
+    encoded bin keys.
     """
     src = np.asarray(src, dtype=np.float64)
     ref = np.asarray(ref, dtype=np.float64)
-    bin_px = tol * 2.0
-    votes: dict = {}
-    for i in range(len(src)):
-        dx = ref[:, 0] - src[i, 0]
-        dy = ref[:, 1] - src[i, 1]
-        ok = (np.abs(dx) <= w * max_off) & (np.abs(dy) <= h * max_off)
-        if not ok.any():
-            continue
-        bx = np.round(dx[ok] / bin_px).astype(int)
-        by = np.round(dy[ok] / bin_px).astype(int)
-        js = np.where(ok)[0]
-        for b, c, j in zip(bx, by, js):
-            votes.setdefault((int(b), int(c)), []).append((i, int(j)))
-    if not votes:
+    if len(src) == 0 or len(ref) == 0:
         return None
-    bk = max(votes, key=lambda kk: len(votes[kk]))
-    merged = list(votes[bk])
+
+    bin_px = float(tol) * 2.0
+    if bin_px <= 0:
+        return None
+
+    dx = ref[None, :, 0] - src[:, None, 0]
+    dy = ref[None, :, 1] - src[:, None, 1]
+    ok = (np.abs(dx) <= w * max_off) & (np.abs(dy) <= h * max_off)
+    if not ok.any():
+        return None
+
+    si, ri = np.nonzero(ok)
+    bx = np.rint(dx[ok] / bin_px).astype(np.int64)
+    by = np.rint(dy[ok] / bin_px).astype(np.int64)
+
+    mnx = int(bx.min()); mny = int(by.min())
+    bx -= mnx
+    by -= mny
+    span_x = int(bx.max()) + 1
+
+    key = by * span_x + bx
+    uk, cnt = np.unique(key, return_counts=True)
+    best = int(uk[int(np.argmax(cnt))])
+    by_b, bx_b = divmod(best, span_x)
+
+    sel = np.zeros(key.shape, dtype=bool)
     for dbx in (-1, 0, 1):
+        nbx = bx_b + dbx
+        if nbx < 0 or nbx >= span_x:
+            continue
         for dby in (-1, 0, 1):
-            if dbx or dby:
-                merged.extend(votes.get((bk[0] + dbx, bk[1] + dby), []))
-    if len(merged) < 4:
+            nby = by_b + dby
+            if nby < 0:
+                continue
+            sel |= (key == (nby * span_x + nbx))
+
+    if int(sel.sum()) < 4:
         return None
-    P = np.array([src[i] for i, j in merged], dtype=np.float64)
-    Q = np.array([ref[j] for i, j in merged], dtype=np.float64)
+
+    P = src[si[sel]]
+    Q = ref[ri[sel]]
     return _similarity_ransac(P, Q, tol * 2.0, iters=300)
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -662,12 +874,14 @@ class _MatchTransform:
 # ─────────────────────────────────────────────────────────────────────────────
 # find_transform  (same signature / return contract as upstream)
 # ─────────────────────────────────────────────────────────────────────────────
+
 def find_transform(
     source,
     target,
     max_control_points: int = 50,
     detection_sigma: int = 5,
     min_area: int = 5,
+    detector: str = "auto",
 ):
     """
     Estimate the transform that maps *source* pixel coords into *target*.
@@ -679,77 +893,138 @@ def find_transform(
     max_control_points
         Maximum number of brightest stars to use.
     detection_sigma
-        Background-sigma threshold for SEP star detection (images only).
+        Background-sigma threshold for star detection (images only).
     min_area
         Minimum connected-pixel area for a valid detection (images only).
+    detector
+        "auto" (default): detect with the GPU detector; if the match FAILS,
+        re-detect with SEP and try again before giving up. "gpu" / "sep"
+        pin a single backend.
 
     Returns
     -------
     T : skimage transform
-        Maps source → target. SimilarityTransform for ordinary data;
+        Maps source -> target. SimilarityTransform for ordinary data;
         AffineTransform when the frames are mirrored (reflection).
     (source_pos, target_pos) : tuple of (N,2) float32 arrays
         Matched star positions in each image.
 
     Raises
     ------
-    TypeError      — unsupported input type
-    ValueError     — fewer than 3 stars detected
-    MaxIterError   — no transform found by any matching stage
+    TypeError      - unsupported input type
+    ValueError     - fewer than 3 stars detected
+    MaxIterError   - no transform found by any matching stage or backend
     """
-    # figure out frame size for spatial balancing / Hough ranges
     frame_wh = [None, None]
 
-    def _get_controlp(img_or_pts, label):
-        # explicit (x,y) list?
+    def _as_points(obj):
+        """Return an (N,2) array if obj is already a control-point list, else None."""
         try:
-            arr = _data(img_or_pts)
+            arr = _data(obj)
             if arr.ndim == 2 and arr.shape[1] == 2 and arr.shape[0] > 0:
                 return np.asarray(arr, dtype=np.float64)[:max_control_points]
         except Exception:
             pass
         try:
-            pts = np.asarray(img_or_pts)
+            pts = np.asarray(obj)
             if pts.ndim == 2 and pts.shape[1] == 2:
                 return pts.astype(np.float64)[:max_control_points]
         except Exception:
             pass
-        # otherwise treat as image
+        return None
+
+    def _as_image(obj, label):
         try:
-            img2d = _bw(_data(img_or_pts))
-            frame_wh[0] = img2d.shape[1]
-            frame_wh[1] = img2d.shape[0]
-            mk = _mask(img_or_pts)
-            return _find_sources(img2d, detection_sigma=detection_sigma,
-                                 min_area=min_area, mask=mk)[:max_control_points]
+            img2d = _bw(_data(obj))
+            return img2d, _mask(obj)
         except Exception as e:
             raise TypeError(f"Input type for {label} not supported: {e}")
 
-    src_cp = _get_controlp(source, "source")
-    tgt_cp = _get_controlp(target, "target")
+    src_pts = _as_points(source)
+    tgt_pts = _as_points(target)
 
-    if len(src_cp) < 3:
-        raise ValueError("Reference stars in source image are less than the minimum value (3).")
-    if len(tgt_cp) < 3:
-        raise ValueError("Reference stars in target image are less than the minimum value (3).")
+    src_img = src_mask = tgt_img = tgt_mask = None
+    if src_pts is None:
+        src_img, src_mask = _as_image(source, "source")
+        frame_wh[0] = src_img.shape[1]
+        frame_wh[1] = src_img.shape[0]
+    if tgt_pts is None:
+        tgt_img, tgt_mask = _as_image(target, "target")
+        frame_wh[0] = frame_wh[0] or tgt_img.shape[1]
+        frame_wh[1] = frame_wh[1] or tgt_img.shape[0]
 
-    # frame extent (fall back to point bounds if inputs were raw coordinates)
-    all_xy = np.vstack([src_cp[:, :2], tgt_cp[:, :2]])
-    w = frame_wh[0] or float(all_xy[:, 0].max() - all_xy[:, 0].min()) or 1.0
-    h = frame_wh[1] or float(all_xy[:, 1].max() - all_xy[:, 1].min()) or 1.0
+    det = (detector or "auto").lower()
+    if src_pts is not None and tgt_pts is not None:
+        backends = [None]                 # nothing to detect
+    elif det == "sep":
+        backends = ["sep"]
+    elif det == "gpu":
+        backends = ["gpu"]
+    else:
+        # GPU first; SEP is the safety net when the match comes up empty.
+        backends = ["gpu", "sep"]
 
-    result = _match_controlpoints(src_cp, tgt_cp, w, h, pix_tol=PIXEL_TOL)
+    last_detail = ""
+    for bk_i, bk in enumerate(backends):
+        if src_pts is not None:
+            src_cp = src_pts
+        else:
+            src_cp = _find_sources(
+                src_img, detection_sigma=detection_sigma, min_area=min_area,
+                mask=src_mask, backend=(bk or "sep"),
+                max_stars=max_control_points,
+            )
+            if src_cp is None:
+                continue
+            src_cp = src_cp[:max_control_points]
 
-    if result is None:
-        raise MaxIterError(
-            "No acceptable transform found: triangle+vote and Hough "
-            "translation fallback both failed. The frames may share too few "
-            "real stars, or the detection thresholds differ too much between "
-            "them."
-        )
+        if tgt_pts is not None:
+            tgt_cp = tgt_pts
+        else:
+            tgt_cp = _find_sources(
+                tgt_img, detection_sigma=detection_sigma, min_area=min_area,
+                mask=tgt_mask, backend=(bk or "sep"),
+                max_stars=max_control_points,
+            )
+            if tgt_cp is None:
+                continue
+            tgt_cp = tgt_cp[:max_control_points]
 
-    T, src_pts, tgt_pts, info = result
-    return T, (src_pts, tgt_pts)
+        if len(src_cp) < 3:
+            if bk == "gpu" and len(backends) > bk_i + 1:
+                last_detail = "GPU detector found <3 stars in source"
+                continue
+            raise ValueError(
+                "Reference stars in source image are less than the minimum value (3)."
+            )
+        if len(tgt_cp) < 3:
+            if bk == "gpu" and len(backends) > bk_i + 1:
+                last_detail = "GPU detector found <3 stars in target"
+                continue
+            raise ValueError(
+                "Reference stars in target image are less than the minimum value (3)."
+            )
+
+        all_xy = np.vstack([src_cp[:, :2], tgt_cp[:, :2]])
+        w = frame_wh[0] or float(all_xy[:, 0].max() - all_xy[:, 0].min()) or 1.0
+        h = frame_wh[1] or float(all_xy[:, 1].max() - all_xy[:, 1].min()) or 1.0
+
+        result = _match_controlpoints(src_cp, tgt_cp, w, h, pix_tol=PIXEL_TOL)
+        if result is not None:
+            T, src_pos, tgt_pos, info = result
+            return T, (src_pos, tgt_pos)
+
+        last_detail = f"{bk or 'points'} backend: no acceptable transform"
+
+    raise MaxIterError(
+        "No acceptable transform found: triangle+vote and Hough "
+        "translation fallback both failed"
+        + (f" ({last_detail})" if last_detail else "")
+        + ". The frames may share too few real stars, or the detection "
+        "thresholds differ too much between them."
+    )
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -767,7 +1042,15 @@ def apply_transform(transform, source, target, fill_value=None, propagate_mask=F
 
     source_data  = _data(source)
     target_shape = _data(target).shape
-    cval = float(np.median(source_data))
+    # Border fill value. A full-frame np.median copies and partitions the whole
+    # array (245 MB / ~0.5-1.5 s on a 61 MP frame) for a single scalar that only
+    # fills the warp's outside-source region. A strided NaN-safe sample is
+    # statistically indistinguishable and effectively free. NaN-safe matters
+    # because satellite-trail no-data arrives as NaN.
+    _cs = source_data[::8, ::8] if source_data.ndim == 2 else source_data[::8, ::8, ...]
+    _cs = np.asarray(_cs, dtype=np.float32).ravel()
+    _cs = _cs[np.isfinite(_cs)]
+    cval = float(np.median(_cs)) if _cs.size else 0.0
 
     H, W  = int(target_shape[0]), int(target_shape[1])
     src32 = np.ascontiguousarray(source_data, dtype=np.float32)

@@ -120,6 +120,7 @@ from setiastro.saspro.accel_installer import current_backend
 from setiastro.saspro.accel_workers import AccelInstallWorker
 from setiastro.saspro.runtime_torch import add_runtime_to_sys_path
 from setiastro.saspro.free_torch_memory import _free_torch_memory
+from setiastro.saspro.stacking_gpu_pipeline import TileSession
 from setiastro.saspro.stacking_gpu_mem import (
     gpu_flat_cache_key,
     is_cuda_oom,
@@ -181,7 +182,8 @@ class _FramePrefetcher:
         return fut.result() if fut is not None else self._loader(path)
 
     def close(self):
-        self._ex.shutdown(wait=False, cancel_futures=True)
+        self._ex.shutdown(wait=True, cancel_futures=True)
+        self._futs.clear()
 
 # --- Rejection-backend correctness gate -----------------------------------
 # Rejection statistics need exact nan-reductions and NaN-preserving device
@@ -3403,7 +3405,7 @@ def _np_winsorized_center_scale(ts, valid, iterations=3, winsor_k=1.5):
     """
     Huber-style Winsorized per-pixel center/scale (PixInsight / APP style).
     Seed with median + 1.4826*MAD, clamp the stack to med +/- winsor_k*sigma,
-    re-measure median/std on the clamped stack with Huber's 1.134 correction
+    re-measure std on the clamped stack with Huber's 1.134 correction
     (exact for winsor_k = 1.5), iterate. Outliers (satellite trails) cannot
     inflate sigma, so the rejection bounds track the clean pixel distribution.
     """
@@ -3425,7 +3427,7 @@ def _np_winsorized_center_scale(ts, valid, iterations=3, winsor_k=1.5):
             lo = med - winsor_k * sigma
             hi = med + winsor_k * sigma
             xw = np.clip(x, lo[None], hi[None])       # NaN stays NaN
-            med = _np_nanmedian_low(xw)
+            # A monotone clamp whose interval contains the median preserves it.
             mean_w = np.where(valid, xw, 0.0).sum(axis=0) / cnt
             var = np.where(valid, (xw - mean_w[None]) ** 2, 0.0).sum(axis=0) / cnt
             sigma_new = np.maximum(1.134 * np.sqrt(np.maximum(var, 0.0)), 1e-10)
@@ -5032,93 +5034,34 @@ class _MMImage:
         return arr
     
     def read_tile_into(self, dst: np.ndarray, y0, y1, x0, x1, channels: int):
-        """
-        Fill dst (shape (th,tw,C) float32) with the tile.
-        No per-tile allocations.
-        """
-        import numpy as np
-
-        th = y1 - y0
-        tw = x1 - x0
-
-        # dst is (th,tw,C)
+        """Read and convert directly into the caller's float32 stack buffer."""
         if self._kind == "fits":
             d = self._fits_data
-
             if self.ndim == 2:
-                tile = d[y0:y1, x0:x1]  # may be view (memmap) or array
-                # scale BEFORE float cast (tile dtype still int if int on disk)
-                if tile.dtype.kind in ("u", "i"):
-                    if self._bitpix == 8:
-                        np.multiply(tile, (1.0/255.0), out=dst[..., 0], casting="unsafe")
-                    elif self._bitpix == 16:
-                        np.multiply(tile, (1.0/65535.0), out=dst[..., 0], casting="unsafe")
-                    else:
-                        dst[..., 0] = tile
-                else:
-                    dst[..., 0] = tile  # astropy already float-scaled
-
-                if channels == 3:
-                    dst[..., 1] = dst[..., 0]
-                    dst[..., 2] = dst[..., 0]
-                return
-
-            # ndim==3
-            sl = [slice(None)] * 3
-            sl[self._spat_axes[0]] = slice(y0, y1)
-            sl[self._spat_axes[1]] = slice(x0, x1)
-            tile = d[tuple(sl)]
-            if (self._color_axis is not None) and (self._color_axis != 2):
-                tile = np.moveaxis(tile, self._color_axis, -1)  # now HWC-ish
-
-            # tile might be (th,tw,3) or (3,th,tw) in weird cases; handle quick
-            if tile.ndim == 3 and tile.shape[-1] != 3 and tile.shape[0] == 3:
-                tile = np.moveaxis(tile, 0, -1)
-
-            # scale if integer
-            if tile.dtype.kind in ("u", "i"):
-                div = 1.0
-                if self._bitpix == 8:
-                    div = 255.0
-                elif self._bitpix == 16:
-                    div = 65535.0
-                # dst float32 = tile / div
-                np.divide(tile, div, out=dst[..., :3], casting="unsafe")
+                tile = d[y0:y1, x0:x1]
             else:
-                dst[..., :3] = tile
-
-            # if caller requested mono, collapse to dst[...,0]
-            if channels == 1:
-                # simple luma or first channel; you can choose policy
-                dst[..., 0] = dst[..., 0]  # keep R
-            return
-
-        # XISF
-        if self._xisf_memmap is not None:
-            C = 1 if self.ndim == 2 else self.shape[2]
-            if C == 1:
-                tile = self._xisf_memmap[0, y0:y1, x0:x1]
-                dst[..., 0] = tile
-                if channels == 3:
-                    dst[..., 1] = dst[..., 0]
-                    dst[..., 2] = dst[..., 0]
-            else:
-                tile = np.moveaxis(self._xisf_memmap[:, y0:y1, x0:x1], 0, -1)
-                dst[..., :3] = tile
-                if channels == 1:
-                    dst[..., 0] = dst[..., 0]
+                sl = [slice(None)] * 3
+                sl[self._spat_axes[0]] = slice(y0, y1)
+                sl[self._spat_axes[1]] = slice(x0, x1)
+                tile = d[tuple(sl)]
+                if self._color_axis is not None and self._color_axis != 2:
+                    tile = np.moveaxis(tile, self._color_axis, -1)
+        elif self._xisf_memmap is not None:
+            tile = np.moveaxis(self._xisf_memmap[:, y0:y1, x0:x1], 0, -1)
         else:
             tile = self._xisf_arr[y0:y1, x0:x1]
-            if tile.ndim == 2:
-                dst[..., 0] = tile
-                if channels == 3:
-                    dst[..., 1] = dst[..., 0]
-                    dst[..., 2] = dst[..., 0]
-            else:
-                dst[..., :3] = tile
-                if channels == 1:
-                    dst[..., 0] = dst[..., 0]
 
+        if tile.ndim == 2:
+            tile = tile[..., None]
+        if tile.shape[-1] == 1 and channels == 3:
+            np.copyto(dst, tile, casting="unsafe")
+        else:
+            np.copyto(dst, tile[..., :channels], casting="unsafe")
+        if self._kind == "fits" and self._orig_dtype.kind != "f":
+            divisor = {8: 255.0, 16: 65535.0, -16: 65535.0,
+                       32: 4294967295.0}.get(self._bitpix)
+            if divisor is not None:
+                np.divide(dst, np.float32(divisor), out=dst)
 
     def read_tile(self, y0, y1, x0, x1) -> np.ndarray:
         import os
@@ -9254,6 +9197,10 @@ class StackingSuiteDialog(QDialog):
             "align/minarea": 5,
             "align/limit_stars": 300,
             "align/timeout_per_job_sec": 300,
+            # SASPRO_SETTINGS_WORKERS_PROFILE_V1
+            # 0 = Auto. Here so the choice travels with a profile like every
+            # other alignment pref rather than being left behind on Export.
+            "align/workers": 0,
 
             # Performance
             "use_hardware_accel": True,
@@ -9620,6 +9567,41 @@ class StackingSuiteDialog(QDialog):
         self.chunkWidthSpinBox.setVisible(False)
         hw_row = QHBoxLayout()
         hw_row.addWidget(self.chunkHeightSpinBox)
+        # SASPRO_SETTINGS_TUNE_BUTTON_V1
+        # "Optimize…": measure this machine instead of guessing. Sets the star
+        # detector and the registration worker count, and the rows-per-pass
+        # value in the spin box beside it. The two are measured separately
+        # because one does not imply the other: worker count is about how many
+        # PROCESSES may hold a CUDA context at once, rows per pass is about how
+        # much work goes into ONE rejection call in this process.
+        try:
+            from setiastro.saspro.stacking_tune_dialog import (
+                install_optimize_button as _install_tune_btn,
+            )
+
+            def _tune_frame_shape():
+                """Best guess at the user's sensor size, for the tuner's default."""
+                for _attr in ("ref_small_full", "reference_image"):
+                    _a = getattr(self, _attr, None)
+                    if _a is not None and getattr(_a, "shape", None):
+                        return int(_a.shape[0]), int(_a.shape[1])
+                try:
+                    import numpy as _np
+                    for _lst in (getattr(self, "light_files", {}) or {}).values():
+                        for _fp in (_lst or [])[:1]:
+                            from astropy.io import fits as _fits
+                            with _fits.open(_fp, memmap=True) as _hd:
+                                _d = _hd[0].data
+                                if _d is not None and _np.ndim(_d) >= 2:
+                                    return int(_d.shape[-2]), int(_d.shape[-1])
+                except Exception:
+                    pass
+                return 3000, 4000
+
+            _install_tune_btn(self, hw_row, self.chunkHeightSpinBox,
+                              frame_shape_provider=_tune_frame_shape)
+        except Exception:
+            pass
         w_hw = QWidget(); w_hw.setLayout(hw_row)
         fl_general.addRow(self.tr("Rows per pass:"), w_hw)
 
@@ -9958,6 +9940,26 @@ class StackingSuiteDialog(QDialog):
             "  result. Keep for ring-sensitive diagnostics only."
         ))
         fl_align.addRow(self.tr("Warp interpolation:"), self.align_kernel_combo)
+
+        # SASPRO_SETTINGS_ALIGN_WORKERS_V1
+        # Alignment workers — shared with the Star Registration window's
+        # Advanced panel through `stacking/align/workers`, exactly as the
+        # kernel dropdown above is shared. 0 shows as "Auto", and the hint
+        # beside it says what Auto currently resolves to, so the number on
+        # screen is always the number the solve pass will use.
+        try:
+            from setiastro.saspro.stacking_tune_dialog import (
+                make_align_workers_row as _mk_workers_row,
+            )
+            _w_row, self.align_workers_spin = _mk_workers_row(
+                self,
+                band_spinbox=getattr(self, "chunkHeightSpinBox", None),
+                frame_shape_provider=getattr(self, "_tune_frame_shape", None),
+            )
+            if _w_row is not None:
+                fl_align.addRow(self.tr("Alignment workers:"), _w_row)
+        except Exception:
+            self.align_workers_spin = None
 
         # Timeout spinbox kept for QSettings back-compat but hidden from UI
         self.align_timeout_spin = QSpinBox()
@@ -35442,7 +35444,8 @@ class StackingSuiteDialog(QDialog):
         rejection_map,       # NEW FORMAT: { aligned_path: [(x0,y0,mask_bool), ...] }
         autocrop_enabled,
         rect_override,
-        status_cb
+        status_cb,
+        _force_cpu: bool = False,
     ):
         import os
         import numpy as np
@@ -35570,6 +35573,18 @@ class StackingSuiteDialog(QDialog):
         drizzle_buffer = np.zeros((out_h, out_w) if is_mono else (out_h, out_w, c), dtype=self._dtype())
         coverage_buffer = np.zeros_like(drizzle_buffer, dtype=self._dtype())
         finalize_func = finalize_drizzle_2d if is_mono else finalize_drizzle_3d
+        gpu_drizzle = None
+        if not _force_cpu and self._hw_accel_enabled() and _torch_ok():
+            try:
+                from setiastro.saspro.torch_drizzle import DrizzleAccumulator
+                gpu_drizzle = DrizzleAccumulator.create(
+                    drizzle_buffer.shape, self._dtype(), scale_factor,
+                    drop_shrink, _kcode, float(gauss_sigma), log)
+                if gpu_drizzle is not None:
+                    log("Drizzle: accumulating frames and channel coverage on GPU.")
+            except Exception as exc:
+                log(f"GPU drizzle unavailable: {exc}; using CPU.")
+
 
         # ---- helpers for rejection masks ----
         dilate_px = int(self.settings.value("stacking/reject_dilate_px", 0, type=int))
@@ -35727,143 +35742,170 @@ class StackingSuiteDialog(QDialog):
             workers=min(4, (os.cpu_count() or 4)),
         )
 
-        for i, ent in enumerate(entries):
-            orig_file = os.path.normpath(ent.get("orig", ""))
-            aligned_file = os.path.normpath(ent.get("aligned", ""))  # this is what rejections/weights reference
-            chan = ent.get("chan", None)
+        try:
+            for i, ent in enumerate(entries):
+                orig_file = os.path.normpath(ent.get("orig", ""))
+                aligned_file = os.path.normpath(ent.get("aligned", ""))  # this is what rejections/weights reference
+                chan = ent.get("chan", None)
 
-            if not orig_file or not aligned_file:
-                log(f"⚠️ Bad drizzle entry (missing orig/aligned) – skipping: {ent}")
-                continue
-
-            # Weight: prefer aligned key (that matches your rejection/weights mapping)
-            weight = frame_weights.get(aligned_file, frame_weights.get(orig_file, 1.0))
-
-            kind, X = xforms.get(orig_file, (None, None))
-
-            # Pre-registered safety: if we have a real transform from a header
-            # stamp but the ORIGINAL pixels are gone (user kept only aligned
-            # frames), we cannot deposit-from-original. Fall back to identity on
-            # the aligned pixels rather than dropping the frame. Only do this in
-            # pre-registered mode — in a live run a missing original is a real
-            # error worth surfacing.
-            if (_pre_registered and kind in ("affine", "similarity", "homography")
-                    and X is not None):
-                if not os.path.exists(orig_file):
-                    log(f"ℹ️ Original missing for {os.path.basename(orig_file)}; "
-                        f"depositing aligned pixels (identity) instead of true drizzle.")
-                    kind, X = None, None
-
-            log(f"🧭 Drizzle uses {kind or '-'} for {os.path.basename(orig_file)} (chan={chan or 'all'})")
-            if kind is None and not _pre_registered:
-                log(f"⚠️ No usable transform for {os.path.basename(orig_file)} – skipping")
-                continue
-
-            # choose pixel source + mapping
-            pixels_are_registered = False
-            img_data = None
-
-            if kind is None and _pre_registered:
-                # Pre-registered / "Skip Registration and Integrate": the aligned
-                # (or split) file is already on the reference grid. Deposit it
-                # directly with an identity canvas at the requested drizzle scale.
-                pixel_path = aligned_file or orig_file
-                if not pixel_path:
-                    log(f"⚠️ Pre-registered frame has no pixel source – skipping {os.path.basename(orig_file)}")
+                if not orig_file or not aligned_file:
+                    log(f"⚠️ Bad drizzle entry (missing orig/aligned) – skipping: {ent}")
                     continue
-                H_canvas = np.eye(3, dtype=np.float32)
-                pixels_are_registered = True
 
-            elif isinstance(kind, str) and (kind.startswith("poly") or kind in ("tps", "thin_plate_spline")):
-                # Already warped to reference during registration
-                pixel_path = aligned_file
-                if not pixel_path:
-                    log(f"⚠️ {kind} frame has no aligned counterpart – skipping {os.path.basename(orig_file)}")
+                # Weight: prefer aligned key (that matches your rejection/weights mapping)
+                weight = frame_weights.get(aligned_file, frame_weights.get(orig_file, 1.0))
+
+                kind, X = xforms.get(orig_file, (None, None))
+
+                # Pre-registered safety: if we have a real transform from a header
+                # stamp but the ORIGINAL pixels are gone (user kept only aligned
+                # frames), we cannot deposit-from-original. Fall back to identity on
+                # the aligned pixels rather than dropping the frame. Only do this in
+                # pre-registered mode — in a live run a missing original is a real
+                # error worth surfacing.
+                if (_pre_registered and kind in ("affine", "similarity", "homography")
+                        and X is not None):
+                    if not os.path.exists(orig_file):
+                        log(f"ℹ️ Original missing for {os.path.basename(orig_file)}; "
+                            f"depositing aligned pixels (identity) instead of true drizzle.")
+                        kind, X = None, None
+
+                log(f"🧭 Drizzle uses {kind or '-'} for {os.path.basename(orig_file)} (chan={chan or 'all'})")
+                if kind is None and not _pre_registered:
+                    log(f"⚠️ No usable transform for {os.path.basename(orig_file)} – skipping")
                     continue
-                H_canvas = np.eye(3, dtype=np.float32)
-                pixels_are_registered = True
 
-            elif kind in ("affine", "similarity") and X is not None:
-                # Use ORIGINAL pixels + affine subpixel mapping. 'similarity' is
-                # a constrained 2x3 affine, so it deposits identically.
-                pixel_path = _cfa_pixel_source(orig_file)
-                H_canvas = np.eye(3, dtype=np.float32)
-                H_canvas[:2] = np.asarray(X, np.float32).reshape(2, 3)
-
-            elif kind == "homography" and X is not None:
-                # Use ORIGINAL pixels + full 3x3 projective mapping in the
-                # deposit — NO interpolating pre-warp (that would double-sample
-                # and, for CFA drizzle, destroy the sparse Bayer grid).
-                pixel_path = _cfa_pixel_source(orig_file)
-                H_canvas = np.asarray(X, np.float32).reshape(3, 3)
+                # choose pixel source + mapping
                 pixels_are_registered = False
+                img_data = None
 
-            else:
-                log(f"⚠️ Unsupported transform '{kind}' – skipping {os.path.basename(orig_file)}")
-                continue
+                if kind is None and _pre_registered:
+                    # Pre-registered / "Skip Registration and Integrate": the aligned
+                    # (or split) file is already on the reference grid. Deposit it
+                    # directly with an identity canvas at the requested drizzle scale.
+                    pixel_path = aligned_file or orig_file
+                    if not pixel_path:
+                        log(f"⚠️ Pre-registered frame has no pixel source – skipping {os.path.basename(orig_file)}")
+                        continue
+                    H_canvas = np.eye(3, dtype=np.float32)
+                    pixels_are_registered = True
 
-            # read pixels if not produced above
-            if img_data is None:
-                if os.path.normpath(pixel_path) != os.path.normpath(orig_file):
-                    log(f"   ↳ depositing pixels from {os.path.basename(pixel_path)}")
-                img_data = _prefetch.get(pixel_path)      # was: load_image(pixel_path)[0-ish]
-                if img_data is None:
-                    log(f"⚠️ Failed to read {os.path.basename(pixel_path)} – skipping")
+                elif isinstance(kind, str) and (kind.startswith("poly") or kind in ("tps", "thin_plate_spline")):
+                    # Already warped to reference during registration
+                    pixel_path = aligned_file
+                    if not pixel_path:
+                        log(f"⚠️ {kind} frame has no aligned counterpart – skipping {os.path.basename(orig_file)}")
+                        continue
+                    H_canvas = np.eye(3, dtype=np.float32)
+                    pixels_are_registered = True
+
+                elif kind in ("affine", "similarity") and X is not None:
+                    # Use ORIGINAL pixels + affine subpixel mapping. 'similarity' is
+                    # a constrained 2x3 affine, so it deposits identically.
+                    pixel_path = _cfa_pixel_source(orig_file)
+                    H_canvas = np.eye(3, dtype=np.float32)
+                    H_canvas[:2] = np.asarray(X, np.float32).reshape(2, 3)
+
+                elif kind == "homography" and X is not None:
+                    # Use ORIGINAL pixels + full 3x3 projective mapping in the
+                    # deposit — NO interpolating pre-warp (that would double-sample
+                    # and, for CFA drizzle, destroy the sparse Bayer grid).
+                    pixel_path = _cfa_pixel_source(orig_file)
+                    H_canvas = np.asarray(X, np.float32).reshape(3, 3)
+                    pixels_are_registered = False
+
+                else:
+                    log(f"⚠️ Unsupported transform '{kind}' – skipping {os.path.basename(orig_file)}")
                     continue
-            # If this is a split dual-band entry, extract channel from the pixel source
-            if chan in ("R", "G", "B"):
-                if img_data.ndim == 3 and img_data.shape[2] >= 3:
-                    ch_idx = {"R": 0, "G": 1, "B": 2}[chan]
-                    img_data = img_data[..., ch_idx]  # mono plane
-                # if already mono, leave it alone
 
-            # Debug bbox once
-            if i == 0:
-                x0, y0 = 0, 0
-                x1, y1 = ref_W - 1, ref_H - 1
-                p0 = H_canvas @ np.array([x0, y0, 1], np.float32); p0 /= max(p0[2], 1e-8)
-                p1 = H_canvas @ np.array([x1, y1, 1], np.float32); p1 /= max(p1[2], 1e-8)
-                log(
-                    f"   bbox(ref)→reg: ({p0[0]:.1f},{p0[1]:.1f}) to ({p1[0]:.1f},{p1[1]:.1f}); "
-                    f"canvas {int(ref_W * scale_factor)}×{int(ref_H * scale_factor)} @ {scale_factor}×"
-                )
+                # read pixels if not produced above
+                if img_data is None:
+                    if os.path.normpath(pixel_path) != os.path.normpath(orig_file):
+                        log(f"   ↳ depositing pixels from {os.path.basename(pixel_path)}")
+                    img_data = _prefetch.get(pixel_path)      # was: load_image(pixel_path)[0-ish]
+                    if img_data is None:
+                        log(f"⚠️ Failed to read {os.path.basename(pixel_path)} – skipping")
+                        continue
+                # If this is a split dual-band entry, extract channel from the pixel source
+                if chan in ("R", "G", "B"):
+                    if img_data.ndim == 3 and img_data.shape[2] >= 3:
+                        ch_idx = {"R": 0, "G": 1, "B": 2}[chan]
+                        img_data = img_data[..., ch_idx]  # mono plane
+                    # if already mono, leave it alone
 
-            # ---- apply per-file rejections (FAST: tile masks -> full mask -> optional warp) ----
-            rej_mask_ref = _build_rej_mask_ref(aligned_file)
-            if rej_mask_ref is not None:
-                A23_for_mask = H_canvas[:2, :]  # raw->ref affine (or identity)
-                img_data = _apply_rejections_to_img(
-                    img_data=img_data,
-                    rej_mask_ref=rej_mask_ref,
-                    pixels_are_registered=pixels_are_registered,
-                    A23=A23_for_mask
-                )
+                # Debug bbox once
+                if i == 0:
+                    x0, y0 = 0, 0
+                    x1, y1 = ref_W - 1, ref_H - 1
+                    p0 = H_canvas @ np.array([x0, y0, 1], np.float32); p0 /= max(p0[2], 1e-8)
+                    p1 = H_canvas @ np.array([x1, y1, 1], np.float32); p1 /= max(p1[2], 1e-8)
+                    log(
+                        f"   bbox(ref)→reg: ({p0[0]:.1f},{p0[1]:.1f}) to ({p1[0]:.1f},{p1[1]:.1f}); "
+                        f"canvas {int(ref_W * scale_factor)}×{int(ref_H * scale_factor)} @ {scale_factor}×"
+                    )
 
-            # ---- deposit ----
-            A23 = H_canvas[:2, :]
+                # ---- apply per-file rejections (FAST: tile masks -> full mask -> optional warp) ----
+                rej_mask_ref = _build_rej_mask_ref(aligned_file)
+                if rej_mask_ref is not None:
+                    A23_for_mask = H_canvas[:2, :]  # raw->ref affine (or identity)
+                    img_data = _apply_rejections_to_img(
+                        img_data=img_data,
+                        rej_mask_ref=rej_mask_ref,
+                        pixels_are_registered=pixels_are_registered,
+                        A23=A23_for_mask
+                    )
 
-            if deposit_func is drizzle_deposit_numba_naive:
-                drizzle_buffer, coverage_buffer = deposit_func(
-                    img_data, A23, drizzle_buffer, coverage_buffer,
-                    scale_factor, weight
-                )
+                # ---- deposit ----
+                A23 = H_canvas[:2, :]
 
-            elif deposit_func is drizzle_deposit_color_naive:
-                drizzle_buffer, coverage_buffer = deposit_func(
-                    img_data, A23, drizzle_buffer, coverage_buffer,
-                    scale_factor, drop_shrink, weight
-                )
+                if gpu_drizzle is not None:
+                    gpu_drizzle.add(img_data, H_canvas, weight)
+                elif deposit_func is drizzle_deposit_numba_naive:
+                    drizzle_buffer, coverage_buffer = deposit_func(
+                        img_data, A23, drizzle_buffer, coverage_buffer,
+                        scale_factor, weight
+                    )
 
+                elif deposit_func is drizzle_deposit_color_naive:
+                    drizzle_buffer, coverage_buffer = deposit_func(
+                        img_data, A23, drizzle_buffer, coverage_buffer,
+                        scale_factor, drop_shrink, weight
+                    )
+
+                else:
+                    # kernel mono OR kernel color — projective kernels take a 3x3
+                    drizzle_buffer, coverage_buffer = deposit_func(
+                        img_data, H_canvas, drizzle_buffer, coverage_buffer,
+                        scale_factor, drop_shrink, weight, _kcode, float(gauss_sigma)
+                    )
+
+            # ---- finalize ----
+            if gpu_drizzle is not None:
+                final_drizzle = gpu_drizzle.finish()
             else:
-                # kernel mono OR kernel color — projective kernels take a 3x3
-                drizzle_buffer, coverage_buffer = deposit_func(
-                    img_data, H_canvas, drizzle_buffer, coverage_buffer,
-                    scale_factor, drop_shrink, weight, _kcode, float(gauss_sigma)
-                )
+                final_drizzle = np.zeros_like(drizzle_buffer, dtype=np.float32)
+                final_drizzle = finalize_func(drizzle_buffer, coverage_buffer, final_drizzle)
 
-        # ---- finalize ----
-        final_drizzle = np.zeros_like(drizzle_buffer, dtype=np.float32)
-        final_drizzle = finalize_func(drizzle_buffer, coverage_buffer, final_drizzle)
+        except Exception as exc:
+            if gpu_drizzle is None:
+                raise
+            log(f"GPU drizzle failed: {exc}; restarting the complete group on CPU.")
+            gpu_drizzle.close()
+            gpu_drizzle = None
+            _prefetch.close()
+            drizzle_buffer = coverage_buffer = None
+            img_data = None
+            _free_torch_memory()
+            return self.drizzle_stack_one_group(
+                group_key=group_key, file_list=file_list, entries=entries,
+                transforms_dict=transforms_dict, frame_weights=frame_weights,
+                scale_factor=scale_factor, drop_shrink=drop_shrink,
+                rejection_map=rejection_map, autocrop_enabled=autocrop_enabled,
+                rect_override=rect_override, status_cb=status_cb, _force_cpu=True)
+        finally:
+            _prefetch.close()
+            if gpu_drizzle is not None:
+                gpu_drizzle.close()
 
         # ---- save (single-HDU; no rejection layers here) ----
         Hd, Wd = final_drizzle.shape[:2] if final_drizzle.ndim >= 2 else (0, 0)
@@ -36300,14 +36342,12 @@ class StackingSuiteDialog(QDialog):
             th = y1 - y0
             tw = x1 - x0
             ts = buf[:N, :th, :tw, :channels]
-            ms = maskbuf[:N, :th, :tw]
-            ms.fill(False)
+            ms = maskbuf[:N, :th, :tw] if maskbuf is not None else None
+            if ms is not None:
+                ms.fill(False)
 
             for i, src in enumerate(sources):
-                sub = src.read_tile(y0, y1, x0, x1)
-                if sub.ndim == 2:
-                    sub = sub[:, :, None].repeat(channels, axis=2) if channels == 3 else sub[:, :, None]
-                ts[i, :, :, :] = sub
+                src.read_tile_into(ts[i], y0, y1, x0, x1, channels)
                 mfull = satmask_full_list[i]
                 if mfull is not None:
                     ms[i, :, :] = mfull[y0:y1, x0:x1]
@@ -36363,7 +36403,8 @@ class StackingSuiteDialog(QDialog):
 
         def _cpu_reduce_tile(ts, forced_reject_2d, th, tw):
             ts = np.asarray(ts, dtype=np.float32)
-            forced_reject = np.asarray(forced_reject_2d, dtype=bool)[..., None]
+            forced_reject = (np.bool_(False) if forced_reject_2d is None else
+                             np.asarray(forced_reject_2d, dtype=bool)[..., None])
             valid = np.isfinite(ts) & (ts != 0.0) & (~forced_reject)
             ts_masked = np.where(valid, ts, np.nan)
             # NaN reads as valid in the != 0.0 numba kernels (NaN != 0.0 is True)
@@ -36387,7 +36428,9 @@ class StackingSuiteDialog(QDialog):
                 w_eff = np.where(valid, w, 0.0)
                 num = np.sum(np.where(valid, ts, 0.0) * w_eff, axis=0)
                 den = np.sum(w_eff, axis=0)
-                fallback = np.nanmedian(ts_masked, axis=0)
+                fallback = (np.full_like(den, np.nan)
+                            if np.all(np.isfinite(weights_array) & (weights_array > 0))
+                            else np.nanmedian(ts_masked, axis=0))
                 return np.where(den > 0, num / np.maximum(den, 1e-20), fallback).astype(np.float32), base_rej
             elif algo == "Max Value":
                 x = np.where(valid, ts, -np.inf)
@@ -36411,7 +36454,8 @@ class StackingSuiteDialog(QDialog):
             return np.asarray(tile_result, dtype=np.float32), tile_rej_map | base_rej
 
         _buf_pool  = [_mk_buf()      for _ in range(PREFETCH_DEPTH + 1)]
-        _mask_pool = [_mk_mask_buf() for _ in range(PREFETCH_DEPTH + 1)]
+        _mask_pool = ([_mk_mask_buf() for _ in range(PREFETCH_DEPTH + 1)]
+                      if satmask_present else [None] * (PREFETCH_DEPTH + 1))
         pending      = deque()
         next_read_idx = 0
         buf_in_use    = 0
@@ -36435,7 +36479,7 @@ class StackingSuiteDialog(QDialog):
             f"chunk {chunk_h}×{chunk_w}, prefetch={PREFETCH_DEPTH})…")
 
         def _abort_cleanup():
-            try: tp.shutdown(wait=False)
+            try: tp.shutdown(wait=True, cancel_futures=True)
             except Exception: pass
             for s in sources:
                 try: s.close()
@@ -36445,6 +36489,15 @@ class StackingSuiteDialog(QDialog):
                 try: cleanup_memmap(None, integrated_memmap_path)
                 except Exception: pass
 
+        gpu_session = None
+        staged_next = None
+        read_wait_seconds = 0.0
+        if use_gpu:
+            try:
+                gpu_session = TileSession.create(weights_array,
+                    (N, chunk_h, chunk_w, channels), log)
+            except Exception as e:
+                log(f"GPU staging unavailable: {e}; retaining the standard GPU path.")
         reduce_maps = (not collect_per_file) and (not DEBUG_INTEGRATION_ONLY)
         _ctx_instance = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
         tile_idx = 0
@@ -36458,7 +36511,9 @@ class StackingSuiteDialog(QDialog):
                     t0 = time.perf_counter()
 
                     fut, bidx, _ = pending.popleft()
+                    wait_start = time.perf_counter()
                     th, tw = fut.result()
+                    read_wait_seconds += time.perf_counter() - wait_start
                     ts               = _buf_pool[bidx][:N, :th, :tw, :channels]
                     if NAN_PROBE:
                         try:
@@ -36469,7 +36524,8 @@ class StackingSuiteDialog(QDialog):
                             self._ip_tot  = getattr(self, "_ip_tot", 0)  + int(_tsv.size)
                         except Exception:
                             pass
-                    forced_mask_tile = _mask_pool[bidx][:N, :th, :tw]
+                    maskbuf = _mask_pool[bidx]
+                    forced_mask_tile = maskbuf[:N, :th, :tw] if maskbuf is not None else None
 
                     _submit_next()
 
@@ -36477,7 +36533,23 @@ class StackingSuiteDialog(QDialog):
                         tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
                     elif use_gpu:
                         try:
-                            tile_result, tile_rej_map = _torch_reduce_tile(
+                            prepared = staged_next
+                            staged_next = None
+                            if gpu_session is not None:
+                                if prepared is None:
+                                    prepared = gpu_session.prepare(ts, (tile_idx - 1) % 2)
+                                # Stage only a completed disk read: waiting for a
+                                # future band here would stall ready GPU work.
+                                if gpu_session.pipelined and pending and pending[0][0].done():
+                                    next_fut, next_bidx, _ = pending[0]
+                                    nh, nw = next_fut.result()
+                                    next_ts = _buf_pool[next_bidx][:N, :nh, :nw, :channels]
+                                    staged_next = gpu_session.prepare(next_ts, tile_idx % 2)
+                            reducer = _torch_reduce_tile
+                            if gpu_session is not None:
+                                reducer = lambda arr, weights, **kw: gpu_session.reduce(
+                                    _torch_reduce_tile, arr, weights, prepared, **kw)
+                            tile_result, tile_rej_map = reducer(
                                 ts, weights_array,
                                 algo_name=algo,
                                 kappa=float(self.kappa),
@@ -36493,6 +36565,7 @@ class StackingSuiteDialog(QDialog):
                                 comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
                                 forced_reject_mask_np=forced_mask_tile,
                                 reduce_rej_maps=reduce_maps,
+                                collapse_rej_channels=True,
                             )
                             if hasattr(tile_result, "detach"):
                                 tile_result = tile_result.detach().cpu().numpy()
@@ -36504,6 +36577,10 @@ class StackingSuiteDialog(QDialog):
                             log(f"⚠️ GPU rejection failed on tile {tile_idx}/{total_tiles} "
                                 f"shape={ts.shape}: {e} – falling back to CPU for this and remaining tiles.")
                             use_gpu = False
+                            if gpu_session is not None:
+                                gpu_session.close()
+                                gpu_session = None
+                            staged_next = None
                             tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
                     else:
                         tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
@@ -36535,6 +36612,10 @@ class StackingSuiteDialog(QDialog):
                     mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
                     log(f"\r  🔧 Tile {tile_idx}/{total_tiles} [{group_key}] — {mpx_s:.1f} MPx/s")
         except MemoryError as e:
+            if gpu_session is not None:
+                gpu_session.close()
+                gpu_session = None
+            staged_next = prepared = None
             # Host RAM ran out mid-integration. Release what this pass holds and
             # re-run the group with the seek-based reader, like the EMFILE
             # fallback above. Wait for the prefetch reads first: they read from
@@ -36568,6 +36649,27 @@ class StackingSuiteDialog(QDialog):
                 algo_override=algo_override,
                 collect_per_file_rejections=collect_per_file_rejections,
             )
+
+        finally:
+            tp.shutdown(wait=True, cancel_futures=True)
+            if gpu_session is not None:
+                gpu_session.close()
+            if sys.exc_info()[0] is not None:
+                for source in sources:
+                    try: source.close()
+                    except Exception: pass
+                sources.clear()
+                if integrated_memmap_path is not None:
+                    cleanup_memmap(None, integrated_memmap_path)
+
+        log(f"Integration timing: read wait={read_wait_seconds:.3f}s" +
+            (f", upload staging={gpu_session.times['upload']:.3f}s, "
+             f"reduction={'GPU' if gpu_session.dev.type == 'cuda' else 'device + download'} "
+             f"{gpu_session.times['reduce']:.3f}s, "
+             f"download/wait={gpu_session.times['download']:.3f}s"
+             if gpu_session is not None else ""))
+        staged_next = prepared = None
+        gpu_session = None
 
         if use_gpu:
             try:
@@ -36741,7 +36843,8 @@ class StackingSuiteDialog(QDialog):
 
         # ── Pre-allocate tile stack — reused every tile ────────────────────────
         buf_stack = np.empty((N, chunk_h, chunk_w, channels), dtype=np.float32)
-        mask_buf  = np.zeros((N, chunk_h, chunk_w), dtype=np.bool_)
+        mask_buf = (np.zeros((N, chunk_h, chunk_w), dtype=np.bool_)
+                    if any(m is not None for m in satmask_full_list) else None)
 
         # ── I/O workers — parallel seek-reads across files per tile ───────────
         _io_workers = min(max(1, (os.cpu_count() or 4)), N, 16)
@@ -36758,7 +36861,7 @@ class StackingSuiteDialog(QDialog):
                 mfull = satmask_full_list[i]
                 if mfull is not None:
                     mask_buf[i, :th, :tw] = mfull[y0:y1, x0:x1]
-                else:
+                elif mask_buf is not None:
                     mask_buf[i, :th, :tw] = False
             finally:
                 try: fh.close()
@@ -36767,11 +36870,10 @@ class StackingSuiteDialog(QDialog):
         def _read_tile_parallel(y0, y1, x0, x1):
             th = y1 - y0
             tw = x1 - x0
-            with _TPE(max_workers=_io_workers) as pool:
-                list(pool.map(_read_one_file, [
-                    (i, sources[i], y0, y1, x0, x1, th, tw)
-                    for i in range(N)
-                ]))
+            list(io_pool.map(_read_one_file, [
+                (i, sources[i], y0, y1, x0, x1, th, tw)
+                for i in range(N)
+            ]))
             return th, tw
 
         # ── Weight resolution ──────────────────────────────────────────────────
@@ -36843,7 +36945,8 @@ class StackingSuiteDialog(QDialog):
         # ── CPU tile reducer ───────────────────────────────────────────────────
         def _cpu_reduce_tile(ts, forced_reject_2d, th, tw):
             ts = np.asarray(ts, dtype=np.float32)
-            forced_reject = np.asarray(forced_reject_2d, dtype=bool)[..., None]
+            forced_reject = (np.bool_(False) if forced_reject_2d is None else
+                             np.asarray(forced_reject_2d, dtype=bool)[..., None])
             valid = np.isfinite(ts) & (ts != 0.0) & (~forced_reject)
             ts_masked = np.where(valid, ts, np.nan)
             # NaN reads as valid in the != 0.0 numba kernels (NaN != 0.0 is True)
@@ -36867,7 +36970,9 @@ class StackingSuiteDialog(QDialog):
                 w_eff = np.where(valid, w, 0.0)
                 num = np.sum(np.where(valid, ts, 0.0) * w_eff, axis=0)
                 den = np.sum(w_eff, axis=0)
-                fallback = np.nanmedian(ts_masked, axis=0)
+                fallback = (np.full_like(den, np.nan)
+                            if np.all(np.isfinite(weights_array) & (weights_array > 0))
+                            else np.nanmedian(ts_masked, axis=0))
                 return np.where(den > 0, num / np.maximum(den, 1e-20), fallback).astype(np.float32), base_rej
             elif algo == "Max Value":
                 x = np.where(valid, ts, -np.inf)
@@ -36915,89 +37020,116 @@ class StackingSuiteDialog(QDialog):
                 try: cleanup_memmap(None, integrated_memmap_path)
                 except Exception: pass
 
+        io_pool = _TPE(max_workers=_io_workers)
+        gpu_session = None
+        if use_gpu:
+            try:
+                gpu_session = TileSession.create(weights_array,
+                    (N, chunk_h, chunk_w, channels), log, allow_pipeline=False)
+            except Exception as exc:
+                log(f"GPU weight cache unavailable: {exc}; using standard transfers.")
         reduce_maps = (not collect_per_file) and (not DEBUG_INTEGRATION_ONLY)
         _ctx_instance = (
             _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
         )
-        with _ctx_instance:
-            for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
-                if self._cancelled():
-                    _abort_cleanup()
-                    log(f"⏹ [LowRAM] Integration cancelled for group '{group_key}'.")
-                    raise StackCancelled()
-                t0 = time.perf_counter()
+        try:
+            with _ctx_instance:
+                for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
+                    if self._cancelled():
+                        _abort_cleanup()
+                        log(f"⏹ [LowRAM] Integration cancelled for group '{group_key}'.")
+                        raise StackCancelled()
+                    t0 = time.perf_counter()
 
-                th, tw = _read_tile_parallel(y0, y1, x0, x1)
+                    th, tw = _read_tile_parallel(y0, y1, x0, x1)
 
-                ts               = buf_stack[:N, :th, :tw, :channels]
-                forced_mask_tile = mask_buf[:N, :th, :tw]
+                    ts               = buf_stack[:N, :th, :tw, :channels]
+                    forced_mask_tile = mask_buf[:N, :th, :tw] if mask_buf is not None else None
 
-                if ts.size == 0 or th == 0 or tw == 0:
-                    continue
+                    if ts.size == 0 or th == 0 or tw == 0:
+                        continue
 
-                if use_gpu:
-                    try:
-                        tile_result, tile_rej_map = _torch_reduce_tile(
-                            ts, weights_array,
-                            algo_name=algo,
-                            kappa=float(self.kappa),
-                            iterations=int(self.iterations),
-                            sigma_low=float(self.sigma_low),
-                            sigma_high=float(self.sigma_high),
-                            trim_fraction=float(self.trim_fraction),
-                            esd_threshold=float(self.esd_threshold),
-                            esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)),
-                            biweight_constant=float(self.biweight_constant),
-                            modz_threshold=float(self.modz_threshold),
-                            comet_hclip_k=float(self.settings.value(
-                                "stacking/comet_hclip_k", 1.30, type=float)),
-                            comet_hclip_p=float(self.settings.value(
-                                "stacking/comet_hclip_p", 25.0, type=float)),
-                            forced_reject_mask_np=forced_mask_tile,
-                            reduce_rej_maps=reduce_maps,
-                        )
-                        if hasattr(tile_result, "detach"):
-                            tile_result = tile_result.detach().cpu().numpy()
-                        if hasattr(tile_rej_map, "detach"):
-                            tile_rej_map = tile_rej_map.detach().cpu().numpy()
-                    except Exception as e:
-                        log(f"⚠️ GPU failed tile {tile_idx}: {e} – falling back to CPU.")
-                        use_gpu = False
+                    if use_gpu:
+                        try:
+                            reducer = _torch_reduce_tile
+                            if gpu_session is not None:
+                                prepared = gpu_session.prepare(ts)
+                                reducer = lambda arr, weights, **kw: gpu_session.reduce(
+                                    _torch_reduce_tile, arr, weights, prepared, **kw)
+                            tile_result, tile_rej_map = reducer(
+                                ts, weights_array,
+                                algo_name=algo,
+                                kappa=float(self.kappa),
+                                iterations=int(self.iterations),
+                                sigma_low=float(self.sigma_low),
+                                sigma_high=float(self.sigma_high),
+                                trim_fraction=float(self.trim_fraction),
+                                esd_threshold=float(self.esd_threshold),
+                                esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)),
+                                biweight_constant=float(self.biweight_constant),
+                                modz_threshold=float(self.modz_threshold),
+                                comet_hclip_k=float(self.settings.value(
+                                    "stacking/comet_hclip_k", 1.30, type=float)),
+                                comet_hclip_p=float(self.settings.value(
+                                    "stacking/comet_hclip_p", 25.0, type=float)),
+                                forced_reject_mask_np=forced_mask_tile,
+                                reduce_rej_maps=reduce_maps,
+                                collapse_rej_channels=True,
+                            )
+                            if hasattr(tile_result, "detach"):
+                                tile_result = tile_result.detach().cpu().numpy()
+                            if hasattr(tile_rej_map, "detach"):
+                                tile_rej_map = tile_rej_map.detach().cpu().numpy()
+                        except Exception as e:
+                            log(f"⚠️ GPU failed tile {tile_idx}: {e} – falling back to CPU.")
+                            use_gpu = False
+                            if gpu_session is not None:
+                                gpu_session.close()
+                                gpu_session = None
+                            tile_result, tile_rej_map = _cpu_reduce_tile(
+                                ts, forced_mask_tile, th, tw
+                            )
+                    else:
                         tile_result, tile_rej_map = _cpu_reduce_tile(
                             ts, forced_mask_tile, th, tw
                         )
-                else:
-                    tile_result, tile_rej_map = _cpu_reduce_tile(
-                        ts, forced_mask_tile, th, tw
-                    )
 
-                integrated_image[y0:y1, x0:x1, :] = tile_result
+                    integrated_image[y0:y1, x0:x1, :] = tile_result
 
-                if not DEBUG_INTEGRATION_ONLY:
-                    if isinstance(tile_rej_map, tuple):
-                        # GPU already reduced to (any-rejected, reject-count);
-                        # copy the two small (th,tw) maps straight in.
-                        tr_any, tr_cnt = tile_rej_map
-                        rej_any[y0:y1, x0:x1]   |= tr_any
-                        rej_count[y0:y1, x0:x1] += tr_cnt.astype(np.uint16)
-                    else:
-                        trm = np.asarray(tile_rej_map, dtype=bool)
-                        if trm.ndim == 4:
-                            trm = np.any(trm, axis=-1)
-                        rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
-                        rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+                    if not DEBUG_INTEGRATION_ONLY:
+                        if isinstance(tile_rej_map, tuple):
+                            # GPU already reduced to (any-rejected, reject-count);
+                            # copy the two small (th,tw) maps straight in.
+                            tr_any, tr_cnt = tile_rej_map
+                            rej_any[y0:y1, x0:x1]   |= tr_any
+                            rej_count[y0:y1, x0:x1] += tr_cnt.astype(np.uint16)
+                        else:
+                            trm = np.asarray(tile_rej_map, dtype=bool)
+                            if trm.ndim == 4:
+                                trm = np.any(trm, axis=-1)
+                            rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
+                            rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
-                        if collect_per_file:
-                            for i, fpath in enumerate(file_list):
-                                m = trm[i]
-                                if np.any(m):
-                                    per_file_rejections[fpath].append((x0, y0, m.copy()))
+                            if collect_per_file:
+                                for i, fpath in enumerate(file_list):
+                                    m = trm[i]
+                                    if np.any(m):
+                                        per_file_rejections[fpath].append((x0, y0, m.copy()))
 
-                dt = time.perf_counter() - t0
-                work_px = th * tw * N * channels
-                mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
-                log(f"\r  🔧 [LowRAM] Tile {tile_idx}/{total_tiles} [{group_key}] "
-                    f"{th}×{tw} — {mpx_s:.1f} MPx/s")
+                    dt = time.perf_counter() - t0
+                    work_px = th * tw * N * channels
+                    mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
+                    log(f"\r  🔧 [LowRAM] Tile {tile_idx}/{total_tiles} [{group_key}] "
+                        f"{th}×{tw} — {mpx_s:.1f} MPx/s")
+
+        finally:
+            io_pool.shutdown(wait=True, cancel_futures=True)
+            if gpu_session is not None:
+                gpu_session.close()
+            if sys.exc_info()[0] is not None:
+                _abort_cleanup()
+        gpu_session = None
+        prepared = None
 
         # ── GPU sync ───────────────────────────────────────────────────────────
         if use_gpu:
