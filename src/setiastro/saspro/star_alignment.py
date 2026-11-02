@@ -2021,10 +2021,39 @@ class StellarAlignmentDialog(QDialog):
         if self.aligned_image is None:
             return
         a = self.aligned_image.astype(np.float32, copy=False)
-        m = np.nanmax(a) if a.size else 1.0
-        if not np.isfinite(m) or m <= 0:
-            m = 1.0
-        self.stretched_image = np.clip(a / m, 0, 1)
+
+        # Downsample 4x for the preview only — the label is 400x400 anyway,
+        # and the stretch statistics (median, robust sigma) are unchanged by
+        # a 4x area-average. Full frame, no crop: the black border from the
+        # shift is the thing you're looking at.
+        if a.shape[0] > 1600 or a.shape[1] > 1600:
+            small = cv2.resize(
+                a, (max(1, a.shape[1] // 4), max(1, a.shape[0] // 4)),
+                interpolation=cv2.INTER_AREA)
+        else:
+            small = a
+
+        try:
+            if small.ndim == 3 and small.shape[2] == 3:
+                if stretch_color_image is None:
+                    raise RuntimeError("stretch_color_image unavailable")
+                out = stretch_color_image(
+                    small, target_median=0.25, linked=True,
+                    normalize=False, apply_curves=False,
+                    blackpoint_sigma=5.0, no_black_clip=False)
+            else:
+                if stretch_mono_image is None:
+                    raise RuntimeError("stretch_mono_image unavailable")
+                out = stretch_mono_image(
+                    small.squeeze(), target_median=0.25,
+                    normalize=False, apply_curves=False,
+                    blackpoint_sigma=5.0, no_black_clip=False)
+            self.stretched_image = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+        except Exception:
+            m = float(np.nanmax(small)) if small.size else 1.0
+            if not np.isfinite(m) or m <= 0:
+                m = 1.0
+            self.stretched_image = np.clip(small / m, 0.0, 1.0)
 
     def update_preview(self, label, image):
         if image is None:
@@ -3738,8 +3767,6 @@ def _solve_delta_job(args):
         except Exception:
             pass
 
-        _prof = _Prof()
-        _prof.start()
         # 1) read → gray float32 (full)
         with fits.open(orig_path, memmap=True) as hdul:
             arr = hdul[0].data
@@ -3755,7 +3782,6 @@ def _solve_delta_job(args):
         # this was hardcoded/recomputed here, ignoring the passed-in value and
         # the user-configured downsample — that override has been removed;
         # `ds` from args is used as-is below.
-        _prof.mark("read")
         ds = max(1, int(ds))
 
         # 2) downsample source to DS space
@@ -3787,7 +3813,6 @@ def _solve_delta_job(args):
         #src_for_match_ds = _suppress_hotpx_fast(src_for_match_ds)
         # memmap the DS reference (persisted once in run()); the OS page-cache
         # is shared across workers and only the crop is materialized downstream.
-        _prof.mark("prep")
         ref_for_match_ds = np.load(ref_ds_npy, mmap_mode="r")
         # Identity of the reference so the solver can cache its star list
         # across the frames this worker handles. See SASPRO_REFDET_CACHE_V1.
@@ -3857,8 +3882,6 @@ def _solve_delta_job(args):
         # V1 marked these phases and never wrote them, so three passes a
         # frame produced no rows at all and every published percentage was
         # finalize alone.
-        _prof.mark("solve")
-        _prof.write(None, "pass", orig_path, f"ds={ds}")
         return (orig_path, np.asarray(T_new_full, np.float64).reshape(2, 3), None)
 
     except Exception as e:
@@ -4244,133 +4267,6 @@ def _gpu_antiring(img, M, out_wh, perspective, hi_flag):
         return None
 
 
-# SASPRO_ALIGN_PROFILE_V3
-# Per-phase timing for registration. Always on: eight perf_counter calls and
-# one short CSV append per frame, which is nothing against a 3 s frame, and
-# an env var you have to remember to set is a profiler you do not use.
-#
-# Each worker writes its OWN file (_align_profile_<pid>.csv) so eight
-# processes appending to one file cannot interleave a row. The parent points
-# them at a directory and prints the summary when the run ends.
-_PROF_DIR_ENV = "SASPRO_ALIGN_PROFILE_DIR"
-
-
-class _Prof:
-    """Collect phase timings for one frame."""
-
-    __slots__ = ("t", "_t0", "on")
-
-    def __init__(self):
-        self.t = {}
-        self._t0 = None
-        self.on = True
-
-    def start(self):
-        import time
-        self._t0 = time.perf_counter()
-
-    def mark(self, phase):
-        import time
-        now = time.perf_counter()
-        if self._t0 is not None:
-            self.t[phase] = self.t.get(phase, 0.0) + (now - self._t0)
-        self._t0 = now
-
-    def write(self, out_dir, stage, path, extra=""):
-        try:
-            import csv
-            import time
-            d = os.environ.get(_PROF_DIR_ENV) or out_dir
-            if not d or not os.path.isdir(d):
-                return
-            fn = os.path.join(d, f"_align_profile_{os.getpid()}.csv")
-            keys = ["read", "norm", "refload", "dsprep", "prep", "solve",
-                    "warp", "mask", "write", "other"]
-            new = not os.path.exists(fn)
-            with open(fn, "a", newline="", encoding="utf-8") as fh:
-                w = csv.writer(fh)
-                if new:
-                    w.writerow(["stamp", "stage", "pid", "frame", "total_s"]
-                               + keys + ["note"])
-                tot = sum(self.t.values())
-                w.writerow(
-                    [f"{time.time():.3f}", stage, os.getpid(),
-                     os.path.basename(str(path)), f"{tot:.4f}"]
-                    + [f"{self.t.get(k, 0.0):.4f}" for k in keys]
-                    + [extra]
-                )
-        except Exception:
-            pass
-
-
-def _prof_phases():
-    return ["read", "norm", "refload", "dsprep", "prep", "solve",
-            "warp", "mask", "write"]
-
-
-def _prof_summary(d, reset=True):
-    """Aggregate every worker's rows into lines for the status log."""
-    import csv
-    import glob
-    out = []
-    try:
-        files = sorted(glob.glob(os.path.join(d, "_align_profile_*.csv")))
-        if not files:
-            return out
-        rows = []
-        for fn in files:
-            try:
-                with open(fn, newline="", encoding="utf-8") as fh:
-                    rows.extend(list(csv.DictReader(fh)))
-            except Exception:
-                continue
-        if not rows:
-            return out
-        phases = _prof_phases()
-        by, n, pids = {}, {}, {}
-        for r in rows:
-            st = r.get("stage") or "?"
-            d_ = by.setdefault(st, {p: 0.0 for p in phases})
-            n[st] = n.get(st, 0) + 1
-            pids.setdefault(st, set()).add(r.get("pid"))
-            for p in phases:
-                try:
-                    d_[p] += float(r.get(p) or 0.0)
-                except Exception:
-                    pass
-        out.append("⏱  Where the time went (core-seconds across all workers):")
-        grand = 0.0
-        for st in sorted(by):
-            tot = sum(by[st].values())
-            grand += tot
-            out.append(f"   {st}: {n[st]} record(s), {len(pids[st])} worker(s), "
-                       f"{tot:.1f}s total, {tot / max(1, n[st]):.2f}s each")
-            for p in phases:
-                v = by[st][p]
-                if v <= 0:
-                    continue
-                out.append(f"      {p:<8} {v:8.1f}s  {v / tot * 100:5.1f}%  "
-                           + "#" * int(round(30 * v / max(tot, 1e-9))))
-        io_s = sum(by[st][p] for st in by for p in ("read", "refload", "write"))
-        mem_s = sum(by[st]["norm"] for st in by)
-        cpu_s = grand - io_s - mem_s
-        out.append(f"   I/O {io_s:.1f}s ({io_s / max(grand, 1e-9) * 100:.0f}%)"
-                   f" | full-frame numpy {mem_s:.1f}s "
-                   f"({mem_s / max(grand, 1e-9) * 100:.0f}%)"
-                   f" | compute {cpu_s:.1f}s "
-                   f"({cpu_s / max(grand, 1e-9) * 100:.0f}%)")
-        out.append(f"   rows kept in {d}")
-        if reset:
-            # next run starts clean rather than averaging in this one
-            for fn in files:
-                try:
-                    os.replace(fn, fn + ".prev")
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    return out
-
 def _finalize_write_job(args):
     """
     Process-safe worker: read full-res, choose model, warp, save.
@@ -4429,30 +4325,11 @@ def _finalize_write_job(args):
         A = np.asarray(A2x3, np.float64).reshape(2, 3)
         return np.vstack([A, [0, 0, 1]])
 
-    _prof = _Prof()
-    _prof.start()
     try:
         # 1) load source (full-res)
         with fits.open(orig_path, memmap=True) as hdul:
             img = hdul[0].data
             hdr = hdul[0].header
-        if img is not None:
-            # memmap is lazy, so the 178 MB has not arrived yet. V1 probed
-            # img[::997, ::997] here — about 36 elements — and duly reported
-            # read = 0.0% while the real I/O was charged to whichever phase
-            # first touched every pixel.
-            #
-            # `.sum()` streams every page in and allocates a scalar. Forcing
-            # it with np.ascontiguousarray would work too and would also add
-            # a 187 MB copy to every frame for good, which is a poor trade
-            # for a number. The later passes then hit the page cache, so what
-            # lands in `read` is the disk and what lands in `norm` is memory
-            # bandwidth — which is the split worth having.
-            try:
-                float(img.sum())
-            except Exception:
-                pass
-        _prof.mark("read")
         if img is None:
             return (orig_path, "", f"⚠️ Failed to read {os.path.basename(orig_path)}", False, None)
 
@@ -4474,7 +4351,6 @@ def _finalize_write_job(args):
         src_gray_full, img = _scrub_detect_and_warp(img)
         # four full-frame passes over 187 MB: int scaling, the gray reduction,
         # two nan_to_num and this copy. Cheap individually, not collectively.
-        _prof.mark("norm")
 
         # Satellite sidecar masks retired: trail pixels are baked to 0.0 at
         # calibration and treated as no-data through integration, so there is no
@@ -4484,7 +4360,6 @@ def _finalize_write_job(args):
 
         # 2) load reference (full-res) via memmap
         ref2d = np.load(ref_npy_path, mmap_mode="r").astype(np.float32, copy=False)
-        _prof.mark("refload")
         if ref2d.shape[:2] != (Href, Wref):
             return (orig_path, "", f"⚠️ Ref shape mismatch for {os.path.basename(orig_path)}", False, None)
 
@@ -4536,7 +4411,6 @@ def _finalize_write_job(args):
                 src_ds0, A_prev_ds, (Wds, Hds),
                 flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101
             )
-            _prof.mark("dsprep")
 
             #src_pre_ds = _suppress_hotpx_fast(src_pre_ds)
             #ref_ds     = _suppress_hotpx_fast(ref_ds)
@@ -4653,7 +4527,6 @@ def _finalize_write_job(args):
             else:
                 kind, X = "affine", A_prev.copy()
 
-        _prof.mark("solve")
         # 4) warp full-res image  (anti-ring: clamp Lanczos to bilinear envelope)
         Hh, Ww = Href, Wref
         _gpu_warp_used = False          # SASPRO_GPU_WARP_V3
@@ -4774,7 +4647,6 @@ def _finalize_write_job(args):
         if not name.endswith("_n_r"):
             name += "_n_r"
 
-        _prof.mark("warp")
         out_path = os.path.join(output_directory, f"{name}.fit")
 
         # ── Drizzle self-description stamp ───────────────────────────────────
@@ -4836,9 +4708,6 @@ def _finalize_write_job(args):
         )
         if debug_lines:
             msg = "\n".join(debug_lines) + "\n" + msg
-        _prof.mark("write")
-        _prof.write(output_directory, "finalize", orig_path,
-                    f"{Ww}x{Hh} {kind}")
         return (orig_path, out_path, msg, True, drizzle_tuple)
 
     except Exception as e:
@@ -5884,11 +5753,6 @@ class StarRegistrationThread(QThread):
             # already hands them SASPRO_FINALIZE_CV2_THREADS. The refinement
             # workers have no output directory of their own, and asking the
             # user to set an environment variable before every run is how a
-            # profiler ends up never being used.
-            try:
-                os.environ["SASPRO_ALIGN_PROFILE_DIR"] = str(self.output_directory)
-            except Exception:
-                pass
             self.progress_step.emit(self._done, self._total)  # optional but helps UI reset immediately
 
             # Registration passes (compute deltas only)
@@ -5919,11 +5783,6 @@ class StarRegistrationThread(QThread):
             # Finalize: single full-res read → warp → write per frame
             self._finalize_writes()
 
-            try:
-                for _ln in _prof_summary(str(self.output_directory)):
-                    self.progress_update.emit(_ln)
-            except Exception:
-                pass
 
             # Summary based on our known corpus
             total_count = len(self.original_files)
