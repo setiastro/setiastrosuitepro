@@ -70,6 +70,7 @@ __all__ = [
     "tune_all",
     "tune_band_height",
     "tune_warp",
+    "warp_verdict",
     "finalize_layout",
 ]
 
@@ -853,6 +854,17 @@ def tune_band_height(frame_shape=(3000, 4000),
     if not ladder:
         ladder = [min(16, h)]
 
+    # Warm the reducer once, off the clock, before the first rung.
+    # `_time_band` warms per size, and that is still not enough: on a 3070 Ti
+    # the 4-row rung measured 51.4 ms against 7.8 ms for 8 rows — 6.6x slower
+    # for half the work, as the best of five reps. A one-off cost was landing
+    # inside every rep of whichever size happened to go first, which puts a
+    # fabricated outlier at the bottom of the ladder where the knee rule is
+    # looking.
+    if len(ladder) > 1:
+        _time_band(ladder[min(2, len(ladder) - 1)], w, n_frames, channels,
+                   algo, reps=1)
+
     rows_tested = []
     best_mpx = 0.0
     best_rows = 0
@@ -1139,8 +1151,43 @@ def tune(frame_shape=(3000, 4000),
 # ─────────────────────────────────────────────────────────────────────────────
 KEY_GPU_WARP = "stacking/align/gpu_warp"
 KEY_GPU_WARP_SLOTS = "stacking/align/gpu_warp_slots"
-WARP_MARGIN = 1.05      # the card must beat one CPU worker by this to be worth it
+# The threshold goes on the GAIN, not on the per-frame times. Getting that
+# wrong turned the warp on for a 1% improvement: the card was 7% faster per
+# frame, which passed a per-frame margin, but it replaces one worker of eight
+# so the pool only moved 1% — well inside run-to-run noise and not worth a
+# CUDA context and 600 MB of VRAM. What the user cares about is finalize
+# throughput, so that is what has to clear the bar.
+WARP_GAIN_MIN = 1.05
 WARP_REPS = 3
+
+
+def warp_verdict(t_gpu: float, t_cpu: float, workers: int,
+                 slots: int = 1) -> dict:
+    """Should the card take `slots` of `workers` finalize slots?
+
+    Pure arithmetic, separated out so it can be tested with exact numbers
+    instead of sleep-based timings — this is the part that was wrong.
+
+        all-CPU   W / t_cpu
+        hybrid    slots/t_gpu + (W - slots)/t_cpu
+
+    `ceiling` is the gain with every worker on the card. When that is already
+    under the threshold, no slot count can help and saying so saves the user
+    an experiment.
+    """
+    W = max(1, int(workers))
+    k = max(1, min(int(slots), W))
+    t_gpu = max(float(t_gpu), 1e-9)
+    t_cpu = max(float(t_cpu), 1e-9)
+    all_cpu = W / t_cpu
+    hybrid = k / t_gpu + (W - k) / t_cpu
+    return {
+        "all_cpu": all_cpu,
+        "hybrid": hybrid,
+        "gain": hybrid / all_cpu,
+        "ceiling": t_cpu / t_gpu,          # every worker on the card
+        "use_gpu": (hybrid / all_cpu) >= WARP_GAIN_MIN,
+    }
 
 
 def finalize_layout(cpu_count: int | None = None,
@@ -1301,14 +1348,14 @@ def tune_warp(frame_shape=(3000, 4000),
         return _save_warp(out, save, log)
 
     out["t_gpu"], out["t_cpu"] = t_gpu, t_cpu
-    all_cpu = W / t_cpu
-    hybrid = 1.0 / t_gpu + (W - 1) / t_cpu
-    out["gain"] = hybrid / max(all_cpu, 1e-9)
+    v = warp_verdict(t_gpu, t_cpu, W, slots=1)
+    out["gain"] = v["gain"]
+    out["ceiling"] = v["ceiling"]
 
     log(f"   gpu_warp          {t_gpu:7.3f} s/frame")
     log(f"   cv2, {T} thread(s) {t_cpu:7.3f} s/frame   (one finalize worker)")
-    log(f"   all-CPU pool: {all_cpu:6.3f} frames/s   "
-        f"hybrid: {hybrid:6.3f} frames/s   ({out['gain']:.2f}x)")
+    log(f"   all-CPU pool: {v['all_cpu']:6.3f} frames/s   "
+        f"hybrid: {v['hybrid']:6.3f} frames/s   ({v['gain']:.2f}x)")
 
     # How many slots the card could hold, reported but not probed: measuring it
     # means several processes warping at once, which is exactly the thing that
@@ -1327,20 +1374,33 @@ def tune_warp(frame_shape=(3000, 4000),
     except Exception:
         pass
 
-    if t_gpu * WARP_MARGIN < t_cpu:
-        out["use_gpu"] = True
+    out["use_gpu"] = v["use_gpu"]
+    pct = (v["gain"] - 1.0) * 100.0
+    if v["use_gpu"]:
         log(f"✅ GPU warp ON: the card does a frame in {t_gpu:.2f}s against "
-            f"{t_cpu:.2f}s for one CPU worker, so it adds "
-            f"{(out['gain'] - 1) * 100:.0f}% to finalize throughput.")
-    else:
-        out["use_gpu"] = False
-        if t_gpu < t_cpu:
-            log(f"✅ GPU warp OFF: the card is faster than one worker but only "
-                f"by {(t_cpu / t_gpu - 1) * 100:.0f}%, which is inside noise "
-                f"and not worth the VRAM and the CUDA start-up.")
+            f"{t_cpu:.2f}s for one CPU worker, which adds {pct:.0f}% to "
+            f"finalize throughput.")
+    elif t_gpu < t_cpu:
+        # Faster per frame and still not worth it: the card is one worker of
+        # W, so a big per-frame win can be a small pool win. Say which number
+        # the verdict is on, or this reads as a contradiction.
+        log(f"✅ GPU warp OFF: the card is {(t_cpu / t_gpu - 1) * 100:.0f}% "
+            f"faster per frame, but it replaces 1 worker of {W}, so the pool "
+            f"only gains {pct:.1f}% — inside run-to-run noise, and not worth "
+            f"a CUDA context and the VRAM.")
+        if v["ceiling"] < WARP_GAIN_MIN:
+            log(f"   Even with every worker on the card the ceiling is "
+                f"{(v['ceiling'] - 1) * 100:.0f}%, so raising "
+                f"'gpu_warp_slots' cannot reach the "
+                f"{(WARP_GAIN_MIN - 1) * 100:.0f}% bar either.")
         else:
-            log(f"✅ GPU warp OFF: one CPU worker with {T} thread(s) does a "
-                f"frame in {t_cpu:.2f}s against the card's {t_gpu:.2f}s.")
+            best = warp_verdict(t_gpu, t_cpu, W, slots=out["slots"])
+            log(f"   With {out['slots']} slot(s) it would be "
+                f"{(best['gain'] - 1) * 100:.0f}%; raise 'gpu_warp_slots' if "
+                f"you want to try that.")
+    else:
+        log(f"✅ GPU warp OFF: one CPU worker with {T} thread(s) does a frame "
+            f"in {t_cpu:.2f}s against the card's {t_gpu:.2f}s.")
     return _save_warp(out, save, log)
 
 

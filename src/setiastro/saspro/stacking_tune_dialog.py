@@ -34,8 +34,8 @@ import os
 
 from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QPlainTextEdit,
-    QPushButton, QSpinBox, QVBoxLayout,
+    QCheckBox, QComboBox, QDialog, QFormLayout, QGroupBox, QHBoxLayout,
+    QLabel, QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 __all__ = [
@@ -183,12 +183,13 @@ class StackingTuneDialog(QDialog):
                  band_spinbox: QSpinBox | None = None, ram_cap_rows=None):
         super().__init__(parent)
         self.setWindowTitle("Optimize stacking for this computer")
-        self.setMinimumSize(720, 480)
+        self.setMinimumSize(760, 620)
         self._band_spin = band_spinbox
         self._ram_cap = ram_cap_rows
         self._thread = None
         self._worker = None
         self._result = None
+        self._measured = {}          # backend -> (workers, fps), from a Run
 
         # What was used last time wins over the caller's guess. Typing a
         # 46.8 MP sensor and a 64-frame depth once should be enough; the
@@ -272,25 +273,207 @@ class StackingTuneDialog(QDialog):
 
         self.btn_run = QPushButton("Run")
         self.btn_cancel = QPushButton("Cancel")
+        self.btn_apply = QPushButton("Save && Close")
         self.btn_close = QPushButton("Close")
+        self.btn_apply.setDefault(True)
+        self.btn_apply.setToolTip(
+            "Write the settings above. A Run already saves what it measured, "
+            "so this is for keeping your own edits on top of it."
+        )
         self.btn_cancel.setEnabled(False)
         btns = QHBoxLayout()
         btns.addStretch(1)
         btns.addWidget(self.btn_run)
         btns.addWidget(self.btn_cancel)
+        btns.addWidget(self.btn_apply)
         btns.addWidget(self.btn_close)
+
+        self.results = self._build_results()
 
         root = QVBoxLayout(self)
         root.addLayout(form)
         root.addWidget(self.note)
         root.addWidget(self.log, 1)
+        root.addWidget(self.results)
         root.addLayout(btns)
 
         self.btn_run.clicked.connect(self._start)
         self.btn_cancel.clicked.connect(self._cancel)
+        self.btn_apply.clicked.connect(self._apply_and_close)
         self.btn_close.clicked.connect(self.close)
 
+        self._load_results()
         self._append(self._hw_line())
+
+
+    # ── results: what was measured, and what will actually be used ──────────
+    # Separate widgets rather than log text, because a measurement the user
+    # cannot override is a measurement they have to live with. The optimizer
+    # is right most of the time; "most" is why these exist. A card that is
+    # fine in every benchmark and unstable in a long run, a sensor the sweep
+    # was not run at, a backend that regresses in a driver update — all of
+    # them need a way out that is not editing QSettings by hand.
+    def _build_results(self):
+        box = QGroupBox("Settings — measured by Run, editable here")
+        form = QFormLayout(box)
+
+        self.cmb_detect = QComboBox()
+        self.cmb_detect.addItem("GPU (torch)", True)
+        self.cmb_detect.addItem("CPU (SEP)", False)
+        self.cmb_detect.setToolTip(
+            "Which star detector the registration solve pass uses.\n"
+            "Writes stacking/align/gpu_detect."
+        )
+        form.addRow("Star detector:", self.cmb_detect)
+
+        self.spin_workers = QSpinBox()
+        self.spin_workers.setRange(0, 64)
+        self.spin_workers.setSpecialValueText("Auto")
+        self.spin_workers.setToolTip(
+            "Processes the solve pass may use. 0 = Auto.\n"
+            "Each GPU worker carries its own CUDA context, so too many "
+            "thrash the card instead of going faster.\n"
+            "Writes stacking/align/workers."
+        )
+        self.lbl_workers = QLabel("")
+        self.lbl_workers.setEnabled(False)
+        wrow = QHBoxLayout()
+        wrow.setContentsMargins(0, 0, 0, 0)
+        wrow.addWidget(self.spin_workers)
+        wrow.addWidget(self.lbl_workers, 1)
+        ww = QWidget(); ww.setLayout(wrow)
+        form.addRow("Alignment workers:", ww)
+
+        self.spin_rows = QSpinBox()
+        self.spin_rows.setRange(1, 8192)
+        self.spin_rows.setToolTip(
+            "Full-width rows handed to one rejection call during "
+            "integration.\nWrites stacking/chunk_height."
+        )
+        form.addRow("Rows per pass:", self.spin_rows)
+
+        self.cmb_warp = QComboBox()
+        self.cmb_warp.addItem("CPU (OpenCV)", False)
+        self.cmb_warp.addItem("GPU (torch)", True)
+        self.cmb_warp.setToolTip(
+            "Where the anti-ring warp runs during finalize.\n\n"
+            "Finalize is a pool, and one GPU slot replaces one worker — so "
+            "the card has to beat a single worker, not the whole pool. On a "
+            "strong CPU it usually will not.\n"
+            "Writes stacking/align/gpu_warp."
+        )
+        form.addRow("Anti-ring warp:", self.cmb_warp)
+
+        self.spin_slots = QSpinBox()
+        self.spin_slots.setRange(1, 16)
+        self.spin_slots.setToolTip(
+            "How many finalize workers may use the card at once. Each one "
+            "holds its own CUDA context and working set; oversubscribing an "
+            "8 GB card does not error on Windows, it pages over PCIe and "
+            "hangs.\nWrites stacking/align/gpu_warp_slots."
+        )
+        self.lbl_slots = QLabel("")
+        self.lbl_slots.setEnabled(False)
+        srow = QHBoxLayout()
+        srow.setContentsMargins(0, 0, 0, 0)
+        srow.addWidget(self.spin_slots)
+        srow.addWidget(self.lbl_slots, 1)
+        sw = QWidget(); sw.setLayout(srow)
+        form.addRow("GPU warp slots:", sw)
+
+        self.cmb_warp.currentIndexChanged.connect(self._warp_changed)
+        self.cmb_detect.currentIndexChanged.connect(self._detect_changed)
+        return box
+
+    def _warp_changed(self):
+        on = bool(self.cmb_warp.currentData())
+        self.spin_slots.setEnabled(on)
+        self.lbl_slots.setText("" if on else "(warp is on the CPU)")
+
+    def _detect_changed(self):
+        """Offer the worker count measured for THIS backend, not the winner's.
+
+        6 GPU workers and 32 SEP workers were both measured on the same box.
+        Switching the detector and keeping the other's number is a worse
+        setting than either, and silently so.
+        """
+        key = "gpu" if self.cmb_detect.currentData() else "cpu"
+        got = self._measured.get(key)
+        if not got:
+            self.lbl_workers.setText("")
+            return
+        nw, fps = got
+        self.spin_workers.setValue(int(nw))
+        self.lbl_workers.setText(f"measured best for {key.upper()}: "
+                                 f"{nw} ({fps:.1f} frames/s)")
+
+    def _load_results(self):
+        """Fill the controls from QSettings — the dialog is usable without a run."""
+        try:
+            from PyQt6.QtCore import QSettings
+            from setiastro.saspro import stacking_worker_tune as T
+            s = QSettings()
+
+            def _b(key, default):
+                v = s.value(key, default)
+                if isinstance(v, bool):
+                    return v
+                if v in (None, ""):
+                    return default
+                return str(v).strip().lower() not in ("0", "false", "no", "off")
+
+            def _i(key, default):
+                v = s.value(key, default)
+                try:
+                    return int(v)
+                except Exception:
+                    return default
+
+            self.cmb_detect.setCurrentIndex(
+                0 if _b("stacking/align/gpu_detect", True) else 1)
+            self.spin_workers.setValue(_i(T.KEY_WORKERS_MANUAL, 0))
+            self.spin_rows.setValue(max(1, _i(T.BAND_KEY, 16)))
+            self.cmb_warp.setCurrentIndex(
+                1 if _b(T.KEY_GPU_WARP, False) else 0)
+            self.spin_slots.setValue(max(1, _i(T.KEY_GPU_WARP_SLOTS, 1)))
+        except Exception:
+            pass
+        self._warp_changed()
+
+    def _apply_results(self) -> bool:
+        """Write the controls to QSettings. Returns True if it stuck."""
+        try:
+            from PyQt6.QtCore import QSettings
+            from setiastro.saspro import stacking_worker_tune as T
+            s = QSettings()
+            s.setValue("stacking/align/gpu_detect",
+                       bool(self.cmb_detect.currentData()))
+            s.setValue(T.KEY_WORKERS_MANUAL, int(self.spin_workers.value()))
+            s.setValue(T.BAND_KEY, int(self.spin_rows.value()))
+            s.setValue(T.KEY_GPU_WARP, bool(self.cmb_warp.currentData()))
+            s.setValue(T.KEY_GPU_WARP_SLOTS, int(self.spin_slots.value()))
+            # the same guard tune_band_height uses, so a hand-set band height
+            # is not eaten by the one-time migration either
+            try:
+                T._mark_band_schema_current(s, None)
+            except Exception:
+                pass
+            s.sync()
+        except Exception as e:
+            self._append(f"⚠️ Could not save: {type(e).__name__}: {e}")
+            return False
+        if self._band_spin is not None:
+            try:
+                self._band_spin.setValue(int(self.spin_rows.value()))
+            except Exception:
+                pass
+        return True
+
+    def _apply_and_close(self):
+        if self._apply_results():
+            self._append("")
+            self._append("Settings saved.")
+        self.close()
 
     # ── helpers ─────────────────────────────────────────────────────────────
     def _hw_line(self):
@@ -320,6 +503,8 @@ class StackingTuneDialog(QDialog):
         self.btn_run.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self.btn_close.setEnabled(False)
+        self.btn_apply.setEnabled(False)
+        self.results.setEnabled(False)
         for wdg in (self.h_spin, self.w_spin, self.n_spin,
                     self.cb_detect, self.cb_band, self.cb_warp):
             wdg.setEnabled(False)
@@ -360,9 +545,26 @@ class StackingTuneDialog(QDialog):
         self.btn_run.setEnabled(True)
         self.btn_cancel.setEnabled(False)
         self.btn_close.setEnabled(True)
+        self.btn_apply.setEnabled(True)
+        self.results.setEnabled(True)
         for wdg in (self.h_spin, self.w_spin, self.n_spin,
                     self.cb_detect, self.cb_band, self.cb_warp):
             wdg.setEnabled(True)
+
+        # Remember what each backend managed, so switching the detector in
+        # the panel can offer that backend's own number instead of the
+        # winner's.
+        det0 = result.get("detection") or {}
+        for key in ("gpu", "cpu"):
+            good = [r for r in (det0.get(key) or [])
+                    if not r.get("aborted") and r.get("fps", 0) > 0]
+            if good:
+                best = max(good, key=lambda r: r["fps"])
+                self._measured[key] = (int(best["workers"]),
+                                       float(best["fps"]))
+        # the sweeps wrote their verdicts straight to QSettings, so the panel
+        # has to re-read rather than keep showing what was there before
+        self._load_results()
 
         if result.get("cancelled"):
             self._append("")
@@ -384,12 +586,9 @@ class StackingTuneDialog(QDialog):
                 f"Integration:  {band['rows']} rows per pass  "
                 f"({band['mpx_s']:.1f} Mpx/s)"
             )
-            # push the measured value into the settings dialog's own control so
-            # the user sees it land, and so Save writes it like any manual edit
             if self._band_spin is not None:
                 try:
                     self._band_spin.setValue(int(band["rows"]))
-                    self._append("              (applied to 'Rows per pass')")
                 except Exception:
                     pass
         warp = result.get("warp") or {}
@@ -407,7 +606,9 @@ class StackingTuneDialog(QDialog):
             self._append("No usable result; settings left unchanged.")
         else:
             self._append("")
-            self._append("Saved. Re-run this if you change GPU or sensor.")
+            self._append("Saved. Change anything above and use Save & Close "
+                         "to keep your own values instead.")
+            self._append("Re-run this if you change GPU or sensor.")
 
     @property
     def result(self):

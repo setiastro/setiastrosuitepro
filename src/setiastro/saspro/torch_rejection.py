@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import sys
 import threading
 import numpy as np
 
@@ -10,7 +11,14 @@ import numpy as np
 # pass can be reused by the satellite-removal CNN. Must be set before the first
 # CUDA allocation — also set it in the launcher env in case Torch initialises
 # CUDA from another module first.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# SASPRO_ALLOC_CONF_PLATFORM_V1
+# Linux CUDA only. The option does not exist on Windows, and setting it there
+# makes torch warn on EVERY allocation — one line per frame per worker during
+# registration, which buries the status pane. Nothing is lost by skipping it:
+# the fragmentation this avoids is a Linux problem precisely because WDDM can
+# page GPU memory to host and Linux cannot.
+if sys.platform.startswith("linux"):
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # One device-wide lock shared by every GPU stage. Calibration cosmetic
 # correction (GPU main loop) and satellite trail removal (save/consumer thread)
