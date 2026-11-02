@@ -5113,6 +5113,225 @@ def _proximity_match_pairs(tgt_gray, ref_gray, *, det_sigma=12.0, minarea=10,
         return None
     return P_t[np.array(s_t)].astype(np.float32), P_r[np.array(s_r)].astype(np.float32)
 
+# ── SASPRO_GPU_UNIFORM_DETECT_V1 ─────────────────────────────────────────────
+# The refinement pass's star detection, on the card.
+#
+# The optimizer measures gpu_star_detect at 3.4x every CPU core combined
+# (15.80 f/s on 6 workers vs 4.67 f/s on 32) and writes the worker count --
+# but the pass called _detect_stars_uniform (SEP) and then passed POINTS to
+# find_transform, where astroalign's `backends = [None]` branch detects
+# nothing. The GPU detector was wired into astroalign and unreachable from
+# the pass. These helpers close that gap.
+
+_GPU_DETECT_MOD: list = []          # import cache: [] untried, [None] no good
+_GPU_DETECT_SLOT: list = []         # [] untried, [None] no slot, [fd] holding
+_GPU_DETECT_SAID: list = [0]
+_GPU_DETECT_SAY_MAX = 2
+
+# A safety ceiling on points handed to the grid balance, NOT a star limit.
+# max_total must not be used here: the detector returns flux-sorted points, so
+# truncating at 500 would give the grid balance only the frame's brightest 500
+# and throw away the spatial spread this whole function exists to produce.
+_GPU_DETECT_MAX_CANDIDATES = 20000
+
+
+def _grid_balance_uniform(xs, ys, H, W, grid, max_per_cell, max_total):
+    """Spatially-balanced pick from flux-sorted points. (N,2) float32.
+
+    Lifted verbatim out of `_detect_stars_uniform` so the GPU path selects
+    points by exactly the same rule -- the detector should be the only thing
+    that differs between the two paths.
+    """
+    import numpy as np
+
+    gy, gx = int(grid[0]), int(grid[1])
+    cell_w = W / gx
+    cell_h = H / gy
+
+    keep_counts = np.zeros((gy, gx), dtype=np.int32)
+    pts = []
+
+    for x, y in zip(xs, ys):
+        cx = int(x / cell_w)
+        cy = int(y / cell_h)
+        if cx < 0 or cy < 0 or cx >= gx or cy >= gy:
+            continue
+        if keep_counts[cy, cx] >= max_per_cell:
+            continue
+        keep_counts[cy, cx] += 1
+        pts.append((x, y))
+        if len(pts) >= max_total:
+            break
+
+    if not pts:
+        return np.empty((0, 2), np.float32)
+    return np.asarray(pts, np.float32)
+
+
+def _gpu_detect_enabled() -> bool:
+    """The same two switches astroalign._find_sources reads, so one setting
+    governs both paths rather than them drifting apart."""
+    try:
+        from PyQt6.QtCore import QSettings as _QS
+        s = _QS()
+        for key, dflt in (("stacking/use_hardware_accel", True),
+                          ("stacking/align/gpu_detect", True)):
+            v = s.value(key, dflt)
+            if isinstance(v, bool):
+                on = v
+            else:
+                on = str(v).strip().lower() not in ("0", "false", "no", "off", "")
+            if not on:
+                return False
+        return True
+    except Exception:
+        # No Qt (headless/CLI): leave it on and let the slot gate and the
+        # detector's own availability check decide.
+        return True
+
+
+def _gpu_detect_slots() -> int:
+    """How many workers may hold the card for detection at once.
+
+    An explicit `align/gpu_detect_slots` wins; otherwise the optimizer's
+    measured worker count IS the answer to this question, since that is
+    precisely what it benchmarked. 6 if nothing has been measured.
+    """
+    try:
+        from PyQt6.QtCore import QSettings as _QS
+        s = _QS()
+        v = s.value("stacking/align/gpu_detect_slots", None)
+        if v not in (None, ""):
+            return max(0, int(v))
+        v = s.value("stacking/align/tuned_workers", None)
+        if v not in (None, ""):
+            return max(1, int(v))
+    except Exception:
+        pass
+    return 6
+
+
+def _claim_gpu_detect_slot() -> bool:
+    """Claim one of the card's detection slots for this process's lifetime.
+
+    Tried ONCE per process and the answer cached -- a worker does not
+    re-contend on every frame. The file descriptor is kept in a module global
+    and never closed, so the OS releases the lock only when the process dies;
+    that way a crashed worker cannot leak a slot.
+
+    NON-BLOCKING on purpose. A worker that loses the race runs SEP instead of
+    waiting, so 32 workers against 6 slots means 6 on the card and 26 on SEP
+    with nobody idle -- and since the card is ~3.4x faster, those 6 take more
+    frames off the queue and the pool balances itself.
+    """
+    import os as _os
+    import tempfile
+
+    if _GPU_DETECT_SLOT:
+        return _GPU_DETECT_SLOT[0] is not None
+
+    n = _gpu_detect_slots()
+    if n <= 0:
+        _GPU_DETECT_SLOT.append(None)
+        return False
+
+    d = _os.path.join(tempfile.gettempdir(), "saspro_gpu_detect_slots")
+    try:
+        _os.makedirs(d, exist_ok=True)
+    except Exception:
+        _GPU_DETECT_SLOT.append(None)
+        return False
+
+    for i in range(int(n)):
+        fd = None
+        try:
+            fd = _os.open(_os.path.join(d, f"slot{i}.lock"),
+                          _os.O_CREAT | _os.O_RDWR)
+            if _os.name == "nt":
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except Exception:
+            if fd is not None:
+                try:
+                    _os.close(fd)
+                except Exception:
+                    pass
+            continue
+        _GPU_DETECT_SLOT.append(fd)      # held until this process exits
+        return True
+
+    _GPU_DETECT_SLOT.append(None)
+    return False
+
+
+def _detect_stars_uniform_gpu(img32, det_sigma, minarea, grid, max_per_cell,
+                              max_total, min_fwhm, max_ellipticity, mask):
+    """`_detect_stars_uniform` on the card, or None to mean "use SEP".
+
+    None is always a valid answer and the caller must treat it as "fall back",
+    never as "no stars" -- that is the same contract
+    astroalign._find_sources_gpu uses.
+
+    min_fwhm and max_ellipticity go straight through because both detectors
+    compute the same two quantities: ellipticity is 1 - b/a on each side
+    (the GPU's `ecc` is built from variances, so sqrt(b2e/a2) IS b/a), and
+    FWHM is 2.3548 * sigma, identical for the round sources that survive an
+    ellipticity cap at all.
+    """
+    import numpy as np
+
+    if not _gpu_detect_enabled():
+        return None
+    if not _claim_gpu_detect_slot():
+        return None
+
+    if not _GPU_DETECT_MOD:
+        try:
+            from setiastro.saspro.gpu_star_detect import detect_stars_full
+            _GPU_DETECT_MOD.append(detect_stars_full)
+        except Exception:
+            _GPU_DETECT_MOD.append(None)
+    fn = _GPU_DETECT_MOD[0]
+    if fn is None:
+        return None
+
+    try:
+        res = fn(img32,
+                 detection_sigma=float(det_sigma),
+                 min_area=int(minarea),
+                 mask=mask,
+                 max_stars=_GPU_DETECT_MAX_CANDIDATES,
+                 min_fwhm=float(min_fwhm),
+                 max_ellipticity=float(max_ellipticity))
+    except Exception:
+        return None
+    if res is None:
+        return None
+
+    x = np.asarray(res.get("x"), np.float32).ravel()
+    y = np.asarray(res.get("y"), np.float32).ravel()
+    if x.size == 0 or x.size != y.size:
+        # The card ran and found nothing. SEP's own "never return empty if
+        # there were detections" relaxation might still find usable points,
+        # so this defers rather than returning an empty list.
+        return None
+
+    H, W = img32.shape[:2]
+    pts = _grid_balance_uniform(x, y, H, W, grid, max_per_cell, max_total)
+    if len(pts) == 0:
+        return None
+
+    _GPU_DETECT_SAID[0] += 1
+    if _GPU_DETECT_SAID[0] <= _GPU_DETECT_SAY_MAX:
+        print(f"[AA] star detection on GPU: {x.size} sources -> "
+              f"{len(pts)} control points "
+              f"({_gpu_detect_slots()} slot(s) for the card)")
+    return pts
+
+
 def _detect_stars_uniform(img32: np.ndarray,
                           det_sigma: float = 12.0,
                           minarea: int = 10,
@@ -5134,6 +5353,17 @@ def _detect_stars_uniform(img32: np.ndarray,
         _nf = ~np.isfinite(img32)
         mask = _nf if mask is None else (np.asarray(mask, bool) | _nf)
         img32 = np.nan_to_num(img32, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # SASPRO_GPU_UNIFORM_DETECT_V1 -- the GPU detector the optimizer measured.
+    # Placed after the NaN folding above so both paths see the same pixels and
+    # the same ignore mask. None means "the card is off, busy, unavailable or
+    # came up empty" -- never "no stars" -- so SEP below is always the
+    # fallback, not a second opinion.
+    _gpu_pts = _detect_stars_uniform_gpu(img32, det_sigma, minarea, grid,
+                                         max_per_cell, max_total, min_fwhm,
+                                         max_ellipticity, mask)
+    if _gpu_pts is not None:
+        return _gpu_pts
 
     bkg = sep.Background(img32, bw=64, bh=64, mask=mask)                    # <- mask
     thresh = float(det_sigma) * float(bkg.globalrms)
@@ -5176,28 +5406,9 @@ def _detect_stars_uniform(img32: np.ndarray,
     xs = objs["x"][order].astype(np.float32)
     ys = objs["y"][order].astype(np.float32)
 
-    gy, gx = int(grid[0]), int(grid[1])
-    cell_w = W / gx
-    cell_h = H / gy
-
-    keep_counts = np.zeros((gy, gx), dtype=np.int32)
-    pts = []
-
-    for x, y in zip(xs, ys):
-        cx = int(x / cell_w)
-        cy = int(y / cell_h)
-        if cx < 0 or cy < 0 or cx >= gx or cy >= gy:
-            continue
-        if keep_counts[cy, cx] >= max_per_cell:
-            continue
-        keep_counts[cy, cx] += 1
-        pts.append((x, y))
-        if len(pts) >= max_total:
-            break
-
-    if not pts:
-        return np.empty((0,2), np.float32)
-    return np.asarray(pts, np.float32)
+    # Factored into _grid_balance_uniform so the GPU path above picks points by
+    # exactly this rule. Same code, same result -- only the detector differs.
+    return _grid_balance_uniform(xs, ys, H, W, grid, max_per_cell, max_total)
 
 class StarRegistrationThread(QThread):
     progress_update = pyqtSignal(str)
