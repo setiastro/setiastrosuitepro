@@ -639,6 +639,31 @@ def _similarity_ransac(P, Q, tol, iters=400, seed=0):
 
 
 
+# SASPRO_KD_WORKERS_V1
+# How many threads a scipy KD-tree query should use, by query size.
+#
+# Measured on a 36-core box (tests/delta_bench.py):
+#
+#     _rematch_full,        388 points:  workers=-1 42.19 ms,  workers=1 1.01 ms
+#     _vote_correspondences, 54k points: workers=-1 41.46 ms,  workers=1 75.19 ms
+#
+# so the answer flips with size, and `workers=-1` everywhere was costing 45%
+# of the delta solve. Thread start-up is a fixed cost per call and the
+# rematch pays it four times for a query it could answer in a millisecond.
+#
+# The crossover is somewhere between those two counts; this sits inside the
+# bracket rather than pretending to know where. _rematch_full is normally
+# called with at most a few hundred points (capped by max_control_points),
+# so the common path takes the 42x, and a caller that passes tens of
+# thousands still gets the cores.
+_KD_PARALLEL_MIN = 4096
+
+
+def _kd_workers(n: int) -> int:
+    """-1 (all cores) for a big query, 1 for a small one."""
+    return -1 if int(n) >= _KD_PARALLEL_MIN else 1
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  STAGE 4 — full-set re-match with iterative tightening
 # ══════════════════════════════════════════════════════════════════════════════
@@ -652,14 +677,14 @@ def _rematch_full(all_src, all_ref, L, t, tol0, min_keep=MIN_FINAL_MATCHES, roun
     reflect = np.linalg.det(L) < 0
     tol = float(tol0)
     pred = all_src @ L.T + t
-    dists, idxs = rtree.query(pred, k=1, workers=-1)
+    dists, idxs = rtree.query(pred, k=1, workers=_kd_workers(len(pred)))
     for _ in range(rounds):
         mask = dists < tol
         if int(mask.sum()) < min_keep:
             break
         L, t = _fit_similarity_ls(all_src[mask], all_ref[idxs[mask]], reflect)
         pred = all_src @ L.T + t
-        dists, idxs = rtree.query(pred, k=1, workers=-1)
+        dists, idxs = rtree.query(pred, k=1, workers=_kd_workers(len(pred)))
         core = dists[dists < tol]
         if len(core) == 0:
             break
