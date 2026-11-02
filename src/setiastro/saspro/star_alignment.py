@@ -3565,6 +3565,8 @@ def _solve_delta_job(args):
         except Exception:
             pass
 
+        _prof = _Prof()
+        _prof.start()
         # 1) read → gray float32 (full)
         with fits.open(orig_path, memmap=True) as hdul:
             arr = hdul[0].data
@@ -3578,6 +3580,7 @@ def _solve_delta_job(args):
         # this was hardcoded/recomputed here, ignoring the passed-in value and
         # the user-configured downsample — that override has been removed;
         # `ds` from args is used as-is below.
+        _prof.mark("read")
         ds = max(1, int(ds))
 
         # 2) downsample source to DS space
@@ -3609,6 +3612,7 @@ def _solve_delta_job(args):
         #src_for_match_ds = _suppress_hotpx_fast(src_for_match_ds)
         # memmap the DS reference (persisted once in run()); the OS page-cache
         # is shared across workers and only the crop is materialized downstream.
+        _prof.mark("prep")
         ref_for_match_ds = np.load(ref_ds_npy, mmap_mode="r")
 
         # 5) AA delta solve in DS space (with meridian-flip pre-rotate).
@@ -3897,6 +3901,152 @@ def _warp_hwc_antiring(nch: int,
         out_planes.append(out)
     return np.stack(out_planes, axis=2)
 
+# SASPRO_ALIGN_PROFILE_V1
+# Per-phase timing for registration, off unless SASPRO_ALIGN_PROFILE=1.
+# Writes one CSV row per frame to <output_dir>/_align_profile.csv so the
+# read / warp / write split can be measured instead of estimated.
+def _prof_on() -> bool:
+    return os.environ.get("SASPRO_ALIGN_PROFILE") == "1"
+
+
+class _Prof:
+    """Collect phase timings for one frame. A no-op when profiling is off."""
+
+    __slots__ = ("t", "_t0", "on")
+
+    def __init__(self):
+        self.on = _prof_on()
+        self.t = {}
+        self._t0 = None
+
+    def start(self):
+        if self.on:
+            import time
+            self._t0 = time.perf_counter()
+
+    def mark(self, phase):
+        if not self.on:
+            return
+        import time
+        now = time.perf_counter()
+        if self._t0 is not None:
+            self.t[phase] = self.t.get(phase, 0.0) + (now - self._t0)
+        self._t0 = now
+
+    def write(self, out_dir, stage, path, extra=""):
+        if not self.on or not out_dir:
+            return
+        try:
+            import csv
+            import time
+            fn = os.path.join(out_dir, "_align_profile.csv")
+            keys = ["read", "prep", "solve", "warp", "mask", "write", "other"]
+            new = not os.path.exists(fn)
+            with open(fn, "a", newline="", encoding="utf-8") as fh:
+                w = csv.writer(fh)
+                if new:
+                    w.writerow(["stamp", "stage", "pid", "frame", "total_s"]
+                               + keys + ["note"])
+                tot = sum(self.t.values())
+                w.writerow(
+                    [f"{time.time():.3f}", stage, os.getpid(),
+                     os.path.basename(str(path)), f"{tot:.4f}"]
+                    + [f"{self.t.get(k, 0.0):.4f}" for k in keys]
+                    + [extra]
+                )
+        except Exception:
+            pass
+
+
+# SASPRO_GPU_WARP_V2
+# The anti-ring warp, on the GPU.
+#
+# Profiling put 58% of _finalize_write_job in this warp — 5.15 s a frame at
+# 8288x5644 — against 8% in the write. It is the biggest single cost in
+# registration and it was all CPU: cv2.ocl.setUseOpenCL(False) disables
+# OpenCV's own GPU path on purpose, so none of that 58% was accelerated.
+#
+# The takeover is deliberately narrow. `_gpu_antiring` returns None unless it
+# can reproduce the CPU path's intent exactly, and the cv2 code then runs
+# untouched — so the fallback is the current behaviour, not an approximation
+# of it. It declines when:
+#
+#   * the frame is not mono        (gpu_warp does one plane; colour stays cv2)
+#   * the hi kernel is not Lanczos4
+#         stacking/align/kernel can be set to cubic or linear, and serving a
+#         different kernel than the user picked would be worse than being slow
+#   * gpu_warp will not import, no GPU resolves, or the frame will not fit
+#
+# The poly3/poly4 branch is not wired up at all: it warps through explicit
+# cv2.remap coordinate maps rather than a matrix.
+#
+# Off with QSettings "stacking/align/gpu_warp" or SASPRO_GPU_WARP=0.
+#
+# NOTE gpu_warp computes the bilinear half exactly while cv2 carries its
+# sample coordinate in float32, so blended star cores can differ from the CPU
+# path by ~2e-3 at full frame width, with the GPU the accurate side. See
+# gpu_warp.py's module docstring for the measurements.
+_GPU_WARP_SETTINGS_KEY = "stacking/align/gpu_warp"
+_GPU_WARP_MOD: list = []        # import cache: [] untried, [None] unavailable
+
+
+def _gpu_warp_enabled() -> bool:
+    """Env var wins over QSettings, as with the warp kernel. Default OFF.
+
+    Off until measured, because whether the card beats the finalize pool is a
+    per-machine question — the same one the worker-count optimizer exists to
+    answer. A 36-core box running 8 workers x 4 cv2 threads is a high bar for
+    one GPU to clear. tests/gpu_warp_bench.py gives the number; turn it on if
+    it wins.
+    """
+    env = os.environ.get("SASPRO_GPU_WARP")
+    if env is not None and env.strip() != "":
+        return env.strip().lower() not in ("0", "false", "no", "off")
+    try:
+        from PyQt6.QtCore import QSettings as _QS
+        v = _QS().value(_GPU_WARP_SETTINGS_KEY, False)
+        if isinstance(v, str):
+            return v.strip().lower() not in ("0", "false", "no", "off")
+        return bool(v)
+    except Exception:
+        # No QApplication in a spawned worker is normal; default to on.
+        return True
+
+
+def _gpu_warp_mod():
+    """Import gpu_warp once per process; remember failure so it is not retried.
+
+    Worth keeping cheap: this runs in every finalize worker, and an import
+    that can shell out to pip has already hung a spawned pool once in this
+    project's history.
+    """
+    if not _GPU_WARP_MOD:
+        try:
+            from setiastro.saspro import gpu_warp as _gw
+            _GPU_WARP_MOD.append(_gw)
+        except Exception:
+            _GPU_WARP_MOD.append(None)
+    return _GPU_WARP_MOD[0]
+
+
+def _gpu_antiring(img, M, out_wh, perspective, hi_flag):
+    """The GPU anti-ring warp, or None meaning "use the cv2 path below"."""
+    try:
+        import cv2 as _cv2
+        if hi_flag != _cv2.INTER_LANCZOS4:
+            return None
+        if getattr(img, "ndim", 0) != 2:
+            return None
+        if not _gpu_warp_enabled():
+            return None
+        gw = _gpu_warp_mod()
+        if gw is None:
+            return None
+        return gw.warp_antiring_gpu(img, M, out_wh, perspective=perspective)
+    except Exception:
+        return None
+
+
 def _finalize_write_job(args):
     """
     Process-safe worker: read full-res, choose model, warp, save.
@@ -3955,11 +4105,18 @@ def _finalize_write_job(args):
         A = np.asarray(A2x3, np.float64).reshape(2, 3)
         return np.vstack([A, [0, 0, 1]])
 
+    _prof = _Prof()
+    _prof.start()
     try:
         # 1) load source (full-res)
         with fits.open(orig_path, memmap=True) as hdul:
             img = hdul[0].data
             hdr = hdul[0].header
+        if img is not None and _prof.on:
+            # memmap is lazy: touch the pages so the read is actually timed
+            # here rather than showing up inside the warp
+            float(np.asarray(img[::997, ::997], dtype=np.float32).sum())
+        _prof.mark("read")
         if img is None:
             return (orig_path, "", f"⚠️ Failed to read {os.path.basename(orig_path)}", False, None)
 
@@ -4154,8 +4311,10 @@ def _finalize_write_job(args):
             else:
                 kind, X = "affine", A_prev.copy()
 
+        _prof.mark("solve")
         # 4) warp full-res image  (anti-ring: clamp Lanczos to bilinear envelope)
         Hh, Ww = Href, Wref
+        _gpu_warp_used = False          # SASPRO_GPU_WARP_V2
         # Hi-sharpness kernel is resolved from SASPRO_WARP_KERNEL at import —
         # defaults to Lanczos4, user can set the env var to "cubic" to swap
         # in bicubic (Mitchell-family, much shorter negative lobes) when
@@ -4183,8 +4342,11 @@ def _finalize_write_job(args):
                 return cv2.warpAffine(ch, A, (Ww, Hh), flags=flags,
                                       borderMode=_BMODE, borderValue=_BVAL)
             if is_mono:
-                aligned = _warp_antiring(lambda: _wa(img, _LANCZOS),
-                                         lambda: _wa(img, _LINEAR))
+                aligned = _gpu_antiring(img, A, (Ww, Hh), False, _LANCZOS)
+                _gpu_warp_used = aligned is not None
+                if aligned is None:
+                    aligned = _warp_antiring(lambda: _wa(img, _LANCZOS),
+                                             lambda: _wa(img, _LINEAR))
             elif img.shape[2] <= 4:
                 _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
                 aligned = _warp_antiring(lambda: _wa(_img, _LANCZOS),
@@ -4205,8 +4367,11 @@ def _finalize_write_job(args):
                 return cv2.warpPerspective(ch, Hm, (Ww, Hh), flags=flags,
                                            borderMode=_BMODE, borderValue=_BVAL)
             if is_mono:
-                aligned = _warp_antiring(lambda: _wp(img, _LANCZOS),
-                                         lambda: _wp(img, _LINEAR))
+                aligned = _gpu_antiring(img, Hm, (Ww, Hh), True, _LANCZOS)
+                _gpu_warp_used = aligned is not None
+                if aligned is None:
+                    aligned = _warp_antiring(lambda: _wp(img, _LANCZOS),
+                                             lambda: _wp(img, _LINEAR))
             elif img.shape[2] <= 4:
                 _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
                 aligned = _warp_antiring(lambda: _wp(_img, _LANCZOS),
@@ -4267,6 +4432,7 @@ def _finalize_write_job(args):
         if not name.endswith("_n_r"):
             name += "_n_r"
 
+        _prof.mark("warp")
         out_path = os.path.join(output_directory, f"{name}.fit")
 
         # ── Drizzle self-description stamp ───────────────────────────────────
@@ -4324,10 +4490,13 @@ def _finalize_write_job(args):
 
         msg = (
             f"🌀 Distortion Correction on {base}: warp={warp_label}\n"
-            f"💾 Wrote {os.path.basename(out_path)} [{warp_label}]"
+            f"💾 Wrote {os.path.basename(out_path)} [{warp_label}{' +gpu' if _gpu_warp_used else ''}]"
         )
         if debug_lines:
             msg = "\n".join(debug_lines) + "\n" + msg
+        _prof.mark("write")
+        _prof.write(output_directory, "finalize", orig_path,
+                    f"{Ww}x{Hh} {kind}")
         return (orig_path, out_path, msg, True, drizzle_tuple)
 
     except Exception as e:

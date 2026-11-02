@@ -56,6 +56,7 @@ LAST_W = "stacking/align/tune_last_w"
 LAST_FRAMES = "stacking/align/tune_last_frames"
 LAST_DETECT = "stacking/align/tune_last_detect"
 LAST_BAND = "stacking/align/tune_last_band"
+LAST_WARP = "stacking/align/tune_last_warp"
 
 
 def _load_last_inputs() -> dict:
@@ -88,12 +89,13 @@ def _load_last_inputs() -> dict:
         out["frames"] = _int(LAST_FRAMES)
         out["detect"] = _bool(LAST_DETECT)
         out["band"] = _bool(LAST_BAND)
+        out["warp"] = _bool(LAST_WARP)
     except Exception:
         pass
     return out
 
 
-def _save_last_inputs(h, w, frames, detect, band) -> None:
+def _save_last_inputs(h, w, frames, detect, band, warp=True) -> None:
     """Remember the inputs so they are prefilled next time. Best effort."""
     try:
         from PyQt6.QtCore import QSettings
@@ -103,6 +105,7 @@ def _save_last_inputs(h, w, frames, detect, band) -> None:
         s.setValue(LAST_FRAMES, int(frames))
         s.setValue(LAST_DETECT, bool(detect))
         s.setValue(LAST_BAND, bool(band))
+        s.setValue(LAST_WARP, bool(warp))
         s.sync()
     except Exception:
         pass
@@ -115,12 +118,13 @@ class TuneWorker(QObject):
     finished = pyqtSignal(dict)
 
     def __init__(self, frame_shape, n_frames, do_detect=True, do_band=True,
-                 channels=1, ram_cap_rows=None):
+                 do_warp=True, channels=1, ram_cap_rows=None):
         super().__init__()
         self._shape = frame_shape
         self._nframes = int(n_frames)
         self._do_detect = bool(do_detect)
         self._do_band = bool(do_band)
+        self._do_warp = bool(do_warp)
         self._channels = int(channels)
         self._ram_cap = ram_cap_rows
         self._cancel = False
@@ -132,7 +136,7 @@ class TuneWorker(QObject):
         return self._cancel
 
     def run(self):
-        out = {"detection": None, "band": None, "error": None}
+        out = {"detection": None, "band": None, "warp": None, "error": None}
         try:
             from setiastro.saspro import stacking_worker_tune as T
             if self._do_detect:
@@ -150,6 +154,14 @@ class TuneWorker(QObject):
                     cancel_cb=self._cancelled,
                     save=True,
                     ram_cap_rows=self._ram_cap,
+                )
+            if self._do_warp and not self._cancel:
+                self.progress.emit("")
+                out["warp"] = T.tune_warp(
+                    self._shape,
+                    status_cb=self.progress.emit,
+                    cancel_cb=self._cancelled,
+                    save=True,
                 )
         except Exception as e:
             out["error"] = f"{type(e).__name__}: {e}"
@@ -225,10 +237,22 @@ class StackingTuneDialog(QDialog):
 
         self.cb_detect = QCheckBox("Star detection (registration workers)")
         self.cb_band = QCheckBox("Integration band height (rows per pass)")
+        self.cb_warp = QCheckBox("Anti-ring warp: GPU or CPU")
+        self.cb_warp.setToolTip(
+            "Finalize warps each frame in a pool of worker processes. One of "
+            "them can use the GPU instead, so the question is whether the "
+            "card beats a SINGLE worker at its share of the cores — not "
+            "whether it beats the whole pool.\n\n"
+            "Measured on a 3070 Ti beside a 36-core Xeon the two are within a "
+            "few percent and the CPU keeps it. A strong card with few cores "
+            "is the case where this turns on."
+        )
         self.cb_detect.setChecked(bool(last.get("detect", True)))
         self.cb_band.setChecked(bool(last.get("band", True)))
+        self.cb_warp.setChecked(bool(last.get("warp", True)))
         form.addRow("Measure:", self.cb_detect)
         form.addRow("", self.cb_band)
+        form.addRow("", self.cb_warp)
 
         self.note = QLabel(
             "Measures this machine rather than guessing. Takes a few minutes; "
@@ -285,7 +309,8 @@ class StackingTuneDialog(QDialog):
     def _start(self):
         if self._thread is not None:
             return
-        if not (self.cb_detect.isChecked() or self.cb_band.isChecked()):
+        if not (self.cb_detect.isChecked() or self.cb_band.isChecked()
+                or self.cb_warp.isChecked()):
             self._append("Nothing selected to measure.")
             return
 
@@ -296,7 +321,7 @@ class StackingTuneDialog(QDialog):
         self.btn_cancel.setEnabled(True)
         self.btn_close.setEnabled(False)
         for wdg in (self.h_spin, self.w_spin, self.n_spin,
-                    self.cb_detect, self.cb_band):
+                    self.cb_detect, self.cb_band, self.cb_warp):
             wdg.setEnabled(False)
 
         self._worker = TuneWorker(
@@ -304,6 +329,7 @@ class StackingTuneDialog(QDialog):
             self.n_spin.value(),
             do_detect=self.cb_detect.isChecked(),
             do_band=self.cb_band.isChecked(),
+            do_warp=self.cb_warp.isChecked(),
             ram_cap_rows=self._ram_cap,
         )
         self._thread = QThread(self)
@@ -335,7 +361,7 @@ class StackingTuneDialog(QDialog):
         self.btn_cancel.setEnabled(False)
         self.btn_close.setEnabled(True)
         for wdg in (self.h_spin, self.w_spin, self.n_spin,
-                    self.cb_detect, self.cb_band):
+                    self.cb_detect, self.cb_band, self.cb_warp):
             wdg.setEnabled(True)
 
         if result.get("cancelled"):
@@ -366,7 +392,18 @@ class StackingTuneDialog(QDialog):
                     self._append("              (applied to 'Rows per pass')")
                 except Exception:
                     pass
-        if not det.get("backend") and not band.get("rows"):
+        warp = result.get("warp") or {}
+        if warp.get("t_gpu") is not None:
+            tg, tc = warp["t_gpu"], warp["t_cpu"]
+            self._append(
+                f"Warp:         {'GPU' if warp['use_gpu'] else 'CPU'}  "
+                f"(card {tg:.2f}s vs one worker {tc:.2f}s; "
+                f"{warp['gain']:.2f}x finalize throughput)"
+            )
+        elif warp:
+            self._append("Warp:         CPU (no GPU warp available to measure)")
+        if (not det.get("backend") and not band.get("rows")
+                and not warp.get("t_gpu")):
             self._append("No usable result; settings left unchanged.")
         else:
             self._append("")
@@ -379,7 +416,7 @@ class StackingTuneDialog(QDialog):
     def _remember(self):
         _save_last_inputs(self.h_spin.value(), self.w_spin.value(),
                           self.n_spin.value(), self.cb_detect.isChecked(),
-                          self.cb_band.isChecked())
+                          self.cb_band.isChecked(), self.cb_warp.isChecked())
 
     def closeEvent(self, ev):
         # Remember even when the window is closed without running: the point

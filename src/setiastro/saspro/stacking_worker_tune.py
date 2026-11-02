@@ -69,6 +69,8 @@ __all__ = [
     "tune",
     "tune_all",
     "tune_band_height",
+    "tune_warp",
+    "finalize_layout",
 ]
 
 # ── QSettings keys ───────────────────────────────────────────────────────────
@@ -1113,6 +1115,251 @@ def tune(frame_shape=(3000, 4000),
             "saved": saved}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3 — should the anti-ring warp run on the GPU?
+#
+# `_finalize_write_job` runs `finalize_workers` processes, each warping with
+# `cpu_count // finalize_workers` cv2 threads, and gpu_warp's slot gate lets
+# exactly one of them use the card. So enabling it does not replace the pool,
+# it REPLACES ONE WORKER: the other N-1 keep doing cv2 warps either way.
+#
+# That makes the test simple, and it is not the test the first benchmark ran.
+# Comparing the card against the whole pool said "loses 5x" and was measuring
+# the wrong thing. What matters is whether one GPU warp beats one CPU worker
+# at the thread count that worker actually gets:
+#
+#     all-CPU   throughput = W / t_cpu(T)
+#     hybrid    throughput = 1 / t_gpu + (W - 1) / t_cpu(T)
+#
+# so the card is worth using iff t_gpu < t_cpu(T), and the gain is the
+# difference between those two rates — small when they are close, large on a
+# strong card paired with a weak CPU, which is the configuration this exists
+# for. Measured on a 3070 Ti + 36-core Xeon the two are within a few percent;
+# on an RTX 5090 with eight cores they will not be.
+# ─────────────────────────────────────────────────────────────────────────────
+KEY_GPU_WARP = "stacking/align/gpu_warp"
+KEY_GPU_WARP_SLOTS = "stacking/align/gpu_warp_slots"
+WARP_MARGIN = 1.05      # the card must beat one CPU worker by this to be worth it
+WARP_REPS = 3
+
+
+def finalize_layout(cpu_count: int | None = None,
+                    finalize_workers: int | None = None) -> tuple[int, int]:
+    """(workers, cv2_threads_per_worker) exactly as `_finalize_writes` picks them.
+
+    Mirrors star_alignment: `min(cpu_count, 8)` workers, floor 2, and
+    `cpu_count // workers` OpenCV threads each. Measuring at any other thread
+    count answers a question nobody asked.
+    """
+    ncpu = int(cpu_count or os.cpu_count() or 8)
+    w = int(finalize_workers or min(ncpu, 8))
+    w = max(2, w)
+    return w, max(1, ncpu // w)
+
+
+def _cpu_antiring_fn():
+    """The shipped `_warp_antiring`, imported if possible, lifted if not.
+
+    Lifting matters for a CLI run, where importing star_alignment drags in Qt.
+    Either way the reference is the function the pipeline really calls, not a
+    copy of it that can drift.
+    """
+    try:
+        from setiastro.saspro.star_alignment import _warp_antiring
+        return _warp_antiring
+    except Exception:
+        pass
+    try:
+        import ast
+        import cv2
+        here = os.path.dirname(os.path.abspath(__file__))
+        src = open(os.path.join(here, "star_alignment.py"), encoding="utf-8").read()
+        fn = next(n for n in ast.parse(src).body
+                  if isinstance(n, ast.FunctionDef) and n.name == "_warp_antiring")
+        ns = {"np": np, "cv2": cv2}
+        exec(compile(ast.Module([fn], []), "<lifted>", "exec"), ns)
+        return ns["_warp_antiring"]
+    except Exception:
+        return None
+
+
+def _warp_frame(h, w, seed=5):
+    rng = np.random.default_rng(seed)
+    img = rng.normal(0.05, 0.004, (h, w)).astype(np.float32)
+    n = max(200, (h * w) // 40000)
+    yy, xx = np.mgrid[-5:6, -5:6].astype(np.float32)
+    g = np.exp(-(xx ** 2 + yy ** 2) / (2 * 1.7 ** 2)).astype(np.float32)
+    for y, x, a in zip(rng.integers(8, h - 8, n), rng.integers(8, w - 8, n),
+                       rng.uniform(0.05, 0.98, n).astype(np.float32)):
+        img[y - 5:y + 6, x - 5:x + 6] += a * g
+    return np.clip(img, 0.0, None)
+
+
+def tune_warp(frame_shape=(3000, 4000),
+              *,
+              finalize_workers: int | None = None,
+              status_cb=None,
+              cancel_cb=None,
+              save: bool = True) -> dict:
+    """
+    Decide whether the anti-ring warp should use the GPU on this machine.
+
+    Returns {"use_gpu", "t_gpu", "t_cpu", "workers", "threads", "gain",
+             "slots", "saved"}.
+    """
+    log = status_cb or (lambda *_: None)
+    h, w = int(frame_shape[0]), int(frame_shape[1])
+    W, T = finalize_layout(finalize_workers=finalize_workers)
+    out = {"use_gpu": False, "t_gpu": None, "t_cpu": None,
+           "workers": W, "threads": T, "gain": 1.0, "slots": 1, "saved": False}
+
+    log(f"⚙️  Tuning the anti-ring warp for {w}x{h}: finalize runs {W} workers "
+        f"x {T} cv2 thread(s).")
+    log("    One GPU slot replaces ONE of those workers, so the question is "
+        "whether the card beats a single worker — not the whole pool.")
+
+    try:
+        from setiastro.saspro import gpu_warp as GW
+    except Exception as e:
+        log(f"   gpu_warp unavailable ({type(e).__name__}); leaving it off.")
+        return _save_warp(out, save, log)
+    if not GW.available():
+        log("   No GPU device for warping; leaving it off.")
+        return _save_warp(out, save, log)
+    if GW.bilinear_mode() is None:
+        log("   This OpenCV build's bilinear could not be identified, so the "
+            "GPU warp would decline every frame anyway; leaving it off.")
+        return _save_warp(out, save, log)
+
+    cpu_fn = _cpu_antiring_fn()
+    if cpu_fn is None:
+        log("   Could not reach _warp_antiring to compare against; "
+            "leaving it off.")
+        return _save_warp(out, save, log)
+
+    try:
+        import cv2
+    except Exception:
+        log("   No cv2; leaving it off.")
+        return _save_warp(out, save, log)
+
+    img = _warp_frame(h, w)
+    th = math.radians(0.31)
+    c, s_ = math.cos(th), math.sin(th)
+    M = np.array([[c, -s_, 7.43], [s_, c, -4.17], [9e-7, -5e-7, 1.0]], np.float64)
+
+    def _gpu():
+        return GW.warp_antiring_gpu(img, M, (w, h), perspective=True)
+
+    def _cpu():
+        return cpu_fn(
+            lambda: cv2.warpPerspective(img, M, (w, h),
+                                        flags=cv2.INTER_LANCZOS4,
+                                        borderMode=cv2.BORDER_CONSTANT,
+                                        borderValue=0),
+            lambda: cv2.warpPerspective(img, M, (w, h),
+                                        flags=cv2.INTER_LINEAR,
+                                        borderMode=cv2.BORDER_CONSTANT,
+                                        borderValue=0))
+
+    def _best(fn, reps):
+        best = None
+        for _ in range(reps):
+            if cancel_cb is not None and cancel_cb():
+                return None
+            t0 = time.perf_counter()
+            r = fn()
+            dt = time.perf_counter() - t0
+            if r is None:
+                return None
+            best = dt if best is None else min(best, dt)
+        return best
+
+    old_threads = None
+    try:
+        if _gpu() is None:
+            log("   The GPU warp declined this frame; leaving it off.")
+            return _save_warp(out, save, log)
+        t_gpu = _best(_gpu, WARP_REPS)
+
+        old_threads = cv2.getNumThreads()
+        cv2.setNumThreads(T)        # what one finalize worker really gets
+        _cpu()                      # warm
+        t_cpu = _best(_cpu, WARP_REPS)
+    except Exception as e:
+        log(f"   Warp timing failed ({type(e).__name__}: {e}); leaving it off.")
+        return _save_warp(out, save, log)
+    finally:
+        try:
+            if old_threads is not None:
+                cv2.setNumThreads(int(old_threads))
+        except Exception:
+            pass
+
+    if t_gpu is None or t_cpu is None:
+        log("   cancelled.")
+        return _save_warp(out, save, log)
+
+    out["t_gpu"], out["t_cpu"] = t_gpu, t_cpu
+    all_cpu = W / t_cpu
+    hybrid = 1.0 / t_gpu + (W - 1) / t_cpu
+    out["gain"] = hybrid / max(all_cpu, 1e-9)
+
+    log(f"   gpu_warp          {t_gpu:7.3f} s/frame")
+    log(f"   cv2, {T} thread(s) {t_cpu:7.3f} s/frame   (one finalize worker)")
+    log(f"   all-CPU pool: {all_cpu:6.3f} frames/s   "
+        f"hybrid: {hybrid:6.3f} frames/s   ({out['gain']:.2f}x)")
+
+    # How many slots the card could hold, reported but not probed: measuring it
+    # means several processes warping at once, which is exactly the thing that
+    # hangs a card that cannot take it.
+    try:
+        import torch
+        if torch.cuda.is_available():
+            peak = torch.cuda.max_memory_allocated() / 2 ** 20
+            _free, total = torch.cuda.mem_get_info()
+            room = int((total / 2 ** 20) * 0.70 // max(peak + 400.0, 1.0))
+            out["slots"] = max(1, min(W, room))
+            if out["slots"] > 1:
+                log(f"   VRAM suggests up to {out['slots']} concurrent GPU "
+                    f"warps ({peak:.0f} MB each + context); the default is 1. "
+                    f"Raise 'gpu_warp_slots' only if you want to test it.")
+    except Exception:
+        pass
+
+    if t_gpu * WARP_MARGIN < t_cpu:
+        out["use_gpu"] = True
+        log(f"✅ GPU warp ON: the card does a frame in {t_gpu:.2f}s against "
+            f"{t_cpu:.2f}s for one CPU worker, so it adds "
+            f"{(out['gain'] - 1) * 100:.0f}% to finalize throughput.")
+    else:
+        out["use_gpu"] = False
+        if t_gpu < t_cpu:
+            log(f"✅ GPU warp OFF: the card is faster than one worker but only "
+                f"by {(t_cpu / t_gpu - 1) * 100:.0f}%, which is inside noise "
+                f"and not worth the VRAM and the CUDA start-up.")
+        else:
+            log(f"✅ GPU warp OFF: one CPU worker with {T} thread(s) does a "
+                f"frame in {t_cpu:.2f}s against the card's {t_gpu:.2f}s.")
+    return _save_warp(out, save, log)
+
+
+def _save_warp(out, save, log):
+    if not save:
+        return out
+    try:
+        from PyQt6.QtCore import QSettings
+        s = QSettings()
+        s.setValue(KEY_GPU_WARP, bool(out["use_gpu"]))
+        s.sync()
+        out["saved"] = True
+    except Exception:
+        out["saved"] = False
+    log("   Saved." if out["saved"] else
+        "   Could not write settings (no Qt?); result not persisted.")
+    return out
+
+
 def tune_all(frame_shape=(3000, 4000),
              *,
              n_frames: int = 24,
@@ -1127,19 +1374,28 @@ def tune_all(frame_shape=(3000, 4000),
 
     Stage 1 (registration) decides the star detector and the solve-pass worker
     count. Stage 2 (integration) decides the band height for the rejection
-    reducer. They are independent: stage 1 is about how many PROCESSES may hold
-    a CUDA context at once, stage 2 is about how much work goes into ONE call in
-    the parent process. One number does not imply the other.
+    reducer. Stage 3 decides whether the anti-ring warp uses the GPU. All three
+    are independent: stage 1 is about how many PROCESSES may hold a CUDA
+    context at once, stage 2 about how much work goes into ONE call in the
+    parent process, stage 3 about whether one finalize worker is better served
+    by the card than by its share of the cores. No one of them implies another
+    — the same box can want the GPU detector and the CPU warp, which is in fact
+    the measured answer on a 3070 Ti beside a 36-core Xeon.
     """
     log = status_cb or (lambda *_: None)
     det = tune(frame_shape, status_cb=log, cancel_cb=cancel_cb, save=save)
     if cancel_cb is not None and cancel_cb():
-        return {"detection": det, "band": None}
+        return {"detection": det, "band": None, "warp": None}
     log("")
     band = tune_band_height(frame_shape, n_frames, channels, algo,
                             status_cb=log, cancel_cb=cancel_cb, save=save,
                             ram_cap_rows=ram_cap_rows)
-    return {"detection": det, "band": band}
+    if cancel_cb is not None and cancel_cb():
+        return {"detection": det, "band": band, "warp": None}
+    log("")
+    warp = tune_warp(frame_shape, status_cb=log, cancel_cb=cancel_cb,
+                     save=save)
+    return {"detection": det, "band": band, "warp": warp}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1163,7 +1419,12 @@ if __name__ == "__main__":
     _w = int(_args[1]) if len(_args) > 1 else 4000
     _n = int(_args[2]) if len(_args) > 2 else None
 
-    if "--band" in _flags:
+    if "--warp" in _flags:
+        out = tune_warp((_h, _w), status_cb=_cli_print, save=False)
+        print()
+        print(f"RESULT: gpu_warp={out['use_gpu']} t_gpu={out['t_gpu']} "
+              f"t_cpu={out['t_cpu']} gain={out['gain']:.3f}")
+    elif "--band" in _flags:
         out = tune_band_height((_h, _w), _n or 24, status_cb=_cli_print, save=False)
         print()
         print(f"RESULT: band_rows={out['rows']} mpx_s={out['mpx_s']:.1f}")
@@ -1176,7 +1437,10 @@ if __name__ == "__main__":
         out = tune_all((_h, _w), n_frames=_n or 24, status_cb=_cli_print, save=False)
         d, b = out["detection"], out["band"]
         print()
+        wp = out.get("warp")
         print(f"RESULT: backend={d['backend']} workers={d['workers']} "
               f"fps={d['fps']:.2f}"
               + (f" | band_rows={b['rows']} mpx_s={b['mpx_s']:.1f}"
-                 if b else ""))
+                 if b else "")
+              + (f" | gpu_warp={wp['use_gpu']} gain={wp['gain']:.2f}"
+                 if wp else ""))
