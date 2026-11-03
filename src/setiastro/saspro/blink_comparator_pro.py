@@ -4315,7 +4315,7 @@ class BlinkTab(QWidget):
             self,
             self.tr("Add Additional Images"),
             self._last_folder(),
-            self.tr("Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)")
+            self.tr("Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.fts *.fits.gz *.fit.gz *.fts.gz *.fz *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;All Files (*)")
         )
         if file_paths:
             self._save_last_folder(file_paths[0])        
@@ -5259,7 +5259,7 @@ class BlinkTab(QWidget):
             self,
             self.tr("Open Images"),
             self._last_folder(),
-            self.tr("Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.jpg *.jpeg);;All Files (*)")
+            self.tr("Images (*.png *.tif *.tiff *.fits *.fit *.fts *.fits.gz *.fit.gz *.fts.gz *.fz *.xisf *.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.jpg *.jpeg);;All Files (*)")
         )
         if file_paths:
             self._save_last_folder(file_paths[0])        

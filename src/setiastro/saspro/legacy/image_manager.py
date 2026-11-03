@@ -685,7 +685,7 @@ def list_fits_extensions(path: str) -> dict:
     Return a dict {extname_or_index: {"index": i, "shape": shape, "dtype": dtype}} for all IMAGE HDUs.
     extname_or_index prefers the HDU name (uppercased) when present, otherwise the numeric index.
     """
-    if path.lower().endswith(('.fits.gz', '.fit.gz')):
+    if path.lower().endswith(('.fits.gz', '.fit.gz', '.fts.gz')):
         with gzip.open(path, 'rb') as f:
             buf = BytesIO(f.read())
         hdul = fits.open(buf, memmap=False)
@@ -714,7 +714,7 @@ def load_fits_extension(path: str, key: str | int):
     Load a single IMAGE HDU (by extname or index) as float32 in [0..1] (like load_image does).
     Returns (image: np.ndarray, header: fits.Header, bit_depth: str, is_mono: bool).
     """
-    if path.lower().endswith(('.fits.gz', '.fit.gz')):
+    if path.lower().endswith(('.fits.gz', '.fit.gz', '.fts.gz')):
         with gzip.open(path, 'rb') as f:
             buf = BytesIO(f.read())
         hdul = fits.open(buf, memmap=False)
@@ -1905,7 +1905,7 @@ def load_fits_vector_extension(path: str, key: str | int):
     Returns:
         values, header, meta
     """
-    if path.lower().endswith(('.fits.gz', '.fit.gz')):
+    if path.lower().endswith(('.fits.gz', '.fit.gz', '.fts.gz')):
         with gzip.open(path, 'rb') as f:
             buf = BytesIO(f.read())
         hdul = fits.open(buf, memmap=False)
@@ -2068,7 +2068,7 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
             original_header = None
 
             # --- Unified FITS handling ---
-            if filename.lower().endswith(('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fz')):
+            if filename.lower().endswith(('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fts.gz', '.fz')):
                 # Use get_valid_header to retrieve the header and extension index.
                 try:
                     original_header, ext_index = get_valid_header(filename)
@@ -2085,7 +2085,7 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                 # that is equal-or-faster (one big read vs thousands of page faults),
                 # and it removes the mmap page-cache that is not safe to fault
                 # concurrently from multiple loader threads (heap corruption -> Abort).
-                if filename.lower().endswith(('.fits.gz', '.fit.gz')):
+                if filename.lower().endswith(('.fits.gz', '.fit.gz', '.fts.gz')):
                     print(f"Loading compressed FITS file: {filename}")
                     with gzip.open(filename, 'rb') as f:
                         file_content = f.read()
@@ -3433,7 +3433,7 @@ def get_valid_header(file_path):
     Raises ValueError if no image HDU exists.
     """
     with _FITS_IO_LOCK:
-        if file_path.lower().endswith(('.fits.gz', '.fit.gz')):
+        if file_path.lower().endswith(('.fits.gz', '.fit.gz', '.fts.gz')):
             with gzip.open(file_path, 'rb') as f:
                 file_content = f.read()
             hdul = fits.open(BytesIO(file_content), memmap=False)
@@ -3467,7 +3467,7 @@ def get_bayer_header(file_path):
     try:
         with _FITS_IO_LOCK:
             # Check for compressed files first.
-            if file_path.lower().endswith(('.fits.gz', '.fit.gz')):
+            if file_path.lower().endswith(('.fits.gz', '.fit.gz', '.fts.gz')):
                 with gzip.open(file_path, 'rb') as f:
                     file_content = f.read()
                 hdul = fits.open(BytesIO(file_content), memmap=False)
