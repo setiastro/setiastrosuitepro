@@ -47,10 +47,72 @@ import shutil
 import subprocess
 
 
-def _save_fmt_and_bitdepth_from_path_for_legacy(path: str):
-    ext = os.path.splitext(path)[1].lower()
+# ---------------------------------------------------------------------------
+# Input formats the satellite tool accepts
+#
+# This list used to be three separate inlined tuples -- _refresh_tree,
+# SatelliteEngineThread._iter_files and the single-image file dialog -- and all
+# three were missing .fz / .fts / gzipped FITS. load_image() has always read
+# those and Blink's folder loader has always offered them, so a frame you could
+# flag in Blink was invisible here: the folder trees came up empty and batch
+# found nothing to do. One list now, shared by all three.
+# ---------------------------------------------------------------------------
 
-    if ext in (".fit", ".fits", ".fits.gz", ".fit.gz", ".fz"):
+# Extensions os.path.splitext() cannot see whole. Checked longest-first.
+_COMPOUND_EXTS = (".fits.gz", ".fit.gz", ".fts.gz")
+
+
+def split_ext_compound(path: str):
+    """os.path.splitext, except ".fits.gz" comes back as ONE extension.
+
+    Plain splitext hands back ".gz" for a gzipped FITS. That is why the
+    ".fits.gz" branch in _save_fmt_and_bitdepth_from_path_for_legacy below
+    could never fire, and why "x.fits.gz" produced the output name
+    "x.fits_satellited.gz".
+    """
+    low = path.lower()
+    for ce in _COMPOUND_EXTS:
+        if low.endswith(ce):
+            return path[:-len(ce)], path[-len(ce):]
+    return os.path.splitext(path)
+
+
+SAT_INPUT_EXTS = (
+    ".png", ".tif", ".tiff",
+    ".fit", ".fits", ".fts",
+    ".fits.gz", ".fit.gz", ".fts.gz", ".fz",
+    ".xisf",
+    ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef",
+    ".jpg", ".jpeg",
+)
+
+SAT_INPUT_FILTER = "Image Files (" + " ".join("*" + e for e in SAT_INPUT_EXTS) + ")"
+
+# Input extension -> extension the RESULT is actually written with.
+# save_image has no Rice/gzip FITS encoder and no RAW writer, so every one of
+# those comes back as plain .fits. Resolving that HERE, rather than letting
+# save_image quietly rewrite the name afterwards, is what keeps the batch
+# loop's "Exists, skipping" test pointing at the file that really gets
+# created -- otherwise every re-run reprocessed every .fz in the folder.
+_SAT_OUT_EXT = {
+    ".fit": ".fit", ".fits": ".fits", ".fts": ".fits",
+    ".fits.gz": ".fits", ".fit.gz": ".fits", ".fts.gz": ".fits", ".fz": ".fits",
+    ".tif": ".tif", ".tiff": ".tiff",
+    ".xisf": ".xisf",
+    ".png": ".png", ".jpg": ".jpg", ".jpeg": ".jpeg",
+}
+
+
+def satellite_output_name(filename: str, suffix: str = "_satellited") -> str:
+    """The name (or path) the processed result for `filename` is saved under."""
+    stem, ext = split_ext_compound(filename)
+    return stem + suffix + _SAT_OUT_EXT.get(ext.lower(), ".fits")
+
+
+def _save_fmt_and_bitdepth_from_path_for_legacy(path: str):
+    ext = split_ext_compound(path)[1].lower()
+
+    if ext in (".fit", ".fits", ".fts", ".fits.gz", ".fit.gz", ".fts.gz", ".fz"):
         return "fits", "32-bit floating point"
 
     if ext in (".tif", ".tiff"):
@@ -2217,8 +2279,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         tree.clear()
         if not folder or not os.path.isdir(folder): return
         for fn in sorted(os.listdir(folder)):
-            if fn.lower().endswith(('.png', '.tif', '.tiff', '.fit', '.fits', '.xisf',
-                                    '.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef', '.jpg', '.jpeg')):
+            if fn.lower().endswith(SAT_INPUT_EXTS):
                 QTreeWidgetItem(tree, [fn])
 
     # ---------- Sensitivity ----------
@@ -2357,7 +2418,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         else:
             file_path, _ = QFileDialog.getOpenFileName(
                 self, "Select Image", "",
-                "Image Files (*.png *.tif *.tiff *.fit *.fits *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.jpg *.jpeg)"
+                SAT_INPUT_FILTER
             )
             if not file_path:
                 return  # user cancelled file dialog
@@ -2469,8 +2530,10 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
         # file path save
         try:
-            base, ext = os.path.splitext(file_path)
-            dst = base + "_satellited" + ext
+            # Not splitext + same ext: there is no Rice/gzip FITS writer and no
+            # RAW writer, so a .fz / .fits.gz / .cr2 source is saved as plain
+            # .fits and the name has to say so up front.
+            dst = satellite_output_name(file_path)
 
             image_meta = meta.get("xisf_meta") if meta else None
             if image_meta is not None and not isinstance(image_meta, list):
@@ -2658,15 +2721,16 @@ class SatelliteEngineThread(QThread):
         self._cancel = True
 
     def _iter_files(self):
-        exts = ('.png', '.tif', '.tiff', '.fit', '.fits', '.xisf',
-                '.cr2', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef', '.jpg', '.jpeg')
         try:
             for fn in sorted(os.listdir(self.input_dir)):
-                stem = os.path.splitext(fn)[0]
+                # split_ext_compound, not splitext: "x_satellited.fits.gz"
+                # splits to stem "x_satellited.fits", which does not end with
+                # the suffix, so an already-processed file was re-queued.
+                stem = split_ext_compound(fn)[0]
                 # Skip files we already processed
                 if stem.endswith('_satellited'):
                     continue
-                if fn.lower().endswith(exts):
+                if fn.lower().endswith(SAT_INPUT_EXTS):
                     yield fn
         except Exception:
             return
@@ -2849,8 +2913,8 @@ class SatelliteEngineThread(QThread):
 
                     self._seen.add(fn)
                     fp_in = os.path.join(self.input_dir, fn)
-                    stem, ext = os.path.splitext(fn)
-                    fp_out = os.path.join(self.output_dir, f"{stem}_satellited{ext}")
+                    fp_out = os.path.join(self.output_dir,
+                                          satellite_output_name(fn))
 
                     # if output already exists, treat as done
                     if os.path.exists(fp_out):
@@ -2876,9 +2940,35 @@ class SatelliteEngineThread(QThread):
                             # bytes instead — identical data, no decode/encode,
                             # and nothing for the round-trip to drop.
                             try:
-                                import shutil as _sh
-                                _sh.copy2(fp_in, fp_out)
-                                self.log_signal.emit(f"No trail, copied: {fn}")
+                                if (split_ext_compound(fn)[1].lower()
+                                        == split_ext_compound(fp_out)[1].lower()):
+                                    import shutil as _sh
+                                    _sh.copy2(fp_in, fp_out)
+                                    self.log_signal.emit(f"No trail, copied: {fn}")
+                                else:
+                                    # Container change (.fz / gzipped FITS /
+                                    # RAW -> .fits). The source bytes are not
+                                    # valid inside the output container, so
+                                    # copying them would write a file whose
+                                    # extension lies. Round-trip through
+                                    # load+save instead -- still no inference,
+                                    # which is the whole point of this path.
+                                    _r = load_image(fp_in, return_metadata=True)
+                                    if _r is None or _r[0] is None:
+                                        raise RuntimeError("load returned nothing")
+                                    _im, _hdr, _bd, _mono, _meta = _r
+                                    _imeta = _meta.get("xisf_meta") if _meta else None
+                                    if _imeta is not None and not isinstance(_imeta, list):
+                                        _imeta = [_imeta]
+                                    _fmt, _ = _save_fmt_and_bitdepth_from_path_for_legacy(fp_out)
+                                    save_image(
+                                        np.clip(np.asarray(_im, dtype=np.float32), 0.0, 1.0),
+                                        fp_out, _fmt or "fits",
+                                        _bd or "32-bit floating point",
+                                        _hdr, _mono,
+                                        image_meta=_imeta, file_meta=None,
+                                    )
+                                    self.log_signal.emit(f"No trail, converted: {fn}")
                                 if self.delete_original and \
                                         os.path.abspath(fp_in) != os.path.abspath(fp_out):
                                     try:
