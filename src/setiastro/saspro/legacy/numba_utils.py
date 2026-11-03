@@ -3021,6 +3021,21 @@ def _estimate_mosaic_noise_sigma(image_data, g_mask) -> float:
         s = int(np.sqrt(total_green / target))
         if s < 1:
             s = 1
+        # The stride MUST be odd. This walks the full index grid and keeps the
+        # points that land on a green site, but a constant EVEN stride only
+        # ever visits CFA phase 0 (y&1 == 0 and x&1 == 0). Phase 0 is R for
+        # RGGB and B for BGGR, so not one green pixel is collected: `samples`
+        # comes back empty, this returns 0.0, and the RCD-N noise-floor
+        # subtraction is silently disabled for the whole frame.
+        # int(sqrt(total_green / 250_000)) lands on an even number for many
+        # common sensors -- IMX571 bin1 and bin2, IMX533, IMX294, IMX183,
+        # IMX464 and most full-frame DSLRs all give s = 2, 4 or 6.
+        # GRBG/GBRG, whose phase 0 IS green, instead collect every grid point
+        # and overshoot the 250k sample target by ~4x. An odd stride keeps
+        # both green sub-lattices reachable and the sample count near target
+        # for every pattern.
+        if s % 2 == 0:
+            s += 1
         stride_y = s
         stride_x = s
     # Laplacian on green pixels (3-tap horizontal + 3-tap vertical) at g sites

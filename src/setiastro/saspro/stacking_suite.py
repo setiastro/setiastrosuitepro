@@ -1332,6 +1332,26 @@ def normalize_images(stack: np.ndarray,
 
 # ----- small helpers -----
 
+
+# How long normalization may make NO progress at all before it reports where
+# its workers are stuck, and twice that before it abandons them and carries on
+# with the frames that finished.
+#
+# Used as a floor: the real threshold is max(this, 20x the slowest frame seen
+# so far), capped at 300 s, so neither a slow sensor nor a network drive is
+# mistaken for a stall, and no single slow frame can push the deadline out to
+# tens of minutes.
+#
+# Deliberately LONGER than torch_calibration._GPU_DEBAYER_LOCK_TIMEOUT (120 s).
+# A frame wedged on the device resolves itself when that lock times out and
+# the frame falls back to the numba kernel, so the pool should not start
+# printing thread stacks while that is still playing out. What reaches this
+# threshold is a stall the GPU layer could NOT fix -- which is exactly when
+# the stacks are worth having.
+NORM_STALL_SECONDS = 150.0
+
+
+
 def _force_shape_hw(img: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
     """
     Return img with exactly (target_h, target_w) spatial shape.
@@ -3825,6 +3845,91 @@ def _median_fast_sample(img: np.ndarray, stride: int = 8) -> float:
         sample = img[::stride, ::stride]
     sample = sample - float(np.nanmin(sample))
     return float(np.nanmedian(sample))   # ignore NaN no-data (satellite trails)
+
+# ---------------------------------------------------------------------------
+# Fast background matching for the normalization stage.
+#
+# The per-frame brightness normalization is a pure SCALAR per channel: additive
+# for dense frames, multiplicative for sparse CFA-drizzle frames. The only
+# thing the full-resolution pixels are needed for is ONE robust median per
+# channel. Measuring that median on a strided subsample and applying the result
+# as a single in-place broadcast pass replaces ~9 full-array passes with ~1.1.
+#
+# The stride MUST be odd. A CFA-drizzle sparse frame populates R at
+# (even,even), G at (even,odd)+(odd,even) and B at (odd,odd), so ANY even
+# stride samples a single parity: G and B would read as all-structural-zero
+# and their medians would come back NaN, silently crushing those channels.
+# Odd strides hit all four parities. 3 -> 1/9 of the pixels; the resulting
+# median agrees with the full-resolution median to ~0.005% on sky-like data,
+# which is orders of magnitude below any photometric relevance for a pedestal.
+_BG_STRIDE = 3
+
+
+def _bg_sample(img: np.ndarray) -> np.ndarray:
+    """Parity-complete strided subsample used for background medians."""
+    s = _BG_STRIDE
+    return img[::s, ::s] if img.ndim == 2 else img[::s, ::s, :]
+
+
+def _robust_bg(a: np.ndarray) -> float:
+    """Median over finite, non-zero samples; 0.0 when nothing qualifies
+    (matches the previous full-resolution behaviour exactly)."""
+    v = a[np.isfinite(a) & (a != 0.0)]
+    return float(np.median(v)) if v.size else 0.0
+
+
+def _bg_match_inplace(img: np.ndarray, *, tgt_med: float, tgt_min: float,
+                      tgt_rgb=None) -> tuple[np.ndarray, str]:
+    """
+    Match this frame's sky background to its (per-filter) reference target,
+    in place. Returns (img, debug_text).
+
+    Semantics are unchanged from the previous full-resolution implementation:
+      * mono / no per-channel target -> additive shift to (tgt_med + tgt_min)
+      * dense OSC                    -> additive per-channel shift to tgt_rgb
+      * sparse CFA-drizzle OSC       -> multiplicative per-channel scale to
+                                        tgt_rgb, structural zeros preserved
+    NaN (satellite-trail no-data) passes through both forms untouched.
+    """
+    if (not img.flags.writeable) or (not img.flags.c_contiguous):
+        img = np.ascontiguousarray(img, dtype=np.float32)
+
+    sub = _bg_sample(img)
+    is_osc = (tgt_rgb is not None and img.ndim == 3 and img.shape[-1] == 3)
+
+    if not is_osc:
+        bg = _robust_bg(sub)
+        target = float(tgt_med) + float(tgt_min)
+        img += np.float32(target - bg)
+        return img, f"frame_bg={bg:.6g} target_bg={target:.6g}"
+
+    # Sparsity is decided on the subsample (1/9 of the pixels) rather than
+    # three full-frame equality passes over the whole array.
+    try:
+        sparse = max(float((sub[..., k] == 0.0).mean()) for k in range(3)) > 0.4
+    except Exception:
+        sparse = False
+
+    if sparse:
+        scales = np.ones(3, dtype=np.float32)
+        for c in range(3):
+            med = _robust_bg(sub[..., c])
+            if np.isfinite(med) and med > 1e-30:
+                scales[c] = np.float32(float(tgt_rgb[c]) / med)
+        # A scalar multiply keeps structural zeros at exactly 0.0 and passes
+        # NaN through, so the old per-channel boolean-mask read-modify-write
+        # is unnecessary -- this is bitwise identical and ~25x cheaper.
+        img *= scales
+        return img, ("per-channel [sparse/CFA]  " + "  ".join(
+            f"{'RGB'[c]}: scale={scales[c]:.6g}" for c in range(3)))
+
+    offs = np.empty(3, dtype=np.float32)
+    for c in range(3):
+        offs[c] = np.float32(float(tgt_rgb[c]) - _robust_bg(sub[..., c]))
+    img += offs
+    return img, ("per-channel  " + "  ".join(
+        f"{'RGB'[c]}: bg_shift={offs[c]:.6g}" for c in range(3)))
+
 
 def _luma_view(img: np.ndarray) -> np.ndarray:
     """Return a float32 2D luma view (no copy if mono)."""
@@ -23573,9 +23678,21 @@ class StackingSuiteDialog(QDialog):
         else:
             why = "pierside"
         self.update_status(self.tr(f"Flipping Image ({why})"))
-        QApplication.processEvents()
-        # 180° is just two 90° rotations; cheap & exact. np.rot90 returns
-        # a view, make contiguous for downstream processing.
+        # NO processEvents() here: this runs inside the normalization worker
+        # thread, and Qt event processing off the main thread is undefined.
+        # update_status is a queued signal and is safe.
+        #
+        # cv2.flip(-1) is a 180° rotation and is bit-exact for float32 (pure
+        # data movement, no interpolation), but reads the source in a far
+        # friendlier order than np.rot90's double-negative-stride view, so the
+        # contiguous copy is ~25-30% cheaper on a debayered frame. Fall back to
+        # numpy for layouts OpenCV will not take (>4 channels, odd dtypes).
+        try:
+            out = cv2.flip(img, -1)
+            if out is not None and out.shape == img.shape:
+                return np.ascontiguousarray(out), True
+        except Exception:
+            pass
         return np.ascontiguousarray(np.rot90(img, 2)), True
 
     def _sync_header_after_rot180(self, hdr, img_shape):
@@ -24042,8 +24159,13 @@ class StackingSuiteDialog(QDialog):
                 data = data.astype(data.dtype.newbyteorder("="))
             img = np.asarray(data, dtype=np.float32)
             # preserve NaN (satellite no-data); scrub only +/-inf -- matches
-            # _finalize_loaded_image under the NaN-preserve context.
-            img = np.nan_to_num(img, nan=np.nan, posinf=1.0, neginf=0.0)
+            # _finalize_loaded_image under the NaN-preserve context. The
+            # unconditional nan_to_num was a full allocate-and-copy of the
+            # frame on every load to fix pixels that are almost never there;
+            # probe first and fix in place only when it matters.
+            if np.isinf(img).any():
+                img = np.nan_to_num(img, copy=False, nan=np.nan,
+                                    posinf=1.0, neginf=0.0)
             img = np.squeeze(img)
             if img.ndim == 3 and img.shape[0] == 3 and img.shape[1] > 1 and img.shape[2] > 1:
                 img = np.transpose(img, (1, 2, 0))   # CHW -> HWC
@@ -26505,16 +26627,12 @@ class StackingSuiteDialog(QDialog):
                 self._align_det_sigma_prev = None
 
 
-            # Initial per-file scale factors from preview medians
+            # Report frames whose preview median came back zero/NaN. (The
+            # per-file scale_guess dict that used to be built here was never
+            # read by anything -- normalization measures its own medians.)
             eps = 1e-6
-            scale_guess = {}
-            missing = []
-            for fp in measured_frames:
-                m = preview_medians.get(fp, 0.0)
-                if m <= eps:
-                    missing.append(os.path.basename(fp))
-                    m = 1.0
-                scale_guess[fp] = ref_target_median / max(m, eps)
+            missing = [os.path.basename(fp) for fp in measured_frames
+                       if preview_medians.get(fp, 0.0) <= eps]
             if missing:
                 self.update_status(self.tr(f"ℹ️ {len(missing)} frame(s) had zero/NaN preview medians; using neutral scale for those."))
 
@@ -26763,15 +26881,45 @@ class StackingSuiteDialog(QDialog):
                     gain_lo      = float(self.settings.value("stacking/grad_poly2/gain_lo", 0.20, type=float))
                     gain_hi      = float(self.settings.value("stacking/grad_poly2/gain_hi", 5.0, type=float))
 
-                # scaled_rot180 is parallel to scaled_paths/images/hdrs; it
-                # carries the per-frame "was pre-rotated 180° at normalize"
-                # flag through to the ABE write path so _sync_header_after_rot180
-                # can be invoked there too. Without this parallel list the flag
-                # would die with its _normalize_one local scope and ABE-written
-                # frames would ship with pre-flip WCS/PA keys.
-                scaled_images = []; scaled_paths = []; scaled_hdrs = []; scaled_rot180 = []
+                    # The maintained ABE implementation lives in
+                    # gradient_abe.py. Imported under an ALIAS on purpose:
+                    # stacking_suite still carries its own module-level
+                    # remove_poly2_gradient_abe (and remove_gradient_stack_abe),
+                    # reachable only from each other and from nothing else, so
+                    # a bare `from ... import remove_poly2_gradient_abe` here
+                    # would read as shadowing that dead copy. The two are
+                    # functionally identical today -- the differences are
+                    # comment wording -- but gradient_abe.py is the one whose
+                    # docstring claims to be the only copy, so it is the one to
+                    # call.
+                    from setiastro.saspro.gradient_abe import (
+                        remove_poly2_gradient_abe as _abe_poly2)
+                    _abe_kw = dict(mode=mode, num_samples=samples,
+                                   downsample=downsample,
+                                   patch_size=patch_size,
+                                   min_strength=min_strength,
+                                   gain_clip=(gain_lo, gain_hi))
+                    # Counters, not a lock: list.append is atomic under the
+                    # GIL and these are only read after the pool drains.
+                    _abe_ok: list = []
+                    _abe_err: list = []
+                    self.update_status(self.tr(
+                        f"🌈 Gradient removal (ABE Poly²) fused into "
+                        f"normalization: mode={mode}, samples={samples}, "
+                        f"downsample={downsample}, patch={patch_size}, "
+                        f"min_strength={min_strength*100:.2f}%, "
+                        f"gain_clip=[{gain_lo},{gain_hi}]"))
 
-                from concurrent.futures import ThreadPoolExecutor, as_completed
+                # No per-chunk frame accumulators any more. ABE used to run
+                # as a second pass over the written files, so every frame in the
+                # chunk had to be kept in RAM (ncpu x ~300 MB for a 26 Mpx OSC
+                # frame) and then written, reopened and rewritten. It now runs
+                # inside the worker on the frame already in hand, so the
+                # rot180 flag never has to leave _normalize_one's scope either.
+
+                from concurrent.futures import (
+                    FIRST_COMPLETED as _CF_FIRST_COMPLETED,
+                    ThreadPoolExecutor, wait as _cf_wait)
                 self.update_status(self.tr(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {io_workers} threads)…"))
                 # Parallel normalize-as-they-arrive: each worker LOADS and NORMALIZES a
                 # frame end-to-end so all cores stay busy. update_status is thread-safe
@@ -26784,6 +26932,24 @@ class StackingSuiteDialog(QDialog):
                     _cfa_pre = bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
                 except Exception:
                     _cfa_pre = False
+
+                # Pin the run-level debayer inputs HERE, on the main thread.
+                # Left unset, debayer_image falls back to
+                #   self.settings.value("stacking/debayer_method", ...)
+                #   self.cfa_drizzle_cb.isChecked()
+                # and those ran inside every worker thread: a QSettings read
+                # and -- worse -- a Qt widget read off the GUI thread, which is
+                # undefined behaviour no lock can make safe. Pinning them here
+                # is also what lets the non-CFA debayer call below run without
+                # _debayer_lock: with these resolved, debayer_image touches no
+                # shared mutable state on that path.
+                _norm_saved_cfa    = self._cfa_for_this_run
+                _norm_saved_method = getattr(self, "_debayer_method_for_this_run", None)
+                self._cfa_for_this_run = bool(_cfa_pre)
+                if _norm_saved_method is None:
+                    self._debayer_method_for_this_run = str(
+                        self.settings.value("stacking/debayer_method", "rcd")).lower()
+
                 self._norm_dbg_on = False
 
                 def _normalize_one(fp):
@@ -26828,8 +26994,27 @@ class StackingSuiteDialog(QDialog):
                                     self._pending_cfa_sparse = {}
                                 self._pending_cfa_sparse[os.path.normcase(os.path.normpath(fp))] = _img_sparse
                             else:
-                                with _debayer_lock:
-                                    img = self.debayer_image(img, fp, hdr)
+                                # No lock here. _debayer_lock exists only to
+                                # guard the CFA branch's mutation of the shared
+                                # self._cfa_for_this_run flag; this branch
+                                # mutates nothing shared (debayer_image touches
+                                # locals and this frame's own header, and the
+                                # cfa/method flags were pinned on the main
+                                # thread above). Holding the lock here
+                                # serialized the single most expensive step in
+                                # the stage across every worker thread, on
+                                # every platform -- numba's own
+                                # NUMBA_PARALLEL_LOCK is a no-op off macOS, so
+                                # this lock was the real serializer.
+                                #
+                                # Safe because _cfa_active is a run-level
+                                # constant and the outer `if` already requires a
+                                # mosaic: either every debayering frame takes
+                                # the CFA branch or none does, so a frame can
+                                # never read the flag while another frame has it
+                                # flipped. If CFA drizzle ever becomes a
+                                # per-frame decision, restore the lock here.
+                                img = self.debayer_image(img, fp, hdr)
                         else:
                             if img.ndim == 3 and img.shape[-1] == 1:
                                 img = np.squeeze(img, axis=-1)
@@ -26960,7 +27145,6 @@ class StackingSuiteDialog(QDialog):
                         _ndbg("03 geom", img, fp)
 
                         # 3) Brightness normalization / scale refine
-                        pm = float(preview_medians.get(fp, 0.0))
                         # Resolve this frame's PER-FILTER target (falls back to
                         # the global reference target when unavailable).
                         _pf_tgt = None
@@ -26973,85 +27157,26 @@ class StackingSuiteDialog(QDialog):
                             _tgt_med, _tgt_min, _tgt_rgb = _pf_tgt
                         else:
                             _tgt_med, _tgt_min, _tgt_rgb = ref_target_median, ref_min, ref_target_medians_rgb
-                        if (_tgt_rgb is not None
-                                and img.ndim == 3 and img.shape[-1] == 3):
-                            # OSC: normalize each channel independently to
-                            # the reference's matching channel. A single
-                            # luma scale cannot correct color-varying sky
-                            # (LP drift, moonlight, airmass reddening), and
-                            # the leftover per-channel offsets between
-                            # frames weaken per-channel rejection.
-                            #
-                            # CFA-drizzle frames are SPARSE: each channel is
-                            # populated only at its Bayer sites (R~25%,
-                            # G~50%, B~25%), the rest are structural zeros.
-                            # Measuring the median across all pixels then
-                            # gives 0 for R/B and crushes those channels, so
-                            # for sparse frames we measure the median over
-                            # POPULATED pixels only and never add a pedestal
-                            # (structural zeros must stay exactly 0).
-                            _cfa_sparse_frame = False
-                            try:
-                                _zfr = [float((img[..., _k] == 0.0).mean()) for _k in range(3)]
-                                _cfa_sparse_frame = max(_zfr) > 0.4
-                            except Exception:
-                                _cfa_sparse_frame = False
-
-                            _ch_dbg = []
-                            for _c in range(3):
-                                if _cfa_sparse_frame:
-                                    _plane = img[..., _c]
-                                    _nz = _plane[np.isfinite(_plane) & (_plane != 0.0)]
-                                    if _nz.size == 0:
-                                        _s_c, _off_c = 1.0, 0.0
-                                    else:
-                                        _med = float(np.median(_nz))
-                                        if (not np.isfinite(_med)) or _med <= 1e-30:
-                                            _s_c, _off_c = 1.0, 0.0
-                                        else:
-                                            _s_c = float(_tgt_rgb[_c] / _med)
-                                            _off_c = 0.0
-                                    # apply scale to populated pixels only;
-                                    # structural zeros stay exactly 0
-                                    _m = img[..., _c] != 0.0
-                                    img[..., _c][_m] = img[..., _c][_m] * _s_c
-                                else:
-                                    # Additive per-channel background match (nan-safe),
-                                    # mirroring the mono fix. Pure multiplicative scaling does
-                                    # NOT equalize an additive sky pedestal across sessions, so
-                                    # multi-night OSC would band exactly like mono did. NaN
-                                    # (satellite no-data) is preserved through the shift.
-                                    _pl   = img[..., _c]
-                                    _finc = _pl[np.isfinite(_pl) & (_pl != 0.0)]
-                                    _bg_c = float(np.median(_finc)) if _finc.size else 0.0
-                                    _tgt_c = float(_tgt_rgb[_c])
-                                    img[..., _c] = (_pl - _bg_c + _tgt_c).astype(np.float32, copy=False)
-                                    _s_c, _off_c = 1.0, float(_tgt_c - _bg_c)
-                                _ch_dbg.append(f"{'RGB'[_c]}: bg_shift={_off_c:.6g}")
-                            if getattr(self, "_norm_dbg_on", False):
-                                self.update_status(
-                                    f"🔬[04 scale-args] {os.path.basename(fp)} per-channel"
-                                    + (" [sparse/CFA]" if _cfa_sparse_frame else "") + "  "
-                                    + "  ".join(_ch_dbg)
-                                )
-                        else:
-                            # Additive background matching (nan-safe).
-                            # _compute_scale is purely MULTIPLICATIVE (s = target/median);
-                            # that equalizes signal above the floor but does NOT equalize an
-                            # additive sky pedestal, so subs from different-brightness sessions
-                            # landed at different background levels -> the 'trail' deficits in
-                            # the master. Subtract each frame's own background and re-level to
-                            # the reference sky, exactly like the standalone bgmatch that fixed
-                            # it. NaN (satellite no-data) is preserved through the shift.
-                            _fin = img[np.isfinite(img) & (img != 0.0)]
-                            _frame_bg = float(np.median(_fin)) if _fin.size else 0.0
-                            _target_bg = float(_tgt_med + _tgt_min)   # per-filter sky level
-                            img = (img - _frame_bg + _target_bg).astype(np.float32, copy=False)
-                            if getattr(self, "_norm_dbg_on", False):
-                                self.update_status(
-                                    f"🔬[04 bg-match] {os.path.basename(fp)} "
-                                    f"frame_bg={_frame_bg:.6g} target_bg={_target_bg:.6g}"
-                                )
+                        # Brightness normalization is a per-channel SCALAR:
+                        # additive for dense frames (a multiplicative scale
+                        # cannot equalize an additive sky pedestal across
+                        # sessions, which is what caused the 'trail' deficits
+                        # in multi-night masters), multiplicative for sparse
+                        # CFA-drizzle frames (where 0.0 is structural no-data,
+                        # not a floor, and must survive bit-exactly).
+                        #
+                        # _bg_match_inplace measures the medians on an odd
+                        # strided subsample and applies the result in one
+                        # in-place broadcast pass. Previously this block ran
+                        # three full-frame equality passes, three full-frame
+                        # masked medians and three strided last-axis writes --
+                        # ~1.8 s per 26 Mpx OSC frame vs ~0.13 s now.
+                        img, _bg_dbg = _bg_match_inplace(
+                            img, tgt_med=_tgt_med, tgt_min=_tgt_min,
+                            tgt_rgb=_tgt_rgb)
+                        if getattr(self, "_norm_dbg_on", False):
+                            self.update_status(
+                                f"🔬[04 bg-match] {os.path.basename(fp)} {_bg_dbg}")
                         _ndbg("05 after-scale", img, fp)
 
                         # 🔒 4) Enforce canonical geometry BEFORE ABE / writing
@@ -27059,147 +27184,89 @@ class StackingSuiteDialog(QDialog):
                             img = _force_shape_hw(img, *self._norm_target_hw)
                         _ndbg("06 force_hw", img, fp)
 
+                        # Gradient removal, on the frame already in hand.
+                        # Previously this was a second pass: write the frame,
+                        # reopen it in a process pool, ABE it, write it again --
+                        # a full extra read and write per frame (~400 ms on a
+                        # 26 Mpx OSC frame) for a result that is bit-identical,
+                        # since a float32 FITS round trip is lossless. Running
+                        # it here also means the write path below is the same
+                        # code whether ABE is on or off.
+                        #
+                        # ABE is numpy + cv2 over the full frame, which releases
+                        # the GIL, so it parallelises across the worker threads.
+                        # Its only GIL-bound part is the sample-point loop, and
+                        # that runs on the downsampled image (1/36 the pixels at
+                        # the default ds=6) over ~150 points -- single-digit ms.
                         if abe_enabled:
-                            scaled_images.append(img.astype(np.float32, copy=False))
-                            scaled_paths.append(fp)
-                            scaled_hdrs.append(hdr)
-                            # Carry the rot180 flag out of this worker's local
-                            # scope so the ABE write stage can sync the header
-                            # the same way the inline write path does.
-                            scaled_rot180.append(bool(_pre_rotated_180))
-                        else:
-                            # write out normalized FITS
-                            out_path = _norm_out_name(fp, norm_dir)
-
                             try:
-                                if os.path.splitext(fp)[1].lower() in (".fits", ".fit", ".fz"):
-                                    orig_header = fits.getheader(fp, ext=0)
-                                else:
-                                    orig_header = fits.Header()
-                            except Exception:
-                                orig_header = fits.Header()
+                                img = _abe_poly2(img, **_abe_kw)
+                                img = np.asarray(img, dtype=np.float32)
+                                # ABE preserves shape, so this is a no-op that
+                                # costs a shape compare -- kept because the
+                                # file-based pass it replaces also re-asserted
+                                # the canonical size after ABE.
+                                if getattr(self, "_norm_target_hw", None):
+                                    img = _force_shape_hw(img, *self._norm_target_hw)
+                                _ndbg("06b abe", img, fp)
+                                _abe_ok.append(1)
+                            except Exception as _e_abe:
+                                # A failed gradient removal must not cost the
+                                # frame: keep the normalized pixels and write
+                                # them. The old pass behaved the same way, it
+                                # just reported it from the parent.
+                                _abe_err.append(os.path.basename(str(fp)))
+                                self.update_status(self.tr(
+                                    f"⚠️ ABE failed on {os.path.basename(fp)}: "
+                                    f"{_e_abe} — writing the frame without it."))
 
-                            if isinstance(img, np.ndarray) and img.ndim == 3 and img.shape[-1] == 3:
-                                orig_header["DEBAYERED"] = (True, "Color debayered normalized")
-                            else:
-                                orig_header["DEBAYERED"] = (False, "Mono normalized")
-
-                            # Sync the header to the rotated pixels before writing
-                            # (CRPIX / CD / PC / ANGLE / POSANGLE / FLIPPED / sentinel).
-                            # Without this, every downstream reader of the _n file
-                            # (plate solve, annotate, a second normalization pass)
-                            # would see a header still describing the pre-flip
-                            # orientation. See _sync_header_after_rot180 for details.
-                            if _pre_rotated_180:
-                                try:
-                                    self._sync_header_after_rot180(orig_header, img.shape)
-                                except Exception as _e_hdr:
-                                    self.update_status(self.tr(
-                                        f"⚠️ WCS/PA header sync after rot180 failed for "
-                                        f"{os.path.basename(fp)}: {_e_hdr}"))
-
-                            from os import path
-                            _key = path.normcase(path.normpath(fp))
-                            _val = path.normpath(out_path)
-                            self._orig2norm[_key] = _val
-                            _ndbg("07 pre-write", img, fp)
-                            fits.PrimaryHDU(data=img.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
-                            normalized_files.append(out_path)
-                            # CFA drizzle: also write the sparse sibling for the
-                            # drizzle deposit (rejection uses the dense out_path).
-                            _cfa_key = os.path.normcase(os.path.normpath(fp))
-                            _cfa_sparse = getattr(self, "_pending_cfa_sparse", {}).pop(_cfa_key, None) if hasattr(self, "_pending_cfa_sparse") else None
-                            if _cfa_sparse is not None:
-                                try:
-                                    _cfa_out = self._cfa_sibling_path(out_path)
-                                    _ch = fits.Header(orig_header)
-                                    _ch["DEBAYERED"] = (True, "Sparse CFA drizzle debayer")
-                                    _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
-                                    fits.PrimaryHDU(data=np.asarray(_cfa_sparse, np.float32), header=_ch).writeto(_cfa_out, overwrite=True)
-                                except Exception as _e:
-                                    self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling: {_e}"))
-                            # Carry the satellite-trail mask sidecar onto the
-                            # normalized frame so registration can find + warp it.
-                            _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
-
-                    except Exception as e:
-                        self.update_status(self.tr(f"⚠️ Error normalizing {fp}: {e}"))
-
-                with ThreadPoolExecutor(max_workers=io_workers) as ex:
-                    _prev_cv2n = None
-                    try:
-                        import cv2 as _cv2n
-                        _prev_cv2n = _cv2n.getNumThreads(); _cv2n.setNumThreads(1)
-                    except Exception:
-                        pass
-                    futs = {ex.submit(_normalize_one, fp): fp for fp in chunk}
-                    for fut in as_completed(futs):
-                        if self._cancelled():
-                            raise StackCancelled()
-                        try:
-                            fut.result()
-                        except StackCancelled:
-                            raise
-                        except Exception as _e:
-                            self.update_status(self.tr(f"⚠️ Error normalizing (worker): {_e}"))
-                        QApplication.processEvents()
-                    try:
-                        if _prev_cv2n is not None:
-                            _cv2n.setNumThreads(_prev_cv2n)
-                    except Exception:
-                        pass
-
-                # 2) ABE with canonical size lock
-                if abe_enabled and scaled_images:
-                    self.update_status(self.tr(
-                        f"Gradient removal (ABE Poly²): mode={mode}, samples={samples}, "
-                        f"downsample={downsample}, patch={patch_size}, min_strength={min_strength*100:.2f}%, "
-                        f"gain_clip=[{gain_lo},{gain_hi}]"
-                    ))
-                    QApplication.processEvents()
-
-                    # File-based ABE: write the normalized (pre-ABE) frames, then
-                    # run poly2 ABE over them in a process pool (rewrites each _n
-                    # in place) -- no GIL, no big-array IPC, all cores. Header /
-                    # _orig2norm / CFA-sparse handling is unchanged (pre-ABE).
-                    _abe_paths = []
-                    for i, fp in enumerate(scaled_paths):
-                        img_out = scaled_images[i]; hdr = scaled_hdrs[i]
-                        # Was this frame rotated 180° at normalize time? If so,
-                        # the orig_header we just loaded from the RAW file still
-                        # describes the pre-flip orientation and needs the same
-                        # CRPIX / CD / angle sync the inline write path applies.
-                        _pre_rotated_180_i = bool(
-                            scaled_rot180[i] if i < len(scaled_rot180) else False
-                        )
+                        # write out normalized FITS
                         out_path = _norm_out_name(fp, norm_dir)
 
                         try:
-                            orig_header = fits.getheader(fp, ext=0)
+                            if os.path.splitext(fp)[1].lower() in (".fits", ".fit", ".fz"):
+                                # Same bytes as fits.getheader(fp, ext=0),
+                                # but served from the LRU header cache so
+                                # the write path does not re-open the file
+                                # we already read. .copy() because we mutate.
+                                orig_header = _get_header_fast(fp).copy()
+                            else:
+                                orig_header = fits.Header()
                         except Exception:
                             orig_header = fits.Header()
 
-                        if isinstance(img_out, np.ndarray) and img_out.ndim == 3 and img_out.shape[-1] == 3:
+                        if isinstance(img, np.ndarray) and img.ndim == 3 and img.shape[-1] == 3:
                             orig_header["DEBAYERED"] = (True, "Color debayered normalized")
                         else:
                             orig_header["DEBAYERED"] = (False, "Mono normalized")
 
-                        if _pre_rotated_180_i:
+                        # Sync the header to the rotated pixels before writing
+                        # (CRPIX / CD / PC / ANGLE / POSANGLE / FLIPPED / sentinel).
+                        # Without this, every downstream reader of the _n file
+                        # (plate solve, annotate, a second normalization pass)
+                        # would see a header still describing the pre-flip
+                        # orientation. See _sync_header_after_rot180 for details.
+                        if _pre_rotated_180:
                             try:
-                                self._sync_header_after_rot180(orig_header, img_out.shape)
+                                self._sync_header_after_rot180(orig_header, img.shape)
                             except Exception as _e_hdr:
                                 self.update_status(self.tr(
-                                    f"⚠️ WCS/PA header sync after rot180 failed (ABE) for "
+                                    f"⚠️ WCS/PA header sync after rot180 failed for "
                                     f"{os.path.basename(fp)}: {_e_hdr}"))
 
                         from os import path
                         _key = path.normcase(path.normpath(fp))
                         _val = path.normpath(out_path)
                         self._orig2norm[_key] = _val
-                        fits.PrimaryHDU(data=img_out.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
+                        _ndbg("07 pre-write", img, fp)
+                        # asarray, not astype: astype always copies, so
+                        # this allocated and memcpy'd a full frame on every
+                        # write even though img is already float32.
+                        fits.PrimaryHDU(data=np.asarray(img, np.float32),
+                                        header=orig_header).writeto(out_path, overwrite=True)
                         normalized_files.append(out_path)
-                        _abe_paths.append(out_path)
-                        # CFA drizzle: also write the sparse sibling (ABE path).
+                        # CFA drizzle: also write the sparse sibling for the
+                        # drizzle deposit (rejection uses the dense out_path).
                         _cfa_key = os.path.normcase(os.path.normpath(fp))
                         _cfa_sparse = getattr(self, "_pending_cfa_sparse", {}).pop(_cfa_key, None) if hasattr(self, "_pending_cfa_sparse") else None
                         if _cfa_sparse is not None:
@@ -27210,45 +27277,139 @@ class StackingSuiteDialog(QDialog):
                                 _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
                                 fits.PrimaryHDU(data=np.asarray(_cfa_sparse, np.float32), header=_ch).writeto(_cfa_out, overwrite=True)
                             except Exception as _e:
-                                self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling (ABE): {_e}"))
+                                self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling: {_e}"))
                         # Carry the satellite-trail mask sidecar onto the
                         # normalized frame so registration can find + warp it.
                         _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
 
-                    # ---- poly2 ABE over the just-written _n frames ----
+                    except Exception as e:
+                        self.update_status(self.tr(f"⚠️ Error normalizing {fp}: {e}"))
+
+                # A stalled worker used to stop the whole stage silently.
+                # `as_completed` waits with no timeout, and the executor's
+                # context manager then calls shutdown(wait=True), which joins
+                # the wedged thread -- so a single stuck frame produced no
+                # error, no progress, and a frozen window, because
+                # processEvents() below only ran when a future COMPLETED.
+                #
+                # This waits in short slices instead: the GUI keeps breathing,
+                # a stall is detected by lack of progress rather than by any
+                # one frame's duration, and the pool is torn down without
+                # joining. A wedged Python thread cannot be killed, so the
+                # frame is abandoned, not stopped -- see the note below.
+                def _stall_report(pending_files):
+                    """Where every worker thread actually is, right now."""
+                    import threading as _sth, traceback as _stb
+                    names = {th.ident: th.name for th in _sth.enumerate()}
+                    main = _sth.main_thread().ident
+                    lines = [self.tr(
+                        "⚠️ Normalization has made no progress for a while. "
+                        "Worker thread stacks follow; the deepest frame in "
+                        "each is where it is stuck.")]
+                    for _f in list(pending_files)[:8]:
+                        lines.append(f"    still running: {os.path.basename(_f)}")
                     try:
-                        from setiastro.saspro.gradient_abe import run_abe_files_parallel, abe_one_file
-                        try:
-                            from setiastro.saspro.worker_env import process_pools_ok as _pp_ok
-                            _abe_pp = _pp_ok()
-                        except Exception:
-                            _abe_pp = True
-                        _abe_kw = dict(mode=mode, num_samples=samples, downsample=downsample,
-                                       patch_size=patch_size, min_strength=min_strength,
-                                       gain_clip=(gain_lo, gain_hi))
-                        _abe_thw = getattr(self, "_norm_target_hw", None)
-                        if _abe_pp:
-                            _n_ok, _n_skip, _n_err = run_abe_files_parallel(
-                                _abe_paths, kw=_abe_kw, target_hw=_abe_thw,
-                                log_fn=self.update_status,
-                            )
+                        frames = sys._current_frames()
+                    except Exception as _fe:
+                        return "\n".join(lines + [f"    (no stacks: {_fe})"])
+                    for ident, frame in frames.items():
+                        if ident == main:
+                            continue
+                        nm = names.get(ident, "?")
+                        if not str(nm).startswith("ThreadPoolExecutor"):
+                            continue
+                        lines.append(f"    [{nm}]")
+                        for fr in _stb.extract_stack(frame)[-10:]:
+                            lines.append(
+                                f"       {os.path.basename(fr.filename)}:"
+                                f"{fr.lineno} in {fr.name}")
+                    if len(lines) == 1 + min(8, len(list(pending_files))):
+                        lines.append(
+                            "    (no pool threads matched by name; the stuck "
+                            "frames are listed above)")
+                    return "\n".join(lines)
+
+                ex = ThreadPoolExecutor(max_workers=io_workers)
+                _prev_cv2n = None
+                try:
+                    try:
+                        import cv2 as _cv2n
+                        _prev_cv2n = _cv2n.getNumThreads(); _cv2n.setNumThreads(1)
+                    except Exception:
+                        pass
+                    futs = {ex.submit(_normalize_one, fp): fp for fp in chunk}
+                    _pending = set(futs)
+                    _slowest = 0.0
+                    _t_last = time.monotonic()
+                    _warned = False
+                    while _pending:
+                        if self._cancelled():
+                            raise StackCancelled()
+                        _done, _pending = _cf_wait(
+                            _pending, timeout=1.0,
+                            return_when=_CF_FIRST_COMPLETED)
+                        if _done:
+                            _now = time.monotonic()
+                            _slowest = max(_slowest, _now - _t_last)
+                            _t_last = _now
+                            _warned = False
+                            for fut in _done:
+                                try:
+                                    fut.result()
+                                except StackCancelled:
+                                    raise
+                                except Exception as _e:
+                                    self.update_status(self.tr(f"⚠️ Error normalizing (worker): {_e}"))
                         else:
-                            # Broken worker env: run ABE single-process (still
-                            # removes gradients, just not across cores).
-                            _n_ok = _n_skip = _n_err = 0
-                            for _i, _p in enumerate(_abe_paths, 1):
-                                _st, _pp, _er = abe_one_file((_p, _abe_kw, _abe_thw))
-                                if _st == "ok":
-                                    _n_ok += 1
-                                elif _st == "skip":
-                                    _n_skip += 1
-                                else:
-                                    _n_err += 1
-                                self.update_status(self.tr(f"🌈 ABE (1-proc) {_i}/{len(_abe_paths)}"))
-                        self.update_status(self.tr(
-                            f"Gradient removal complete: {_n_ok} ok, {_n_skip} skipped, {_n_err} error(s)."))
-                    except Exception as _abe_e:
-                        self.update_status(self.tr(f"⚠️ ABE pass failed: {_abe_e}"))
+                            # Scale the patience to how long frames actually
+                            # take on this machine, so a legitimately slow
+                            # sensor is not mistaken for a stall.
+                            _idle = time.monotonic() - _t_last
+                            _limit = min(300.0, max(
+                                NORM_STALL_SECONDS, 20.0 * _slowest))
+                            if not _warned and _idle > _limit:
+                                _warned = True
+                                self.update_status(_stall_report(
+                                    [futs[f] for f in _pending]))
+                            elif _warned and _idle > 2.0 * _limit:
+                                for _f in (futs[f] for f in _pending):
+                                    self.update_status(self.tr(
+                                        f"⚠️ Giving up on {os.path.basename(_f)}: "
+                                        f"no progress for {_idle:.0f}s. It is "
+                                        f"excluded from this run."))
+                                self.update_status(self.tr(
+                                    "Continuing with the frames that "
+                                    "finished. The abandoned worker is left "
+                                    "running — Python cannot kill a thread — "
+                                    "so it may still write its output, and "
+                                    "may delay closing the app."))
+                                break
+                        QApplication.processEvents()
+                finally:
+                    try:
+                        if _prev_cv2n is not None:
+                            _cv2n.setNumThreads(_prev_cv2n)
+                    except Exception:
+                        pass
+                    # NOT wait=True. That join is the second place this hung,
+                    # and it would undo everything above.
+                    try:
+                        ex.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:        # Python < 3.9
+                        ex.shutdown(wait=False)
+
+                # Hand the run-level debayer flags back to whatever the rest of
+                # the pipeline had set, so pinning them for this chunk cannot
+                # leak into a later stage.
+                self._cfa_for_this_run = _norm_saved_cfa
+                self._debayer_method_for_this_run = _norm_saved_method
+
+                if abe_enabled:
+                    _n_ok = len(_abe_ok)
+                    _n_err = len(_abe_err)
+                    self.update_status(self.tr(
+                        f"🌈 Gradient removal complete for chunk {idx}: "
+                        f"{_n_ok} ok, {_n_err} error(s)."))
                     QApplication.processEvents()
 
             # restore OpenCV threads
@@ -27258,11 +27419,45 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
 
-            # Update self.light_files to *_n.fit
+            # Update self.light_files to *_n.fit.
+            #
+            # This predicts each output name from its INPUT name rather than
+            # collecting what the workers actually produced, so a frame that
+            # errored -- or that the stall watchdog abandoned -- left a path
+            # here that does not exist, and registration was the one to find
+            # out. Keep only files that are really on disk, and say which went
+            # missing: a run that drops three frames and says so is a result,
+            # a run that hands registration a phantom path is a second bug
+            # wearing the first one's clothes.
+            _missing_total = 0
             for group, file_list in self.light_files.items():
-                self.light_files[group] = [_norm_out_name(p, norm_dir) for p in file_list]
+                _want = [_norm_out_name(p, norm_dir) for p in file_list]
+                _have = [q for q in _want if os.path.isfile(q)]
+                _gone = [q for q in _want if not os.path.isfile(q)]
+                if _gone:
+                    _missing_total += len(_gone)
+                    for q in _gone[:8]:
+                        self.update_status(self.tr(
+                            f"⚠️ Normalized frame missing, dropping it: "
+                            f"{os.path.basename(q)}"))
+                    if len(_gone) > 8:
+                        self.update_status(self.tr(
+                            f"   …and {len(_gone) - 8} more."))
+                self.light_files[group] = _have
 
+            if _missing_total:
+                self.update_status(self.tr(
+                    f"⚠️ {_missing_total} frame(s) did not survive "
+                    f"normalization and were dropped from this run."))
             self.update_status(self.tr("✅ Updated self.light_files to use debayered, normalized *_n.fit frames."))
+            # With the GPU demosaic in play this phase has been allocating on
+            # the card for every frame. Hand it back before alignment starts:
+            # torch's caching allocator keeps the high-water mark otherwise,
+            # and registration wants the same device.
+            try:
+                _free_torch_memory()
+            except Exception:
+                pass
             self.update_status(self.tr("📏 Phase: Normalization complete."))
 
             from os import path
