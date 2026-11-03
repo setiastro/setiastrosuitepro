@@ -4,12 +4,39 @@ import numpy as np
 from typing import Optional, Tuple
 import cv2
 import os
+import threading as _threading
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDialogButtonBox,
     QGroupBox, QMessageBox, QProgressBar
 )
+
+# Methods with a GPU implementation. Anything else resolves to the numba
+# kernel, so the dialog says so rather than letting the user pick GPU and
+# silently get the CPU.
+try:
+    from setiastro.saspro.torch_calibration import GPU_DEBAYER_METHODS
+except Exception:
+    # Only reached when torch_calibration will not import at all, in which
+    # case nothing runs on the GPU anyway and this list just drives the
+    # dialog's wording.
+    GPU_DEBAYER_METHODS = ("rcd", "ahd")
+
+def _gpu_methods_label() -> str:
+    """"RCD and AHD run" -- for dialog text, derived from GPU_DEBAYER_METHODS
+    so the wording cannot drift from what is actually implemented.
+
+    Carries its own verb so the sentence still agrees in number when the list
+    is one method long, or empty.
+    """
+    names = [str(m).upper() for m in GPU_DEBAYER_METHODS]
+    if not names:
+        return "No method runs"
+    if len(names) == 1:
+        return f"Only {names[0]} runs"
+    return ", ".join(names[:-1]) + " and " + names[-1] + " run"
+
 
 # fast kernels you already have
 try:
@@ -26,6 +53,39 @@ from setiastro.saspro.bayer_utils import (
 from setiastro.saspro.help_support import make_help_button
 
 _RAW_EXTS = (".raf", ".raw", ".rw2", ".arw", ".nef", ".cr2", ".cr3", ".dng", ".orf", ".pef")
+
+# ── GPU demosaic preference ─────────────────────────────────────────────────
+# Resolved once, lazily, under a lock. debayer_array runs inside the
+# normalization worker threads, so the alternative -- reading QSettings on
+# every call from every thread -- is both wasteful and the sort of cross-thread
+# Qt access that only works by accident. The value cannot change mid-run.
+_GPU_PREF_LOCK = _threading.Lock()
+_GPU_PREF: Optional[bool] = None
+
+
+def set_gpu_debayer_pref(value) -> None:
+    """Pin the GPU-demosaic preference for this run, or pass None to go back to
+    reading it from settings. Call this from the main thread."""
+    global _GPU_PREF
+    with _GPU_PREF_LOCK:
+        _GPU_PREF = None if value is None else bool(value)
+
+
+def _gpu_debayer_pref() -> bool:
+    """Whether the optimizer measured the GPU demosaic as the winner here."""
+    global _GPU_PREF
+    with _GPU_PREF_LOCK:
+        if _GPU_PREF is not None:
+            return _GPU_PREF
+    try:
+        from setiastro.saspro.stacking_worker_tune import debayer_gpu_enabled
+        v = bool(debayer_gpu_enabled())
+    except Exception:
+        v = False
+    with _GPU_PREF_LOCK:
+        if _GPU_PREF is None:
+            _GPU_PREF = v
+        return _GPU_PREF
 
 def _find_raw_sibling(path: Optional[str]) -> Optional[str]:
     """
@@ -300,11 +360,13 @@ class _DebayerWorker(QThread):
     failed = pyqtSignal(str)
     finished = pyqtSignal(np.ndarray, str)  # (rgb, used_pattern)
 
-    def __init__(self, mono: np.ndarray, pattern: str, method: str = "vng"):
+    def __init__(self, mono: np.ndarray, pattern: str, method: str = "vng",
+                 use_gpu: Optional[bool] = None):
         super().__init__()
         self.mono = mono
         self.pattern = pattern
         self.method = (method or "vng")
+        self.use_gpu = use_gpu
 
     def run(self):
         try:
@@ -320,7 +382,20 @@ class _DebayerWorker(QThread):
                 raise ValueError(f"Unsupported pattern: {self.pattern}")
 
             self.progress.emit(5, f"Debayering ({self.pattern}, {self.method}) …")
-            rgb = debayer_fits_fast(img, self.pattern, cfa_drizzle=False, method=self.method)
+            # Through debayer_array, not debayer_fits_fast. This used to call
+            # the numba kernel directly, which meant the interactive tool could
+            # never use the GPU however stacking/debayer_gpu was set -- and it
+            # was a second copy of the dispatch that debayer_array's own
+            # docstring claims to be the only one.
+            #
+            # roworder="" on purpose: DebayerDialog has already flipped the
+            # mosaic to top-down in its constructor and flips the RGB back in
+            # _on_done, so letting debayer_array flip as well would double it.
+            rgb = debayer_array(
+                img, pattern=self.pattern, roworder="", method=self.method,
+                cfa_drizzle=False, use_gpu=self.use_gpu,
+                status_cb=lambda s: self.progress.emit(60, f"Using {s} …"),
+            )
             self.progress.emit(96, "Finalizing …")
             self.finished.emit(rgb, self.pattern)
         except Exception as e:
@@ -486,6 +561,54 @@ class DebayerDialog(QDialog):
         hm.addWidget(make_help_button("debayer", self))
         v.addWidget(self.method_group)
 
+        # ── Processing: CPU or GPU, plus a way to measure which is faster ──
+        # The combo is a per-run override, initialised from what the optimizer
+        # measured (stacking/debayer_gpu). It deliberately does NOT write that
+        # key: a choice made in a one-shot tool should not quietly change what
+        # the stacking pipeline does. Optimize… is how the stored default
+        # changes, and it re-reads this combo when it closes.
+        self.backend_group = QGroupBox(self.tr("Processing"), self)
+        hb = QHBoxLayout(self.backend_group)
+        self.combo_backend = QComboBox(self)
+        self.combo_backend.addItem(self.tr("CPU (numba)"), False)
+        self.combo_backend.addItem(self.tr("GPU (torch)"), True)
+        self.combo_backend.setToolTip(self.tr(
+            "Where the demosaic runs, for this run only.\n\n"
+            "Starts on whatever the optimizer measured as faster on this "
+            "machine. Changing it here does not change that stored setting — "
+            "use Optimize… for that.\n\n"
+            "%s on the GPU; every other method falls back to the "
+            "numba kernel automatically, and the status line will say so when "
+            "it does."
+        ) % _gpu_methods_label())
+        self.lbl_backend = QLabel("")
+        self.lbl_backend.setEnabled(False)
+        hb.addWidget(self.combo_backend)
+        hb.addWidget(self.lbl_backend, 1)
+
+        try:
+            from setiastro.saspro.stacking_tune_dialog import (
+                install_optimize_button as _install_tune_btn,
+            )
+
+            def _shape_for_tuner():
+                try:
+                    s = np.asarray(self._src).shape
+                    return int(s[0]), int(s[1])
+                except Exception:
+                    return 3000, 4000
+
+            _install_tune_btn(self, hb,
+                              frame_shape_provider=_shape_for_tuner,
+                              on_finished=self._reload_backend_pref)
+        except Exception:
+            pass   # a missing tuner must not stop the Debayer tool opening
+
+        v.addWidget(self.backend_group)
+        self.combo_method.currentIndexChanged.connect(self._backend_changed)
+        self.combo_backend.currentIndexChanged.connect(self._backend_changed)
+        self._reload_backend_pref()
+
         #sasprogress + buttons
         self.status = QLabel("")
         self.bar = QProgressBar(self); self.bar.setRange(0, 100)
@@ -497,6 +620,57 @@ class DebayerDialog(QDialog):
         btns.rejected.connect(self.reject)
         v.addWidget(btns)
 
+
+    def _current_method_token(self) -> str:
+        """The method token for whatever is selected, Bayer or X-Trans."""
+        label = self.combo_method.currentText()
+        table = (_XTRANS_METHODS if self._cfa_family == "XTRANS"
+                 else _BAYER_METHODS)
+        return next((tok for (lbl, tok) in table if lbl == label), "rcd")
+
+    def _reload_backend_pref(self):
+        """Set the combo from what the optimizer measured. Also called after
+        Optimize… closes, since that writes the setting behind our back."""
+        want = False
+        try:
+            from setiastro.saspro.stacking_worker_tune import debayer_gpu_enabled
+            want = bool(debayer_gpu_enabled())
+        except Exception:
+            want = False
+        try:
+            self.combo_backend.blockSignals(True)
+            self.combo_backend.setCurrentIndex(1 if want else 0)
+        finally:
+            self.combo_backend.blockSignals(False)
+        self._backend_changed()
+
+    def _backend_changed(self):
+        """Keep the note beside the combo honest about what will actually run."""
+        if self._cfa_family == "XTRANS":
+            self.combo_backend.setEnabled(False)
+            self.lbl_backend.setText(
+                self.tr("X-Trans demosaics through rawpy (CPU only)"))
+            return
+        self.combo_backend.setEnabled(True)
+        if not bool(self.combo_backend.currentData()):
+            self.lbl_backend.setText("")
+            return
+        meth = self._current_method_token()
+        if meth not in GPU_DEBAYER_METHODS:
+            self.lbl_backend.setText(self.tr(
+                "{0} has no GPU path — it will run on the CPU"
+            ).format(meth.upper()))
+            return
+        try:
+            from setiastro.saspro.torch_calibration import (
+                debayer_backend_note, debayer_gpu_available)
+            if debayer_gpu_available():
+                self.lbl_backend.setText(debayer_backend_note())
+            else:
+                self.lbl_backend.setText(self.tr(
+                    "no GPU device available — it will run on the CPU"))
+        except Exception:
+            self.lbl_backend.setText("")
 
     def _chosen_pattern(self) -> str:
         if self._cfa_family == 'XTRANS':
@@ -547,9 +721,13 @@ class DebayerDialog(QDialog):
             return
 
         bayer_method = next((tok for (label, tok) in _BAYER_METHODS if label == method_label), "vng")
-        self.status.setText(f"Debayering as {pat} ({bayer_method}) …")
+        _use_gpu = bool(self.combo_backend.currentData())
+        self.status.setText(
+            f"Debayering as {pat} ({bayer_method}) on "
+            f"{'GPU' if _use_gpu else 'CPU'} …")
         self.bar.setValue(0)
-        self.worker = _DebayerWorker(self._src, pat, method=bayer_method)
+        self.worker = _DebayerWorker(self._src, pat, method=bayer_method,
+                                     use_gpu=_use_gpu)
         self.worker.progress.connect(self._on_prog)
         self.worker.failed.connect(self._on_fail)
         self.worker.finished.connect(self._on_done)
@@ -583,6 +761,8 @@ def debayer_array(
     roworder: str = "",
     method: str = "vng",
     cfa_drizzle: bool = False,
+    use_gpu: Optional[bool] = None,
+    status_cb=None,
 ) -> np.ndarray:
     """
     Pure Bayer demosaic: mono mosaic array in -> RGB array out. No doc, no Qt,
@@ -593,6 +773,15 @@ def debayer_array(
     `pattern` must already be a resolved RGGB/BGGR/GRBG/GBRG token — this
     function does NOT re-detect. Callers own detection so each can apply its
     own header-reading rules.
+
+    `use_gpu` overrides the measured preference for THIS call only: True to
+    try the card, False to force numba, None (the default) to follow
+    stacking/debayer_gpu. The interactive dialog passes an explicit value so a
+    choice made there cannot leak into the stacking pipeline's setting.
+
+    `status_cb` is called once with a short description of the backend that
+    actually ran. Worth wiring up: a GPU request that falls back to numba --
+    unported method, no VRAM headroom -- is otherwise invisible.
     """
     if debayer_fits_fast is None:
         raise RuntimeError("Numba debayer kernels not available.")
@@ -610,7 +799,39 @@ def debayer_array(
         m = np.ascontiguousarray(np.flipud(m))
 
     meth = method if method in ("edge", "bilinear", "strict_cfa", "vng", "rcd", "ahd") else "rcd"
-    rgb = debayer_fits_fast(m, pat, cfa_drizzle=cfa_drizzle, method=meth)
+
+    # GPU demosaic when the optimizer measured it faster on this machine
+    # (stacking/debayer_gpu). debayer_gpu returns None for anything it does not
+    # implement, for a device without the VRAM headroom, and on any exception,
+    # so the numba kernel below stays the single fallback for every such case
+    # and this is strictly additive.
+    rgb = None
+    _want_gpu = _gpu_debayer_pref() if use_gpu is None else bool(use_gpu)
+    _why = []
+    if _want_gpu:
+        try:
+            from setiastro.saspro.torch_calibration import debayer_gpu
+            rgb = debayer_gpu(m, pat, cfa_drizzle=cfa_drizzle, method=meth,
+                              status_cb=_why.append)
+        except Exception as e:
+            _why.append(f"{type(e).__name__}: {e}")
+            rgb = None
+    if rgb is None:
+        rgb = debayer_fits_fast(m, pat, cfa_drizzle=cfa_drizzle, method=meth)
+        if status_cb:
+            try:
+                if _want_gpu:
+                    status_cb(f"CPU (numba {meth.upper()}) — the GPU path "
+                              f"declined: {_why[-1] if _why else 'no reason given'}")
+                else:
+                    status_cb(f"CPU (numba {meth.upper()})")
+            except Exception:
+                pass
+    elif status_cb:
+        try:
+            status_cb(f"GPU (torch {meth.upper()})")
+        except Exception:
+            pass
 
     if flipped:
         rgb = np.ascontiguousarray(np.flipud(rgb))
@@ -675,7 +896,11 @@ def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]
     if debayer_fits_fast is None:
         raise RuntimeError("Numba debayer kernels not available.")
 
-    rgb = debayer_fits_fast(mono, pat, cfa_drizzle=False, method=method_tok)
+    # Through debayer_array for the same reason as the dialog's worker: this
+    # was a direct numba call, so Scripts / Presets / Replay never used the
+    # card either. roworder="" because `mono` was already flipped above.
+    rgb = debayer_array(mono, pattern=pat, roworder="", method=method_tok,
+                        cfa_drizzle=False)
     # Flip back to match original orientation (see DebayerDialog._on_done).
     if _roworder_is_bottom_up(roworder):
         rgb = np.ascontiguousarray(np.flipud(rgb))

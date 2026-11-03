@@ -72,6 +72,11 @@ __all__ = [
     "tune_warp",
     "warp_verdict",
     "finalize_layout",
+    "KEY_DEBAYER_GPU",
+    "debayer_gpu_enabled",
+    "debayer_verdict",
+    "tune_debayer",
+    "_release_gpu",
 ]
 
 # ── QSettings keys ───────────────────────────────────────────────────────────
@@ -1420,6 +1425,479 @@ def _save_warp(out, save, log):
     return out
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 4 — Bayer demosaic: GPU or CPU
+#
+# This is the stage whose answer genuinely flips between machines, which is why
+# it is measured rather than defaulted. The numba RCD kernel is parallel=True,
+# so ONE frame already saturates every core: an i9 beside an elderly 1060 keeps
+# the demosaic on the CPU, while an i5 with a 3080 does not, and no static
+# default is right for both.
+#
+# There is no slot arithmetic here, unlike the warp. The warp runs in a pool of
+# finalize workers and one GPU slot replaces one of them, so the card only has
+# to beat a single worker. Debayer is the opposite shape: because the CPU
+# kernel already uses every core on a single frame, CPU throughput is about
+# 1/t_cpu however many normalize threads call it, and the serialized GPU path
+# is about 1/t_gpu. The verdict is therefore the plain per-frame ratio.
+#
+# That ratio is deliberately conservative in the CPU's favour. t_cpu is taken
+# with numba at its full thread count on one frame — the CPU's best case — and
+# it ignores the fact that moving the demosaic off the CPU frees those cores
+# for the loading, background matching and writing the same worker does next.
+# A card that wins this comparison wins by more than this in the pipeline.
+# ─────────────────────────────────────────────────────────────────────────────
+KEY_DEBAYER_GPU = "stacking/debayer_gpu"
+KEY_DEBAYER_GPU_STAMP = "stacking/debayer_gpu_stamp"
+KEY_DEBAYER_GPU_MP = "stacking/debayer_gpu_mp"
+
+# What the card must clear to be worth a CUDA context and ~1.2 GB of VRAM
+# beside everything else a run wants the device for.
+DEBAYER_GAIN_MIN = 1.10
+DEBAYER_REPS = 3
+# Above this relative disagreement with the CPU kernel the GPU path is refused
+# regardless of speed. float32-vs-float64 round-off on RCD measures ~3e-07, so
+# 1e-03 is four orders of margin and still catches a real porting error.
+DEBAYER_MAX_DEVIATION = 1e-3
+
+# AHD needs a different test, and not because its port is looser.
+#
+# AHD chooses between a horizontal and a vertical candidate at every pixel by
+# comparing integer homogeneity counts. A pixel whose count sits exactly on the
+# CIE76 ball boundary can fall the other way under float32 Lab round-off, and
+# when it does the pixel moves by the spread between the two candidates rather
+# than by an epsilon. That is a knife-edge decision, not an error: both answers
+# are the method's own output, and the same pixel flips if you merely reorder
+# the CPU kernel's arithmetic.
+#
+# Measured, GPU vs the numba kernel, 600x800 / 1200x1600 / 2048x3072, all four
+# Bayer phases: the 99.99th percentile deviation is 3e-08, while 7-12 pixels
+# per megapixel exceed 1e-03, worst single pixel 9e-03. So a max-relative test
+# rejects a correct implementation, while the bulk statistic has four orders of
+# margin.
+#
+# The AHD test is therefore three-part: the bulk must agree tightly (any real
+# porting error shows up there, across the whole frame), the flipped pixels
+# must stay rare, and nothing may diverge catastrophically. Each threshold has
+# roughly an order of magnitude over what was measured.
+DEBAYER_AHD_BULK_DEVIATION = 1e-3      # 99.99th percentile  (measured 3e-08)
+DEBAYER_AHD_MAX_DEVIATION = 5e-2       # worst single pixel  (measured 9e-03)
+DEBAYER_AHD_FLIP_FRACTION = 1e-4       # share over 1e-03    (measured 1.2e-05)
+
+# Methods that make a discrete per-pixel choice, and so need the robust test
+# above rather than a max-relative one.
+DEBAYER_DISCRETE_METHODS = ("ahd",)
+
+
+def gpu_debayer_methods_label() -> str:
+    """"RCD and AHD run" -- the GPU-capable demosaic methods, as a sentence
+    subject with its verb, so UI text agrees in number for any list length.
+
+    Read from torch_calibration.GPU_DEBAYER_METHODS rather than written out,
+    so a tooltip cannot drift away from what the code actually implements.
+    Two tooltips said "Only RCD has a GPU implementation", which was true when
+    it was written and became wrong the moment AHD was ported; deriving it
+    means the next method to land fixes them both.
+    """
+    try:
+        from setiastro.saspro.torch_calibration import GPU_DEBAYER_METHODS
+        names = [str(m).upper() for m in GPU_DEBAYER_METHODS]
+    except Exception:
+        return "Only RCD runs"
+    if not names:
+        return "No method runs"
+    if len(names) == 1:
+        return f"Only {names[0]} runs"
+    return ", ".join(names[:-1]) + " and " + names[-1] + " run"
+
+
+def _debayer_agreement(ref, got, method: str):
+    """(ok, reported_deviation, explanation) for one GPU-vs-CPU comparison.
+
+    `reported_deviation` is the max relative deviation either way, so the
+    number the optimizer stores and prints means the same thing for every
+    method. Only the ACCEPTANCE test changes.
+    """
+    a = np.asarray(ref, dtype=np.float32)
+    b = np.asarray(got, dtype=np.float32)
+    if a.shape != b.shape:
+        raise ValueError(f"shape {b.shape} != {a.shape}")
+    scale = max(float(np.abs(a).max()), 1e-12)
+    d = np.abs(a.astype(np.float64) - b.astype(np.float64)) / scale
+    dev = float(d.max())
+
+    if (method or "").lower() not in DEBAYER_DISCRETE_METHODS:
+        if dev > DEBAYER_MAX_DEVIATION:
+            return False, dev, (f"disagree by {dev:.2e} relative, over the "
+                                f"{DEBAYER_MAX_DEVIATION:.0e} limit")
+        return True, dev, f"{dev:.2e} relative  (float32 round-off)"
+
+    bulk = float(np.quantile(d, 0.9999))
+    flips = int((d > DEBAYER_MAX_DEVIATION).sum())
+    frac = flips / max(1, d.size)
+    if bulk > DEBAYER_AHD_BULK_DEVIATION:
+        return False, dev, (f"99.99% of pixels disagree by up to {bulk:.2e} "
+                            f"relative, over the "
+                            f"{DEBAYER_AHD_BULK_DEVIATION:.0e} limit")
+    if dev > DEBAYER_AHD_MAX_DEVIATION:
+        return False, dev, (f"worst pixel differs by {dev:.2e} relative, over "
+                            f"the {DEBAYER_AHD_MAX_DEVIATION:.0e} limit")
+    if frac > DEBAYER_AHD_FLIP_FRACTION:
+        return False, dev, (f"{frac:.2e} of pixels differ by more than "
+                            f"{DEBAYER_MAX_DEVIATION:.0e}, over the "
+                            f"{DEBAYER_AHD_FLIP_FRACTION:.0e} limit")
+    return True, dev, (f"{bulk:.2e} relative over 99.99% of pixels, "
+                       f"{flips} knife-edge pixel(s) up to {dev:.2e}")
+
+
+def _release_gpu(log=None, note: str = "") -> None:
+    """Hand device memory back to the driver, and say how much came back.
+
+    Each stage in this module can leave multiple GB reserved in torch's
+    caching allocator -- the band sweep and the warp A/B both allocate in this
+    process, and the demosaic stage works on a full frame. Reserved-but-unused
+    blocks cannot be seen or used by anything else, so not releasing them both
+    strands VRAM after the dialog closes AND makes the next stage read a card
+    that looks full. That is what made the demosaic stage decline after its
+    first frame on an 8 GB card.
+
+    Delegates to free_torch_memory, which stacking_suite already uses, instead
+    of carrying a second implementation. Falls back to a plain empty_cache if
+    the package is not importable (a CLI run from a partial tree).
+    """
+    before = None
+    try:
+        import torch
+        if torch.cuda.is_available():
+            free_b, total = torch.cuda.mem_get_info()
+            before = (torch.cuda.memory_reserved() / 2 ** 20,
+                      free_b / 2 ** 20, total / 2 ** 20)
+    except Exception:
+        pass
+
+    try:
+        from setiastro.saspro.free_torch_memory import _free_torch_memory
+        _free_torch_memory()
+    except Exception:
+        try:
+            import gc
+
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            gc.collect()
+        except Exception:
+            pass
+
+    if log is None or before is None:
+        return
+    try:
+        import torch
+        free_a, _total = torch.cuda.mem_get_info()
+        log(f"   released GPU memory{note}: reserved "
+            f"{before[0]:.0f} -> {torch.cuda.memory_reserved() / 2 ** 20:.0f} MB, "
+            f"free {before[1]:.0f} -> {free_a / 2 ** 20:.0f} MB "
+            f"of {before[2]:.0f} MB")
+    except Exception:
+        pass
+
+
+def debayer_verdict(t_gpu: float, t_cpu: float) -> dict:
+    """Should the demosaic run on the card?
+
+    Pure arithmetic, split out so it can be tested with exact numbers instead
+    of sleep-based timings.
+    """
+    t_gpu = max(float(t_gpu), 1e-9)
+    t_cpu = max(float(t_cpu), 1e-9)
+    gain = t_cpu / t_gpu
+    return {
+        "cpu_fps": 1.0 / t_cpu,
+        "gpu_fps": 1.0 / t_gpu,
+        "gain": gain,
+        "use_gpu": gain >= DEBAYER_GAIN_MIN,
+    }
+
+
+def _debayer_cpu_fn():
+    """The shipped numba demosaic, imported if possible, loaded by path if not.
+
+    Importing setiastro.saspro.legacy runs its __init__, which pulls
+    image_manager -> xisf -> lz4; loading numba_utils straight off disk keeps a
+    CLI run working when that chain is unavailable. The module is registered
+    under its real dotted name either way, because numba's on-disk cache keys
+    on the module name and a mismatch makes it fail to reload its own entries.
+    """
+    try:
+        from setiastro.saspro.legacy.numba_utils import debayer_fits_fast
+        return debayer_fits_fast
+    except Exception:
+        pass
+    try:
+        import importlib.util
+        here = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(here, "legacy", "numba_utils.py")
+        name = "setiastro.saspro.legacy.numba_utils"
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod.debayer_fits_fast
+    except Exception:
+        return None
+
+
+def _debayer_mosaic(h, w, bp="RGGB", seed=4):
+    """A sky-like CFA mosaic to demosaic.
+
+    Per-channel sky levels so the colour work is real rather than grey, an LP
+    gradient, read noise, and stars dense and bright enough that both the
+    direction-gradient branches and the near-clip blend actually execute — the
+    blend is skipped entirely on a frame with nothing near saturation, and
+    timing the cheap path would flatter both backends unevenly.
+    """
+    rng = np.random.default_rng(seed)
+    chan = {"RGGB": (0, 1, 1, 2), "BGGR": (2, 1, 1, 0),
+            "GRBG": (1, 0, 2, 1), "GBRG": (1, 2, 0, 1)}[bp.upper()]
+    yy, xx = np.indices((h, w), dtype=np.int32)
+    phase = ((yy & 1) << 1) | (xx & 1)
+    cap = np.asarray(chan, np.int8)[phase]
+    img = np.asarray([0.040, 0.065, 0.052], np.float32)[cap]
+    img = img + (1.2e-5 * xx + 0.9e-5 * yy).astype(np.float32)
+    img += rng.standard_normal((h, w)).astype(np.float32) * 0.004
+    n = max(120, (h * w) // 20000)
+    gy, gx = np.mgrid[-3:4, -3:4].astype(np.float32)
+    g = np.exp(-(gx ** 2 + gy ** 2) / (2 * 1.4 ** 2)).astype(np.float32)
+    for y, x, a in zip(rng.integers(5, h - 5, n), rng.integers(5, w - 5, n),
+                       rng.uniform(0.05, 1.3, n).astype(np.float32)):
+        img[y - 3:y + 4, x - 3:x + 4] += a * g
+    return np.ascontiguousarray(np.clip(img, 0.0, None), dtype=np.float32)
+
+
+def _save_debayer(out, save, log):
+    if not save:
+        return out
+    try:
+        from PyQt6.QtCore import QSettings
+        s = QSettings()
+        s.setValue(KEY_DEBAYER_GPU, bool(out["use_gpu"]))
+        # Record what was measured and on what. chunk_height and gpu_warp do
+        # not, which makes a stale verdict indistinguishable from a deliberate
+        # preference after a GPU or sensor change; this stage can tell.
+        s.setValue(KEY_DEBAYER_GPU_STAMP, hardware_stamp())
+        s.setValue(KEY_DEBAYER_GPU_MP, float(out.get("mp") or 0.0))
+        s.sync()
+        out["saved"] = True
+    except Exception:
+        out["saved"] = False
+    log("   Saved." if out["saved"] else
+        "   Could not write settings (no Qt?); result not persisted.")
+    return out
+
+
+def debayer_gpu_enabled(frame_mp: float | None = None) -> bool:
+    """Was the GPU demosaic measured as the winner on THIS hardware?
+
+    False when the hardware stamp no longer matches (GPU, driver, torch or core
+    count changed) or when the frame is far from the size that was measured.
+    A hand-set value with no stamp is honoured as-is.
+    """
+    try:
+        from PyQt6.QtCore import QSettings
+        s = QSettings()
+        if not bool(s.value(KEY_DEBAYER_GPU, False, type=bool)):
+            return False
+        stamp = str(s.value(KEY_DEBAYER_GPU_STAMP, "") or "")
+        if stamp and stamp != hardware_stamp():
+            return False
+        if frame_mp:
+            try:
+                measured = float(s.value(KEY_DEBAYER_GPU_MP, 0.0) or 0.0)
+            except Exception:
+                measured = 0.0
+            if measured > 0.0:
+                ratio = float(frame_mp) / measured
+                if ratio > 1.5 or ratio < (1.0 / 1.5):
+                    return False
+        return True
+    except Exception:
+        return False
+
+
+def tune_debayer(frame_shape=(3000, 4000),
+                 *,
+                 pattern: str = "RGGB",
+                 method: str = "rcd",
+                 status_cb=None,
+                 cancel_cb=None,
+                 save: bool = True) -> dict:
+    """
+    Decide whether the Bayer demosaic should use the GPU on this machine.
+
+    Returns {"use_gpu", "t_gpu", "t_cpu", "gain", "deviation", "method",
+             "pattern", "mp", "saved"}.
+    """
+    log = status_cb or (lambda *_: None)
+    h, w = int(frame_shape[0]), int(frame_shape[1])
+    meth = (method or "rcd").lower()
+    pat = (pattern or "RGGB").upper()
+    out = {"use_gpu": False, "t_gpu": None, "t_cpu": None, "gain": 1.0,
+           "deviation": None, "method": meth, "pattern": pat,
+           "mp": (h * w) / 1e6, "saved": False}
+
+    log(f"⚙️  Tuning the Bayer demosaic for {w}x{h} ({meth.upper()}, {pat}).")
+    log("    The numba kernel is parallel, so one frame already uses every "
+        "core — this asks whether the card beats ALL of them, not one worker.")
+
+    cpu_fn = _debayer_cpu_fn()
+    if cpu_fn is None:
+        log("   Could not reach debayer_fits_fast to compare against; "
+            "leaving it on the CPU.")
+        return _save_debayer(out, save, log)
+
+    try:
+        from setiastro.saspro.torch_calibration import (
+            GPU_DEBAYER_METHODS, debayer_backend_note, debayer_gpu,
+            debayer_gpu_available)
+    except Exception as e:
+        log(f"   torch_calibration unavailable ({type(e).__name__}); "
+            f"leaving it on the CPU.")
+        return _save_debayer(out, save, log)
+
+    if meth not in GPU_DEBAYER_METHODS:
+        log(f"   '{meth}' has no GPU implementation (only "
+            f"{', '.join(GPU_DEBAYER_METHODS)}); leaving it on the CPU.")
+        return _save_debayer(out, save, log)
+    if not debayer_gpu_available():
+        log("   No GPU device for demosaicing; leaving it on the CPU.")
+        return _save_debayer(out, save, log)
+    log(f"   backend: {debayer_backend_note()}")
+
+    img = _debayer_mosaic(h, w, pat)
+
+    # Release anything the earlier stages left reserved on the device. The
+    # demosaic stage runs last, right after the warp stage has had the card,
+    # and torch's caching allocator holds blocks it is no longer using. On an
+    # 8 GB card with a 46.8 Mpx frame that reserve is the difference between
+    # fitting and not.
+    try:
+        import torch as _t
+        if _t.cuda.is_available():
+            _t.cuda.empty_cache()
+            _t.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
+
+    _why = []
+
+    def _gpu():
+        return debayer_gpu(img, pat, method=meth, status_cb=_why.append)
+
+    def _cpu():
+        return cpu_fn(img, pat, cfa_drizzle=False, method=meth)
+
+    def _best(fn, reps):
+        """(seconds, None) on success, else (None, 'cancelled'|'declined').
+
+        These were one return value before, which meant a GPU path that
+        declined on its second frame was reported to the user as "cancelled" --
+        a message about something they did, for something the code did.
+        """
+        best = None
+        for _ in range(reps):
+            if cancel_cb is not None and cancel_cb():
+                return None, "cancelled"
+            t0 = time.perf_counter()
+            r = fn()
+            dt = time.perf_counter() - t0
+            if r is None:
+                return None, "declined"
+            best = dt if best is None else min(best, dt)
+        return best, None
+
+    try:
+        # Warm both before the clock. The card pays a context plus kernel
+        # autotune on its first call and numba pays its JIT; either one inside
+        # a timed rep invents a winner.
+        first = _gpu()
+        if first is None:
+            log(f"   The GPU demosaic declined this frame: "
+                f"{_why[-1] if _why else 'no reason given'}; "
+                f"leaving it on the CPU.")
+            return _save_debayer(out, save, log)
+        ref = _cpu()
+        t_gpu, why_gpu = _best(_gpu, DEBAYER_REPS)
+        t_cpu, why_cpu = _best(_cpu, DEBAYER_REPS)
+    except Exception as e:
+        log(f"   Demosaic timing failed ({type(e).__name__}: {e}); "
+            f"leaving it on the CPU.")
+        return _save_debayer(out, save, log)
+
+    if "cancelled" in (why_gpu, why_cpu):
+        log("   cancelled.")
+        return _save_debayer(out, save, log)
+    if t_gpu is None:
+        log(f"   The GPU demosaic worked once and then declined: "
+            f"{_why[-1] if _why else 'no reason given'}.")
+        log("   That is usually device memory at this frame size rather than a "
+            "card that cannot do it at all — the first frame fits on a clear "
+            "device and the repeat does not.")
+        try:
+            import torch as _t
+            if _t.cuda.is_available():
+                _free, _tot = _t.cuda.mem_get_info()
+                log(f"   device: {_free/2**20:.0f} MB free of "
+                    f"{_tot/2**20:.0f} MB, peak this run "
+                    f"{_t.cuda.max_memory_allocated()/2**20:.0f} MB")
+        except Exception:
+            pass
+        return _save_debayer(out, save, log)
+    if t_cpu is None:
+        log("   The CPU demosaic returned nothing; leaving it on the CPU.")
+        return _save_debayer(out, save, log)
+
+    # Agreement check before endorsing the card, in the spirit of
+    # _rejection_gpu_ok: a path that is faster and wrong is worse than slow.
+    try:
+        agree_ok, dev, agree_note = _debayer_agreement(ref, first, meth)
+    except Exception as e:
+        log(f"   Could not compare GPU output against CPU "
+            f"({type(e).__name__}: {e}); leaving it on the CPU.")
+        return _save_debayer(out, save, log)
+
+    out["deviation"] = dev
+    if not agree_ok:
+        log(f"   ⚠️ GPU and CPU demosaics {agree_note} — refusing the GPU "
+            f"path regardless of speed.")
+        return _save_debayer(out, save, log)
+
+    out["t_gpu"], out["t_cpu"] = t_gpu, t_cpu
+    v = debayer_verdict(t_gpu, t_cpu)
+    out["gain"] = v["gain"]
+    out["use_gpu"] = v["use_gpu"]
+
+    log(f"   output agreement  {agree_note}")
+    log(f"   GPU               {t_gpu:7.3f} s/frame   "
+        f"({v['gpu_fps']:5.2f} frames/s)")
+    log(f"   CPU, numba all-core {t_cpu:7.3f} s/frame   "
+        f"({v['cpu_fps']:5.2f} frames/s)")
+
+    pct = abs(v["gain"] - 1.0) * 100.0
+    if v["use_gpu"]:
+        log(f"✅ GPU demosaic ON: the card is {pct:.0f}% faster per frame than "
+            f"every core at once, and it hands those cores back to the rest "
+            f"of normalization.")
+    elif v["gain"] >= 1.0:
+        log(f"✅ GPU demosaic OFF: the card is only {pct:.0f}% faster, under "
+            f"the {(DEBAYER_GAIN_MIN - 1) * 100:.0f}% needed to be worth the "
+            f"VRAM and the context. Your CPU is doing well here.")
+    else:
+        log(f"✅ GPU demosaic OFF: your CPU is {pct:.0f}% faster than the "
+            f"card at this. Keeping the numba kernel.")
+    return _save_debayer(out, save, log)
+
+
 def tune_all(frame_shape=(3000, 4000),
              *,
              n_frames: int = 24,
@@ -1443,19 +1921,37 @@ def tune_all(frame_shape=(3000, 4000),
     the measured answer on a 3070 Ti beside a 36-core Xeon.
     """
     log = status_cb or (lambda *_: None)
-    det = tune(frame_shape, status_cb=log, cancel_cb=cancel_cb, save=save)
-    if cancel_cb is not None and cancel_cb():
-        return {"detection": det, "band": None, "warp": None}
-    log("")
-    band = tune_band_height(frame_shape, n_frames, channels, algo,
-                            status_cb=log, cancel_cb=cancel_cb, save=save,
-                            ram_cap_rows=ram_cap_rows)
-    if cancel_cb is not None and cancel_cb():
-        return {"detection": det, "band": band, "warp": None}
-    log("")
-    warp = tune_warp(frame_shape, status_cb=log, cancel_cb=cancel_cb,
-                     save=save)
-    return {"detection": det, "band": band, "warp": warp}
+    # Release between stages, not only at the end: a reserve left by one stage
+    # is invisible to the next, which reads it as a card that is already full.
+    try:
+        det = tune(frame_shape, status_cb=log, cancel_cb=cancel_cb, save=save)
+        _release_gpu(log, " after star detection")
+        if cancel_cb is not None and cancel_cb():
+            return {"detection": det, "band": None, "warp": None,
+                    "debayer": None}
+        log("")
+        band = tune_band_height(frame_shape, n_frames, channels, algo,
+                                status_cb=log, cancel_cb=cancel_cb, save=save,
+                                ram_cap_rows=ram_cap_rows)
+        _release_gpu(log, " after the band sweep")
+        if cancel_cb is not None and cancel_cb():
+            return {"detection": det, "band": band, "warp": None,
+                    "debayer": None}
+        log("")
+        warp = tune_warp(frame_shape, status_cb=log, cancel_cb=cancel_cb,
+                         save=save)
+        _release_gpu(log, " after the warp A/B")
+        if cancel_cb is not None and cancel_cb():
+            return {"detection": det, "band": band, "warp": warp,
+                    "debayer": None}
+        log("")
+        deb = tune_debayer(frame_shape, status_cb=log, cancel_cb=cancel_cb,
+                           save=save)
+        return {"detection": det, "band": band, "warp": warp, "debayer": deb}
+    finally:
+        # Whatever happened -- finished, cancelled, or raised -- the app should
+        # not keep holding the card.
+        _release_gpu(log, " (optimizer finished)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1479,7 +1975,13 @@ if __name__ == "__main__":
     _w = int(_args[1]) if len(_args) > 1 else 4000
     _n = int(_args[2]) if len(_args) > 2 else None
 
-    if "--warp" in _flags:
+    if "--debayer" in _flags:
+        out = tune_debayer((_h, _w), status_cb=_cli_print, save=False)
+        print()
+        print(f"RESULT: debayer_gpu={out['use_gpu']} t_gpu={out['t_gpu']} "
+              f"t_cpu={out['t_cpu']} gain={out['gain']:.3f} "
+              f"deviation={out['deviation']}")
+    elif "--warp" in _flags:
         out = tune_warp((_h, _w), status_cb=_cli_print, save=False)
         print()
         print(f"RESULT: gpu_warp={out['use_gpu']} t_gpu={out['t_gpu']} "

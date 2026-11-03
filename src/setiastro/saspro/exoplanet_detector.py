@@ -111,21 +111,19 @@ def _configure_simbad_endpoint():
     version that lacks one of these attributes doesn't break the others.
     """
     host = cds_health.current_server()
-    try:
-        import astroquery.simbad as _aqs
-        for setter in (
-            lambda: setattr(_aqs.conf, "server", host),
-            lambda: setattr(_aqs.conf, "timeout", int(_SIMBAD_TIMEOUT_S)),
-            lambda: setattr(Simbad, "timeout", int(_SIMBAD_TIMEOUT_S)),
-            lambda: setattr(Simbad, "TIMEOUT", int(_SIMBAD_TIMEOUT_S)),
-        ):
-            try:
-                setter()
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return host
+    applied = cds_health.apply_server(host)
+    for setter in (
+        lambda: setattr(Simbad, "timeout", int(_SIMBAD_TIMEOUT_S)),
+        lambda: setattr(Simbad, "TIMEOUT", int(_SIMBAD_TIMEOUT_S)),
+    ):
+        try:
+            setter()
+        except Exception:
+            pass
+    if not applied:
+        print(f"[DEBUG] astroquery refused SIMBAD server {host!r} — "
+              f"queries would go to the default host instead.")
+    return host, applied
 
 
 def _new_simbad():
@@ -144,8 +142,13 @@ def _new_simbad():
     (which new instances inherit) AND this sets the attribute directly on
     the instance we are about to use, under both spellings.
     """
-    _configure_simbad_endpoint()
+    host, applied = _configure_simbad_endpoint()
     s = Simbad()
+    if applied:
+        try:
+            s.server = host
+        except Exception:
+            pass
     for setter in (
         lambda: setattr(s, "timeout", int(_SIMBAD_TIMEOUT_S)),
         lambda: setattr(s, "TIMEOUT", int(_SIMBAD_TIMEOUT_S)),
@@ -161,11 +164,39 @@ def _new_simbad():
     return s
 
 
+def _new_vizier(**kwargs):
+    """
+    Build a bounded Vizier client pointed at the chosen VizieR mirror.
+
+    VizieR runs on different hosts from the SIMBAD TAP endpoint, so it
+    survives a SIMBAD-only fault -- but vizier.cds.unistra.fr is still a
+    Strasbourg host, so a CDS-wide outage takes it down too. Hence a
+    mirror here as well, and the same bounded timeout either way.
+    """
+    kwargs.setdefault("timeout", int(_VIZIER_TIMEOUT_S))
+    v = Vizier(**kwargs)
+    try:
+        v.VIZIER_SERVER = cds_health.vizier_server()
+    except Exception:
+        pass
+    return v
+
+
 def _configure_vizier_timeout():
-    """Bound VizieR the same way. VizieR is CDS infrastructure too."""
+    """Bound the module-level Vizier object and point it at the mirror."""
+    host = cds_health.vizier_server()
+    try:
+        import astroquery.vizier as _aqv
+        try:
+            _aqv.conf.server = host
+        except Exception:
+            pass
+    except Exception:
+        pass
     for setter in (
         lambda: setattr(Vizier, "TIMEOUT", int(_VIZIER_TIMEOUT_S)),
         lambda: setattr(Vizier, "timeout", int(_VIZIER_TIMEOUT_S)),
+        lambda: setattr(Vizier, "VIZIER_SERVER", host),
     ):
         try:
             setter()
@@ -1150,6 +1181,64 @@ class ExoPlanetWindow(QDialog):
         ef.addRow("Comparison stars (k):", self.ensemble_spin)
         layout.addWidget(ens_box)
 
+        cds_box = QGroupBox("CDS / SIMBAD")
+        cds_form = QFormLayout(cds_box)
+
+        _pref, _pinned = cds_health.server_preference()
+        self.cds_server_combo = QComboBox()
+        self.cds_server_combo.addItem("Automatic (Strasbourg, then Harvard)", "")
+        for _host in cds_health.MIRRORS:
+            self.cds_server_combo.addItem(_host, _host)
+        _i = self.cds_server_combo.findData(_pref)
+        self.cds_server_combo.setCurrentIndex(_i if _i >= 0 else 0)
+        self.cds_server_combo.setToolTip(
+            "Which SIMBAD mirror to try first.\n\n"
+            "Harvard (simbad.harvard.edu) is the US mirror \u2014 the same "
+            "machine the web UI calls simbad.cfa.harvard.edu, but that alias "
+            "is not a name astroquery accepts, so pick it from this list "
+            "rather than typing it."
+        )
+        cds_form.addRow("SIMBAD mirror:", self.cds_server_combo)
+
+        self.cds_pin_cb = QCheckBox("Don't fall back to the other mirror")
+        self.cds_pin_cb.setChecked(_pinned)
+        self.cds_pin_cb.setToolTip(
+            "If your network reaches one mirror and not the other, failing "
+            "over just costs a timeout on every lookup."
+        )
+        cds_form.addRow("", self.cds_pin_cb)
+
+        self.cds_vizier_combo = QComboBox()
+        self.cds_vizier_combo.addItem("Automatic (Strasbourg)", "")
+        for _host in cds_health.VIZIER_MIRRORS:
+            self.cds_vizier_combo.addItem(_host, _host)
+        _vi = self.cds_vizier_combo.findData(cds_health.vizier_server())
+        self.cds_vizier_combo.setCurrentIndex(_vi if _vi > 0 else 0)
+        cds_form.addRow("VizieR mirror (VSX, APASS):", self.cds_vizier_combo)
+
+        self.cds_status_label = QLabel(cds_health.status_text())
+        self.cds_status_label.setWordWrap(True)
+        cds_form.addRow("Status:", self.cds_status_label)
+
+        _test_btn = QPushButton("Test now")
+
+        def _test_cds():
+            cds_health.set_server_preference(
+                self.cds_server_combo.currentData() or "",
+                pin=self.cds_pin_cb.isChecked(),
+                vizier=self.cds_vizier_combo.currentData() or "",
+            )
+            self.cds_status_label.setText("Probing\u2026")
+            QApplication.processEvents()
+            cds_health.probe(force=True)
+            self.cds_status_label.setText(
+                cds_health.status_text() + "\n" + cds_health.status_detail())
+
+        _test_btn.clicked.connect(_test_cds)
+        cds_form.addRow("", _test_btn)
+
+        layout.addWidget(cds_box)
+
         ana_box = QGroupBox("Analysis (period search)")
         form = QFormLayout(ana_box)
         self.ls_samp_spin = QSpinBox(); self.ls_samp_spin.setRange(1, 100); self.ls_samp_spin.setValue(self.ls_samples_per_peak)
@@ -1177,6 +1266,11 @@ class ExoPlanetWindow(QDialog):
             self.sep_threshold   = self.sep_spin.value()
             self.border_fraction = self.border_spin.value()
             self.ensemble_k      = self.ensemble_spin.value()
+            cds_health.set_server_preference(
+                self.cds_server_combo.currentData() or "",
+                pin=self.cds_pin_cb.isChecked(),
+                vizier=self.cds_vizier_combo.currentData() or "",
+            )
             self.ls_samples_per_peak = self.ls_samp_spin.value()
             self.bls_min_period        = self.bls_min_spin.value()
             self.bls_max_period        = self.bls_max_spin.value()
@@ -3001,8 +3095,8 @@ class ExoPlanetWindow(QDialog):
             # hosts from the SIMBAD TAP endpoint, so this is a genuine
             # fallback when SIMBAD alone is broken. It is only bounded, so a
             # Strasbourg-wide outage costs one timeout instead of hanging.
-            v = Vizier(columns=["Name", "RAJ2000", "DEJ2000"], catalog="B/vsx",
-                       timeout=int(_VIZIER_TIMEOUT_S))
+            v = _new_vizier(columns=["Name", "RAJ2000", "DEJ2000"],
+                            catalog="B/vsx")
             v.ROW_LIMIT = 25
             tbls = v.query_region(coord, radius=radius_arcsec*u.arcsec)
         except Exception as e:
@@ -3121,15 +3215,35 @@ class ExoPlanetWindow(QDialog):
         # region lookups this one genuinely cannot proceed without CDS, and
         # the right behaviour is to say so in ~4 s rather than freeze.
         if not cds_health.simbad_available():
-            QMessageBox.warning(
-                self, "SIMBAD Unavailable",
-                "Name resolution needs SIMBAD, and CDS is not reachable "
-                f"right now.\n\n{cds_health.status_text()}\n\n"
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("SIMBAD Unavailable")
+            box.setText("Name resolution needs SIMBAD, and no CDS mirror "
+                        "is reachable right now.")
+            box.setInformativeText(
                 "Resolving a name to coordinates has no offline equivalent, "
                 "so this lookup can't run. You can still select the star "
                 "directly in the image, or paste its RA/Dec if you have "
-                "them.\n\nCDS status: https://cds.unistra.fr"
+                "them.\n\n"
+                "If one mirror works for you and the other doesn't, pick it "
+                "under the wrench \u2192 CDS / SIMBAD.\n\n"
+                "CDS status: https://cds.unistra.fr"
             )
+            box.setDetailedText(
+                f"{cds_health.status_text()}\n\nMirrors tried:\n"
+                f"{cds_health.status_detail()}"
+            )
+            retry = box.addButton("Re-test mirrors",
+                                  QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QMessageBox.StandardButton.Ok)
+            box.exec()
+            if box.clickedButton() is retry:
+                cds_health.reset()
+                ok_probe, srv, _d = cds_health.probe(force=True)
+                if ok_probe:
+                    QMessageBox.information(
+                        self, "SIMBAD",
+                        f"SIMBAD is reachable via {srv}. Try the lookup again.")
             return
 
         tbl = None
@@ -3601,8 +3715,8 @@ class ExoPlanetWindow(QDialog):
             try:
                 from astroquery.vizier import Vizier
                 c0, rad = _cone()
-                vz = Vizier(columns=["RAJ2000", "DEJ2000", "Vmag", "Bmag", "r_mag", "r\'mag"],
-                            row_limit=50000, timeout=int(_VIZIER_TIMEOUT_S))
+                vz = _new_vizier(columns=["RAJ2000", "DEJ2000", "Vmag", "Bmag", "r_mag", "r\'mag"],
+                                 row_limit=50000)
                 res = vz.query_region(c0, radius=rad, catalog="II/336/apass9")
                 if res:
                     tbl = res[0]
@@ -3626,8 +3740,8 @@ class ExoPlanetWindow(QDialog):
             try:
                 from astroquery.vizier import Vizier
                 c0, rad = _cone()
-                vz = Vizier(columns=["RAJ2000", "DEJ2000", "Vmag", "Bmag", "rmag"],
-                            row_limit=50000, timeout=int(_VIZIER_TIMEOUT_S))
+                vz = _new_vizier(columns=["RAJ2000", "DEJ2000", "Vmag", "Bmag", "rmag"],
+                                 row_limit=50000)
                 res = vz.query_region(c0, radius=rad, catalog="I/322A/out")
                 if res:
                     tbl = res[0]
@@ -4184,8 +4298,8 @@ class ExoPlanetWindow(QDialog):
             try:
                 from astroquery.vizier import Vizier
                 c0, rad = _cone()
-                vz = Vizier(columns=["RAJ2000", "DEJ2000", "Vmag"], row_limit=50000,
-                            timeout=int(_VIZIER_TIMEOUT_S))
+                vz = _new_vizier(columns=["RAJ2000", "DEJ2000", "Vmag"],
+                                 row_limit=50000)
                 res = vz.query_region(c0, radius=rad, catalog=cat_id)
                 if res:
                     tbl = res[0]
@@ -4229,8 +4343,7 @@ class ExoPlanetWindow(QDialog):
             try:
                 Vizier.ROW_LIMIT = 1
                 _configure_vizier_timeout()
-                v = Vizier(columns=["Name"], catalog="B/vsx",
-                           timeout=int(_VIZIER_TIMEOUT_S))
+                v = _new_vizier(columns=["Name"], catalog="B/vsx")
                 tbls = v.query_object(star_id)
                 if tbls and len(tbls) > 0 and len(tbls[0]) > 0:
                     star_id = tbls[0]["Name"][0]

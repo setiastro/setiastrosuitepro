@@ -57,6 +57,7 @@ LAST_FRAMES = "stacking/align/tune_last_frames"
 LAST_DETECT = "stacking/align/tune_last_detect"
 LAST_BAND = "stacking/align/tune_last_band"
 LAST_WARP = "stacking/align/tune_last_warp"
+LAST_DEBAYER = "stacking/align/tune_last_debayer"
 
 
 def _load_last_inputs() -> dict:
@@ -90,12 +91,14 @@ def _load_last_inputs() -> dict:
         out["detect"] = _bool(LAST_DETECT)
         out["band"] = _bool(LAST_BAND)
         out["warp"] = _bool(LAST_WARP)
+        out["debayer"] = _bool(LAST_DEBAYER)
     except Exception:
         pass
     return out
 
 
-def _save_last_inputs(h, w, frames, detect, band, warp=True) -> None:
+def _save_last_inputs(h, w, frames, detect, band, warp=True,
+                      debayer=True) -> None:
     """Remember the inputs so they are prefilled next time. Best effort."""
     try:
         from PyQt6.QtCore import QSettings
@@ -106,6 +109,7 @@ def _save_last_inputs(h, w, frames, detect, band, warp=True) -> None:
         s.setValue(LAST_DETECT, bool(detect))
         s.setValue(LAST_BAND, bool(band))
         s.setValue(LAST_WARP, bool(warp))
+        s.setValue(LAST_DEBAYER, bool(debayer))
         s.sync()
     except Exception:
         pass
@@ -118,13 +122,15 @@ class TuneWorker(QObject):
     finished = pyqtSignal(dict)
 
     def __init__(self, frame_shape, n_frames, do_detect=True, do_band=True,
-                 do_warp=True, channels=1, ram_cap_rows=None):
+                 do_warp=True, channels=1, ram_cap_rows=None,
+                 do_debayer=True):
         super().__init__()
         self._shape = frame_shape
         self._nframes = int(n_frames)
         self._do_detect = bool(do_detect)
         self._do_band = bool(do_band)
         self._do_warp = bool(do_warp)
+        self._do_debayer = bool(do_debayer)
         self._channels = int(channels)
         self._ram_cap = ram_cap_rows
         self._cancel = False
@@ -136,7 +142,8 @@ class TuneWorker(QObject):
         return self._cancel
 
     def run(self):
-        out = {"detection": None, "band": None, "warp": None, "error": None}
+        out = {"detection": None, "band": None, "warp": None,
+               "debayer": None, "error": None}
         try:
             from setiastro.saspro import stacking_worker_tune as T
             if self._do_detect:
@@ -146,6 +153,7 @@ class TuneWorker(QObject):
                     cancel_cb=self._cancelled,
                     save=True,
                 )
+                T._release_gpu(self.progress.emit, " after star detection")
             if self._do_band and not self._cancel:
                 self.progress.emit("")
                 out["band"] = T.tune_band_height(
@@ -155,6 +163,7 @@ class TuneWorker(QObject):
                     save=True,
                     ram_cap_rows=self._ram_cap,
                 )
+                T._release_gpu(self.progress.emit, " after the band sweep")
             if self._do_warp and not self._cancel:
                 self.progress.emit("")
                 out["warp"] = T.tune_warp(
@@ -163,9 +172,29 @@ class TuneWorker(QObject):
                     cancel_cb=self._cancelled,
                     save=True,
                 )
+                T._release_gpu(self.progress.emit, " after the warp A/B")
+            if self._do_debayer and not self._cancel:
+                self.progress.emit("")
+                out["debayer"] = T.tune_debayer(
+                    self._shape,
+                    status_cb=self.progress.emit,
+                    cancel_cb=self._cancelled,
+                    save=True,
+                )
         except Exception as e:
             out["error"] = f"{type(e).__name__}: {e}"
             self.progress.emit(f"⚠️ Tuning failed: {out['error']}")
+        finally:
+            # The dialog runs the stages individually when only some boxes are
+            # ticked, so tune_all's own release is not always on the path.
+            # Three of these stages allocate in THIS process and torch's
+            # caching allocator holds the high-water mark of all of them until
+            # something hands it back.
+            try:
+                from setiastro.saspro import stacking_worker_tune as _T
+                _T._release_gpu(self.progress.emit, " (optimizer finished)")
+            except Exception:
+                pass
         out["cancelled"] = self._cancel
         self.finished.emit(out)
 
@@ -248,12 +277,24 @@ class StackingTuneDialog(QDialog):
             "few percent and the CPU keeps it. A strong card with few cores "
             "is the case where this turns on."
         )
+        self.cb_debayer = QCheckBox("Bayer demosaic: GPU or CPU (OSC only)")
+        self.cb_debayer.setToolTip(
+            "Normalization debayers every OSC frame. The numba RCD kernel is "
+            "parallel, so one frame already uses every core — the question is "
+            "whether the card beats ALL of them, not one worker.\n\n"
+            "This is the setting that most depends on your particular "
+            "machine: a strong CPU next to an older card keeps the demosaic "
+            "on the CPU, while a modest CPU next to a recent card does not. "
+            "Mono frames never debayer, so this changes nothing for them."
+        )
         self.cb_detect.setChecked(bool(last.get("detect", True)))
         self.cb_band.setChecked(bool(last.get("band", True)))
         self.cb_warp.setChecked(bool(last.get("warp", True)))
+        self.cb_debayer.setChecked(bool(last.get("debayer", True)))
         form.addRow("Measure:", self.cb_detect)
         form.addRow("", self.cb_band)
         form.addRow("", self.cb_warp)
+        form.addRow("", self.cb_debayer)
 
         self.note = QLabel(
             "Measures this machine rather than guessing. Takes a few minutes; "
@@ -381,6 +422,27 @@ class StackingTuneDialog(QDialog):
         sw = QWidget(); sw.setLayout(srow)
         form.addRow("GPU warp slots:", sw)
 
+        self.cmb_debayer = QComboBox()
+        self.cmb_debayer.addItem("CPU (numba)", False)
+        self.cmb_debayer.addItem("GPU (torch)", True)
+        try:
+            from setiastro.saspro.stacking_worker_tune import (
+                gpu_debayer_methods_label)
+            _gpu_meths = gpu_debayer_methods_label()
+        except Exception:
+            _gpu_meths = "Only RCD runs"
+        self.cmb_debayer.setToolTip(
+            "Where the Bayer demosaic runs during normalization.\n\n"
+            "The CPU kernel is parallel and already uses every core for one "
+            "frame, so the card has to beat the whole CPU — not one worker. "
+            f"{_gpu_meths} on the GPU; every other method falls back to "
+            "numba automatically.\n\n"
+            "Optimize measures RCD and applies the verdict to every "
+            "GPU-capable method.\n"
+            "Writes stacking/debayer_gpu."
+        )
+        form.addRow("Bayer demosaic:", self.cmb_debayer)
+
         self.cmb_warp.currentIndexChanged.connect(self._warp_changed)
         self.cmb_detect.currentIndexChanged.connect(self._detect_changed)
         return box
@@ -436,6 +498,8 @@ class StackingTuneDialog(QDialog):
             self.cmb_warp.setCurrentIndex(
                 1 if _b(T.KEY_GPU_WARP, False) else 0)
             self.spin_slots.setValue(max(1, _i(T.KEY_GPU_WARP_SLOTS, 1)))
+            self.cmb_debayer.setCurrentIndex(
+                1 if _b(T.KEY_DEBAYER_GPU, False) else 0)
         except Exception:
             pass
         self._warp_changed()
@@ -452,6 +516,14 @@ class StackingTuneDialog(QDialog):
             s.setValue(T.BAND_KEY, int(self.spin_rows.value()))
             s.setValue(T.KEY_GPU_WARP, bool(self.cmb_warp.currentData()))
             s.setValue(T.KEY_GPU_WARP_SLOTS, int(self.spin_slots.value()))
+            s.setValue(T.KEY_DEBAYER_GPU, bool(self.cmb_debayer.currentData()))
+            # Stamp a hand-set choice with the current hardware too, or
+            # debayer_gpu_enabled would compare it against the stamp from an
+            # older measurement and quietly ignore the override.
+            try:
+                s.setValue(T.KEY_DEBAYER_GPU_STAMP, T.hardware_stamp())
+            except Exception:
+                pass
             # the same guard tune_band_height uses, so a hand-set band height
             # is not eaten by the one-time migration either
             try:
@@ -493,7 +565,7 @@ class StackingTuneDialog(QDialog):
         if self._thread is not None:
             return
         if not (self.cb_detect.isChecked() or self.cb_band.isChecked()
-                or self.cb_warp.isChecked()):
+                or self.cb_warp.isChecked() or self.cb_debayer.isChecked()):
             self._append("Nothing selected to measure.")
             return
 
@@ -506,7 +578,8 @@ class StackingTuneDialog(QDialog):
         self.btn_apply.setEnabled(False)
         self.results.setEnabled(False)
         for wdg in (self.h_spin, self.w_spin, self.n_spin,
-                    self.cb_detect, self.cb_band, self.cb_warp):
+                    self.cb_detect, self.cb_band, self.cb_warp,
+                    self.cb_debayer):
             wdg.setEnabled(False)
 
         self._worker = TuneWorker(
@@ -515,6 +588,7 @@ class StackingTuneDialog(QDialog):
             do_detect=self.cb_detect.isChecked(),
             do_band=self.cb_band.isChecked(),
             do_warp=self.cb_warp.isChecked(),
+            do_debayer=self.cb_debayer.isChecked(),
             ram_cap_rows=self._ram_cap,
         )
         self._thread = QThread(self)
@@ -548,7 +622,8 @@ class StackingTuneDialog(QDialog):
         self.btn_apply.setEnabled(True)
         self.results.setEnabled(True)
         for wdg in (self.h_spin, self.w_spin, self.n_spin,
-                    self.cb_detect, self.cb_band, self.cb_warp):
+                    self.cb_detect, self.cb_band, self.cb_warp,
+                    self.cb_debayer):
             wdg.setEnabled(True)
 
         # Remember what each backend managed, so switching the detector in
@@ -601,8 +676,18 @@ class StackingTuneDialog(QDialog):
             )
         elif warp:
             self._append("Warp:         CPU (no GPU warp available to measure)")
+        deb = result.get("debayer") or {}
+        if deb.get("t_gpu") is not None:
+            self._append(
+                f"Demosaic:     {'GPU' if deb['use_gpu'] else 'CPU'}  "
+                f"(card {deb['t_gpu']:.2f}s vs all cores "
+                f"{deb['t_cpu']:.2f}s; {deb['gain']:.2f}x)"
+            )
+        elif deb:
+            self._append("Demosaic:     CPU (no GPU demosaic available to "
+                         "measure)")
         if (not det.get("backend") and not band.get("rows")
-                and not warp.get("t_gpu")):
+                and not warp.get("t_gpu") and not deb.get("t_gpu")):
             self._append("No usable result; settings left unchanged.")
         else:
             self._append("")
@@ -617,7 +702,8 @@ class StackingTuneDialog(QDialog):
     def _remember(self):
         _save_last_inputs(self.h_spin.value(), self.w_spin.value(),
                           self.n_spin.value(), self.cb_detect.isChecked(),
-                          self.cb_band.isChecked(), self.cb_warp.isChecked())
+                          self.cb_band.isChecked(), self.cb_warp.isChecked(),
+                          self.cb_debayer.isChecked())
 
     def closeEvent(self, ev):
         # Remember even when the window is closed without running: the point
@@ -648,7 +734,9 @@ def install_optimize_button(parent_dialog, layout, band_spinbox=None,
         btn = QPushButton("Optimize…")
         btn.setToolTip(
             "Measure this computer and set the star-detection backend, the "
-            "registration worker count, and the rows per pass."
+            "registration worker count, the rows per pass, whether the "
+            "anti-ring warp uses the GPU, and whether the Bayer demosaic "
+            "does."
         )
 
         def _open():
