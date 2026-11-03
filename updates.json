@@ -1,10 +1,10 @@
 {
-  "version": "1.23.6",
+  "version": "1.23.7",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.6/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.6/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.6/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.6/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.7/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.7/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.7/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.7/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro\n\nV1.23.6\nMajor update to Star Alignment and Registration: Introducing Optimization. This will determine the best under the hood parameters for your system, this works hand in hand with star alignment, star detection, and integration. Star alignment has been changed so what can run on hardware acceleration has updates to allow that and also to actually test your system for the optimal settings. No more guessing how many rows are needed, how many workers you should be using, or if the gpu for a task is better than your cpu. Access Optimization either in Stacking Suite Settings or in Stellar Registration Advanced Settings.\n\nThis has led to a nearly 2x increase in speed during Registration/Star Alignment.\n\nThere were also PR's from Spec-Chum and Grm that improved GPU utilization and efficiency during integration and allows for collapsable groups in the Workflow tool, respectively. Integration now with this update and the Optimizer should run >15% faster depending on GPU. You will also find changes inside drizzle and rejection for speed increases.\n\nBlink new Feature: PreLoad vs Stream. PreLoad is the current normal behavior. Stream is when you are loading many many many images. It will not load them in RAM but instead just open them on demand when you click on one. Makes it slower to flip between images, but much much faster to load the list in and does not need nearly the RAM requirements. You also have the option to choose if the image is debayered, again time saver and RAM reduction\n\nExoplanet/Transient Detector now can use the various Simbad mirror sites if the main Simbad site is down.\n\nAll in, this is a very big update under the hood with 11 new modules and 10,000 lines in previous modules changed!"
+  "notes": "Seti Astro Suite Pro\n\nV1.23.7\nDebayer for RCD and AHD are now hardware accelerated. Verify hardware acceleration optimization either in Stacking Suite settings -> Optimization or directly in the Debayer tool -> Optimization\n\nMajor optimizations in Stacking Suite Normalization. Expect roughly a 2x improvement for mono images and depending on hardware up to a 4x improvement in OSC images.\n\nExoplanet Transit Detector has multiple choosable mirror sites to choose from"
 }
