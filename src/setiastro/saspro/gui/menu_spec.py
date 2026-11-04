@@ -299,7 +299,7 @@ def build_categorized_menu(
     include_all_list: bool = True,
 ) -> None:
     """
-    Populate `menu` with category submenus, then the complete flat list.
+    Populate `menu` with the complete flat list, then the category submenus.
 
     A QAction may live in more than one QMenu, so each tool appears both in
     its category submenu and in the full list -- muscle memory is preserved.
@@ -310,6 +310,18 @@ def build_categorized_menu(
     groups = SUBMENUS.get(key, [])
     all_attrs = MENU_CONTENTS.get(key, [])
     categorized: set[str] = set()
+
+    every = _sorted_actions(_resolve(window, all_attrs)) if include_all_list else []
+
+    # --- ALL-FIRST ---
+    # The "All ..." submenu is the first entry in the dropdown, above the
+    # category submenus, so the flat list is one hop away from the menubar.
+    if every and not flat_list_inline:
+        all_label = ALL_LABELS.get(key, "All")
+        sub = menu.addMenu(_tr(window, all_label))
+        for act in every:
+            sub.addAction(act)
+        menu.addSeparator()
 
     for label, attrs in groups:
         acts = _resolve(window, attrs)
@@ -328,22 +340,11 @@ def build_categorized_menu(
         for act in _sorted_actions(leftover_acts):
             sub.addAction(act)
 
-    if not include_all_list:
-        return
-
-    every = _sorted_actions(_resolve(window, all_attrs))
-    if not every:
-        return
-
-    menu.addSeparator()
-    if flat_list_inline:
+    # Inline flat list stays at the bottom of the menu.
+    if every and flat_list_inline:
+        menu.addSeparator()
         for act in every:
             menu.addAction(act)
-    else:
-        all_label = ALL_LABELS.get(key, "All")
-        sub = menu.addMenu(_tr(window, all_label))
-        for act in every:
-            sub.addAction(act)
 
 
 # ---------------------------------------------------------------------------

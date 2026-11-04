@@ -128,6 +128,35 @@ _SK_CENTER1 = "NBExtract/Center_Line1"
 _SK_CENTER2 = "NBExtract/Center_Line2"
 _SK_MAX_CAL = "NBExtract/MaxCalStars"
 
+#: Per-filter bandpass memory. Every entry in the dropdown keeps its own
+#: centers, bandwidths and (for Custom) line names, so editing the bandwidth
+#: for one filter and switching away no longer discards it. The flat
+#: _SK_BW*/_SK_CENTER* keys above are kept for backward compatibility and
+#: are still written, but these are what _on_preset_changed reads.
+_SK_FILTERS = "NBExtract/Filters"
+
+
+def _preset_slug(name: str) -> str:
+    """
+    Turn a preset name into something safe to use as a QSettings key.
+
+    This is not cosmetic: QSettings treats "/" as a GROUP separator, and
+    three of the four preset names contain one. "Ha / OIII" used verbatim
+    would silently create a nested group "Ha " holding a subgroup " OIII",
+    and the values would land somewhere nobody would think to look -- on
+    Windows, a pair of stray registry keys.
+
+    Non-ASCII is folded out for the same reason: "SII / Hβ" would otherwise
+    carry a beta into a key that has to survive a Windows registry export,
+    a macOS plist and a Linux INI file. The four preset names stay distinct
+    without it ("SII_H"), and a slug only has to be unique, not readable.
+    """
+    s = "".join(ch if (ch.isascii() and ch.isalnum()) else "_"
+                for ch in str(name or ""))
+    while "__" in s:
+        s = s.replace("__", "_")
+    return s.strip("_") or "preset"
+
 
 class NBExtractError(RuntimeError):
     """Raised by the headless NBExtract entry point instead of popping a modal
@@ -839,6 +868,18 @@ class NBExtractDialog(SFCCDialog):
         )
 
         self.nb_max_cal_spin.valueChanged.connect(self._redraw_fetch_histogram)
+
+        # Persist on edit, not only after a successful calibration. The old
+        # code saved from _calibrate() alone, so a user who set a bandwidth
+        # and closed the tool lost it.
+        for _sp in (self.nb_center1_spin, self.nb_center2_spin,
+                    self.nb_bw1_spin, self.nb_bw2_spin):
+            _sp.valueChanged.connect(self._save_current_filter_bandpass)
+        self.nb_line1_name.textChanged.connect(self._save_current_filter_bandpass)
+        self.nb_line2_name.textChanged.connect(self._save_current_filter_bandpass)
+        # Remember which filter was last selected, too.
+        self.nb_preset_combo.currentIndexChanged.connect(self._save_nb_settings)
+
         self._place_nb_help_button()
         self._on_preset_changed()
 
@@ -920,7 +961,15 @@ class NBExtractDialog(SFCCDialog):
 
     # ── Preset / settings ─────────────────────────────────────────────────────
 
-    def _on_preset_changed(self, _=None):
+    def _on_preset_changed(self, _=None, *, restore_saved: bool = True):
+        """
+        Bring the widgets in line with the selected filter.
+
+        `restore_saved` overlays this filter's remembered bandpass on top of
+        the preset defaults. It is on for anything the user drives, and off
+        for _apply_preset, so a headless run stays reproducible instead of
+        inheriting whatever the GUI user last typed.
+        """
         preset_name = self.nb_preset_combo.currentText()
         if preset_name not in FILTER_PRESETS:
             return
@@ -946,6 +995,13 @@ class NBExtractDialog(SFCCDialog):
                        self.nb_bw1_spin, self.nb_bw2_spin):
                 sp.blockSignals(False)
         # Custom: leave spinners at whatever the user last set
+
+        # Defaults first, then this filter's remembered values on top. In that
+        # order a half-written entry (say bw1 saved but bw2 missing) still
+        # leaves a coherent pair rather than a stale number from whichever
+        # filter happened to be selected before.
+        if restore_saved:
+            self._restore_filter_bandpass(preset_name)
 
         # Update labels — for Custom use the QLineEdit names
         if is_custom:
@@ -1079,32 +1135,142 @@ class NBExtractDialog(SFCCDialog):
 
     # ── Settings ──────────────────────────────────────────────────────────────
 
+    def _nb_filter_key(self, preset_name: str, field: str) -> str:
+        return f"{_SK_FILTERS}/{_preset_slug(preset_name)}/{field}"
+
+    def _set_spin_quietly(self, spin, value) -> None:
+        """setValue without re-triggering the save handlers."""
+        try:
+            spin.blockSignals(True)
+            spin.setValue(float(value))
+        except (TypeError, ValueError):
+            pass
+        finally:
+            spin.blockSignals(False)
+
+    def _save_current_filter_bandpass(self, *_args) -> None:
+        """
+        Remember the bandpass for the filter currently selected.
+
+        Wired to every spinner and name edit, so a value the user types is
+        kept even if they never run a calibration -- which is when the old
+        code was the only thing that saved.
+        """
+        if getattr(self, "_nb_loading_settings", False):
+            return
+        name = self.nb_preset_combo.currentText()
+        if not name:
+            return
+        try:
+            s = QSettings()
+            for field, spin in (("center1", self.nb_center1_spin),
+                                ("center2", self.nb_center2_spin),
+                                ("bw1",     self.nb_bw1_spin),
+                                ("bw2",     self.nb_bw2_spin)):
+                s.setValue(self._nb_filter_key(name, field),
+                           float(spin.value()))
+            if name == FILTER_PRESET_CUSTOM:
+                s.setValue(self._nb_filter_key(name, "name1"),
+                           self.nb_line1_name.text())
+                s.setValue(self._nb_filter_key(name, "name2"),
+                           self.nb_line2_name.text())
+        except Exception as e:
+            print(f"[NBExtract] could not save the bandpass for {name!r}: {e}")
+
+    def _restore_filter_bandpass(self, preset_name: str) -> bool:
+        """
+        Put a filter's remembered bandpass back. True if anything was found.
+
+        Values are collected before any are applied, so a settings store with
+        one unreadable entry cannot leave the spinners half-updated.
+        """
+        try:
+            s = QSettings()
+        except Exception:
+            return False
+
+        found = []
+        for field, spin in (("center1", self.nb_center1_spin),
+                            ("center2", self.nb_center2_spin),
+                            ("bw1",     self.nb_bw1_spin),
+                            ("bw2",     self.nb_bw2_spin)):
+            raw = s.value(self._nb_filter_key(preset_name, field), None)
+            if raw is None:
+                continue
+            try:
+                found.append((spin, float(raw)))
+            except (TypeError, ValueError):
+                pass
+        if not found:
+            return False
+        for spin, val in found:
+            self._set_spin_quietly(spin, val)
+
+        if preset_name == FILTER_PRESET_CUSTOM:
+            for field, edit in (("name1", self.nb_line1_name),
+                                ("name2", self.nb_line2_name)):
+                raw = s.value(self._nb_filter_key(preset_name, field), None)
+                if not raw:
+                    continue
+                try:
+                    edit.blockSignals(True)
+                    edit.setText(str(raw))
+                finally:
+                    edit.blockSignals(False)
+        return True
+
     def _load_nb_settings(self):
         s = QSettings()
-        preset = s.value(_SK_PRESET, "Ha / OIII")
-        idx = self.nb_preset_combo.findText(preset)
-        if idx >= 0:
-            self.nb_preset_combo.setCurrentIndex(idx)
-        for key, spin in (
-            (_SK_BW1,     self.nb_bw1_spin),
-            (_SK_BW2,     self.nb_bw2_spin),
-            (_SK_CENTER1, self.nb_center1_spin),
-            (_SK_CENTER2, self.nb_center2_spin),
-        ):
-            val = s.value(key, None)
-            if val is not None:
+        # Guards the save handlers: setCurrentIndex and setValue below both
+        # emit, and without this the act of loading would write the values
+        # straight back out -- harmless for the current filter, but it would
+        # stamp the migrated numbers onto whatever got selected on the way.
+        self._nb_loading_settings = True
+        try:
+            preset = s.value(_SK_PRESET, "Ha / OIII")
+            idx = self.nb_preset_combo.findText(preset)
+            if idx >= 0:
+                self.nb_preset_combo.setCurrentIndex(idx)
+
+            # setCurrentIndex only emits when the index actually CHANGES, and
+            # the saved preset is usually the one already showing, so the
+            # restore inside _on_preset_changed cannot be relied on here.
+            name = self.nb_preset_combo.currentText()
+            if not self._restore_filter_bandpass(name):
+                # MIGRATION: no per-filter entry yet. Older builds kept one
+                # flat set of numbers for whichever filter was last used, so
+                # adopt them for this preset; from here on they are its own.
+                for key, spin in (
+                    (_SK_BW1,     self.nb_bw1_spin),
+                    (_SK_BW2,     self.nb_bw2_spin),
+                    (_SK_CENTER1, self.nb_center1_spin),
+                    (_SK_CENTER2, self.nb_center2_spin),
+                ):
+                    val = s.value(key, None)
+                    if val is not None:
+                        self._set_spin_quietly(spin, val)
+
+            max_cal = s.value(_SK_MAX_CAL, 300)
+            if hasattr(self, "nb_max_cal_spin"):
                 try:
-                    spin.setValue(float(val))
+                    self.nb_max_cal_spin.setValue(int(max_cal))
                 except Exception:
                     pass
-        max_cal = s.value(_SK_MAX_CAL, 300)
-        if hasattr(self, "nb_max_cal_spin"):
-            try:
-                self.nb_max_cal_spin.setValue(int(max_cal))
-            except Exception:
-                pass
+        finally:
+            self._nb_loading_settings = False
 
-    def _save_nb_settings(self):
+        # Seed this filter's entry so the migrated (or default) numbers are
+        # already there next session even if nothing is touched.
+        self._save_current_filter_bandpass()
+
+    def _save_nb_settings(self, *_args):
+        # *_args because this is connected to nb_max_cal_spin.valueChanged,
+        # which emits an int. Without it every edit of "max calibration
+        # stars" raised TypeError inside the signal handler -- PyQt prints
+        # the traceback and carries on, so the only visible symptom was the
+        # value quietly not persisting.
+        if getattr(self, "_nb_loading_settings", False):
+            return
         s = QSettings()
         s.setValue(_SK_PRESET,  self.nb_preset_combo.currentText())
         s.setValue(_SK_BW1,     self.nb_bw1_spin.value())
@@ -1113,6 +1279,7 @@ class NBExtractDialog(SFCCDialog):
         s.setValue(_SK_CENTER2, self.nb_center2_spin.value())
         s.setValue(_SK_MAX_CAL, self.nb_max_cal_spin.value()
                    if hasattr(self, "nb_max_cal_spin") else 300)
+        self._save_current_filter_bandpass()
         
     # ── SED loading ───────────────────────────────────────────────────────────
 
@@ -1743,8 +1910,12 @@ class NBExtractDialog(SFCCDialog):
                     f"Options: {list(FILTER_PRESETS.keys())}"
                 )
             self.nb_preset_combo.setCurrentIndex(idx)
-        # Force a consistent widget state for the (possibly unchanged) selection.
-        self._on_preset_changed()
+        # Force a consistent widget state for the (possibly unchanged)
+        # selection. restore_saved=False on purpose: a scripted run asking for
+        # "Ha / OIII" should get the documented preset, not whatever bandwidth
+        # the GUI user last typed into that dropdown entry. Anything the
+        # preset dict specifies is applied below and still wins.
+        self._on_preset_changed(restore_saved=False)
 
         if self.nb_preset_combo.currentText() == FILTER_PRESET_CUSTOM:
             if preset.get("line1_name"):

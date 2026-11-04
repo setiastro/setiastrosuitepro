@@ -533,9 +533,46 @@ def blind_seed(image: np.ndarray,
             f"{len(chosen)} built layer{'s' if len(chosen) != 1 else ''} will "
             f"be tried, coarsest first")
 
-    res = solve_blind_core(det[:, :2], w, h, chosen, fetch,
-                           scale_hint_arcsec=scale_hint_arcsec,
-                           status_cb=say)
+    # A hint is an accelerator, not a constraint -- but solve_blind_core
+    # enforces it as one, discarding any candidate outside +/-30% of it. So a
+    # hint wrong by more than that rejects the correct field without ever
+    # verifying it, and the only evidence is a bare "no match".
+    #
+    # If the hinted pass finds nothing, retry the way a bare JPEG is solved:
+    # no scale assumption, every built layer. That search is strictly a
+    # superset of the hinted one (the hint only ever removes candidates), so
+    # it can find anything the first pass could, plus whatever a bad hint was
+    # hiding. It is the slow path, which is why it is a fallback and not the
+    # default.
+    attempts = [(scale_hint_arcsec, chosen)]
+    if scale_hint_arcsec:
+        every = lib.layers_for_field(None)
+        if every:
+            attempts.append((None, every))
+
+    res = {}
+    for attempt, (hint, use_layers) in enumerate(attempts, 1):
+        if attempt > 1:
+            say(f"Blind: nothing matched under the hinted search. A scale hint "
+                f"that is WRONG is worse than none — any candidate outside "
+                f"±30% of it is discarded before it is ever verified — so "
+                f"retrying with no scale assumption at all, across all "
+                f"{len(use_layers)} built layer"
+                f"{'s' if len(use_layers) != 1 else ''}. This is the slow "
+                f"path.")
+        res = solve_blind_core(det[:, :2], w, h, use_layers, fetch,
+                               scale_hint_arcsec=hint,
+                               status_cb=say)
+        if res.get("ok"):
+            if attempt > 1 and scale_hint_arcsec:
+                ratio = res["scale_arcsec"] / float(scale_hint_arcsec)
+                say(f"Blind: solved hint-free at {res['scale_arcsec']:.3f}\"/px, "
+                    f"but the frame's metadata implied "
+                    f"{scale_hint_arcsec:.3f}\"/px — a factor of {ratio:.2f} "
+                    f"out. The solve is good; the scale metadata on this frame "
+                    f"is not, and whatever produced it is worth a look.")
+            break
+
     if not res.get("ok"):
         say(f"Blind: FAILED — {res.get('error', 'no match')}")
         return False, res.get("error", "blind solve failed")
