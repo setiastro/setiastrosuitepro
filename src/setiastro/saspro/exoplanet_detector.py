@@ -366,6 +366,82 @@ def _build_astrometry_hints(hdr: fits.Header, plane: np.ndarray):
 
     return hints
 
+# ── Photometric gain ─────────────────────────────────────────────────────
+#
+# sep's `gain` converts DATA UNITS to Poisson counts: it adds flux/gain to
+# the variance. load_image divides by the source bit depth, so one data
+# unit is 65535 ADU for 16-bit input, not one electron. The old gain=1.0
+# therefore claimed a star with ~0.1 units of total aperture flux carried
+# ~0.1 electrons -- sqrt(0.1)/0.1 = 3.2, i.e. a 3.5 mag error on every
+# measurement. That is what pushed MERR past AAVSO's 1.0 ceiling and wrote
+# "na" on every row while the magnitudes themselves stayed correct.
+#
+#     gain_eff = EGAIN[e-/ADU] * ADU_per_unit * 4
+#
+# The 4 is because bin2x2_numba AVERAGES: a binned pixel of value v holds
+# the electrons of four unbinned pixels averaging v, so four times as many
+# electrons sit behind each unit of the binned array.
+#
+# Note the noise model this completes: err=rmsmap already carries sky and
+# read noise (sep's background rms measures exactly that), and because `ds`
+# is background-subtracted the gain term adds only the star's own shot
+# noise. The two are complementary, which is why the annulus call needs the
+# same gain rather than none.
+
+_ADU_PER_UNIT = {
+    "8-bit":           255.0,
+    "16-bit":          65535.0,
+    "16-bit signed":   65535.0,
+    "32-bit unsigned": 4294967295.0,
+    "32-bit signed":   4294967295.0,
+}
+
+# ASCOM/INDI report true e-/ADU as EGAIN. A bare GAIN keyword is usually
+# the CMOS gain *setting* (0-500 on ZWO/QHY), not e-/ADU, so it is left out
+# on purpose -- using it here would be wrong by roughly 100x.
+_EGAIN_KEYS = ("EGAIN", "GAINE", "E_GAIN", "ELECGAIN")
+
+
+def _header_scalar(hdr, keys):
+    """First of `keys` present in a fits.Header or XISF-style dict, as float."""
+    if hdr is None:
+        return None
+    if isinstance(hdr, fits.Header):
+        for k in keys:
+            if k in hdr:
+                try:
+                    return float(hdr[k])
+                except (TypeError, ValueError):
+                    pass
+        return None
+    if isinstance(hdr, dict):
+        kw = None
+        im = hdr.get("image_meta")
+        if isinstance(im, dict):
+            kw = im.get("FITSKeywords")
+        if kw is None:
+            kw = hdr.get("FITSKeywords")
+        for k in keys:
+            v = None
+            if isinstance(kw, dict) and k in kw:
+                ent = kw[k]
+                v = ent[0].get("value") if isinstance(ent, list) and ent else ent
+            elif k in hdr:
+                v = hdr[k]
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    pass
+        for sub in ("fits_header", "original_header", "header"):
+            h = hdr.get(sub)
+            if isinstance(h, fits.Header):
+                r = _header_scalar(h, keys)
+                if r is not None:
+                    return r
+    return None
+
+
 # ============================================================
 # Transit search helpers — ported from exoplanet_ground_telescope_script - Kyle Lynch
 # ============================================================
@@ -927,6 +1003,32 @@ def _name_score(name: str) -> int:
     return 0
 
 
+# AAVSO's STARID and KNAME fields want the designation alone -- "V336 Aps",
+# not SIMBAD's "V* V336 Aps". That leading token is SIMBAD's object-type
+# tag (V*, **, Cl*, EM*, SV*, ...) or the literal "NAME" marker, and WebObs
+# rejects a submission that still carries it.
+#
+# The same tag is why the old VSX fallback never fired: query_object() on a
+# tagged SIMBAD id resolves nothing, so the name it was meant to replace
+# was handed straight through to the file. Resolve VSX by coordinate and
+# sanitise whatever comes back.
+def _strip_simbad_type_prefix(name: str) -> str:
+    n = " ".join(str(name or "").split())
+    if not n:
+        return ""
+    if n.upper().startswith("NAME "):
+        n = n[5:].strip()
+    head, _sep, rest = n.partition(" ")
+    if rest and head.endswith("*"):
+        n = rest.strip()
+    return " ".join(n.split())
+
+
+def _aavso_starid(name: str) -> str:
+    """SIMBAD/VSX identifier -> a form AAVSO WebObs will accept."""
+    return _strip_simbad_type_prefix(name)
+
+
 class ExoPlanetWindow(QDialog):
     def __init__(self, parent=None, wrench_path=None, settings=None):
         super().__init__(parent)
@@ -957,6 +1059,9 @@ class ExoPlanetWindow(QDialog):
         self.sep_threshold     = 5.0   # SEP σ
         self.border_fraction   = 0.10  # ignore border fraction
         self.ensemble_k        = 10    # ensemble companions
+        # e-/ADU override for the photometric gain. 0 = take EGAIN from the
+        # header, and fall back to no Poisson term if it isn't there.
+        self.camera_egain      = 0.0
 
         # Analysis
         self.ls_min_frequency     = 0.01
@@ -1173,6 +1278,22 @@ class ExoPlanetWindow(QDialog):
         fb.addRow("SEP detection σ:", self.sep_spin)
         self.border_spin = QDoubleSpinBox(); self.border_spin.setRange(0.0, 0.5); self.border_spin.setSingleStep(0.01); self.border_spin.setValue(self.border_fraction)
         fb.addRow("Border fraction:", self.border_spin)
+        self.egain_spin = QDoubleSpinBox()
+        self.egain_spin.setRange(0.0, 100.0)
+        self.egain_spin.setSingleStep(0.05)
+        self.egain_spin.setDecimals(3)
+        self.egain_spin.setValue(float(getattr(self, "camera_egain", 0.0) or 0.0))
+        self.egain_spin.setSpecialValueText("Auto (from EGAIN header)")
+        self.egain_spin.setToolTip(
+            "Camera gain in electrons per ADU, used for the shot-noise term "
+            "in MERR.\n\n"
+            "0 = read EGAIN from the frame headers. If neither is available "
+            "the shot-noise term is dropped, which understates MERR for "
+            "bright stars.\n\n"
+            "This is NOT the CMOS gain setting (0-500 on ZWO/QHY) — it is "
+            "e-/ADU, typically 0.1-10."
+        )
+        fb.addRow("Camera gain (e-/ADU):", self.egain_spin)
         layout.addWidget(photo_box)
 
         ens_box = QGroupBox("Ensemble Normalization")
@@ -1265,6 +1386,7 @@ class ExoPlanetWindow(QDialog):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.sep_threshold   = self.sep_spin.value()
             self.border_fraction = self.border_spin.value()
+            self.camera_egain    = self.egain_spin.value()
             self.ensemble_k      = self.ensemble_spin.value()
             cds_health.set_server_preference(
                 self.cds_server_combo.currentData() or "",
@@ -1374,6 +1496,7 @@ class ExoPlanetWindow(QDialog):
         self.image_paths     = sorted_paths
         self._cached_images  = []
         self._cached_headers = []
+        self._cached_bitdepths = []
         self.airmasses       = []
         self.star_list.clear()
         self.plot_widget.clear()
@@ -1391,11 +1514,13 @@ class ExoPlanetWindow(QDialog):
                 QMessageBox.warning(self, "Load Error", f"Failed to load raw frame:\n{os.path.basename(p)}")
                 self._cached_images.append(None)
                 self._cached_headers.append(None)
+                self._cached_bitdepths.append(None)
                 am = 1.0
             else:
                 img_binned = bin2x2_numba(img)
                 self._cached_images.append(img_binned)
                 self._cached_headers.append(hdr)
+                self._cached_bitdepths.append(bit_depth)
 
                 if self.exposure_time is None:
                     if isinstance(hdr, fits.Header):
@@ -1528,6 +1653,7 @@ class ExoPlanetWindow(QDialog):
         self.image_paths     = sorted_paths
         self._cached_images  = []
         self._cached_headers = []
+        self._cached_bitdepths = []
         self.airmasses       = []
 
         self.status_label.setText("Loading aligned frames…")
@@ -1543,11 +1669,13 @@ class ExoPlanetWindow(QDialog):
                 QMessageBox.warning(self, "Load Error", f"Failed to load aligned frame:\n{os.path.basename(p)}")
                 self._cached_images.append(None)
                 self._cached_headers.append(None)
+                self._cached_bitdepths.append(None)
                 am = 1.0
             else:
                 img_binned = bin2x2_numba(img)
                 self._cached_images.append(img_binned)
                 self._cached_headers.append(hdr)
+                self._cached_bitdepths.append(bit_depth)
 
                 if self.exposure_time is None:
                     if isinstance(hdr, fits.Header):
@@ -1919,6 +2047,42 @@ class ExoPlanetWindow(QDialog):
             return None
 
 
+    def _photometry_gain(self):
+        """
+        Electrons per data unit, for sep's `gain`, or None when unknown.
+
+        Order: explicit user setting, then EGAIN from the frame headers.
+        Returns None if neither is available or the bit depth doesn't pin
+        down the ADU scale -- a 32-bit float stack carries no units we can
+        infer, and guessing one is worse than dropping the Poisson term.
+        """
+        egain = float(getattr(self, "camera_egain", 0.0) or 0.0)
+        if egain <= 0.0:
+            egain = 0.0
+            for hdr in (getattr(self, "_cached_headers", None) or []):
+                v = _header_scalar(hdr, _EGAIN_KEYS)
+                # Sanity band: real e-/ADU sits around 0.1-10. A value of
+                # 100+ is almost certainly a CMOS gain setting written to
+                # the wrong keyword, and using it would under-weight the
+                # shot noise by the same factor.
+                if v is not None and 0.01 <= v <= 100.0:
+                    egain = float(v)
+                    break
+        if egain <= 0.0:
+            return None
+
+        scale = None
+        for bd in (getattr(self, "_cached_bitdepths", None) or []):
+            if bd:
+                scale = _ADU_PER_UNIT.get(str(bd).strip())
+                break
+        if not scale:
+            return None
+
+        # bin2x2_numba averages, so each binned unit stands for 4 pixels'
+        # worth of electrons.
+        return float(egain) * float(scale) * 4.0
+
     def detect_stars(self):
         self.status_label.setText("Measuring frames…")
         self.progress_bar.setVisible(True)
@@ -1927,7 +2091,9 @@ class ExoPlanetWindow(QDialog):
 
         # 0) ensure frames are cached
         if not hasattr(self, "_cached_images") or len(self._cached_images) != len(self.image_paths):
-            self._cached_images = [load_image(p)[0] for p in self.image_paths]
+            _loaded = [load_image(p) for p in self.image_paths]
+            self._cached_images    = [r[0] for r in _loaded]
+            self._cached_bitdepths = [r[2] for r in _loaded]
 
         n_frames = len(self._cached_images)
         self.progress_bar.setMaximum(n_frames)
@@ -2052,6 +2218,16 @@ class ExoPlanetWindow(QDialog):
         self.progress_bar.setMaximum(n_frames)
         self.progress_bar.setValue(0)
 
+        _gain = self._photometry_gain()
+        self._photometry_gain_used = _gain
+        if _gain:
+            print(f"[DEBUG] photometric gain: {_gain:.4g} e-/data-unit")
+        else:
+            print("[DEBUG] photometric gain unknown — Poisson term omitted; "
+                  "MERR will reflect sky/read noise and the systematic floor "
+                  "only. Set the camera gain in Settings for a complete "
+                  "error budget.")
+
         def _sum_frame(t: int):
             data_sub, _objs, rmsmap = frame_data[t]
             ds = np.maximum(data_sub, -1.0 * rmsmap)
@@ -2071,7 +2247,7 @@ class ExoPlanetWindow(QDialog):
                 try:
                     f_ap, f_err, f_flag = sep.sum_circle(
                         ds, [xsi], [ysi], r, err=rmsmap,
-                        gain=1.0,
+                        gain=_gain,
                     )
                     f_ap   = float(f_ap[0])
                     f_err  = float(f_err[0])
@@ -2083,7 +2259,7 @@ class ExoPlanetWindow(QDialog):
                 # --- annulus sky estimate (robust median × aperture area) ---
                 try:
                     ann_flux, ann_err, ann_flag = sep.sum_circann(
-                        ds, [xsi], [ysi], rin, rout, err=rmsmap,
+                        ds, [xsi], [ysi], rin, rout, err=rmsmap, gain=_gain,
                     )
                     ann_area = sep.circann_area(rin, rout)
                     ap_area  = np.pi * r * r
@@ -3563,6 +3739,7 @@ class ExoPlanetWindow(QDialog):
 
             xs_c = np.ascontiguousarray(xs_a.astype(np.float64, copy=False))
             ys_c = np.ascontiguousarray(ys_a.astype(np.float64, copy=False))
+            _mb_gain = self._photometry_gain()
 
             for t, img in enumerate(images):
                 if img is None or getattr(img, "ndim", 2) != 3 or img.shape[2] < 3:
@@ -3582,9 +3759,9 @@ class ExoPlanetWindow(QDialog):
 
                     try:
                         f_ap, f_err, _ = sep.sum_circle(ds, xs_c, ys_c, r_ap,
-                                                        err=rmsmap, gain=1.0)
+                                                        err=rmsmap, gain=_mb_gain)
                         ann_flux, ann_err, _ = sep.sum_circann(ds, xs_c, ys_c, r_in, r_out,
-                                                               err=rmsmap)
+                                                               err=rmsmap, gain=_mb_gain)
                     except Exception:
                         continue
 
@@ -3777,17 +3954,23 @@ class ExoPlanetWindow(QDialog):
 
         # -- STARID ---------------------------------------------------------
         star_id = self._query_simbad_main_id()
-        if star_id:
+        # Resolve the VSX designation by COORDINATE, not by name. VSX has
+        # no reverse index on a tagged SIMBAD id ("V* V336 Aps") or on a
+        # Gaia DR3 number, which between them cover most targets -- so the
+        # old query_object() call returned nothing and the unusable SIMBAD
+        # spelling went into the file. Whatever we settle on is stripped of
+        # its object-type tag, because AAVSO rejects a STARID carrying one.
+        _radec_for_id = self.get_selected_star_radec()
+        _vsx_id = None
+        if _radec_for_id is not None:
             try:
-                Vizier.ROW_LIMIT = 1
-                _configure_vizier_timeout()
-                v = Vizier(columns=["Name"], catalog="B/vsx",
-                           timeout=int(_VIZIER_TIMEOUT_S))
-                tbls = v.query_object(star_id)
-                if tbls and len(tbls) > 0 and len(tbls[0]) > 0:
-                    star_id = tbls[0]["Name"][0]
+                _c_for_id = SkyCoord(ra=_radec_for_id[0] * u.deg,
+                                     dec=_radec_for_id[1] * u.deg,
+                                     frame="icrs")
+                _vsx_id = self._vsx_name_near(_c_for_id, 15.0)
             except Exception as e:
-                print(f"[DEBUG] VSX lookup failed: {e}")
+                print(f"[DEBUG] VSX coordinate lookup failed: {e}")
+        star_id = _aavso_starid(_vsx_id or star_id or "")
         star_id, ok = QInputDialog.getText(
             self, "Target Star Name",
             "AAVSO STARID for this target:",
@@ -3832,7 +4015,7 @@ class ExoPlanetWindow(QDialog):
             sky = wcs.pixel_to_world(x * bf, y * bf)
             name, v = self._query_simbad_name_and_vmag(sky.ra.deg, sky.dec.deg)
             if name and (v is not None) and np.isfinite(v):
-                kname, k_idx = name, m
+                kname, k_idx = _aavso_starid(name), m
                 kstar_catalog = {"Vmag": float(v), "Bmag": None, "Rmag": None}
                 break
         if kname is None:
@@ -4011,7 +4194,10 @@ class ExoPlanetWindow(QDialog):
                     merr  = np.sqrt((LOGC ** 2) * frac2 + floor ** 2)
                 bad = ~np.isfinite(mags) | (F_T <= 0) | (F_C <= 0)
                 note = (f"{filt}: single-comparison vs member #{c_idx} "
-                        f"({band_key}={c_mag:.3f}); err incl {floor:.2f}floor")
+                        f"({band_key}={c_mag:.3f}); err incl {floor:.2f}floor"
+                        f"; ensemble not used: {comp_idx_all.size} of "
+                        f"{len(comp_members)} field stars had a catalog "
+                        f"{band_key} (need 3)")
                 if ch == "R" and r_note_extra:
                     note += r_note_extra
                 # NOT an ensemble: classic differential photometry, so CNAME is
@@ -4040,7 +4226,14 @@ class ExoPlanetWindow(QDialog):
                     merr  = np.sqrt((LOGC ** 2) * frac2 + floor ** 2)
                 bad = ~np.isfinite(mags) | (F_T <= 0) | (F_C <= 0)
                 note = (f"{filt}: check-star fallback vs {kname}"
-                        f"; err incl {floor:.2f}floor")
+                        f"; err incl {floor:.2f}floor"
+                        f"; no field star had a catalog {band_key} "
+                        f"({len(comp_members)} tried)")
+                # The check star is doing double duty as the comparison
+                # here, so it belongs in the comps[RA/Dec] provenance --
+                # otherwise that line comes out empty and the submission
+                # records nothing about what set the zero point.
+                used_comps.add(int(k_idx))
                 # Degenerate: the check star is doubling as the comparison, so
                 # it can't also be an independent check — CNAME=check with its
                 # instrumental CMAG, and KNAME/KMAG left as na.
@@ -4339,16 +4532,23 @@ class ExoPlanetWindow(QDialog):
                 return self._export_aavso_multiband(idx)
 
         star_id = self._query_simbad_main_id()
-        if star_id:
+        # Resolve the VSX designation by COORDINATE, not by name. VSX has
+        # no reverse index on a tagged SIMBAD id ("V* V336 Aps") or on a
+        # Gaia DR3 number, which between them cover most targets -- so the
+        # old query_object() call returned nothing and the unusable SIMBAD
+        # spelling went into the file. Whatever we settle on is stripped of
+        # its object-type tag, because AAVSO rejects a STARID carrying one.
+        _radec_for_id = self.get_selected_star_radec()
+        _vsx_id = None
+        if _radec_for_id is not None:
             try:
-                Vizier.ROW_LIMIT = 1
-                _configure_vizier_timeout()
-                v = _new_vizier(columns=["Name"], catalog="B/vsx")
-                tbls = v.query_object(star_id)
-                if tbls and len(tbls) > 0 and len(tbls[0]) > 0:
-                    star_id = tbls[0]["Name"][0]
+                _c_for_id = SkyCoord(ra=_radec_for_id[0] * u.deg,
+                                     dec=_radec_for_id[1] * u.deg,
+                                     frame="icrs")
+                _vsx_id = self._vsx_name_near(_c_for_id, 15.0)
             except Exception as e:
-                print(f"[DEBUG] VSX lookup failed: {e}")
+                print(f"[DEBUG] VSX coordinate lookup failed: {e}")
+        star_id = _aavso_starid(_vsx_id or star_id or "")
         if not star_id:
             star_id, ok = QInputDialog.getText(self, "Target Star Name", "Could not auto-identify.  Enter target star name for STARID:", QLineEdit.EchoMode.Normal, "")
             if not ok or not star_id.strip():
@@ -4380,7 +4580,7 @@ class ExoPlanetWindow(QDialog):
 
             name, v = self._query_simbad_name_and_vmag(sky.ra.deg, sky.dec.deg)
             if name and (v is not None) and np.isfinite(v):
-                kname, kmag, k_idx = name, v, m
+                kname, kmag, k_idx = _aavso_starid(name), v, m
                 break
         if kname is None:
             kname, ok = QInputDialog.getText(self, "Check Star Name", "Could not auto-identify a check star. Enter check-star ID:")
@@ -4580,7 +4780,21 @@ class ExoPlanetWindow(QDialog):
             cmag_field  = f"{-2.5 * np.log10(_fc):.3f}" if np.isfinite(_fc) else "na"
             kname_field = "na"
             kmag_field  = "na"
-            note_field  = f"single-comparison vs {kname}; err incl {floor:.2f} floor"
+            # Say WHY there is no ensemble, and keep the comparison's
+            # position. Previously the comps[RA/Dec] provenance existed
+            # only in the ensemble branch, so a run that fell back here
+            # lost it with no explanation -- the file then looks as though
+            # an ensemble was never attempted, when in fact the catalog
+            # lookup came up short (commonly because VizieR was
+            # unreachable, so APASS DR9 and UCAC4 returned nothing).
+            note_field  = (f"single-comparison vs {kname}; "
+                           f"err incl {floor:.2f} floor; "
+                           f"ensemble not used: {comp_idx.size} of "
+                           f"{len(comp_members)} field stars had a catalog V "
+                           f"(need 3)")
+            _cn_fb = _comp_radec_labels([k_idx])
+            if _cn_fb:
+                note_field += f"; comp[RA/Dec]: {_cn_fb}"
 
         mags = np.where(bad, np.nan, mags)
         merr = np.where(bad | ~np.isfinite(merr), np.nan, merr)
