@@ -442,6 +442,96 @@ def _header_scalar(hdr, keys):
     return None
 
 
+def _rescale_header_for_binning(hdr, bin_factor: int = 2):
+    """
+    Return a copy of `hdr` describing the same sky on a `bin_factor`-binned
+    pixel grid.
+
+    _solve_reference hands the plate solver a 2x2 binned plane, but a header
+    straight off the file describes the unbinned frame. plate_solver reads
+    it for the pixel-scale hint it cannot solve without
+    (_estimate_scale_arcsec_from_header: WCS/CD, then CDELT, then
+    PIXSCALE-style keys, then XPIXSZ * XBINNING / FOCALLEN), so uncorrected
+    it is told the scale is half what it really is.
+
+    What changes, and why:
+
+      CRPIX        (p - 0.5)/b + 0.5
+                   FITS numbers pixel CENTRES from 1, so the outer edge of
+                   pixel 1 sits at 0.5. Binning maps edges, not centres;
+                   dividing the centre directly is off by half a binned
+                   pixel.
+      CD, CDELT    x b   one binned pixel spans b unbinned ones.
+      PIXSCALE,
+      SECPIX, ...  x b   the same statement, made directly in arcsec/px.
+      XBINNING,
+      YBINNING     x b   this is where the solver expects a binning factor
+                         to live: it computes XPIXSZ * XBINNING / FOCALLEN.
+                         Scaling XPIXSZ as well would square the correction.
+
+    SIP is dropped rather than rescaled. Those coefficients carry units of
+    unbinned pixels to the (p+q)th power, so a correct rescale is
+    A_pq * b**(p + q - 1) -- easy to get subtly wrong, and the solver refits
+    SIP from scratch regardless. A seed with no distortion model is fine; a
+    seed with a wrong one is not.
+    """
+    if not isinstance(hdr, fits.Header):
+        return hdr
+    b = float(max(1, int(bin_factor)))
+    out = hdr.copy()
+    if b == 1.0:
+        return out
+
+    for k in ("CRPIX1", "CRPIX2"):
+        if k in out:
+            try:
+                out[k] = (float(out[k]) - 0.5) / b + 0.5
+            except (TypeError, ValueError):
+                pass
+
+    for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2", "CDELT1", "CDELT2",
+              "PIXSCALE", "SECPIX", "SECPIX1", "SECPIX2",
+              "SCALE", "PLATESCL", "PLTSCALE"):
+        if k in out:
+            try:
+                out[k] = float(out[k]) * b
+            except (TypeError, ValueError):
+                pass
+
+    _had_bin = False
+    for k in ("XBINNING", "YBINNING", "XBIN", "YBIN"):
+        if k in out:
+            try:
+                out[k] = int(round(float(out[k]) * b))
+                _had_bin = True
+            except (TypeError, ValueError):
+                pass
+    if not _had_bin and any(k in out for k in ("XPIXSZ", "YPIXSZ",
+                                               "PIXSIZE1", "PIXSIZE2")):
+        out["XBINNING"] = int(b)
+        out["YBINNING"] = int(b)
+
+    for k in [k for k in list(out.keys())
+              if str(k).upper().startswith(("A_", "B_", "AP_", "BP_"))]:
+        try:
+            del out[k]
+        except Exception:
+            pass
+    for k in ("CTYPE1", "CTYPE2"):
+        if k in out:
+            try:
+                out[k] = str(out[k]).replace("-SIP", "")
+            except Exception:
+                pass
+
+    try:
+        out.add_history(f"Rescaled for {int(b)}x{int(b)} software binning "
+                        f"(SASpro exoplanet tool)")
+    except Exception:
+        pass
+    return out
+
+
 # ============================================================
 # Transit search helpers — ported from exoplanet_ground_telescope_script - Kyle Lynch
 # ============================================================
@@ -2490,7 +2580,16 @@ class ExoPlanetWindow(QDialog):
                     self._wcs_bin_factor = 2  # header WCS is full-res; star coords are binned
                     H, W = plane2d.shape[:2]
                     try:
-                        center = self._wcs.pixel_to_world(W, H)
+                        # This WCS is in FULL-RES pixels while plane2d is
+                        # binned, so the frame centre sits at
+                        # (W, H) * bin_factor / 2 in its coordinates. At
+                        # bin_factor 2 that is exactly (W, H) -- which is
+                        # what the old line passed, correct by coincidence
+                        # rather than by construction. Spelled out so it
+                        # survives the factor ever changing.
+                        _bf = float(getattr(self, "_wcs_bin_factor", 2) or 2)
+                        center = self._wcs.pixel_to_world(W * _bf / 2.0,
+                                                          H * _bf / 2.0)
                         self.wcs_ra  = float(center.ra.deg)
                         self.wcs_dec = float(center.dec.deg)
                     except Exception:
@@ -2513,15 +2612,35 @@ class ExoPlanetWindow(QDialog):
 
 
         # ── Step 2: plate-solve ───────────────────────────────────────────
-        seed_hdr = self._coerce_seed_header(hdr if hdr is not None else {}, plane2d)
+        #
+        # plane2d is 2x2 binned; the header is not. plate_solver takes its
+        # pixel-scale hint straight out of this header, so handing it an
+        # unbinned one tells it the scale is half what it is.
+        #
+        # The blind path does not merely degrade on that: solve_blind_core
+        # discards any candidate outside +/-30% of the hint, and the truth
+        # is 2.0x it, so every candidate is thrown away and the solve
+        # reports "no match" on a field it had already located. The same
+        # number also sets the |AB| baseline window and picks the index
+        # layer, so it is wrong three ways before the filter even runs.
+        _BIN = 2
+        seed_hdr = _rescale_header_for_binning(
+            self._coerce_seed_header(hdr if hdr is not None else {}, plane2d),
+            _BIN)
         meta = {}
         if isinstance(hdr, fits.Header):
-            meta["original_header"] = hdr.copy()
+            meta["original_header"] = _rescale_header_for_binning(hdr, _BIN)
         elif isinstance(hdr, dict):
             meta.update(hdr)
+            # _seed_header_from_meta lets meta["wcs"] / meta["wcs_header"]
+            # OVERRIDE original_header. Both describe the unbinned grid, so
+            # leaving them in means the corrected header is quietly
+            # overwritten by the very WCS it was correcting.
+            for _k in ("wcs", "wcs_header", "fits_header"):
+                meta.pop(_k, None)
             H = self._get_best_header_for_wcs(hdr)
-            if H is not None:
-                meta["original_header"] = H.copy()
+            meta["original_header"] = (_rescale_header_for_binning(H, _BIN)
+                                       if H is not None else seed_hdr)
         else:
             meta["original_header"] = seed_hdr
 
@@ -2578,7 +2697,13 @@ class ExoPlanetWindow(QDialog):
                         self._wcs = fallback_wcs
                         H2, W2 = plane2d.shape[:2]
                         try:
-                            center = self._wcs.pixel_to_world(W2 / 2, H2 / 2)
+                            # Same correction as the reuse path above, and
+                            # here it was genuinely wrong: this WCS is
+                            # full-res, so (W2/2, H2/2) is a QUARTER of the
+                            # way into the frame, not the centre.
+                            _bf2 = float(getattr(self, "_wcs_bin_factor", 2) or 2)
+                            center = self._wcs.pixel_to_world(W2 * _bf2 / 2.0,
+                                                              H2 * _bf2 / 2.0)
                             self.wcs_ra  = float(center.ra.deg)
                             self.wcs_dec = float(center.dec.deg)
                         except Exception:
