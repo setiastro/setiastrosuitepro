@@ -425,6 +425,128 @@ _MIN_ORIENT_STARS = 12        # below this an orientation map is not worth drawi
 # sensor tilt, which shows 8-15%, and comfortably above the noise floor.
 _MIN_ABS_ELONG = 0.08
 
+# --- _SASPRO_SHAPE_FIT_V2 : begin ------------------------------------------------
+# SNR floor for stars entering a surface fit. The fit must not select on the
+# elongation it is measuring (see _orientation_mask), so this is the only
+# lower bound: below it the shape is noise regardless of how it looks.
+_MIN_FIT_SNR = 10.0
+
+# Weight cap. The fit weight is 1/sigma_e^2 and sigma_e ~ 2/SNR, so weight
+# goes as SNR^2 and the few brightest stars would otherwise own the result --
+# the same stars whose cores are clipped and therefore measure too round.
+# Capping at this percentile keeps inverse-variance weighting where it is
+# meaningful and stops the tail dominating.
+_FIT_WEIGHT_CAP_PCT = 90.0
+
+# Fraction of the data maximum at or above which a peak is treated as clipped.
+_SAT_FRAC = 0.995
+
+# The anchor regions that actually matter for a focal-plane judgement: four
+# corners, four edge midpoints, and the centre.
+_ZONE_NAMES = ("top-left", "top-centre", "top-right",
+               "left", "centre", "right",
+               "bottom-left", "bottom-centre", "bottom-right")
+_MIN_ZONE_STARS = 8
+
+
+def _estimate_sat_level(data: np.ndarray) -> Optional[float]:
+    """
+    Clipping level inferred from the pixel distribution, or None.
+
+    sat_level is threaded through _sampling_mask, _quality_filter and both
+    detectors, but was never given a value at any call site, so the
+    saturation cut never ran. Clipped stars stayed in the catalogue, and a
+    flat-topped core measures rounder than the star really is while carrying
+    the largest fit weight of anything in the frame.
+
+    A real clipped frame shows a pile-up in the top bin: many pixels at
+    exactly the same maximum. A frame with headroom does not. Requiring a
+    pile-up rather than always cutting at a fixed fraction means an
+    unsaturated frame loses no stars.
+    """
+    try:
+        d = np.asarray(data, dtype=np.float32)
+        finite = d[np.isfinite(d)]
+        if finite.size < 1000:
+            return None
+        mx = float(finite.max())
+        if not np.isfinite(mx) or mx <= 0.0:
+            return None
+        n_top = int(np.count_nonzero(finite >= mx * _SAT_FRAC))
+        # A genuine pile-up, not just the handful of pixels in the
+        # single brightest star's core.
+        if n_top < 50:
+            return None
+        return mx * _SAT_FRAC
+    except Exception:
+        return None
+
+
+def _zone_index(x: np.ndarray, y: np.ndarray, H: int, W: int) -> np.ndarray:
+    """3x3 anchor-region index (0..8), row-major from the top-left."""
+    cx = np.clip((np.asarray(x, float) / (float(W) / 3.0)).astype(int), 0, 2)
+    cy = np.clip((np.asarray(y, float) / (float(H) / 3.0)).astype(int), 0, 2)
+    return cy * 3 + cx
+
+
+def _anchor_zone_stats(x: np.ndarray, y: np.ndarray,
+                       e1: np.ndarray, e2: np.ndarray,
+                       sigma_e: np.ndarray,
+                       H: int, W: int,
+                       min_zone_stars: int = _MIN_ZONE_STARS) -> list:
+    """
+    Per-region shape summary over the nine anchor zones.
+
+    A single global surface hides exactly the thing a focal-plane check is
+    for: whether ONE corner disagrees with the rest. These are direct
+    inverse-variance means of the measured ellipticity vectors inside each
+    region -- no surface, no extrapolation -- so a zone reports what its own
+    stars say or reports that it has too few to say anything.
+
+    Each entry: name, n, e_mag, angle_deg, sig, ok.
+    'angle_deg' is in the same y-down frame as the rest of the module, i.e.
+    clockwise from horizontal as displayed. 'sig' is |e| divided by the
+    standard error of the zone's own weighted mean, measured from the
+    observed scatter of its stars, so ~3 or more is a real detection and a
+    near-round zone lands near zero.
+    """
+    z = _zone_index(x, y, H, W)
+    out = []
+    for k in range(9):
+        m = z == k
+        n = int(np.count_nonzero(m))
+        if n == 0:
+            out.append({'name': _ZONE_NAMES[k], 'n': 0, 'e_mag': float('nan'),
+                        'angle_deg': float('nan'), 'sig': 0.0, 'ok': False})
+            continue
+        w = 1.0 / np.maximum(sigma_e[m], 1e-6) ** 2
+        w = np.nan_to_num(w, nan=0.0, posinf=0.0)
+        sw = float(w.sum())
+        if sw <= 0.0:
+            out.append({'name': _ZONE_NAMES[k], 'n': n, 'e_mag': float('nan'),
+                        'angle_deg': float('nan'), 'sig': 0.0, 'ok': False})
+            continue
+        m1 = float(np.sum(w * e1[m]) / sw)
+        m2 = float(np.sum(w * e2[m]) / sw)
+        emag = math.hypot(m1, m2)
+        # Standard error from the OBSERVED scatter of this zone's own stars,
+        # not from propagated sigma_e. sigma_e ~ 2/SNR is a rule of thumb that
+        # badly understates real shape dispersion on bright stars, which would
+        # otherwise report a 170-sigma detection of a 1% elongation.
+        n_eff = (sw * sw) / max(float(np.sum(w * w)), 1e-30)
+        var = (float(np.sum(w * ((e1[m] - m1) ** 2 + (e2[m] - m2) ** 2))) / sw) / 2.0
+        se = math.sqrt(max(var, 0.0) / max(n_eff, 1.0)) if n_eff > 1.0 else float('inf')
+        out.append({
+            'name': _ZONE_NAMES[k],
+            'n': n,
+            'e_mag': emag,
+            'angle_deg': math.degrees(0.5 * math.atan2(m2, m1)) % 180.0,
+            'sig': (emag / se) if se > 0 else 0.0,
+            'ok': n >= int(min_zone_stars),
+        })
+    return out
+# --- _SASPRO_SHAPE_FIT_V2 : end --------------------------------------------------
+
 
 def _shape_stats(cat: dict, rms: float = 0.0) -> dict:
     """
@@ -546,9 +668,30 @@ def _sampling_mask(cat: dict,
 def _orientation_mask(stats: dict,
                       max_sigma_theta_deg: float = _MAX_SIGMA_THETA_DEG,
                       min_elong_snr: float = _MIN_ELONG_SNR,
-                      min_abs_elong: float = _MIN_ABS_ELONG) -> np.ndarray:
+                      min_abs_elong: float = _MIN_ABS_ELONG,
+                      for_fit: bool = False,
+                      min_snr: float = _MIN_FIT_SNR) -> np.ndarray:
     """
     Boolean mask of stars whose POSITION ANGLE is worth believing.
+
+    _SASPRO_SHAPE_FIT_V2: for_fit=True selects on measurement QUALITY only -- sampling,
+    noise, a finite angle -- and never on the value being measured.
+
+    This distinction is the whole correctness question for the surface fit.
+    The three thresholds below (|e|, elongation SNR, sigma_theta) are all
+    functions of the measured e_mag, so using them to choose which stars
+    enter a fit of e_mag keeps only the stars whose noise made them look
+    oblong, and deletes the round ones that should have pulled the result
+    toward zero. On a frame of genuinely round stars that bias alone
+    produces a smooth, confident ~0.20 elongation surface out of nothing.
+    The (e1, e2) vector representation already handles round stars correctly
+    -- they contribute near-zero vectors -- so the fit wants every
+    well-measured star, elongated or not, and the elongation threshold
+    belongs on the FITTED surface afterwards.
+
+    for_fit=False keeps the original per-star behaviour described below, which
+    is right where a single star's own angle is the output: do not draw an
+    arrow on a star that has no axis.
 
     Applied on top of _sampling_mask, and only where direction is the
     quantity of interest. Three conditions, all necessary, because each
@@ -566,6 +709,17 @@ def _orientation_mask(stats: dict,
     The three together mean: big enough to care about, real, and pointing
     somewhere definite.
     """
+    if for_fit:
+        # _SASPRO_SHAPE_FIT_V2: quality only. Every threshold below is a function of the
+        # measured e_mag, so applying them here would select the stars whose
+        # noise looked oblong and discard the round ones that should pull a
+        # weighted fit toward zero.
+        return (np.isfinite(stats['sigma_e'])
+                & (stats['sigma_e'] > 0.0)
+                & np.isfinite(stats['sigma_theta'])
+                & (stats['fwhm_px'] >= _MIN_FWHM_PX)
+                & (stats['snr'] >= float(min_snr)))
+
     max_rad = math.radians(float(max_sigma_theta_deg))
     return ((stats['e_mag'] >= float(min_abs_elong))
             & (stats['elong_snr'] >= float(min_elong_snr))
@@ -728,6 +882,13 @@ def _detect_stars_waterfall(gray: np.ndarray,
     sub = data - bkg.back()
     rms = bkg.globalrms
 
+    # _SASPRO_SHAPE_FIT_V2: sat_level was threaded all the way down to _sampling_mask
+    # but never given a value by any caller, so the saturation cut never ran.
+    # A clipped core measures rounder than the star is, and carries the
+    # largest weight of anything in the frame.
+    if sat_level is None:
+        sat_level = _estimate_sat_level(data)
+
     best: Optional[dict] = None
     for sig in sigma_ladder:
         try:
@@ -748,6 +909,7 @@ def _detect_stars_waterfall(gray: np.ndarray,
 
         best = _pack_catalogue(stars, good, float(rms), sigma=float(sig))
         best['attrition'] = attrition
+        best['sat_level'] = sat_level     # _SASPRO_SHAPE_FIT_V2: reported in stars_band
         if n_good >= target_count:
             break
 
@@ -859,10 +1021,9 @@ def _fit_orientation_field(cat: dict, H: int, W: int,
         median_sigma_theta_deg   typical per-star angular uncertainty
     """
     stats = _shape_stats(cat, rms=float(cat.get('rms', 0.0)))
-    keep = _orientation_mask(stats,
-                             max_sigma_theta_deg=max_sigma_theta_deg,
-                             min_elong_snr=min_elong_snr,
-                             min_abs_elong=min_abs_elong)
+    # _SASPRO_SHAPE_FIT_V2: quality-only selection. Selecting on the measured |e| here
+    # biases the fit upward without bound -- see _orientation_mask.
+    keep = _orientation_mask(stats, for_fit=True)
     n_used = int(np.count_nonzero(keep))
     n_input = int(cat.get('n', len(keep)))
     if n_used < int(min_stars):
@@ -881,6 +1042,30 @@ def _fit_orientation_field(cat: dict, H: int, W: int,
     with np.errstate(divide='ignore'):
         w = 1.0 / np.maximum(sig, 1e-6) ** 2
     w = np.nan_to_num(w, nan=0.0, posinf=0.0)
+
+    # _SASPRO_SHAPE_FIT_V2 -------------------------------------------------------
+    # The nine anchor regions, measured directly from their own stars.
+    zones = _anchor_zone_stats(x, y, e1, e2, sig, H, W)
+
+    # w goes as SNR^2, so without a cap a few of the brightest stars -- the
+    # ones most likely to be clipped, and so measured too round -- decide the
+    # surface on their own.
+    if w.size:
+        cap = float(np.percentile(w[w > 0], _FIT_WEIGHT_CAP_PCT)) if np.any(w > 0) else 0.0
+        if cap > 0.0:
+            w = np.minimum(w, cap)
+
+    # Equalise the anchor regions so a star-rich centre cannot outvote a
+    # sparse corner. Without this the surface is whichever zone kept the most
+    # stars, extrapolated over the rest of the frame.
+    zidx = _zone_index(x, y, H, W)
+    for _k in range(9):
+        _m = zidx == _k
+        if np.any(_m):
+            _s = float(w[_m].sum())
+            if _s > 0.0:
+                w[_m] = w[_m] / _s
+    # ------------------------------------------------------------------
 
     # A plane is usually the right model: sensor tilt and decentre both
     # produce a slowly varying axis field. Degree is capped at 2 so a
@@ -909,6 +1094,16 @@ def _fit_orientation_field(cat: dict, H: int, W: int,
         'emag_range': (float(em_used.min()), float(em_used.max())),
         'median_sigma_theta_deg': float(
             np.degrees(np.median(stats['sigma_theta'][keep]))),
+        # _SASPRO_SHAPE_FIT_V2: per-region numbers, plus the brightness band the fit
+        # actually used, so the map can be checked against the stars.
+        'zones': zones,
+        'stars_band': {
+            'min_snr': float(_MIN_FIT_SNR),
+            'snr_pct': [float(v) for v in np.percentile(stats['snr'][keep],
+                                                        [5, 50, 95])],
+            'weight_cap_pct': float(_FIT_WEIGHT_CAP_PCT),
+            'sat_level': cat.get('sat_level'),
+        },
     }
 
 
@@ -1151,6 +1346,92 @@ def _coverage_mask(x: np.ndarray, y: np.ndarray, H: int, W: int,
         return big > 0.5
     except Exception:
         return full
+
+
+# --- _SASPRO_MAP_CONFIDENCE : begin --------------------------------------------------
+# Floor for the confidence multiplier inside the covered region. A weak area
+# should read as "nothing measurable here", not as a hole in the image.
+_CONF_FLOOR = 0.10
+
+# Sampling ramp for a FITTED FWHM surface, in pixels. At _MIN_FWHM_PX the
+# second moments track subpixel phase rather than the star, so neither the
+# axis ratio nor the position angle means anything; half a pixel above it they
+# do. Individual stars below the limit are already rejected at detection --
+# this is about a REGION of the frame whose stars are all marginal.
+_CONF_FWHM_LO = _MIN_FWHM_PX
+_CONF_FWHM_HI = _MIN_FWHM_PX + 0.5
+
+
+def _get_cmap(name: str):
+    """
+    Version-proof matplotlib colormap lookup.
+
+    SurfaceDialog used cm.get_cmap(), which matplotlib deprecated in 3.7 and
+    REMOVED in 3.9 -- there it raises AttributeError, which would take out
+    every Image Peeker heatmap (FWHM, ellipticity, orientation) as soon as
+    matplotlib is updated. matplotlib.colormaps[...] is the supported form;
+    the old call is kept as a fallback for older matplotlib.
+    """
+    try:
+        import matplotlib
+        return matplotlib.colormaps[name]
+    except Exception:
+        from matplotlib import cm as _cm
+        return _cm.get_cmap(name)
+
+
+def _conf_ramp(v: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """Smoothstep from 0 at `lo` to 1 at `hi`, clamped outside."""
+    v = np.asarray(v, dtype=np.float32)
+    if not (hi > lo):
+        return (v >= hi).astype(np.float32)
+    t = np.clip((v - float(lo)) / (float(hi) - float(lo)), 0.0, 1.0)
+    # Smoothstep, so the transition does not read as a contour line.
+    return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+
+
+def _confidence_surface(H: int, W: int,
+                        emag_surf: Optional[np.ndarray] = None,
+                        fwhm_px_surf: Optional[np.ndarray] = None,
+                        coverage: Optional[np.ndarray] = None,
+                        emag_full: float = _MIN_ABS_ELONG,
+                        floor: float = _CONF_FLOOR) -> np.ndarray:
+    """
+    Per-pixel confidence in [0, 1] for modulating a map's brightness.
+
+    Hue is the wrong channel to carry strength: it has no "nothing here"
+    value, since 0 and 180 degrees are both bright red. Brightness does, so
+    the two are separated -- hue says which way, brightness says how much to
+    believe it.
+
+    Factors, multiplied, each omitted when its input is None:
+
+      emag_surf      fitted |e|. Zero elongation -> zero confidence, ramping
+                     to full by emag_full. A fitted angle is defined for any
+                     (e1, e2) however short the vector, and that is exactly
+                     the case where the angle is meaningless.
+      fwhm_px_surf   fitted FWHM in PIXELS. Below _CONF_FWHM_LO the shape
+                     measurement describes the pixel grid.
+      coverage       boolean hull of the detections. Outside it the surface is
+                     a polynomial's invention, so the factor is hard zero --
+                     not floored.
+
+    The floor applies to the measurement terms only, so a weak but sampled
+    region stays visible while an unsampled one goes black.
+    """
+    conf = np.ones((int(H), int(W)), dtype=np.float32)
+    if emag_surf is not None:
+        conf *= _conf_ramp(np.abs(np.asarray(emag_surf, dtype=np.float32)),
+                           0.0, float(emag_full))
+    if fwhm_px_surf is not None:
+        conf *= _conf_ramp(fwhm_px_surf, _CONF_FWHM_LO, _CONF_FWHM_HI)
+    conf = np.clip(conf, float(floor), 1.0)
+    if coverage is not None:
+        cov = np.asarray(coverage)
+        if cov.shape == conf.shape:
+            conf = conf * cov.astype(bool).astype(np.float32)
+    return conf.astype(np.float32, copy=False)
+# --- _SASPRO_MAP_CONFIDENCE : end ----------------------------------------------------
 
 
 def _normalize_for_display(surf: np.ndarray,
@@ -1966,12 +2247,29 @@ def analyze_focal_plane(img: np.ndarray,
     fwhm_norm, fwhm_range = _normalize_for_display(fwhm_surf, cover)
     ell_norm, ell_range = _normalize_for_display(ell_surf, cover)
 
+    # _SASPRO_MAP_CONFIDENCE -------------------------------------------------------
+    # The sampling term has to be in pixels; fwhm_surf is in microns.
+    _ps = float(pixel_scale) if float(pixel_scale) > 0 else 1.0
+    fwhm_px_surf = (fwhm_surf / _ps).astype(np.float32, copy=False)
+    # Ellipticity is unreliable where the stars are undersampled, and
+    # meaningless outside the star field. Roundness is NOT a reason to
+    # dim it -- a round star is a true ellipticity of zero.
+    ell_conf = _confidence_surface(H, W, fwhm_px_surf=fwhm_px_surf,
+                                   coverage=cover)
+    # FWHM only needs the coverage term: a round, well-sampled star is
+    # a perfectly good FWHM measurement.
+    fwhm_conf = _confidence_surface(H, W, coverage=cover)
+    # ----------------------------------------------------------------
+
     out = {
         'n_stars':        cat['n'],
         'fwhm_norm':      fwhm_norm,
         'fwhm_range_um':  fwhm_range,
         'ell_norm':       ell_norm,
         'ell_range':      ell_range,
+        'ell_conf':       ell_conf,     # _SASPRO_MAP_CONFIDENCE
+        'fwhm_conf':      fwhm_conf,    # _SASPRO_MAP_CONFIDENCE
+        'fwhm_px_surf':   fwhm_px_surf,  # _SASPRO_MAP_CONFIDENCE
         'coverage':       cover,
         'coverage_frac':  float(np.count_nonzero(cover)) / float(max(1, cover.size)),
         'attrition':      cat.get('attrition', {}),
@@ -1996,6 +2294,12 @@ def analyze_focal_plane(img: np.ndarray,
             'theta_range_rad':  ori['theta_range'],
             'emag_surf':        ori['emag_surf'],
             'emag_range':       ori['emag_range'],
+            # _SASPRO_MAP_CONFIDENCE: orientation is the map that most needs this --
+            # hue is vivid at every angle, including the angle of a
+            # zero-length ellipticity vector.
+            'orient_conf':      _confidence_surface(
+                H, W, emag_surf=ori['emag_surf'],
+                fwhm_px_surf=fwhm_px_surf, coverage=cover),
             'n_orient_stars':   ori['n_used'],
             'orient_sigma_deg': ori['median_sigma_theta_deg'],
         })
@@ -2815,7 +3119,8 @@ class DiagnosisDialog(QDialog):
 
 
 class SurfaceDialog(QDialog):
-    def __init__(self, title, heatmap, vmin, vmax, units:str="", cmap="gray", parent=None):
+    def __init__(self, title, heatmap, vmin, vmax, units:str="", cmap="gray", parent=None,
+                 confidence=None):   # _SASPRO_MAP_CONFIDENCE
         super().__init__(parent)
         self.setWindowTitle(title)
 
@@ -2828,9 +3133,22 @@ class SurfaceDialog(QDialog):
         view = PreviewPane()
         if heatmap.ndim == 2:
             # 1) map to RGBA via colormap
-            cmap_obj = cm.get_cmap(cmap)
+            cmap_obj = _get_cmap(cmap)   # _SASPRO_MAP_CONFIDENCE: 3.9-safe
             rgba = cmap_obj(heatmap)            # shape H×W×4, floats 0–1
             rgb  = (rgba[...,:3] * 255).astype(np.uint8)
+            # _SASPRO_MAP_CONFIDENCE: brightness carries how much to believe the
+            # colour. Hue cannot: 0 and 180 degrees are both bright red,
+            # so a region of round stars would otherwise render as a
+            # confident direction that is not there.
+            if confidence is not None:
+                try:
+                    c = np.clip(np.asarray(confidence, dtype=np.float32),
+                                0.0, 1.0)
+                    if c.shape == rgb.shape[:2]:
+                        rgb = (rgb.astype(np.float32)
+                               * c[..., None]).astype(np.uint8)
+                except Exception:
+                    pass
             view.load_numpy(rgb)
         else:
             # assume already float32 [0..1] RGB or uint8 RGB
@@ -2850,6 +3168,10 @@ class SurfaceDialog(QDialog):
         btn = QPushButton(self.tr("Close"))
         btn.clicked.connect(self.accept)
         lbl_span = QLabel(self.tr("Span: {0:.2f} … {1:.2f} {2}").format(vmin, vmax, units))
+        if confidence is not None:   # _SASPRO_MAP_CONFIDENCE
+            lbl_span.setText(lbl_span.text() + self.tr(
+                "    •    dimmed where the measurement is weak: near-round "
+                "stars, below ~2 px FWHM, or outside the star coverage"))
 
         v = QVBoxLayout(self)
         v.addLayout(h)
@@ -2862,7 +3184,7 @@ class SurfaceDialog(QDialog):
         import matplotlib.pyplot as plt
         from matplotlib import cm
         grad = np.linspace(0,1,256)[:,None]
-        bar  = cm.get_cmap(cmap_name)(grad)
+        bar  = _get_cmap(cmap_name)(grad)   # _SASPRO_MAP_CONFIDENCE: 3.9-safe
         bar  = (bar[:,:,:3]*255).astype(np.uint8)
         # make a QImage
         H,W,_ = bar.shape
@@ -3635,6 +3957,11 @@ class ImagePeekerDialogPro(QDialog):
             except Exception:
                 pass
             self._analysis_worker = None
+        # Never leave the override cursor pushed if the dialog closes mid-run.
+        try:
+            self._set_busy_cursor(False)
+        except Exception:
+            pass
         super().closeEvent(ev)
 
     def _set_busy(self, on: bool, text: str = ""):
@@ -3642,8 +3969,34 @@ class ImagePeekerDialogPro(QDialog):
         self.status_lbl.setText(text if on else "")
         for w in (self.params, self.analysis_combo):
             w.setEnabled(not on)
-        QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor) if on else QGuiApplication.restoreOverrideCursor()
+        self._set_busy_cursor(on)
         QCoreApplication.processEvents()
+
+    def _set_busy_cursor(self, on: bool):
+        """
+        Push/pop the application-wide busy cursor at most once.
+
+        QGuiApplication's override cursor is a STACK, not a flag: every
+        setOverrideCursor() must be matched by exactly one
+        restoreOverrideCursor(). This used to push on every _set_busy(True),
+        and the worker's progress_signal was wired to _set_busy(True, ...),
+        so a successful Tilt / Focal Plane run pushed twice (launch, then
+        "Detecting stars...") and popped once -- leaving the busy cursor on
+        for the whole application while the dialog sat idle and responsive.
+        Pairing against a flag also stops a stray _set_busy(False) from
+        popping an override cursor this dialog never set.
+        """
+        active = bool(getattr(self, "_busy_cursor_active", False))
+        if on and not active:
+            QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            self._busy_cursor_active = True
+        elif active and not on:
+            QGuiApplication.restoreOverrideCursor()
+            self._busy_cursor_active = False
+
+    def _set_busy_text(self, text: str):
+        """Progress updates: status label only, never the cursor stack."""
+        self.status_lbl.setText(text)
 
     def _arr_and_meta(self):
         doc = self._coerce_doc(self.document)
@@ -3709,7 +4062,7 @@ class ImagePeekerDialogPro(QDialog):
             worker = _AnalysisWorker(mode, arr_c, params, parent=self)
             self._analysis_worker = worker
             worker.progress_signal.connect(
-                lambda t, m=mode: self._set_busy(True, f"{m}: {t}"))
+                lambda t, m=mode: self._set_busy_text(f"{m}: {t}"))
             worker.error_signal.connect(self._on_analysis_error)
             worker.finished_signal.connect(self._on_analysis_finished)
             worker.start()
@@ -3803,11 +4156,13 @@ class ImagePeekerDialogPro(QDialog):
                 mn_e, mx_e = res["ell_range"]
                 SurfaceDialog(
                     self.tr("FWHM Heatmap ({0} stars)").format(res["n_stars"]),
-                    res["fwhm_norm"], mn_f, mx_f, "µm", "viridis", parent=self
+                    res["fwhm_norm"], mn_f, mx_f, "µm", "viridis", parent=self,
+                    confidence=res.get("fwhm_conf")   # _SASPRO_MAP_CONFIDENCE
                 ).show()
                 SurfaceDialog(
                     self.tr("Ellipticity Map (1 − b/a)"),
-                    res["ell_norm"], mn_e, mx_e, "", "magma", parent=self
+                    res["ell_norm"], mn_e, mx_e, "", "magma", parent=self,
+                    confidence=res.get("ell_conf")   # _SASPRO_MAP_CONFIDENCE
                 ).show()
 
                 # Orientation only when the stars support one. A map drawn
@@ -3819,7 +4174,9 @@ class ImagePeekerDialogPro(QDialog):
                         self.tr("Orientation Map ({0} elongated stars, ±{1:.0f}°)")
                             .format(res.get("n_orient_stars", 0),
                                     res.get("orient_sigma_deg", float("nan"))),
-                        res["theta_norm"], mn_o, mx_o, "rad", "hsv", parent=self
+                        res["theta_norm"], mn_o, mx_o, "rad", "hsv",
+                        parent=self,
+                        confidence=res.get("orient_conf")   # _SASPRO_MAP_CONFIDENCE
                     ).show()
                 else:
                     att = res.get("attrition", {}) or {}
