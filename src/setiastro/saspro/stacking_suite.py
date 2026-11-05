@@ -41,6 +41,95 @@ from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout,
                              QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
                              QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox, QFrame, QSplitter, QInputDialog)
 
+# --- SASPRO_CLICK_TO_WHEEL : begin -----------------------------------------------------
+# The wheel must not edit a control the cursor merely passes over. Qt gives
+# QAbstractSpinBox and QComboBox Qt::WheelFocus, and their wheelEvent does not
+# check focus at all, so scrolling the Stacking Settings scroll area used to
+# silently step whatever spin box or combo happened to be under the pointer.
+#
+# These subclasses shadow the plain Qt names for the rest of this module, so
+# every control built below is focus-gated: the wheel reaches it only once it
+# has keyboard focus (click or Tab). Unfocused, the tick goes to the nearest
+# scrolling ancestor so the dialog keeps scrolling.
+#
+# Opt-out for a single control: widget.setProperty("sasWheelFree", True)
+from PyQt6.QtWidgets import (
+    QAbstractScrollArea,
+    QComboBox as _QtComboBox,
+    QDoubleSpinBox as _QtDoubleSpinBox,
+    QSlider as _QtSlider,
+    QSpinBox as _QtSpinBox,
+)
+
+
+class _ClickToWheelMixin:
+    """Mouse wheel adjusts this control only after you click or Tab into it."""
+
+    # Focus the user asked for. Qt hands focus to the first control in the tab
+    # order when a dialog opens (ActiveWindow/Other reason); that is not a click,
+    # so it must not arm the wheel.
+    _WHEEL_ARMING_REASONS = frozenset((
+        Qt.FocusReason.MouseFocusReason,
+        Qt.FocusReason.TabFocusReason,
+        Qt.FocusReason.BacktabFocusReason,
+        Qt.FocusReason.ShortcutFocusReason,
+    ))
+
+    def __init__(self, *args, **kwargs):
+        self._sas_wheel_armed = False
+        super().__init__(*args, **kwargs)
+        # WheelFocus would let one tick grant focus and the next tick edit.
+        try:
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        except Exception:
+            pass
+
+    def focusInEvent(self, ev):
+        try:
+            self._sas_wheel_armed = ev.reason() in self._WHEEL_ARMING_REASONS
+        except Exception:
+            self._sas_wheel_armed = True
+        super().focusInEvent(ev)
+
+    def focusOutEvent(self, ev):
+        self._sas_wheel_armed = False
+        super().focusOutEvent(ev)
+
+    def wheelEvent(self, ev):
+        try:
+            armed = self.hasFocus() and getattr(self, "_sas_wheel_armed", False)
+            if armed or self.property("sasWheelFree"):
+                super().wheelEvent(ev)
+                return
+            # Not focused: scroll the enclosing view instead of editing.
+            parent = self.parentWidget()
+            while parent is not None:
+                if isinstance(parent, QAbstractScrollArea):
+                    ev.accept()
+                    QApplication.sendEvent(parent.viewport(), ev)
+                    return
+                parent = parent.parentWidget()
+            ev.ignore()
+        except Exception:
+            super().wheelEvent(ev)
+
+
+class QSpinBox(_ClickToWheelMixin, _QtSpinBox):
+    pass
+
+
+class QDoubleSpinBox(_ClickToWheelMixin, _QtDoubleSpinBox):
+    pass
+
+
+class QComboBox(_ClickToWheelMixin, _QtComboBox):
+    pass
+
+
+class QSlider(_ClickToWheelMixin, _QtSlider):
+    pass
+# --- SASPRO_CLICK_TO_WHEEL : end -------------------------------------------------------
+
 
 
 
@@ -9470,9 +9559,11 @@ class StackingSuiteDialog(QDialog):
 
     def open_stacking_settings(self, origin: str = "stacking"):
         """Opens a 2-column Stacking Settings dialog."""
+        # SASPRO_CLICK_TO_WHEEL: QComboBox / QSpinBox / QDoubleSpinBox are deliberately NOT
+        # re-imported here -- the module-level focus-gated subclasses are used.
         from PyQt6.QtWidgets import (
             QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QFormLayout,
-            QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
+            QLabel, QLineEdit, QPushButton,
             QCheckBox, QDialogButtonBox, QScrollArea, QWidget, QInputDialog
         )
         self._ensure_builtin_stacking_profiles()
