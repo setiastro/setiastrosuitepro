@@ -10,6 +10,9 @@ from PyQt6.QtWidgets import QToolButton, QProgressDialog
 from PyQt6.QtCore import QThread
 # i18n support
 from setiastro.saspro.i18n import get_available_languages, get_saved_language, save_language
+from setiastro.saspro.icon_packs import (
+    DEFAULT_PACK, available_icon_packs, get_saved_icon_pack, save_icon_pack, user_packs_dir,
+)
 from setiastro.saspro.color_space_manager import (
     COLOR_SPACES,
     DEFAULT_COLOR_SPACE,
@@ -412,6 +415,22 @@ class SettingsDialog(QDialog):
         self.sp_icon_size.setSuffix(" px")
         self.sp_icon_size.setToolTip(self.tr("Toolbar icon size in pixels (default: 24)"))
         left_col.addRow(self.tr("Toolbar Icon Size:"), self.sp_icon_size)
+
+        self.cb_icon_pack = QComboBox()
+        self.cb_icon_pack.setToolTip(self.tr(
+            "Alternate artwork for the application's icons. "
+            "Icons a pack doesn't include keep their default look."
+        ))
+        btn_icon_pack_folder = QPushButton(self.tr("Open Folder…"))
+        btn_icon_pack_folder.setToolTip(self.tr("Add an icon pack by placing its folder here"))
+        btn_icon_pack_folder.clicked.connect(self._open_icon_packs_folder)
+        row_icon_pack = QHBoxLayout()
+        row_icon_pack.setContentsMargins(0, 0, 0, 0)
+        row_icon_pack.addWidget(self.cb_icon_pack, 1)
+        row_icon_pack.addWidget(btn_icon_pack_folder)
+        w_icon_pack = QWidget()
+        w_icon_pack.setLayout(row_icon_pack)
+        left_col.addRow(self.tr("Icon Pack:"), w_icon_pack)
 
         self.cb_color_space = QComboBox()
         self._color_space_keys = []
@@ -988,6 +1007,32 @@ class SettingsDialog(QDialog):
             webbrowser.open(mbc.RELEASES_PAGE_URL)
         except Exception:
             pass
+
+    def _open_icon_packs_folder(self):
+        folder = user_packs_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            if sys.platform.startswith("win"):
+                os.startfile(str(folder))  # noqa: S606
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+        except Exception:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(self, self.tr("Icon Packs Folder"), str(folder))
+
+    def _refresh_icon_packs(self):
+        """List installed packs, keeping a selected pack even if it has been removed."""
+        selected = get_saved_icon_pack()
+        self.cb_icon_pack.clear()
+        self.cb_icon_pack.addItem(self.tr("Default"), DEFAULT_PACK)
+        names = list(available_icon_packs())
+        if selected != DEFAULT_PACK and selected not in names:
+            names.append(selected)
+        for name in names:
+            self.cb_icon_pack.addItem(name, name)
+        self.cb_icon_pack.setCurrentIndex(self.cb_icon_pack.findData(selected))
 
     def _open_minorbody_folder(self):
         folder = self._minorbody_data_dir()
@@ -1900,6 +1945,7 @@ class SettingsDialog(QDialog):
         self._initial_bg_opacity = int(current_opacity) # For cancel/revert
 
         self.sp_icon_size.setValue(self.settings.value("toolbar/icon_size", 24, type=int))
+        self._refresh_icon_packs()
 
         current_color_space = get_working_color_space_from_settings(self.settings)
         cs_idx = self.cb_color_space.findData(current_color_space)
@@ -2199,6 +2245,16 @@ class SettingsDialog(QDialog):
             pass
 
         self.settings.setValue("toolbar/icon_size", int(self.sp_icon_size.value()))
+
+        new_icon_pack = self.cb_icon_pack.currentData()
+        if new_icon_pack != get_saved_icon_pack():
+            save_icon_pack(new_icon_pack)
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self,
+                self.tr("Restart required"),
+                self.tr("Icon pack changed. Please restart the application to apply it.")
+            )
 
         # Apply live
         p = self.parent()

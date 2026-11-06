@@ -17,6 +17,8 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
+from setiastro.saspro.icon_packs import icon_override
+
 
 def _get_base_path() -> str:
     """Get base path for resources (PyInstaller, installed package, or development)."""
@@ -52,6 +54,10 @@ def _resource_path(filename: str) -> str:
 
     is_img = fn.lower().endswith(('.png','.ico','.gif','.icns','.svg','.jpg','.jpeg','.bmp'))
     if is_img:
+        override = icon_override(fn)
+        if override:
+            return override
+
         candidates = [
             os.path.join(base, 'images', fn),
             os.path.join(base, 'setiastro', 'images', fn),
