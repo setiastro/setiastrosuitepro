@@ -1029,7 +1029,6 @@ class CosmicClarityDialogPro(QDialog):
  
         self.setMinimumSize(760, 520)
         self._restore_cc_geometry()
-        from PyQt6.QtCore import QTimer
         QTimer.singleShot(0, self._deferred_resize)
 
 

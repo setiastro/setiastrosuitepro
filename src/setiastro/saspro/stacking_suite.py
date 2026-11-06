@@ -2813,9 +2813,24 @@ _PREFETCH_POOL_GUESS = 8              # ~PREFETCH_DEPTH+1 buffers in flight
 # 32/64 to trade more per-band GPU work for fewer, fatter passes. One knob.
 _DEFAULT_BAND_ROWS = 16
 # One-time settings migrations. Bump this when a stored value needs a forced
-# reset on next launch; the current bump (0 -> 1) re-homes the pre-band
-# chunk_height (a TILE height like 256/512/2048) onto a safe band height.
-_STACKING_SCHEMA_VERSION = 1
+# reset on next launch. Each step below is gated on its own version so a user
+# part-way up the ladder does not re-run earlier steps.
+#   0 -> 1  re-homes the pre-band chunk_height (a TILE height like 256/512/
+#           2048) onto a safe band height.
+#   1 -> 2  re-homes esd_threshold after esd_critical_values was recalibrated.
+_STACKING_SCHEMA_VERSION = 2
+
+# Default ESD sigma. Deliberately below the historical 3.0: the corrected
+# critical values (|t| folding + max-over-n) made lambda(n=20) rise 3.21 ->
+# 4.70, so 3.0 now means a true per-pixel 3-sigma test and rejects very
+# little. Measured on F=20, clean Gaussian stacks / one injected outlier:
+#   thr   clean pixels hit   4-sig   6-sig
+#   2.0        3.2 %           55 %    96 %
+#   2.5        0.78 %          35 %    88 %
+#   3.0        0.19 %          19 %    73 %
+# 2.5 keeps far fewer false rejections than the old broken 3.0 (which hit
+# 7.6 % of clean pixels at F=20, 17.5 % at F=64) at comparable real power.
+_ESD_DEFAULT_THRESHOLD = 2.5
 
 def _band_shape(pref_rows, height, width):
     """Resolve a full-width band shape.
@@ -7550,12 +7565,13 @@ class StackingSuiteDialog(QDialog):
         self.kappa = self.settings.value("stacking/kappa", 2.5, type=float)
         self.iterations = self.settings.value("stacking/iterations", 3, type=int)
         self.esd_threshold = self.settings.value("stacking/esd_threshold", 3.0, type=float)
-        # Rosner's family-wise multiplicity correction for ESD. OFF by default:
-        # with it on, the threshold controls the per-PIXEL error rate instead of
-        # the per-FRAME rate the "sigma" control advertises, and detection of a
-        # 4-sigma outlier on a 245-frame stack drops from ~100% to ~1%. On is the
-        # literature test and is available for anyone who wants it. No UI
-        # control — expert escape hatch, set it in the INI.
+        # Legacy knob, retained so existing INIs keep loading. It is now a
+        # NO-OP: esd_critical_values applies the multiplicity correction
+        # unconditionally, because the ESD statistic really is the absolute
+        # maximum over the active samples and the old uncorrected test ran
+        # ~2n hot. The threshold now controls the per-PIXEL false-rejection
+        # rate in both settings. Pass legacy=True to esd_critical_values if
+        # you need to reproduce a pre-fix stack bit-for-bit.
         self.esd_bonferroni = self.settings.value("stacking/esd_bonferroni", False, type=bool)
         self.biweight_constant = self.settings.value("stacking/biweight_constant", 6.0, type=float)
         self.trim_fraction = self.settings.value("stacking/trim_fraction", 0.1, type=float)
@@ -7566,9 +7582,24 @@ class StackingSuiteDialog(QDialog):
         # so a stale 256 builds a 256xWidth band that hammers the GPU. Reset the
         # stored height ONCE to a safe band default; the schema flag stops it from
         # re-running, so a user's later choice is preserved.
-        if int(self.settings.value("stacking/settings_schema_version", 0, type=int)) < _STACKING_SCHEMA_VERSION:
+        _schema_now = int(self.settings.value(
+            "stacking/settings_schema_version", 0, type=int))
+        if _schema_now < 1:
             self.settings.setValue("stacking/chunk_height", _DEFAULT_BAND_ROWS)
             self.settings.setValue("stacking/chunk_width", 0)  # ignored (full width)
+        if _schema_now < 2:
+            # SASPRO_ESD_THRESHOLD_MIGRATION_V1
+            # esd_critical_values was recalibrated, so a stored 3.0 is a much
+            # stricter test than the one that value was chosen under and would
+            # reject almost nothing. Re-home the OLD DEFAULT only: a user who
+            # deliberately dialled in something else keeps their number.
+            if abs(float(self.settings.value(
+                    "stacking/esd_threshold", _ESD_DEFAULT_THRESHOLD,
+                    type=float)) - 3.0) < 1e-9:
+                self.settings.setValue("stacking/esd_threshold",
+                                       _ESD_DEFAULT_THRESHOLD)
+                self.esd_threshold = _ESD_DEFAULT_THRESHOLD
+        if _schema_now < _STACKING_SCHEMA_VERSION:
             self.settings.setValue("stacking/settings_schema_version", _STACKING_SCHEMA_VERSION)
             try: self.settings.sync()
             except Exception: pass
@@ -7627,6 +7658,22 @@ class StackingSuiteDialog(QDialog):
         self.tabs.addTab(self.flat_tab, self.tr("Flats"))
         self.tabs.addTab(self.light_tab, self.tr("Lights"))
         self.tabs.addTab(self.image_integration_tab, self.tr("Image Integration"))
+
+        # Log Analysis (Beta). Guarded: this tab only reads log files, so a
+        # fault in it must never be able to stop the Stacking Suite from
+        # opening -- the suite is the tool people actually need.
+        try:
+            from setiastro.saspro.stacking_log_analysis_ui import (
+                StackingLogAnalysisTab,
+            )
+            self.log_analysis_tab = StackingLogAnalysisTab(suite=self)
+            self.tabs.addTab(self.log_analysis_tab,
+                             self.tr("Log Analysis (Beta)"))
+        except Exception as _e_log_tab:
+            self.log_analysis_tab = None
+            print(f"[stacking_suite] Log Analysis tab unavailable: "
+                  f"{_e_log_tab!r}")
+
         self.tabs.setCurrentWidget(self.quick_stack_tab)
 
         # Header row
@@ -9430,6 +9477,9 @@ class StackingSuiteDialog(QDialog):
             "cosmetic/custom_enable": True,
             "cosmetic/hot_sigma": 2.5,
             "cosmetic/cold_sigma": 2.5,
+            # CFA/OSC cross-colour star protection, stored as the kernel's
+            # evidence RATIO (the settings UI shows 1-ratio as "protection").
+            "cosmetic/star_ratio": 0.05,
             "cosmetic/star_mean_ratio": 0.22,
             "cosmetic/star_max_ratio": 0.55,
             "cosmetic/sat_quantile": 0.9995,
@@ -10667,7 +10717,7 @@ class StackingSuiteDialog(QDialog):
 
         self.esd_spinbox = QDoubleSpinBox()
         self.esd_spinbox.setRange(0.1, 10.0); self.esd_spinbox.setDecimals(2)
-        self.esd_spinbox.setValue(self.settings.value("stacking/esd_threshold", 3.0, type=float))
+        self.esd_spinbox.setValue(self.settings.value("stacking/esd_threshold", _ESD_DEFAULT_THRESHOLD, type=float))
         row_esd = _mini_row(self.tr("ESD threshold:"), self.esd_spinbox, self.tr("Lower = more aggressive outlier rejection."))
 
         self.biweight_spinbox = QDoubleSpinBox()
@@ -10772,7 +10822,59 @@ class StackingSuiteDialog(QDialog):
         row_prot = QWidget(); row_prot_h = QHBoxLayout(row_prot); row_prot_h.setContentsMargins(0,0,0,0)
         row_prot_h.addWidget(QLabel(self.tr("Protect σ:"))); row_prot_h.addWidget(self.cosm_protect_sigma)
         row_prot_h.addStretch(1)
-        fl_cosm.addRow(self.tr("Structure protection:"), row_prot)
+        fl_cosm.addRow(self.tr("Structure protection (mono):"), row_prot)
+
+        # CFA / OSC star protection.  Replaces Protect σ on Bayer data: the
+        # structure gate is degenerate on a mosaic (a tight star core and a hot
+        # pixel both read ~1-2σ through a stride-2 window), so Bayer frames are
+        # gated on cross-colour evidence instead.  Stored as the kernel's
+        # evidence RATIO; shown here as protection = 1 - ratio so it reads the
+        # same way round as Hot σ / Cold σ (turn it up, correct less).
+        try:
+            from setiastro.saspro.cosmetic_correction import (
+                CFA_STAR_PROTECT_UI_MIN as _SP_MIN,
+                CFA_STAR_PROTECT_UI_MAX as _SP_MAX,
+                _ratio_to_protection as _sp_r2p,
+            )
+        except Exception:
+            _SP_MIN, _SP_MAX = 0.40, 1.00
+            def _sp_r2p(r):
+                try:
+                    return float(min(max(1.0 - float(r), 0.40), 1.00))
+                except Exception:
+                    return 0.95
+
+        self.cosm_star_protect = QDoubleSpinBox()
+        self.cosm_star_protect.setRange(_SP_MIN, _SP_MAX)
+        self.cosm_star_protect.setDecimals(2)
+        self.cosm_star_protect.setSingleStep(0.01)
+        self.cosm_star_protect.setValue(_sp_r2p(
+            self.settings.value("stacking/cosmetic/star_ratio", 0.05, type=float)
+        ))
+        self.cosm_star_protect.setToolTip(self.tr(
+            "One-shot colour / Bayer frames only (ignored for mono and for\n"
+            "already-debayered RGB, which use Protect σ above).\n"
+            "\n"
+            "A star is optical — it lights every photosite under the PSF no\n"
+            "matter which filter sits on top. A hot pixel is electrical — it\n"
+            "lights only itself. This gate compares a suspect pixel against\n"
+            "its nearest neighbours of the OTHER colours: if they are lit too,\n"
+            "it is a star core and is left alone.\n"
+            "\n"
+            "Reads the same way round as Hot σ / Cold σ — turn it UP and\n"
+            "cosmetic correction does LESS:\n"
+            "  1.00  maximum protection, almost nothing corrected\n"
+            "  0.95  recommended\n"
+            "  0.40  minimum protection, corrects most aggressively\n"
+            "\n"
+            "Note: below roughly 1.2 px FWHM in the mosaic grid a star core is\n"
+            "genuinely indistinguishable from a hot pixel, and narrowband OSC\n"
+            "frames with very little off-colour response weaken the premise."
+        ))
+        row_star = QWidget(); row_star_h = QHBoxLayout(row_star); row_star_h.setContentsMargins(0,0,0,0)
+        row_star_h.addWidget(QLabel(self.tr("Star protection:"))); row_star_h.addWidget(self.cosm_star_protect)
+        row_star_h.addStretch(1)
+        fl_cosm.addRow(self.tr("CFA / OSC protection:"), row_star)
 
         # Legacy profile compatibility: read-but-don't-show star guard / sat quantile values
         # so old profiles don't error on load. These are never written back.
@@ -10791,6 +10893,7 @@ class StackingSuiteDialog(QDialog):
             self.cosm_hot_sigma.setValue(5.0)
             self.cosm_cold_sigma.setValue(5.0)
             self.cosm_protect_sigma.setValue(5.0)
+            self.cosm_star_protect.setValue(0.95)
         btn_defaults.clicked.connect(_restore_defaults)
         fl_cosm.addRow(btn_defaults)
 
@@ -11050,6 +11153,16 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/cosmetic/hot_sigma",      float(self.cosm_hot_sigma.value()))
         self.settings.setValue("stacking/cosmetic/cold_sigma",     float(self.cosm_cold_sigma.value()))
         self.settings.setValue("stacking/cosmetic/protect_sigma",  float(self.cosm_protect_sigma.value()))
+        try:
+            from setiastro.saspro.cosmetic_correction import _protection_to_ratio as _sp_p2r
+        except Exception:
+            def _sp_p2r(p):
+                try:
+                    return float(min(max(1.0 - float(p), 0.0), 1.0))
+                except Exception:
+                    return 0.05
+        self.settings.setValue("stacking/cosmetic/star_ratio",
+                               float(_sp_p2r(self.cosm_star_protect.value())))
         self.settings.setValue("stacking/cosmetic/star_mean_ratio",float(self.cosm_star_mean_ratio.value()))
         self.settings.setValue("stacking/cosmetic/star_max_ratio", float(self.cosm_star_max_ratio.value()))
         self.settings.setValue("stacking/cosmetic/sat_quantile",   float(self.cosm_sat_quantile.value()))
@@ -20804,7 +20917,8 @@ class StackingSuiteDialog(QDialog):
 
     def _calibrate_lights_cpu(self, frame_infos, calibrated_dir, total_files,
                                master_bias_np, interactive_flat, do_satellite,
-                               hot_sigma, cold_sigma, protect_sigma=5.0):
+                               hot_sigma, cold_sigma, protect_sigma=5.0,
+                               star_ratio=0.05):
         """
         CPU fallback calibration path — used when hardware acceleration is disabled.
         Sequential single-threaded processing, no GPU involvement.
@@ -21120,6 +21234,8 @@ class StackingSuiteDialog(QDialog):
                         light_data = bulk_cosmetic_correction_bayer(
                             light_data, hot_sigma=hot_sigma, cold_sigma=cold_sigma,
                             protect_sigma=protect_sigma,
+                            pattern=str(bayerpat).upper(),
+                            star_ratio=star_ratio,
                         )
                     else:
                         light_data = bulk_cosmetic_correction_numba(
@@ -21606,6 +21722,9 @@ class StackingSuiteDialog(QDialog):
         hot_sigma       = self.settings.value("stacking/cosmetic/hot_sigma",       3.0,    type=float)
         cold_sigma      = self.settings.value("stacking/cosmetic/cold_sigma",       3.0,    type=float)
         protect_sigma   = self.settings.value("stacking/cosmetic/protect_sigma",    5.0,    type=float)
+        # CFA/OSC cross-colour star protection, stored as the kernel's evidence
+        # ratio.  Only consulted for Bayer frames; mono/RGB use protect_sigma.
+        star_ratio      = self.settings.value("stacking/cosmetic/star_ratio",       0.05,   type=float)
         star_mean_ratio = self.settings.value("stacking/cosmetic/star_mean_ratio",  0.22,   type=float)
         star_max_ratio  = self.settings.value("stacking/cosmetic/star_max_ratio",   0.55,   type=float)
         sat_quantile    = self.settings.value("stacking/cosmetic/sat_quantile",     0.9995, type=float)
@@ -21850,6 +21969,7 @@ class StackingSuiteDialog(QDialog):
                 hot_sigma=self.settings.value("stacking/cosmetic/hot_sigma", 3.0, type=float),
                 cold_sigma=self.settings.value("stacking/cosmetic/cold_sigma", 3.0, type=float),
                 protect_sigma=self.settings.value("stacking/cosmetic/protect_sigma", 5.0, type=float),
+                star_ratio=self.settings.value("stacking/cosmetic/star_ratio", 0.05, type=float),
             )
             return
 
@@ -21880,6 +22000,7 @@ class StackingSuiteDialog(QDialog):
                 hot_sigma=hot_sigma,
                 cold_sigma=cold_sigma,
                 protect_sigma=protect_sigma,
+                star_ratio=star_ratio,
             )
 
         # ════════════════════════════════════════════════════════════════
@@ -22424,6 +22545,7 @@ class StackingSuiteDialog(QDialog):
                             hot_sigma=hot_sigma,
                             cold_sigma=cold_sigma,
                             protect_sigma=protect_sigma,
+                            star_ratio=star_ratio,
                             apply_cosmetic=fi["apply_cosmetic"],
                             bayer_pattern=fi["bayerpat"],
                         )
@@ -25589,17 +25711,25 @@ class StackingSuiteDialog(QDialog):
             pad_r = max(0, tw - cw - pad_l)
 
             if pad_t or pad_b or pad_l or pad_r:
-                if cropped.ndim == 2:
+                # Pad with 0.0 -- NOT BORDER_REFLECT_101. A reflected border is
+                # duplicated real sky: nonzero, so it sails straight past the
+                # "0.0 = no-data" convention the rest of the pipeline is built
+                # on. Rejection and _valid_region_stats then accept it as
+                # genuine signal, and because every frame is dithered
+                # differently the mirrored band lands on different sky per
+                # frame and integrates as a structured border artifact instead
+                # of being excluded. 0.0 marks it as no-data and the existing
+                # machinery drops it.
+                if cropped.ndim == 2 or Caxis == -1:
                     cropped = cv2.copyMakeBorder(cropped, pad_t, pad_b, pad_l, pad_r,
-                                                borderType=cv2.BORDER_REFLECT_101)
-                elif Caxis == -1:
-                    cropped = cv2.copyMakeBorder(cropped, pad_t, pad_b, pad_l, pad_r,
-                                                borderType=cv2.BORDER_REFLECT_101)
+                                                 borderType=cv2.BORDER_CONSTANT,
+                                                 value=0.0)
                 else:
                     chans = []
                     for c in range(cropped.shape[0]):
                         chans.append(cv2.copyMakeBorder(cropped[c], pad_t, pad_b, pad_l, pad_r,
-                                                        borderType=cv2.BORDER_REFLECT_101))
+                                                        borderType=cv2.BORDER_CONSTANT,
+                                                        value=0.0))
                     cropped = np.stack(chans, axis=0)
 
             return cropped
@@ -26813,6 +26943,12 @@ class StackingSuiteDialog(QDialog):
             skip_single = bool(self.settings.value("stacking/skip_scale_if_single_group", True, type=bool))
             tol_pct = float(self.settings.value("stacking/scale_tol_pct", 5.0, type=float))  # you said 5%
             tol = tol_pct / 100.0
+            # How close a solved scale ratio has to be to the exact binning
+            # ratio before we treat them as the same thing. Plate-solve spread
+            # on a single rig runs a few tenths of a percent; a genuinely
+            # different optical train differs by far more than 2%.
+            snap_tol = float(self.settings.value(
+                "stacking/scale_snap_tol_pct", 2.0, type=float)) / 100.0
 
             # If only one group and policy says skip, we don't even *compute* scales.
             if groups_count == 1 and skip_single:
@@ -26830,24 +26966,61 @@ class StackingSuiteDialog(QDialog):
                         hdr0 = {}
                     raw_scale[fp] = _robust_scale_from_header(hdr0)
 
-                # Effective scales at the chosen target bin
-                # --- Compute target pixel scale = highest resolution across frames (min arcsec/px) ---
+                # --- Target pixel scale = robust centre of the FINEST binning class ---
+                # Reuse raw_scale (already read above) instead of re-opening
+                # every header, and keep the scales bucketed by binning class.
                 eff_sx_list, eff_sy_list = [], []
+                cls_sx, cls_sy = {}, {}
                 for fp in all_files:
-                    try:
-                        hdr0 = fits.getheader(fp, ext=0)
-                    except Exception:
-                        hdr0 = {}
-                    sx, sy = _robust_scale_from_header(hdr0)
+                    sx, sy = raw_scale.get(fp, (None, None))
                     if sx and sy:
                         eff_sx_list.append(float(sx))
                         eff_sy_list.append(float(sy))
+                        _cb = tuple(bin_map.get(fp, (1, 1)))
+                        cls_sx.setdefault(_cb, []).append(float(sx))
+                        cls_sy.setdefault(_cb, []).append(float(sy))
 
                 if eff_sx_list and eff_sy_list:
-                    # pick the *smallest* arcsec/px (best resolution) so we never downsample the hi-res set
-                    target_sx = float(min(eff_sx_list))
-                    target_sy = float(min(eff_sy_list))
-                    self.update_status(self.tr(f"🎯 Target pixel scale (hi-res): {target_sx:.3f}\"/px × {target_sy:.3f}\"/px"))
+                    # This used to be min() over every frame. Don't go back to
+                    # that: each frame's CD matrix is an INDEPENDENT plate solve
+                    # with its own fit noise, so min() is an extreme-value
+                    # estimator -- it lands below the true scale by roughly the
+                    # spread of the solves (0.25% on a 514-frame set), it gets
+                    # worse the more frames you add, and it moves run to run.
+                    # That bias then multiplies through the canvas size, so the
+                    # same data integrated twice produced two different output
+                    # geometries. The scale is a FIXED property of the optics;
+                    # estimate it robustly from the class that defines the grid.
+                    _fine = min(cls_sx) if cls_sx else None
+                    if _fine is not None:
+                        # Express the target AT the target binning. Normally the
+                        # finest class with WCS *is* the target bin and these
+                        # factors are 1.0; they only matter if the finest frames
+                        # happen to carry no WCS, in which case a coarse class's
+                        # median still has to be converted to the target bin's
+                        # equivalent scale or every snap below would miss.
+                        _kx = float(target_xbin) / float(max(1, _fine[0]))
+                        _ky = float(target_ybin) / float(max(1, _fine[1]))
+                        target_sx = float(np.median(cls_sx[_fine])) * _kx
+                        target_sy = float(np.median(cls_sy[_fine])) * _ky
+                        _spread = 0.0
+                        try:
+                            _a = np.asarray(cls_sx[_fine], dtype=np.float64)
+                            _spread = float(_a.max() / max(1e-12, _a.min()) - 1.0) * 100.0
+                        except Exception:
+                            pass
+                        self.update_status(self.tr(
+                            f"🎯 Target pixel scale {target_sx:.4f}\"/px × {target_sy:.4f}\"/px "
+                            f"(median of {len(cls_sx[_fine])} frame(s) at bin "
+                            f"{_fine[0]}×{_fine[1]}; solve spread {_spread:.3f}%)"
+                        ))
+                    else:
+                        target_sx = float(np.median(eff_sx_list))
+                        target_sy = float(np.median(eff_sy_list))
+                        self.update_status(self.tr(
+                            f"🎯 Target pixel scale {target_sx:.4f}\"/px × "
+                            f"{target_sy:.4f}\"/px (median, binning unknown)"
+                        ))
                 else:
                     target_sx = target_sy = None
                     self.update_status(self.tr("🎯 Target pixel scale unknown (no WCS/pixel size). Will skip scale normalization."))
@@ -26922,17 +27095,32 @@ class StackingSuiteDialog(QDialog):
             io_workers = min(8, max(2, ncpu // 2))
 
             ref_H, ref_W = ref_img.shape[:2] if ref_img.ndim == 2 else ref_img.shape[:2]
-            # When pixel-scale normalization is active, every frame (including the
-            # reference) is resampled to the hi-res target scale. _norm_target_hw
-            # is used by _force_shape_hw below to snap each normalized frame to a
-            # canonical size — if we leave it at the raw reference shape (e.g.
-            # 2822×4144 for a bin 2 ref), the correctly upscaled bin 2 frames
-            # (8288×5644 at bin 1 scale) get center-cropped back to bin 2 size
-            # and the "upscale to bin 1" step is silently reversed. Compute the
-            # post-normalization target shape by applying the ref's own gx/gy to
-            # its raw shape, using the same tol-clamp as the per-frame path so a
-            # ref that's already at target scale stays bit-stable.
-            if do_scale_norm:
+            # ── Canonical normalized shape ────────────────────────────────
+            # _norm_target_hw is what _force_shape_hw snaps every normalized
+            # frame to. It must be the FINEST binning class's NATIVE geometry:
+            # that is the real sensor grid, it is the shape the frames that need
+            # no resampling already have (so they get neither resampled nor
+            # padded), and it does not move between runs.
+            #
+            # It used to be the REFERENCE frame's shape scaled by the
+            # reference's own solved gx/gy. With a bin 2 reference that made the
+            # canvas (ref native) x (ref solved scale / target scale) -- a ratio
+            # of two order statistics out of N noisy plate solves. On a real
+            # 770-frame set that produced an 8309x5658 canvas for a sensor whose
+            # bin 1 grid is 8288x5644: every bin 1 frame then got reflect-padded
+            # by 21x14 px, and the canvas changed between runs on the same data.
+            # Don't reinstate the ref-derived shape as the primary source.
+            _canon_hw = self._finest_class_native_hw(
+                all_files, bin_map, (target_xbin, target_ybin))
+            if _canon_hw:
+                if (int(_canon_hw[0]), int(_canon_hw[1])) != (int(ref_H), int(ref_W)):
+                    self.update_status(self.tr(
+                        f"📐 Normalize canvas {ref_W}×{ref_H} → "
+                        f"{int(_canon_hw[1])}×{int(_canon_hw[0])} "
+                        f"(native geometry of the bin {target_xbin}×{target_ybin} set)"
+                    ))
+                ref_H, ref_W = int(_canon_hw[0]), int(_canon_hw[1])
+            elif do_scale_norm:
                 try:
                     _ref_psx, _ref_psy = _robust_scale_from_header(ref_hdr)
                     if _ref_psx and _ref_psy and target_sx and target_sy:
@@ -27195,6 +27383,24 @@ class StackingSuiteDialog(QDialog):
                             if raw_psx and raw_psy and target_sx and target_sy:
                                 gx = float(raw_psx) / float(target_sx)
                                 gy = float(raw_psy) / float(target_sy)
+                                # SNAP to the exact binning ratio. The headers
+                                # already state this frame's binning, so the
+                                # factor that takes it to the target bin is
+                                # known exactly (bin 2 -> bin 1 is 2.0, full
+                                # stop). The solved ratio only ever approximates
+                                # it, so using the solved value resamples at a
+                                # slightly wrong rate and lands the frame on a
+                                # canvas a few px off the sensor grid. Snap when
+                                # the two agree; if they genuinely disagree
+                                # (different scope/reducer) the snap won't fire
+                                # and the measured ratio still applies.
+                                _xb, _yb = bin_map.get(fp, (1, 1))
+                                _exp_gx = float(_xb) / float(max(1, target_xbin))
+                                _exp_gy = float(_yb) / float(max(1, target_ybin))
+                                if _rel_delta(gx, _exp_gx) <= snap_tol:
+                                    gx = _exp_gx
+                                if _rel_delta(gy, _exp_gy) <= snap_tol:
+                                    gy = _exp_gy
                                 # clamp tiny jitter
                                 if _rel_delta(gx, 1.0) <= tol:
                                     gx = 1.0
@@ -34464,23 +34670,195 @@ class StackingSuiteDialog(QDialog):
 
         return {"kind": kind, "matrix": matrix, "ref_shape": ref_shape, "orig_path": orig_path}
 
-    def _infer_ref_shape_from_first(self, grouped_files: dict) -> tuple | None:
-        """Reference grid = pixel dims of the first aligned frame (all frames in
-        the pre-registered set share the same grid). Returns (H, W) or None."""
+    @staticmethod
+    def _probe_frame_hw(path):
+        """(H, W) of a frame from its header alone, or None.
+
+        Header-only so it stays cheap on 8288x5644 x 770 sets. Walks the HDUs
+        rather than assuming ext=0 carries the image.
+        """
         try:
-            for _g, _lst in (grouped_files or {}).items():
-                for _p in _lst:
-                    try:
-                        h = fits.getheader(_p, ext=0)
-                        ht = int(h.get("NAXIS2", 0) or 0)
-                        wd = int(h.get("NAXIS1", 0) or 0)
+            with fits.open(path, memmap=True) as hdul:
+                for h in hdul:
+                    if int(h.header.get("NAXIS", 0) or 0) >= 2:
+                        ht = int(h.header.get("NAXIS2", 0) or 0)
+                        wd = int(h.header.get("NAXIS1", 0) or 0)
                         if ht > 0 and wd > 0:
                             return (ht, wd)
-                    except Exception:
-                        continue
+        except Exception:
+            return None
+        return None
+
+    def _finest_class_native_hw(self, all_files, bin_map, target_bin) -> tuple | None:
+        """Native (H, W) of the finest-binning class, or None.
+
+        This is the canonical normalization canvas: the real sensor grid at the
+        best binning present in the set. Frames already at that binning need no
+        geometric resampling, and frames at coarser binning land exactly on it
+        once their factor is snapped to the integer binning ratio -- so nothing
+        has to be padded or cropped.
+
+        Modal, not first-found: one odd frame (a crop, a different ROI) must not
+        get to define the canvas for the whole run.
+        """
+        try:
+            tx = int(target_bin[0]); ty = int(target_bin[1])
+        except Exception:
+            return None
+        try:
+            counts = {}
+            for fp in (all_files or []):
+                xb, yb = tuple(bin_map.get(fp, (1, 1)))
+                if int(xb) != tx or int(yb) != ty:
+                    continue
+                hw = self._probe_frame_hw(fp)
+                if hw is not None:
+                    counts[hw] = counts.get(hw, 0) + 1
+            if not counts:
+                return None
+            # most frames win; ties break toward the larger canvas
+            return max(counts.items(),
+                       key=lambda kv: (kv[1], kv[0][0] * kv[0][1]))[0]
+        except Exception:
+            return None
+
+    def _infer_ref_shape_from_first(self, grouped_files: dict) -> tuple | None:
+        """Reference grid for a pre-registered set. Returns (H, W) or None.
+
+        Uses the MODAL geometry across all frames, not the first one found.
+        'Skip Registration and Integrate' builds its groups straight from the
+        Lights tree, so a stray un-registered frame can be sitting among the
+        registered ones -- and if that stray happens to sort first, trusting
+        "the first frame" would adopt its native size as the canvas and throw
+        away every correctly registered frame instead of the one bad apple.
+        """
+        try:
+            counts = {}
+            for _g, _lst in (grouped_files or {}).items():
+                for _p in (_lst or []):
+                    hw = self._probe_frame_hw(_p)
+                    if hw is not None:
+                        counts[hw] = counts.get(hw, 0) + 1
+            if not counts:
+                return None
+            # most frames win; ties break toward the larger canvas
+            return max(counts.items(), key=lambda kv: (kv[1], kv[0][0] * kv[0][1]))[0]
+        except Exception:
+            return None
+
+    def _count_on_grid(self, grouped_files: dict, ref_shape) -> int:
+        """How many frames across all groups sit on `ref_shape` (H, W)."""
+        try:
+            Href, Wref = int(ref_shape[0]), int(ref_shape[1])
+        except Exception:
+            return 0
+        n = 0
+        for _g, _lst in (grouped_files or {}).items():
+            for _p in (_lst or []):
+                if self._probe_frame_hw(_p) == (Href, Wref):
+                    n += 1
+        return n
+
+    def _sas_alignment_provenance(self, grouped_files: dict, n_stamped: int = 0):
+        """Did SASpro register this set? Returns (bool, human reason).
+
+        The off-grid guard exists to catch a stray un-registered frame sitting
+        among frames SASpro aligned. That premise only holds when SASpro did
+        the aligning. Someone who registered in PixInsight/APP/Siril and then
+        pressed "Skip Registration and Integrate" has neither SASDZ* stamps nor
+        an Aligned_Images folder -- their frames are legitimately whatever
+        geometry their own tool produced, and the request is to integrate them,
+        not to audit them against a grid SASpro never defined.
+
+        Evidence, either one being sufficient:
+          * at least one frame carries a SASDZ* alignment stamp
+          * at least one frame lives under an Aligned_Images* folder
+        """
+        try:
+            if int(n_stamped or 0) > 0:
+                return True, self.tr(
+                    f"{int(n_stamped)} frame(s) carry SASpro alignment stamps")
         except Exception:
             pass
-        return None
+        try:
+            for _g, _lst in (grouped_files or {}).items():
+                for _p in (_lst or []):
+                    d = os.path.dirname(os.path.normpath(_p))
+                    while d:
+                        base = os.path.basename(d)
+                        if base.lower().startswith("aligned_images"):
+                            return True, self.tr(f"frames are in {base}{os.sep}")
+                        parent = os.path.dirname(d)
+                        if parent == d:
+                            break
+                        d = parent
+        except Exception:
+            pass
+        return False, self.tr(
+            "no SASpro alignment stamps and no Aligned_Images folder")
+
+    def _drop_offgrid_frames(self, grouped_files: dict, ref_shape, log) -> dict:
+        """Drop frames that are not on the reference grid, loudly.
+
+        'Skip Registration and Integrate' takes its file lists from the Lights
+        tree and assumes every frame is already on the reference grid. A single
+        un-registered frame alongside the registered ones breaks that: the
+        canvas is read from the group's first entry, every other frame is
+        assumed to match, and the run dies inside np.copyto with a bare
+        "could not broadcast input array from shape (...)" -- no filename, and
+        only after the whole group has been opened and tiled.
+
+        An off-grid frame has no transform that would place it on the canvas, so
+        there is nothing correct to do with it but leave it out. Same stance as
+        a registration failure dropping a frame; the alternative -- stacking it
+        anyway at some arbitrary offset -- would be a confidently wrong answer.
+        """
+        try:
+            Href, Wref = int(ref_shape[0]), int(ref_shape[1])
+        except Exception:
+            return grouped_files
+        if Href <= 0 or Wref <= 0:
+            return grouped_files
+
+        out = {}
+        dropped = []
+        for g, lst in (grouped_files or {}).items():
+            keep = []
+            for p in (lst or []):
+                hw = self._probe_frame_hw(p)
+                if hw is None:
+                    keep.append(p)          # unreadable header: let the loader rule
+                elif hw != (Href, Wref):
+                    dropped.append((g, p, hw))
+                else:
+                    keep.append(p)
+            out[g] = keep
+
+        if dropped:
+            log(self.tr(
+                f"⚠️ {len(dropped)} frame(s) are not on the reference grid "
+                f"{Wref}x{Href} and cannot be integrated with the registered "
+                f"set — dropping them:"
+            ))
+            for g, p, (hh, ww) in dropped[:25]:
+                log(self.tr(
+                    f"   ❌ {ww}x{hh}  {os.path.basename(os.path.dirname(p))}"
+                    f"{os.sep}{os.path.basename(p)}   [{g}]"
+                ))
+            if len(dropped) > 25:
+                log(self.tr(f"   … and {len(dropped) - 25} more"))
+            log(self.tr(
+                "💡 'Skip Registration and Integrate' expects every selected "
+                "frame to be already registered. These look like un-registered "
+                "frames that got picked up alongside the aligned ones."
+            ))
+            for g in list(out.keys()):
+                if not out[g]:
+                    log(self.tr(
+                        f"⚠️ Group '{g}' has no on-grid frames left; skipping it."
+                    ))
+                    out.pop(g, None)
+        return out
 
     def _write_sasd_from_pre_registered(self, status_cb=None) -> bool:
         """Persist a complete alignment_transforms.sasd for the pre-registered
@@ -35464,10 +35842,107 @@ class StackingSuiteDialog(QDialog):
             # Reference grid for the drizzle canvas: prefer a stamp-recovered
             # shape; else fall back to the actual pixel dimensions of the first
             # aligned frame (they are all on the same grid by definition here).
+            _modal_hw = self._infer_ref_shape_from_first(aligned_light_files)
             if self._pre_reg_ref_shape is not None:
                 self.ref_shape_for_drizzle = tuple(self._pre_reg_ref_shape)
             else:
-                self.ref_shape_for_drizzle = self._infer_ref_shape_from_first(aligned_light_files)
+                self.ref_shape_for_drizzle = _modal_hw
+
+            # A stamp can outlive the pixels it described: frames re-cropped,
+            # re-registered in another tool, or copied out of an older run keep
+            # the old SASDZRFH/RFW cards. If the stamped grid matches FEWER
+            # frames than the set's own modal geometry, the card is stale --
+            # believe the pixels. Without this, one stale stamp could define a
+            # canvas no frame is on and the guard below would drop the lot.
+            try:
+                if (_modal_hw and self.ref_shape_for_drizzle
+                        and tuple(self.ref_shape_for_drizzle) != tuple(_modal_hw)):
+                    _n_stamp_grid = self._count_on_grid(aligned_light_files,
+                                                        self.ref_shape_for_drizzle)
+                    _n_modal_grid = self._count_on_grid(aligned_light_files, _modal_hw)
+                    if _n_modal_grid > _n_stamp_grid:
+                        self.update_status(self.tr(
+                            f"ℹ️ Header stamp claims a "
+                            f"{int(self.ref_shape_for_drizzle[1])}x"
+                            f"{int(self.ref_shape_for_drizzle[0])} reference grid, "
+                            f"but only {_n_stamp_grid} frame(s) match it vs "
+                            f"{_n_modal_grid} at {int(_modal_hw[1])}x{int(_modal_hw[0])}. "
+                            f"Stamp looks stale — using the frames' own geometry."
+                        ))
+                        self.ref_shape_for_drizzle = tuple(_modal_hw)
+            except Exception:
+                pass
+
+            # Frames here are ASSUMED to be on the reference grid, because the
+            # lists come straight from the Lights tree. That assumption is only
+            # ours to enforce when SASpro did the registering -- then a frame
+            # off the grid is a stray un-registered one, and finding it now
+            # beats a bare broadcast error deep inside the tile copy. If the
+            # set was registered in other software there is no SASpro grid to
+            # audit against, so integrate it all, as asked.
+            _prov_ok, _prov_why = self._sas_alignment_provenance(
+                aligned_light_files, _n_stamped)
+            _n_total = sum(len(v) for v in aligned_light_files.values())
+            if self.ref_shape_for_drizzle and not _prov_ok:
+                _on = self._count_on_grid(aligned_light_files,
+                                          self.ref_shape_for_drizzle)
+                if _on >= _n_total:
+                    self.update_status(self.tr(
+                        f"🔎 Externally pre-registered set ({_prov_why}); "
+                        f"integrating all {_n_total} frame(s) as requested on their "
+                        f"own {int(self.ref_shape_for_drizzle[1])}x"
+                        f"{int(self.ref_shape_for_drizzle[0])} grid."
+                    ))
+                else:
+                    # Not a provenance problem -- an arithmetic one. Frames of
+                    # different pixel dimensions cannot share one integration
+                    # canvas, so the minority still has to come out; say plainly
+                    # that this is about geometry, not registration.
+                    self.update_status(self.tr(
+                        f"⚠️ Externally pre-registered set ({_prov_why}), but "
+                        f"the frames are not all the same size — only {_on} of "
+                        f"{_n_total} are {int(self.ref_shape_for_drizzle[1])}x"
+                        f"{int(self.ref_shape_for_drizzle[0])}. Integration needs one "
+                        f"common canvas, so the odd sizes cannot be included:"
+                    ))
+                    aligned_light_files = self._drop_offgrid_frames(
+                        aligned_light_files, self.ref_shape_for_drizzle,
+                        self.update_status,
+                    )
+                    if not aligned_light_files:
+                        self.update_status(self.tr(
+                            "⚠️ No frames share a common canvas; aborting."
+                        ))
+                        self._set_registration_busy(False)
+                        return
+            elif self.ref_shape_for_drizzle:
+                _before = sum(len(v) for v in aligned_light_files.values())
+                aligned_light_files = self._drop_offgrid_frames(
+                    aligned_light_files, self.ref_shape_for_drizzle,
+                    self.update_status,
+                )
+                _after = sum(len(v) for v in aligned_light_files.values())
+                if _after != _before:
+                    # Keep the recovered-transform maps consistent with the
+                    # surviving frames so the .sasd rebuild can't describe a
+                    # frame we just dropped.
+                    _live = {os.path.normpath(p)
+                             for v in aligned_light_files.values() for p in v}
+                    _ob = getattr(self, "orig_by_aligned", None) or {}
+                    for _k in [k for k in _ob if os.path.normpath(k) not in _live]:
+                        _orig = _ob.pop(_k, None)
+                        if _orig is not None:
+                            self._pre_reg_xforms.pop(os.path.normpath(_orig), None)
+                        self._pre_reg_xforms.pop(os.path.normpath(_k), None)
+                    self.update_status(self.tr(
+                        f"✅ Continuing with {_after} on-grid frame(s)."
+                    ))
+                if not aligned_light_files:
+                    self.update_status(self.tr(
+                        "⚠️ No frames remain on the reference grid; aborting."
+                    ))
+                    self._set_registration_busy(False)
+                    return
 
             # Mark this run as pre-registered so the drizzle deposit knows a
             # missing/None transform means "identity deposit", not "skip".
@@ -36438,6 +36913,72 @@ class StackingSuiteDialog(QDialog):
 
         return int(ref_H), int(ref_W), xforms
 
+    def _audit_group_geometry(self, group_key, file_list, ref_file,
+                              height, width, log):
+        """Report any frame whose geometry doesn't match the integration canvas.
+
+        The canvas is taken from file_list[0] and nothing validates the rest, so
+        a single odd-sized frame dies deep inside np.copyto with a bare
+        "could not broadcast input array from shape (...)" and no filename --
+        after the whole group has been opened and tiled.  Probing the headers up
+        front is cheap (NAXIS only) and says exactly which file is wrong and
+        which folder it came from.
+
+        Purely diagnostic: logs and returns the mismatch list, changes nothing.
+        """
+        import os
+        from astropy.io import fits
+
+        bad = []
+        try:
+            counts = {}
+            for i, p in enumerate(file_list):
+                hh = ww = None
+                try:
+                    with fits.open(p, memmap=True) as hdul:
+                        for h in hdul:
+                            if int(h.header.get("NAXIS", 0)) >= 2:
+                                ww = int(h.header["NAXIS1"])
+                                hh = int(h.header["NAXIS2"])
+                                break
+                except Exception as pe:
+                    log(f"   ⚠️ geometry probe failed [{i}] {p}: {pe}")
+                    continue
+                if hh is None:
+                    continue
+                counts[(hh, ww)] = counts.get((hh, ww), 0) + 1
+                if (hh, ww) != (height, width):
+                    bad.append((i, p, hh, ww))
+
+            summary = ", ".join(
+                f"{w}x{h} x{n}" for (h, w), n in
+                sorted(counts.items(), key=lambda kv: -kv[1])
+            )
+            log(f"🧭 Geometry audit '{group_key}': canvas {width}x{height} from "
+                f"[0] {os.path.basename(ref_file)} | {len(file_list)} frame(s) "
+                f"-> {summary}")
+
+            folders = {}
+            for p in file_list:
+                d = os.path.basename(os.path.dirname(p))
+                folders[d] = folders.get(d, 0) + 1
+            log("   📂 source folders: " + ", ".join(
+                f"{d} x{n}" for d, n in
+                sorted(folders.items(), key=lambda kv: -kv[1])))
+
+            if bad:
+                log(f"   ❌ {len(bad)} frame(s) do NOT match the canvas "
+                    f"-- these are what break the tile copy:")
+                for i, p, hh, ww in bad[:25]:
+                    log(f"      [{i}] {ww}x{hh}  "
+                        f"{os.path.basename(os.path.dirname(p))}"
+                        f"{os.sep}{os.path.basename(p)}")
+                if len(bad) > 25:
+                    log(f"      ... and {len(bad) - 25} more")
+        except Exception as ae:
+            log(f"⚠️ geometry audit failed (non-fatal): {ae}")
+        return bad
+
     def normal_integration_with_rejection(
         self,
         group_key,
@@ -36477,6 +37018,9 @@ class StackingSuiteDialog(QDialog):
         channels = 3 if is_color else 1
         N = len(file_list)
         del ref_data
+
+        self._audit_group_geometry(group_key, file_list, ref_file,
+                                   height, width, log)
 
         algo = (algo_override or self.rejection_algorithm)
 
@@ -37068,6 +37612,9 @@ class StackingSuiteDialog(QDialog):
         channels = 3 if is_color else 1
         N = len(file_list)
         del ref_data
+
+        self._audit_group_geometry(group_key, file_list, ref_file,
+                                   height, width, log)
 
         algo = (algo_override or self.rejection_algorithm)
         use_gpu = (

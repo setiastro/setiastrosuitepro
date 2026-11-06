@@ -544,12 +544,12 @@ class StarSpikesDialogPro(QDialog):
         shrink_max = self.advanced["shrink_max"]
         color_boost = self.color_boost.value()
 
-        # Try OpenCV for faster zoom/blur
-        try:
-            import cv2
-            _HAS_CV2 = True
-        except ImportError:
-            _HAS_CV2 = False
+        # NOTE: do *not* `import cv2` here.  A function-body import binds the
+        # name as a local for the whole of _run_impl, which shadows the
+        # module-level cv2 and makes the `if cv2 is None` check in the JWST
+        # branch above raise UnboundLocalError.  Use the module-level symbol,
+        # which is already None-guarded at the top of this file.
+        _HAS_CV2 = cv2 is not None
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         def star_runner(x, y, flux, a, b):
@@ -778,17 +778,9 @@ class StarSpikesDialogPro(QDialog):
         return img
 
     def _simulate_psf(self, pupil, wavelength_scale=1.0, blur_sigma=1.0):
-        # Try to use OpenCV for speed
-        if getattr(self, "_cv2_checked", False):
-            has_cv2 = True
-            import cv2
-        else:
-            try:
-                import cv2
-                has_cv2 = True
-            except ImportError:
-                has_cv2 = False
-            self._cv2_checked = has_cv2
+        # Module-level cv2 (None when OpenCV is unavailable).  Keep this a
+        # plain lookup -- a function-body import would shadow it as a local.
+        has_cv2 = cv2 is not None
 
         if has_cv2:
             # Gaussian blur on pupil

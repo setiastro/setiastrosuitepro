@@ -4180,14 +4180,29 @@ def bulk_cosmetic_correction_numba(image,
                                    star_mean_ratio=0.22,
                                    star_max_ratio=0.55,
                                    sat_quantile=0.9995,
-                                   protect_sigma=5.0):
+                                   protect_sigma=5.0,
+                                   bayer_pattern=None,
+                                   star_ratio=None):
     """
     Orchestrator: try GPU first, fall back to Numba CPU.
+
+    `bayer_pattern` / `star_ratio` are passed straight through to the kernel.
+    With a pattern set the kernel runs its CFA branch (per-phase background
+    statistics + cross-colour star protection); without one it runs the mono
+    structure gate on `protect_sigma` exactly as before.
     """
-    from setiastro.saspro.torch_rejection import (cosmetic_correction_gpu, torch_available as _torch_ok) 
-    
+    from setiastro.saspro.torch_rejection import (
+        cosmetic_correction_gpu, torch_available as _torch_ok,
+        CFA_STAR_PROTECT_RATIO,
+    )
+
+    if star_ratio is None:
+        star_ratio = CFA_STAR_PROTECT_RATIO
+
     return cosmetic_correction_gpu(image, hot_sigma=hot_sigma, cold_sigma=cold_sigma,
-                                   protect_sigma=protect_sigma)
+                                   protect_sigma=protect_sigma,
+                                   bayer_pattern=bayer_pattern,
+                                   star_ratio=star_ratio)
 
 
 
@@ -4198,67 +4213,36 @@ def bulk_cosmetic_correction_bayer(image,
                                    star_max_ratio=0.55,
                                    sat_quantile=0.9995,
                                    pattern="RGGB",
-                                   protect_sigma=5.0):
+                                   protect_sigma=5.0,
+                                   star_ratio=None):
     """
-    Bayer-safe cosmetic correction. Work on same-color sub-planes (2-px stride),
-    then write results back. Defaults assume normalized or 16/32f data.
-    """
-    H, W = image.shape
-    corrected = image.astype(np.float32).copy()
+    Bayer-safe cosmetic correction on a full CFA mosaic.
 
-    if pattern.upper() not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+    Delegates to the kernel's CFA branch, which calibrates background
+    statistics per Bayer phase and gates the hot pass on cross-colour
+    evidence: a star lights every photosite under the PSF regardless of
+    filter, a hot pixel lights only itself.
+
+    This used to decimate the mosaic into four same-colour sub-planes and run
+    the MONO kernel on each. Don't go back to that -- inside a sub-plane the
+    nearest neighbour is 2 px away in the mosaic and the cross-colour evidence
+    has been discarded before the kernel ever sees it, so tight star cores read
+    as hot pixels at any protect_sigma.
+
+    `star_mean_ratio` / `star_max_ratio` / `sat_quantile` are accepted for
+    call-site compatibility and unused, as in the mono wrapper.
+    """
+    if pattern is None or str(pattern).upper() not in ("RGGB", "BGGR", "GRBG", "GBRG"):
         pattern = "RGGB"
 
-    # index maps for each CFA pattern (row0,col0 offsets)
-    if pattern.upper() == "RGGB":
-        r0, c0 = 0, 0
-        g1r, g1c = 0, 1
-        g2r, g2c = 1, 0
-        b0, b0c = 1, 1
-    elif pattern.upper() == "BGGR":
-        r0, c0 = 1, 1
-        g1r, g1c = 1, 0
-        g2r, g2c = 0, 1
-        b0, b0c = 0, 0
-    elif pattern.upper() == "GRBG":
-        r0, c0 = 0, 1
-        g1r, g1c = 0, 0
-        g2r, g2c = 1, 1
-        b0, b0c = 1, 0
-    else:  # GBRG
-        r0, c0 = 1, 0
-        g1r, g1c = 0, 0
-        g2r, g2c = 1, 1
-        b0, b0c = 0, 1
-
-    # helper to process a same-color plane view
-    def _process_plane(view):
-        return bulk_cosmetic_correction_numba(
-            view,
-            hot_sigma=hot_sigma,
-            cold_sigma=cold_sigma,
-            star_mean_ratio=star_mean_ratio,
-            star_max_ratio=star_max_ratio,
-            sat_quantile=sat_quantile,
-            protect_sigma=protect_sigma,
-        )
-
-    # Red
-    red = corrected[r0:H:2, c0:W:2]
-    corrected[r0:H:2, c0:W:2] = _process_plane(red)
-
-    # Blue
-    blue = corrected[b0:H:2, b0c:W:2]
-    corrected[b0:H:2, b0c:W:2] = _process_plane(blue)
-
-    # Greens
-    g1 = corrected[g1r:H:2, g1c:W:2]
-    corrected[g1r:H:2, g1c:W:2] = _process_plane(g1)
-
-    g2 = corrected[g2r:H:2, g2c:W:2]
-    corrected[g2r:H:2, g2c:W:2] = _process_plane(g2)
-
-    return corrected
+    return bulk_cosmetic_correction_numba(
+        image,
+        hot_sigma=hot_sigma,
+        cold_sigma=cold_sigma,
+        protect_sigma=protect_sigma,
+        bayer_pattern=str(pattern).upper(),
+        star_ratio=star_ratio,
+    )
 
 def evaluate_polynomial(H: int, W: int, coeffs: np.ndarray, degree: int) -> np.ndarray:
     """

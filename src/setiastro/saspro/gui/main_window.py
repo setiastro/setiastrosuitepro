@@ -7245,7 +7245,6 @@ class AstroSuiteProMainWindow(
         # ----- Function bundle: run a sequence of steps on the target view(s) -----
         # ----- Function bundle: run a sequence of steps on the target view(s) -----
         if cid in ("function_bundle", "bundle_functions"):
-            from PyQt6.QtWidgets import QApplication
 
             payload = payload or {}
             steps   = list((payload or {}).get("steps") or [])
