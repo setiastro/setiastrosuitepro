@@ -1110,7 +1110,7 @@ def _bootstrap_imports():
                 "https://aka.ms/smartappcontrol about Smart App Control."
             )
         _stub.reproject_exact = _reproject_exact_unavailable
-        sys.modules["reproject.spherical_intersect"] = _stub
+        _sys.modules["reproject.spherical_intersect"] = _stub
         print(
             f"[SASpro] reproject.spherical_intersect unavailable "
             f"({_reproject_err}); stub injected. "

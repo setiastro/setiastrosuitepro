@@ -54,6 +54,58 @@ try:
 except Exception:
     cv2 = None
 
+# Single source of truth for the CFA star-protection default (see
+# torch_rejection._cfa_flag_map for what it measures and why 0.05).
+try:
+    from setiastro.saspro.torch_rejection import CFA_STAR_PROTECT_RATIO
+except Exception:
+    CFA_STAR_PROTECT_RATIO = 0.05
+
+# ---------------------------------------------------------------------
+# UI orientation of the CFA star gate
+# ---------------------------------------------------------------------
+# The kernel takes an EVIDENCE THRESHOLD (`star_ratio`): raise it and you
+# demand more proof that a candidate is a star, so FEWER pixels are
+# protected and MORE get corrected.  That is backwards from Hot/Cold sigma,
+# where turning the knob up corrects LESS -- and those are the knobs users
+# live in.  So the spin-box shows PROTECTION STRENGTH instead:
+#
+#     star_ratio = 1.0 - protection
+#
+# 1.00 = maximum protection (almost nothing corrected)
+# 0.40 = no effective protection (full blast)
+# 0.95 = default, i.e. the measured star_ratio of 0.05
+#
+# The inversion lives ONLY at the widget boundary.  The kernel kwarg, the
+# preset key and the QSettings key all still carry `star_ratio`, so old
+# presets and replay markers keep working unchanged and the trade table in
+# torch_rejection stays readable against the stored number.
+#
+# Range is the inverse of the old ratio range (0.02..0.60) rather than a
+# full 0..1, because the useful band is ratio 0.02..0.20 -> protection
+# 0.80..0.98.  On a 0..1 knob four fifths of the travel would be dead.
+CFA_STAR_PROTECT_UI_MIN = 0.40
+CFA_STAR_PROTECT_UI_MAX = 1.00
+
+
+def _protection_to_ratio(protection: float) -> float:
+    """Widget value -> kernel evidence threshold."""
+    try:
+        r = 1.0 - float(protection)
+    except Exception:
+        return float(CFA_STAR_PROTECT_RATIO)
+    return float(min(max(r, 0.0), 1.0))
+
+
+def _ratio_to_protection(star_ratio: float) -> float:
+    """Kernel evidence threshold -> widget value."""
+    try:
+        p = 1.0 - float(star_ratio)
+    except Exception:
+        p = 1.0 - float(CFA_STAR_PROTECT_RATIO)
+    return float(min(max(p, CFA_STAR_PROTECT_UI_MIN),
+                     CFA_STAR_PROTECT_UI_MAX))
+
 
 # =====================================================================
 # Cosmetic correction wrappers
@@ -65,6 +117,7 @@ def _run_cosmetic(
     cold_sigma: float,
     bayer_pattern: str | None = None,
     protect_sigma: float = 5.0,
+    star_ratio: float = CFA_STAR_PROTECT_RATIO,
 ) -> np.ndarray:
     """Route to the GPU/CPU cosmetic corrector.  Accepts:
        - (H, W) mono
@@ -81,6 +134,7 @@ def _run_cosmetic(
             arr, hot_sigma=float(hot_sigma), cold_sigma=float(cold_sigma),
             bayer_pattern=(bayer_pattern or None),
             protect_sigma=float(protect_sigma),
+            star_ratio=float(star_ratio),
         )
 
     if arr.ndim == 3:
@@ -92,6 +146,7 @@ def _run_cosmetic(
                 arr, hot_sigma=float(hot_sigma),
                 cold_sigma=float(cold_sigma), bayer_pattern=bp,
                 protect_sigma=float(protect_sigma),
+                star_ratio=float(star_ratio),
             )
         # extra channels (e.g. RGBA) — process the first 3, pass rest through
         out = arr.copy()
@@ -99,6 +154,7 @@ def _run_cosmetic(
             arr[..., :3], hot_sigma=float(hot_sigma),
             cold_sigma=float(cold_sigma), bayer_pattern=bp,
             protect_sigma=float(protect_sigma),
+            star_ratio=float(star_ratio),
         )
         return out
 
@@ -110,6 +166,20 @@ def _bayer_from_doc(doc) -> str | None:
     returns a value when the image is a raw 2-D mosaic (i.e. hasn't been
     debayered yet) — otherwise applying Bayer stride-2 to an RGB frame
     would be wrong.
+
+    Detection is delegated to the resolvers the Debayer dialog already uses
+    (debayer._detect_bayer_from_header -> bayer_utils.detect_bayer_pattern).
+    The hand-rolled lookup this replaced searched `doc.metadata` / `doc.meta`
+    / `doc.header` for four key spellings at the TOP level only, and so
+    missed the common case outright: SASpro keeps the FITS header one level
+    down, at metadata['original_header'] (or 'fits_header' / 'header'), so
+    'Auto-detect' reported mono on frames that plainly carry BAYERPAT.
+
+    It also missed the BAYERPATN / BAYERPATTERN / CFAPATTERN spellings, and
+    an exact `str(v).strip().upper() in (...)` test turns a (value, comment)
+    tuple into "('RGGB', '...')", which matches nothing.  The canonical
+    resolver probes ten aliases, substring-matches (so a tuple still reads),
+    normalises separator-laden tokens, and applies XBAYROFF / YBAYROFF.
     """
     if doc is None:
         return None
@@ -120,20 +190,54 @@ def _bayer_from_doc(doc) -> str | None:
     except Exception:
         return None
 
+    # Preferred: the shared doc-aware resolver (finds nested headers).
+    try:
+        from setiastro.saspro.debayer import _detect_bayer_from_header
+        pat = _detect_bayer_from_header(doc)
+        if pat:
+            s = str(pat).strip().upper()
+            if s in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                return s
+    except Exception:
+        pass
+
+    # Next: resolve a header ourselves and use the pattern detector directly.
+    try:
+        from setiastro.saspro.bayer_utils import detect_bayer_pattern
+        meta = getattr(doc, "metadata", None)
+        meta = meta if isinstance(meta, dict) else {}
+        hdr = (meta.get("original_header")
+               or meta.get("fits_header")
+               or meta.get("header")
+               or getattr(doc, "header", None))
+        pat = detect_bayer_pattern(hdr, meta, image_shape=img.shape)
+        if pat:
+            s = str(pat).strip().upper()
+            if s in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                return s
+    except Exception:
+        pass
+
+    # Last resort: the original narrow top-level scan, widened to tolerate a
+    # (value, comment) tuple, in case neither module above is importable.
     for src_name in ("metadata", "meta", "header"):
         m = getattr(doc, src_name, None)
         if not m:
             continue
         try:
-            for key in ("BAYERPAT", "bayerpat", "bayer_pattern", "CFA"):
+            for key in ("BAYERPAT", "bayerpat", "BAYERPATN",
+                        "bayer_pattern", "BAYER_PATTERN", "CFA"):
                 if hasattr(m, "get"):
                     v = m.get(key)
                 else:
                     v = getattr(m, key, None)
-                if v:
-                    s = str(v).strip().upper()
-                    if s in ("RGGB", "BGGR", "GRBG", "GBRG"):
-                        return s
+                if not v:
+                    continue
+                if isinstance(v, (tuple, list)) and v:
+                    v = v[0]
+                s = str(v).strip().upper()
+                if s in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                    return s
         except Exception:
             continue
     return None
@@ -151,6 +255,7 @@ def cosmetic_correction_headless(
     bayer_pattern: str | None = None,
     correct_hot: bool = True,
     correct_cold: bool = True,
+    star_ratio: float = CFA_STAR_PROTECT_RATIO,
     use_hw_accel: bool = True,   # informational; corrector picks internally
     preset: dict | None = None,  # NEW: canonical preset for the replay marker
 ):
@@ -179,6 +284,7 @@ def cosmetic_correction_headless(
     processed = _run_cosmetic(
         src_f, hot_sigma=hs, cold_sigma=cs, bayer_pattern=bp,
         protect_sigma=float(protect_sigma),
+        star_ratio=float(star_ratio),
     )
 
     # Preserve alpha / extra channels if the source had them
@@ -231,6 +337,7 @@ def cosmetic_correction_headless(
             "correct_hot": bool(correct_hot),
             "correct_cold": bool(correct_cold),
             "bayer_pattern": (bayer_pattern or ""),
+            "star_ratio": float(star_ratio),
         }
 
     meta = {
@@ -244,6 +351,7 @@ def cosmetic_correction_headless(
             "correct_hot": bool(correct_hot),
             "correct_cold": bool(correct_cold),
             "bayer_pattern": bp,
+            "star_ratio": float(star_ratio),
             "passes": passes,
         },
         "bit_depth": "32-bit floating point",
@@ -269,6 +377,7 @@ class _CosmeticPreviewWorker(QThread):
         cold_sigma: float,
         bayer_pattern: str | None,
         protect_sigma: float = 5.0,
+        star_ratio: float = CFA_STAR_PROTECT_RATIO,
         parent=None,
     ):
         super().__init__(parent)
@@ -276,6 +385,7 @@ class _CosmeticPreviewWorker(QThread):
         self._hot = float(hot_sigma)
         self._cold = float(cold_sigma)
         self._protect = float(protect_sigma)
+        self._star = float(star_ratio)
         self._bp = bayer_pattern
 
     def run(self):
@@ -286,6 +396,7 @@ class _CosmeticPreviewWorker(QThread):
                 cold_sigma=self._cold,
                 bayer_pattern=self._bp,
                 protect_sigma=self._protect,
+                star_ratio=self._star,
             )
             self.finished_ok.emit(out)
         except Exception as e:
@@ -558,7 +669,8 @@ class CosmeticCorrectionDialog(QDialog):
       - Bayer pattern combo (Auto / None / RGGB / BGGR / GRBG / GBRG)
       - "Correct hot" / "Correct cold" checkboxes (per-pass on/off)
       - Preview refresh (Preview button, or auto on parameter change)
-      - Apply / Cancel + preset drag handle
+      - Apply / Cancel (Cancel becomes Close once Apply has run)
+        + preset drag handle
     """
     _PREVIEW_MAX_LONG_SIDE = 1024
 
@@ -579,6 +691,10 @@ class CosmeticCorrectionDialog(QDialog):
         self.main = main
         self.doc = doc
         self._tuning_mode = bool(tuning_mode)
+        # True once a successful Apply has modified the document.  Drives the
+        # Cancel -> Close relabel: after Apply there is nothing left to cancel,
+        # the edit is already committed to DocManager history.
+        self._applied = False
         self._sample_source_label = sample_source_label or ""
         self.setWindowTitle(
             self.tr("Cosmetic Correction — Tune Sigmas") if self._tuning_mode
@@ -769,6 +885,37 @@ class CosmeticCorrectionDialog(QDialog):
         ))
         form.addRow(self.tr("Protect structure σ:"), self.sp_protect)
 
+        self.sp_star = QDoubleSpinBox()
+        self.sp_star.setRange(CFA_STAR_PROTECT_UI_MIN,
+                              CFA_STAR_PROTECT_UI_MAX)
+        self.sp_star.setSingleStep(0.01); self.sp_star.setDecimals(2)
+        self.sp_star.setValue(_ratio_to_protection(CFA_STAR_PROTECT_RATIO))
+        self.sp_star.setToolTip(self.tr(
+            "Star protection for BAYERED (CFA) data only.\n"
+            "\n"
+            "HIGHER = MORE protection, FEWER pixels corrected.\n"
+            "LOWER  = LESS protection, MORE pixels corrected.\n"
+            "Reads the same way round as Hot / Cold σ: turn it up and\n"
+            "cosmetic correction does less.\n"
+            "\n"
+            "  1.00  maximum protection -- almost nothing is corrected\n"
+            "  0.95  default\n"
+            "  0.40  no effective protection -- full blast\n"
+            "\n"
+            "How it works: a star is OPTICAL and lights every photosite under\n"
+            "the PSF, whatever colour filter sits on top.  A hot pixel is\n"
+            "ELECTRICAL and lights only itself.  So a candidate is kept if its\n"
+            "immediately adjacent DIFFERENTLY-COLOURED photosites are lit in\n"
+            "proportion to its own brightness.  This knob sets how much of that\n"
+            "cross-colour company is enough.\n"
+            "\n"
+            "'Protect structure σ' above cannot do this job on a mosaic: a\n"
+            "star core's SAME-colour neighbours sit 2 px away, outside the PSF,\n"
+            "so they look like background no matter what you set it to.  That\n"
+            "is why it is greyed out for CFA data and this knob replaces it."
+        ))
+        form.addRow(self.tr("Star protection (CFA):"), self.sp_star)
+
         self.sp_cold = QDoubleSpinBox()
         self.sp_cold.setRange(0.5, 10.0)
         self.sp_cold.setSingleStep(0.1); self.sp_cold.setDecimals(2)
@@ -942,6 +1089,9 @@ class CosmeticCorrectionDialog(QDialog):
             self.btn_apply = QPushButton(self.tr("Apply"))
         self.btn_apply.clicked.connect(self._apply)
         self.btn_cancel = QPushButton(self.tr("Cancel"))
+        self.btn_cancel.setToolTip(self.tr(
+            "Close without touching the image."
+        ))
         self.btn_cancel.clicked.connect(self.reject)
         row.addStretch(1); row.addWidget(self.btn_apply); row.addWidget(self.btn_cancel)
         root.addLayout(row)
@@ -975,14 +1125,158 @@ class CosmeticCorrectionDialog(QDialog):
             except Exception:
                 pass
 
+        # Restore last-used detection settings BEFORE wiring the change
+        # signals, so seeding doesn't fire a preview refresh per widget.
+        # An explicit preset still wins: the openers call seed_from_preset()
+        # after construction.
+        if not self._tuning_mode:
+            self._load_persisted_settings()
+
         # Wire parameter changes → schedule a preview refresh + clear status
         for w in (self.sp_hot, self.sp_cold):
             w.valueChanged.connect(lambda _=None: self._on_params_changed())
         for w in (self.cb_hot, self.cb_cold):
             w.toggled.connect(lambda _=None: self._on_params_changed())
         self.cmb_bayer.currentIndexChanged.connect(lambda _=None: self._on_params_changed())
+        for w in (self.sp_protect, self.sp_star):
+            w.valueChanged.connect(lambda _=None: self._on_params_changed())
+        self.cmb_bayer.currentIndexChanged.connect(
+            lambda _=None: self._sync_gate_enabled())
+        self._sync_gate_enabled()
 
         self.resize(1050, 700)
+
+    def _star_ratio(self) -> float:
+        """Kernel evidence threshold for the current widget value.
+
+        The spin-box shows protection strength (higher = protect more);
+        the kernel wants the evidence threshold.  See the module header.
+        """
+        try:
+            return _protection_to_ratio(self.sp_star.value())
+        except Exception:
+            return float(CFA_STAR_PROTECT_RATIO)
+
+    def _sync_gate_enabled(self):
+        """Only one star-protection gate is live at a time.
+
+        Mono / debayered data uses the stride-1 structure gate driven by
+        'Protect structure σ'; a raw CFA mosaic uses the cross-colour ratio
+        gate instead, because the structure gate is degenerate at stride 2.
+        Grey out whichever one the current data doesn't use, so the UI never
+        implies a knob that does nothing.
+        """
+        try:
+            # Mirror what the kernel actually does: _run_cosmetic drops the
+            # bayer flag for any 3-D array, so a pattern forced onto
+            # debayered RGB is inert and must not light up the CFA knob.
+            _src = np.asarray(self.doc.image)
+            is_cfa = (_src.ndim == 2) and (self._full_frame_bayer() is not None)
+        except Exception:
+            is_cfa = False
+        try:
+            self.sp_protect.setEnabled(not is_cfa)
+            self.sp_star.setEnabled(is_cfa)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Settings persistence (instance to instance)
+    # ------------------------------------------------------------------
+    _SETTINGS_PREFIX = "cosmetic_correction"
+
+    def _load_persisted_settings(self):
+        """Seed the detection knobs from the previous session's values.
+
+        Any missing or unreadable key falls back to the hard-coded default
+        already set in _build_ui, so a partial or corrupt QSettings store
+        degrades to the previous behaviour instead of raising.
+        """
+        try:
+            from PyQt6.QtCore import QSettings
+            s = QSettings()
+        except Exception:
+            return
+        p = self._SETTINGS_PREFIX
+
+        def _f(key, cur):
+            try:
+                return float(s.value(f"{p}/{key}", cur, type=float))
+            except Exception:
+                return cur
+
+        def _b(key, cur):
+            try:
+                return bool(s.value(f"{p}/{key}", cur, type=bool))
+            except Exception:
+                return cur
+
+        try:
+            self.sp_hot.setValue(_f("hot_sigma", self.sp_hot.value()))
+            self.sp_cold.setValue(_f("cold_sigma", self.sp_cold.value()))
+            self.sp_protect.setValue(_f("protect_sigma", self.sp_protect.value()))
+            # stored as the kernel's evidence ratio; shown as protection
+            self.sp_star.setValue(_ratio_to_protection(
+                _f("star_ratio", self._star_ratio())))
+            self.cb_hot.setChecked(_b("correct_hot", self.cb_hot.isChecked()))
+            self.cb_cold.setChecked(_b("correct_cold", self.cb_cold.isChecked()))
+        except Exception:
+            pass
+
+        # Bayer is stored as the raw combo userData ("" = Auto, "__none__", or
+        # a 4-letter pattern) so "Auto" stays auto on the next image rather
+        # than freezing one session's detected pattern.
+        try:
+            bp = str(s.value(f"{p}/bayer_pattern", "", type=str) or "")
+            idx = self.cmb_bayer.findData(bp)
+            if idx >= 0:
+                self.cmb_bayer.setCurrentIndex(idx)
+        except Exception:
+            pass
+
+    def _save_persisted_settings(self):
+        """Write the current detection knobs for the next dialog instance."""
+        if self._tuning_mode:
+            # Tuning mode writes stacking/cosmetic/* on Apply instead.  Don't
+            # let a Stacking Suite tuning session redefine the interactive
+            # defaults used for single-image work.
+            return
+        try:
+            from PyQt6.QtCore import QSettings
+            s = QSettings()
+            p = self._SETTINGS_PREFIX
+            s.setValue(f"{p}/hot_sigma", float(self.sp_hot.value()))
+            s.setValue(f"{p}/cold_sigma", float(self.sp_cold.value()))
+            s.setValue(f"{p}/protect_sigma", float(self.sp_protect.value()))
+            s.setValue(f"{p}/star_ratio", self._star_ratio())
+            s.setValue(f"{p}/correct_hot", bool(self.cb_hot.isChecked()))
+            s.setValue(f"{p}/correct_cold", bool(self.cb_cold.isChecked()))
+            s.setValue(f"{p}/bayer_pattern", self._selected_bayer_for_preset())
+            s.sync()
+        except Exception:
+            pass
+
+    def _mark_applied(self):
+        """Relabel Cancel -> Close once the document has been modified."""
+        self._applied = True
+        try:
+            self.btn_cancel.setText(self.tr("Close"))
+            self.btn_cancel.setToolTip(self.tr(
+                "Close the dialog.  The correction has already been applied —\n"
+                "use Undo on the image to revert it."
+            ))
+        except Exception:
+            pass
+
+    def done(self, r):
+        """Persist settings on every exit path.
+
+        QDialog.done() is the funnel for accept(), reject() and the window
+        close button (QDialog.closeEvent calls reject()), so saving here
+        covers Apply-then-Close, plain Cancel, and the X.
+        """
+        self._save_persisted_settings()
+        super().done(r)
 
     # ------------------------------------------------------------------
     # Preset get/seed
@@ -992,6 +1286,7 @@ class CosmeticCorrectionDialog(QDialog):
             "hot_sigma": float(self.sp_hot.value()),
             "cold_sigma": float(self.sp_cold.value()),
             "protect_sigma": float(self.sp_protect.value()),
+            "star_ratio": self._star_ratio(),
             "correct_hot": bool(self.cb_hot.isChecked()),
             "correct_cold": bool(self.cb_cold.isChecked()),
             "bayer_pattern": self._selected_bayer_for_preset(),
@@ -1017,20 +1312,30 @@ class CosmeticCorrectionDialog(QDialog):
         if "protect_sigma" in p:
             try: self.sp_protect.setValue(float(p["protect_sigma"]))
             except Exception: pass
+        if "star_ratio" in p:
+            try:
+                self.sp_star.setValue(
+                    _ratio_to_protection(float(p["star_ratio"])))
+            except Exception: pass
         if "correct_hot" in p:
             self.cb_hot.setChecked(bool(p["correct_hot"]))
         if "correct_cold" in p:
             self.cb_cold.setChecked(bool(p["correct_cold"]))
-        bp = str(p.get("bayer_pattern", "") or "").strip()
-        idx = 0  # Auto default
-        if bp == "__none__":
-            idx = 1
-        elif bp.upper() in ("RGGB", "BGGR", "GRBG", "GBRG"):
-            idx = self.cmb_bayer.findData(bp.upper())
-            if idx < 0: idx = 0
-        self.cmb_bayer.setCurrentIndex(idx)
+        # Only touch the combo when the preset actually carries the key.
+        # An empty preset ({} from a shortcut with nothing saved) used to
+        # fall through to idx 0 and silently reset a restored selection.
+        if "bayer_pattern" in p:
+            bp = str(p.get("bayer_pattern", "") or "").strip()
+            idx = 0  # Auto default
+            if bp == "__none__":
+                idx = 1
+            elif bp.upper() in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                idx = self.cmb_bayer.findData(bp.upper())
+                if idx < 0: idx = 0
+            self.cmb_bayer.setCurrentIndex(idx)
         try: self.status_label.clear()
         except Exception: pass
+        self._sync_gate_enabled()
         self._request_preview_refresh()
 
     # ------------------------------------------------------------------
@@ -1186,6 +1491,7 @@ class CosmeticCorrectionDialog(QDialog):
             corrected = _run_cosmetic(
                 src_f, hot_sigma=hs, cold_sigma=cs,
                 protect_sigma=ps, bayer_pattern=bp,
+                star_ratio=self._star_ratio(),
             )
         except Exception as e:
             QMessageBox.critical(self, self.tr("Cosmetic Correction"),
@@ -1301,6 +1607,9 @@ class CosmeticCorrectionDialog(QDialog):
             s.setValue("stacking/cosmetic/hot_sigma", hs)
             s.setValue("stacking/cosmetic/cold_sigma", cs)
             s.setValue("stacking/cosmetic/protect_sigma", float(self.sp_protect.value()))
+            # CFA/OSC gate — stored as the kernel's evidence ratio, same
+            # convention the suite's own settings page uses.
+            s.setValue("stacking/cosmetic/star_ratio", float(self._star_ratio()))
             s.sync()
         except Exception as e:
             QMessageBox.warning(self, self.tr("Push to Stacking Suite"),
@@ -1345,6 +1654,7 @@ class CosmeticCorrectionDialog(QDialog):
             self._preview_tile_src,
             hot_sigma=hs, cold_sigma=cs, bayer_pattern=bp,
             protect_sigma=float(self.sp_protect.value()),
+            star_ratio=self._star_ratio(),
             parent=self,
         )
         self._preview_worker.finished_ok.connect(self._on_preview_ok)
@@ -1380,6 +1690,7 @@ class CosmeticCorrectionDialog(QDialog):
         hs = float(self.sp_hot.value())
         cs = float(self.sp_cold.value())
         ps = float(self.sp_protect.value())
+        sr = self._star_ratio()
         ch = bool(self.cb_hot.isChecked())
         cc = bool(self.cb_cold.isChecked())
         if not (ch or cc):
@@ -1395,6 +1706,9 @@ class CosmeticCorrectionDialog(QDialog):
                 s = QSettings()
                 s.setValue("stacking/cosmetic/hot_sigma", hs)
                 s.setValue("stacking/cosmetic/cold_sigma", cs)
+                s.setValue("stacking/cosmetic/protect_sigma", ps)
+                # CFA/OSC gate — the suite reads this for Bayer frames.
+                s.setValue("stacking/cosmetic/star_ratio", float(sr))
                 s.sync()
             except Exception as e:
                 QMessageBox.warning(self, self.tr("Cosmetic Correction"),
@@ -1404,7 +1718,8 @@ class CosmeticCorrectionDialog(QDialog):
                 try:
                     self.main._log(
                         f"Cosmetic σ tuned in Stacking Suite: "
-                        f"hot={hs:.2f}, cold={cs:.2f}"
+                        f"hot={hs:.2f}, cold={cs:.2f}, protect={ps:.1f}, "
+                        f"CFA star protection={_ratio_to_protection(sr):.2f}"
                     )
                 except Exception:
                     pass
@@ -1429,7 +1744,7 @@ class CosmeticCorrectionDialog(QDialog):
         preset = {
             "hot_sigma": hs, "cold_sigma": cs, "protect_sigma": ps,
             "correct_hot": ch, "correct_cold": cc,
-            "bayer_pattern": bp_raw,
+            "bayer_pattern": bp_raw, "star_ratio": sr,
         }
 
         try:
@@ -1438,6 +1753,7 @@ class CosmeticCorrectionDialog(QDialog):
                 hot_sigma=hs, cold_sigma=cs, protect_sigma=ps,
                 bayer_pattern=(None if bp == "__none__" else bp),
                 correct_hot=ch, correct_cold=cc,
+                star_ratio=sr,
                 preset=self.get_preset(),
             )
         except Exception as e:
@@ -1481,6 +1797,12 @@ class CosmeticCorrectionDialog(QDialog):
         self.status_label.setText(
             self.tr(f"✓ Applied to {target} — corrected {n_hot} hot, {n_cold} cold pixel(s)")
         )
+        # The edit is committed to the document (undo lives in DocManager
+        # history), so "Cancel" would be a lie from here on — relabel it.
+        self._mark_applied()
+        # Persist now as well as on close, so tuned sigmas survive even if
+        # the app goes away before the dialog is dismissed.
+        self._save_persisted_settings()
         self._refresh_document_from_active()
 
     def _refresh_document_from_active(self):
@@ -1502,6 +1824,7 @@ class CosmeticCorrectionDialog(QDialog):
                         )
                     except Exception:
                         pass
+                    self._sync_gate_enabled()
         except Exception:
             pass
 
@@ -1549,6 +1872,7 @@ class _CosmeticBatchWorker(QThread):
         out_dir: str = "",
         suffix: str = "_cc",
         protect_sigma: float = 5.0,
+        star_ratio: float = CFA_STAR_PROTECT_RATIO,
         parent=None,
     ):
         super().__init__(parent)
@@ -1556,6 +1880,7 @@ class _CosmeticBatchWorker(QThread):
         self._hot = float(hot_sigma) if bool(correct_hot) else 1e9
         self._cold = float(cold_sigma) if bool(correct_cold) else 1e9
         self._protect = float(protect_sigma)
+        self._star = float(star_ratio)
         self._bp = bayer_pattern
         self._out_mode = out_mode
         self._out_dir = out_dir or ""
@@ -1634,6 +1959,7 @@ class _CosmeticBatchWorker(QThread):
                 corrected = _run_cosmetic(
                     arr, hot_sigma=self._hot, cold_sigma=self._cold,
                     bayer_pattern=bp, protect_sigma=self._protect,
+                    star_ratio=self._star,
                 )
 
                 # Determine format from source extension
@@ -1781,6 +2107,34 @@ class CosmeticCorrectionBatchDialog(QDialog):
         ))
         det_form.addRow(self.tr("Protect structure σ:"), self.sp_protect)
 
+        self.sp_star = QDoubleSpinBox()
+        self.sp_star.setRange(CFA_STAR_PROTECT_UI_MIN,
+                              CFA_STAR_PROTECT_UI_MAX)
+        self.sp_star.setSingleStep(0.01)
+        self.sp_star.setDecimals(2)
+        # preset stores the kernel ratio; the widget shows protection
+        self.sp_star.setValue(_ratio_to_protection(
+            float(preset.get("star_ratio", CFA_STAR_PROTECT_RATIO))))
+        self.sp_star.setToolTip(self.tr(
+            "Star protection for BAYERED (CFA) files only.\n"
+            "\n"
+            "HIGHER = MORE protection, FEWER pixels corrected.\n"
+            "LOWER  = LESS protection, MORE pixels corrected.\n"
+            "Same direction as Hot / Cold σ: turn it up and correction\n"
+            "does less.\n"
+            "\n"
+            "  1.00  maximum protection -- almost nothing corrected\n"
+            "  0.95  default\n"
+            "  0.40  no effective protection\n"
+            "\n"
+            "A star lights every photosite under the PSF; a hot pixel lights\n"
+            "only itself.  This sets how much company a candidate's adjacent\n"
+            "differently-coloured photosites must keep it before it is kept.\n"
+            "\n"
+            "Has no effect on mono / debayered input."
+        ))
+        det_form.addRow(self.tr("Star protection (CFA):"), self.sp_star)
+
         self.cb_hot = QCheckBox(self.tr("Correct hot pixels"))
         self.cb_hot.setChecked(bool(preset.get("correct_hot", True)))
         self.cb_cold = QCheckBox(self.tr("Correct cold pixels"))
@@ -1901,6 +2255,9 @@ class CosmeticCorrectionBatchDialog(QDialog):
             s = QSettings()
             s.setValue("stacking/cosmetic/hot_sigma", hs)
             s.setValue("stacking/cosmetic/cold_sigma", cs)
+            s.setValue("stacking/cosmetic/protect_sigma", float(self.sp_protect.value()))
+            s.setValue("stacking/cosmetic/star_ratio",
+                       float(_protection_to_ratio(self.sp_star.value())))
             s.sync()
         except Exception as e:
             QMessageBox.warning(self, self.tr("Push to Stacking Suite"),
@@ -2084,6 +2441,7 @@ class CosmeticCorrectionBatchDialog(QDialog):
             bayer_pattern=bp_raw,
             out_mode=out_mode, out_dir=out_dir, suffix=suffix,
             protect_sigma=float(self.sp_protect.value()),
+            star_ratio=_protection_to_ratio(self.sp_star.value()),
             parent=self,
         )
         self._worker.file_started.connect(self._on_file_started)
@@ -2212,6 +2570,7 @@ def apply_cosmetic_correction_preset_to_doc(main, doc, preset: dict):
     hs = float(preset.get("hot_sigma", 3.0))
     cs = float(preset.get("cold_sigma", 3.0))
     ps = float(preset.get("protect_sigma", 5.0))
+    sr = float(preset.get("star_ratio", CFA_STAR_PROTECT_RATIO))
     ch = bool(preset.get("correct_hot", True))
     cc = bool(preset.get("correct_cold", True))
     bp_raw = str(preset.get("bayer_pattern", "") or "").strip()
@@ -2227,6 +2586,7 @@ def apply_cosmetic_correction_preset_to_doc(main, doc, preset: dict):
         hot_sigma=hs, cold_sigma=cs, protect_sigma=ps,
         bayer_pattern=bp,
         correct_hot=ch, correct_cold=cc,
+        star_ratio=sr,
         preset=preset,
     )
     if hasattr(main, "_log"):
@@ -2382,6 +2742,8 @@ def open_cosmetic_correction_tune(main, sample_light_path: str,
                 "hot_sigma": float(s.value("stacking/cosmetic/hot_sigma", 3.0, type=float)),
                 "cold_sigma": float(s.value("stacking/cosmetic/cold_sigma", 3.0, type=float)),
                 "protect_sigma": float(s.value("stacking/cosmetic/protect_sigma", 5.0, type=float)),
+                "star_ratio": float(s.value("stacking/cosmetic/star_ratio",
+                                            CFA_STAR_PROTECT_RATIO, type=float)),
                 "correct_hot": True,
                 "correct_cold": True,
                 "bayer_pattern": "",

@@ -310,6 +310,165 @@ def _derive_display_name_from_header(header, fallback: str | None = None,
             pass  # naming is cosmetic - never let it break a file load
     return name
 
+class _ChainedHeader:
+    """Read-only .get() across several headers; first non-empty hit wins.
+
+    Extension headers and XISF sibling layers usually carry only what the
+    writer considered layer-specific, so OBJECT / FILTER commonly live in
+    the primary image alone. Chaining lets a layer inherit identity cards
+    without copying or mutating either header. Blank strings count as
+    absent -- a FILTER card written as '' should fall through to the
+    primary rather than suppressing it.
+    """
+
+    __slots__ = ("_hdrs",)
+
+    def __init__(self, *hdrs):
+        self._hdrs = [h for h in hdrs if h is not None and hasattr(h, "get")]
+
+    def get(self, key, default=None):
+        for h in self._hdrs:
+            try:
+                v = h.get(key)
+            except Exception:
+                continue
+            if v is None:
+                continue
+            try:
+                if str(v).strip() == "":
+                    continue
+            except Exception:
+                pass
+            return v
+        return default
+
+
+class _XisfHeader:
+    """FITS-style .get() over one XISF image-metadata dict.
+
+    XISF carries identity two ways: a FITSKeywords block (what a
+    converted file keeps) and native XISFProperties. Generated layers --
+    masks, checkpoints -- often have neither and only an 'id', which is
+    why these get chained to the primary image's metadata for naming.
+
+    Values arrive as [{'value': ...}] from FITSKeywords or {'value': ...}
+    from XISFProperties; both shapes are unwrapped so callers see a plain
+    scalar.
+    """
+
+    # Only the cards that can affect a view title.
+    _PROPS = {
+        "OBJECT":   ("Observation:Object:Name",),
+        "TARGET":   ("Observation:Object:Name",),
+        "FILTER":   ("Instrument:Filter:Name",),
+        "TELESCOP": ("Instrument:Telescope:Name",),
+        "INSTRUME": ("Instrument:Camera:Name",),
+        "DATE-OBS": ("Observation:Time:Start",),
+    }
+
+    __slots__ = ("_fk", "_props")
+
+    def __init__(self, meta):
+        meta = meta if isinstance(meta, dict) else {}
+        fk = meta.get("FITSKeywords")
+        self._fk = fk if isinstance(fk, dict) else {}
+        pr = meta.get("XISFProperties")
+        self._props = pr if isinstance(pr, dict) else {}
+
+    @staticmethod
+    def _unwrap(v):
+        if isinstance(v, list):
+            v = v[0] if v else None
+        if isinstance(v, dict):
+            v = v.get("value")
+        return v
+
+    def get(self, key, default=None):
+        v = self._unwrap(self._fk.get(key))
+        if v is not None and str(v).strip() != "":
+            return v
+        for pname in self._PROPS.get(str(key).upper(), ()):
+            v = self._unwrap(self._props.get(pname))
+            if v is not None and str(v).strip() != "":
+                return v
+        return default
+
+
+def _primary_stem(primary_doc) -> str | None:
+    """Title of the already-opened primary doc, for layers to hang off.
+
+    Last resort before the raw-filename form: when the primary derived a
+    good name but a layer's own metadata has nothing usable, the layer
+    should still read as part of the same image.
+    """
+    try:
+        if primary_doc is None:
+            return None
+        nm = primary_doc.display_name()
+    except Exception:
+        return None
+    nm = str(nm or "").strip()
+    return nm or None
+
+
+def _derive_layer_display_name(ident_hdr, primary_hdr, base: str, tag: str, *,
+                               path: str | None = None,
+                               fallback: str | None = None,
+                               stem: str | None = None) -> str:
+    """
+    Title for one image layer: 'OBJECT_FILTER_TAG', e.g.
+    'NGC_6842_B_crop_mask' or 'ngc660galaxy_Ha_REJ_CNT'.
+
+    Shared by extra FITS image HDUs, XISF sibling images and SYQ layers,
+    which differ only in where the identity cards and the layer label
+    come from.
+
+    The tag is kept on the end because OBJECT and FILTER are identical
+    across every layer of a file by construction -- drop it and each
+    layer derives the same string, so the uniquifier in _register_doc
+    numbers them _1, _2, _3: correct, but it no longer tells you which
+    layer is which. It IS dropped when the derived name already says it,
+    so a 'starless' layer of a '..._starless' file does not stutter.
+
+    Resolution order: layer header -> primary header -> the primary
+    view's own title -> the old '<file> <label>' form.
+    """
+    tag_raw = str(tag or "").strip()
+    if fallback is None:
+        fallback = f"{base} {tag_raw}".strip() if tag_raw else str(base)
+
+    try:
+        from PyQt6.QtCore import QSettings
+        if not QSettings().value("files/smart_view_naming", True, type=bool):
+            return fallback
+    except Exception:
+        pass
+
+    try:
+        derived = _derive_display_name_from_header(
+            _ChainedHeader(ident_hdr, primary_hdr), path=path
+        )
+    except Exception:
+        derived = None
+    if not derived:
+        derived = stem
+    if not derived:
+        return fallback
+
+    # Layer labels end up as export filename defaults, so keep them legal:
+    # 'REJ_CNT[1]' -> 'REJ_CNT_1', 'crop_mask' unchanged.
+    tag_clean = re.sub(r"[^\w\-.]", "_", tag_raw)
+    tag_clean = re.sub(r"_+", "_", tag_clean).strip("_")
+    if not tag_clean:
+        return derived
+
+    have = {t for t in re.split(r"[^a-z0-9]+", derived.lower()) if t}
+    want = {t for t in re.split(r"[^a-z0-9]+", tag_clean.lower()) if t}
+    if want and want <= have:
+        return derived
+    return f"{derived}_{tag_clean}"
+
+
 def _normalize_image_01(arr: np.ndarray) -> np.ndarray:
     """
     Normalize an image to [0,1] in-place-ish:
@@ -3224,6 +3383,13 @@ class DocManager(QObject):
             try:
                 with fits.open(path, memmap=False) as hdul:
                     base = os.path.basename(path)
+                    # Identity cards (OBJECT / FILTER / DATE-OBS) are
+                    # typically written to the primary HDU only; extra
+                    # image HDUs inherit them for naming purposes.
+                    try:
+                        primary_hdr = hdul[0].header if len(hdul) else None
+                    except Exception:
+                        primary_hdr = None
 
                     for i, hdu in enumerate(hdul):
                         name_up = (getattr(hdu, "name", "PRIMARY") or "PRIMARY").upper()
@@ -3294,7 +3460,10 @@ class DocManager(QObject):
 
                         try:
                             a, ext_depth, ext_mono = _decode_fits_hdu_image(hdu)
-                            disp = f"{base} {key_str}"
+                            disp = _derive_layer_display_name(
+                                ext_hdr, primary_hdr, base, key_str, path=path,
+                                stem=_primary_stem(primary_doc),
+                            )
 
                             aux_meta = {
                                 "file_path": f"{path}::{key_str}",
@@ -3358,6 +3527,9 @@ class DocManager(QObject):
                 xisf = XISFReader(path)
                 metas = xisf.get_images_metadata() or []
                 base = os.path.basename(path)
+                # Image 0 holds the acquisition identity; masks and
+                # other generated siblings usually carry only an id.
+                xisf_ident = _XisfHeader(metas[0]) if metas else None
 
                 # If legacy did NOT create a primary, build image #0 now
                 if primary_doc is None and len(metas) >= 1:
@@ -3370,6 +3542,13 @@ class DocManager(QObject):
 
                         # Friendly label for #0
                         label0 = metas[0].get("id") or "Image[0]"
+                        # Primary takes no layer tag: nothing to
+                        # disambiguate it against, and it is the stem
+                        # the siblings hang off.
+                        disp0 = _derive_layer_display_name(
+                            xisf_ident, None, base, "", path=path,
+                            fallback=f"{base} {label0}",
+                        )
                         md0 = {
                             "file_path": f"{path}::XISF[0]",
                             "original_header": metas[0],  # will be sanitized
@@ -3377,7 +3556,7 @@ class DocManager(QObject):
                             "is_mono": is_mono0,
                             "original_format": "xisf",
                             "image_meta": {"derived_from": path, "layer_index": 0, "readonly": True},
-                            "display_name": f"{base} {label0}",
+                            "display_name": disp0,
                         }
                         # NEW: attach WCS if possible
                         hdr0 = _xisf_meta_to_fits_header(metas[0])
@@ -3423,6 +3602,11 @@ class DocManager(QObject):
                             if not label:
                                 label = f"Image[{i}]"
 
+                            disp = _derive_layer_display_name(
+                                _XisfHeader(m), xisf_ident, base, label,
+                                path=path, stem=_primary_stem(primary_doc),
+                            )
+
                             md = {
                                 "file_path": f"{path}::XISF[{i}]",
                                 "original_header": m,  # snapshot; sanitized below
@@ -3430,7 +3614,7 @@ class DocManager(QObject):
                                 "is_mono": is_mono_i,
                                 "original_format": "xisf",
                                 "image_meta": {"derived_from": path, "layer_index": i, "readonly": True},
-                                "display_name": f"{base} {label}",
+                                "display_name": disp,
                             }
                             hdri = _xisf_meta_to_fits_header(m)
                             if hdri is not None:
@@ -3464,6 +3648,15 @@ class DocManager(QObject):
                 )
                 base = os.path.basename(path)
                 layers = list_syq_images(path)
+                # The primary's header is the identity source for
+                # checkpoint / mask layers that carry only a role.
+                try:
+                    syq_primary_hdr = (
+                        (primary_doc.metadata or {}).get("original_header")
+                        if primary_doc is not None else None
+                    )
+                except Exception:
+                    syq_primary_hdr = None
 
                 if primary_doc is not None:
                     prim = next((L for L in layers if L["is_primary"]), None)
@@ -3489,7 +3682,10 @@ class DocManager(QObject):
                             # ("NAME", "NAME 2", …); the object id in file_path
                             # stays the stable, unique key regardless.
                             label = L["role"] or f"SYQ[{L['id']}]"
-                            disp = f"{base} {label}"
+                            disp = _derive_layer_display_name(
+                                hdr, syq_primary_hdr, base, label, path=path,
+                                stem=_primary_stem(primary_doc),
+                            )
                             md = {
                                 "file_path": f"{path}::SYQ[{L['id']}]",
                                 "original_header": hdr,

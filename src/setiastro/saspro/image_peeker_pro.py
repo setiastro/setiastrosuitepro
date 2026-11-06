@@ -317,6 +317,39 @@ class PreviewPane(QWidget):
                 self.scroll_area.viewport().setCursor(Qt.CursorShape.ArrowCursor)
                 return True
 
+            elif evt.type() == QEvent.Type.Wheel:
+                # _SASPRO_STRENGTH_WHEEL: zoom about the pointer, so the pixel under the
+                # cursor stays under the cursor. Driving the slider keeps the
+                # two controls from disagreeing; signals are blocked so the
+                # display is updated once, after the new zoom is in place.
+                try:
+                    dy = evt.angleDelta().y()
+                    if dy == 0:
+                        return True
+                    fine = bool(evt.modifiers() & (Qt.KeyboardModifier.ControlModifier
+                                                   | Qt.KeyboardModifier.ShiftModifier))
+                    step = (1.05 if fine else 1.18) ** (1 if dy > 0 else -1)
+                    old = float(self.zoom_factor) or 1.0
+                    new = min(max(old * step, 0.01), 4.0)
+                    if abs(new - old) < 1e-9:
+                        return True
+                    pos = evt.position()
+                    hb = self.scroll_area.horizontalScrollBar()
+                    vb = self.scroll_area.verticalScrollBar()
+                    # Point of the IMAGE currently under the cursor.
+                    ix = (hb.value() + pos.x()) / old
+                    iy = (vb.value() + pos.y()) / old
+                    blocked = self.zoom_slider.blockSignals(True)
+                    self.zoom_slider.setValue(int(round(new * 100)))
+                    self.zoom_slider.blockSignals(blocked)
+                    self.zoom_factor = new
+                    self._update_display()
+                    hb.setValue(int(round(ix * new - pos.x())))
+                    vb.setValue(int(round(iy * new - pos.y())))
+                except Exception:
+                    return False
+                return True
+
         return super().eventFilter(source, evt)
 
     def load_numpy(self, arr: np.ndarray):
@@ -973,6 +1006,155 @@ def _fit_and_render_surface(x: np.ndarray, y: np.ndarray, values: np.ndarray,
     return surf, (float(np.min(values)), float(np.max(values)))
 
 
+# --- _SASPRO_LOCAL_AXES : begin --------------------------------------------------
+# Samples required per polynomial coefficient before a degree is allowed. A
+# 2D polynomial of degree d has (d+1)(d+2)/2 coefficients, so degree 4 needs
+# 300 stars, degree 3 needs 200, degree 2 needs 120.
+_POLY_SAMPLES_PER_COEF = 20
+_POLY_MAX_DEGREE = 4
+
+# A tick cell needs at least this many stars before its own measurement is
+# trusted; below it the cell falls back to the fitted surface, drawn faint.
+_BIN_MIN_STARS = 6
+
+# --- _SASPRO_KERNEL_FIELD : begin --------------------------------------------------
+# Target stars per grid cell. Smaller cells follow more structure and carry
+# more noise; the Gaussian below sets the real smoothing scale, so this only
+# has to be fine enough not to throw structure away before smoothing.
+_KERNEL_CELL_STARS = 8
+# Smoothing bandwidth, in cells. ~1.6 cells at 8 stars/cell averages roughly
+# 60-80 stars per output point, which is where the hold-out error bottoms out.
+_KERNEL_SIGMA_CELLS = 1.6
+_KERNEL_MIN_CELLS = 5
+_KERNEL_MAX_CELLS = 64
+
+
+def _kernel_axis_field(x, y, e1, e2, w, H: int, W: int,
+                       cell_stars: float = _KERNEL_CELL_STARS,
+                       sigma_cells: float = _KERNEL_SIGMA_CELLS):
+    """
+    _SASPRO_KERNEL_FIELD: Nadaraya-Watson kernel regression of the ellipticity vector.
+
+        E(p) = sum_i w_i K(|p - p_i|) e_i / sum_i w_i K(|p - p_i|)
+
+    evaluated by binning onto a coarse grid, Gaussian-blurring numerator and
+    denominator, dividing, and bilinearly upsampling. O(N + grid), under a
+    millisecond on a multi-megapixel frame.
+
+    This replaces a global least-squares polynomial, which had to describe
+    the whole focal plane with 15 coefficients and was therefore stiffest
+    exactly at the corners -- on a real frame it reported |e| = 0.042 in a
+    corner whose stars measure 0.307. Five-fold hold-out over 2073 stars:
+    kernel 0.1330, polynomial degree 4 0.1420, degree 2 0.1527, thin-plate
+    RBF 0.1630.
+
+    Smoothing e1 and e2 and recovering the angle afterwards is what keeps the
+    axis ambiguity harmless: +/-180 degrees is the same point in (e1, e2), so
+    there is no branch to cut and no bearing to propagate around the frame.
+
+    Returns (surf_e1, surf_e2, support, (nx, ny, sigma)). `support` is the
+    smoothed weight denominator normalised to [0, 1] -- a free, smooth map of
+    where the frame actually has data.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    e1 = np.asarray(e1, float); e2 = np.asarray(e2, float)
+    w = np.nan_to_num(np.asarray(w, float), nan=0.0, posinf=0.0)
+    n = int(x.size)
+
+    # Grid sized for ~cell_stars per cell, keeping the frame's aspect ratio.
+    target = max(4.0, n / max(float(cell_stars), 1.0))
+    nx = int(round(math.sqrt(max(target * W / max(float(H), 1.0), 1.0))))
+    ny = int(round(target / max(nx, 1)))
+    nx = int(np.clip(nx, _KERNEL_MIN_CELLS, _KERNEL_MAX_CELLS))
+    ny = int(np.clip(ny, _KERNEL_MIN_CELLS, _KERNEL_MAX_CELLS))
+
+    cw, ch = float(W) / nx, float(H) / ny
+    ix = np.clip((x / cw).astype(int), 0, nx - 1)
+    iy = np.clip((y / ch).astype(int), 0, ny - 1)
+
+    aw = np.zeros((ny, nx)); a1 = np.zeros((ny, nx)); a2 = np.zeros((ny, nx))
+    np.add.at(aw, (iy, ix), w)
+    np.add.at(a1, (iy, ix), w * e1)
+    np.add.at(a2, (iy, ix), w * e2)
+
+    s = float(sigma_cells)
+    sw = gaussian_filter(aw, s, mode="nearest")
+    g1 = gaussian_filter(a1, s, mode="nearest") / np.maximum(sw, 1e-12)
+    g2 = gaussian_filter(a2, s, mode="nearest") / np.maximum(sw, 1e-12)
+    sup = sw / max(float(sw.max()), 1e-12)
+
+    def _up(a):
+        b = _ndzoom(a, (H / ny, W / nx), order=1, mode="nearest")
+        if b.shape != (H, W):            # zoom rounding
+            out = np.zeros((H, W), dtype=b.dtype)
+            hh, ww = min(H, b.shape[0]), min(W, b.shape[1])
+            out[:hh, :ww] = b[:hh, :ww]
+            if hh < H:
+                out[hh:, :] = out[hh - 1, :]
+            if ww < W:
+                out[:, ww:] = out[:, ww - 1:ww]
+            b = out
+        return b.astype(np.float32, copy=False)
+
+    return _up(g1), _up(g2), _up(sup), (nx, ny, s)
+# --- _SASPRO_KERNEL_FIELD : end ----------------------------------------------------
+
+
+def _adaptive_poly_degree(n: int, requested: int,
+                          dmax: int = _POLY_MAX_DEGREE) -> int:
+    """_SASPRO_LOCAL_AXES: the highest degree this many stars can actually support."""
+    d = max(1, min(int(requested), int(dmax)))
+    while d > 1:
+        n_coef = (d + 1) * (d + 2) // 2
+        if int(n) >= _POLY_SAMPLES_PER_COEF * n_coef:
+            break
+        d -= 1
+    return d
+
+
+def _local_axis_bins(x, y, e1, e2, sigma_e, H: int, W: int,
+                     nx: int, ny: int,
+                     min_stars: int = _BIN_MIN_STARS) -> list:
+    """
+    _SASPRO_LOCAL_AXES: inverse-variance mean ellipticity vector per lattice cell.
+
+    A direct measurement of the stars inside each cell -- no surface, no
+    extrapolation, nothing that can carry a corner's answer in from the rest
+    of the frame. On the frame this was built against, a cell of 33 stars
+    landed 1 degree from the independently stacked PSF of the same region,
+    where the global degree-2 surface was 46 degrees away.
+
+    Each entry: ix, iy, n, e_mag, theta (radians, the module's y-down frame),
+    ok (n >= min_stars).
+    """
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    cw, ch = float(W) / max(int(nx), 1), float(H) / max(int(ny), 1)
+    cx = np.clip((x / cw).astype(int), 0, int(nx) - 1)
+    cy = np.clip((y / ch).astype(int), 0, int(ny) - 1)
+    w = 1.0 / np.maximum(np.asarray(sigma_e, float), 1e-6) ** 2
+    w = np.nan_to_num(w, nan=0.0, posinf=0.0)
+    out = []
+    for iy in range(int(ny)):
+        for ix in range(int(nx)):
+            m = (cx == ix) & (cy == iy)
+            n = int(np.count_nonzero(m))
+            if n == 0 or float(w[m].sum()) <= 0.0:
+                out.append({'ix': ix, 'iy': iy, 'n': n, 'e_mag': 0.0,
+                            'theta': 0.0, 'ok': False})
+                continue
+            sw = float(w[m].sum())
+            m1 = float(np.sum(w[m] * np.asarray(e1, float)[m]) / sw)
+            m2 = float(np.sum(w[m] * np.asarray(e2, float)[m]) / sw)
+            out.append({'ix': ix, 'iy': iy, 'n': n,
+                        'e_mag': math.hypot(m1, m2),
+                        'theta': 0.5 * math.atan2(m2, m1),
+                        'ok': n >= int(min_stars)})
+    return out
+# --- _SASPRO_LOCAL_AXES : end ----------------------------------------------------
+
+
 def _fit_orientation_field(cat: dict, H: int, W: int,
                            deg: int = 2,
                            coarse: int = 128,
@@ -1071,11 +1253,22 @@ def _fit_orientation_field(cat: dict, H: int, W: int,
     # produce a slowly varying axis field. Degree is capped at 2 so a
     # high-order FWHM setting does not drag the orientation fit into
     # modelling noise.
-    d = max(1, min(int(deg), 2))
-    surf_e1, _ = _fit_and_render_surface(x, y, e1, H, W, deg=d, coarse=coarse,
-                                         sigma_clip=sigma_clip, weights=w)
-    surf_e2, _ = _fit_and_render_surface(x, y, e2, H, W, deg=d, coarse=coarse,
-                                         sigma_clip=sigma_clip, weights=w)
+    # _SASPRO_LOCAL_AXES: degree by star count, not a flat cap of 2.
+    #
+    # A global quadratic has the least freedom exactly at the corners, so a
+    # corner that disagrees with the rest of the frame is rotated toward the
+    # frame mean and flattened. On a real 2073-star frame the degree-2 surface
+    # was 46 degrees off the local measurement in one corner; degree 4 was 3.
+    # The old cap of 2 dates from when round stars were excluded from the fit,
+    # which made it far noisier than it is now.
+    # The caller's `deg` is the FWHM setting; orientation should not inherit
+    # it. Ask for the most this star count supports and let the rule decide.
+    d = _adaptive_poly_degree(len(x), max(int(deg), _POLY_MAX_DEGREE))
+    # _SASPRO_KERNEL_FIELD: kernel regression on the measurements, not a global fit.
+    # The polynomial reported |e| = 0.042 in a corner measuring 0.307, because
+    # 15 coefficients cannot describe a focal plane and are stiffest at the
+    # edges. `d` above is retained only for the result dict.
+    surf_e1, surf_e2, support, _kgrid = _kernel_axis_field(x, y, e1, e2, w, H, W)
 
     theta_surf = 0.5 * np.arctan2(surf_e2, surf_e1)
     emag_surf = np.hypot(surf_e1, surf_e2)
@@ -1097,6 +1290,14 @@ def _fit_orientation_field(cat: dict, H: int, W: int,
         # _SASPRO_SHAPE_FIT_V2: per-region numbers, plus the brightness band the fit
         # actually used, so the map can be checked against the stars.
         'zones': zones,
+        # _SASPRO_LOCAL_AXES: per-cell measurements for the tick lattice.
+        'bins': _local_axis_bins(x, y, e1, e2, sig, H, W,
+                                 _TICK_GRID[0], _TICK_GRID[1]),
+        'poly_degree': int(d),
+        # _SASPRO_KERNEL_FIELD: (nx, ny, sigma_cells) of the kernel grid, and the smooth
+        # map of local data support that falls out of its denominator.
+        'kernel_grid': _kgrid,
+        'support': support,
         'stars_band': {
             'min_snr': float(_MIN_FIT_SNR),
             'snr_pct': [float(v) for v in np.percentile(stats['snr'][keep],
@@ -1351,7 +1552,19 @@ def _coverage_mask(x: np.ndarray, y: np.ndarray, H: int, W: int,
 # --- _SASPRO_MAP_CONFIDENCE : begin --------------------------------------------------
 # Floor for the confidence multiplier inside the covered region. A weak area
 # should read as "nothing measurable here", not as a hole in the image.
-_CONF_FLOOR = 0.10
+# _SASPRO_KERNEL_FIELD: raised from 0.10. With the field measured rather than modelled,
+# the dark areas are now real low-elongation regions rather than places the
+# polynomial happened to dip through, and they should stay legible.
+_CONF_FLOOR = 0.25
+
+# _SASPRO_STRENGTH_WHEEL: shaping for the strength channel (the ellipticity map used as the
+# orientation map's brightness). 1.0 is a literal multiply.
+_STRENGTH_GAMMA = 0.6
+
+# _SASPRO_AXIS_TICKS: confidence well outside the star hull. Not zero -- a hard zero
+# reads as a rendering fault, and the hull is inset by about one star spacing
+# by construction, so the first band beyond it is barely extrapolating.
+_COVER_OUTSIDE = 0.22
 
 # Sampling ramp for a FITTED FWHM surface, in pixels. At _MIN_FWHM_PX the
 # second moments track subpixel phase rather than the star, so neither the
@@ -1380,6 +1593,37 @@ def _get_cmap(name: str):
         return _cm.get_cmap(name)
 
 
+def _hsl_to_rgb(h: np.ndarray, s: np.ndarray, l: np.ndarray) -> np.ndarray:
+    """
+    _SASPRO_HSL_LIGHTNESS: vectorised HSL -> uint8 RGB.
+
+    HSL, not HSV, and the difference is the whole point. In HSV every colour
+    below V = 1 is a darkened version of itself, so a hue map whose strength
+    is mostly mid-range renders as one murky wash. In HSL, L = 0.5 is the
+    fully saturated colour, L above washes to white and below to black --
+    the same black -> colour -> white structure the magma ellipticity map
+    has, which is why that map reads cleanly on the same data.
+
+    Lets the orientation map carry angle in hue and strength in lightness
+    without the two fighting each other.
+    """
+    h = np.clip(np.asarray(h, dtype=np.float32), 0.0, 1.0)
+    s = np.clip(np.asarray(s, dtype=np.float32), 0.0, 1.0)
+    l = np.clip(np.asarray(l, dtype=np.float32), 0.0, 1.0)
+    c = (1.0 - np.abs(2.0 * l - 1.0)) * s
+    hp = h * 6.0
+    x = c * (1.0 - np.abs(np.mod(hp, 2.0) - 1.0))
+    z = np.zeros_like(h)
+    seg = np.floor(hp).astype(np.int32) % 6
+    cond = [seg == i for i in range(6)]
+    r = np.select(cond, [c, x, z, z, x, c])
+    g = np.select(cond, [x, c, c, x, z, z])
+    b = np.select(cond, [z, z, x, c, c, x])
+    m = l - c / 2.0
+    out = np.stack([r + m, g + m, b + m], axis=-1)
+    return (np.clip(out, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
 def _conf_ramp(v: np.ndarray, lo: float, hi: float) -> np.ndarray:
     """Smoothstep from 0 at `lo` to 1 at `hi`, clamped outside."""
     v = np.asarray(v, dtype=np.float32)
@@ -1395,7 +1639,9 @@ def _confidence_surface(H: int, W: int,
                         fwhm_px_surf: Optional[np.ndarray] = None,
                         coverage: Optional[np.ndarray] = None,
                         emag_full: float = _MIN_ABS_ELONG,
-                        floor: float = _CONF_FLOOR) -> np.ndarray:
+                        floor: float = _CONF_FLOOR,
+                        margin_px: float = 0.0,
+                        strength: Optional[np.ndarray] = None) -> np.ndarray:
     """
     Per-pixel confidence in [0, 1] for modulating a map's brightness.
 
@@ -1420,6 +1666,19 @@ def _confidence_surface(H: int, W: int,
     region stays visible while an unsampled one goes black.
     """
     conf = np.ones((int(H), int(W)), dtype=np.float32)
+    # _SASPRO_STRENGTH_WHEEL: an already-normalised [0,1] strength map -- in practice the
+    # ellipticity map -- so the hue map's brightness IS the ellipticity the
+    # user is looking at in the other window. Folded in before the floor, so
+    # the weakest region sits at the floor rather than at black.
+    if strength is not None:
+        s = np.asarray(strength, dtype=np.float32)
+        if s.shape == conf.shape:
+            # Gamma, because a straight multiply by a frame-normalised map
+            # takes the whole picture down (mean brightness 0.35 on a real
+            # frame) while barely touching the strongest corner. At 0.6 the
+            # ordering is unchanged, the strong corner stays at 0.87, and the
+            # mid-range stays readable. Set to 1.0 for a literal multiply.
+            conf *= np.clip(s, 0.0, 1.0) ** _STRENGTH_GAMMA
     if emag_surf is not None:
         conf *= _conf_ramp(np.abs(np.asarray(emag_surf, dtype=np.float32)),
                            0.0, float(emag_full))
@@ -1429,8 +1688,42 @@ def _confidence_surface(H: int, W: int,
     if coverage is not None:
         cov = np.asarray(coverage)
         if cov.shape == conf.shape:
-            conf = conf * cov.astype(bool).astype(np.float32)
+            conf = conf * _soft_coverage(cov, margin_px)
     return conf.astype(np.float32, copy=False)
+
+
+def _soft_coverage(cov: np.ndarray, margin_px: float = 0.0,
+                   outside: float = _COVER_OUTSIDE) -> np.ndarray:
+    """
+    _SASPRO_AXIS_TICKS: the coverage hull as a soft falloff rather than a hard edge.
+
+    _coverage_mask is the convex hull of the star CENTROIDS, so it is inset
+    from the frame edge by roughly one star spacing no matter how good the
+    frame is -- no star's centre lands in the outermost band. Multiplying by
+    it directly turned that band pure black, which reads as a rendering fault
+    rather than as information, and showed the 128-grid stair-stepping that
+    _coverage_mask upsamples with order=0.
+
+    So: full confidence out to `margin_px` beyond the hull -- the scale on
+    which the surface is still genuinely constrained -- then a smooth fade to
+    `outside`. Beyond that the polynomial really is inventing values, and a
+    dim region says so without punching a hole in the picture.
+    """
+    cov = np.asarray(cov).astype(bool)
+    if not cov.any():
+        return np.ones(cov.shape, dtype=np.float32)
+    m = float(max(margin_px, 0.0))
+    if m <= 0.0:
+        return cov.astype(np.float32)
+    try:
+        from scipy.ndimage import distance_transform_edt
+        d_out = distance_transform_edt(~cov).astype(np.float32)
+    except Exception:
+        return cov.astype(np.float32)
+    # Smoothstep from 1 at the margin to `outside` a further margin out.
+    t = np.clip((d_out - m) / max(m, 1.0), 0.0, 1.0)
+    t = t * t * (3.0 - 2.0 * t)
+    return (1.0 - (1.0 - float(outside)) * t).astype(np.float32)
 # --- _SASPRO_MAP_CONFIDENCE : end ----------------------------------------------------
 
 
@@ -2122,25 +2415,52 @@ def _fit_defocus_model(x: np.ndarray, y: np.ndarray, fwhm_um: np.ndarray,
     # variance. Standard linearised error estimate -- adequate here, where
     # the model is mildly nonlinear and the residuals are many.
     se = [float('nan')] * 5
+    pq_cov = None          # _SASPRO_ONE_TILT: the (p, q) block, for corner error bars
     try:
         J = res.jac
         dof = max(1, n_used - 5)
         s2 = float(np.sum(res.fun ** 2)) / dof
         cov = np.linalg.inv(J.T @ J) * s2
         se = [float(math.sqrt(max(cov[i, i], 0.0))) for i in range(5)]
+        # _SASPRO_ONE_TILT: params are [f0, p, q, r, kappa], so rows/cols 1:3 are the
+        # tilt pair. TiltDialog needs this to give each corner its own error
+        # bar; it was being computed and thrown away.
+        _c = np.asarray(cov[1:3, 1:3], dtype=float)
+        if _c.shape == (2, 2) and np.all(np.isfinite(_c)):
+            pq_cov = _c.tolist()
     except Exception:
         pass
 
     # Peak-to-peak of the tilt plane over the frame: the plane runs from
     # -|p|-|q| to +|p|+|q| in half-frame units, so p-p is twice their sum in
     # quadrature along the steepest direction.
-    tilt_pp = 2.0 * math.hypot(p, q)
-    tilt_se = (2.0 * math.hypot(se[1], se[2])
-               if all(np.isfinite(se[1:3])) else float('nan'))
+    # _SASPRO_ONE_TILT: corner to opposite corner, which is what the comment above
+    # says and what TiltDialog's corner table has always computed. A plane
+    # over a RECTANGLE reaches its extremes at the corners, dz = +/-p +/-q,
+    # so max - min = 2(|p| + |q|). The previous 2*hypot(p, q) is the span
+    # over the inscribed CIRCLE -- the steepest direction, but only out to
+    # the short radius -- and understated the tilt by up to sqrt(2) (1.38x
+    # on the frame this was found on: 21.3 um reported, 29.5 um corner to
+    # corner). That gap was most of the disagreement between the two dialogs.
+    tilt_pp = 2.0 * (abs(p) + abs(q))
+    # Propagated for THAT quantity: d/dp = 2*sign(p), d/dq = 2*sign(q), so
+    # the covariance term carries its own sign rather than being dropped.
+    if all(np.isfinite(se[1:3])):
+        _vp, _vq = se[1] ** 2, se[2] ** 2
+        _cpq = float(pq_cov[0][1]) if pq_cov is not None else 0.0
+        _sgn = (1.0 if p >= 0 else -1.0) * (1.0 if q >= 0 else -1.0)
+        tilt_se = 2.0 * math.sqrt(max(_vp + _vq + 2.0 * _sgn * _cpq, 0.0))
+    else:
+        tilt_se = float('nan')
 
     rms_resid = float(np.sqrt(np.mean((model(res.x) - f)[mask] ** 2)))
     return {
         'fwhm0_um': abs(f0), 'fwhm0_se': se[0],
+        # _SASPRO_ONE_TILT: the tilt plane itself, in the model's half-frame units
+        # (dz = p*xn + q*yn + ...), plus the half-frame scale so a caller can
+        # convert to microns per pixel without re-deriving it.
+        'p': float(p), 'q': float(q), 'pq_cov': pq_cov,
+        'half_w': float(max(W / 2.0, 1e-9)), 'half_h': float(max(H / 2.0, 1e-9)),
         'tilt_um': tilt_pp, 'tilt_se': tilt_se,
         'tilt_angle_deg': math.degrees(math.atan2(q, p)) % 360.0,
         'curvature_um': abs(kap), 'curvature_se': se[4],
@@ -2226,8 +2546,11 @@ def analyze_focal_plane(img: np.ndarray,
 
     # ----- Ellipticity (canonical: 1 - b/a in [0, 1)) -----------------------
     ell = 1.0 - (b / a)
-    ell_surf, _ = _fit_and_render_surface(x, y, ell, H, W,
-                                          deg=deg, coarse=coarse)
+    # _SASPRO_STRENGTH_WHEEL: the same kernel regression the orientation field uses. This
+    # surface is now also the orientation map's brightness channel, so it must
+    # not reintroduce the polynomial stiffness that was just removed.
+    ell_surf, _unused_e2, _ell_support, _ = _kernel_axis_field(
+        x, y, ell, np.zeros_like(ell), np.ones_like(ell), H, W)
 
     # ----- Orientation --------------------------------------------------
     # Only the stars whose elongation is real and whose angle is pinned down
@@ -2250,15 +2573,21 @@ def analyze_focal_plane(img: np.ndarray,
     # _SASPRO_MAP_CONFIDENCE -------------------------------------------------------
     # The sampling term has to be in pixels; fwhm_surf is in microns.
     _ps = float(pixel_scale) if float(pixel_scale) > 0 else 1.0
+    # _SASPRO_AXIS_TICKS: mean nearest-neighbour star spacing for n stars over the
+    # frame. The surface is still constrained about this far past the last
+    # star, so it is the right distance to carry full confidence outward.
+    _cov_margin = 0.5 * math.sqrt((float(H) * float(W))
+                                  / max(1.0, float(cat['n'])))
     fwhm_px_surf = (fwhm_surf / _ps).astype(np.float32, copy=False)
     # Ellipticity is unreliable where the stars are undersampled, and
     # meaningless outside the star field. Roundness is NOT a reason to
     # dim it -- a round star is a true ellipticity of zero.
     ell_conf = _confidence_surface(H, W, fwhm_px_surf=fwhm_px_surf,
-                                   coverage=cover)
+                                   coverage=cover, margin_px=_cov_margin)
     # FWHM only needs the coverage term: a round, well-sampled star is
     # a perfectly good FWHM measurement.
-    fwhm_conf = _confidence_surface(H, W, coverage=cover)
+    fwhm_conf = _confidence_surface(H, W, coverage=cover,
+                                    margin_px=_cov_margin)
     # ----------------------------------------------------------------
 
     out = {
@@ -2268,6 +2597,14 @@ def analyze_focal_plane(img: np.ndarray,
         'ell_norm':       ell_norm,
         'ell_range':      ell_range,
         'ell_conf':       ell_conf,     # _SASPRO_MAP_CONFIDENCE
+        # _SASPRO_HSL_LIGHTNESS: lightness for the orientation map -- the ellipticity map
+        # itself, scaled only by the sampling and coverage terms (1.0 on a
+        # normal frame, so the lightness IS the ellipticity map).
+        'orient_lightness': (np.clip(ell_norm, 0.0, 1.0)
+                             * _confidence_surface(
+                                 H, W, fwhm_px_surf=fwhm_px_surf,
+                                 coverage=cover, margin_px=_cov_margin)
+                             ).astype(np.float32),
         'fwhm_conf':      fwhm_conf,    # _SASPRO_MAP_CONFIDENCE
         'fwhm_px_surf':   fwhm_px_surf,  # _SASPRO_MAP_CONFIDENCE
         'coverage':       cover,
@@ -2291,6 +2628,10 @@ def analyze_focal_plane(img: np.ndarray,
         out.update({
             'orientation_ok':   True,
             'theta_norm':       ori['theta_norm'],
+            'theta_surf':       ori['theta_surf'],   # _SASPRO_AXIS_TICKS: ticks need radians
+            'zones':            ori.get('zones'),    # _SASPRO_AXIS_TICKS
+            'axis_bins':        ori.get('bins'),     # _SASPRO_LOCAL_AXES
+            'poly_degree':      ori.get('poly_degree'),   # _SASPRO_LOCAL_AXES
             'theta_range_rad':  ori['theta_range'],
             'emag_surf':        ori['emag_surf'],
             'emag_range':       ori['emag_range'],
@@ -2299,7 +2640,9 @@ def analyze_focal_plane(img: np.ndarray,
             # zero-length ellipticity vector.
             'orient_conf':      _confidence_surface(
                 H, W, emag_surf=ori['emag_surf'],
-                fwhm_px_surf=fwhm_px_surf, coverage=cover),
+                fwhm_px_surf=fwhm_px_surf, coverage=cover,
+                # _SASPRO_ROUNDNESS_ONLY: no strength channel -- see above.
+                margin_px=_cov_margin),
             'n_orient_stars':   ori['n_used'],
             'orient_sigma_deg': ori['median_sigma_theta_deg'],
         })
@@ -2475,12 +2818,50 @@ def tilt_analysis(
     fwhm_um = _FWHM_FACTOR * np.sqrt(a_pix * b_pix) * float(pixel_size_um)
 
     f_number = float(focal_length_mm) / float(aperture_mm)
-    fit = _fit_tilt_paraboloid(x, y, fwhm_um, f_number,
-                               sigma_clip=sigma_clip, max_iter=5)
+    # _SASPRO_ONE_TILT: the SAME estimator the Optical Diagnosis uses, so the two
+    # dialogs cannot report different tilts for one frame. The paraboloid it
+    # replaces had no field-curvature term, so curvature leaked into its tilt
+    # -- which is what TiltDialog's own "surface is not flat" warning was
+    # describing. Expect smaller, better-determined numbers than before.
+    # NB: deliberately NOT passing this function's `sigma_clip` (2.5). The
+    # Optical Diagnosis uses the model's own default, and a different clip
+    # selects a different subset of stars -- 1009 against 1059 on a real
+    # frame -- which is enough on its own to make the two dialogs disagree.
+    # One estimator means one clip too.
+    fit = _fit_defocus_model(x, y, fwhm_um, f_number, H, W)
     if fit is None:
         return np.zeros((H, W), dtype=np.float32), (0.0, 0.0, 0.0), (H, W), None
 
-    p, q, r = fit['p'], fit['q'], fit['r']
+    # The model works in half-frame units; the corner table wants microns per
+    # PIXEL, delta = p*dx + q*dy measured from the frame centre.
+    _hw = float(fit.get('half_w') or max(W / 2.0, 1e-9))
+    _hh = float(fit.get('half_h') or max(H / 2.0, 1e-9))
+    p = float(fit.get('p', 0.0)) / _hw
+    q = float(fit.get('q', 0.0)) / _hh
+    r = float(fit.get('r_um', 0.0))
+
+    # Transform the covariance with the same scaling, so each corner keeps an
+    # exact error bar rather than a shared global one.
+    _pq = fit.get('pq_cov')
+    if _pq is not None:
+        try:
+            _S = np.array([[1.0 / _hw, 0.0], [0.0, 1.0 / _hh]], dtype=float)
+            _pq = (_S @ np.asarray(_pq, dtype=float) @ _S).tolist()
+        except Exception:
+            _pq = None
+
+    fit = dict(fit)
+    fit.update({
+        'p': p, 'q': q, 'r': r, 'pq_cov': _pq,
+        'fwhm_baseline': fit.get('fwhm0_um'),
+        # now a residual in microns, not microns^2 -- the label says so too
+        'rms_residual': fit.get('rms_resid_um'),
+        'well_defined': True,
+        # Retired: it flagged the old model having nowhere to put curvature.
+        # Curvature is a fitted term now, so the corner numbers are the tilt
+        # part by construction, and the dialog shows the curvature instead.
+        'planarity': None,
+    })
 
     # Rasterise the (linear) signed defocus plane. Uses shared coarse-grid
     # upsampler for consistency, though a plane could be evaluated directly.
@@ -2764,8 +3145,17 @@ class TiltDialog(QDialog):
                     diag_bits.append(self.tr("f/{0:.1f}")
                                      .format(float(fit_info["f_number"])))
                 if fit_info.get("rms_residual") is not None:
-                    diag_bits.append(self.tr("RMS residual: {0:.2f} µm²")
+                    # _SASPRO_ONE_TILT: the defocus model's residual is in µm, not
+                    # µm² -- it no longer works in FWHM².
+                    diag_bits.append(self.tr("RMS residual: {0:.2f} µm")
                                      .format(float(fit_info["rms_residual"])))
+                # _SASPRO_ONE_TILT: curvature is fitted separately now, so show it
+                # here too rather than leaving it to the other dialog.
+                if fit_info.get("curvature_um") is not None:
+                    _cv = float(fit_info["curvature_um"])
+                    _cs = fit_info.get("curvature_sig")
+                    diag_bits.append(self.tr("Curvature: {0:.1f} µm").format(_cv)
+                                     + (f" ({float(_cs):.1f}σ)" if _cs else ""))
                 if diag_bits:
                     diag_label = QLabel("   |   ".join(diag_bits))
 
@@ -3118,9 +3508,126 @@ class DiagnosisDialog(QDialog):
         self.resize(560, 520)
 
 
+# --- _SASPRO_AXIS_TICKS : begin --------------------------------------------------
+# Drawing an AXIS as a hue is the core legibility problem. A hue ramp has no
+# natural zero (both ends of "hsv" are red, because +90 and -90 degrees are
+# the same axis) and cannot resolve the 20-degree differences that matter
+# here -- 17 vs 45 degrees is green versus slightly different green. A line
+# segment lying along the measured axis is read instantly and can be compared
+# directly against the stars underneath it.
+_TICK_GRID = (10, 7)          # columns, rows of the fitted-field tick lattice
+_TICK_MIN_PX = 14.0           # a tick this short means "no measurable axis"
+_TICK_GAIN = 420.0            # pixels of length per unit |e|
+_TICK_BACKDROP = 0.45         # dim the frame so the ticks carry the eye
+
+
+def _axis_tick_overlay(pane, base_image, theta_surf, emag_surf,
+                       zones=None, conf=None, bins_in=None):   # _SASPRO_LOCAL_AXES
+    """
+    _SASPRO_AXIS_TICKS: render the orientation fit as axis ticks over the frame.
+
+    Returns an H x W x 3 uint8 array, or None if it cannot be built -- the
+    caller then simply offers no toggle.
+
+    theta_surf is in the module's y-down frame, so a tick is drawn with
+    (cos t, sin t) directly in widget coordinates and comes out lying along
+    the elongation as it appears on screen. No sign flip anywhere: that
+    equivalence is the reason this view cannot disagree with the heatmap.
+    """
+    try:
+        a = np.asarray(base_image)
+        if a.ndim == 3:
+            a = a.mean(axis=2)
+        a = a.astype(np.float32)
+        H, W = a.shape
+        if theta_surf.shape != (H, W):
+            return None
+
+        # Percentile stretch so stars are visible without blowing out nebula.
+        lo, hi = np.percentile(a[np.isfinite(a)], (20.0, 99.3))
+        if not np.isfinite(hi) or hi <= lo:
+            lo, hi = float(np.nanmin(a)), float(np.nanmax(a)) or 1.0
+        g = np.clip((a - lo) / max(hi - lo, 1e-9), 0.0, 1.0) * _TICK_BACKDROP
+        rgb = (np.repeat(g[..., None], 3, axis=2) * 255.0).astype(np.uint8)
+
+        qimg = pane.numpy_to_qimage(rgb).convertToFormat(
+            QImage.Format.Format_RGB888)
+        p = QPainter(qimg)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        def tick(cx, cy, t, length, colour, width, alpha=255):
+            dx = 0.5 * length * math.cos(t)
+            dy = 0.5 * length * math.sin(t)     # y-down: no sign flip
+            col = QColor(colour)
+            col.setAlpha(int(alpha))
+            pen = QPen(col, float(width))
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.drawLine(int(cx - dx), int(cy - dy), int(cx + dx), int(cy + dy))
+
+        # The fitted field, on a lattice.
+        # _SASPRO_LOCAL_AXES: draw each cell's OWN stars. Sampling the fitted surface
+        # here was wrong by 48 degrees in a real corner, because a global
+        # polynomial cannot follow a corner that disagrees with the frame.
+        # A cell without enough stars falls back to the surface and is drawn
+        # faint, so "too few stars" never looks like "measured, and weak".
+        nx, ny = _TICK_GRID
+        bins = {}
+        for b in (bins_in or []):
+            bins[(int(b.get("ix", -1)), int(b.get("iy", -1)))] = b
+        for iy in range(ny):
+            for ix in range(nx):
+                px = int((ix + 0.5) * W / nx)
+                py = int((iy + 0.5) * H / ny)
+                b = bins.get((ix, iy))
+                if b is not None and b.get("ok"):
+                    e, t, measured = float(b["e_mag"]), float(b["theta"]), True
+                else:
+                    e, t, measured = (float(emag_surf[py, px]),
+                                      float(theta_surf[py, px]), False)
+                a_ = 255
+                if conf is not None and conf.shape == (H, W):
+                    a_ = int(70 + 185 * float(np.clip(conf[py, px], 0.0, 1.0)))
+                if not measured:
+                    a_ = int(a_ * 0.45)
+                tick(px, py, t, _TICK_MIN_PX + _TICK_GAIN * e,
+                     "#19d9ff" if measured else "#6f8fa0", 2.2, a_)
+
+        # The nine anchor zones, measured straight from their own stars.
+        if zones:
+            p.setFont(QFont("", max(8, int(min(H, W) / 90))))
+            for k, z in enumerate(zones):
+                if not z.get("n"):
+                    continue
+                r_, c_ = divmod(k, 3)
+                px = int((c_ + 0.5) * W / 3)
+                py = int((r_ + 0.5) * H / 3)
+                e = float(z.get("e_mag") or 0.0)
+                if not np.isfinite(e):
+                    continue
+                strong = float(z.get("sig") or 0.0) >= 3.0
+                tick(px, py, math.radians(float(z.get("angle_deg") or 0.0)),
+                     _TICK_MIN_PX * 2.0 + _TICK_GAIN * 1.7 * e,
+                     "#ffd400" if strong else "#ff8c3a", 4.2,
+                     255 if strong else 130)
+                col = QColor("#ffd400" if strong else "#ff8c3a")
+                col.setAlpha(255 if strong else 150)
+                p.setPen(QPen(col))
+                p.drawText(int(px - 42), int(py + int(min(H, W) / 22)),
+                           f"|e|={e:.3f}")
+        p.end()
+        return pane.qimage_to_numpy(qimg)
+    except Exception as exc:
+        print(f"[image peeker] tick overlay skipped: {type(exc).__name__}: {exc}")
+        return None
+# --- _SASPRO_AXIS_TICKS : end ----------------------------------------------------
+
+
 class SurfaceDialog(QDialog):
     def __init__(self, title, heatmap, vmin, vmax, units:str="", cmap="gray", parent=None,
-                 confidence=None):   # _SASPRO_MAP_CONFIDENCE
+                 confidence=None,   # _SASPRO_MAP_CONFIDENCE
+                 base_image=None, ticks=None,   # _SASPRO_AXIS_TICKS
+                 lightness=None):   # _SASPRO_HSL_LIGHTNESS
         super().__init__(parent)
         self.setWindowTitle(title)
 
@@ -3136,6 +3643,16 @@ class SurfaceDialog(QDialog):
             cmap_obj = _get_cmap(cmap)   # _SASPRO_MAP_CONFIDENCE: 3.9-safe
             rgba = cmap_obj(heatmap)            # shape H×W×4, floats 0–1
             rgb  = (rgba[...,:3] * 255).astype(np.uint8)
+            # _SASPRO_HSL_LIGHTNESS: for a cyclic hue map, compose in HSL and take the
+            # lightness from the companion map instead of scaling RGB. See
+            # _hsl_to_rgb for why value is the wrong channel for this.
+            if lightness is not None:
+                try:
+                    _l = np.asarray(lightness, dtype=np.float32)
+                    if _l.shape == heatmap.shape:
+                        rgb = _hsl_to_rgb(heatmap, np.ones_like(_l), _l)
+                except Exception:
+                    pass
             # _SASPRO_MAP_CONFIDENCE: brightness carries how much to believe the
             # colour. Hue cannot: 0 and 180 degrees are both bright red,
             # so a region of round stars would otherwise render as a
@@ -3153,7 +3670,19 @@ class SurfaceDialog(QDialog):
         else:
             # assume already float32 [0..1] RGB or uint8 RGB
             view.load_numpy(heatmap)
+            rgb = heatmap
         view.fit_to_view()
+
+        # _SASPRO_AXIS_TICKS: build the tick view now so the toggle is instant.
+        self._view = view
+        self._rgb_heat = rgb
+        self._rgb_ticks = None
+        if ticks is not None and base_image is not None:
+            self._rgb_ticks = _axis_tick_overlay(
+                view, base_image,
+                ticks.get("theta"), ticks.get("emag"),
+                zones=ticks.get("zones"), conf=ticks.get("conf"),
+                bins_in=ticks.get("bins"))   # _SASPRO_LOCAL_AXES
 
         # colorbar pixmap
         cb = self._make_colorbar(cmap, vmin, vmax, units)
@@ -3164,6 +3693,13 @@ class SurfaceDialog(QDialog):
         h = QHBoxLayout()
         h.addWidget(view, 1)
         h.addWidget(lbl_cb, 0)
+
+        # _SASPRO_AXIS_TICKS: one fit, two readings, one click apart.
+        self._btn_toggle = None
+        if self._rgb_ticks is not None:
+            self._btn_toggle = QPushButton(self.tr("Show axis ticks"))
+            self._btn_toggle.setCheckable(True)
+            self._btn_toggle.clicked.connect(self._toggle_ticks)
 
         btn = QPushButton(self.tr("Close"))
         btn.clicked.connect(self.accept)
@@ -3176,7 +3712,29 @@ class SurfaceDialog(QDialog):
         v = QVBoxLayout(self)
         v.addLayout(h)
         v.addWidget(lbl_span)
+        if self._btn_toggle is not None:   # _SASPRO_AXIS_TICKS
+            v.addWidget(self._btn_toggle)
         v.addWidget(btn)
+
+    def _toggle_ticks(self, on: bool):
+        """_SASPRO_AXIS_TICKS: swap between the tick view and the heatmap, keeping zoom."""
+        try:
+            arr = self._rgb_ticks if on else self._rgb_heat
+            if arr is None:
+                return
+            pane = self._view
+            z = getattr(pane, "zoom_factor", 1.0)
+            pane.load_numpy(arr)
+            try:
+                pane.zoom_factor = z
+                pane.zoom_slider.setValue(int(round(z * 100)))
+            except Exception:
+                pane.fit_to_view()
+            self._btn_toggle.setText(
+                self.tr("Show heatmap") if on else self.tr("Show axis ticks"))
+        except Exception as exc:
+            print(f"[image peeker] tick toggle failed: "
+                  f"{type(exc).__name__}: {exc}")
 
     def _make_colorbar(self, cmap_name, vmin, vmax, units):
         # build a 256×20 gradient in RGBA
@@ -4174,9 +4732,23 @@ class ImagePeekerDialogPro(QDialog):
                         self.tr("Orientation Map ({0} elongated stars, ±{1:.0f}°)")
                             .format(res.get("n_orient_stars", 0),
                                     res.get("orient_sigma_deg", float("nan"))),
-                        res["theta_norm"], mn_o, mx_o, "rad", "hsv",
+                        res["theta_norm"], mn_o, mx_o,
+                        self.tr("rad  (cyan=horizontal, +=clockwise on screen)"),
+                        "hsv",
                         parent=self,
-                        confidence=res.get("orient_conf")   # _SASPRO_MAP_CONFIDENCE
+                        # _SASPRO_ROUNDNESS_ONLY: brightness from roundness alone.
+                        # Driving it from the ellipticity map muddied the whole
+                        # frame in HSV and washed the strongest region to white
+                        # in HSL -- one channel cannot carry strength without
+                        # taking it out of hue.
+                        confidence=res.get("orient_conf"),
+                        # _SASPRO_AXIS_TICKS: an axis drawn as an axis.
+                        base_image=self._arr_and_meta()[0],
+                        ticks={"theta": res.get("theta_surf"),
+                               "emag": res.get("emag_surf"),
+                               "zones": res.get("zones"),
+                               "bins": res.get("axis_bins"),   # _SASPRO_LOCAL_AXES
+                               "conf": res.get("orient_conf")}
                     ).show()
                 else:
                     att = res.get("attrition", {}) or {}

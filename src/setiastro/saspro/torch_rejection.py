@@ -472,7 +472,8 @@ _ESD_CRIT_CACHE: dict = {}
 _ESD_CRIT_LOCK = threading.Lock()
 
 
-def esd_critical_values(F: int, threshold: float, *, bonferroni: bool = False) -> np.ndarray:
+def esd_critical_values(F: int, threshold: float, *, bonferroni: bool = True,
+                        legacy: bool = False) -> np.ndarray:
     """
     Critical values lambda_n for Rosner's Generalized ESD, indexed by the number
     of still-active samples n (0..F). Entries for n < 3 are +inf, which disables
@@ -488,7 +489,16 @@ def esd_critical_values(F: int, threshold: float, *, bonferroni: bool = False) -
     Student-t, so the critical value is just a t quantile -- no need for the
     internally studentized form and its (n-1)/sqrt(n(n-2+t^2)) conversion.
 
-    `threshold` is the UI "sigma" control, converted to a one-sided normal tail
+    `threshold` is the UI "sigma" control, converted to a per-PIXEL
+    false-rejection rate: alpha = P(Z > threshold) is the chance that ANY
+    frame at a given pixel is falsely clipped on clean data. Since the
+    statistic is the absolute maximum over nn candidates, the tail
+    probability actually passed to the t quantile is alpha / (2*nn).
+    `bonferroni` is retained for call compatibility but no longer selects
+    behaviour; `legacy=True` restores the pre-fix formula for reproducing
+    historical stacks.
+
+    (superseded) threshold was previously a one-sided normal tail
     probability alpha = P(Z > threshold), so threshold=3 gives alpha ~ 1.35e-3 --
     what a user reading the control as "3 sigma" expects for one observation.
 
@@ -522,7 +532,7 @@ def esd_critical_values(F: int, threshold: float, *, bonferroni: bool = False) -
     """
     F = int(F)
     thr = float(threshold)
-    _key = (F, thr, bool(bonferroni))
+    _key = (F, thr, bool(bonferroni), bool(legacy))
     with _ESD_CRIT_LOCK:
         _hit = _ESD_CRIT_CACHE.get(_key)
     if _hit is not None:
@@ -541,8 +551,23 @@ def esd_critical_values(F: int, threshold: float, *, bonferroni: bool = False) -
     # keep the tail probability representable; thr beyond ~7 sigma underflows
     p_one = min(max(p_one, 1e-12), 0.49)
 
+    # SASPRO_ESD_CRIT_FIX_V1
+    # R in the ESD branch is the ABSOLUTE externally studentized deviate of
+    # the MOST EXTREME of nn active samples. Two corrections are therefore
+    # mandatory, and neither is a conservatism knob:
+    #   |t| rather than t      -> halve the tail probability
+    #   max over nn candidates -> divide it by nn
+    # Without them the test runs ~2*nn hot (a factor of 40 at nn=20). Because
+    # jstar takes the LARGEST passing step, one spurious late pass discards
+    # every earlier removal, so on clean data the rejection count piles up at
+    # max_out = F/2 and those pixels come out sqrt(2) noisier than their
+    # neighbours -- the sparse speckle that looks like cross-hatch on smooth
+    # backgrounds. With the correction the cascade stops on its own.
     for nn in range(3, F + 1):
-        p_eff = max((p_one / nn) if bonferroni else p_one, 1e-15)
+        if legacy:
+            p_eff = max((p_one / nn) if bonferroni else p_one, 1e-15)
+        else:
+            p_eff = max(p_one / (2.0 * nn), 1e-15)
         lam = _tppf(1.0 - p_eff, nn - 2)
         if lam is not None and np.isfinite(lam) and lam > 0.0:
             crit[nn] = np.float32(lam)
@@ -552,6 +577,52 @@ def esd_critical_values(F: int, threshold: float, *, bonferroni: bool = False) -
             _ESD_CRIT_CACHE.clear()
         _ESD_CRIT_CACHE[_key] = crit
     return crit.copy()
+
+# Default cross-colour star-protection ratio.
+#
+# A star is an OPTICAL event: it illuminates every photosite under the PSF
+# regardless of which filter sits on top, so a star core's immediately
+# adjacent (differently-coloured) photosites are elevated in proportion to
+# the PSF shape.  Measured on synthetic RGGB: 0.17-0.52 of the core's own
+# excess, and near-constant (0.27-0.30 at fixed FWHM) across a 16x range of
+# star brightness, because the ratio is set by PSF shape and not by flux.
+#
+# A hot pixel is ELECTRICAL: one photosite, no optical footprint.  Measured
+# cross-colour support 0.004 and below.
+#
+# Measured trade curve (synthetic RGGB, hot_sigma = 5):
+#
+#   ratio | faintest star colour kept   | hot pixels lost on nebulosity
+#         | (off-colour phase response) | brighter than
+#   ------+-----------------------------+------------------------------
+#    0.02 | 0.05 at FWHM 2.0            |  6 sigma   <- too costly
+#    0.05 | 0.12 at FWHM 2.0            | 14 sigma
+#    0.10 | 0.30 at FWHM 2.0            | 14 sigma   <- strictly worse
+#    0.20 | 0.50 at FWHM 2.0            | 29 sigma
+#
+# 0.05 is chosen because it dominates 0.10: identical hot-pixel cost, but it
+# keeps much redder/narrower stars.  Dropping to 0.02 starts losing real
+# defects across any nebula, which is the worse trade.
+#
+# Isolated hot-pixel detection is INDEPENDENT of this knob (their support is
+# ~0.00, so every threshold above ~0.01 catches them) and so is the
+# false-protection rate on pure noise -- both measured flat from 0.02 to 0.40.
+# The knob only arbitrates candidates that sit on real signal.
+#
+# The error asymmetry favours protection: a false protect leaves one noise
+# pixel alone, a false correct eats a star core.
+#
+# KNOWN LIMITS (synthetic; see the stress runs in the session notes):
+#   * below ~FWHM 1.2 px in the MOSAIC grid a star core is spatially
+#     indistinguishable from a hot pixel by any neighbour test -- an
+#     information limit, not a tuning problem.
+#   * OSC behind a narrowband filter weakens the premise, because the
+#     off-colour phases genuinely do not see the line.  Below ~0.12
+#     off-colour response, lower this or disable the hot pass.
+#   * a 3x3-or-larger contiguous hot block self-protects at its centre
+#     (corners still correct).  Clusters that big belong in a bad-pixel map.
+CFA_STAR_PROTECT_RATIO = 0.05
+
 
 # ---------------------------------------------------------------------------
 # GPU Calibration Pipeline — dark sub, flat div, cosmetic correction
@@ -653,6 +724,7 @@ def calibration_pipeline_gpu(
     apply_cosmetic: bool = True,
     bayer_pattern: str | None = None,
     protect_sigma: float = 5.0,
+    star_ratio: float = CFA_STAR_PROTECT_RATIO,
 ) -> np.ndarray:
     """
     Full per-frame calibration pipeline on GPU:
@@ -714,6 +786,7 @@ def calibration_pipeline_gpu(
                 cold_sigma=cold_sigma,
                 bayer_pattern=bayer_pattern,
                 protect_sigma=protect_sigma,
+                star_ratio=star_ratio,
             )
 
     # ── back to CPU, restore original layout ─────────────────────────
@@ -734,8 +807,137 @@ def _clear_cc_buffers():
     refcount per frame, so there is nothing to clear."""
     pass
 
+# ---------------------------------------------------------------------------
+# CFA (Bayer) cosmetic correction: cross-colour star protection
+# ---------------------------------------------------------------------------
+def _cfa_phase_stats(plane, torch):
+    """Per-CFA-phase background statistics for a 2-D mosaic plane.
+
+    Returns three 2x2 nested lists indexed [y & 1][x & 1]:
+      med      - phase median (that phase's background level)
+      avg_dev  - mean |x - med| within the phase.  This is the SAME scale the
+                 mono path uses for hot/cold sigma, just measured inside one
+                 CFA phase, so `hot_sigma=5` means the same thing on a mosaic
+                 as it does on mono.
+      mad_sig  - 1.4826 * MAD, the robust sigma the star gate normalises by.
+
+    Four phases, not three colours: G1/G2 imbalance is real on most sensors.
+
+    Measuring per phase also fixes two calibration bugs in the whole-frame
+    stats this replaces for CFA data:
+      * a global MAD-sigma is inflated (~4.5x on a typical OSC sky) by the
+        R/G/B background OFFSETS being measured as noise, so `hot_sigma=3`
+        behaved like ~10 sigma on a mosaic;
+      * the old strided sample hit either one phase or all four depending on
+        whether `min(H, W) // 100` happened to be even or odd, i.e. on the
+        sensor's dimensions.  Phase-pure sampling makes stride parity moot.
+    """
+    med = [[0.0, 0.0], [0.0, 0.0]]
+    avg = [[0.0, 0.0], [0.0, 0.0]]
+    mad = [[0.0, 0.0], [0.0, 0.0]]
+    for a in (0, 1):
+        for b in (0, 1):
+            sub = plane[a::2, b::2]
+            sh, sw = int(sub.shape[0]), int(sub.shape[1])
+            if sh == 0 or sw == 0:
+                med[a][b], avg[a][b], mad[a][b] = 0.0, 1e-8, 1e-8
+                continue
+            k = max(1, min(sh, sw) // 100)
+            smp = sub[::k, ::k].reshape(-1).to('cpu', dtype=torch.float32).numpy()
+            if smp.size == 0:
+                med[a][b], avg[a][b], mad[a][b] = 0.0, 1e-8, 1e-8
+                continue
+            m = float(np.median(smp))
+            ad = np.abs(smp - m)
+            med[a][b] = m
+            avg[a][b] = max(float(ad.mean()), 1e-8)
+            mad[a][b] = max(1.4826 * float(np.median(ad)), 1e-8)
+    return med, avg, mad
+
+
+def _cfa_flag_map(torch, plane, p, m5, pad, stats,
+                  hot_sigma, cold_sigma, star_ratio):
+    """Hot/cold flag map for a CFA mosaic plane, with star protection.
+
+    `p` is `plane` reflect-padded by `pad` (must be >= 2) and `m5` is the
+    stride-2 same-colour cross median.  Reflect padding preserves CFA phase
+    parity at every edge (it mirrors about the edge element, so an odd
+    offset lands on an odd-offset phase), which is what makes the stride-1
+    cross-colour lookups below colour-correct right up to the border.
+
+    The old structure gate (`m5 > background + protect_sigma * sigma`) is
+    degenerate on CFA data: at stride 2 a star core's same-colour neighbours
+    are 2 px away, outside the PSF, so a star core cannot move m5 any more
+    than a lone hot pixel can.  Measured on synthetic RGGB, m5 reads 2.2
+    sigma for a tight star core and 0.9 sigma for a hot pixel -- there is no
+    information there to threshold on, at any protect_sigma.
+
+    So split the two questions the old code conflated:
+
+      * REPLACEMENT VALUE stays same-colour / stride-2 (the caller's job).
+        Mixing colours there would inject colour artefacts.
+      * THE DECISION TO REPLACE uses every colour available, at stride 1.
+
+    Per phase (a, b):
+      detection - stride-2 same-colour vs a PER-PHASE scale, so hot_sigma /
+                  cold_sigma keep their mono meaning.
+      star gate - stride-1 CROSS-COLOUR support, as a ratio of the
+                  candidate's own excess, split by axis.
+
+    Expressing support as a RATIO rather than an absolute threshold is what
+    makes it brightness-independent: the PSF fixes the neighbour-to-core
+    ratio regardless of how bright the star is.
+
+    Splitting by axis and taking the min is what stops a defective column or
+    any 1-D cluster from protecting itself -- a star is isotropic and shows
+    support on both axes, a column shows it only vertically (measured 84.3
+    sigma vertical vs -2.6 sigma cross-axis).
+    """
+    med, avg, mad = stats
+    H, W = int(plane.shape[0]), int(plane.shape[1])
+    flagged = torch.zeros((H, W), dtype=torch.bool, device=plane.device)
+
+    for a in (0, 1):
+        for b in (0, 1):
+            # strided views into the padded plane; original (y, x) -> p[y+pad, x+pad]
+            ctr = p[pad + a    : pad + H    : 2, pad + b    : pad + W    : 2]
+            n_n = p[pad + a - 1: pad + H - 1: 2, pad + b    : pad + W    : 2]
+            n_s = p[pad + a + 1: pad + H + 1: 2, pad + b    : pad + W    : 2]
+            n_w = p[pad + a    : pad + H    : 2, pad + b - 1: pad + W - 1: 2]
+            n_e = p[pad + a    : pad + H    : 2, pad + b + 1: pad + W + 1: 2]
+            m5p = m5[a::2, b::2]
+
+            m_c, ad_c, sg_c = med[a][b], avg[a][b], mad[a][b]
+            # N/S always sit in phase (1-a, b); W/E always in phase (a, 1-b)
+            m_v, sg_v = med[1 - a][b], mad[1 - a][b]
+            m_h, sg_h = med[a][1 - b], mad[a][1 - b]
+
+            # ---- detection: per-phase scale == mono semantics ----------
+            scale = max(ad_c * float(hot_sigma), ad_c)
+            hot_c = ctr > (m5p + scale)
+            cold  = ctr < (m5p - ad_c * float(cold_sigma))
+
+            # ---- cross-colour star gate --------------------------------
+            # Taking min() in raw units before normalising is exact: both
+            # members of each pair share a phase, so they share (med, sigma).
+            z_c = (ctr - m_c) / sg_c
+            z_v = (torch.minimum(n_n, n_s) - m_v) / sg_v
+            z_h = (torch.minimum(n_w, n_e) - m_h) / sg_h
+            sup = torch.minimum(z_v, z_h)
+            # sup / z_c > star_ratio, as a multiply (no divide, and a
+            # non-positive z_c can't be a hot candidate anyway)
+            protect = sup > (float(star_ratio) * z_c.clamp(min=1e-6))
+
+            flagged[a::2, b::2] = (hot_c & (~protect)) | cold
+            del ctr, n_n, n_s, n_w, n_e, m5p, z_c, z_v, z_h, sup, protect
+            del hot_c, cold
+
+    return flagged
+
+
 def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma,
-                                bayer_pattern=None, protect_sigma=5.0):
+                                bayer_pattern=None, protect_sigma=5.0,
+                                star_ratio=CFA_STAR_PROTECT_RATIO):
     """
     Two-pass cosmetic correction on a (C,H,W) tensor already on device.
     Detection is whole-frame; the neighbour-median sort is tiled over row
@@ -792,6 +994,10 @@ def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma,
         del _s, _absdev
         del sample
 
+        # CFA: per-phase background stats drive both the detection scale
+        # (so sigma keeps its mono meaning) and the star gate's z-scores.
+        _cfa_stats = _cfa_phase_stats(plane, torch) if bayer_pattern else None
+
         # ── reflect-pad the plane once (whole frame) ──────────────────
         p = F.pad(plane.unsqueeze(0).unsqueeze(0),
                   (pad_amt, pad_amt, pad_amt, pad_amt),
@@ -808,19 +1014,29 @@ def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma,
         m5 = median5_along_dim0(five, torch)  # 5-elt median, min/max only
         del five
 
-        # ── detection + structure gate (whole frame) ──────────────────
-        scale_f     = max(avg_dev_f * float(hot_sigma), avg_dev_f)
-        hot_thresh  = m5 + scale_f
-        cold_thresh = m5 - avg_dev_f * float(cold_sigma)
+        # ── detection + star protection (whole frame) ─────────────────
+        if bayer_pattern:
+            # CFA: per-phase detection scale + cross-colour star gate.
+            # protect_sigma is deliberately unused here -- the stride-2
+            # structure gate it drives carries no information on a mosaic.
+            flagged = _cfa_flag_map(
+                torch, plane, p, m5, pad_amt, _cfa_stats,
+                hot_sigma=hot_sigma, cold_sigma=cold_sigma,
+                star_ratio=star_ratio,
+            )
+        else:
+            scale_f     = max(avg_dev_f * float(hot_sigma), avg_dev_f)
+            hot_thresh  = m5 + scale_f
+            cold_thresh = m5 - avg_dev_f * float(cold_sigma)
 
-        hot_candidates = plane > hot_thresh
-        cold_map       = plane < cold_thresh
-        #sasprotect resolved signal: a lone hot pixel can't move m5, a star
-        # core can. m5 is stride-s so this stays same-colour for Bayer.
-        protect_thr = med_f + float(protect_sigma) * robust_sig
-        structure   = m5 > protect_thr
-        flagged     = (hot_candidates & (~structure)) | cold_map
-        del hot_candidates, cold_map, structure, hot_thresh, cold_thresh
+            hot_candidates = plane > hot_thresh
+            cold_map       = plane < cold_thresh
+            #sasprotect resolved signal: a lone hot pixel can't move m5, a
+            # star core can.
+            protect_thr = med_f + float(protect_sigma) * robust_sig
+            structure   = m5 > protect_thr
+            flagged     = (hot_candidates & (~structure)) | cold_map
+            del hot_candidates, cold_map, structure, hot_thresh, cold_thresh
 
         # padded flagged mask for neighbour lookups (whole frame)
         fp = F.pad(flagged.float().unsqueeze(0).unsqueeze(0),
@@ -905,12 +1121,20 @@ def cosmetic_correction_gpu(
     cold_sigma: float = 3.0,
     bayer_pattern: str | None = None,
     protect_sigma: float = 5.0,
+    star_ratio: float = CFA_STAR_PROTECT_RATIO,
 ) -> np.ndarray:
     """
     Two-pass cosmetic correction on GPU.
     bayer_pattern: if set (e.g. "RGGB"), uses stride-2 neighbors so only
                    same-color CFA pixels are compared. Otherwise uses stride-1
                    for debayered/mono images.
+
+    With a bayer_pattern set, detection is calibrated PER CFA PHASE (so
+    hot_sigma / cold_sigma mean the same thing as on mono) and star cores
+    are protected by cross-colour neighbour support rather than by the
+    stride-2 structure gate, which carries no information on a mosaic.
+    `protect_sigma` applies to the mono/debayered path only; `star_ratio`
+    applies to the CFA path only.  See _cfa_flag_map.
     """
     torch = _get_torch(prefer_cuda=True)
     dev = _device() or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
@@ -941,6 +1165,9 @@ def cosmetic_correction_gpu(
                 min=1e-8,
             )
 
+            # CFA: per-phase background stats (see _cfa_phase_stats)
+            _cfa_stats = _cfa_phase_stats(plane, torch) if bayer_pattern else None
+
             # pad by stride amount so border pixels are handled cleanly
             p = torch.nn.functional.pad(
                 plane.unsqueeze(0).unsqueeze(0),
@@ -957,28 +1184,36 @@ def cosmetic_correction_gpu(
             five = torch.stack([north, south, west, east, center], dim=0)
             m5 = five.median(dim=0).values
 
-            scale       = torch.clamp(avg_dev * hot_sigma, min=float(avg_dev))
-            hot_thresh  = m5 + scale
-            cold_thresh = m5 - avg_dev * cold_sigma
+            if bayer_pattern:
+                # ── CFA: per-phase detection + cross-colour star gate ──
+                # The stride-2 structure gate below is degenerate on a
+                # mosaic (a star core can't move m5 either), so replace it
+                # outright rather than stacking another threshold on it.
+                flagged = _cfa_flag_map(
+                    torch, plane, p, m5, s, _cfa_stats,
+                    hot_sigma=hot_sigma, cold_sigma=cold_sigma,
+                    star_ratio=star_ratio,
+                )
+            else:
+                scale       = torch.clamp(avg_dev * hot_sigma, min=float(avg_dev))
+                hot_thresh  = m5 + scale
+                cold_thresh = m5 - avg_dev * cold_sigma
 
-            hot_candidates = plane > hot_thresh
-            cold_map       = plane < cold_thresh
+                hot_candidates = plane > hot_thresh
+                cold_map       = plane < cold_thresh
 
-            # ── structure gate: protect resolved signal (stars / nebula) ──
-            # A hot pixel is a lone spike and cannot move a local median; a
-            # star or nebula core has spatial extent, so its local median is
-            # genuinely elevated. Gate the hot pass on m5 (the 5-px cross
-            # median, already robust to an isolated hot centre) vs a global
-            # robust background: patches whose median clears protect_sigma
-            # sigmas above background are real signal and are left untouched.
-            # NB: m5 uses stride-s neighbours, so this stays same-colour for
-            # Bayer automatically — unlike the old stride-1 3x3 mean, which
-            # averaged across CFA colours.
-            protect_thr = med_val + float(protect_sigma) * robust_sigma
-            structure   = m5 > protect_thr
-            hot_map     = hot_candidates & (~structure)
+                # ── structure gate: protect resolved signal (stars / nebula) ──
+                # A hot pixel is a lone spike and cannot move a local median; a
+                # star or nebula core has spatial extent, so its local median is
+                # genuinely elevated. Gate the hot pass on m5 (the 5-px cross
+                # median, already robust to an isolated hot centre) vs a global
+                # robust background: patches whose median clears protect_sigma
+                # sigmas above background are real signal and are left untouched.
+                protect_thr = med_val + float(protect_sigma) * robust_sigma
+                structure   = m5 > protect_thr
+                hot_map     = hot_candidates & (~structure)
 
-            flagged = hot_map | cold_map
+                flagged = hot_map | cold_map
 
             # --- START OPTIMIZED SPARSE PROCESSING ---
             # 1. Find the 1D coordinates of the bad pixels
