@@ -247,17 +247,13 @@ class ViewMixin:
             return
         view = sw.widget()
 
-        # Bring the label pixmap to native size first so _infer_image_size
-        # (which prefers the scaled pixmap) reports true image dimensions.
-        # Do not go through _zoom_active_1_1 — that preserves centre and is
-        # the wrong prelude for a subsequent fit-and-recenter.
-        if hasattr(view, "set_scale") and callable(view.set_scale):
-            try:
-                view.set_scale(1.0)
-            except Exception:
-                pass
-
-        # Get sizes
+        # No 1:1 prelude. This used to call view.set_scale(1.0) first, purely so
+        # that _infer_image_size -- which read the label pixmap -- would see the
+        # image at native size. _infer_image_size now asks the canvas, the
+        # current display source and the document for the real dimensions, so
+        # the prelude bought nothing and cost a full render of the whole image
+        # at 100% on every fit (two full presents, since the fit scale follows
+        # immediately).
         img_w, img_h = self._infer_image_size(view)
         if not img_w or not img_h:
             return
@@ -334,13 +330,46 @@ class ViewMixin:
 
 
     def _infer_image_size(self, view):
-        """Return (img_w, img_h) in device-independent pixels (ints), best-effort."""
-        # Preferred: from the label's pixmap
+        """Return (img_w, img_h) in device-independent pixels (ints), best-effort.
+
+        Order matters. This used to read view.label.pixmap() FIRST, because for
+        a plain QLabel presenting at 1:1 the pixmap's size is the image's size.
+        That stopped being true when the tiled canvas became the default display
+        path: its pixmap() hands back a whole-image PROXY, downscaled to
+        PROXY_MAX on the long edge (and sized from whatever _pm_src currently
+        is, so the error factor moves with the zoom). Fit-to-window then
+        computed its scale from the thumbnail's dimensions and came out 4x too
+        large, leaving the image hanging out of the viewport.
+
+        So: ask the things that actually know the source dimensions first, and
+        keep the pixmap only as a last resort for view types that have nothing
+        better.
+        """
+        # Preferred: the tiled/viewport canvas records the exact dimensions of
+        # the source it is displaying.
         try:
-            pm = getattr(view, "label", None).pixmap() if hasattr(view, "label") else None
-            if pm and not pm.isNull():
-                dpr = max(1.0, float(pm.devicePixelRatio()))
-                return int(round(pm.width() / dpr)), int(round(pm.height() / dpr))
+            lbl = getattr(view, "label", None)
+            sw = int(getattr(lbl, "_src_w", 0) or 0)
+            sh = int(getattr(lbl, "_src_h", 0) or 0)
+            if sw > 0 and sh > 0:
+                return sw, sh
+        except Exception:
+            pass
+
+        # Next: whatever the view says it is currently displaying. An active
+        # preview or display override can differ from document.image, and the
+        # fit has to match what is on screen.
+        try:
+            getter = getattr(view, "_current_display_source", None)
+            if callable(getter):
+                import numpy as np
+                a = getter()
+                if a is not None:
+                    arr = np.asarray(a)
+                    if arr.ndim >= 2:
+                        h, w = arr.shape[:2]
+                        if w > 0 and h > 0:
+                            return int(w), int(h)
         except Exception:
             pass
 
@@ -351,6 +380,17 @@ class ViewMixin:
                 import numpy as np
                 h, w = np.asarray(doc.image).shape[:2]
                 return int(w), int(h)
+        except Exception:
+            pass
+
+        # Last resort: the label's pixmap. Only meaningful for a view that
+        # presents the whole image at 1:1 (which is why _zoom_active_fit sets
+        # scale 1.0 before asking).
+        try:
+            pm = getattr(view, "label", None).pixmap() if hasattr(view, "label") else None
+            if pm and not pm.isNull():
+                dpr = max(1.0, float(pm.devicePixelRatio()))
+                return int(round(pm.width() / dpr)), int(round(pm.height() / dpr))
         except Exception:
             pass
 
