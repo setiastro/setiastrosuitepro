@@ -56,11 +56,27 @@ def _rt_dbg(msg: str, status_cb=print):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _venv_pyver(venv_python: Path) -> tuple[int, int] | None:
-    """Return (major, minor) for the venv interpreter, or None if unknown."""
+    """
+    Return (major, minor) for the venv interpreter, or None if unknown.
+
+    None is a NORMAL, expected result, not a freak case: a venv's python.exe is
+    a thin launcher that reads pyvenv.cfg and loads the DLL of the *base* Python
+    it was created from. Uninstall that base Python -- which is exactly what a
+    user does when they swap 3.12 for 3.14 -- and python.exe still EXISTS but
+    can no longer run. Every caller must therefore handle None; treating it as
+    "unknown, carry on" leaves the caller holding an unusable venv, and
+    unpacking it (actual_ver[0]) raises a TypeError that reaches the user as
+    "'NoneType' object is not subscriptable" with no hint of the real cause.
+
+    timeout= matters for the same reason: an orphaned launcher can hang rather
+    than fail, and this runs on the startup path before the window appears.
+    """
     try:
         out = subprocess.check_output(
             [str(venv_python), "-c",
              "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            stderr=subprocess.DEVNULL,
+            timeout=30,
             **_safe_text_kwargs(),
         ).strip()
         maj, min_ = out.split(".")
@@ -160,6 +176,16 @@ def _discover_existing_runtime_dir(status_cb=print) -> Path | None:
                     _rt_dbg(f"Found runtime: {candidate} (Python {actual_ver[0]}.{actual_ver[1]})", status_cb)
                     _RUNTIME_DISCOVERY_LOGGED = True
                 return candidate
+            elif actual_ver is None:
+                # python.exe is present but will not run -- the base Python it
+                # was built from is gone. Do NOT format actual_ver here: that
+                # subscript is the startup TypeError users were seeing.
+                _rt_dbg(
+                    f"Skipping {candidate}: the venv interpreter exists but would "
+                    f"not run (its base Python 3.{cur_minor} has most likely been "
+                    f"uninstalled). The runtime will be rebuilt.",
+                    status_cb,
+                )
             else:
                 _rt_dbg(
                     f"Skipping {candidate}: folder tag says py3{cur_minor} but venv "
@@ -1258,6 +1284,29 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
             raise
     else:
         ver = _venv_pyver(p["python"])
+
+        # python.exe exists but will not run. An orphaned venv (base Python
+        # uninstalled) is unusable and every downstream step -- site-packages
+        # discovery, pip, the torch import -- fails against it in a way that
+        # looks like a torch problem. Throw it away and rebuild; if no matching
+        # system Python is installed, the rebuild raises the clear "install
+        # Python 3.x" message instead of a mystery TypeError later.
+        if ver is None:
+            status_cb(
+                "Runtime venv interpreter will not run (its base Python was most "
+                "likely uninstalled). Discarding the orphaned venv and rebuilding."
+            )
+            shutil.rmtree(p["venv"], ignore_errors=True)
+            # rmtree is ignore_errors, so a locked file leaves python.exe in
+            # place -- and recursing on an unchanged tree would spin forever.
+            if p["python"].exists():
+                raise OSError(
+                    f"Could not remove the unusable runtime venv at:\n  {p['venv']}\n\n"
+                    "Close any other SAS Pro windows (and any antivirus scan of that "
+                    "folder), delete the folder manually, then relaunch."
+                )
+            return _ensure_venv(rt, status_cb=status_cb)
+
         if ver and (ver[0] != 3 or ver[1] not in _SUPPORTED_PY_MINORS):
             status_cb(
                 f"Runtime venv is Python {ver[0]}.{ver[1]} which is no longer supported. Rebuilding."
@@ -2595,6 +2644,111 @@ def _find_system_python_cmd() -> list[str]:
     )
 
 
+def _detected_python_versions() -> list[str]:
+    """
+    Best-effort list of Python versions actually installed, e.g. ['3.14'].
+
+    Only used to make an error message concrete ("you have 3.14, you need
+    3.12"). Never raises; an empty list just means the message stays generic.
+    """
+    seen: list[str] = []
+
+    def _add(v: str) -> None:
+        if v and v not in seen:
+            seen.append(v)
+
+    code = "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+
+    if platform.system() == "Windows":
+        # `py -0p` lists every registered install. The tag is the first token
+        # and has varied by launcher version ('-V:3.14 *' vs '-3.12-64'), so
+        # pull the first x.y out of that token rather than matching a format.
+        try:
+            r = subprocess.run(
+                ["py", "-0p"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=15, **_safe_text_kwargs(),
+            )
+            if r.returncode == 0:
+                for line in (r.stdout or "").splitlines():
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    m = re.search(r"(\d+\.\d+)", parts[0])
+                    if m:
+                        _add(m.group(1))
+        except Exception:
+            pass
+
+    for cmd in (["python"], ["python3"], ["py"]):
+        try:
+            r = subprocess.run(
+                cmd + ["-c", code], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=15, **_safe_text_kwargs(),
+            )
+            if r.returncode == 0:
+                _add((r.stdout or "").strip())
+        except Exception:
+            pass
+
+    return seen
+
+
+def runtime_python_preflight(status_cb=None) -> dict | None:
+    """
+    Answer one question at startup: can this build ever stand up its AI runtime?
+
+    Returns None when the answer is yes (or the question does not apply), else a
+    dict describing the problem so the caller can show a real message instead of
+    letting the user discover it as a mid-bootstrap traceback.
+
+    Why this exists: the frozen build embeds a fixed Python, and torch is
+    imported IN-PROCESS, so the runtime venv must be built by a system Python of
+    that exact minor. A user who installs only 3.14 and runs the 3.12 installer
+    is in a state that cannot work, and every symptom they hit afterwards points
+    somewhere else (a torch error, a DLL error, a TypeError in path discovery).
+
+    Cost: zero extra work on the happy path. A runtime that already exists and
+    runs ends the check immediately, and the discovery result is cached exactly
+    as _user_runtime_dir would have cached it, so the later bootstrap call is
+    free. The system-Python scan only runs when there is no usable runtime --
+    the case where SAS Pro is about to spend minutes downloading torch anyway.
+    """
+    global _RUNTIME_DIR_CACHED
+
+    # Running from source: this interpreter builds AND imports the venv, so it
+    # matches by construction. Nothing to warn about.
+    if not getattr(sys, "frozen", False):
+        return None
+
+    want = _required_runtime_minor()
+    if want is None or want not in _SUPPORTED_PY_MINORS:
+        return None
+
+    _quiet = (lambda *_a, **_k: None) if status_cb is None else status_cb
+
+    try:
+        found = _discover_existing_runtime_dir(status_cb=_quiet)
+        if found is not None:
+            # Already built and version-matched -- no system Python needed.
+            if _RUNTIME_DIR_CACHED is None:
+                _RUNTIME_DIR_CACHED = found
+            return None
+
+        if _find_system_python_cmd_for_minor(want) is not None:
+            return None   # we can build the runtime when we need to
+
+        rt = _runtime_base_dir() / _tag_for_pyver(3, want)
+        return {
+            "required": f"3.{want}",
+            "detected": _detected_python_versions(),
+            "runtime_dir": str(rt),
+            "orphaned_venv": _venv_paths(rt)["python"].exists(),
+        }
+    except Exception:
+        # A preflight must never be the reason the app fails to start.
+        return None
+
+
 def add_runtime_to_sys_path(status_cb=print) -> None:
     rt = _user_runtime_dir(status_cb=status_cb)
     p = _venv_paths(rt)
@@ -2604,6 +2758,16 @@ def add_runtime_to_sys_path(status_cb=print) -> None:
 
     # Verify version match before injecting — prevents stale py312 polluting py314
     ver = _venv_pyver(vpy)
+    if ver is None:
+        # Orphaned venv: do not inject its site-packages. _site_packages() would
+        # fail anyway, but it fails inside a bare `except Exception: return`,
+        # so without this the log says nothing about why torch never appeared.
+        _rt_dbg(
+            f"add_runtime_to_sys_path: skipping {rt} — the venv interpreter will "
+            f"not run (base Python uninstalled?). Runtime will be rebuilt on next use.",
+            status_cb,
+        )
+        return
     if ver:
         expected_minor = None
         try:

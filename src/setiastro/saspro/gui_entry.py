@@ -49,6 +49,83 @@ if sys.platform.startswith("win"):
             print(_msg)
         sys.exit(1)
 
+# ── Frozen build: verify a matching system Python exists ─────────────────────
+# The installer build embeds a FIXED Python (3.12 today) and imports torch into
+# that very interpreter, so its AI runtime venv has to be built by a system
+# Python of the same minor. Install only 3.13/3.14 and the app is in a state
+# that cannot work -- but every symptom shows up somewhere else and somewhere
+# later: a WinError 126, a torch import failure, or (before this landed) a
+# "'NoneType' object is not subscriptable" from runtime path discovery. None of
+# those name the actual cause, which is why this was a recurring support thread.
+#
+# Say it plainly, once, at startup. Non-fatal: SAS Pro runs without the AI
+# runtime, just without the GPU/AI features, so the user chooses.
+# Set SASPRO_SKIP_PYTHON_PREFLIGHT=1 to silence it.
+if getattr(sys, "frozen", False) and not os.environ.get("SASPRO_SKIP_PYTHON_PREFLIGHT"):
+    try:
+        from setiastro.saspro.runtime_torch import runtime_python_preflight
+
+        _pyprob = runtime_python_preflight()
+        if _pyprob:
+            _need = _pyprob["required"]                       # e.g. "3.12"
+            _have = _pyprob.get("detected") or []
+            # Pinned full versions for the direct python.org installer link.
+            _PY_FULL = {"3.12": "3.12.10", "3.13": "3.13.9", "3.14": "3.14.2"}
+            _full = _PY_FULL.get(_need)
+            _url = (f"https://www.python.org/ftp/python/{_full}/python-{_full}-amd64.exe"
+                    if _full and sys.platform.startswith("win")
+                    else "https://www.python.org/downloads/")
+
+            _have_txt = (", ".join(_have) if _have
+                         else "none that SAS Pro could detect")
+            _msg = (
+                f"This installer build of Seti Astro Suite Pro runs on Python {_need} "
+                f"and needs Python {_need} installed on your system to set up its "
+                f"GPU/AI runtime.\r\n\r\n"
+                f"Python versions found on this PC: {_have_txt}\r\n\r\n"
+                f"Python {_need} was not found. Without it, denoise, sharpening, "
+                f"star removal and the other AI/GPU features will not be available.\r\n\r\n"
+                f"To fix it:\r\n"
+                f"  1. Install Python {_need} from:\r\n     {_url}\r\n"
+                f"  2. During setup, tick \"Add python.exe to PATH\".\r\n"
+                f"  3. Relaunch Seti Astro Suite Pro - it rebuilds its runtime "
+                f"automatically.\r\n\r\n"
+                f"(Other Python versions can stay installed; they do not conflict. "
+                f"Running SAS Pro from pip or source works on 3.12, 3.13 and 3.14 - "
+                f"this requirement applies to the installer build only.)\r\n\r\n"
+                f"Open the Python {_need} download page now and exit?\r\n"
+                f"  Yes = open the download and close SAS Pro\r\n"
+                f"  No  = continue without the AI/GPU features"
+            )
+
+            if sys.platform.startswith("win"):
+                # MB_YESNO(0x4) | MB_ICONWARNING(0x30) | SETFOREGROUND | TOPMOST
+                _IDYES = 6
+                try:
+                    import ctypes  # bound above on Windows; re-import is free
+                    _choice = ctypes.windll.user32.MessageBoxW(
+                        0, _msg,
+                        f"Seti Astro Suite Pro - Python {_need} Required",
+                        0x50034,
+                    )
+                except Exception:
+                    print(_msg)
+                    _choice = 0
+                if _choice == _IDYES:
+                    try:
+                        import webbrowser
+                        webbrowser.open(_url)
+                    except Exception:
+                        pass
+                    sys.exit(1)
+            else:
+                print(_msg, file=sys.stderr)
+    except SystemExit:
+        raise
+    except Exception:
+        # A preflight must never be the reason the app fails to start.
+        pass
+
 # ── Numba threading-layer bootstrap ──────────────────────────────────────────
 # MUST run before ANY `import numba` in this process. astroalign and
 # numba_warmup both import numba, and numba locks its threading layer at first
@@ -1177,6 +1254,43 @@ def _bootstrap_imports():
  
     os.environ["LIGHTKURVE_STYLE"] = "default"
  
+    # ── Linux: FreeType symbol clash with Qt ─────────────────────────────────
+    # matplotlib's wheel links its own FreeType into the ft2font extension, but
+    # Python dlopens extensions RTLD_LOCAL, so ft2font's FT_* lookups search the
+    # GLOBAL symbol scope first — where libQt6Gui has already published the
+    # system libfreetype.so.6. An older system FreeType then services calls
+    # compiled against a newer one, the glyph metrics come out garbage, and the
+    # first text render dies with:
+    #     RuntimeError: FT_Render_Glyph (ft2font_wrapper.cpp line 1943)
+    #                   failed with error 0x62: raster overflow
+    # In practice that surfaces as a tool window refusing to open at all
+    # ("Could not open Dither Analysis: ..."), since the exception comes out of
+    # the first Qt paint of the canvas.
+    #
+    # RTLD_DEEPBIND makes ft2font prefer its own bundled FreeType. Qt keeps
+    # using the system one; neither interferes with the other.
+    #
+    # This has to be the FIRST matplotlib import in the process — the extension
+    # module is cached after it, so a later rebind is impossible. Hence here and
+    # not at module scope: ensure_mpl_config_dir() above must set MPLCONFIGDIR
+    # before matplotlib reads it, and the splash is already up by this point.
+    # Upstream: https://github.com/matplotlib/matplotlib/issues/32208
+    # SASPRO_FT2FONT_DEEPBIND
+    if hasattr(os, "RTLD_DEEPBIND"):   # glibc Linux only; absent on Win/mac/musl
+        if "matplotlib" in sys.modules:
+            print("[ft2font] matplotlib already imported - deepbind preload "
+                  "skipped; Linux text rendering may fail", file=sys.stderr)
+        else:
+            _dl_flags = sys.getdlopenflags()
+            try:
+                sys.setdlopenflags(_dl_flags | os.RTLD_DEEPBIND)
+                from matplotlib import ft2font as _ft2font  # noqa: F401
+            except Exception as _ft_exc:
+                print(f"[ft2font] deepbind preload failed: {_ft_exc}",
+                      file=sys.stderr)
+            finally:
+                sys.setdlopenflags(_dl_flags)
+
     import matplotlib
     try:
         matplotlib.use("QtAgg", force=True)

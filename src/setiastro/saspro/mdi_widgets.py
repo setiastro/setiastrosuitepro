@@ -219,13 +219,28 @@ class ViewLinkController:
                 except Exception:
                     pass
 
-                hb = tgt.scroll.horizontalScrollBar().value()
-                vb = tgt.scroll.verticalScrollBar().value()
-                if abs(scale - tgt.scale) < 1e-9 and int(hval) == hb and int(vval) == vb:
-                    continue
-
+                # SASPRO_RELATIVE_LINK: hand the target the source's
+                # viewport-centre FRACTION plus the source's pixel dimensions
+                # and let it derive its own scroll offsets and zoom. Raw
+                # scrollbar values only agree when both views share pixel
+                # dimensions, zoom and window size, so a 1x/2x drizzle pair
+                # drifted apart on both axes. Falls back to the absolute path
+                # for any view that predates apply_linked_center.
                 try:
-                    tgt.set_view_transform(scale, hval, vval, from_link=True)
+                    if (hasattr(tgt, "apply_linked_center")
+                            and hasattr(src_view, "_viewport_center_fraction")):
+                        fx, fy = src_view._viewport_center_fraction()
+                        dims = (src_view._link_ref_dims()
+                                if hasattr(src_view, "_link_ref_dims") else None)
+                        tgt.apply_linked_center(float(scale), fx, fy,
+                                                from_link=True, src_dims=dims)
+                    else:
+                        hb = tgt.scroll.horizontalScrollBar().value()
+                        vb = tgt.scroll.verticalScrollBar().value()
+                        if (abs(scale - tgt.scale) < 1e-9
+                                and int(hval) == hb and int(vval) == vb):
+                            continue
+                        tgt.set_view_transform(scale, hval, vval, from_link=True)
                 except Exception as ex:
                     print("[link] apply failed:", ex)
         finally:

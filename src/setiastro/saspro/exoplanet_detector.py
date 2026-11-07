@@ -56,7 +56,7 @@ from setiastro.saspro import cds_health
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 # ------------------------------------------------------------------------
-from setiastro.saspro.xisf import XISF
+from setiastro.saspro.legacy.xisf import XISF
 from PyQt6.QtCore import Qt, QTimer, QSettings, QRectF, QPoint, QPointF
 from PyQt6.QtGui import QIcon, QColor, QBrush, QPen, QPainter, QImage, QPixmap
 from PyQt6.QtWidgets import (

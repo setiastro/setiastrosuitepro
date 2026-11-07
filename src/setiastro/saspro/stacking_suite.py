@@ -5578,7 +5578,7 @@ def _ensure_minimal_header(header, file_path: str) -> fits.Header:
     if header is None:
         header = fits.Header()
         header["SIMPLE"]  = True
-        header["BITPIX"]  = 16
+        header["BITPIX"]  = -32   # SASpro writes FITS as float32 throughout
         header["CREATOR"] = "SetiAstroSuite"
 
     # Try to provide DATE-OBS if not present
@@ -9001,15 +9001,28 @@ class StackingSuiteDialog(QDialog):
             base = os.path.basename(file_path)
             name, _ = os.path.splitext(base)
             output_filename = os.path.join(self.conversion_output_directory, f"{name}.fit")
-            maxv = float(np.max(image))
-
 
             try:
+                # 32-bit float, not 16-bit. This writes the frames the whole
+                # calibration/registration pipeline then consumes, so it has to
+                # be the lossless end of save_image. The old "16-bit" did four
+                # bad things at once:
+                #   * quantised the data -- a 32-bit TIFF source lost ~0.4% of
+                #     its faint sky signal, and debayer output is interpolated
+                #     float that never was 16-bit to begin with
+                #   * clipped everything above 1.0 (linear frames routinely sit
+                #     above it before stretching)
+                #   * clipped negatives to 0.0 -- and 0.0 is the no-data
+                #     sentinel, so a slightly negative calibrated sky silently
+                #     became no-data
+                #   * emitted BZERO/BSCALE, which astropy then refuses to
+                #     memory-map, so the registration workers could not read
+                #     their own converted frames at all
                 save_image(
                     img_array=image,
                     filename=output_filename,
                     original_format="fit",
-                    bit_depth="16-bit",
+                    bit_depth="32-bit floating point",
                     original_header=header,
                     is_mono=is_mono
                 )
@@ -21421,6 +21434,13 @@ class StackingSuiteDialog(QDialog):
                 n3 = int(n3) if n3 is not None else None
             except Exception:
                 n3 = None
+            # The pipeline's own intermediates (Calibrated/, Normalized_Images/)
+            # are raw writes of the in-memory (H, W, C) array, so their NAXIS1
+            # is the channel count, not the width. Resolve that the same way
+            # _MMImageSeek._open_fits does, or a colour frame gets sized as a
+            # 3-pixel-wide mono one and the disk-space estimate collapses.
+            if n3 is not None and w == 3 and n3 != 3:
+                w, h, n3 = h, n3, 3
             bayer = str(hdr.get("BAYERPAT", "") or "").strip()
             return h, w, n3, bayer
         except Exception:
@@ -35222,7 +35242,16 @@ class StackingSuiteDialog(QDialog):
                     else:
                         h["DEBAYERED"] = (False, "Mono frame")
 
-                    fits.PrimaryHDU(data=img.astype(np.float32), header=h).writeto(outp, overwrite=True)
+                    # Channels-first for colour, matching the master-stack
+                    # writer and legacy save_image. These land in the user's
+                    # stacking directory under Prepared_Registered/, so an
+                    # (H, W, 3) block here would be a 3-pixel-wide image to
+                    # anything but SASpro -- and _frame_geometry, which reads
+                    # NAXIS3 as the channel count, would size them as mono.
+                    _prep = img.astype(np.float32)
+                    if _prep.ndim == 3 and _prep.shape[2] == 3:
+                        _prep = np.ascontiguousarray(np.transpose(_prep, (2, 0, 1)))
+                    fits.PrimaryHDU(data=_prep, header=h).writeto(outp, overwrite=True)
 
                     orig2prep[os.path.normcase(os.path.normpath(fp))] = outp
                     prepared.append(outp)

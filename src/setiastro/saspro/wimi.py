@@ -11,7 +11,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 import webbrowser
-from setiastro.saspro.xisf import XISF
+from setiastro.saspro.legacy.xisf import XISF
 import requests
 import csv
 import lz4.block

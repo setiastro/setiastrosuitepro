@@ -42,7 +42,7 @@ from setiastro.saspro.legacy.image_manager import (
     read_embedded_metadata_header,
     xisf_fits_header_from_meta,
 )
-from setiastro.saspro.xisf import XISF
+from setiastro.saspro.legacy.xisf import XISF
 
 # Only plain, uncompressed containers. .gz and .fz have no contiguous pixel
 # block to seek into, so they go the slow way.

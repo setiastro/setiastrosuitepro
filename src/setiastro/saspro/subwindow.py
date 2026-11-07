@@ -835,15 +835,36 @@ class ImageSubWindow(QWidget):
         self.scroll = QScrollArea(full_host)
         self.scroll.setWidgetResizable(False)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)        
+        # Viewport/tiled canvas is the DEFAULT display path.
+        #
+        # The QLabel path presents by scaling the whole source pixmap to
+        # src * scale, so its memory grows as the square of the zoom. Measured
+        # on a 4436x4377 frame: 82 MB at 100%, 315 MB at 200%, 704 MB at 300%,
+        # 1946 MB at 500% -- the 25x the user sees at 5x zoom. The tiled canvas
+        # reports the same full size to the scroll area (identical scrollbar
+        # ranges) but rasterizes only the exposed rect from source-resolution
+        # tiles, so it measured a flat 82 MB at every one of those zooms.
+        #
+        # Output is pixel-identical: markers at known source pixels land at the
+        # same widget coordinates in both paths, with the same values and the
+        # same nearest-neighbour block sizes, at 100/200/400%.
+        #
+        # Set display/viewport_canvas = False (or SASPRO_VIEWPORT_CANVAS=0) to
+        # go back to the whole-pixmap path.
         try:
             from PyQt6.QtCore import QSettings as _QSettings
             import os as _os
-            self._use_viewport_canvas = (
-                _os.environ.get("SASPRO_VIEWPORT_CANVAS", "").lower() in ("1", "true", "yes", "on")
-                or bool(_QSettings().value("display/viewport_canvas", False, type=bool))
-            )
+            _env = _os.environ.get("SASPRO_VIEWPORT_CANVAS", "").strip().lower()
+            if _env in ("1", "true", "yes", "on"):
+                self._use_viewport_canvas = True
+            elif _env in ("0", "false", "no", "off"):
+                self._use_viewport_canvas = False
+            else:
+                self._use_viewport_canvas = bool(
+                    _QSettings().value("display/viewport_canvas", True, type=bool)
+                )
         except Exception:
-            self._use_viewport_canvas = False
+            self._use_viewport_canvas = True
 
         if self._use_viewport_canvas:
             self.label = TiledImageCanvas(self, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -993,8 +1014,10 @@ class ImageSubWindow(QWidget):
         try:
             s = float(self.scale)
             fx, fy = self._viewport_center_fraction()
+            dims = self._link_ref_dims()   # SASPRO_RELATIVE_LINK
             for peer in merged - {self}:
-                peer.apply_linked_center(s, fx, fy, from_link=True)
+                peer.apply_linked_center(s, fx, fy, from_link=True,
+                                         src_dims=dims)
         except Exception:
             pass
 
@@ -1022,15 +1045,23 @@ class ImageSubWindow(QWidget):
         view's viewport centre as a fraction of the (scaled) image, plus the
         scale. Each peer re-derives its own scrollbars from that fraction using
         its own viewport, so linked windows no longer have to share a size.
+
+        The zoom is relative too: this view's pixel dimensions ride along, so
+        a peer at a different sampling (1x vs 2x drizzle) derives the zoom
+        that puts the same field on screen at the same size.
         """
         try:
             fx, fy = self._viewport_center_fraction()
         except Exception:
             return
         s = float(scale)
+        # SASPRO_RELATIVE_LINK: our own pixel dimensions travel with the
+        # transform so each peer can derive its own zoom from the ratio.
+        dims = self._link_ref_dims()
         for peer in list(self._linked_views):
             try:
-                peer.apply_linked_center(s, fx, fy, from_link=True)
+                peer.apply_linked_center(s, fx, fy, from_link=True,
+                                         src_dims=dims)
             except Exception:
                 pass
 
@@ -1049,14 +1080,89 @@ class ImageSubWindow(QWidget):
         fy = min(1.0, max(0.0, p.y() / float(lh)))
         return float(fx), float(fy)
 
-    def apply_linked_center(self, scale, fx, fy, from_link=True):
-        """Resolution-independent linked-view apply: match *scale*, then place the
-        image fraction (fx, fy) at this view's OWN viewport centre. Peers need not
-        share window size or zoom-cap state with the sender. Replaces the old
-        raw-scrollbar set_view_transform() path for links."""
+    # ----- relative (field-matched) link helpers -----  SASPRO_RELATIVE_LINK
+    def _link_ref_dims(self):
+        """(W, H) in image pixels of whatever this view is currently showing -
+        preview ROI, display override, or the document image. This is the frame
+        of reference that linked-view fractions and zoom ratios are expressed
+        against. None when nothing is loaded."""
+        try:
+            arr = self._current_display_source()
+            if arr is None:
+                return None
+            shp = np.asarray(arr).shape
+            if len(shp) < 2:
+                return None
+            h, w = int(shp[0]), int(shp[1])
+            if w <= 0 or h <= 0:
+                return None
+            return w, h
+        except Exception:
+            return None
+
+    def _link_scale_ratio(self, src_dims) -> float:
+        """Factor converting a sender's zoom into this view's zoom so that both
+        show the same FIELD at the same on-screen size.
+
+        self.scale is screen px per image px and the label is sized to
+        src * scale, so field magnification is scale * (image_width /
+        field_width). Matching two views therefore means
+
+            scale_self * W_self == scale_src * W_src   ->   ratio = W_src/W_self
+
+        A 2x drizzle (twice the pixels) driving a 1x peer puts that peer at
+        twice the zoom, which is what makes the two look identical.
+
+        Uses the geometric mean of the width and height ratios: identical to the
+        width ratio whenever the two images share an aspect - true for drizzle
+        pairs of one stack - and a sane compromise when they do not. Returns
+        1.0 when either side's dimensions are unknown, which reproduces the old
+        absolute-zoom behaviour.
+        """
+        try:
+            if not src_dims:
+                return 1.0
+            sw, sh = int(src_dims[0]), int(src_dims[1])
+            own = self._link_ref_dims()
+            if not own or sw <= 0 or sh <= 0:
+                return 1.0
+            ow, oh = int(own[0]), int(own[1])
+            if ow <= 0 or oh <= 0:
+                return 1.0
+            r = math.sqrt((sw / float(ow)) * (sh / float(oh)))
+            if not math.isfinite(r) or r <= 0.0:
+                return 1.0
+            return float(r)
+        except Exception:
+            return 1.0
+
+    def apply_linked_center(self, scale, fx, fy, from_link=True,
+                            src_dims=None):
+        """Relative linked-view apply: show the same FIELD as the sender, at
+        the same on-screen size, centred on the same fraction of the image.
+
+        (fx, fy) is the sender's viewport centre as a fraction of ITS image,
+        so pan is resolution-independent already - the 1x and 2x drizzle of
+        one stack share fractions. src_dims is the sender's (W, H) in image
+        pixels; when supplied, *scale* is converted into this view's own zoom
+        via _link_scale_ratio() rather than copied verbatim. Omit it to get
+        the old absolute-zoom behaviour.
+        """
         self._suppress_link_emit = True
         try:
-            scale = float(max(self._min_scale, min(float(scale), self._max_scale)))
+            # SASPRO_RELATIVE_LINK: convert the sender's zoom into ours.
+            ratio = self._link_scale_ratio(src_dims)
+            scale = float(scale) * ratio
+            # A ratio link legitimately drives a peer past its own ceiling: a
+            # 1x matching a 2x sitting at 5.0 has to reach 10.0. The clamp
+            # bounds how far the FIELD may be magnified, so scale the bound by
+            # the ratio too - otherwise the pair silently drifts apart at high
+            # zoom, which is the bug this patch exists to remove. Costs nothing:
+            # above 1.0 _render() upsamples a 1:1 pixmap (build_scale =
+            # min(1.0, scale)) and the 8192-per-side cap still bounds memory.
+            _lo = self._min_scale * min(1.0, ratio)
+            _hi = self._max_scale * max(1.0, ratio)
+            scale = float(max(_lo, min(scale, _hi)))
             if abs(scale - self.scale) > 1e-9:
                 self.scale = scale
                 self._render(rebuild=False)   # fast present; resizes label synchronously
@@ -3664,9 +3770,26 @@ class ImageSubWindow(QWidget):
         - Smooth scaling
         - Optionally draw WCS overlay once
         """
-        if isinstance(self.label, ViewportImageCanvas):
-            # Viewport-crop path: size the canvas and let paintEvent rasterize
-            # only what's visible. (WCS-grid bake is not ported to this path yet.)
+        # Viewport-crop path: size the canvas and let paintEvent rasterize only
+        # what's visible.
+        #
+        # Exception: the WCS grid. Its painter bakes onto a whole scaled pixmap
+        # and has not been ported to paint per-exposed-rect, so while the grid
+        # is switched ON we fall through to the whole-pixmap path below and
+        # hand the canvas the finished pixmap as a direct override. That gives
+        # up the memory win for as long as the grid is on -- it is the old
+        # behaviour exactly -- but losing the overlay silently would be worse.
+        # Porting the painter removes this branch.
+        if (isinstance(self.label, ViewportImageCanvas)
+                and not getattr(self, "_show_wcs_grid", False)):
+            # Drop anything the whole-pixmap path left behind. Those caches are
+            # normally replaced on the next present, but the viewport path
+            # returns before that -- so switching the grid off at high zoom
+            # would otherwise strand the last bake (measured 599 MB at 300%)
+            # for the life of the view.
+            self._present_scaled_cache = None
+            self._pm_src_wcs = None
+            self._pm_src_wcs_key = None
             self._present_viewport_canvas()
             return
 
@@ -3712,6 +3835,20 @@ class ImageSubWindow(QWidget):
                 self._pm_src_wcs_key = cache_key
             else:
                 pm_scaled = self._pm_src_wcs
+
+        if isinstance(self.label, ViewportImageCanvas):
+            # Grid-on fallback (see the note at the top of this method). The
+            # canvas is sized through request_full_size() -- that is what drives
+            # the scroll range -- and it MUST come first, because it clears any
+            # standing override. Then the baked pixmap goes in as the override.
+            _sc = max(float(self.scale), 1e-9)
+            self.label.request_full_size(
+                pm_scaled.width(), pm_scaled.height(),
+                max(1, int(round(pm_scaled.width() / _sc))),
+                max(1, int(round(pm_scaled.height() / _sc))),
+            )
+            self.label.setPixmap(pm_scaled)
+            return
 
         self.label.setPixmap(pm_scaled)
         self.label.resize(pm_scaled.size())

@@ -63,7 +63,7 @@ try:
 except Exception:
     rawpy = None  # optional; RAW loading will raise if it's None
 
-from setiastro.saspro.xisf import XISF
+from setiastro.saspro.legacy.xisf import XISF
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -671,6 +671,24 @@ def _finalize_loaded_image(arr: np.ndarray) -> np.ndarray:
     """Ensure float32 [finite], C-contiguous for downstream Qt/Numba."""
     if arr is None:
         return None
+
+    # Fast path: nothing to scrub. NaN propagates through min/max and +/-inf
+    # surfaces in them, so a finite min AND max means every pixel is finite --
+    # the overwhelmingly common case. nan_to_num would otherwise do a full copy
+    # plus isnan/isposinf/isneginf mask passes on every load (~0.3 s on a
+    # 47 Mpx frame, more on slower machines) only to change nothing. This sits
+    # under File->Open, Blink and the stacking loaders, so it must stay
+    # bit-identical: values are untouched in this branch, and np.array(copy=True)
+    # keeps the old contract of ALWAYS returning a fresh array -- nan_to_num's
+    # default copy is what detached the result from a memmap'd source.
+    # (copy=True on np.array is numpy-1.x safe; it is np.asarray(copy=) that
+    # is 2.x-only.)
+    try:
+        if arr.size and np.isfinite(arr.min()) and np.isfinite(arr.max()):
+            return np.array(arr, dtype=np.float32, order="C", copy=True)
+    except Exception:
+        pass  # odd dtype / empty: take the original path below
+
     # Replace NaN/Inf (can appear after BSCALE/BZERO math)
     # Preserve NaN as no-data when a NaN-aware caller opts in (satellite
     # trails); otherwise keep the historical NaN->0 scrub. Always kill +/-inf
@@ -2422,7 +2440,13 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                 elif image_data.dtype == np.float32 or image_data.dtype == np.float64:
                     bit_depth = "32-bit floating point"
                     print("Debug: Detected float dtype. Casting to float32 (no normalization).")
-                    image = image_data.astype(np.float32)
+                    # asarray, not astype: for the float32 case (almost every
+                    # PI master) astype copied the whole frame for nothing --
+                    # 0.07 s on a 2x-drizzled master -- and
+                    # _finalize_loaded_image below already makes the one owned
+                    # copy this function is contracted to return. float64 input
+                    # still copies here, because the dtype really changes.
+                    image = np.asarray(image_data, dtype=np.float32)
 
                 else:
                     raise ValueError(f"Unsupported XISF data type: {image_data.dtype}")
@@ -2803,19 +2827,126 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                         m = np.isfinite(u) & np.isfinite(v) & np.isfinite(dx_pix) & np.isfinite(dy_pix)
                         u = u[m]; v = v[m]; dx_pix = dx_pix[m]; dy_pix = dy_pix[m]
 
-                        def fit_sip_pixels(u, v, dx, dy, order):
-                            terms = [(i,j) for i in range(order+1) for j in range(order+1-i) if (i,j)!=(0,0)]
-                            M = np.vstack([(u**i)*(v**j) for (i,j) in terms]).T
-                            a, *_ = np.linalg.lstsq(M, dx, rcond=None)
-                            b, *_ = np.linalg.lstsq(M, dy, rcond=None)
-                            rms = np.hypot(dx - M.dot(a), dy - M.dot(b)).std()
+                        # This runs on EVERY open of a PI-solved XISF, and a
+                        # 2x-drizzled master has ~1M grid nodes. Three things
+                        # make it fast AND correct; the order matters.
+                        #
+                        # 1. NORMALISE the basis. Fitting u^i v^j on raw pixel
+                        #    offsets gives a Vandermonde with cond ~2e11
+                        #    (u^4 reaches 4e14), and float64 simply cannot
+                        #    solve that: the answer came out wrong by 0.08-0.35
+                        #    px depending on the frame. Scaling u,v by their
+                        #    own max|.| drops cond to ~12.3 -- and it is
+                        #    exactly span-preserving, because each monomial
+                        #    maps to a fixed multiple of itself, so the model
+                        #    is untouched and the scale divides straight back
+                        #    out of the coefficients afterwards. (Centring
+                        #    would NOT be safe: (u-c)^i spans the constant
+                        #    term that SIP deliberately excludes.)
+                        #
+                        #    Verified by solving the same system four
+                        #    numerically independent ways -- max-scaled SVD,
+                        #    QR with column pivoting, std-scaled SVD, and
+                        #    explicit Householder QR. Across 16 PI masters
+                        #    they agree with each other to 2e-13 px, while the
+                        #    old raw-coordinate solve sits 0.08-0.35 px away
+                        #    from all four, and the normalised fit reproduces
+                        #    PixInsight's own grid 0.14-2.44% more closely.
+                        #    So this is a correction, not a perturbation.
+                        #
+                        # 2. Monomials ordered by TOTAL DEGREE and built once,
+                        #    so each lower order's design matrix is a column
+                        #    PREFIX -- a slice, not a fancy-index gather out of
+                        #    a transposed array (62 ms -> 0.4 us). Fortran
+                        #    order is the layout LAPACK wants. Powers come from
+                        #    repeated multiplication: `u**i` on float64 calls
+                        #    pow() per element, and building the 14 monomials
+                        #    that way, then vstack + .T, was the single most
+                        #    expensive line in the whole XISF open (302 ms).
+                        #
+                        # 3. Solve by NORMAL EQUATIONS. Squaring the condition
+                        #    number is only reckless when the matrix is badly
+                        #    conditioned; at cond 12.3 the squared 151 still
+                        #    leaves ~14 digits, and measured agreement with the
+                        #    SVD answer is 1e-11 relative. It is 3.2x faster
+                        #    than any lstsq driver here (503 ms -> 156 ms for
+                        #    the three orders). Falls back to the SVD solve if
+                        #    the Cholesky ever fails.
+                        #
+                        #    scipy's gelsy and gelss drivers were measured too
+                        #    and are NOT faster for this shape: a 1M x 14
+                        #    system is dominated by the O(N k^2) reduction that
+                        #    every driver pays, so the small dense
+                        #    factorisation they differ in is noise.
+                        #
+                        # Deliberately NOT done: subsampling the grid. It is
+                        # 10-40x faster but moves the field by 0.03-0.085 px
+                        # (up to ~26% of the fit's own 0.32 px rms) -- an
+                        # astrometric change, not a speedup.
+                        _su = float(np.max(np.abs(u))) if u.size else 1.0
+                        _sv = float(np.max(np.abs(v))) if v.size else 1.0
+                        if not np.isfinite(_su) or _su <= 0.0:
+                            _su = 1.0
+                        if not np.isfinite(_sv) or _sv <= 0.0:
+                            _sv = 1.0
+                        _U = u / _su
+                        _V = v / _sv
+                        _terms4 = [(i, deg - i) for deg in range(1, 5)
+                                   for i in range(deg + 1)]
+                        _upow = [None, _U, None, None, None]
+                        _vpow = [None, _V, None, None, None]
+                        for _k in range(2, 5):
+                            _upow[_k] = _upow[_k - 1] * _U
+                            _vpow[_k] = _vpow[_k - 1] * _V
+                        _M4 = np.empty((_U.size, len(_terms4)), dtype=np.float64, order="F")
+                        for _c, (_i, _j) in enumerate(_terms4):
+                            if _i == 0:
+                                _M4[:, _c] = _vpow[_j]
+                            elif _j == 0:
+                                _M4[:, _c] = _upow[_i]
+                            else:
+                                np.multiply(_upow[_i], _vpow[_j], out=_M4[:, _c])
+                        _rhs = np.column_stack([dx_pix, dy_pix])
+                        del _upow, _vpow, _U, _V
+
+                        def _fit_sip_order(order):
+                            # count of (i,j) with 1 <= i+j <= order
+                            k = (order + 1) * (order + 2) // 2 - 1
+                            terms = _terms4[:k]
+                            M = _M4[:, :k]
+                            try:
+                                import scipy.linalg as _sla
+                                ab = _sla.solve(M.T @ M, M.T @ _rhs,
+                                                assume_a="pos",
+                                                overwrite_a=True, overwrite_b=True,
+                                                check_finite=False)
+                            except Exception:
+                                ab, *_ = np.linalg.lstsq(M, _rhs, rcond=None)
+                            res = _rhs - M @ ab          # one GEMM, both axes
+                            rms = np.hypot(res[:, 0], res[:, 1]).std()
+                            # undo the normalisation: a_ij <- A_ij / (su^i sv^j)
+                            a = ab[:, 0].copy()
+                            b = ab[:, 1].copy()
+                            for _c, (_i, _j) in enumerate(terms):
+                                _f = (_su ** _i) * (_sv ** _j)
+                                a[_c] /= _f
+                                b[_c] /= _f
                             return a, b, terms, rms
 
                         # cap order hard to avoid overfit; PI splines can be complex
+                        #
+                        # Sequential on purpose. The three candidate orders are
+                        # independent and the solve drops the GIL, so running
+                        # them in a thread pool looks like free parallelism --
+                        # but measured on the 919k-node grid it was 488 ms ->
+                        # 478 ms, 1.02x. BLAS is already using every core for
+                        # one solve, so three at once just contend. Not worth a
+                        # nested pool when load_image is itself called from
+                        # worker threads (Blink, the stacking loaders).
                         best = {'order':None, 'rms':np.inf}
 
                         for order in (2,3,4):  # <=4 is plenty for real optics
-                            a, b, terms, rms = fit_sip_pixels(u, v, dx_pix, dy_pix, order)
+                            a, b, terms, rms = _fit_sip_order(order)
                             if rms < best['rms']:
                                 best.update(order=order, a=a, b=b, terms=terms, rms=rms)
 
@@ -4496,38 +4627,28 @@ def save_image(img_array,
             h, w = img_array.shape[:2]
             is_rgb = (img_array.ndim == 3 and img_array.shape[2] == 3)
 
-            # Build base header (same as before)
-            if is_xisf:
-                fits_header = fits.Header()
-                props = None
-                if isinstance(image_meta, dict):
-                    props = image_meta.get("XISFProperties")
-                elif isinstance(image_meta, list) and image_meta and isinstance(image_meta[0], dict):
-                    props = image_meta[0].get("XISFProperties")
-                if isinstance(props, dict):
-                    try:
-                        if "PCL:AstrometricSolution:ReferenceCoordinates" in props:
-                            ra, dec = props["PCL:AstrometricSolution:ReferenceCoordinates"]["value"]
-                            fits_header["CRVAL1"] = ra
-                            fits_header["CRVAL2"] = dec
-                        if "PCL:AstrometricSolution:ReferenceLocation" in props:
-                            cx, cy = props["PCL:AstrometricSolution:ReferenceLocation"]["value"]
-                            fits_header["CRPIX1"] = cx
-                            fits_header["CRPIX2"] = cy
-                        if "PCL:AstrometricSolution:PixelSize" in props:
-                            px = props["PCL:AstrometricSolution:PixelSize"]["value"]
-                            fits_header["CDELT1"] = -px / 3600.0
-                            fits_header["CDELT2"] =  px / 3600.0
-                        if "PCL:AstrometricSolution:LinearTransformationMatrix" in props:
-                            m = props["PCL:AstrometricSolution:LinearTransformationMatrix"]["value"]
-                            fits_header["CD1_1"] = m[0][0]; fits_header["CD1_2"] = m[0][1]
-                            fits_header["CD2_1"] = m[1][0]; fits_header["CD2_2"] = m[1][1]
-                    except Exception:
-                        pass
-                fits_header.setdefault("CTYPE1", "RA---TAN")
-                fits_header.setdefault("CTYPE2", "DEC--TAN")
-
-            elif _is_header_obj(original_header):
+            # ----- Build base header -------------------------------------
+            #
+            # Whatever header the loader already assembled wins, and for XISF
+            # that matters most of all: load_image turns an XISF's
+            # FITSKeywords into a real FITS header AND fits a SIP solution
+            # from PixInsight's astrometric spline grid, so a PI master
+            # arrives here carrying ~90 keywords plus CRVAL/CRPIX/CD and a
+            # full order-4 SIP.
+            #
+            # This used to test is_xisf FIRST and throw all of that away,
+            # rebuilding a bare TAN out of image_meta["XISFProperties"].
+            # Callers that pass no image_meta -- Batch Convert does not --
+            # got SEVEN cards: SIMPLE, BITPIX, NAXIS1/2/3 and a lone
+            # CTYPE1/CTYPE2 pair with no CRVAL or CRPIX behind them. So
+            # converting a plate-solved PI master to FITS produced a file
+            # with no usable WCS and not one instrument keyword.
+            #
+            # The props path is still here, demoted to what it actually is:
+            # a fallback for an XISF whose header didn't come through, and a
+            # gap-filler for WCS the header itself lacks. It never overwrites
+            # anything the header already carries.
+            if _is_header_obj(original_header) and len(original_header) > 0:
                 # Clean up invalid cards
                 if isinstance(original_header, fits.Header):
                     safe_header = _drop_invalid_cards(original_header)
@@ -4537,8 +4658,14 @@ def save_image(img_array,
                     src_items = safe_header.items()
 
                 fits_header = fits.Header()
+                deferred_xisf_props = []
                 for key, value in src_items:
                     if isinstance(key, str) and key.startswith("XISF:"):
+                        # Not a legal FITS keyword (too long, and colons), but
+                        # it is real provenance -- which catalog solved it, in
+                        # which PixInsight build. Keep it as HISTORY instead of
+                        # dropping it on the floor.
+                        deferred_xisf_props.append((key, value))
                         continue
                     if key in ("RANGE_LOW", "RANGE_HIGH"):
                         continue
@@ -4548,8 +4675,53 @@ def save_image(img_array,
                         fits_header[key] = value
                     except Exception:
                         pass
+                for key, value in deferred_xisf_props:
+                    try:
+                        fits_header.add_history(f"{key}={value}")
+                    except Exception:
+                        pass
+            elif is_xisf:
+                fits_header = fits.Header()
             else:
                 fits_header = _minimal_fits_header(h, w, is_rgb)
+
+            # XISF astrometry fallback — fills only what is missing.
+            if is_xisf:
+                props = None
+                if isinstance(image_meta, dict):
+                    props = image_meta.get("XISFProperties")
+                elif isinstance(image_meta, list) and image_meta and isinstance(image_meta[0], dict):
+                    props = image_meta[0].get("XISFProperties")
+                if isinstance(props, dict):
+                    try:
+                        if ("CRVAL1" not in fits_header
+                                and "PCL:AstrometricSolution:ReferenceCoordinates" in props):
+                            ra, dec = props["PCL:AstrometricSolution:ReferenceCoordinates"]["value"]
+                            fits_header["CRVAL1"] = ra
+                            fits_header["CRVAL2"] = dec
+                        if ("CRPIX1" not in fits_header
+                                and "PCL:AstrometricSolution:ReferenceLocation" in props):
+                            cx, cy = props["PCL:AstrometricSolution:ReferenceLocation"]["value"]
+                            fits_header["CRPIX1"] = cx
+                            fits_header["CRPIX2"] = cy
+                        if ("CDELT1" not in fits_header and "CD1_1" not in fits_header
+                                and "PCL:AstrometricSolution:PixelSize" in props):
+                            px = props["PCL:AstrometricSolution:PixelSize"]["value"]
+                            fits_header["CDELT1"] = -px / 3600.0
+                            fits_header["CDELT2"] =  px / 3600.0
+                        if ("CD1_1" not in fits_header
+                                and "PCL:AstrometricSolution:LinearTransformationMatrix" in props):
+                            m = props["PCL:AstrometricSolution:LinearTransformationMatrix"]["value"]
+                            fits_header["CD1_1"] = m[0][0]; fits_header["CD1_2"] = m[0][1]
+                            fits_header["CD2_1"] = m[1][0]; fits_header["CD2_2"] = m[1][1]
+                    except Exception:
+                        pass
+                # Only name a projection when there is a reference point to
+                # project about. A lone CTYPE pair with no CRVAL behind it is
+                # not a WCS, it just makes readers think there is one.
+                if "CRVAL1" in fits_header:
+                    fits_header.setdefault("CTYPE1", "RA---TAN")
+                    fits_header.setdefault("CTYPE2", "DEC--TAN")
 
             # 🔥 Merge explicit WCS header from metadata, if present
             from astropy.io import fits as _fits_mod
@@ -4738,6 +4910,33 @@ def save_image(img_array,
                                 "comment": str(kw_vals.get("comment", "")),
                             }]
                     clean_meta["FITSKeywords"] = clean_fk
+
+            # No FITSKeywords in image_meta, but the caller handed us a real
+            # FITS header? Synthesize them from it. Without this, anything
+            # converted FITS -> XISF lost every keyword: OBJECT, FILTER,
+            # EXPTIME, TELESCOP, the WCS, all of it. Batch Convert passes
+            # original_header and no image_meta, so that was the normal case.
+            # Commentary cards (COMMENT/HISTORY) are kept in order under their
+            # own keyword, which is how XISF carries repeated keywords too.
+            if not clean_meta.get("FITSKeywords") and isinstance(original_header, fits.Header):
+                synth_fk = {}
+                try:
+                    for card in _drop_invalid_cards(original_header).cards:
+                        kw = str(card.keyword)
+                        if not kw or kw in ("SIMPLE", "EXTEND", "END"):
+                            continue
+                        if kw.startswith("XISF:") or kw in ("RANGE_LOW", "RANGE_HIGH"):
+                            continue
+                        try:
+                            entry = {"value": str(card.value),
+                                     "comment": str(card.comment or "")}
+                        except Exception:
+                            continue
+                        synth_fk.setdefault(kw, []).append(entry)
+                except Exception:
+                    synth_fk = {}
+                if synth_fk:
+                    clean_meta["FITSKeywords"] = synth_fk
 
             # Carry forward XISFProperties — but only scalar/string types that are
             # already resolved (not lazy numpy blobs), to avoid the tobytes error

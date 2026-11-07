@@ -110,7 +110,15 @@ class _BatchWorker(QThread):
 
                 self.progress.emit(int((i - 1) * 100 / n), f"Loading {os.path.basename(src)}")
                 try:
-                    img, header, src_bit_depth, is_mono = legacy_load_image(src)
+                    # return_metadata=True so XISF sources hand their
+                    # XISFProperties through to save_image. The FITS writer
+                    # uses them to fill any WCS the header is missing, and
+                    # the XISF writer needs them to carry properties across
+                    # an XISF -> XISF conversion.
+                    loaded = legacy_load_image(src, return_metadata=True)
+                    img, header, src_bit_depth, is_mono = loaded[:4]
+                    src_meta = loaded[4] if len(loaded) > 4 else {}
+                    image_meta = (src_meta or {}).get("xisf_meta")
                 except Exception as e:
                     self.progress.emit(int(i * 100 / n), f"Skipping (load failed): {os.path.basename(src)}")
                     continue
@@ -149,7 +157,7 @@ class _BatchWorker(QThread):
                         bit_depth=bit_depth,
                         original_header=header,  # preserves FITS keywords when saving to FITS
                         is_mono=is_mono,
-                        image_meta=None,
+                        image_meta=image_meta,
                         file_meta=None,
                     )
                 except Exception as e:

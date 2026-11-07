@@ -74,7 +74,7 @@ class XISF:
 
     Usage example:
     ```
-    from setiastro.saspro.xisf import XISF
+    from setiastro.saspro.legacy.xisf import XISF
     import matplotlib.pyplot as plt
     xisf = XISF("file.xisf")
     file_meta = xisf.get_file_metadata()
@@ -94,7 +94,7 @@ class XISF:
     If the file is not huge and it contains only an image (or you're interested just in one of the
     images inside the file), there is a convenience method for reading the data and the metadata:
     ```
-    from setiastro.saspro.xisf import XISF
+    from setiastro.saspro.legacy.xisf import XISF
     import matplotlib.pyplot as plt
     im_data = XISF.read("file.xisf")
     plt.imshow(im_data)
@@ -411,10 +411,49 @@ class XISF:
                 f"Assumed 2D channels (width, height, channels), found {meta['geometry']} geometry"
             )
 
-        data = self._read_data_block(meta)
-        im_data = np.frombuffer(data, dtype=meta["dtype"])
-        im_data = im_data.reshape((chc, h, w))
+        im_data = self._read_image_array(meta, chc, h, w)
         return np.transpose(im_data, (1, 2, 0)) if data_format == "channels_last" else im_data
+
+    def _read_image_array(self, meta, chc, h, w):
+        """Pixel block as an ndarray shaped (channels, height, width).
+
+        Fast path: an uncompressed attached block is the overwhelmingly
+        common case, and it is just the pixels laid out exactly as numpy
+        wants them. readinto() lands them in their final buffer in one
+        pass. The generic path builds a `bytes` first and then wraps it
+        with frombuffer, which means the frame exists twice at peak (235 MB
+        each on a 2x-drizzled master) and the caller is handed a READ-ONLY
+        view, so every downstream step has to copy it again before it can
+        touch anything.
+
+        Anything unexpected -- a compressed block, an inline/embedded one,
+        a size that doesn't match the geometry, a short read -- falls
+        through to the original path rather than guessing.
+        """
+        dtype = np.dtype(meta["dtype"])
+        location = meta.get("location") or ()
+        if (len(location) == 3 and location[0] == "attachment"
+                and "compression" not in meta):
+            _, pos, size = location
+            try:
+                arr = np.empty(chc * h * w, dtype=dtype)
+                mv = memoryview(arr).cast("B")
+                if len(mv) == size:
+                    got = 0
+                    with open(self._fname, "rb") as f:
+                        f.seek(pos)
+                        while got < size:
+                            k = f.readinto(mv[got:])
+                            if not k:
+                                break
+                            got += k
+                    if got == size:
+                        return arr.reshape((chc, h, w))
+            except Exception:
+                pass  # fall through to the generic reader
+
+        data = self._read_data_block(meta)
+        return np.frombuffer(data, dtype=dtype).reshape((chc, h, w))
 
     @staticmethod
     def read(fname, n=0, image_metadata={}, xisf_metadata={}):

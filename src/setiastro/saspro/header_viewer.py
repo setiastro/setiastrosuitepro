@@ -18,7 +18,7 @@ except Exception:
     class VerifyError(Exception):
         pass
 
-from setiastro.saspro.xisf import XISF
+from setiastro.saspro.legacy.xisf import XISF
 
 # we’ll reuse your loader helper for FITS headers
 from setiastro.saspro.legacy.image_manager import get_valid_header, _drop_invalid_cards

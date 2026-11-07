@@ -288,7 +288,9 @@ from skimage.transform import warp, PolynomialTransform
 from setiastro.saspro.memory_utils import smart_zeros, should_use_memmap
 
 # I/O & stretch (same stack we used for Plate Solver)
-from setiastro.saspro.legacy.image_manager import load_image, save_image
+from setiastro.saspro.legacy.image_manager import (
+    load_image, save_image, _normalize_format,
+)
 try:
     from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 except Exception:
@@ -1051,27 +1053,47 @@ def _safe_filename_base(name: str) -> str:
     return s or "view"
 
 
+# Extensions the registration workers can open directly. Everything the Add
+# Files dialog offers beyond this list -- TIFF, PNG, JPEG, XISF -- has to be
+# converted to a temp FITS first; see _spill_file_to_fits.
+_WORKER_FITS_EXTS = (".fit", ".fits", ".fts", ".fz",
+                     ".fit.gz", ".fits.gz", ".fts.gz")
+
+
+def _is_worker_readable_fits(path: str) -> bool:
+    """True when the registration workers can read this file as-is.
+
+    They open inputs with fits.open, so anything else arrives as
+    "No SIMPLE card found" and is reported as an alignment failure.
+    """
+    return str(path).lower().endswith(_WORKER_FITS_EXTS)
+
+
 def _read_aligned_fits(path: str) -> tuple[np.ndarray, "Header | None"]:
     """
     Read an aligned FITS the worker wrote so we can route it back into a
-    SASpro document. Converts the data to float32 and preserves the FITS
-    header (WCS, filter, etc.) so overwritten / newly-opened docs don't
-    lose that metadata. Matches the integer-normalisation the rest of
-    SASpro uses (uint16/255-scale).
+    SASpro document, as (H, W) / (H, W, C) float32 plus the header (WCS,
+    filter, etc.) so overwritten / newly-opened docs keep that metadata.
+
+    Delegates to load_image rather than reading hdul[0].data raw, because
+    the two registration methods do NOT write the same channel layout:
+
+      * stellar  -> finalises through legacy save_image, which writes the
+                    FITS-standard (C, H, W) for colour
+      * wcs      -> writes its in-memory (H, W, C) straight out
+
+    Reading raw therefore handed a document a (3, H, W) array for every
+    colour frame the stellar path produced; SASpro read that as a 3-row
+    image with W channels. load_image is the single place in SASpro that
+    already resolves both layouts -- along with the NAXIS squeeze,
+    uint8/uint16 scaling and the ROWORDER flip -- so routing through it
+    keeps "HWC in memory, agnostic on read" true here instead of keeping
+    a second, divergent copy of the layout rules in this module.
     """
-    with fits.open(path, memmap=False) as hdul:
-        data = hdul[0].data
-        hdr = hdul[0].header.copy() if hdul[0].header is not None else None
-    if data is None:
-        raise RuntimeError(f"FITS at {path} has no data")
-    arr = np.asarray(data)
-    if arr.dtype == np.uint16:
-        arr = arr.astype(np.float32) / 65535.0
-    elif arr.dtype == np.uint8:
-        arr = arr.astype(np.float32) / 255.0
-    elif arr.dtype != np.float32:
-        arr = arr.astype(np.float32, copy=False)
-    return arr, hdr
+    img, hdr, _bit_depth, _is_mono = load_image(path)
+    if img is None:
+        raise RuntimeError(f"FITS at {path} could not be read as an image")
+    return np.asarray(img, dtype=np.float32), hdr
 
 
 def _apply_aligned_to_doc(doc, aligned_img: np.ndarray,
@@ -3691,6 +3713,87 @@ def _own_f32(a):
     return np.array(a, dtype=np.float32, order="C")
 
 
+def _open_frame_fits(path):
+    """Open one registration input frame, memmap'd where astropy allows it.
+
+    The workers want the memmap: it is the fast path for the float32
+    intermediates the stacking pipeline feeds in, and `_own_f32` already
+    knows how to detach from one. But astropy flatly refuses to memmap an
+    image carrying BZERO/BSCALE/BLANK --
+
+        ValueError: Cannot load a memory-mapped image: BZERO/BSCALE/BLANK
+        header keywords present. Set memmap=False.
+
+    -- and that is EVERY unsigned-integer FITS, so every 16-bit camera frame
+    and every 16-bit TIFF->FITS conversion. The worker caught that as
+    "Astroalign failed for <file>", so a "Select Files" run over such frames
+    reported all of them unalignable and wrote nothing, while "From Views..."
+    on the same images worked (views go through load_image, which reads with
+    memmap=False).
+
+    So: try the memmap, and fall back to a plain read when astropy says no.
+    Nothing that works today changes -- the fallback only runs where the
+    alternative was an exception -- and load_image already reads this way
+    (one read() of the pixel block, measured equal-or-faster, and safe to do
+    from several processes at once).
+
+    Touching .data here is what forces astropy's memmap decision; it caches
+    the result, so the caller's own access does not re-read.
+    """
+    try:
+        hdul = fits.open(path, memmap=True)
+    except Exception:
+        return fits.open(path, memmap=False)
+    try:
+        _ = hdul[0].data
+        return hdul
+    except ValueError:
+        try:
+            hdul.close()
+        except Exception:
+            pass
+        return fits.open(path, memmap=False)
+
+
+def _hwc_from_fits_data(arr):
+    """Raw FITS pixel block -> SASpro's in-memory (H, W) / (H, W, C).
+
+    The registration workers read their inputs with a bare `fits.open` rather
+    than `load_image`: one pass over the frame, satellite-trail NaN kept
+    verbatim, no ROWORDER flip (the warp and the write-back have to stay in
+    register with the pixels exactly as they sit on disk). The cost of that is
+    they also inherit whatever channel order the producer used, and producers
+    disagree:
+
+      * SASpro's own stacking intermediates (Calibrated/, Normalized_Images/)
+        are raw `fits.PrimaryHDU` writes of the in-memory array -> (H, W, C)
+      * everything else -- legacy save_image, PixInsight, Siril, a TIFF->FITS
+        conversion -- writes the FITS standard, NAXIS3=channels -> (C, H, W)
+
+    Handed one of the latter, a worker reduced `np.mean(arr, axis=2)` over the
+    WIDTH axis: a (3, H, W) colour frame became a 3 x H strip, SEP found no
+    stars in it, and every frame failed to align while "From Views..." on the
+    same images worked (views go through load_image). That is what this fixes.
+
+    The rule mirrors load_image's FITS branch exactly (image_manager.py
+    ~L2253): squeeze singleton axes, then treat a leading axis of 3 with both
+    trailing axes > 1 as channels-first. A 4-plane cube is left alone on
+    purpose -- load_image rejects those outright, and silently accepting one
+    here would make the two paths disagree about what is a valid image.
+
+    Returns a view when it can (a transpose is free, and the already-correct
+    (H, W, C) case is untouched); every consumer below funnels through
+    _own_f32, which materialises a C-contiguous copy when it needs one.
+    """
+    import numpy as np
+    a = np.asarray(arr)
+    if a.ndim > 2:
+        a = np.squeeze(a)
+    if a.ndim == 3 and a.shape[0] == 3 and a.shape[1] > 1 and a.shape[2] > 1:
+        a = np.transpose(a, (1, 2, 0))
+    return a
+
+
 def _scrub_for_detect(a):
     """One frame for detection: non-finite filled with 0.
 
@@ -3768,10 +3871,13 @@ def _solve_delta_job(args):
             pass
 
         # 1) read → gray float32 (full)
-        with fits.open(orig_path, memmap=True) as hdul:
+        with _open_frame_fits(orig_path) as hdul:
             arr = hdul[0].data
             if arr is None:
                 return (orig_path, None, f"Could not load {os.path.basename(orig_path)}")
+            # Channels-first inputs (save_image / PixInsight / Siril / a
+            # TIFF->FITS conversion) would otherwise reduce over width.
+            arr = _hwc_from_fits_data(arr)
             gray = arr if arr.ndim == 2 else np.mean(arr, axis=2)
             # Was an unconditional nan_to_num: 0.74 s/frame, 38.7% of the
             # pass, repeated for every pass. Now one reduction decides it.
@@ -4327,11 +4433,17 @@ def _finalize_write_job(args):
 
     try:
         # 1) load source (full-res)
-        with fits.open(orig_path, memmap=True) as hdul:
+        with _open_frame_fits(orig_path) as hdul:
             img = hdul[0].data
             hdr = hdul[0].header
         if img is None:
             return (orig_path, "", f"⚠️ Failed to read {os.path.basename(orig_path)}", False, None)
+
+        # Channels-first inputs -> (H, W, C) before anything reads .ndim or
+        # reduces over axis 2. The aligned frame is written back out through
+        # legacy save_image below, which re-emits colour as (C, H, W) and
+        # rewrites NAXIS* from the array, so the round-trip stays standard.
+        img = _hwc_from_fits_data(img)
 
         # normalize ints
         if img.dtype == np.uint16:
@@ -4753,11 +4865,12 @@ class StarRegistrationWorker(QRunnable):
                 pass
 
             # --- Load ORIGINAL frame → grayscale float32 ---
-            with fits.open(self.original_file, memmap=True) as hdul:
+            with _open_frame_fits(self.original_file) as hdul:
                 arr = hdul[0].data
                 if arr is None:
                     self.signals.error.emit(f"Could not load {self.original_file}")
                     return
+                arr = _hwc_from_fits_data(arr)   # channels-first -> (H, W, C)
                 gray = arr if arr.ndim == 2 else np.mean(arr, axis=2)
                 gray_small = np.nan_to_num(gray, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
 
@@ -6654,8 +6767,22 @@ class WCSRegistrationThread(QThread):
                                                "SASpro registration method")
                     except Exception:
                         pass
+                    # Colour goes out FITS-standard (C, H, W), the same
+                    # layout legacy save_image gives the stellar path.
+                    # Writing the in-memory (H, W, C) straight out made a
+                    # 3 x W x H cube: SASpro's own agnostic loader coped,
+                    # but the file was a 3-pixel-wide image to anything
+                    # else (PixInsight, Siril, DS9), and the two
+                    # registration methods disagreed on the layout of
+                    # their own deliverable. astropy rewrites NAXIS* from
+                    # the data, so the header needs no fixup here.
+                    _out = np.asarray(aligned, dtype=np.float32)
+                    if _out.ndim == 3:
+                        _out = (_out[:, :, 0] if _out.shape[2] == 1
+                                else np.ascontiguousarray(
+                                    np.transpose(_out, (2, 0, 1))))
                     fits.PrimaryHDU(
-                        data=np.asarray(aligned, dtype=np.float32),
+                        data=_out,
                         header=out_hdr,
                     ).writeto(out_path, overwrite=True)
 
@@ -6726,6 +6853,13 @@ class StarRegistrationWindow(QWidget):
         # on-disk output file deleted — no "final files" leak into user
         # folders from view-sourced targets.
         self._view_spill_by_input: dict[str, dict] = {}
+        # Same idea for FILE targets that aren't FITS. The workers read with
+        # fits.open, so a TIFF/PNG/XISF target can't reach them; it is
+        # converted to a temp FITS in the same scratch dir. This records what
+        # the aligned result has to be converted BACK to, so the user gets
+        # their own format out: {spill_path_normcased: {"src_path", "stem",
+        # "fmt", "bit_depth", "is_mono", "image_meta", "spill_path"}}.
+        self._file_spill_by_input: dict[str, dict] = {}
         # True while the current run's output_directory is the view-spill
         # scratch dir (no file targets at all). Lets registration_finished
         # drop the whole dir without worrying about user files.
@@ -7881,13 +8015,26 @@ class StarRegistrationWindow(QWidget):
                     f"you can import them manually."
                 )
 
+        # Same for non-FITS file targets: convert each aligned FITS back to
+        # the format the user picked before the scratch dir goes away.
+        file_report = ""
+        if success and self._file_spill_by_input:
+            try:
+                file_report = self._route_file_outputs_to_source_format()
+            except Exception as e:
+                file_report = (
+                    f"\n\nWriting aligned results back in their source format "
+                    f"FAILED: {e}\nThe aligned FITS remain in the output "
+                    f"directory."
+                )
+
         # Clean up spill scratch + output-dir-is-scratch. If output_directory
         # was the scratch dir (view-only run) the aligned files live there
         # and we're about to delete them — but _route_view_outputs_to_docs
         # above has already consumed them into docs, so this is correct.
         self._cleanup_view_spill()
 
-        full_msg = message + view_report
+        full_msg = message + view_report + file_report
         color = "green" if success else "red"
         self.progress_label.setText(f"Status: {message}")
         self.progress_label.setStyleSheet(f"color: {color}; font-weight: bold;")
@@ -7901,30 +8048,47 @@ class StarRegistrationWindow(QWidget):
     # ------------------------------------------------------------------
     def _spill_views_and_resolve_paths(self) -> list[str]:
         """
-        Walk self.files_to_align and return a flat list of file paths for
-        the thread. File-path entries pass through unchanged. View entries
-        are written to temp FITS files in a per-run scratch directory so
-        the downstream multiprocess workers can read them like any other
-        FITS input.
+        Walk self.files_to_align and return a flat list of FITS paths for
+        the thread, which only speaks FITS. Two kinds of target need a
+        temp file in a per-run scratch directory:
 
-        Also populates self._view_spill_by_input, mapping the normalised
-        spill-input path to the originating doc so registration_finished
-        can route the aligned output back into SASpro (overwrite the view
-        or open as new) and then delete the on-disk aligned output. No
-        "final files" are left on the user's disk for view-sourced targets.
+          * view entries  -> the live doc's pixels, so an unsaved stack
+                             aligns correctly
+          * non-FITS file entries (TIFF/PNG/JPEG/XISF) -> the workers open
+                             inputs with fits.open, so these used to reach
+                             them as "No SIMPLE card found" and be reported
+                             as alignment failures, even though the Add
+                             Files dialog offers those extensions
+
+        FITS file entries pass through untouched.
+
+        Also populates self._view_spill_by_input (spill path -> source doc)
+        and self._file_spill_by_input (spill path -> what to convert the
+        aligned result back to), so registration_finished can route view
+        results into documents and write file results out in their own
+        source format. No "final files" are left on the user's disk for
+        view-sourced targets, and no stray FITS for non-FITS ones.
         """
         resolved: list[str] = []
         self._view_spill_by_input = {}
+        self._file_spill_by_input = {}
         view_entries = [e for e in self.files_to_align
                         if isinstance(e, dict) and e.get("kind") == "view"]
+        convert_entries = [e for e in self.files_to_align
+                           if isinstance(e, str) and not _is_worker_readable_fits(e)]
 
-        if view_entries:
+        if view_entries or convert_entries:
             # One scratch dir per run so cleanup is a single rmtree.
             self._view_spill_dir = tempfile.mkdtemp(prefix="sas_reg_views_")
 
         for entry in self.files_to_align:
             if isinstance(entry, str):
-                resolved.append(entry)
+                if _is_worker_readable_fits(entry):
+                    resolved.append(entry)
+                else:
+                    spilled = self._spill_file_to_fits(entry)
+                    if spilled:
+                        resolved.append(spilled)
                 continue
             if not (isinstance(entry, dict) and entry.get("kind") == "view"):
                 # Unknown shape — skip and warn instead of crashing the run.
@@ -7973,6 +8137,173 @@ class StarRegistrationWindow(QWidget):
             resolved.append(candidate)
 
         return resolved
+
+    def _spill_file_to_fits(self, src_path: str) -> str | None:
+        """
+        Convert one non-FITS target to a temp float32 FITS the workers can
+        read, and remember what it has to become again afterwards.
+
+        Reuses the scratch dir and the single rmtree the view spill already
+        has. The conversion itself is load_image -> save_image, the same
+        pair Batch Convert uses, so it inherits the correct FITS geometry
+        (channels-first colour, NAXIS from the array) and full float32
+        precision -- the registration solve should never see a quantised
+        copy of the user's data.
+
+        Returns the spill path, or None (with a user-visible note) if the
+        source can't be read. A skipped target drops out of the run rather
+        than failing it.
+        """
+        base = os.path.basename(src_path)
+        try:
+            loaded = load_image(src_path, return_metadata=True)
+        except Exception as e:
+            self._enqueue_progress(f"Could not read '{base}': {e}; skipping.")
+            return None
+
+        img, hdr, bit_depth, is_mono = loaded[0], loaded[1], loaded[2], loaded[3]
+        meta = loaded[4] if len(loaded) > 4 else {}
+        if img is None:
+            self._enqueue_progress(f"Could not read '{base}'; skipping.")
+            return None
+
+        # Multiple inputs can share a stem across folders — suffix on collision,
+        # the same way the view spill disambiguates duplicate titles.
+        stem = _safe_filename_base(os.path.splitext(base)[0])
+        idx = 0
+        while True:
+            candidate = os.path.join(
+                self._view_spill_dir,
+                f"{stem}.fits" if idx == 0 else f"{stem}_{idx}.fits",
+            )
+            if not os.path.exists(candidate):
+                break
+            idx += 1
+
+        try:
+            save_image(
+                img_array=np.asarray(img, dtype=np.float32),
+                filename=candidate,
+                original_format="fits",
+                bit_depth="32-bit floating point",
+                original_header=hdr,
+                is_mono=bool(is_mono),
+            )
+        except Exception as e:
+            self._enqueue_progress(
+                f"Could not prepare '{base}' for registration: {e}; skipping."
+            )
+            return None
+
+        self._file_spill_by_input[os.path.normcase(os.path.normpath(candidate))] = {
+            "src_path": src_path,
+            "stem": os.path.splitext(base)[0],
+            # _normalize_format folds jpeg->jpg and tiff->tif, which is also
+            # the extension save_image will put on the file, so one value
+            # serves as both the format token and the output extension.
+            "fmt": _normalize_format(os.path.splitext(src_path)[1]),
+            "bit_depth": bit_depth,
+            "is_mono": bool(is_mono),
+            "image_meta": (meta or {}).get("xisf_meta"),
+            "spill_path": candidate,
+        }
+        self._enqueue_progress(
+            f"Prepared '{base}' for registration (converted to temp FITS)."
+        )
+        return candidate
+
+    def _route_file_outputs_to_source_format(self) -> str:
+        """
+        Write each spilled non-FITS target's aligned result back out in the
+        format the user actually picked, and drop the intermediate FITS.
+
+        Someone who adds .tif targets expects .tif results next to them, not
+        a folder of FITS. Bit depth, mono-ness and (for XISF) the source
+        metadata are carried through from the original load, so a 16-bit
+        TIFF in gives a 16-bit TIFF out.
+
+        Returns a short summary to append to the completion dialog.
+        """
+        if not self._file_spill_by_input:
+            return ""
+
+        key_to_out = {}
+        try:
+            key_to_out = dict(self.thread.file_key_to_current_path)
+        except Exception:
+            pass
+
+        converted = failed = skipped = 0
+        for norm_input, info in self._file_spill_by_input.items():
+            base = os.path.basename(info["src_path"])
+
+            out_path = key_to_out.get(os.path.normpath(info["spill_path"]))
+            if out_path is None:
+                for k, v in key_to_out.items():
+                    if os.path.normcase(k) == norm_input:
+                        out_path = v
+                        break
+
+            # Still pointing at its own input means alignment failed for it.
+            if (not out_path) or os.path.normcase(os.path.normpath(out_path)) == norm_input:
+                self._enqueue_progress(
+                    f"'{base}': alignment produced no output; nothing written."
+                )
+                skipped += 1
+                continue
+            if not os.path.exists(out_path):
+                self._enqueue_progress(
+                    f"'{base}': aligned output missing at {out_path}; skipping."
+                )
+                skipped += 1
+                continue
+
+            fmt = info["fmt"] or "tif"
+            final_path = os.path.join(
+                os.path.dirname(out_path),
+                os.path.splitext(os.path.basename(out_path))[0] + "." + fmt,
+            )
+            try:
+                img, hdr, _bd, _mono = load_image(out_path)
+                if img is None:
+                    raise RuntimeError("aligned output could not be read back")
+                save_image(
+                    img_array=np.asarray(img, dtype=np.float32),
+                    filename=final_path,
+                    original_format=fmt,
+                    bit_depth=info["bit_depth"],
+                    original_header=hdr,
+                    is_mono=info["is_mono"],
+                    image_meta=info["image_meta"],
+                )
+            except Exception as e:
+                self._enqueue_progress(
+                    f"'{base}': aligned, but writing it back as .{fmt} failed: {e}. "
+                    f"The aligned FITS was left at {out_path}."
+                )
+                failed += 1
+                continue
+
+            converted += 1
+            # Drop the intermediate FITS — the user asked for their own format.
+            # Guarded in case save_image resolved to the same filename.
+            if (os.path.normcase(os.path.normpath(final_path))
+                    != os.path.normcase(os.path.normpath(out_path))):
+                try:
+                    os.remove(out_path)
+                except Exception:
+                    pass
+
+        bits = []
+        if converted:
+            bits.append(f"{converted} target(s) written in their source format")
+        if failed:
+            bits.append(f"{failed} left as aligned FITS (conversion failed)")
+        if skipped:
+            bits.append(f"{skipped} non-FITS target(s) skipped (no aligned output)")
+        if not bits:
+            return ""
+        return "\n\n" + " · ".join(bits) + "."
 
     def _route_view_outputs_to_docs(self) -> str:
         """
@@ -8129,12 +8460,15 @@ class StarRegistrationWindow(QWidget):
 
     def _cleanup_view_spill(self):
         """
-        Remove the per-run view-spill scratch directory and reset trackers.
-        Safe to call multiple times and when no spill occurred.
+        Remove the per-run spill scratch directory and reset trackers. The
+        same directory holds both view spills and non-FITS file conversions,
+        so one rmtree covers both. Safe to call multiple times and when no
+        spill occurred.
         """
         d = self._view_spill_dir
         self._view_spill_dir = None
         self._view_spill_by_input = {}
+        self._file_spill_by_input = {}
         self._output_dir_is_scratch = False
         if not d:
             return

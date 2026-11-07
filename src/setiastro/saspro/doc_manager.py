@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 import os
 import re
 import numpy as np
-from setiastro.saspro.xisf import XISF as XISFReader
+from setiastro.saspro.legacy.xisf import XISF as XISFReader
 from astropy.io import fits  # local import; optional dep
 from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image, save_image as legacy_save_image
 from setiastro.saspro.legacy.image_manager import list_fits_extensions, load_fits_extension
@@ -483,6 +483,29 @@ def _normalize_image_01(arr: np.ndarray) -> np.ndarray:
         return arr
 
     a = np.asarray(arr, dtype=np.float32)
+
+    # Fast path for an all-finite image -- which is every image arriving from
+    # load_image, since _finalize_loaded_image has already scrubbed NaN/inf.
+    # The masked path below builds an isfinite map and then a[finite].min() /
+    # a[finite].max(), and boolean indexing COPIES the whole image each time
+    # (~190 MB per copy at 47 Mpx): ~0.25-0.5 s of every File->Open for no
+    # change. Plain reductions give the identical float32 scalars when nothing
+    # is masked, and the max is still taken AFTER the shift, exactly as below,
+    # so the result is bit-identical. Anything non-finite (or a shift that
+    # overflows) falls through to the original masked path untouched.
+    if a.size:
+        mn = a.min()
+        mx = a.max()
+        if np.isfinite(mn) and np.isfinite(mx):
+            b = a
+            if mn < 0.0:
+                b = a - mn
+                mx = b.max()
+            if np.isfinite(mx):
+                if mx > 1.0 and mx > 0.0:
+                    b = b / mx
+                return b
+
     finite = np.isfinite(a)
     if not finite.any():
         # completely bogus; give back zeros
@@ -1806,14 +1829,30 @@ def _snapshot_header_for_metadata(meta: dict):
 
     try:
         if Header is not None and isinstance(hdr, Header):
+            # One row per CARD -- never hdr.keys() + hdr[k]. keys() yields a
+            # repeated keyword once per card, but hdr["HISTORY"] returns ALL
+            # history cards, so N HISTORY lines became N repr()s of all N
+            # lines: quadratic in time and size. A 787-card WBPP XISF header
+            # (732 HISTORY) took 3.75 s to snapshot and produced 25.6 MB, every
+            # HISTORY row a 34 KB blob -- on every File->Open, and it rides
+            # along in the sticky metadata. Duplicate non-commentary keys also
+            # all collapsed to the first card's value/comment.
+            #
+            # Per-card rows are what project_io._serialize_header_any already
+            # writes for "fits-cards", and what every reader expects: they
+            # rebuild with hdr[k] = (v, c), which APPENDS commentary cards.
             cards = []
-            for k in hdr.keys():
+            for card in hdr.cards:
                 try:
-                    val = hdr[k]
+                    k = card.keyword
+                except Exception:
+                    k = ""
+                try:
+                    val = card.value
                 except Exception:
                     val = ""
                 try:
-                    cmt = hdr.comments[k] if hasattr(hdr, "comments") else ""
+                    cmt = card.comment
                 except Exception:
                     cmt = ""
                 cards.append([str(k), _dm_json_sanitize(val), str(cmt)])
