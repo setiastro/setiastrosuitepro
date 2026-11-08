@@ -243,7 +243,6 @@ ICONS = {
     # Edit
     "undoicon": ("Edit", lambda: path("M84,92 H154 A44,44 0 0 1 154,180 H100") + path("M112,56 L74,92 L112,128")),
     "redoicon": ("Edit", lambda: path("M172,92 H102 A44,44 0 0 0 102,180 H156") + path("M144,56 L182,92 L144,128")),
-    "redo": ("Edit", lambda: path("M172,92 H102 A44,44 0 0 0 102,180 H156") + path("M144,56 L182,92 L144,128")),
     # File and other toolbar basics
     "openfile": ("File", lambda: path("M52,190 V70 H104 L122,90 H192 V112")
                  + fill("M72,118 H220 L192,196 H46Z")),
@@ -362,10 +361,7 @@ ICONS = {
     "stacking": ("Tools", lambda: layers(70)),
     "surfacemosaic": ("Tools", lambda: dot(128, 128, 78) + dot(100, 100, 13, "#17704A99") + dot(160, 112, 18, "#17704A99") + dot(118, 164, 16, "#17704A99") + line(128, 50, 128, 206, TILE, 9) + line(50, 128, 206, 128, TILE, 9)),
     "unwarp": ("Tools", lambda: "".join(path(f"M{x},52 Q{x + (128 - x) * .5},128 {x},204", W, 11) for x in (56, 128, 200)) + "".join(path(f"M52,{y} Q128,{y + (128 - y) * .5} 204,{y}", W, 11) for y in (56, 128, 200))),
-    "upscale": ("Tools", lambda: block(52, 172, 32, 32) + block(92, 132, 32, 72, DIM) + block(132, 132, 32, 32, DIM) + block(132, 172, 72, 32, DIM) + arrow(108, 108, 200, 60, Y, 16, 26)),
     # UI
-    "benchmark": ("UI_Elements", lambda: "".join(line(x, 40, x, 216, W, 11) for x in (92, 128, 164)) + "".join(line(40, y, 216, y, W, 11) for y in (92, 128, 164))
-                  + block(62, 62, 132, 132, "#384254", 14) + fill("M138,76 L100,136 H128 L118,180 L158,116 H130Z", Y)),
     "copyslot": ("UI_Elements", lambda: box(52, 52, 104, 118, DIM, 15) + block(96, 92, 108, 118, W, 10) + line(120, 128, 180, 128, "#384254", 11) + line(120, 164, 180, 164, "#384254", 11)),
     "disk": ("UI_Elements", lambda: fill("M52,60 Q52,52 60,52 H176 L204,80 V196 Q204,204 196,204 H60 Q52,204 52,196Z") + block(88, 52, 72, 46, "#384254", 3) + block(136, 58, 14, 32, W, 2) + block(82, 136, 92, 68, Y, 3)),
     "functionbundle": ("UI_Elements", lambda: path("M92,52 Q68,52 68,76 V110 Q68,128 46,128 Q68,128 68,146 V180 Q68,204 92,204") + path("M164,52 Q188,52 188,76 V110 Q188,128 210,128 Q188,128 188,146 V180 Q188,204 164,204") + dot(100, 128, 12, Y) + dot(128, 128, 12, Y) + dot(156, 128, 12, Y)),
