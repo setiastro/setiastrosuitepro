@@ -74,10 +74,7 @@ except Exception:  # pragma: no cover
 
 from astropy.wcs import WCS
 
-from setiastro.saspro.abe import (
-    abe_run, _downsample_area, _upscale_bg,
-    _generate_sample_points, _to_luminance,
-)
+from setiastro.saspro.abe import abe_run, _downsample_area, _upscale_bg
 from setiastro.saspro.autostretch import autostretch as hard_autostretch
 
 
@@ -887,109 +884,6 @@ def _brief(e: Exception, n: int = 140) -> str:
 #                                 Robust fit
 # =============================================================================
 
-def _robust_norm01(a: np.ndarray) -> np.ndarray:
-    """
-    Percentile-normalise to [0,1] so two images with wildly different units
-    (Rayleighs vs ADU vs 16-bit plate counts) can be compared for brightness.
-    Clipped at the 1st/99.5th percentile so a handful of saturated stars
-    cannot compress everything else into the bottom of the range.
-    """
-    a = np.asarray(a, dtype=np.float32)
-    f = np.isfinite(a)
-    if not f.any():
-        return np.zeros_like(a)
-    lo, hi = np.percentile(a[f], [1.0, 99.5])
-    if not np.isfinite(hi - lo) or (hi - lo) < 1e-12:
-        return np.zeros_like(a)
-    return np.clip((a - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
-
-
-def _selection_map(tgt_small: np.ndarray, ref_small: np.ndarray,
-                   patch_size: int) -> np.ndarray:
-    """
-    The brightness map that sample points are chosen on.
-
-    THE SURVEY IS THE GROUND TRUTH for where real diffuse emission is. The
-    target's own brightness must NOT disqualify a location, because the target
-    is the frame with the gradient in it — that is the entire premise. Treating
-    a bright patch of light pollution as "not background" would starve the fit
-    on the bright side of the gradient and bias the model toward the dim
-    corner, which is the same failure ADBE's cell-bounded descent exists to
-    prevent. It is also self-defeating: the gradient is the quantity being
-    measured, so declining to sample where it is strong declines to measure it.
-
-    So the reference supplies the diffuse-structure veto, and the target
-    contributes only its HIGH-PASS — stars, satellite trails, sharp artifacts.
-    A high-pass is blind to a smooth gradient by construction, so a point sat
-    in the brightest corner of your light pollution is still a perfectly good
-    background sample, while a point on a star is not.
-
-        map = max( norm(reference),  norm(positive high-pass of target) )
-    """
-    r = _robust_norm01(ref_small)
-
-    t = _to_luminance(tgt_small) if tgt_small.ndim == 3 else tgt_small
-    t = np.asarray(t, dtype=np.float32)
-    hp = None
-    if cv2 is not None:
-        try:
-            sigma = max(2.0, float(patch_size))
-            k = int(2 * round(3 * sigma) + 1)
-            low = cv2.GaussianBlur(t, (k, k), sigma, borderType=cv2.BORDER_REPLICATE)
-            hp = np.clip(t - low, 0.0, None)      # positive excursions only
-        except Exception:
-            hp = None
-    if hp is None:
-        _log("  (no cv2: star rejection via high-pass disabled)")
-        return r
-    return np.maximum(r, _robust_norm01(hp)).astype(np.float32)
-
-
-def _shared_sample_points(tgt_small: np.ndarray, ref_small: np.ndarray,
-                          *, valid: np.ndarray, num_samples: int,
-                          patch_size: int, seed: int = 42) -> np.ndarray:
-    """
-    One set of background sample points, used for BOTH background models.
-
-    This is the difference between a reference-based correction that works and
-    one that quietly eats nebulosity.
-
-    Modelling the two backgrounds independently lets each one chase structure
-    in its own way — different noise, different resolution (NSNS is ~10", your
-    data is sub-arcsec), different star content. The fit downstream is
-    B_t ~ a + b*B_r, so any structure one model follows and the other does not
-    lands in the residual and gets subtracted as "gradient". Sampling both at
-    the SAME sky positions makes those errors common-mode, and common-mode
-    error is exactly what the b*B_r term is there to absorb.
-
-    See _selection_map for what counts as a valid background location — in
-    short, the survey decides, not the frame being corrected.
-
-    `valid` (True = usable) keeps points out of the region where the reference
-    had no coverage and was median-filled — sampling there would be fitting an
-    invented flat value and would drag the model toward it.
-    """
-    combined = _selection_map(tgt_small, ref_small, patch_size)
-
-    mask = np.asarray(valid, dtype=bool)
-    if mask.shape[:2] != combined.shape[:2]:
-        mask = None
-    elif mask.all():
-        mask = None
-
-    pts = _generate_sample_points(
-        combined,
-        num_points=int(num_samples),
-        exclusion_mask=mask,
-        patch_size=int(patch_size),
-        rng=np.random.default_rng(int(seed)),
-    )
-    _log(f"shared sample points: {len(pts)} "
-         f"(requested {num_samples}, patch {patch_size}px"
-         + (", coverage-masked)" if mask is not None else ")"))
-    return pts
-
-
 def _robust_linear_fit(ref: np.ndarray, tgt: np.ndarray,
                        *, n_iter: int = 5, sigma: float = 2.5
                        ) -> tuple[float, float, np.ndarray]:
@@ -1057,9 +951,6 @@ def survey_gradient_model(
     degree: int = 1,
     use_rbf: bool = True,
     rbf_smooth: float = 1.0,
-    num_samples: int = 200,
-    patch_size: int = 15,
-    seed: int = 42,
     min_coverage: float = 0.25,
     progress_cb=None,
     reference: np.ndarray | None = None,
@@ -1156,43 +1047,36 @@ def survey_gradient_model(
     # is linear, so both backgrounds have to be modelled in a linear domain.
     # ABE's legacy prestretch is a nonlinear MTF-style mapping; running it here
     # would put a nonlinearity between the two sides of a linear fit.
+    if progress_cb:
+        progress_cb("Modelling image background…")
+
     img_small = _downsample_area(img, max(1, int(round(max(H, W) / max(h, w)))))
     if img_small.shape[:2] != (h, w):
         img_small = _resize_to(img_small, (h, w))
 
+    _, bg_t = abe_run(
+        img_small, degree=int(degree), num_samples=200, downsample=1,
+        patch_size=15, use_rbf=bool(use_rbf), rbf_smooth=float(rbf_smooth),
+        return_background=True, legacy_prestretch=False,
+        progress_cb=None,
+    )
+
+    if progress_cb:
+        progress_cb("Modelling reference background…")
+
     # NaN outside the footprint would poison the fit; fill with the median of
-    # the covered part so the model stays smooth. The fill is NOT sampled —
-    # `valid` is passed through to the point generator below.
+    # the covered part so the model stays smooth, then re-mask afterwards.
     ref_filled = ref.copy()
     if not valid.all():
         fill = float(np.nanmedian(ref)) if np.any(valid) else 0.0
         ref_filled[~valid] = fill
 
-    if progress_cb:
-        progress_cb("Choosing background sample points…")
-    pts = _shared_sample_points(
-        img_small, ref_filled, valid=valid,
-        num_samples=int(num_samples), patch_size=int(patch_size),
-        seed=int(seed),
+    _, bg_r = abe_run(
+        ref_filled, degree=int(degree), num_samples=200, downsample=1,
+        patch_size=15, use_rbf=bool(use_rbf), rbf_smooth=float(rbf_smooth),
+        return_background=True, legacy_prestretch=False,
+        progress_cb=None,
     )
-
-    # Both models get the SAME points. abe_run uses manual_points for the
-    # polynomial AND the RBF stage, so this pins the sampling for both stages
-    # of both fits — see _shared_sample_points for why that matters.
-    common = dict(
-        degree=int(degree), num_samples=int(num_samples), downsample=1,
-        patch_size=int(patch_size), use_rbf=bool(use_rbf),
-        rbf_smooth=float(rbf_smooth), return_background=True,
-        legacy_prestretch=False, manual_points=pts, progress_cb=None,
-    )
-
-    if progress_cb:
-        progress_cb("Modelling image background…")
-    _, bg_t = abe_run(img_small, **common)
-
-    if progress_cb:
-        progress_cb("Modelling reference background…")
-    _, bg_r = abe_run(ref_filled, **common)
     bg_r = np.asarray(bg_r, dtype=np.float32)
     if bg_r.ndim == 3:
         bg_r = bg_r[..., 0]
@@ -1234,10 +1118,8 @@ def survey_gradient_model(
         "gradient": gradient,
         "gradient_small": grad_small,
         "reference": ref,
-        "target_small": img_small,
         "bg_target": bg_t,
         "bg_ref": bg_r,
-        "points": pts,
         "coeffs": coeffs,
         "coverage": coverage,
         "work_shape": (h, w),
@@ -1359,32 +1241,6 @@ class SurveyGradientDialog(QDialog):
         self.chk_rbf = QCheckBox(self.tr("RBF refinement on both backgrounds"))
         self.chk_rbf.setChecked(True)
 
-        self.sp_samples = QSpinBox()
-        self.sp_samples.setRange(20, 4000)
-        self.sp_samples.setSingleStep(20)
-        self.sp_samples.setValue(200)
-        self.sp_samples.setToolTip(
-            "Background sample points, placed by the same star-avoiding\n"
-            "gradient descent ADBE uses.\n\n"
-            "One set of points is generated and used for BOTH background\n"
-            "models, on the per-pixel maximum of the two images — so a point\n"
-            "only counts as background where it is dim in your frame AND in\n"
-            "the reference.\n\n"
-            "Too many points on a nebula-filled field starts sampling the\n"
-            "nebula itself; too few and the fit cannot follow a real gradient."
-        )
-
-        self.sp_patch = QSpinBox()
-        self.sp_patch.setRange(5, 151)
-        self.sp_patch.setSingleStep(2)
-        self.sp_patch.setValue(15)
-        self.sp_patch.setToolTip(
-            "Patch size in work-grid pixels for each sample point.\n\n"
-            "The descent scores a patch by its 25th percentile, so a larger\n"
-            "patch is more robust against stars but blurs the distinction\n"
-            "between sky and faint extended signal."
-        )
-
         self.sp_strength = QSpinBox()
         self.sp_strength.setRange(0, 100)
         self.sp_strength.setValue(100)
@@ -1394,8 +1250,6 @@ class SurveyGradientDialog(QDialog):
         form.addRow(self.tr("Reference survey:"), self.cmb_survey)
         form.addRow(self.tr("Work resolution:"), self.sp_work)
         form.addRow(self.tr("Background degree:"), self.sp_degree)
-        form.addRow(self.tr("Sample points:"), self.sp_samples)
-        form.addRow(self.tr("Patch size (px):"), self.sp_patch)
         form.addRow(self.chk_rbf)
         form.addRow(self.tr("Strength:"), self.sp_strength)
 
@@ -1419,7 +1273,6 @@ class SurveyGradientDialog(QDialog):
         self.cmb_view = QComboBox()
         self.cmb_view.addItems([
             "Corrected", "Gradient removed", "Reference", "Reference background",
-            "Sample points",
         ])
         self.cmb_view.currentTextChanged.connect(self._redraw)
 
@@ -1484,8 +1337,6 @@ class SurveyGradientDialog(QDialog):
             self.cmb_survey.setCurrentText(name)
         self.sp_work.setValue(int(s.value("srgc/work", 1024)))
         self.sp_degree.setValue(int(s.value("srgc/degree", 1)))
-        self.sp_samples.setValue(int(s.value("srgc/samples", 200)))
-        self.sp_patch.setValue(int(s.value("srgc/patch", 15)))
         self.chk_rbf.setChecked(bool(s.value("srgc/rbf", True, type=bool)))
         self.sp_strength.setValue(int(s.value("srgc/strength", 100)))
 
@@ -1494,8 +1345,6 @@ class SurveyGradientDialog(QDialog):
         s.setValue("srgc/survey", self.cmb_survey.currentText())
         s.setValue("srgc/work", self.sp_work.value())
         s.setValue("srgc/degree", self.sp_degree.value())
-        s.setValue("srgc/samples", self.sp_samples.value())
-        s.setValue("srgc/patch", self.sp_patch.value())
         s.setValue("srgc/rbf", self.chk_rbf.isChecked())
         s.setValue("srgc/strength", self.sp_strength.value())
 
@@ -1552,8 +1401,6 @@ class SurveyGradientDialog(QDialog):
                 work_long_side=int(self.sp_work.value()),
                 degree=int(self.sp_degree.value()),
                 use_rbf=bool(self.chk_rbf.isChecked()),
-                num_samples=int(self.sp_samples.value()),
-                patch_size=int(self.sp_patch.value()),
                 progress_cb=self._set_status,
             )
         except SurveyFetchError as e:
@@ -1757,7 +1604,6 @@ class SurveyGradientDialog(QDialog):
         if self._result is None:
             return
         mode = self.cmb_view.currentText()
-        overlay_pts = False
         img = self._source_float()
         if img is None:
             return
@@ -1771,19 +1617,6 @@ class SurveyGradientDialog(QDialog):
         elif mode == "Reference":
             arr = _norm01(np.nan_to_num(self._result["reference"],
                                         nan=float(np.nanmedian(self._result["reference"]))))
-        elif mode == "Sample points":
-            # Exactly the map the points were chosen on: the survey's diffuse
-            # structure, plus only the SHARP part of your frame. Your gradient
-            # is deliberately invisible here — a point in the brightest corner
-            # of your light pollution is a good sample. A point on anything
-            # bright in THIS view is sampling structure, which is the catch.
-            arr = _selection_map(
-                self._result.get("target_small"),
-                np.nan_to_num(self._result["reference"],
-                              nan=float(np.nanmedian(self._result["reference"]))),
-                int(self.sp_patch.value()),
-            )
-            overlay_pts = True
         else:
             arr = _norm01(np.asarray(self._result["bg_ref"], dtype=np.float32))
 
@@ -1797,22 +1630,6 @@ class SurveyGradientDialog(QDialog):
         if disp.ndim == 2:
             disp = np.repeat(disp[..., None], 3, axis=2)
         buf = np.ascontiguousarray((np.clip(disp, 0, 1) * 255).astype(np.uint8))
-
-        if overlay_pts:
-            pts = self._result.get("points")
-            if pts is not None and len(pts):
-                Hs, Ws = buf.shape[:2]
-                p = np.asarray(pts, dtype=int)
-                for px, py in p:
-                    y0, y1 = max(0, py - 2), min(Hs, py + 3)
-                    x0, x1 = max(0, px - 2), min(Ws, px + 3)
-                    if y0 < y1 and x0 < x1:
-                        buf[y0:y1, x0:x1] = (255, 60, 60)
-                self._set_status(
-                    f"{len(p)} sample points over the survey's structure + "
-                    f"your frame's sharp detail. Your gradient is not shown "
-                    f"here and does not disqualify a point."
-                )
         self._preview_buf = buf
         h, w, _ = buf.shape
         qimg = QImage(buf.data, w, h, buf.strides[0], QImage.Format.Format_RGB888)
