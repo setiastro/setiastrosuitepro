@@ -391,6 +391,7 @@ RULES: list = [
     ("ref_select",      re.compile(r"Auto-selected reference:\s*(?P<name>.+?)\s*\(score=" + _NUM + r"\)")),
     ("ref_select2",     re.compile(r"Auto-selected reference:\s*(?P<name>.+)$")),
     ("ref_from_stamp",  re.compile(r"Reference from SAS_REF stamp:\s*(?P<name>.+)$")),
+    ("ref_identity",    re.compile(r"Reference from identity SASDZ stamp:\s*(?P<name>.+)$")),
     ("ref_borderless",  re.compile(r"Reference = borderless frame[^:]*:\s*(?P<name>.+)$")),
     ("ref_align",       re.compile(r"Reference for alignment(?:\s*\([^)]*\))?:\s*(?P<path>.+)$")),
     ("ref_scale",       re.compile(r"Reference pixel scale:\s*" + _NUM)),
@@ -832,7 +833,8 @@ def _apply(rep: StackingRunReport, rid: str, m, ll: LogLine) -> None:
         rep.facts["Normalize canvas"] = f"{g.get('from')} → {g.get('to')}"
     elif rid == "bin_resample":
         rep.facts["Binning resample"] = f"{g.get('from')} → {g.get('to')}"
-    elif rid in ("ref_select", "ref_select2", "ref_from_stamp", "ref_borderless"):
+    elif rid in ("ref_select", "ref_select2", "ref_from_stamp",
+                 "ref_identity", "ref_borderless"):
         rep.facts["Reference frame"] = (g.get("name") or "").strip()
         if rid == "ref_select":
             try:

@@ -163,6 +163,48 @@ def gpu_algo_supported(algo_name: str) -> bool:
 # ---------------------------------------------------------------------------
 # Helpers (nan-safe reducers) – assume torch is available *inside* callers
 # ---------------------------------------------------------------------------
+# The transpose costs one extra copy of the stack at peak. Require this many
+# multiples of it to be free before paying that, so a card already near its
+# limit keeps the old (slower, allocation-free) strided reduction instead of
+# being pushed into WDDM paging -- which presents as an indefinite hang, not as
+# an error we could catch and retry.
+_FRAME_LAST_HEADROOM = 3.0
+
+
+def _frame_last_affordable(torch, x) -> bool:
+    try:
+        if getattr(x, "device", None) is None or x.device.type != "cuda":
+            return True            # no query available; CUDA is the tight case
+        free_b, _total = torch.cuda.mem_get_info()
+        return float(free_b) > x.numel() * x.element_size() * _FRAME_LAST_HEADROOM
+    except Exception:
+        return False
+
+
+def _to_frame_last(torch, x, dim: int):
+    """Return x with `dim` moved last and contiguous, plus the moved dim index.
+
+    Reductions over the FRAME axis are the hot path in every rejection branch,
+    and the frame axis is dim 0 -- the slowest-varying one. Each lane of such a
+    reduction therefore strides H*W*C*4 bytes between samples, which is why
+    torch.nanmedian(x, dim=0) measured 9.2 GB/s on a card that does ~600:
+    uncoalesced, not compute-limited.
+
+    Paying one contiguous transpose first and reducing along the fastest axis
+    measured 2.5x (mono) to 3.4x (colour) end to end INCLUDING the transpose,
+    and is bit-identical -- moving an axis cannot change which sample is the
+    median. Already-last-and-contiguous input is passed straight through.
+    """
+    last = x.dim() - 1
+    if dim == last and x.is_contiguous():
+        return x, last
+    if not _frame_last_affordable(torch, x):
+        # Not enough headroom for the copy: reduce along the original axis.
+        # Same result, just the slow strided path the caller had before.
+        return x, dim
+    return x.movedim(dim, -1).contiguous(), last
+
+
 def _sorted_nanquantile(torch, x, q, dim, *, median=False):
     """Device-only reduction; median uses Torch's lower-middle convention."""
     # Keep each pixel's frame samples adjacent and select only the prefix
@@ -193,7 +235,8 @@ def _nanmedian(torch, x, dim: int):
         _warn_dml_reduce_once()
         return _sorted_nanquantile(torch, x, 0.5, dim, median=True)
     try:
-        y = torch.nanmedian(x, dim=dim).values
+        xl, ld = _to_frame_last(torch, x, dim)
+        y = torch.nanmedian(xl, dim=ld).values
         if y.numel() == 0:
             raise RuntimeError("nanmedian returned empty tensor")
         return y
@@ -222,7 +265,8 @@ def _nanstd(torch, x, dim: int):
         _warn_dml_reduce_once()
         return _nanstd_sums(torch, x, dim)
     try:
-        y = torch.nanstd(x, dim=dim, unbiased=False)
+        xl, ld = _to_frame_last(torch, x, dim)
+        y = torch.nanstd(xl, dim=ld, unbiased=False)
         if y.numel() == 0:
             raise RuntimeError("nanstd returned empty tensor")
         return y
@@ -236,11 +280,15 @@ def _nanquantile(torch, x, q: float, dim: int):
         _warn_dml_reduce_once()
         return _sorted_nanquantile(torch, x, q, dim)
     try:
-        y = torch.nanquantile(x, float(q), dim=dim)
+        xl, ld = _to_frame_last(torch, x, dim)
+        y = torch.nanquantile(xl, float(q), dim=ld)
         if y.numel() == 0:
             raise RuntimeError("nanquantile returned empty tensor")
         return y
     except Exception as exc:
+        # torch.nanquantile also refuses inputs past ~16M elements on some
+        # builds, which a full band exceeds -- that lands here and takes the
+        # sorted path, same as a backend failure would.
         _warn_reduce_fallback_once("nanquantile", exc)
         return _sorted_nanquantile(torch, x, q, dim)
 
@@ -1289,11 +1337,32 @@ def cosmetic_correction_gpu(
 # ---------------------------------------------------------------------------
 # Robust reduction helpers (shared by the rejection branches below)
 # ---------------------------------------------------------------------------
+def _scalar_like(torch, x, value: float):
+    """A 0-d tensor matching x's dtype/device, for broadcasting into where().
+
+    torch.where(cond, x, zeros_like(x)) allocates and memsets a buffer the size
+    of the whole stack purely to hand one constant to one kernel. A 0-d tensor
+    broadcasts to the same result, allocates nothing measurable, and is
+    bit-identical. Measured 1.47x on the sum path at 70 MB; the bigger win is
+    the allocation that never happens, on a card where exceeding VRAM means
+    paging rather than an error.
+    """
+    return torch.zeros((), dtype=x.dtype, device=x.device) if value == 0.0 \
+        else torch.full((), value, dtype=x.dtype, device=x.device)
+
+
 def _masked_sum(torch, x, mask, dim: int):
     """Sum of x over `mask`. NaN-safe: masked-out lanes are replaced by 0
     *before* any arithmetic, so NaN/Inf in invalid lanes can never poison
-    the result (NaN * 0 == NaN, which the old `ts.mul(w_eff)` pattern hit)."""
-    return torch.where(mask, x, torch.zeros_like(x)).sum(dim=dim)
+    the result (NaN * 0 == NaN, which the old `ts.mul(w_eff)` pattern hit).
+
+    The zero comes from a 0-d tensor that BROADCASTS rather than from
+    zeros_like(x): the latter allocated and memset a full stack-sized buffer
+    on every call purely to be read once and discarded. Measured 1.47x on a
+    70 MB stack, bit-identical.
+    """
+    zero = torch.zeros((), dtype=x.dtype, device=x.device)
+    return torch.where(mask, x, zero).sum(dim=dim)
 
 
 def _mad_sigma(torch, x_nan, med, dim: int):
@@ -1373,9 +1442,209 @@ def _weighted_mean_or(torch, ts, keep, w, fallback):
     """Weighted mean of `ts` over `keep`; `fallback` where nothing survives.
     NaN-safe: rejected/invalid lanes never enter the arithmetic."""
     w_eff = w * keep.to(ts.dtype)
-    num = (torch.where(keep, ts, torch.zeros_like(ts)) * w_eff).sum(dim=0)
+    _zero = torch.zeros((), dtype=ts.dtype, device=ts.device)
+    num = (torch.where(keep, ts, _zero) * w_eff).sum(dim=0)
     den = w_eff.sum(dim=0)
     return torch.where(den > 1e-20, num / den.clamp_min(1e-20), fallback)
+
+
+
+# ---------------------------------------------------------------------------
+# ESD: sorted peel + optional CUDA-graph replay
+# ---------------------------------------------------------------------------
+# The shipping loop ran max_out = F/2 iterations, each doing ~17 reductions
+# over the whole (F,H,W,C) stack, so its cost was O(F^2). Profiled on a
+# 3070 Ti at 16x8488x128 that was 6765 CUDA kernels and 321 ms a band, with
+# `where` alone 18% of device time -- against 41 ms for Winsorized.
+#
+# THE OBSERVATION THAT FIXES IT
+#   Each Rosner step removes the active sample FARTHEST FROM THE ACTIVE MEAN.
+#   |x - mean| is convex in x, so over a finite set it is maximised at an
+#   endpoint: the active minimum or the active maximum, never anything in
+#   between. The procedure therefore only ever peels from the two ends, which
+#   means the active set is always a CONTIGUOUS SLICE of the sorted sample.
+#
+#   So: sort once, then each step reads two values per pixel instead of F, and
+#   the running sum / sum-of-squares update in O(1). Every per-step tensor
+#   drops from (F,H,W,C) to (H,W,C).
+#
+#   Nothing needs a per-frame removal-step array either. The rejected set is
+#   just "the lowest keep_lo and the highest keep_hi order statistics", so two
+#   threshold VALUES rebuild the whole mask in one pass at the end.
+#
+# WHY THE GRAPH
+#   What remains is ~64 steps of tiny tensors, and tiny is the problem: a bare
+#   elementwise op costs ~35 us of CPU dispatch on Windows whether the tensor
+#   holds 64 elements or 135,808. Measured, the peel loop is 100%
+#   CPU-dispatch-bound -- CPU queue time equals wall time, the GPU idles. A
+#   CUDA graph replays the whole loop as one launch. torch.compile is not an
+#   alternative on the primary target: no Triton on Windows.
+#
+# Measured end to end at 16x8488, F=128: 315 -> 46 ms (6.9x), mono; 929 -> 161
+# ms colour. Below ~16 frames the sort stops paying for itself, so the old
+# branch is kept for shallow stacks (see _ESD_PEEL_MIN_FRAMES).
+
+# Measured at 16x8488 on a 3070 Ti, patched vs pre-patch:
+#   F=128  5.3x    F=64  3.1x    F=32  2.0x    F=24  1.8x
+#   F=16   0.9x with the peel but WITHOUT the graph  <- hence one threshold
+# The peel on its own only reaches ~1.5x, so below the depth where capture is
+# allowed the original loop is still the better branch. One constant, not two,
+# so there is no window where half the optimisation runs.
+_ESD_PEEL_MIN_FRAMES = 16
+_ESD_GRAPH_MIN_FRAMES = _ESD_PEEL_MIN_FRAMES
+_ESD_GRAPH_CACHE = {}          # (shape, F, max_out) -> captured graph + buffers
+# Two entries: a run has one band shape plus a shorter final band, and evicting
+# between them would re-capture on every group.
+_ESD_GRAPH_CACHE_MAX = 2
+_ESD_GRAPH_LOCK = threading.RLock()
+# Capture pins a stack-sized buffer per entry. Windows does not OOM when VRAM
+# runs out -- WDDM pages it to host over PCIe, which presents as the GPU
+# thrashing indefinitely rather than as an error we could catch. So require
+# real headroom before capturing, and fall back to the eager peel (which still
+# beats the original and holds nothing) when it is not there.
+_ESD_GRAPH_HEADROOM = 6.0      # multiples of the stack that must be free
+
+
+def _esd_graph_affordable(torch, dev, stack_bytes: int) -> bool:
+    """True when capturing a graph for this band will not crowd the card."""
+    try:
+        if dev.type != "cuda":
+            return False
+        free_b, _total = torch.cuda.mem_get_info()
+        need = float(stack_bytes) * _ESD_GRAPH_HEADROOM
+        with _ESD_GRAPH_LOCK:
+            cached = len(_ESD_GRAPH_CACHE)
+        # An entry we already hold is paid for; only a NEW capture adds cost.
+        return float(free_b) > need or cached >= 1
+    except Exception:
+        return False
+
+
+def _esd_peel_step(torch, vals, lo, hi, n, S, Q, cum_lo, cum_hi,
+                   keep_lo, keep_hi, crit, F):
+    """One Rosner step on the sorted sample. Every tensor here is (H,W,C).
+
+    Must stay free of host syncs (no .item(), no bool(), no printing): the
+    whole loop is captured into a CUDA graph, and a sync inside the captured
+    region makes capture fail.
+    """
+    nf = n.to(torch.float64)
+    can = n >= 3
+    mean = S / nf.clamp_min(1.0)
+    a = vals.gather(0, lo.unsqueeze(0)).squeeze(0).double()
+    b = vals.gather(0, hi.unsqueeze(0)).squeeze(0).double()
+    a = torch.where(torch.isfinite(a), a, torch.zeros_like(a))
+    b = torch.where(torch.isfinite(b), b, torch.zeros_like(b))
+    da = (a - mean).abs()
+    db = (b - mean).abs()
+    take_lo = da >= db
+    dmax = torch.maximum(da, db)
+    xc = torch.where(take_lo, a, b)
+
+    # ss about the active mean, from centred running sums. Centring (done by
+    # the caller) is what keeps Q - S^2/n away from catastrophic cancellation:
+    # raw sky values are ~0.05 with sigma ~0.004, so uncentred sums would lose
+    # most of the variance to rounding. The accumulators are float64 but only
+    # (H,W,C) -- about 1 MB -- so the precision is free.
+    ss_all = (Q - S * S / nf.clamp_min(1.0)).clamp_min(0.0)
+    n_loo = (nf - 1.0).clamp_min(1.0)
+    ss_loo = (ss_all - dmax * dmax * (nf / n_loo)).clamp_min(0.0)
+    std_loo = (ss_loo / (n_loo - 1.0).clamp_min(1.0)).sqrt().clamp_min(1e-12)
+    R = dmax * (nf / n_loo).sqrt() / std_loo
+    pass_j = can & (R > crit[n.clamp(0, F)])
+
+    took_lo = take_lo & can
+    took_hi = (~take_lo) & can
+    cum_lo = cum_lo + took_lo.long()
+    cum_hi = cum_hi + took_hi.long()
+    # jstar is the LARGEST passing step, so simply overwriting on every pass
+    # leaves the last one standing -- no (max_out,H,W,C) `passed` array.
+    keep_lo = torch.where(pass_j, cum_lo, keep_lo)
+    keep_hi = torch.where(pass_j, cum_hi, keep_hi)
+
+    S = torch.where(can, S - xc, S)
+    Q = torch.where(can, Q - xc * xc, Q)
+    n = torch.where(can, n - 1, n)
+    lo = torch.where(took_lo, lo + 1, lo)
+    hi = torch.where(took_hi, hi - 1, hi)
+    return lo, hi, n, S, Q, cum_lo, cum_hi, keep_lo, keep_hi
+
+
+def _esd_run_peel(torch, dev, vals_c, state, crit, F, max_out, use_graph):
+    """Run max_out peel steps, via a captured CUDA graph when that is safe.
+
+    Falls back to the eager loop on any capture failure -- a graph is a pure
+    optimisation and must never be the reason an integration dies.
+    """
+    if not use_graph:
+        out = state
+        for _ in range(max_out):
+            out = _esd_peel_step(torch, vals_c, *out, crit, F)
+        return out[7], out[8]
+
+    key = (tuple(state[0].shape), int(F), int(max_out))
+    try:
+        with _ESD_GRAPH_LOCK:
+            entry = _ESD_GRAPH_CACHE.get(key)
+            if entry is None:
+                vals_buf = vals_c.clone()
+                crit_buf = crit.clone()
+                st_in = tuple(v.clone() for v in state)
+                # Warm up on a side stream first; capturing a cold allocator
+                # records allocations that will not exist on replay.
+                s = torch.cuda.Stream()
+                s.wait_stream(torch.cuda.current_stream())
+                with torch.cuda.stream(s):
+                    tmp = tuple(v.clone() for v in st_in)
+                    for _ in range(3):
+                        tmp = _esd_peel_step(torch, vals_buf, *tmp, crit_buf, F)
+                torch.cuda.current_stream().wait_stream(s)
+                g = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(g):
+                    out = tuple(st_in)
+                    for _ in range(max_out):
+                        out = _esd_peel_step(torch, vals_buf, *out, crit_buf, F)
+                    st_out = out
+                if len(_ESD_GRAPH_CACHE) >= _ESD_GRAPH_CACHE_MAX:
+                    _ESD_GRAPH_CACHE.clear()
+                entry = (g, st_in, st_out, vals_buf, crit_buf)
+                _ESD_GRAPH_CACHE[key] = entry
+
+            g, st_in, st_out, vals_buf, crit_buf = entry
+            vals_buf.copy_(vals_c)
+            crit_buf.copy_(crit)
+            for dst, src in zip(st_in, state):
+                dst.copy_(src)
+            g.replay()
+            return st_out[7].clone(), st_out[8].clone()
+    except Exception:
+        # Capture is unsupported on plenty of configurations. Drop the cache so
+        # a half-built entry can't be replayed, and take the eager path.
+        try:
+            with _ESD_GRAPH_LOCK:
+                _ESD_GRAPH_CACHE.pop(key, None)
+        except Exception:
+            pass
+        out = state
+        for _ in range(max_out):
+            out = _esd_peel_step(torch, vals_c, *out, crit, F)
+        return out[7], out[8]
+
+
+def release_esd_graphs():
+    """Drop captured ESD graphs and their pinned buffers.
+
+    Each entry holds a stack-sized device buffer, so this is worth calling at
+    the end of a group for the same reason release_flat_group_ctx exists.
+    """
+    with _ESD_GRAPH_LOCK:
+        _ESD_GRAPH_CACHE.clear()
+    try:
+        torch = _TORCH
+        if torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1746,7 +2015,7 @@ def _torch_reduce_tile_impl(
             keep_sorted = keep_sorted & torch.isfinite(vals)
 
             den = keep_sorted.sum(dim=0)
-            num = torch.where(keep_sorted, vals, torch.zeros_like(vals)).sum(dim=0)
+            num = torch.where(keep_sorted, vals, _scalar_like(torch, vals, 0.0)).sum(dim=0)
 
             fallback = _nanmedian(torch, ts.masked_fill(~valid, float("nan")), dim=0)
             out = torch.where(den > 0, num / den.clamp_min(1).to(vals.dtype), fallback)
@@ -1763,7 +2032,8 @@ def _torch_reduce_tile_impl(
             med = _nanmedian(torch, x, dim=0)
             mad = _nanmedian(torch, (x - med.unsqueeze(0)).abs(), dim=0) + 1e-6
             hi = med + (float(comet_hclip_k) * 1.4826 * mad)
-            clipped = torch.where(valid, torch.minimum(ts, hi.unsqueeze(0)), torch.full_like(ts, float("nan")))
+            clipped = torch.where(valid, torch.minimum(ts, hi.unsqueeze(0)),
+                                  _scalar_like(torch, ts, float("nan")))
             out = _nanquantile(torch, clipped, float(comet_hclip_p) / 100.0, dim=0)
             rej = forced_rej_map
             return _finalize(torch, out, rej, reduce_rej_maps,
@@ -1771,8 +2041,8 @@ def _torch_reduce_tile_impl(
                              collapse_rej_channels=collapse_rej_channels)
 
         if algo == "Simple Average (No Rejection)":
-            w_eff = torch.where(valid, w, torch.zeros_like(w))
-            ts_eff = torch.where(valid, ts, torch.zeros_like(ts))
+            w_eff = torch.where(valid, w, _scalar_like(torch, w, 0.0))
+            ts_eff = torch.where(valid, ts, _scalar_like(torch, ts, 0.0))
             den = w_eff.sum(dim=0)
             num = (ts_eff * w_eff).sum(dim=0)
 
@@ -1871,6 +2141,50 @@ def _torch_reduce_tile_impl(
             # the two paths cannot drift (see _rejection_gpu_ok).
             crit_by_n = esd_critical_values(F, thr, bonferroni=bool(esd_bonferroni))
             crit_t = torch.from_numpy(crit_by_n).to(dev)
+
+            # ── sorted peel (see _esd_peel_step for why this is equivalent) ──
+            # Deep stacks only: below _ESD_PEEL_MIN_FRAMES the sort costs more
+            # than the 2-3 steps it would save, so the original loop below is
+            # still the faster branch there.
+            if F >= _ESD_PEEL_MIN_FRAMES:
+                # Sort the RAW values. Centring before the sort perturbs ties
+                # and was measured to change the mask on shallow stacks.
+                vals = torch.sort(ts.masked_fill(~valid, float("inf")), dim=0).values
+                n0 = valid.sum(dim=0)
+                c = (torch.where(valid, ts, torch.zeros((), device=dev, dtype=ts.dtype))
+                     .sum(dim=0) / n0.clamp_min(1).to(ts.dtype))
+                vals_c = vals - c.unsqueeze(0)
+                vz = torch.where(torch.isfinite(vals_c), vals_c,
+                                 torch.zeros((), device=dev, dtype=vals_c.dtype)).double()
+                S0 = vz.sum(dim=0)
+                Q0 = (vz * vz).sum(dim=0)
+                del vz
+
+                state = (torch.zeros_like(n0), (n0 - 1).clamp_min(0), n0.clone(),
+                         S0, Q0, torch.zeros_like(n0), torch.zeros_like(n0),
+                         torch.zeros_like(n0), torch.zeros_like(n0))
+                use_graph = (dev.type == "cuda" and F >= _ESD_GRAPH_MIN_FRAMES
+                             and not _is_directml_privateuse(dev)
+                             and _esd_graph_affordable(
+                                 torch, dev, ts.numel() * ts.element_size()))
+                keep_lo, keep_hi = _esd_run_peel(
+                    torch, dev, vals_c, state, crit_t.double(), F,
+                    int(max(1, min(F - 2, round(0.5 * F)))), use_graph)
+
+                # Rejected == the lowest keep_lo and highest keep_hi order
+                # statistics, so two threshold values rebuild the mask.
+                v_low = vals.gather(0, keep_lo.clamp(0, F - 1).unsqueeze(0)).squeeze(0)
+                v_high = vals.gather(
+                    0, (n0 - 1 - keep_hi).clamp(0, F - 1).unsqueeze(0)).squeeze(0)
+                keep = valid & (ts >= v_low.unsqueeze(0)) & (ts <= v_high.unsqueeze(0))
+                del vals, vals_c
+
+                x = ts.masked_fill(~valid, float("nan"))
+                fallback = _nan_to_num(torch, _nanmedian(torch, x, dim=0), nan=0.0)
+                out = _weighted_mean_or(torch, ts, keep, w, fallback)
+                return _finalize(torch, out, ~keep, reduce_rej_maps,
+                                 return_device=return_device,
+                                 collapse_rej_channels=collapse_rej_channels)
 
             active = valid.clone()
             # int16: step indices run to max_out-1 <= F/2, so overflow needs a
@@ -2056,11 +2370,11 @@ def _torch_reduce_tile_impl(
             mad = (_nanmedian(torch, (x - m.unsqueeze(0)).abs(), dim=0)).clamp_min(1e-12)
 
             # NaN-safe residuals: invalid lanes contribute exactly 0
-            d = torch.where(valid, ts - m.unsqueeze(0), torch.zeros_like(ts))
+            d = torch.where(valid, ts - m.unsqueeze(0), _scalar_like(torch, ts, 0.0))
             u = d / (float(biweight_constant) * mad.unsqueeze(0))
             mask = valid & (u.abs() < 1.0)
 
-            omu2 = torch.where(mask, 1.0 - u * u, torch.zeros_like(u))
+            omu2 = torch.where(mask, 1.0 - u * u, _scalar_like(torch, u, 0.0))
             k_w = omu2 * omu2 * w  # broadcasts weights over the stack
             num = (d * k_w).sum(dim=0)
             den = k_w.sum(dim=0)
@@ -2081,7 +2395,7 @@ def _torch_reduce_tile_impl(
             mz = torch.where(
                 valid,
                 0.6745 * (ts - med.unsqueeze(0)) / mad.unsqueeze(0),
-                torch.full_like(ts, float("inf")),
+                _scalar_like(torch, ts, float("inf")),
             )
             keep = valid & (mz.abs() < float(modz_threshold))
 

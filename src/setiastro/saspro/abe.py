@@ -22,6 +22,17 @@ import numpy as np
 # ---------------------------------------------------------------------------
 DEBUG = False
 
+# ---------------------------------------------------------------------------
+# Show the "Survey Gradient…" launcher in the ADBE dialog. This opens the
+# reference-based additive gradient tool (survey_gradient.py), which fetches
+# a cutout of the same field from a published all-sky survey (NSNS in the
+# north, DSS2 as the all-sky fallback) and removes whatever part of your
+# background the real sky does not explain.
+#
+# Flip to False to hide the button without removing any of this code.
+# ---------------------------------------------------------------------------
+SHOW_SURVEY_GRADIENT_BUTTON = True
+
 try:
     import cv2
 except Exception:  # pragma: no cover
@@ -1644,6 +1655,18 @@ class ABEDialog(QDialog):
         # them side-by-side and away from Preview/Apply reduces the chance of
         # a mis-click clobbering tuned settings mid-session.
         self.btn_reset   = QPushButton(self.tr("Reset to Defaults"))
+        # Beta launcher for the survey-reference gradient tool. Hidden
+        # unless SHOW_SURVEY_GRADIENT_BUTTON is on, so it can ship dark.
+        self.btn_survey_grad = QPushButton(self.tr("Survey Gradient…"))
+        self.btn_survey_grad.setToolTip(
+            "Open the Survey Reference Gradient Correction tool (beta).\n\n"
+            "Fetches a reference image of this exact field from a published\n"
+            "all-sky survey, models its background the same way ADBE models\n"
+            "yours, and removes the difference. Unlike ADBE, real nebulosity\n"
+            "is present in the reference too, so it is not flattened.\n\n"
+            "Requires a plate solution and a network connection."
+        )
+        self.btn_survey_grad.setVisible(bool(SHOW_SURVEY_GRADIENT_BUTTON))
         self.btn_reset.setToolTip(
             "Restore every ADBE control to its shipped default value "
             "(polynomial degree, sample count, multiscale refinement\n"
@@ -1656,6 +1679,7 @@ class ABEDialog(QDialog):
         self.btn_close.clicked.connect(self.close)
         self.btn_clear.clicked.connect(self._clear_polys)
         self.btn_reset.clicked.connect(self._reset_to_defaults)
+        self.btn_survey_grad.clicked.connect(self._open_survey_gradient)
 
         # Layout
         params = QFormLayout()
@@ -1718,6 +1742,7 @@ class ABEDialog(QDialog):
         housekeeping_row = QHBoxLayout()
         housekeeping_row.addWidget(self.btn_clear)
         housekeeping_row.addWidget(self.btn_reset)
+        housekeeping_row.addWidget(self.btn_survey_grad)
         housekeeping_row.addStretch(1)
         opts.addLayout(housekeeping_row)
 
@@ -1883,6 +1908,41 @@ class ABEDialog(QDialog):
         # whatever _load_settings restored for chk_ms_disable_protect).
         if hasattr(self, "chk_ms_disable_protect"):
             self._protect_disabled_changed(self.chk_ms_disable_protect.isChecked())
+
+    def _open_survey_gradient(self):
+        """
+        Open the Survey Reference Gradient Correction dialog on the
+        document this ADBE dialog is currently pointed at.
+
+        Imported lazily so ADBE keeps working untouched if the beta
+        module is missing, half-installed, or raises on import — ABE is
+        an offline core tool and must not acquire a hard dependency on a
+        network-backed experiment.
+        """
+        try:
+            from setiastro.saspro.survey_gradient import open_survey_gradient
+        except Exception as e:
+            QMessageBox.warning(
+                self, self.tr("Survey Gradient"),
+                self.tr("The survey gradient module could not be loaded:\n\n"
+                        "{0}\n\n"
+                        "Make sure survey_gradient.py is installed next to "
+                        "abe.py in setiastro/saspro/.").format(e)
+            )
+            return
+
+        doc = getattr(self, "doc", None)
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(
+                self, self.tr("Survey Gradient"),
+                self.tr("No image is loaded in the active document.")
+            )
+            return
+
+        # Parent to the main window, not to this dialog: the tool is
+        # non-modal and should outlive an ADBE close, and it needs the
+        # main window for docman / _log access.
+        self._survey_grad_dlg = open_survey_gradient(self._main, doc)
 
     def _reset_to_defaults(self):
         """
