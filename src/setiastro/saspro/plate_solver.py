@@ -2711,11 +2711,14 @@ class _GaiaSolveWorker(QThread):
         self.done.emit(ok, res)
 
 def _solve_with_GAIA_threaded(parent, settings, image, seed_header,
-                              force_blind: "bool | None" = None) -> tuple[bool, "Header | str"]:
+                              force_blind: "bool | None" = None,
+                              status_cb=None) -> tuple[bool, "Header | str"]:
     """
     Same signature/contract as _solve_with_GAIA but runs it in a QThread,
     spinning a local event loop so the UI stays responsive. Synchronous to
     the caller — the fallback chain doesn't need restructuring.
+
+    status_cb, when given, receives the same status lines as the dialog.
     """
     result = {}
     loop = QEventLoop()
@@ -2735,7 +2738,16 @@ def _solve_with_GAIA_threaded(parent, settings, image, seed_header,
 
     worker = _GaiaSolveWorker(image, seed_header, settings_scope=_scope,
                               force_blind=force_blind)
-    worker.status.connect(lambda t: _set_status_ui(parent, t))   # queued → GUI thread
+
+    def _on_status(text):
+        _set_status_ui(parent, text)
+        if status_cb is not None:
+            try:
+                status_cb(text)
+            except Exception:
+                pass
+
+    worker.status.connect(_on_status)   # queued → GUI thread
 
     def _on_done(ok, res):
         result["ok"], result["res"] = ok, res
