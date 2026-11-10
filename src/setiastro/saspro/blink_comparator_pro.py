@@ -529,6 +529,110 @@ def _blink_exposure_label(hdr):
     return f"{f:.3f}".rstrip("0").rstrip(".") + "s"
 
 
+def _blink_sexagesimal_deg(val, *, hours=False):
+    """Decimal degrees from a float or a sexagesimal string. Hours scale by 15."""
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        f = float(val)
+        if not np.isfinite(f):
+            return None
+        return f * 15.0 if hours else f
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        f = float(s)
+        return f * 15.0 if hours else f
+    except ValueError:
+        pass
+    neg = s.startswith("-")
+    parts = [p for p in s.replace(":", " ").split() if p]
+    try:
+        nums = [abs(float(p)) for p in parts]
+    except ValueError:
+        return None
+    if not nums:
+        return None
+    deg = nums[0]
+    if len(nums) > 1:
+        deg += nums[1] / 60.0
+    if len(nums) > 2:
+        deg += nums[2] / 3600.0
+    if hours:
+        deg *= 15.0
+    return -deg if neg else deg
+
+
+def _blink_pointing_deg(hdr):
+    """(ra, dec) in degrees from WCS, else from RA/DEC. Missing → (None, None)."""
+    ra = _blink_key_float(hdr, "CRVAL1")
+    dec = _blink_key_float(hdr, "CRVAL2")
+    if ra is not None and dec is not None and -90.0 <= dec <= 90.0:
+        return ra % 360.0, dec
+    ra = None
+    for key in ("RA", "OBJCTRA"):
+        raw = _blink_hdr_get(hdr, key)
+        if raw is None:
+            continue
+        if isinstance(raw, str) and any(c in raw for c in ": "):
+            ra = _blink_sexagesimal_deg(raw, hours=True)
+        else:
+            f = _blink_key_float(hdr, key)
+            if f is None:
+                continue
+            ra = f * 15.0 if abs(f) <= 24.0 else f
+        if ra is not None:
+            break
+    dec = None
+    for key in ("DEC", "OBJCTDEC"):
+        raw = _blink_hdr_get(hdr, key)
+        if raw is None:
+            continue
+        if isinstance(raw, str) and any(c in raw for c in ": "):
+            dec = _blink_sexagesimal_deg(raw, hours=False)
+        else:
+            dec = _blink_key_float(hdr, key)
+        if dec is not None:
+            break
+    if ra is None or dec is None or not (-90.0 <= dec <= 90.0):
+        return None, None
+    return ra % 360.0, dec
+
+
+def _blink_field_deg(hdr):
+    """Field width in degrees from pixel scale and NAXIS1, or None."""
+    width = _blink_key_float(hdr, "NAXIS1")
+    if width is None or width <= 0:
+        return None
+    for key in ("SECPIX", "PIXSCALE", "SCALE"):
+        scale = _blink_key_float(hdr, key)
+        if scale is not None and scale > 0:
+            return scale * width / 3600.0
+    cdelt = _blink_key_float(hdr, "CDELT1")
+    if cdelt is not None and cdelt != 0:
+        return abs(cdelt) * width
+    pix = _blink_key_float(hdr, "XPIXSZ")
+    if pix is None:
+        pix = _blink_key_float(hdr, "PIXSIZE")
+    focal = _blink_key_float(hdr, "FOCALLEN")
+    if pix is not None and focal is not None and pix > 0 and focal > 0:
+        return (pix / focal * 206.265) * width / 3600.0
+    return None
+
+
+def _blink_bin_and_size(hdr):
+    """(binning or None, (NAXIS1, NAXIS2) or None) for pre-flag grouping."""
+    binning = _blink_key_float(hdr, "XBINNING")
+    if binning is None:
+        binning = _blink_key_float(hdr, "XBIN")
+    bin_v = int(binning) if binning is not None and binning > 0 else None
+    w = _blink_key_float(hdr, "NAXIS1")
+    h = _blink_key_float(hdr, "NAXIS2")
+    size = (int(w), int(h)) if w and h and w > 0 and h > 0 else None
+    return bin_v, size
+
+
 # ⬇️ your SASv2 classes — paste them unchanged (Qt6 compatible already)
 class MetricsPanel(QWidget):
     """2×2 grid with clickable dots and draggable thresholds."""
@@ -1878,8 +1982,8 @@ class _BlinkSortItem(QTreeWidgetItem):
         if b == "":
             return True
 
-        # Filename (0) and the Sat flag (1) sort naturally as text.
-        if col in (0, 1):
+        # Filename (0), the Sat flag (1) and the Quality reason (9) sort as text.
+        if col in (0, 1, 9):
             return self._natkey(a) < self._natkey(b)
 
         # Metric columns (2..8) parse as float; fall back to text
@@ -2730,8 +2834,7 @@ class BlinkTab(QWidget):
         left_layout.addLayout(filter_row)
         # Tree view for file names
         self.fileTree = QTreeWidget(self)
-        self.fileTree.setColumnCount(9)
-        self.fileTree.setColumnCount(9)
+        self.fileTree.setColumnCount(10)
         self.fileTree.setHeaderLabels([
             self.tr("Image Files"),
             self.tr("Sat"),
@@ -2742,6 +2845,7 @@ class BlinkTab(QWidget):
             self.tr("Score"),
             self.tr("Temp"),
             self.tr("BG/s"),
+            self.tr("Quality"),
         ])
 
         for c in (1, 2, 3, 4, 5, 6, 7, 8):
@@ -2756,6 +2860,7 @@ class BlinkTab(QWidget):
         self.fileTree.setColumnWidth(6, 60)   # Score (Weighted Score)
         self.fileTree.setColumnWidth(7, 50)   # Temp (°C from header)
         self.fileTree.setColumnWidth(8, 65)   # BG/s (ADU/s, OFFSET-corrected)
+        self.fileTree.setColumnWidth(9, 280)  # Quality reason
         self.fileTree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)  # Allow multiple selections
         #self.fileTree.itemClicked.connect(self.on_item_clicked)
         self.fileTree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -2793,6 +2898,14 @@ class BlinkTab(QWidget):
         hdr.sortIndicatorChanged.connect(self._on_tree_sort_changed)
 
         left_layout.addWidget(self.fileTree)
+
+        self.preflagButton = QPushButton(self.tr("Pre-flag quality"), self)
+        self.preflagButton.setToolTip(self.tr(
+            "Flag frames that disagree with the others of the same target, filter and exposure.\n"
+            "The Quality column says why. Clear Flags removes the marks."
+        ))
+        self.preflagButton.clicked.connect(self._preflag_quality)
+        left_layout.addWidget(self.preflagButton)
 
         # "Clear Flags" Button
         self.clearFlagsButton = QPushButton(self.tr('Clear Flags'), self)
@@ -3237,6 +3350,8 @@ class BlinkTab(QWidget):
             state = s.value("blink/tree_header_state_v2", None)
             if state is not None:
                 hdr.restoreState(state)
+            if self.fileTree.columnWidth(9) < 40:
+                self.fileTree.setColumnWidth(9, 280)
         except Exception:
             pass
 
@@ -3784,11 +3899,110 @@ class BlinkTab(QWidget):
         item.setData(0, Qt.ItemDataRole.UserRole, full_path)
 
 
+    def _preflag_quality(self):
+        """Flag frames that disagree with their target, filter and exposure."""
+        if not self.loaded_images:
+            self.loading_label.setText(self.tr("No images to pre-flag."))
+            return
+        panel = None
+        if self.metrics_window is not None:
+            panel = getattr(self.metrics_window, "metrics_panel", None)
+        if panel is None or getattr(panel, "metrics_data", None) is None:
+            self.show_metrics()
+            panel = self.metrics_window.metrics_panel if self.metrics_window else None
+        metrics = getattr(panel, "metrics_data", None) if panel is not None else None
+        if not metrics:
+            self.loading_label.setText(self.tr("Quality metrics are not available."))
+            return
+
+        from setiastro.saspro.stacking_suite import (
+            _object_name_from_header,
+            format_quality_reason,
+            quality_flag_reasons,
+        )
+
+        fwhm, ecc, bg, stars = metrics[0], metrics[1], metrics[2], metrics[3]
+
+        for entry in self.loaded_images:
+            if entry.get("quality_reason") or entry.get("quality_is_verdict"):
+                entry["flagged"] = False
+            entry["quality_reason"] = ""
+            entry["quality_is_verdict"] = False
+
+        def _num(arr, i):
+            try:
+                v = float(arr[i])
+            except Exception:
+                return float("nan")
+            return v if np.isfinite(v) else float("nan")
+
+        samples = []
+        for i, entry in enumerate(self.loaded_images):
+            hdr = entry.get("header") or {}
+            star_n = _num(stars, i)
+            ra, dec = _blink_pointing_deg(hdr)
+            bin_v, size = _blink_bin_and_size(hdr)
+            samples.append({
+                "ok": np.isfinite(star_n) and np.isfinite(_num(bg, i)),
+                "sky": _num(bg, i),
+                "stars": 0 if not np.isfinite(star_n) else int(round(star_n)),
+                "ecc": _num(ecc, i),
+                "fwhm": _num(fwhm, i),
+                "obj": _object_name_from_header(hdr),
+                "filt": str(_blink_hdr_get(hdr, "FILTER") or ""),
+                "exposure": _blink_exposure_label(hdr),
+                "bin": bin_v,
+                "size": size,
+                "ra": ra,
+                "dec": dec,
+                "field": _blink_field_deg(hdr),
+            })
+
+        n_flag = 0
+        for i, result in enumerate(quality_flag_reasons(samples)):
+            verdict, note = format_quality_reason(result, self.tr)
+            self.loaded_images[i]["quality_reason"] = verdict or note
+            self.loaded_images[i]["quality_is_verdict"] = bool(verdict)
+            if verdict:
+                self.loaded_images[i]["flagged"] = True
+                n_flag += 1
+
+        self._paint_quality_column()
+        if self.metrics_window is not None:
+            panel.flags = [e.get("flagged", False) for e in self.loaded_images]
+            panel._refresh_scatter_colors()
+            self.metrics_window._update_status()
+        self.loading_label.setText(self.tr(
+            "Pre-flagged {0} of {1}. The Quality column says why."
+        ).format(n_flag, len(self.loaded_images)))
+
+    def _paint_quality_column(self):
+        red_name = QBrush(Qt.GlobalColor.red)
+        red_reason = QBrush(QColor("#ff6b6b"))
+        normal = QBrush(self.fileTree.palette().color(QPalette.ColorRole.WindowText))
+        for i, entry in enumerate(self.loaded_images):
+            item = self.get_tree_item_for_index(i)
+            if item is None:
+                continue
+            text = entry.get("quality_reason") or ""
+            item.setText(9, text)
+            item.setToolTip(9, text)
+            item.setForeground(9, red_reason if entry.get("quality_is_verdict") else normal)
+            base = os.path.basename(self.image_paths[i]) if i < len(self.image_paths) else item.text(0).lstrip("⚠️ ")
+            if entry.get("flagged"):
+                item.setText(0, f"⚠️ {base}")
+                item.setForeground(0, red_name)
+            else:
+                item.setText(0, base)
+                item.setForeground(0, normal)
+
     def clearFlags(self):
         """Clear all flagged states, update tree icons & metrics."""
         # 1) Reset internal flag state
         for entry in self.loaded_images:
             entry['flagged'] = False
+            entry['quality_reason'] = ""
+            entry['quality_is_verdict'] = False
 
         # 2) Update tree widget: strip any "⚠️ " prefix and reset color
         normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
@@ -3796,6 +4010,9 @@ class BlinkTab(QWidget):
             name = item.text(0).lstrip("⚠️ ")
             item.setText(0, name)
             item.setForeground(0, QBrush(normal))
+            item.setText(9, "")
+            item.setToolTip(9, "")
+            item.setForeground(9, QBrush(normal))
 
         # 3) If metrics window is open, refresh its dots & status
         if self.metrics_window:
@@ -4906,6 +5123,10 @@ class BlinkTab(QWidget):
                         self.loaded_images[i]['flagged'] = True
                         break
 
+        for entry in self.loaded_images:
+            if entry.get("quality_is_verdict"):
+                entry["flagged"] = True
+
         # Update tree visuals for all frames
         RED = Qt.GlobalColor.red
         normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
@@ -4986,6 +5207,7 @@ class BlinkTab(QWidget):
                 else:
                     item.setText(0, base)
                     item.setForeground(0, QBrush(normal))
+            self._paint_quality_column()
 
         # After re-enabling sort, metric columns may need the current
         # sort indicator applied against freshly-rebuilt rows.
