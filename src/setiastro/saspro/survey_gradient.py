@@ -3419,6 +3419,25 @@ class SurveyGradientDialog(QDialog):
             "Signal protection for the refinement, in MAD-sigma units.\n"
             "LOWER protects more.")
 
+        self.chk_ms_residual = QCheckBox(
+            self.tr("Include coarsest residual"))
+        self.chk_ms_residual.setChecked(False)
+        self.chk_ms_residual.setToolTip(
+            "Fold everything COARSER than the band above into the\n"
+            "multiplicative correction as well, instead of stopping at\n"
+            "the top of the band.\n\n"
+            "Leave OFF unless a broad multiplicative falloff survives\n"
+            "the additive stage — vignetting the flat missed, say. The\n"
+            "reason to be more careful with it here than in ADBE: the\n"
+            "smooth background has ALREADY been handled additively, and\n"
+            "handled against a reference that says which large-scale\n"
+            "structure is real sky. The coarsest residual is exactly\n"
+            "where that structure lives, so folding it in can divide out\n"
+            "nebulosity the survey just finished vouching for, on top of\n"
+            "double-correcting the gradient.\n\n"
+            "Costs time too: the full pyramid has to be built rather\n"
+            "than stopping at the top of the band."),
+
         self.chk_ms_stars = QCheckBox(self.tr("Remove stars first (DarkStar)"))
         self.chk_ms_stars.setChecked(True)
         self.chk_ms_stars.setToolTip(
@@ -3447,6 +3466,7 @@ class SurveyGradientDialog(QDialog):
         _band.addWidget(self.sp_ms_hi); _band.addStretch(1)
         _bandw = QWidget(); _bandw.setLayout(_band)
         _msf.addRow(self.tr("Scales:"), _bandw)
+        _msf.addRow(self.chk_ms_residual)
         _msf.addRow(self.tr("Refine strength:"), self.sp_ms_strength)
         _msf.addRow(self.tr("Protect k (MAD):"), self.sp_ms_protect)
         _msf.addRow(self.chk_ms_stars)
@@ -3634,6 +3654,31 @@ class SurveyGradientDialog(QDialog):
             self._bg_combos.append(c)
             return c
 
+        # ADBE can write its background out as its own document, and
+        # the same question has more answers here: the gradient, both
+        # modelled backgrounds, the reference, the point map. They are
+        # all computed already, so the button is cheap -- the work is
+        # saying honestly what each one IS, which _push_view_document
+        # does per view.
+        #
+        # ONE button, pushing whichever view is on screen, and it lives
+        # in the action column with the other verbs. Two other homes
+        # were built and measured first:
+        #
+        #   per-page buttons -- a 200 px button in tab 0's toolbar, and
+        #     that toolbar is what sets this dialog's minimum width:
+        #     1704 -> 1910 px, which stops it fitting a 1920 screen.
+        #   a tab-bar corner widget -- free in minimum width, but it
+        #     spends TAB-BAR width, which is already tight: the six
+        #     tabs want 1236 px and have 1212 at a 1700-wide dialog,
+        #     so the corner put Sample points behind a scroll arrow.
+        #
+        # The column has the room, and its label says what it acts on
+        # since it is no longer sitting on the thing it acts on.
+        self.btn_push = QPushButton(
+            self.tr("Current view → new document"))
+        self.btn_push.clicked.connect(self._push_current_view)
+
         self.chk_before = QCheckBox(self.tr("Before"))
         self.chk_before.setToolTip(
             "Show the image as it was when this correction was modelled,\n"
@@ -3734,6 +3779,11 @@ class SurveyGradientDialog(QDialog):
                            "Target background", "Reference background",
                            "Sample points"]
 
+        # The tooltip is written per view, so it can only be built once
+        # _TAB_MODES exists.
+        self.tabs.currentChanged.connect(self._sync_push_button)
+        self._sync_push_button()
+
         self.btn_fetch = QPushButton(self.tr("1. Fetch Reference"))
         self.btn_fetch.setToolTip(
             "Pull the reference for this field and show it, WITHOUT doing\n"
@@ -3792,6 +3842,7 @@ class SurveyGradientDialog(QDialog):
         rowd = QHBoxLayout()
         rowd.addWidget(self.btn_diag)
         rowd.addStretch(1)
+        rowd.addWidget(self.btn_push)
 
         left = QVBoxLayout()
         left.addWidget(gb)
@@ -3961,6 +4012,8 @@ class SurveyGradientDialog(QDialog):
             bool(s.value("srgc/ms_stars", True, type=bool)))
         self.chk_ms_survey_protect.setChecked(
             bool(s.value("srgc/ms_survey_protect", True, type=bool)))
+        self.chk_ms_residual.setChecked(
+            bool(s.value("srgc/ms_residual", False, type=bool)))
         self._ms_toggled(self.chk_ms.isChecked())
         _sm = str(s.value("srgc/stretch_mode", "normal"))
         _si = self.cmb_stretch.findData(_sm)
@@ -3980,7 +4033,7 @@ class SurveyGradientDialog(QDialog):
                    self.sp_ms_strength, self.sp_ms_protect):
             _w.valueChanged.connect(self._save_settings)
         for _c in (self.chk_rbf, self.chk_ms, self.chk_ms_stars,
-                   self.chk_ms_survey_protect):
+                   self.chk_ms_survey_protect, self.chk_ms_residual):
             _c.toggled.connect(self._save_settings)
 
     def _save_settings(self, *_args):
@@ -3998,6 +4051,7 @@ class SurveyGradientDialog(QDialog):
         s.setValue("srgc/ms_stars", self.chk_ms_stars.isChecked())
         s.setValue("srgc/ms_survey_protect",
                    self.chk_ms_survey_protect.isChecked())
+        s.setValue("srgc/ms_residual", self.chk_ms_residual.isChecked())
         s.setValue("srgc/stretch_mode",
                    str(self.cmb_stretch.currentData() or "normal"))
         s.setValue("srgc/bg_stretch_mode",
@@ -4333,12 +4387,22 @@ class SurveyGradientDialog(QDialog):
             _log(f"multiscale: {len(self.pane_target.polygons)} drawn "
                  f"zone(s) added to the protection")
 
+        # Off by default, and worth leaving off: the additive stage has
+        # already removed the smooth background, using a reference that
+        # says which large-scale structure is real. On it folds the
+        # coarsest residual into the multiplicative correction as well.
+        residual = bool(self.chk_ms_residual.isChecked())
+        if residual:
+            _log("multiscale: coarsest residual INCLUDED — the smooth "
+                 "background is being corrected a second time, "
+                 "multiplicatively")
         self._set_status("Refinement: dividing out the defect band…")
         out = multiscale_gradient_correct(
             base,
             estimate_from=estimate_from,
             mask_from=mask_from,
             band_lo=lo, band_hi=hi,
+            include_residual=residual,
             strength=float(self.sp_ms_strength.value()),
             protect_k=float(self.sp_ms_protect.value()),
             protect_blend_mask=protect,
@@ -4358,7 +4422,9 @@ class SurveyGradientDialog(QDialog):
         _ph, _pw = _work_shape(out.shape[0], out.shape[1], _PREVIEW_LONG_SIDE)
         self._result["preview_corrected"] = (
             out if (_ph, _pw) == out.shape[:2] else _resize_to(out, (_ph, _pw)))
-        _log("multiscale refinement applied")
+        _log(f"multiscale refinement applied (scales {lo}-{hi}, "
+             f"residual={residual}, strength="
+             f"{float(self.sp_ms_strength.value()):.2f})")
 
     @staticmethod
     def _describe_reference(ref: np.ndarray, where: str,
@@ -5367,6 +5433,271 @@ class SurveyGradientDialog(QDialog):
                 f"dust-mote refinement.")
 
     # ---- apply ----------------------------------------------------------
+    def _sync_push_button(self, *_):
+        """Point the corner button's tooltip at the view on screen."""
+        btn = getattr(self, "btn_push", None)
+        if btn is None:
+            return
+        idx = int(self.tabs.currentIndex())
+        modes = getattr(self, "_TAB_MODES", ())
+        mode = modes[idx] if 0 <= idx < len(modes) else ""
+        name = self.tabs.tabText(idx)
+        tip = _PUSH_TIPS.get(mode, "")
+        btn.setToolTip(
+            f"Acts on the tab you are on, which is '{name}'.\n\n{tip}"
+            if tip else f"Push '{name}' out as its own document.")
+
+    def _push_current_view(self):
+        """The corner button: push whichever view is on screen."""
+        idx = int(self.tabs.currentIndex())
+        modes = getattr(self, "_TAB_MODES", ())
+        if not (0 <= idx < len(modes)):
+            return None
+        return self._push_view_document(modes[idx])
+
+    def _push_view_document(self, mode: str):
+        """
+        Hand one view to the main window as its own document.
+
+        Each view is a different KIND of thing -- full-resolution
+        pixels, a work-grid surface in the target's units, a survey
+        frame in survey counts, a display render with dots drawn on
+        it -- so each one says what it is in its own status line and
+        in the document metadata. Three rules hold across all of
+        them:
+
+          * Surfaces go out on the TARGET's pixel grid, upscaled by
+            the same _upscale_bg the model used, so they line up with
+            your image and can honestly carry its WCS.
+          * Anything median-subtracted gets your median added back,
+            so it is positive and lands where your data lives.
+            Autostretch then shows it, and nothing that clips at zero
+            can eat half of it.
+          * Only a full-resolution push inherits the header. A
+            work-grid push is a different size, and a header whose
+            NAXIS disagrees with the array is a trap for whatever
+            saves it later.
+        """
+        import os
+        if self._result is None:
+            QMessageBox.information(
+                self, "Nothing to push",
+                "Run '1. Fetch Reference' or '2. Model && Correct' "
+                "first.")
+            return
+        if self._result.get("preview_only") and mode != "Reference":
+            QMessageBox.information(
+                self, "Nothing to push",
+                "Only the reference has been fetched so far, so there "
+                "is no gradient and no modelled background yet. Run "
+                "'2. Model && Correct' first.")
+            return
+
+        mw = self._main
+        dm = getattr(mw, "docman", None) or getattr(mw, "doc_manager", None)
+        if dm is None or not hasattr(dm, "open_array"):
+            QMessageBox.warning(
+                self, "No document manager",
+                "Could not reach the document manager from here, so "
+                "there is nowhere to put the new document.")
+            return
+
+        # The snapshot, never the live document -- same reason Apply
+        # uses it: after Apply the document already carries the
+        # correction, and pushing a view built from it would be a
+        # second subtraction.
+        img = self._result.get("source")
+        if img is None:
+            img = self._source_float()
+        if img is None:
+            return
+        img = np.asarray(img, dtype=np.float32)
+        H, W = img.shape[:2]
+        mono = (img.ndim == 2)
+        med = float(np.nanmedian(img))
+
+        def _full(a):
+            """A work-grid surface, put on the target's pixel grid."""
+            a = np.asarray(a, dtype=np.float32)
+            if a.shape[:2] != (H, W):
+                a = np.asarray(_upscale_bg(a, (H, W)), dtype=np.float32)
+            if mono and a.ndim == 3:
+                a = a[..., 0]
+            return np.ascontiguousarray(a, dtype=np.float32)
+
+        arr = None
+        tag = ""
+        what = ""
+        full_grid = True
+
+        if mode == "Corrected":
+            if self.chk_before.isChecked():
+                arr = img.copy()
+                tag = "Before"
+                what = ("the uncorrected snapshot this model was built "
+                        "from, at full resolution")
+            else:
+                # Exactly what Apply would commit, refinement included
+                # when it is current for this strength.
+                _cf = self._result.get("corrected_full")
+                if (_cf is not None
+                        and self._result.get("ms_strength") is not None
+                        and int(self._result["ms_strength"])
+                        == int(self.sp_strength.value())):
+                    arr = np.asarray(_cf, dtype=np.float32)
+                else:
+                    arr = apply_survey_gradient(
+                        img, self._result["gradient"],
+                        self.sp_strength.value() / 100.0)
+                tag = "Corrected"
+                what = (f"the corrected image at "
+                        f"{int(self.sp_strength.value())}% strength "
+                        f"— what Apply would commit, as a new document "
+                        f"instead of an edit")
+
+        elif mode == "Gradient removed":
+            arr = _full(np.asarray(self._result["gradient"],
+                                   dtype=np.float32) + med)
+            tag = "Gradient"
+            what = (f"the surface being subtracted, in your image's "
+                    f"units, with your median ({med:.5g}) added back "
+                    f"— subtract it and restore the median to redo "
+                    f"the correction by hand")
+
+        elif mode == "Target background":
+            arr = _full(self._result["bg_target"])
+            tag = "Background"
+            what = ("your modelled background, already in your image's "
+                    "units and at its own level, so it is left exactly "
+                    "as the model made it")
+
+        elif mode == "Reference background":
+            # b*B_r, for the same reason the linear view shows it:
+            # bg_ref is in survey counts, which mean nothing next to a
+            # 0-1 frame, while the term the fit subtracts is in your
+            # units by construction.
+            _br, _fb = self._ref_bg_in_target_units(
+                np.asarray(self._result["bg_ref"], dtype=np.float32))
+            _br = np.asarray(_br, dtype=np.float32)
+            _bm = float(np.nanmedian(_br))
+            arr = _full(_br - _bm + med)
+            tag = "RefBackground"
+            what = (f"b·B_r{_fb} — what the reference contributes "
+                    f"in YOUR units, median moved to yours ({med:.5g}) "
+                    f"so it blinks against the target background")
+
+        elif mode == "Reference":
+            _ref = np.asarray(self._result["reference"], dtype=np.float32)
+            _ref = np.nan_to_num(_ref, nan=float(np.nanmedian(_ref)))
+            _lo = float(np.nanmin(_ref))
+            _hi = float(np.nanmax(_ref))
+            if _lo < 0.0 or _hi > 1.0:
+                # A DSS2 plate arrives as 1130..20528 counts. Pushed
+                # raw, it would be the one document in SASpro that
+                # does not live in 0-1, and the first tool that clips
+                # would flatten it to white. The fit absorbs any
+                # linear scale anyway, so the range is a label, not
+                # data -- rescale and record it.
+                _ref = ((_ref - _lo)
+                        / max(_hi - _lo, 1e-12)).astype(np.float32)
+                _sc = f", rescaled from its own {_lo:.6g}..{_hi:.6g}"
+            else:
+                _sc = ", in the units it arrived in (already 0-1)"
+            arr = _ref
+            full_grid = False
+            tag = "Reference"
+            what = (f"the fetched reference on the work grid "
+                    f"({arr.shape[1]}×{arr.shape[0]}, not your "
+                    f"resolution){_sc}")
+
+        elif mode == "Sample points":
+            # The only view whose content exists solely as a render:
+            # the dots and the veto tint are painted into the 8-bit
+            # buffer, so that buffer IS the thing being asked for.
+            # Make sure it is the one on screen first.
+            try:
+                _i = self._TAB_MODES.index(mode)
+            except ValueError:
+                _i = -1
+            if _i >= 0 and int(self.tabs.currentIndex()) != _i:
+                self.tabs.setCurrentIndex(_i)
+                self._redraw()
+            _buf = getattr(self, "_preview_buf", None)
+            if _buf is None:
+                QMessageBox.information(
+                    self, "Nothing to push",
+                    "The point map has not been drawn yet.")
+                return
+            arr = (np.asarray(_buf, dtype=np.float32) / 255.0)
+            full_grid = False
+            tag = "Points"
+            what = ("the point map as drawn — green = used, red tint "
+                    "= vetoed by the survey. A DISPLAY render promoted "
+                    "from 8-bit, so it is a picture for the record, "
+                    "not data to measure")
+
+        if arr is None:
+            return
+        arr = np.nan_to_num(np.asarray(arr, dtype=np.float32),
+                            nan=0.0, posinf=0.0, neginf=0.0)
+        arr = np.ascontiguousarray(arr, dtype=np.float32)
+
+        try:
+            base = os.path.splitext(str(self.doc.display_name()))[0]
+        except Exception:
+            base = "image"
+        title = f"{base}_SRGC_{tag}"
+        meta = {
+            "bit_depth": "32-bit floating point",
+            "is_mono": (arr.ndim == 2),
+            "source": f"SRGC {tag} — {what}",
+            "survey_gradient": {
+                "view": mode,
+                "survey": self.cmb_survey.currentText(),
+                "strength": self.sp_strength.value() / 100.0,
+                "coverage": float(self._result.get("coverage") or 0.0),
+                "coeffs": [[float(_a), float(_b)] for _a, _b
+                           in (self._result.get("coeffs") or [])],
+                "grid": "full resolution" if full_grid else "work grid",
+            },
+        }
+        if full_grid:
+            # Shares the target's pixel grid, so it can carry its WCS.
+            # Copied, not referenced: open_array keeps the object it is
+            # given, and a plate solve on the pushed document would
+            # otherwise write its cards straight into the header of the
+            # document it came from.
+            _h = (getattr(self.doc, "metadata", None) or {}).get(
+                "original_header")
+            if _h is not None:
+                try:
+                    _h = _h.copy()
+                except Exception:
+                    pass
+                meta["original_header"] = _h
+
+        try:
+            _newdoc = dm.open_array(arr, metadata=meta, title=title)
+        except Exception as e:
+            QMessageBox.critical(self, "Push failed", str(e))
+            return
+        # open_array registers the document, which the MDI answers by
+        # spawning a subwindow; this raises and focuses the one that
+        # already exists rather than making a second.
+        if hasattr(mw, "_spawn_subwindow_for"):
+            try:
+                mw._spawn_subwindow_for(_newdoc)
+            except Exception:
+                pass
+        if hasattr(mw, "_log"):
+            try:
+                mw._log(f"[SRGC] pushed '{title}' {arr.shape} — {what}")
+            except Exception:
+                pass
+        _log(f"pushed '{title}' shape={arr.shape} — {what}")
+        self._set_status(f"Pushed '{title}' — {what}.")
+        return _newdoc
+
     def _do_apply(self):
         if self._result is None:
             return
@@ -5419,6 +5750,51 @@ class SurveyGradientDialog(QDialog):
                 pass
         self._set_status("Applied.")
 
+
+# Each push is a different kind of object and the tooltip is where that
+# gets said before the click, not after. Keyed by _TAB_MODES.
+_PUSH_TIPS = {
+    "Corrected": (
+        "Push the corrected image out as a NEW document, at full\n"
+        "resolution and the current strength — the same pixels Apply\n"
+        "would commit, but leaving this document untouched.\n\n"
+        "With Before ticked you get the uncorrected snapshot instead,\n"
+        "so you can keep both and blink them."),
+    "Reference": (
+        "Push the fetched reference out as a new document.\n\n"
+        "It is on the WORK grid, not your resolution, and it arrives\n"
+        "in the survey's own units — so if those fall outside 0-1 it\n"
+        "is rescaled by its own range and the range is recorded in\n"
+        "the metadata. The fit absorbs any linear scale, so nothing\n"
+        "the correction used is lost."),
+    "Gradient removed": (
+        "Push the subtracted surface out as a new document, at full\n"
+        "resolution and in your image's units.\n\n"
+        "Your median is added back, because the gradient is\n"
+        "median-subtracted and half of a zero-centred surface would\n"
+        "sit below black. Subtract this document and restore the\n"
+        "median and you have redone the correction by hand."),
+    "Target background": (
+        "Push your modelled background out as a new document, at full\n"
+        "resolution.\n\n"
+        "This is the one surface that needs no adjusting: it is\n"
+        "already in your units and at your sky level, so it goes out\n"
+        "exactly as the model made it. ADBE's background document is\n"
+        "the same idea."),
+    "Reference background": (
+        "Push the reference's contribution out as a new document, at\n"
+        "full resolution.\n\n"
+        "What you get is b·B_r — the term the fit subtracts — not\n"
+        "the raw survey background, because that is in survey counts\n"
+        "and means nothing beside a 0-1 frame. Its median is moved to\n"
+        "yours so it can be blinked against the target background."),
+    "Sample points": (
+        "Push the point map out as a new document.\n\n"
+        "This one is a PICTURE, not data: the green dots and the red\n"
+        "veto tint are painted into the display render, so what you\n"
+        "get is that render promoted to float at work-grid size. Good\n"
+        "for a record of what was sampled; not something to measure."),
+}
 
 _BG_LINEAR_GAIN = 0.5
 

@@ -9,6 +9,8 @@
   h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
        border-bottom:1px solid #333; padding-bottom:3px; }
   h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#8fd7c6; font-size:13px; margin:14px 0 2px 0;
+       font-weight:600; }
   p, li, td, th { color:#dcdcdc; }
   b, strong { color:#ffffff; }
   code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
@@ -199,9 +201,51 @@ figure (&sect;3.9) tells you when it has happened.</div>
       never explained.</td></tr>
 </table>
 
+<h4>Remove dust motes / reflections (optional)</h4>
+<p>Everything above is <b>additive</b> &mdash; sky added on top of your signal.
+Dust motes, internal reflections and vignetting are <b>multiplicative</b>: they
+scale what was already there, and no additive fit can take them out. Ticking
+this runs ADBE&rsquo;s multiscale stage afterwards, as a second pass, dividing
+out a band of wavelet scales. The core is ADBE&rsquo;s verbatim; what SRGC adds
+is the <i>protection</i> &mdash; see the last row.</p>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Scales (1&ndash;12)</td><td>The wavelet band the defect is estimated
+      from. 6&ndash;8 is where dust motes and reflections live: coarse enough to
+      miss stars and noise, fine enough to keep their edges. Lower catches
+      smaller, sharper defects; higher drifts toward the smooth gradient the
+      additive stage has already dealt with.</td></tr>
+  <tr><td>Include coarsest residual</td><td>Folds everything <i>coarser</i> than
+      that band into the correction as well. <b>Leave it off</b> unless a broad
+      multiplicative falloff survives the additive stage &mdash; vignetting the
+      flat missed, typically. Be more careful with it here than in ADBE: the
+      smooth background has already been removed additively, and removed against
+      a reference that says which large-scale structure is real sky. The coarsest
+      residual is exactly where that structure lives, so folding it in can divide
+      out nebulosity the survey just finished vouching for &mdash; on top of
+      correcting the gradient twice. It also costs time: the full pyramid has to
+      be built rather than stopping at the top of the band.</td></tr>
+  <tr><td>Refine strength</td><td>How much of the multiplicative correction to
+      apply. 1.00 applies it fully; ease it down if the correction flattens real
+      large-scale structure.</td></tr>
+  <tr><td>Protect k (MAD)</td><td>As above, but for this stage: what counts as
+      signal that must not be divided out. <b>Lower protects more.</b></td></tr>
+  <tr><td>Remove stars first (DarkStar)</td><td>Estimates the defect band on a
+      starless copy while the protection mask is still built on the
+      star-inclusive image. That pairing is what makes the band clean; leave it
+      on unless DarkStar is unavailable.</td></tr>
+  <tr><td>Protect real structure using the survey</td><td>The one thing SRGC
+      knows that ADBE cannot. ADBE builds its protection from the image itself,
+      so a bright extended blob looks the same whether it is a nebula or an
+      internal reflection; here the survey says which. Real structure is kept
+      from the untouched source, and anything sharp sitting on sky the survey
+      says is empty is treated as a defect. Hand-drawn exclusion zones protect
+      unconditionally, whether or not this is ticked.</td></tr>
+</table>
+
 <h3>2.4 Running it, and reading the views</h3>
-<p><b>Fetch &amp; Model</b> does the work; <b>Apply</b> commits it. The View
-dropdown is where the tool earns your trust:</p>
+<p><b>Fetch &amp; Model</b> does the work; <b>Apply</b> commits it. The six
+view tabs are where the tool earns your trust:</p>
 
 <table>
   <tr><th>View</th><th>What to look for</th></tr>
@@ -226,13 +270,13 @@ dropdown is where the tool earns your trust:</p>
       top of the tab &mdash; one setting shared by all three, since all three
       draw a surface rather than a picture:
       <ul>
-      <li><b>BG: min/max</b> &mdash; the default. The surface&rsquo;s own range
+      <li><b>Scale: min/max</b> &mdash; the default. The surface&rsquo;s own range
           is stretched to fill 0&ndash;1 and then tone-mapped, so a field
           varying by 0.1% fills the screen. This is the only way to see the
           <i>shape</i> of the gradient, and it makes a nearly-flat background
           look violent. <b>Trust the number in the status bar, not the
           picture.</b></li>
-      <li><b>BG: linear</b> &mdash; \( 0.5 + (B - \mathrm{med}\,B) / 2 \), per channel, with no tone
+      <li><b>Scale: linear</b> &mdash; \( 0.5 + (B - \mathrm{med}\,B) / 2 \), per channel, with no tone
           map. The median sits on mid-grey and the gradient keeps its true
           amplitude, so a 0.002 background is a barely-visible grey wash
           &mdash; which is what it is. The status bar reports what fraction
@@ -267,6 +311,75 @@ dropdown is where the tool earns your trust:</p>
 cutout and reports what each one returned. Use it when a fetch fails: it
 separates a dead host from a rejected request from a genuine footprint miss,
 which all look identical from the main error message.</p>
+
+<h3>2.5 Pushing a view out as its own document</h3>
+<p><b>Current view &#8594; new document</b>, in the button column beside
+<b>Run diagnostics</b>, hands whatever you are looking at to the main window as
+a new image document &mdash; the way ADBE can write its background out
+separately. It acts on the tab you are on, and the tooltip changes with the tab
+to say exactly what you will get. It changes nothing here: the correction is
+still only committed by <b>Apply</b>.</p>
+
+<p>Each view is a different <i>kind</i> of thing, so each one is handed over in
+the form that is actually usable, and the status bar says which:</p>
+
+<table>
+  <tr><th>Tab</th><th>What you get</th></tr>
+  <tr><td><b>Target image</b></td><td><code>_SRGC_Corrected</code> &mdash; the
+      corrected image at the current strength, full resolution, the same pixels
+      Apply would commit &mdash; except that this document is <i>new</i>, so the
+      original is left alone. With <b>Before</b> ticked you get
+      <code>_SRGC_Before</code> instead, the uncorrected snapshot the model was
+      built from, so you can keep both and blink them.</td></tr>
+  <tr><td><b>Survey reference</b></td><td><code>_SRGC_Reference</code> &mdash; the
+      fetched cutout, at <i>work</i> resolution rather than yours, because that
+      is the grid it was reprojected onto and upscaling it would invent detail
+      it never had. If its values fall outside 0&ndash;1 &mdash; a DSS2 plate
+      arrives as 1130&ndash;20528 counts &mdash; it is rescaled by its own range
+      and the range is recorded in the metadata, so it behaves like every other
+      document in SASpro. Nothing the correction used is lost: the fit absorbs
+      any linear scale (&sect;3.6).</td></tr>
+  <tr><td><b>Gradient removed</b></td><td><code>_SRGC_Gradient</code> &mdash; the
+      surface being subtracted, full resolution, in your image&rsquo;s units,
+      with <i>your median added back</i>. The gradient is median-subtracted, so
+      half of it sits below zero; shifted up to your sky level it is positive,
+      autostretch shows it, and nothing that clips at zero can eat half of it.
+      The amplitude is untouched &mdash; only a constant differs &mdash; so
+      subtract this document and restore the median and you have redone the
+      correction by hand.</td></tr>
+  <tr><td><b>Target background</b></td><td><code>_SRGC_Background</code> &mdash;
+      your modelled background, full resolution, exactly as the model made it.
+      The one surface that needs no adjusting: it is already in your units and
+      at your own sky level. This is the direct equivalent of ADBE&rsquo;s
+      background document.</td></tr>
+  <tr><td><b>Survey background</b></td><td><code>_SRGC_RefBackground</code>
+      &mdash; \( b\,B_r \), the term the fit subtracts, full
+      resolution. Not the raw survey background, for the same reason the linear
+      view does not show it: that is in survey counts and means nothing beside a
+      0&ndash;1 frame. Its median is moved to yours, so it blinks against
+      <code>_SRGC_Background</code> &mdash; what the survey contributes, beside
+      what you started with.</td></tr>
+  <tr><td><b>Sample points</b></td><td><code>_SRGC_Points</code> &mdash; the
+      point map as drawn, at work resolution. This one is a <b>picture, not
+      data</b>: the green dots and the red veto tint are painted into the display
+      render, so what you get is that render promoted to float. Good as a record
+      of what was sampled; not something to measure.</td></tr>
+</table>
+
+<p>The four full-resolution pushes sit on your pixel grid, so they inherit your
+image&rsquo;s header and its WCS and can be combined with it directly. The two
+work-grid pushes deliberately do <i>not</i> &mdash; a header whose
+<code>NAXIS</code> disagrees with the array it describes is a trap for whatever
+saves the file later. Every pushed document records which view it came from,
+the survey, the strength, the coverage and the fitted coefficients in its
+metadata.</p>
+
+<div class="tip"><b>The quickest sanity check in the tool.</b> Push
+<b>Gradient removed</b> and <b>Target background</b>, then look at them beside
+each other at the same stretch. The background is the whole sky surface; the
+gradient is only the part the survey could not explain. If those two look alike,
+the reference contributed nothing and you are doing ADBE with extra steps
+&mdash; which &sect;3.9 measures for you as the reference share.</div>
 
 <h2>3. Technical details</h2>
 <p class="tech-lead">What follows is the method rather than the interface. None
