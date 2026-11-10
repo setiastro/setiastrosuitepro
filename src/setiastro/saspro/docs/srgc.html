@@ -80,6 +80,16 @@ ADBE's result looked suspiciously flat.</div>
 <h2>2. Using the tool</h2>
 
 <h3>2.1 Before you start</h3>
+
+<p class="tip"><b>SRGC is for linear data.</b> It models your gradient as
+something <i>added</i> to the sky and subtracts it, which is only true while
+the data is still linear. Once an image has been stretched &mdash; and that
+could be any combination of autostretch, curves, hyperbolic tweaks, masked
+stretching, local contrast &mdash; the gradient has been bent by whatever
+transfer function you applied, and no additive model describes it any more.
+There is also no way for the tool to invert a stretch it did not perform. On
+stretched data, use ordinary ABE instead.</p>
+
 <p>The image must be <b>plate-solved</b>: the reference is fetched and aligned by
 sky coordinates, so without a WCS there is nothing to look up. If the image has
 no solution SRGC offers to run the plate solver for you. With no pointing in the
@@ -203,10 +213,40 @@ dropdown is where the tool earns your trust:</p>
       piece of sky and the right way up. If it reports <b>MONO</b>, every channel
       resolved to the same plane &mdash; a colour survey degraded because only
       one of its channels could be fetched.</td></tr>
-  <tr><td><b>Reference / Target background</b></td><td>The two modelled surfaces.
-      These are min&ndash;max stretched for display, so a field varying by 0.1%
-      fills the screen and looks like structure. <b>Trust the number in the
-      status bar, not the picture.</b></td></tr>
+  <tr><td><b>Reference / Target background</b></td><td>The two modelled surfaces,
+      each carrying its own display toggle at the top of the tab:
+      <ul>
+      <li><b>BG: min/max</b> &mdash; the default. The surface&rsquo;s own range
+          is stretched to fill 0&ndash;1 and then tone-mapped, so a field
+          varying by 0.1% fills the screen. This is the only way to see the
+          <i>shape</i> of the gradient, and it makes a nearly-flat background
+          look violent. <b>Trust the number in the status bar, not the
+          picture.</b></li>
+      <li><b>BG: linear</b> &mdash; \( 0.5 + (B - \mathrm{med}\,B) / 2 \), per channel, with no tone
+          map. The median sits on mid-grey and the gradient keeps its true
+          amplitude, so a 0.002 background is a barely-visible grey wash
+          &mdash; which is what it is. The status bar reports what fraction
+          of the tonal range it fills. Full black to full white here would
+          mean the background spans 1.0, i.e. something has gone wrong.
+          Per channel because an OSC background carries a different offset
+          in each, and a single global median would push R and B off grey
+          and read as a colour cast that is not in the gradient.
+          <p class="new">On the <b>Survey background</b> tab this mode shows
+          \( b\,B_r \) rather than \( B_r \) itself.
+          The reference is in the survey&rsquo;s own units &mdash; a DSS2 plate
+          arrives as 1130&ndash;20528 counts &mdash; so a true-scale mapping of
+          those numbers against a 0&ndash;1 frame is meaningless and rails every
+          pixel (a 2409-count span was reported as filling 120480% of the tonal
+          range). \( b\,B_r \) is the term the fit actually
+          subtracts, and it is in <i>your</i> units by construction, so the two
+          background tabs land on the same mapping and can be read against each
+          other: what the survey contributes, beside what you started with.
+          \( b \) keeps its sign, so an anti-correlated reference shows
+          inverted &mdash; which is how it is being subtracted. The status bar
+          still reports the raw span in survey counts as well.</p></li>
+      </ul>
+      Use min/max to judge the shape, linear to judge whether the shape is
+      worth correcting at all.</td></tr>
   <tr><td><b>Sample points</b></td><td>Green dots are the points used; red tint
       is vetoed by the survey. A point sitting on anything bright <i>in this
       view</i> is sampling structure. Your own gradient is deliberately invisible
@@ -319,18 +359,124 @@ channel still solves its own \((a, b)\) &mdash; the structure is assumed to have
 the same shape in every channel and a different amplitude, which is an
 approximation, but a far better one than no reference at all.</p>
 
-<h3>3.6 Is the reference actually doing anything?</h3>
-<p>The status bar reports what fraction of the gradient's amplitude the reference
-explains:</p>
+<h3>3.6 Units, stretches and why nothing needs rescaling</h3>
+<p>A survey cutout and your frame are in completely unrelated units &mdash; a
+DSS2 plate arrives as roughly 1100&ndash;20000 counts against your 0&ndash;1
+floats &mdash; which raises the obvious worry that the two sides of the fit are
+not comparable. They are, and the fit form is the reason. Because it solves
+\( B_t \approx a + b\,B_r \), any linear rescaling of
+either side is absorbed exactly:</p>
 
-<div class="matheq">\mathrm{share} = \frac{|b| \cdot \mathrm{span}(B_r)}{\mathrm{span}(G)}</div>
+<ul>
+<li>Scale <b>your</b> image by \( s \) and the fit returns
+    \( a s \) and \( b s \), so the gradient comes back as
+    \( s \cdot G \). Divide by \( s \) and you have exactly
+    what you started with.</li>
+<li>Scale the <b>reference</b> by \( p \) (plus any offset
+    \( q \)) and \( b \) simply comes back as \( b/p \),
+    with \( a \) absorbing the offset. \( a + b\,B_r \) is
+    unchanged.</li>
+</ul>
+
+<p>The sigma clipping does not break this either, because its threshold is
+MAD-based and so scales with the data. Measured: a target or reference
+rescaled by \( 10^4 \) changes the recovered gradient by about
+\( 10^{-8} \), which is float32 round-off and not a difference. So
+<b>matching the two images' scales before the fit, and undoing it afterwards,
+is provably a no-op</b> &mdash; and it is worse than neutral if done carelessly:
+rescaling a small signal onto a large pedestal cost 0.18% of the gradient span
+to float32 cancellation in the same test.</p>
+
+<p>What the fit <i>cannot</i> absorb is <b>curvature</b> &mdash; a reference that
+encodes brightness non-linearly, as a log-stretched 8-bit composite does. In
+practice this costs very little, for a structural reason: the fit runs on
+<i>background models</i>, not raw pixels, and a background spans a narrow range
+by construction. Any smooth monotone curve is close to its own tangent over a
+narrow range, and a tangent is exactly what \( a + b\,B_r \)
+fits. On a real DSS2 fetch the reference background spanned 2.2% of its own sky
+level, which puts the second-order term of a log at about 1.1% of the
+reference term &mdash; and that term explained 31% of the gradient, so roughly
+0.35% of the correction. Swapping a linear reference for a log, asinh, gamma or
+8-bit-quantised one changed recovery by <b>0.01 percentage points</b> in a
+controlled test.</p>
+
+<p>The tool therefore does not rescale anything. It <i>reports</i> instead: the
+Survey reference tab names the format it fetched, how that tree encodes
+brightness (linear, log, or high-passed) and whether it can resolve a gradient
+at all &mdash; see &sect;3.7.</p>
+
+<h3>3.7 Can the reference resolve your gradient?</h3>
+<p>Separate question from &sect;3.8, and not covered by it. A reference
+quantised so coarsely that the sky sits on one or two levels can still produce
+a perfectly healthy \( b \) &mdash; fitted to a staircase. FITS tiles are
+preferred wherever a tree publishes them, but some trees are 8-bit only, so the
+resolution is measured directly from the data: the quantisation step is found
+from the gaps between distinct values, and the modelled background is reported
+in units of that step.</p>
+
+<p>Noise decides how much that costs. If the per-pixel scatter is wider than one
+step, sky pixels straddle several levels and averaging a sample patch recovers
+structure far finer than the step &mdash; the quantisation is <i>dithered</i>. If
+the scatter is narrower, every sky pixel reads the same integer and the
+structure is simply gone. Four verdicts follow:</p>
+
+<table>
+  <tr><th>Verdict</th><th>Means</th></tr>
+  <tr><td><b>ample</b></td><td>32+ steps, or 8+ steps with dithering. Nothing
+      to think about.</td></tr>
+  <tr><td><b>coarse</b></td><td>8 or more steps but undithered. The gradient's
+      shape is described; its amplitude is described in that many discrete
+      steps. Prefer a FITS tree if one covers the field.</td></tr>
+  <tr><td><b>coarse-dithered</b></td><td>Fewer than 8 steps, but noise wider
+      than a step. Patch averaging recovers sub-step structure &mdash; shape
+      usable, amplitude soft.</td></tr>
+  <tr><td><b>pinned</b></td><td>Fewer than 8 steps <i>and</i> undithered. The
+      reference cannot resolve your gradient. Flagged with a warning on the
+      run summary.</td></tr>
+</table>
+
+<p>Measured on M81 with a 256 px work grid: the DSS2 red FITS tree gave a
+background spanning 91 quantisation steps with noise 48&times; the step
+(<i>ample</i>), while CDS's 8-bit DSS2 colour composite gave 8.5 steps with
+noise 0.88&times; the step (<i>coarse</i>) on the same field. Both are usable;
+only one of them is comfortable.</p>
+
+<p>This is measured from the pixels rather than inferred from the tile format,
+so it also covers a reference you supply yourself &mdash; which is the case
+where nobody knows what the data has been through.</p>
+
+<h3>3.8 Is the reference actually doing anything?</h3>
+<p>The run summary splits the background structure between the two components
+that describe it. Write \( E \) for the amplitude the reference accounted
+for and \( R \) for what was left over &mdash; your gradient:</p>
+
+<div class="matheq">E = |b| \cdot \mathrm{span}(B_r)\,,\qquad R = \mathrm{span}(G)\,,\qquad \mathrm{share} = \frac{E}{E + R}</div>
+
+<p>So the survey's share and yours sum to 100%, and neither can exceed it.</p>
+
+<p class="new">Earlier versions divided \( E \) by \( R \) alone,
+which could report a reference explaining <i>164%</i> of the gradient. That was
+not a display bug but a real one, and the reason is worth knowing:
+<b>spans do not add.</b> \( \mathrm{span}(X + Y) \) equals
+\( \mathrm{span}(X) + \mathrm{span}(Y) \) only when
+\( X \) and \( Y \) are perfectly correlated, and a fitted
+component and its residual generally are not &mdash; so \( E \) can
+exceed \( R \) with both being correct measurements of their own
+component. The ratio of one to the other is then not a fraction of anything.
+For a least-squares fit the exact orthogonal decomposition is in
+<i>quadrature</i>, \( E^2/(E^2 + R^2) \); the linear form is used here
+because these spans are robust percentile measures rather than variances (so
+exact additivity is unavailable either way), and because in the small-\( E \)
+regime where the warning fires \( E/(E+R) \) tends to \( E/R \),
+which keeps the 5% trip point calibrated where it already was. Quadrature would
+have moved it by about a factor of four.</p>
 
 <p>This is the honest self-check, and it is worth reading every time. With a
 strict veto the reference background can come out nearly flat, \(b\,B_r\)
 collapses toward a constant, and the method quietly degenerates into <b>ADBE with
 a survey-derived exclusion mask</b>. That is still a useful tool &mdash; but it is
 not reference-based correction, and the difference should be visible rather than
-assumed. A share near zero means one of:</p>
+assumed. A survey share near zero means one of:</p>
 <ul>
   <li>the field genuinely has no large-scale structure, so there was nothing to
       attribute and ADBE would have done just as well;</li>
@@ -339,14 +485,14 @@ assumed. A share near zero means one of:</p>
       dual-scope trap from &sect;2.2.</li>
 </ul>
 
-<h3>3.7 Subtraction</h3>
+<h3>3.9 Subtraction</h3>
 <p>The correction is <b>additive</b>, always. The premise is that what the
 reference fails to explain is additive sky, so dividing it out would be the wrong
 operator. The gradient is median-centred, scaled by Strength, subtracted, and the
 original median restored; the result is then rescaled if needed so nothing clips
 at either end.</p>
 
-<h3>3.8 Coverage, and what the failures mean</h3>
+<h3>3.10 Coverage, and what the failures mean</h3>
 <p>Pixels outside the survey footprint come back non-finite and are carried
 through honestly. A pixel is usable only where <i>every</i> reference channel has
 data, so one channel's footprint edge cannot silently fit against a hole in
@@ -362,7 +508,7 @@ cases, because they have very different fixes:</p>
       structure at all. A server or request problem, not a coverage one.</li>
 </ul>
 
-<h3>3.9 Notes</h3>
+<h3>3.11 Notes</h3>
 <ul>
   <li>Both background models are fitted in a <b>linear</b> domain. The relation
       being fitted is linear, so a nonlinear display stretch between the two

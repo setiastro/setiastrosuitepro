@@ -276,6 +276,51 @@ def _strip_sip(w: "WCS") -> "WCS":
 # deliberately lead with a NON-CDS host where one exists — simg.de serves NSNS
 # itself, and IRSA at Caltech mirrors DSS2 — so a total CDS outage is survivable.
 
+# How each tree encodes surface brightness. SRGC fits  tgt = a + b*ref,
+# which absorbs any LINEAR scale and offset exactly (measured: a target or
+# reference rescaled by 1e4 changes the recovered gradient by ~1e-8, i.e.
+# float32 round-off). What it cannot absorb is curvature -- though over a
+# background's narrow range even a log is close to its own tangent, so the
+# practical cost is small. This table exists so the tool can SAY what it
+# fetched instead of leaving the user to wonder, which is the actual
+# complaint it answers.
+#
+#   linear   - counts proportional to surface brightness. Nothing to say.
+#   log      - a monotone compressive stretch applied by the tree builder.
+#              Mostly absorbed into b; amplitude slightly soft.
+#   highpass - large scales REMOVED. This is the one real hazard, because
+#              the removed frequencies are exactly the ones being fitted.
+#              reference_share measures the damage directly.
+_TREE_ENCODING: dict[str, tuple[str, str]] = {
+    "CDS/P/DSS2/color": (
+        "linear",
+        "CDS built this from the DSS2 FITS planes with linear cuts "
+        "(recorded in its properties), so it is the plate, scaled and "
+        "quantised to 8 bits."),
+    "CDS/P/SDSS9/color": (
+        "log",
+        "CDS applied a Log stretch building this composite. A monotone "
+        "curve over a background's narrow range is close to linear and is "
+        "largely absorbed into the fitted scale factor."),
+}
+
+
+def _tree_encoding(hips_id: str) -> tuple[str, str]:
+    """(kind, why) for a tree. NSNS is matched by prefix, not by layer."""
+    hid = str(hips_id or "")
+    hit = _TREE_ENCODING.get(hid)
+    if hit is not None:
+        return hit
+    if "NSNS" in hid:
+        return ("highpass",
+                "NSNS states these mosaics are dynamic-range compressed "
+                "(non-linearly high-pass filtered) and tonal-curve "
+                "corrected. A high-pass removes the large scales this "
+                "tool fits, so check the survey/yours split on the "
+                "run summary.")
+    return ("linear", "")
+
+
 def _nsns(layer: str) -> dict:
     return {
         "hips": f"simg.de/P/NSNS/DR0_2/{layer}",
@@ -452,7 +497,7 @@ SURVEYS: dict[str, dict] = {
                 "from CDS's 8-bit composite. Log-stretched rather than "
                 "linear, which a background's narrow range mostly absorbs "
                 "into the scale factor. 36% of sky, north galactic cap. "
-                "Check 'reference explains' in diagnostics on this one.",
+                "Check the survey/yours structure split on this one.",
         "dec_min": -25.0,
         "noncommercial": False,
     },
@@ -610,8 +655,8 @@ _AVAILABILITY["moved"] = (
 _AVAILABILITY["stretched"] = (
     "ℹ Log-stretched 8-bit source. Quantisation is irrelevant at these "
     "frequencies, but the stretch is only approximately linear over the "
-    "background's range, so check what fraction of the gradient the "
-    "reference explains in diagnostics. "
+    "background's range, so check the survey/yours structure split on "
+    "the run summary. "
 )
 
 # Prefer a reference that actually fetches today. NSNS continuum stays the
@@ -1067,7 +1112,8 @@ def _fetch_tile(base: str, order: int, npix: int, ext: str,
 
 
 def _fetch_via_tiles(qw: WCS, h: int, w: int, base_url: str,
-                     *, timeout: float = HIPS_TIMEOUT) -> np.ndarray:
+                     *, timeout: float = HIPS_TIMEOUT,
+                     info: dict | None = None) -> np.ndarray:
     """
     Sample a HiPS tile tree onto the grid described by `qw`.
 
@@ -1101,6 +1147,17 @@ def _fetch_via_tiles(qw: WCS, h: int, w: int, base_url: str,
     is_image = ext != "fits"
     if is_image:
         _log(f"  using 8-bit {ext} tiles (no FITS at this tree)")
+    # An out-parameter rather than a changed return type: every existing
+    # caller wants the array and nothing else, and the dict is owned by
+    # whoever asked, so two concurrent fetches cannot scribble on each
+    # other the way a module-level "last fetch" global would.
+    if info is not None:
+        info.update({
+            "route": "tiles",
+            "format": ext,
+            "bits": (8 if is_image else None),
+            "offered": sorted(fmts),
+        })
     m = int(round(np.log2(tile_w)))
     if 2 ** m != tile_w:
         raise SurveyFetchError(f"tile width {tile_w} is not a power of two")
@@ -1119,6 +1176,8 @@ def _fetch_via_tiles(qw: WCS, h: int, w: int, base_url: str,
     d_want = int(round(np.log2(58.6323 * 3600.0 / max(scale_as, 1e-6))))
     order = int(np.clip(d_want - m, 0, max_order))
     deep = order + m
+    if info is not None:
+        info.update({"order": order, "max_order": max_order, "deep": deep})
     _log(f"  grid {scale_as:.2f}\"/px -> deep order {d_want}, "
          f"using tile order {order}/{max_order} (deep {deep})")
 
@@ -1284,7 +1343,8 @@ def _is_connection_failure(e: BaseException) -> bool:
 def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
                     *, mirrors: list[str] | None = None,
                     progress_cb=None, timeout: float = HIPS_TIMEOUT,
-                    allow_tiles: bool = True) -> np.ndarray:
+                    allow_tiles: bool = True,
+                    info: dict | None = None) -> np.ndarray:
     """
     Pull a reference cutout for `wcs`, trying every route we know about.
 
@@ -1354,9 +1414,14 @@ def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
             _log(f"-- route: direct tiles @ {host}")
             t0 = time.monotonic()
             try:
-                data = _fetch_via_tiles(qw, h, w, base, timeout=timeout)
+                _inf: dict = {}
+                data = _fetch_via_tiles(qw, h, w, base, timeout=timeout,
+                                        info=_inf)
                 dt = (time.monotonic() - t0) * 1000.0
                 _log(f"   OK in {dt:.0f} ms")
+                if info is not None:
+                    info.update(_inf)
+                    info.update({"host": host, "hips": hips_id})
                 if progress_cb:
                     progress_cb(f"Reference built from {host} tiles.")
                 return data
@@ -1395,6 +1460,12 @@ def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
                 dt = (time.monotonic() - t0) * 1000.0
                 _remember_endpoint(ep)
                 _log(f"   OK in {dt:.0f} ms")
+                if info is not None:
+                    # hips2fits always hands back FITS, whatever the
+                    # underlying tree is published as.
+                    info.update({"route": "hips2fits", "format": "fits",
+                                 "bits": None, "host": host,
+                                 "hips": hips_id})
                 if progress_cb:
                     progress_cb(f"Reference received from {host}.")
                 return data
@@ -1602,7 +1673,8 @@ def _select_band(arr: np.ndarray, k, hips_id: str, i: int) -> np.ndarray:
 
 def fetch_reference_channels(wcs: WCS, out_hw: tuple[int, int],
                              channels: list, *, progress_cb=None,
-                             timeout: float = HIPS_TIMEOUT) -> np.ndarray:
+                             timeout: float = HIPS_TIMEOUT,
+                             info: dict | None = None) -> np.ndarray:
     """
     Fetch a 1- or 3-channel reference.
 
@@ -1622,6 +1694,28 @@ def fetch_reference_channels(wcs: WCS, out_hw: tuple[int, int],
     Returns (h, w) for mono or (h, w, 3) for colour.
     """
     h, w = int(out_hw[0]), int(out_hw[1])
+
+    def _rollup():
+        """
+        Summarise the channels into the top-level fields the UI reads.
+
+        A colour reference can mix trees -- DSS2 red for R and NSNS for
+        G/B is a shipped option -- so a single "format" is only honest
+        when every channel agrees. When they do not, say "mixed" rather
+        than picking one channel's answer and implying it covers all.
+        """
+        if info is None:
+            return
+        chans = info.get("channels") or []
+        if not chans:
+            return
+        for field in ("route", "format", "bits", "host"):
+            vals = {c.get(field) for c in chans}
+            if len(vals) == 1:
+                info[field] = next(iter(vals))
+            else:
+                info[field] = "mixed"
+        info["n_channels"] = len(chans)
     planes: list[np.ndarray | None] = []
     synth: list[int] = []
 
@@ -1647,9 +1741,16 @@ def fetch_reference_channels(wcs: WCS, out_hw: tuple[int, int],
         if progress_cb and len(channels) > 1:
             progress_cb(f"Reference channel {i + 1}/{len(channels)}…")
         try:
+            _ci: dict = {}
             plane = fetch_reference(
                 wcs, (h, w), hips_id, mirrors=ch.get("mirrors"),
-                progress_cb=progress_cb, timeout=timeout)
+                progress_cb=progress_cb, timeout=timeout, info=_ci)
+            if info is not None:
+                _ci["channel"] = i
+                _enc, _why = _tree_encoding(hips_id)
+                _ci["encoding"] = _enc
+                _ci["encoding_why"] = _why
+                info.setdefault("channels", []).append(_ci)
         except Exception as e:
             # One unavailable channel must not throw away the ones that
             # worked. While CDS is down, DSS2 blue is mirrored nowhere
@@ -1691,6 +1792,7 @@ def fetch_reference_channels(wcs: WCS, out_hw: tuple[int, int],
         _log(f"  channel {i} synthesised as the mean of "
              f"{len(real)} fetched plane(s)")
 
+    _rollup()
     if len(planes) == 1:
         return np.asarray(planes[0], dtype=np.float32)
     return np.stack([np.asarray(p, dtype=np.float32) for p in planes],
@@ -1947,6 +2049,160 @@ def _shared_sample_points(tgt_small: np.ndarray, ref_small: np.ndarray,
     return np.asarray(pts, dtype=np.int32), allowed, info
 
 
+# A background spanning fewer levels than this cannot describe a gradient
+# with any shape to it. Measured on real fetches of M81 at 1.5 deg: a FITS
+# tree gave a background spanning 3445 quantisation steps, CDS's 8-bit
+# composites 62 and 78. Those look comfortable, but that is a whole-frame
+# figure -- the SKY-ONLY background the fit actually uses was 40x smaller on
+# the same field, which puts the 8-bit trees at a couple of levels. Hence
+# the check.
+_REF_MIN_LEVELS = 8.0
+
+
+def describe_reference_provenance(info: dict | None,
+                                  diag: dict | None = None) -> str:
+    """
+    What was fetched, how it encodes brightness, and whether it can
+    resolve a gradient -- as one line for the UI.
+
+    This is the answer to "are we comparing apples to apples?". The fit
+    absorbs any linear scale exactly, so the honest reportable facts are
+    the ENCODING (linear / log / high-passed) and the RESOLUTION (how many
+    quantisation steps the background spans). Both were previously in the
+    log only, which meant the one number that decides whether a reference
+    is usable was invisible unless you went looking.
+    """
+    bits = []
+    info = info or {}
+    fmt = info.get("format")
+    route = info.get("route")
+    nbits = info.get("bits")
+    if route == "supplied":
+        bits.append("your own reference (no survey provenance)")
+    elif fmt == "fits":
+        src = ("hips2fits" if route == "hips2fits" else "FITS tiles")
+        bits.append(f"{src}, linear")
+    elif fmt:
+        bits.append(f"{nbits or 8}-bit {fmt} tiles")
+
+    # Encoding: unanimous across channels, or named per channel.
+    chans = info.get("channels") or []
+    encs = {c.get("encoding", "linear") for c in chans}
+    if encs and encs != {"linear"}:
+        bits.append("encoding: " + "/".join(sorted(encs)))
+    elif encs == {"linear"} and fmt and fmt != "fits":
+        bits.append("linearly scaled")
+
+    d = diag or {}
+    res = d.get("ref_resolution")
+    lv = d.get("ref_levels")
+    if res == "ample" and lv:
+        bits.append(f"background spans {lv:.0f} levels")
+    elif res == "coarse" and lv:
+        bits.append(f"background spans only {lv:.0f} quantisation steps, "
+                    f"undithered — shape fine, amplitude stepped")
+    elif res == "coarse-dithered" and lv:
+        bits.append(f"only {lv:.1f} levels, but dithered by noise "
+                    f"(shape usable, amplitude soft)")
+    elif res == "pinned" and lv is not None:
+        bits.append(f"⚠ background pinned to {max(lv, 1.0):.0f} "
+                    f"level(s) and undithered — it cannot resolve "
+                    f"your gradient; prefer a FITS tree")
+    return ("  " + chr(0xB7) + "  ").join(b for b in bits if b)
+
+
+def _quantisation(ref: np.ndarray, valid: np.ndarray | None = None,
+                  *, max_px: int = 400_000) -> dict:
+    """
+    Measure a reference's quantisation step and its noise, from the DATA.
+
+    Derived rather than inferred from the tile format on purpose: a
+    user-supplied reference can be an 8-bit PNG off disk, with no HiPS
+    provenance to consult, and that is exactly the case where the user
+    has no idea what they handed over.
+
+    Returns {step, lattice, distinct, hf}:
+      step     the smallest positive gap between distinct values, or None
+               if the values do not sit on a regular lattice (i.e. the
+               data is effectively continuous and quantisation is moot)
+      lattice  share of gaps that are near-integer multiples of step --
+               the test for "is this really a lattice"
+      distinct how many distinct values the cutout carries
+      hf       robust per-pixel scatter with the smooth part removed.
+               This decides whether the quantisation is DITHERED: if the
+               noise is wider than a step, sky pixels straddle several
+               levels and averaging a patch recovers sub-level structure.
+               If it is not, every sky pixel reads the same integer and
+               the gradient is simply gone.
+    """
+    a = np.asarray(ref, dtype=np.float32)
+    if a.ndim == 3:
+        a = a[..., 0]
+    fin = np.isfinite(a)
+    if valid is not None:
+        v2 = np.asarray(valid, dtype=bool)
+        if v2.shape[:2] == a.shape[:2]:
+            fin = fin & v2
+    out = {"step": None, "lattice": 0.0, "distinct": 0, "hf": 0.0}
+    if int(fin.sum()) < 256:
+        return out
+
+    # high-frequency scatter, before any subsampling breaks adjacency
+    try:
+        if cv2 is not None:
+            filled = np.where(fin, a, float(np.nanmedian(a[fin])))
+            sm = cv2.GaussianBlur(filled.astype(np.float32), (0, 0), 4.0,
+                                  borderType=cv2.BORDER_REFLECT)
+            r = (a - sm)[fin]
+            out["hf"] = float(np.median(np.abs(r - np.median(r)))) * 1.4826
+    except Exception as e:
+        _log(f"quantisation: could not measure the noise: {_brief(e)}")
+
+    v = a[fin].astype(np.float64)
+    if v.size > max_px:
+        v = v[:: int(np.ceil(v.size / max_px))]
+    u = np.unique(v)
+    out["distinct"] = int(u.size)
+    if u.size < 4:
+        # Degenerate: fewer than 4 values in the whole cutout. Report the
+        # gap anyway, since that IS the finding.
+        if u.size >= 2:
+            out["step"] = float(np.min(np.diff(u)))
+            out["lattice"] = 1.0
+        return out
+    d = np.diff(u)
+    d = d[d > 0]
+    if d.size == 0:
+        return out
+    step = float(np.min(d))
+    if step <= 0:
+        return out
+    k = d / step
+    out["lattice"] = float(np.mean(np.abs(k - np.round(k)) < 0.02))
+
+    # Three tests, and all three are needed.
+    #
+    # The lattice test alone is NOT enough, and the way it fails is
+    # instructive: float32 is itself a lattice. Continuous data near 0.1
+    # has a representable spacing of 2**-27, so every gap is an exact
+    # integer multiple of the smallest one and the lattice test returns a
+    # confident 100% on a step of 7.45e-09. Measured, not hypothesised.
+    #
+    #   lattice  - the gaps are multiples of one step
+    #   ulp      - that step is well clear of the float grid at this
+    #              magnitude, so it is a property of the DATA rather than
+    #              of its storage
+    #   sparsity - the values are few relative to the pixels. 8-bit data
+    #              gives at most 256 values over tens of thousands of
+    #              pixels; continuous data gives nearly one per pixel.
+    mag = float(max(abs(float(u[0])), abs(float(u[-1])))) or 1.0
+    ulp = float(np.spacing(np.float32(mag)))
+    sparse = out["distinct"] <= max(4, int(0.2 * v.size))
+    if out["lattice"] >= 0.90 and step > 8.0 * ulp and sparse:
+        out["step"] = step
+    return out
+
+
 def _robust_linear_fit(ref: np.ndarray, tgt: np.ndarray,
                        *, n_iter: int = 5, sigma: float = 2.5
                        ) -> tuple[float, float, np.ndarray]:
@@ -2057,12 +2313,18 @@ def survey_gradient_model(
     work_wcs = _rescaled_wcs(wcs, (H, W), (h, w))
 
     # ---- reference ------------------------------------------------------
+    ref_info: dict = {}
     if reference is None:
         if not channels:
             channels = SURVEYS[DEFAULT_SURVEY]["channels"]
         ref = fetch_reference_channels(work_wcs, (h, w), list(channels),
-                                       progress_cb=progress_cb)
+                                       progress_cb=progress_cb,
+                                       info=ref_info)
     else:
+        # A caller-supplied reference has no HiPS provenance to report.
+        # Say that, rather than leaving the field blank and letting the
+        # UI imply a tree it never fetched.
+        ref_info = {"route": "supplied", "format": None, "bits": None}
         ref = np.asarray(reference, dtype=np.float32)
         if ref.shape[:2] != (h, w):
             raise SurveyFetchError(
@@ -2272,15 +2534,116 @@ def survey_gradient_model(
     ref_span = _span(bg_r, valid)
     grad_span = _span(grad_small)
     explained = [abs(b) * ref_span for _, b in coeffs]
+
+    # Two amplitudes, split into shares that sum to 1:
+    #
+    #   E = |b| * span(B_r)   what the reference accounted for
+    #   R = span(G)           what is left over, i.e. YOUR gradient
+    #   share = E / (E + R)
+    #
+    # The denominator used to be R alone, which could and did exceed 100%
+    # -- a real fetch reported "explains 164%". That was not a display
+    # bug: SPANS DO NOT ADD. span(X + Y) equals span(X) + span(Y) only
+    # when X and Y are perfectly correlated, and the fitted component and
+    # its residual are generally not, so E can be larger than R while
+    # both are correct measurements of their own component. Dividing one
+    # by the other therefore has no upper bound and is not a fraction of
+    # anything.
+    #
+    # E / (E + R) is bounded in [0, 1] by construction and reads as what
+    # the number was always meant to mean: of the total structure the two
+    # components describe between them, this much came from the survey and
+    # the rest is yours. For a least-squares fit the exact orthogonal
+    # decomposition is in QUADRATURE rather than linear -- E^2/(E^2+R^2)
+    # -- but linear is the right choice here for two reasons: the spans
+    # are robust percentile measures rather than variances, so exact
+    # additivity is not available anyway; and in the small-E regime where
+    # the warning below fires, E/(E+R) tends to E/R, which keeps the 5%
+    # threshold calibrated exactly as it was. Quadrature would move that
+    # trip point by a factor of about four.
+    _E = max(explained) if explained else 0.0
+    _R = grad_span
+    _total = _E + _R
     diag = {
         "ref_bg_span": ref_span,
         "gradient_span": grad_span,
+        "explained_amplitude": _E,
         "explained_by_reference": explained,
-        "reference_share": (max(explained) / grad_span) if grad_span > 0 else 0.0,
+        "reference_share": (_E / _total) if _total > 0 else 0.0,
+        "residual_share": (_R / _total) if _total > 0 else 0.0,
+        "ref_info": ref_info,
     }
-    _log(f"reference bg span={ref_span:.6g}  gradient span={grad_span:.6g}  "
-         f"b*span={['%.4g' % e for e in explained]}  -> reference explains "
-         f"{diag['reference_share']*100:.1f}% of the gradient's amplitude")
+
+    # ---- can the reference RESOLVE a gradient at all? -------------------
+    # Separate question from reference_share, and not covered by it. A
+    # reference quantised so coarsely that the sky sits on one or two
+    # levels can still produce a healthy b -- fitted to a staircase. This
+    # measures the resolution directly: how many quantisation steps does
+    # the modelled background actually span, and is the quantisation
+    # dithered by noise (in which case patch averaging recovers far more
+    # than the step suggests) or not (in which case the structure is gone).
+    qz = _quantisation(ref, valid)
+    diag.update({
+        "ref_step": qz["step"],
+        "ref_distinct": qz["distinct"],
+        "ref_hf": qz["hf"],
+        "ref_levels": None,
+        "ref_dither": None,
+        "ref_resolution": "continuous",
+    })
+    _step = qz["step"]
+    if _step and _step > 0:
+        _levels = ref_span / _step
+        _dither = qz["hf"] / _step
+        diag["ref_levels"] = float(_levels)
+        diag["ref_dither"] = float(_dither)
+        # Four cases, because levels and dithering fail independently.
+        # Measured on a real DSS2 8-bit colour fetch: 8.5 levels with
+        # noise/step 0.88 -- just over the level bar and just under the
+        # dither bar. Calling that "ample" would be the tool flattering
+        # itself, and calling it "pinned" would be alarmism; 8 levels of
+        # ramp describe a shape perfectly well, they just describe its
+        # amplitude in 8 steps.
+        if _levels >= 32.0 or (_levels >= _REF_MIN_LEVELS
+                               and _dither >= 1.0):
+            diag["ref_resolution"] = "ample"
+        elif _levels >= _REF_MIN_LEVELS:
+            diag["ref_resolution"] = "coarse"
+        elif _dither >= 1.0:
+            diag["ref_resolution"] = "coarse-dithered"
+        else:
+            diag["ref_resolution"] = "pinned"
+        _log(f"reference quantisation: step={_step:.6g}  "
+             f"{qz['distinct']} distinct values  "
+             f"background spans {_levels:.1f} steps  "
+             f"noise/step={_dither:.2f}  -> {diag['ref_resolution']}")
+        if diag["ref_resolution"] == "pinned":
+            _log("  WARNING: the reference background is pinned to about "
+                 f"{max(1.0, _levels):.0f} quantisation level(s) and the "
+                 "noise is narrower than one step, so there is nothing "
+                 "for patch averaging to recover. Prefer a survey that "
+                 "publishes FITS tiles.")
+        elif diag["ref_resolution"] == "coarse-dithered":
+            _log("  NOTE: coarse quantisation, but dithered by noise -- "
+                 "each sample patch averages thousands of pixels, which "
+                 "recovers sub-step structure. The SHAPE is usable; treat "
+                 "the amplitude with mild suspicion.")
+        elif diag["ref_resolution"] == "coarse":
+            _log(f"  NOTE: the background spans only {_levels:.1f} "
+                 f"quantisation steps and the noise is narrower than one "
+                 f"step, so there is no dither to average away. The "
+                 f"gradient SHAPE is described, its amplitude in "
+                 f"{_levels:.0f} discrete steps. A FITS tree would be "
+                 f"better if one is offered for this field.")
+    else:
+        _log(f"reference quantisation: continuous "
+             f"({qz['distinct']} distinct values, lattice "
+             f"{100.0 * qz['lattice']:.0f}%) -- no step to report")
+    _log(f"reference bg span={ref_span:.6g}  residual gradient span="
+         f"{grad_span:.6g}  b*span={['%.4g' % e for e in explained]}  -> "
+         f"reference accounts for {diag['reference_share']*100:.1f}% of the "
+         f"structure, your own gradient for "
+         f"{diag['residual_share']*100:.1f}%")
     if diag["reference_share"] < 0.05:
         _log("  NOTE: the reference background is essentially flat, so this "
              "run is ADBE with a survey-derived exclusion mask rather than a "
@@ -2936,6 +3299,8 @@ class SurveyGradientDialog(QDialog):
         # User reference: an open document, or a file on disk.
         self._user_ref = None        # (image, header, label) once loaded
         self._ref_cache = {}         # cache_key -> fetched reference array
+        self._ref_info = {}          # provenance of the reference on screen
+        self._ref_info_cache = {}    # cache_key -> that provenance
         self._disp_cache = {}        # (mode, before, strength, patch) -> (buf, status)
         self.cmb_refdoc = QComboBox()
         self.cmb_refdoc.setToolTip(
@@ -3174,8 +3539,10 @@ class SurveyGradientDialog(QDialog):
 
         # One tab per thing worth looking at, instead of a dropdown over a
         # single canvas. Tab 1 is the one you interact with -- zoom, before/
-        # after, and drawing exclusion zones -- and the rest are read-only
-        # diagnostics, so only tab 1 carries the toolbar.
+        # after, and drawing exclusion zones -- so it carries the full
+        # toolbar; the rest are read-only diagnostics. The two background
+        # tabs carry one control of their own, the display mode for the
+        # view they show, because that is the only place it means anything.
         self.tabs = QTabWidget()
         self.pane_target = _PreviewPane(drawable=True)
         self.pane_ref = _PreviewPane()
@@ -3223,6 +3590,47 @@ class SurveyGradientDialog(QDialog):
             "Aggressive: hard autostretch to a 0.4 median. Shows the faintest\n"
             "structure, at the cost of making noise look like signal.")
         self.cmb_stretch.currentIndexChanged.connect(self._stretch_changed)
+
+        # Background views have their own problem, opposite to the one
+        # above: min-max normalisation gives a field that varies by 0.1%
+        # the whole tonal range, so a background that is genuinely almost
+        # flat looks violent. Min-max stays the default because it is the
+        # only way to SEE the SHAPE; the linear mode shows the true
+        # AMPLITUDE, which is the other half of the judgement.
+        # It belongs ON the background tabs, not in tab 0's toolbar:
+        # that toolbar is a child of the Target image page, so the
+        # control was only ever on screen in the one view where it has
+        # nothing to act on -- and the enable rule (background views
+        # only) therefore held it permanently disabled. One combo per
+        # background tab, built by a factory, with the MODE as the
+        # single source of truth and the combos kept in step.
+        self._bg_stretch_mode = "minmax"
+        self._bg_combos = []
+
+        def _mk_bgstretch():
+            c = QComboBox()
+            c.addItem(self.tr("BG: min/max"), "minmax")
+            c.addItem(self.tr("BG: linear"), "linear")
+            c.setToolTip(
+                "How the two BACKGROUND views are displayed. Affects nothing\n"
+                "that is applied, and nothing in the other tabs.\n\n"
+                "min/max: stretch the background's own range to fill 0-1,\n"
+                "then tone-map it. Shows the SHAPE of the gradient at any\n"
+                "amplitude, and makes a nearly-flat background look dramatic.\n\n"
+                "linear: 0.5 + (bg - median(bg)) / 2, no tone map. The median\n"
+                "sits at mid-grey and the gradient keeps its real size, so a\n"
+                "0.002 background is a barely-visible grey wash — which is\n"
+                "what it actually is. Full black to full white here would mean\n"
+                "the background spans 1.0, i.e. something has gone wrong.")
+            _i = c.findData(self._bg_stretch_mode)
+            if _i >= 0:
+                c.blockSignals(True)
+                c.setCurrentIndex(_i)
+                c.blockSignals(False)
+            c.currentIndexChanged.connect(
+                lambda *_a, _c=c: self._bgstretch_changed(_c))
+            self._bg_combos.append(c)
+            return c
 
         self.chk_before = QCheckBox(self.tr("Before"))
         self.chk_before.setToolTip(
@@ -3275,8 +3683,30 @@ class SurveyGradientDialog(QDialog):
         self.tabs.addTab(_tgtw, self.tr("Target image"))
         self.tabs.addTab(self.pane_ref, self.tr("Survey reference"))
         self.tabs.addTab(self.pane_grad, self.tr("Gradient removed"))
-        self.tabs.addTab(self.pane_bgt, self.tr("Target background"))
-        self.tabs.addTab(self.pane_bgr, self.tr("Survey background"))
+        def _bgpage(pane):
+            """A background pane plus its own display-mode control."""
+            _bb = QHBoxLayout()
+            _bb.setContentsMargins(2, 2, 2, 2)
+            _bb.addWidget(_mk_bgstretch())
+            _bb.addStretch(1)
+            _bl = QVBoxLayout()
+            _bl.setContentsMargins(0, 0, 0, 0)
+            _bl.addLayout(_bb)
+            _bl.addWidget(pane, 1)
+            _bw = QWidget()
+            _bw.setLayout(_bl)
+            return _bw
+
+        self.tabs.addTab(_bgpage(self.pane_bgt),
+                         self.tr("Target background"))
+        self.tabs.addTab(_bgpage(self.pane_bgr),
+                         self.tr("Survey background"))
+        # _active_pane() maps a tab index onto the PANE, not the page,
+        # so wrapping the panes changes nothing downstream.
+        # Kept as an alias: the mode lives in _bg_stretch_mode now, but
+        # this name is the one the rest of the file and the tests reach
+        # for, and driving it still propagates through the handler.
+        self.cmb_bgstretch = self._bg_combos[0]
         self.tabs.addTab(self.pane_pts, self.tr("Sample points"))
         self.tabs.setTabToolTip(0, "The result, and where you draw exclusions.")
         self.tabs.setTabToolTip(1, "The fetched reference. Check it is the "
@@ -3362,14 +3792,25 @@ class SurveyGradientDialog(QDialog):
         left.addWidget(self.status)
         left.addStretch(1)
 
-        # The grip goes AFTER the stretch, so it pins to the lower-left
-        # corner below the status label rather than floating wherever the
-        # controls above happen to end. Same placement ADBE uses.
-        if self.preset_drag_handle is not None:
+        # Bottom row, AFTER the stretch so it pins to the lower corners
+        # rather than floating wherever the controls above happen to end:
+        # grip at the far left, help at the far right. Same arrangement
+        # Statistical Stretch uses.
+        self.btn_help = None
+        try:
+            from setiastro.saspro.help_support import make_help_button
+            self.btn_help = make_help_button("srgc", self)
+        except Exception as _e:
+            _log(f"help button unavailable: {_brief(_e)}")
+
+        if self.preset_drag_handle is not None or self.btn_help is not None:
             grip_row = QHBoxLayout()
             grip_row.setContentsMargins(0, 0, 0, 0)
-            grip_row.addWidget(self.preset_drag_handle)
+            if self.preset_drag_handle is not None:
+                grip_row.addWidget(self.preset_drag_handle)
             grip_row.addStretch(1)
+            if self.btn_help is not None:
+                grip_row.addWidget(self.btn_help)
             left.addLayout(grip_row)
 
         # The status label wraps, and a wrapping QLabel still reports the
@@ -3518,6 +3959,8 @@ class SurveyGradientDialog(QDialog):
             self.cmb_stretch.blockSignals(True)
             self.cmb_stretch.setCurrentIndex(_si)
             self.cmb_stretch.blockSignals(False)
+        self._set_bg_stretch_mode(
+            str(s.value("srgc/bg_stretch_mode", "minmax")))
 
         # Save on CHANGE, not only when something is run. Settings that
         # only persist via _do_run silently lose anything a user tweaks and
@@ -3548,6 +3991,8 @@ class SurveyGradientDialog(QDialog):
                    self.chk_ms_survey_protect.isChecked())
         s.setValue("srgc/stretch_mode",
                    str(self.cmb_stretch.currentData() or "normal"))
+        s.setValue("srgc/bg_stretch_mode",
+                   str(getattr(self, "_bg_stretch_mode", "minmax")))
         s.setValue("srgc/work", self.sp_work.value())
         s.setValue("srgc/degree", self.sp_degree.value())
         s.setValue("srgc/samples", self.sp_samples.value())
@@ -3751,18 +4196,26 @@ class SurveyGradientDialog(QDialog):
             if self._source() == "user":
                 ref = self._prepare_user_reference(img, hdr)
                 where = "your own image"
+                self._ref_info = {"route": "supplied", "format": None,
+                                  "bits": None}
             else:
                 key = self._ref_cache_key(img, hdr)
                 ref = self._ref_cache.get(key)
                 if ref is None:
+                    _info: dict = {}
                     ref = fetch_reference_channels(
                         work_wcs, (h, w), list(self._channels()),
-                        progress_cb=self._set_status)
+                        progress_cb=self._set_status, info=_info)
                     self._ref_cache[key] = ref
+                    self._ref_info_cache[key] = _info
+                    self._ref_info = _info
                     while len(self._ref_cache) > _REF_CACHE_MAX:
-                        self._ref_cache.pop(next(iter(self._ref_cache)))
+                        _k = next(iter(self._ref_cache))
+                        self._ref_cache.pop(_k)
+                        self._ref_info_cache.pop(_k, None)
                 else:
                     _log("reference served from the session cache")
+                    self._ref_info = self._ref_info_cache.get(key, {})
                 where = self.cmb_survey.currentText()
         except SurveyFetchError as e:
             self._set_status("Fetch failed")
@@ -3788,7 +4241,8 @@ class SurveyGradientDialog(QDialog):
         self.tabs.setCurrentIndex(1)          # Survey reference
         self.tabs.blockSignals(False)
         self._redraw()
-        self._set_status(self._describe_reference(ref, where))
+        self._set_status(self._describe_reference(ref, where,
+                                                  self._ref_info))
 
     def _ms_toggled(self, on: bool):
         self.w_ms.setVisible(bool(on))
@@ -3898,7 +4352,8 @@ class SurveyGradientDialog(QDialog):
         _log("multiscale refinement applied")
 
     @staticmethod
-    def _describe_reference(ref: np.ndarray, where: str) -> str:
+    def _describe_reference(ref: np.ndarray, where: str,
+                            info: dict | None = None) -> str:
         """
         A one-line verdict on a fetched reference, before any modelling.
 
@@ -3947,9 +4402,12 @@ class SurveyGradientDialog(QDialog):
             if all(np.allclose(p0, np.nan_to_num(a[..., c]), rtol=1e-5)
                    for c in range(1, planes)):
                 mono = "  ·  MONO (all channels are the same plane)"
+        prov = describe_reference_provenance(info)
+        if prov:
+            prov = "  ·  " + prov
         return (f"Reference from {where}  ·  coverage {cov:.1f}%  ·  "
                 f"contrast {rel * 100:.1f}% of its own level — {verdict}"
-                f"{mono}{gap}")
+                f"{prov}{mono}{gap}")
 
     def _do_run(self):
         img = self._source_float()
@@ -3976,12 +4434,16 @@ class SurveyGradientDialog(QDialog):
 
             if self._source() == "user":
                 user_ref = self._prepare_user_reference(img, hdr)
+                self._ref_info = {"route": "supplied", "format": None,
+                                  "bits": None}
             else:
                 cache_key = self._ref_cache_key(img, hdr)
                 cached_ref = self._ref_cache.get(cache_key)
                 if cached_ref is not None:
                     _log("reference served from the session cache "
                          "(no fetch)")
+                    self._ref_info = self._ref_info_cache.get(
+                        cache_key, self._ref_info)
                     self._set_status(
                         "Reusing the reference already fetched for these "
                         "settings — no download.")
@@ -4042,8 +4504,19 @@ class SurveyGradientDialog(QDialog):
         # image geometry and pointing — so any of those invalidates it.
         try:
             self._ref_cache[cache_key] = self._result["reference"]
+            _ri = (self._result.get("diag") or {}).get("ref_info")
+            # Only adopt provenance from a run that actually FETCHED. On a
+            # cache hit the array is handed to the model, which honestly
+            # reports "supplied" -- and letting that overwrite the real
+            # record would relabel a fetched FITS tree as "your own
+            # reference" on the second run.
+            if _ri and _ri.get("format"):
+                self._ref_info_cache[cache_key] = _ri
+                self._ref_info = _ri
             while len(self._ref_cache) > _REF_CACHE_MAX:
-                self._ref_cache.pop(next(iter(self._ref_cache)))
+                _k = next(iter(self._ref_cache))
+                self._ref_cache.pop(_k)
+                self._ref_info_cache.pop(_k, None)
         except Exception:
             pass
 
@@ -4068,19 +4541,46 @@ class SurveyGradientDialog(QDialog):
         g = self._result["gradient"]
         # reference_share is the number that says whether this was a
         # REFERENCE-based correction at all, so it belongs on screen rather
-        # than buried in the log. Near zero means the reference explained
-        # nothing and the run degenerated into ADBE with a survey mask.
-        _share = (self._result.get("diag") or {}).get("reference_share", 0.0)
+        # than buried in the log. It is a partition: the survey's share and
+        # your own gradient's share sum to 100%. Near zero means the
+        # reference explained nothing and the run degenerated into ADBE
+        # with a survey mask.
+        _d = self._result.get("diag") or {}
+        _share = _d.get("reference_share", 0.0)
         _warn = ("  ·  ⚠ the reference explains almost none of this — "
                  "treat it as ADBE with a survey-derived mask"
                  if _share < 0.05 else "")
+        # A reference can explain a healthy share and still be fitted to a
+        # staircase, so the resolution verdict is its own warning rather
+        # than something reference_share can stand in for.
+        if _d.get("ref_resolution") == "pinned":
+            _warn += (f"  ·  ⚠ the reference background is pinned to "
+                      f"{max(_d.get('ref_levels') or 1.0, 1.0):.0f} "
+                      f"quantisation level(s) — prefer a survey with "
+                      f"FITS tiles")
         self._set_status(
             f"Coverage {cov:.1f}%  ·  work {self._result['work_shape'][1]}×"
             f"{self._result['work_shape'][0]}  ·  {cs}  ·  "
-            f"reference explains {_share * 100:.0f}%  ·  "
+            f"structure: survey {_share * 100:.0f}% / yours "
+            f"{_d.get('residual_share', 0.0) * 100:.0f}%  ·  "
             f"gradient peak-to-peak {float(np.nanmax(g) - np.nanmin(g)):.4f}"
             f"{_warn}"
         )
+
+        # Step 1 flips to the reference so you can see what was fetched;
+        # step 2 flips back, because the thing you asked for is the
+        # corrected image and that is where the run should land you.
+        # Without this the view stayed on whatever step 1 left behind,
+        # and _redraw below would then overwrite the run summary with
+        # that tab's own note -- so the result line above was never
+        # even read on the usual 1-then-2 path.
+        # Signals blocked for the same reason as the step 1 flip: the
+        # currentChanged -> _redraw hook would render the new tab from
+        # a result that is complete but not yet drawn, and the explicit
+        # _redraw() on the next line does that job once.
+        self.tabs.blockSignals(True)
+        self.tabs.setCurrentIndex(0)          # Target image
+        self.tabs.blockSignals(False)
         self._redraw()
 
     def _ref_cache_key(self, img, hdr):
@@ -4375,6 +4875,10 @@ class SurveyGradientDialog(QDialog):
                 "run '2. Model && Correct' to see this view.")
             return
         overlay_pts = False
+        # Set by the linear background path: that mapping is already a
+        # display mapping, and tone-mapping it would undo the one thing it
+        # exists to do -- keep the amplitude true.
+        raw_display = False
         # The snapshot taken when the model was built, never the live
         # document. After Apply the document already HAS the correction in
         # it, and correcting it again here would show a doubly-corrected
@@ -4390,8 +4894,14 @@ class SurveyGradientDialog(QDialog):
         # Rendered buffers are cached per view, so flicking Before/After or
         # returning to a view you have already seen is a dictionary lookup
         # rather than a correct-and-tone-map pass.
+        # Everything the render depends on goes in the key -- including both
+        # display modes. That is what lets a stretch change KEEP the cache:
+        # the bg mode only affects two of the six views, and the corrected
+        # view is the expensive one to rebuild.
+        _bgmode = str(getattr(self, "_bg_stretch_mode", "minmax"))
         _key = (mode, bool(self.chk_before.isChecked()),
-                int(self.sp_strength.value()), int(self.sp_patch.value()))
+                int(self.sp_strength.value()), int(self.sp_patch.value()),
+                str(self.cmb_stretch.currentData() or "normal"), _bgmode)
         _hit = self._disp_cache.get(_key)
         if _hit is not None:
             _buf, _st = _hit
@@ -4437,6 +4947,19 @@ class SurveyGradientDialog(QDialog):
         elif mode == "Reference":
             _ref = np.asarray(self._result["reference"], dtype=np.float32)
             arr = _norm01(np.nan_to_num(_ref, nan=float(np.nanmedian(_ref))))
+            # What this actually IS: the format it arrived in, how it
+            # encodes brightness, and whether it can resolve a gradient.
+            # All three used to be log-only, which left "is this
+            # comparable to my data?" unanswerable from the UI.
+            _prov = describe_reference_provenance(
+                getattr(self, "_ref_info", None) or
+                (self._result.get("diag") or {}).get("ref_info"),
+                self._result.get("diag"))
+            if _prov:
+                self._set_status(
+                    _prov +
+                    "   ·  the fit absorbs any linear scale difference "
+                    "exactly, so units never need matching.")
             # Say WHY it is grey, when it is. A colour survey whose
             # channels all failed but one degrades to that survivor
             # replicated across all three slots -- an honest picture of a
@@ -4475,10 +4998,11 @@ class SurveyGradientDialog(QDialog):
                                  int(self.sp_patch.value()))
             overlay_pts = True
         else:
-            # Background views are min-max normalised AND autostretched, so a
-            # field varying by 0.1% fills the full tonal range and looks like
-            # structure. The numbers below are the only honest read — report
-            # them rather than letting the picture lie.
+            # Under min/max the background is normalised AND autostretched,
+            # so a field varying by 0.1% fills the full tonal range and looks
+            # like structure; the numbers below are then the only honest read.
+            # Under linear the picture itself is honest and the numbers just
+            # confirm it. Either way, report them.
             is_ref = mode.startswith("Reference")
             raw = np.asarray(self._result["bg_ref" if is_ref else "bg_target"],
                              dtype=np.float32)
@@ -4501,28 +5025,67 @@ class SurveyGradientDialog(QDialog):
             note = ""
             if is_ref:
                 share = d.get("reference_share", 0.0) * 100.0
-                note = (f"  Explains {share:.0f}% of the gradient amplitude."
+                note = (f"  Accounts for {share:.0f}% of the background "
+                        f"structure; the remaining "
+                        f"{d.get('residual_share', 0.0) * 100.0:.0f}% is "
+                        f"your own gradient."
                         + ("  Essentially flat — this run is ADBE with a "
                            "survey-derived mask." if share < 5 else ""))
-            self._set_status(
-                f"{'Reference' if is_ref else 'Target'} background span = "
-                f"{bg_span:.5g} ({pct:.2f}% of that image's own range). "
-                f"Display is min-max stretched, so flatness is invisible — "
-                f"trust the number, not the picture.{note}"
-            )
-            arr = _norm01(raw)
+            _who = "Reference" if is_ref else "Target"
+            _lead = (f"{_who} background span = {bg_span:.5g} "
+                     f"({pct:.2f}% of that image's own range). ")
+            if _bgmode == "linear":
+                # Gain is fixed at 0.5, so the span occupies half as much of
+                # the display range as it does of the data range -- PROVIDED
+                # the data is in the target's 0-1 units. The reference is
+                # not: it is in survey counts, where a true-scale mapping
+                # railed the whole view (a 2409-count span "filling 120480%
+                # of the tonal range"). So the reference is shown as the
+                # contribution it makes in your units instead.
+                _lin = raw
+                _units = ""
+                if is_ref:
+                    _lin, _fb = self._ref_bg_in_target_units(raw)
+                    _units = (f"Shown as b·B_r{_fb} — what it "
+                              f"contributes in YOUR units, since survey "
+                              f"counts mean nothing against a 0-1 frame. ")
+                _lin_span = _sp(_lin, fr)
+                arr = _linear_mid(_lin, mask=fr, gain=_BG_LINEAR_GAIN)
+                raw_display = True
+                self._set_status(
+                    _lead + _units +
+                    f"Display is LINEAR at true scale (median at mid-grey, "
+                    f"gain {_BG_LINEAR_GAIN:g}), so its {_lin_span:.5g} "
+                    f"span fills "
+                    f"{100.0 * _lin_span * _BG_LINEAR_GAIN:.1f}% of the tonal "
+                    f"range — a flat background genuinely looks flat "
+                    f"here. Switch to min/max to see its shape.{note}")
+            else:
+                arr = _norm01(raw)
+                self._set_status(
+                    _lead +
+                    f"Display is min-max stretched, so flatness is invisible "
+                    f"— trust the number, not the picture. Switch to "
+                    f"linear to see the true amplitude.{note}")
 
-        try:
-            # Note for the aggressive path: use_24bit builds a 2**24-entry
-            # LUT, ~1.6 s of FIXED cost independent of image size, for a
-            # buffer written out as 8-bit and then scaled down to a few
-            # hundred pixels. Off. Not bit-identical (max 6/255 on a
-            # synthetic worst case) but 32x faster, and the difference does
-            # not survive the scale-down.
-            disp = np.asarray(self._display_stretch(arr), dtype=np.float32)
-        except Exception as e:
-            _log(f"display stretch failed: {_brief(e)}")
-            disp = np.clip(arr, 0.0, 1.0)
+        if raw_display:
+            disp = np.clip(np.nan_to_num(np.asarray(arr, dtype=np.float32),
+                                         nan=0.5, posinf=1.0, neginf=0.0),
+                           0.0, 1.0)
+        else:
+            try:
+                # Note for the aggressive path: use_24bit builds a
+                # 2**24-entry LUT, ~1.6 s of FIXED cost independent of
+                # image size, for a buffer written out as 8-bit and then
+                # scaled down to a few hundred pixels. Off. Not
+                # bit-identical (max 6/255 on a synthetic worst case) but
+                # 32x faster, and the difference does not survive the
+                # scale-down.
+                disp = np.asarray(self._display_stretch(arr),
+                                  dtype=np.float32)
+            except Exception as e:
+                _log(f"display stretch failed: {_brief(e)}")
+                disp = np.clip(arr, 0.0, 1.0)
 
         if disp.ndim == 2:
             disp = np.repeat(disp[..., None], 3, axis=2)
@@ -4578,10 +5141,95 @@ class SurveyGradientDialog(QDialog):
             pass
         self._show_buffer(buf)
 
+    def _ref_bg_in_target_units(self, bg_r):
+        """
+        The reference background as what it CONTRIBUTES, not as it is.
+
+        bg_ref is in the survey's own units -- a DSS2 plate arrives as
+        1130..20528 counts -- so a true-scale display of it against a
+        0-1 frame has no meaning and simply rails to black and white.
+        What DOES have meaning is the term the fit subtracts,
+        b * B_r: that is in the target's units by construction, so it
+        renders on exactly the same mapping as the Target background
+        view and the two tabs can be read against each other.
+
+        The constant a is dropped because the display subtracts the
+        median anyway, and b keeps its SIGN: an anti-correlated
+        reference contributes an inverted surface, and showing it
+        upright would misrepresent what is being subtracted.
+        """
+        a = np.asarray(bg_r, dtype=np.float32)
+        coeffs = (self._result or {}).get("coeffs") or []
+        if not coeffs:
+            # Nothing fitted to borrow a scale from. Fall back to the
+            # reference's own range so the view is at least not clipped,
+            # and say so rather than implying target units.
+            v = a[np.isfinite(a)]
+            rng = (float(np.percentile(v, 99.5) - np.percentile(v, 0.5))
+                   if v.size >= 8 else 0.0)
+            return ((a / rng) if rng > 0 else np.zeros_like(a),
+                    " (no fit yet, so scaled by its own range)")
+        nch_r = 1 if a.ndim == 2 else a.shape[2]
+        planes = []
+        for c, (_a, b) in enumerate(coeffs):
+            if a.ndim == 2:
+                p = a
+            elif len(coeffs) == 1:
+                # Mono target against a colour reference: the fit used
+                # the luminance plane, so the display must too.
+                p = _to_luminance(a)
+            else:
+                p = a[..., min(c, nch_r - 1)]
+            planes.append((float(b) * np.asarray(p, np.float32)))
+        out = (planes[0] if len(planes) == 1
+               else np.stack(planes, axis=-1))
+        return np.asarray(out, dtype=np.float32), ""
+
+    def _bgstretch_changed(self, combo):
+        """
+        One of the background-view combos changed.
+
+        There is one per background tab and they show the same setting,
+        so the others are brought into step before the redraw. Signals
+        are blocked on the sync so this does not recurse.
+        """
+        _m = str(combo.currentData() or "minmax")
+        if _m == getattr(self, "_bg_stretch_mode", "minmax"):
+            return
+        self._bg_stretch_mode = _m
+        for _c in getattr(self, "_bg_combos", ()):
+            if _c is combo:
+                continue
+            _i = _c.findData(_m)
+            if _i >= 0 and _i != _c.currentIndex():
+                _c.blockSignals(True)
+                _c.setCurrentIndex(_i)
+                _c.blockSignals(False)
+        self._stretch_changed()
+
+    def _set_bg_stretch_mode(self, mode: str):
+        """Set the mode and every combo, without triggering a redraw."""
+        _m = str(mode or "minmax")
+        if _m not in ("minmax", "linear"):
+            _m = "minmax"
+        self._bg_stretch_mode = _m
+        for _c in getattr(self, "_bg_combos", ()):
+            _i = _c.findData(_m)
+            if _i >= 0:
+                _c.blockSignals(True)
+                _c.setCurrentIndex(_i)
+                _c.blockSignals(False)
+
     def _stretch_changed(self, *_):
-        """A different display stretch invalidates every cached render."""
+        """
+        Either display-mode combo changed.
+
+        No cache flush: both modes are part of the cache key, so the
+        existing entries stay valid and flicking back to a mode you have
+        already looked at is a dictionary lookup. The source preview is not
+        cached, so that one does have to be rebuilt by hand.
+        """
         self._save_settings()
-        self._disp_cache.clear()
         if self._result is None:
             self.pane_target._pm = None
             self._show_source_now()
@@ -4736,6 +5384,52 @@ class SurveyGradientDialog(QDialog):
             except Exception:
                 pass
         self._set_status("Applied.")
+
+
+_BG_LINEAR_GAIN = 0.5
+
+
+def _linear_mid(a: np.ndarray, mask: np.ndarray | None = None,
+                gain: float = _BG_LINEAR_GAIN) -> np.ndarray:
+    """
+    0.5 + (a - median(a)) * gain -- a background at its TRUE amplitude.
+
+    Purely linear and purely additive, so what you see is the gradient's
+    real size rather than its shape blown up to fill the screen. The
+    median lands exactly on mid-grey; a 0.002 background is then a 0.001
+    excursion either side of grey, i.e. almost nothing, which is the
+    honest picture of an almost-flat field.
+
+    Per channel, because an OSC background carries a different offset in
+    each -- a single global median would push R and B off mid-grey and
+    read as a colour cast that is not in the gradient.
+
+    `mask` (the fit region) keeps off-footprint pixels out of the median.
+    Non-finite pixels are set to the median, so no-data reads as grey
+    rather than as real dark structure.
+    """
+    a = np.asarray(a, dtype=np.float32)
+    g = float(gain)
+    m = None
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        if m.shape[:2] != a.shape[:2] or not m.any():
+            m = None
+
+    def _one(p: np.ndarray) -> np.ndarray:
+        v = p[m] if m is not None else p
+        v = v[np.isfinite(v)]
+        med = float(np.median(v)) if v.size else 0.0
+        q = np.where(np.isfinite(p), p, med).astype(np.float32)
+        return (0.5 + (q - med) * g).astype(np.float32)
+
+    if a.ndim == 2:
+        out = _one(a)
+    else:
+        out = np.empty_like(a, dtype=np.float32)
+        for c in range(a.shape[2]):
+            out[..., c] = _one(a[..., c])
+    return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
 def _norm01(a: np.ndarray) -> np.ndarray:

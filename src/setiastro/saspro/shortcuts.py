@@ -4775,36 +4775,54 @@ class _WaveScaleDarkEnhancerPresetDialog(QDialog):
 class _CLAHEPresetDialog(QDialog):
     """
     Preset UI for CLAHE:
-      • clip_limit (0.10–4.00)
-      • tile_px (8–512 px)  → converted to OpenCV tileGridSize based on image size
+      • clip_limit (0.10–20.00)
+      • tile_px (8–1024 px)  → converted to OpenCV tileGridSize based on image size
+      • blend (0.00–1.00)
+      • precision — 16- or 8-bit CLAHE plane
+
+    Ranges mirror the CLAHE tool's own controls on purpose. A narrower range
+    here would silently clamp a preset dropped from the tool's grip, so the
+    shortcut would stop matching the settings it was created from.
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("CLAHE — Preset")
         init = dict(initial or {})
 
+        # Keep the default in step with the tool, so flipping the module
+        # constant changes both places at once.
+        try:
+            from setiastro.saspro.clahe import DEFAULT_PRECISION as _DEF_PREC
+        except Exception:
+            _DEF_PREC = 16
+
         form = QFormLayout(self)
 
         self.dp_clip = QDoubleSpinBox()
-        self.dp_clip.setRange(0.10, 4.00)
+        self.dp_clip.setRange(0.10, 20.00)
         self.dp_clip.setDecimals(2)
         self.dp_clip.setSingleStep(0.10)
-        self.dp_clip.setValue(float(init.get("clip_limit", 2.00)))
+        self.dp_clip.setValue(max(0.10, min(20.00, float(init.get("clip_limit", 2.00)))))
 
         self.sp_tile_px = QSpinBox()
-        self.sp_tile_px.setRange(8, 512)
+        self.sp_tile_px.setRange(8, 1024)
         self.sp_tile_px.setSingleStep(8)
 
         # Support both old and new in the UI:
         if "tile_px" in init:
-            self.sp_tile_px.setValue(int(init.get("tile_px", 128)))
+            self.sp_tile_px.setValue(max(8, min(1024, int(init.get("tile_px", 128)))))
+        elif "tile" not in init:
+            # No tile information at all (new/empty preset) -> the tool's own
+            # default. Previously this fell into the legacy branch below and
+            # came back as 256 px, which is not what the CLAHE tool opens with.
+            self.sp_tile_px.setValue(128)
         else:
             # legacy tile count → rough px guess; keeps old presets "reasonable"
             legacy_tile = int(init.get("tile", 8))
             legacy_tile = max(2, min(legacy_tile, 128))
             # Heuristic: convert tile count to a "typical" px size assuming ~2048 min dim
             px_guess = int(round(2048 / float(legacy_tile)))
-            px_guess = max(8, min(px_guess, 512))
+            px_guess = max(8, min(px_guess, 1024))
             # snap to step 8
             px_guess = int(round(px_guess / 8)) * 8
             self.sp_tile_px.setValue(px_guess)
@@ -4819,9 +4837,22 @@ class _CLAHEPresetDialog(QDialog):
             _b = _b / 100.0
         self.dp_blend.setValue(max(0.0, min(1.0, _b)))
 
+        self.cb_16bit = QCheckBox("16-bit CLAHE plane")
+        try:
+            _prec = int(init.get("precision", _DEF_PREC))
+        except Exception:
+            _prec = _DEF_PREC
+        self.cb_16bit.setChecked(_prec >= 16)
+        self.cb_16bit.setToolTip(
+            "Run CLAHE on a 16-bit plane instead of 8-bit.\n"
+            "Avoids posterisation on 32-bit float data. Uncheck to reproduce\n"
+            "results from SASpro builds before the CLAHE rework."
+        )
+
         form.addRow("Clip limit:", self.dp_clip)
         form.addRow("Tile size (px):", self.sp_tile_px)
         form.addRow("Blend amount:", self.dp_blend)
+        form.addRow("Precision:", self.cb_16bit)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
@@ -4837,6 +4868,7 @@ class _CLAHEPresetDialog(QDialog):
             "clip_limit": float(self.dp_clip.value()),
             "tile_px": int(self.sp_tile_px.value()),
             "blend": float(self.dp_blend.value()),
+            "precision": 16 if self.cb_16bit.isChecked() else 8,
         }
 
 class _MorphologyPresetDialog(QDialog):
