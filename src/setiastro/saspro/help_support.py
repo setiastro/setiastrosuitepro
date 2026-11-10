@@ -83,6 +83,7 @@ _DOC_TITLES: dict[str, str] = {
     "snr_tool": "Object SNR Tool",
     "image_peeker": "Image Peeker",
     "image_combine": "Image Combine",
+    "hdr_composition": "HDR Composition",
     "dither_analysis": "Dither Analysis",
     "live_stacking": "Live Stacking",
     "psf_viewer": "PSF Viewer",

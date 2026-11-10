@@ -5049,6 +5049,17 @@ class AstroSuiteProMainWindow(
         w.resize(900, 650)
         w.show()                       # <- modeless; no exec(), no result_preset()
 
+    def _open_hdr_composition(self):
+        from setiastro.saspro.hdr_composition import HDRCompositionDialog
+        w = HDRCompositionDialog(self)
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        try:
+            w.setWindowIcon(QIcon(hdr_path))
+        except Exception:
+            pass
+        w.resize(560, 520)
+        w.show()
+
 
     def _apply_image_combine_from_preset(self, preset: dict, *, target_doc=None):
         """
@@ -8659,6 +8670,9 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 QMessageBox.warning(self, "Debayer failed", str(e))
             return   
+        if cid == "hdr_composition":
+            self._open_hdr_composition()
+            return
         if cid == "image_combine":
             if target_sw is None:
                 # Open the dialog (use preset defaults if present)

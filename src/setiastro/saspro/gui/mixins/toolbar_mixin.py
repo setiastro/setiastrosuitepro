@@ -291,6 +291,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_contsub)
         tb_tl.addAction(self.act_narrowband_integration)
         tb_tl.addAction(self.act_image_combine)
+        tb_tl.addAction(self.act_hdr_composition)
         tb_tl.addAction(self.act_magnitude)
         tb_tl.addAction(self.act_snr)
         tb_tl.addAction(self.act_slap_toolkit)
@@ -1258,6 +1259,13 @@ class ToolbarMixin:
         self.act_image_combine.setStatusTip(self.tr("Blend two open images (replace A or create new)"))
         self.act_image_combine.triggered.connect(self._open_image_combine)
 
+        self.act_hdr_composition = QAction(QIcon(hdr_path), self.tr("HDR Composition..."), self)
+        self.act_hdr_composition.setIconVisibleInMenu(True)
+        self.act_hdr_composition.setStatusTip(self.tr(
+            "Replace saturated pixels in a long exposure with a scaled shorter exposure"
+        ))
+        self.act_hdr_composition.triggered.connect(self._open_hdr_composition)
+
         # --- Geometry ---
         self.act_geom_invert = QAction(QIcon(invert_path), self.tr("Invert"), self)
         self.act_geom_invert.setIconVisibleInMenu(True)
@@ -1764,7 +1772,8 @@ class ToolbarMixin:
         reg("project_new",  self.act_project_new)
         reg("project_save", self.act_project_save)
         reg("project_load", self.act_project_load)     
-        reg("image_combine", self.act_image_combine)   
+        reg("image_combine", self.act_image_combine)
+        reg("hdr_composition", self.act_hdr_composition)   
         reg("psf_viewer", self.act_psf_viewer)
         reg("fx", self.act_fx)
         reg("dither_analysis", self.act_dither_analysis)
