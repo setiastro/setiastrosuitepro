@@ -128,6 +128,8 @@ ALIASES: Dict[str, str] = {
 
     "abe": "abe",
     "automatic_background_extraction": "abe",
+    "srgc": "srgc",
+    "survey_gradient": "srgc",
 
     "graxpert": "graxpert",
     "grax": "graxpert",
@@ -771,6 +773,124 @@ register(CommandSpec(
     supports_linear=True,
     supports_nonlinear=True,
 ))
+register(CommandSpec(
+    id="srgc",
+    title="Survey Reference Gradient Correction",
+    group="Background",
+    import_path="setiastro.saspro.srgc_preset",
+    callable_name="apply_srgc_via_preset",
+    ui_method="open_srgc_with_preset",
+    summary=(
+        "Removes the part of your background that the real sky does NOT "
+        "explain. Fetches a reference image of this exact field from a "
+        "published survey, models both backgrounds on the same sample "
+        "points, fits B_target = a + b*B_reference robustly, and subtracts "
+        "the residual. Real nebulosity survives because it is in the "
+        "reference too and is absorbed by the b term. "
+        "REQUIRES a plate solution and a network connection. The dual-scope "
+        "option (your own wide frame as the reference) is interactive only "
+        "-- a specific array in one session is not something a preset could "
+        "resolve on a later run."
+    ),
+    presets=[
+        PresetSpec(
+            key="survey",
+            type="str",
+            default="NSNS visual continuum (north) — mono",
+            help=(
+                "Reference survey name, exactly as it appears in the dialog. "
+                "Unknown names fall back to the default. Availability varies "
+                "with what is reachable -- see the dialog note."
+            ),
+        ),
+        PresetSpec(
+            key="work_long_side",
+            type="int",
+            default=1024,
+            min=256, max=4096,
+            help=(
+                "Long side of the grid the reference is fetched on and both "
+                "backgrounds are modelled at. A gradient is low-frequency by "
+                "definition, so larger is slower without being better."
+            ),
+        ),
+        PresetSpec(
+            key="degree",
+            type="int",
+            default=1,
+            min=0, max=4,
+            help=(
+                "Polynomial degree for BOTH background models. Keep it low: a "
+                "high-degree model on the target absorbs real structure before "
+                "the reference can explain it, which defeats the tool."
+            ),
+        ),
+        PresetSpec(
+            key="rbf",
+            type="bool",
+            default=True,
+            help="RBF refinement on both background models.",
+        ),
+        PresetSpec(
+            key="samples",
+            type="int",
+            default=200,
+            min=20, max=4000,
+            help="Background sample points, shared by both models.",
+        ),
+        PresetSpec(
+            key="patch",
+            type="int",
+            default=15,
+            min=5, max=151,
+            help="Patch size in work-grid pixels for each sample point.",
+        ),
+        PresetSpec(
+            key="exclude",
+            type="int",
+            default=50,
+            min=0, max=95,
+            help=(
+                "Percent of the SURVEY's brightest pixels that are off-limits "
+                "to sampling. The survey decides, not your frame -- your "
+                "gradient must not disqualify a location."
+            ),
+        ),
+        PresetSpec(
+            key="protect_k",
+            type="float",
+            default=3.0,
+            min=0.5, max=20.0,
+            help=(
+                "Signal protection on the reference in MAD-sigma units, the "
+                "same median + k*MAD threshold ADBE uses. LOWER protects more."
+            ),
+        ),
+        PresetSpec(
+            key="strength",
+            type="int",
+            default=100,
+            min=0, max=150,
+            help=(
+                "Percent of the modelled gradient to subtract. Above 100% deliberately OVER-corrects: there is no physical reason to, but the model is an estimate and tilting past it is sometimes the quickest way to see whether the residual you are chasing is really the gradient."
+            ),
+        ),
+    ],
+    aliases=[
+        "survey_gradient",
+        "survey_reference_gradient_correction",
+    ],
+    examples=[
+        "ctx.run_command('srgc', {})",
+        "ctx.run_command('srgc', {'survey': 'DSS2 red (all sky) — mono'})",
+        "ctx.run_command('srgc', {'degree': 2, 'samples': 300, 'strength': 80})",
+    ],
+    supports_mono=True,
+    supports_rgb=True,
+    supports_linear=True,
+    supports_nonlinear=False,
+))
+
 
 
 register(CommandSpec(

@@ -6424,6 +6424,38 @@ class StarRegistrationThread(QThread):
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             gc.collect()
 
+        # ── Mark the registration reference in its own aligned copy ─────────
+        # SAS_REF answers "which of these aligned frames was the reference?"
+        # for anything that is later handed the folder and nothing else —
+        # chiefly "Skip Registration and Integrate", which needs the reference
+        # to anchor MFDeconv masks, the autocrop base and the displayed frame.
+        # It had a reader in stacking_suite and no writer anywhere, so the
+        # lookup never once fired; this is that missing half.
+        #
+        # Without it the only header-level fallback is "the frame whose SASDZ
+        # transform is identity", which cannot work for a poly/TPS model (those
+        # stamp a kind but no matrix) or when drizzle stamping is off entirely.
+        # In those cases the reader is reduced to re-deriving the reference
+        # from pixels — a full preview decode of every frame. One boolean card
+        # on one file removes that.
+        try:
+            _ref_src = self.reference if isinstance(self.reference, str) else None
+            if _ref_src and _ref_src != "__ACTIVE_VIEW__":
+                _ref_out = self.file_key_to_current_path.get(os.path.normpath(_ref_src))
+                if _ref_out and os.path.exists(_ref_out):
+                    with fits.open(_ref_out, mode="update", memmap=False) as _hdul:
+                        _hdul[0].header["SAS_REF"] = (
+                            True, "Registration reference frame")
+                        _hdul.flush()
+                    self.progress_update.emit(
+                        f"📌 Marked {os.path.basename(_ref_out)} as the "
+                        f"registration reference (SAS_REF)."
+                    )
+        except Exception as e:
+            # Best-effort: a frame we could not stamp just falls back to the
+            # pixel-based recovery, exactly as before.
+            self.progress_update.emit(f"⚠️ Could not stamp SAS_REF: {e}")
+
         try:
             sasd_path = os.path.join(self.output_directory, "alignment_transforms.sasd")
             self._save_alignment_transforms_sasd(sasd_path)

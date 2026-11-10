@@ -17,6 +17,8 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
+from setiastro.saspro.icon_packs import icon_override
+
 
 def _get_base_path() -> str:
     """Get base path for resources (PyInstaller, installed package, or development)."""
@@ -52,6 +54,10 @@ def _resource_path(filename: str) -> str:
 
     is_img = fn.lower().endswith(('.png','.ico','.gif','.icns','.svg','.jpg','.jpeg','.bmp'))
     if is_img:
+        override = icon_override(fn)
+        if override:
+            return override
+
         candidates = [
             os.path.join(base, 'images', fn),
             os.path.join(base, 'setiastro', 'images', fn),
@@ -154,6 +160,7 @@ class Icons:
     CROP = property(lambda self: _resource_path('cropicon.png'))
     OPEN_FILE = property(lambda self: _resource_path('openfile.png'))
     ABE = property(lambda self: _resource_path('abeicon.png'))
+    SRGC = property(lambda self: _resource_path('srgc.png'))
     BLASTER = property(lambda self: _resource_path('blaster.png'))
     CLONESTAMP = property(lambda self: _resource_path('clonestamp.png'))
     
@@ -430,6 +437,7 @@ _LEGACY_ICON_MAP = {
     'cropicon_path': 'cropicon.png',
     'openfile_path': 'openfile.png',
     'abeicon_path': 'abeicon.png',
+    'srgc_path': 'srgc.png',
     'undoicon_path': 'undoicon.png',
     'redoicon_path': 'redoicon.png',
     'blastericon_path': 'blaster.png',

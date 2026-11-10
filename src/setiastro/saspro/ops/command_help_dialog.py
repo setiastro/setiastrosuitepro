@@ -372,6 +372,9 @@ def render_ctx_api_markdown() -> str:
         "- `ctx.get_image_for(name_or_uid)` — ndarray for a specific open view.",
         "- `ctx.set_image_for(name_or_uid, img, step_name='Script')` — update a specific open view.",
         "- `ctx.activate_view(name_or_uid)` — bring a view to front.",
+        "- `ctx.list_image_views()` — list of `(view_title, doc)` for views that hold an image.",
+        "- `ctx.get_document_by_view_name(name)` — match on *window title* (exact, else unique prefix).",
+        "- `ctx.get_image_by_view_name(name)` — ndarray for that window title.",
         "",
         "```python",
         "for v in ctx.list_views():",
@@ -380,6 +383,24 @@ def render_ctx_api_markdown() -> str:
         "doc = ctx.get_document(\"Andromeda\")",
         "if doc:",
         "    ctx.set_image_for(\"Andromeda\", doc.image*1.05, step_name=\"Boost\")",
+        "```",
+        "",
+        "### Renaming views and documents",
+        "A **view title** is per-window. A **document display name** is global: it shows in",
+        "the explorer and in every view of that document.",
+        "",
+        "- `ctx.rename_active_view(new_title)` — rename only the active window's title.",
+        "- `ctx.rename_active_document(new_name)` — rename the active document.",
+        "- `ctx.rename_view(name_or_uid, new_title)` — rename a specific window.",
+        "- `ctx.rename_document(name_or_uid, new_name)` — rename a specific document.",
+        "",
+        "All four return `True` on success and `False` if the target or the new name was",
+        "invalid. See the **Document & Image Objects** page for what is stored where.",
+        "",
+        "```python",
+        "def run(ctx):",
+        "    if not ctx.rename_active_document(\"M31 HaLRGB\"):",
+        "        ctx.log(\"rename failed\")",
         "```",
         "",
         "### Creating a new document",
@@ -474,6 +495,107 @@ def render_ctx_api_markdown() -> str:
         "```",
     ])
 
+# ---------------------------------------------------------------------
+# Document / Image object model help
+# ---------------------------------------------------------------------
+def render_object_model_markdown() -> str:
+    return "\n".join([
+        "## Document & Image Objects",
+        "What `ctx.get_image()` and `ctx.active_document()` actually hand you.",
+        "",
+        "### There is no \"image object\"",
+        "`ctx.get_image()` returns **`doc.image`**, which is a plain `numpy.ndarray`.",
+        "It has no SASpro attributes or methods; everything you call on it is NumPy.",
+        "",
+        "- dtype: `float32` (SASpro normalizes to `float32` on commit)",
+        "- range: normally `0.0 .. 1.0`, but scripts should not assume it",
+        "- shape: `(H, W)` mono, `(H, W, 3)` RGB (some docs carry `(H, W, 1)`)",
+        "- it is a **live reference** to the document buffer, not a copy",
+        "",
+        "```python",
+        "img = ctx.get_image()",
+        "if img is None:",
+        "    ctx.log(\"no active image\")",
+        "    return",
+        "ctx.log(f\"shape={img.shape} dtype={img.dtype} min={img.min()} max={img.max()}\")",
+        "```",
+        "",
+        "Never mutate it in place and expect Undo to work. Build a new array and commit:",
+        "```python",
+        "out = img * 0.9",
+        "ctx.set_image(out, step_name=\"Dim\")",
+        "```",
+        "",
+        "### The document (`ImageDocument`)",
+        "This is the object to use for anything that is *about* the image rather than",
+        "the pixels: names, file path, metadata, Undo.",
+        "",
+        "**Attributes**",
+        "- `doc.image` — the ndarray described above (may be `None`).",
+        "- `doc.metadata` — plain `dict`. Keys SASpro itself reads:",
+        "    `display_name` (document name), `file_path` (source file, may be absent).",
+        "    Loaders add format/header/bit-depth/mono entries.",
+        "- `doc.uid` — stable unique id string for this document.",
+        "",
+        "**Methods / signals**",
+        "- `doc.display_name()` — human-visible document name.",
+        "- `doc.apply_edit(img, metadata={}, step_name='...')` — commit a new image with Undo.",
+        "- `doc.changed` — Qt signal; call `doc.changed.emit()` after editing `metadata`",
+        "  so the explorer and open views refresh.",
+        "",
+        "```python",
+        "doc = ctx.active_document()",
+        "if doc is not None:",
+        "    ctx.log(doc.display_name())",
+        "    ctx.log(str(doc.metadata.get(\"file_path\", \"\")))",
+        "```",
+        "",
+        "### Wrappers: what `active_document()` can return",
+        "`ctx.active_document()` is **ROI-aware**, so it may hand back a wrapper instead",
+        "of the base document:",
+        "",
+        "- a Preview/ROI tab yields an ROI wrapper, which exposes `_parent_doc`",
+        "- a live view yields a `LiveViewDocument`, which exposes `_base`",
+        "",
+        "If you need the real underlying document, use one of these instead:",
+        "- `ctx.base_document()` — base doc for the active window",
+        "- `ctx.get_document(name_or_uid)` — always returns a base doc, never a wrapper",
+        "",
+        "This matters for renaming and metadata: writing `display_name` onto a wrapper",
+        "is not the same as renaming the document.",
+        "",
+        "### Renaming: view title vs document name",
+        "These are two different things in SASpro.",
+        "",
+        "- **View title** — per-window. Stored as `_view_title_override` on the",
+        "  ImageSubWindow and pushed to the frame by `_sync_host_title()`.",
+        "- **Document display name** — global. Stored in `doc.metadata['display_name']`",
+        "  and visible in the explorer and in every view of that document.",
+        "",
+        "Use the `ctx` helpers rather than touching either one by hand:",
+        "",
+        "```python",
+        "SCRIPT_NAME  = \"Rename Active Document\"",
+        "SCRIPT_GROUP = \"User\"",
+        "",
+        "def run(ctx):",
+        "    doc = ctx.active_document()",
+        "    if doc is None:",
+        "        ctx.log(\"no active document\")",
+        "        return",
+        "",
+        "    old = doc.display_name()",
+        "    if ctx.rename_active_document(f\"{old}_processed\"):",
+        "        ctx.log(f\"renamed '{old}' -> '{ctx.active_document().display_name()}'\")",
+        "    else:",
+        "        ctx.log(\"rename failed\")",
+        "```",
+        "",
+        "See **Script Context (ctx) API → Renaming views and documents** for the full",
+        "list of rename helpers.",
+    ])
+
+
 class CommandHelpDialog(QDialog):
     """
     Dialog that documents all registered COMMAND_REGISTRY commands.
@@ -562,6 +684,11 @@ class CommandHelpDialog(QDialog):
             "load_image save_image open_image write_image "
             "file io disk batch fits tiff png jpg exr xisf"),
 
+            ("Docs · Document & Image Objects", "__object_model__",
+            "object model document image ndarray numpy array attributes methods "
+            "metadata display_name uid apply_edit changed rename ImageDocument "
+            "doc image dtype shape roi wrapper base_document parent_doc"),
+
             ("Docs · Available Libraries", "__available_libs__",
             "available libraries libs imports bundled installed"),
         ]
@@ -616,6 +743,11 @@ class CommandHelpDialog(QDialog):
             self.detail.setMarkdown(md)
             return
 
+        if cid == "__object_model__":
+            md = render_object_model_markdown()
+            self.detail.setMarkdown(md)
+            return
+
         # ---- normal command specs ----
         spec = COMMAND_REGISTRY.get(cid)
         if spec is None:
@@ -641,6 +773,8 @@ class CommandHelpDialog(QDialog):
             md = render_scripting_quickstart_markdown()
         elif cid == "__ctx_help__":
             md = render_ctx_api_markdown()
+        elif cid == "__object_model__":
+            md = render_object_model_markdown()
         else:
             spec = COMMAND_REGISTRY.get(cid)
             if spec is None:

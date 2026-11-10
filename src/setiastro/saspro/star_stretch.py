@@ -126,7 +126,20 @@ class StarStretchDialog(QDialog):
     - Works on active ImageDocument (passed in).
     - Preview is computed in background thread.
     - 'Apply to Document' records history via doc.apply_edit(..., step_name="Star Stretch").
+
+    Auto-refresh pipeline (when enabled):
+      - any control change -> _auto_timer (_AUTO_REFRESH_MS) -> full-res preview
+      - exactly one worker at a time; a change made while a worker is in flight
+        re-arms the timer from _on_worker_finished, so edits are never dropped
+        and previews never stack up
     """
+
+    # Debounce for auto-refresh previews, in ms.  Stat Stretch uses 800 because
+    # its per-channel sigma work is heavy; Star Stretch is a single pixel-math
+    # pass, so it can settle faster and still feel instant.  Bump to 800 for
+    # exact parity with Stat Stretch.
+    _AUTO_REFRESH_MS = 250
+
     def __init__(self, parent, document):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Star Stretch"))
@@ -158,6 +171,11 @@ class StarStretchDialog(QDialog):
         self._pan_start = QPointF()
         self._apply_when_ready = False  
         self._headless = False  # True when constructed for a headless preset apply (no geometry save)
+        # auto-refresh (instant preview) state
+        self._busy = False                    # a preview worker is in flight
+        self._preview_stale = True            # self._preview no longer matches the controls
+        self._job_params: dict | None = None  # params the in-flight worker was started with
+        self._settings_dirty = False          # user touched a control this session
         # UI
         main = QHBoxLayout(self)
 
@@ -193,6 +211,15 @@ class StarStretchDialog(QDialog):
         # SCNR checkbox
         self.chk_scnr = QCheckBox(self.tr("Remove Green via SCNR (Optional)"))
         left.addWidget(self.chk_scnr)
+
+        # Auto-refresh (instant preview) toggle - mirrors Stat Stretch
+        self.chk_auto = QCheckBox(self.tr("Auto-refresh preview"))
+        self.chk_auto.setChecked(False)
+        self.chk_auto.setToolTip(self.tr(
+            "When enabled, any control change updates the preview automatically\n"
+            "after a short settle, so you don't have to press Preview."
+        ))
+        left.addWidget(self.chk_auto)
 
         # Buttons row
         rowb = QHBoxLayout()
@@ -263,11 +290,40 @@ class StarStretchDialog(QDialog):
         main.addLayout(right, 1)
 
         # signals
-        self.btn_preview.clicked.connect(self._run_preview)
+        # NOTE: clicked(bool) would bind to _run_preview's `interactive` arg,
+        # so route the button through a lambda and keep interactive=True.
+        self.btn_preview.clicked.connect(lambda: self._run_preview(True))
         self.btn_apply.clicked.connect(self._apply_to_doc)
+        self.chk_scnr.toggled.connect(lambda _=False: self._on_any_control_changed())
+        self.chk_auto.toggled.connect(self._on_auto_refresh_toggled)
+
+        # Auto-refresh debounce timer -> full-res preview once controls settle
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setSingleShot(True)
+        self._auto_timer.setInterval(int(self._AUTO_REFRESH_MS))
+        self._auto_timer.timeout.connect(self._auto_preview)
+
+        # Restore every user option from the last session (signals blocked
+        # inside, so this cannot fire a handler or schedule a save)
+        self._load_settings()
+
+        # Persist on change, debounced: one slider drag becomes one write
+        # instead of one per tick.  closeEvent flushes anything still pending.
+        self._settings_timer = QTimer(self)
+        self._settings_timer.setSingleShot(True)
+        self._settings_timer.setInterval(400)
+        self._settings_timer.timeout.connect(self._save_settings)
+        self.sld_st.valueChanged.connect(self._schedule_save_settings)
+        self.sld_sat.valueChanged.connect(self._schedule_save_settings)
+        self.chk_scnr.toggled.connect(self._schedule_save_settings)
+        self.chk_auto.toggled.connect(self._schedule_save_settings)
 
         # initialize preview with current doc image
         self._update_preview_pix(self.doc.image)
+
+        # If auto-refresh was left on, show a stretched preview immediately
+        if self.chk_auto.isChecked():
+            self._auto_timer.start()
 
     # --- active document change ---
     def _on_active_doc_changed(self, doc):
@@ -276,21 +332,88 @@ class StarStretchDialog(QDialog):
             return
         self.doc = doc
         self._preview = None
+        self._preview_stale = True
         self._update_preview_pix(self.doc.image)
+        # Switching to another image should re-stretch it if auto is on
+        chk = getattr(self, "chk_auto", None)
+        if chk is not None and chk.isChecked() and not getattr(self, "_headless", False):
+            self._auto_timer.start()
 
     # --- UI change handlers ---
     def _on_stretch_changed(self, v: int):
         self.lbl_st.setText(f"Stretch Amount: {v/100.0:.2f}")
+        self._on_any_control_changed()
 
     def _on_sat_changed(self, v: int):
         self.lbl_sat.setText(f"Color Boost: {v/100.0:.2f}")
+        self._on_any_control_changed()
+
+    # --- auto-refresh (instant preview) ---
+    def _on_any_control_changed(self):
+        """Called by every control that changes the stretched output.
+
+        Marks the cached preview stale (so Apply can't commit a result from
+        older settings) and, when auto-refresh is on, re-arms the debounce.
+        Guarded with getattr because the sliders are connected before
+        chk_auto / _auto_timer exist during __init__.
+        """
+        self._preview_stale = True
+        chk = getattr(self, "chk_auto", None)
+        if chk is None or not chk.isChecked():
+            return
+        t = getattr(self, "_auto_timer", None)
+        if t is None:
+            return
+        # If a worker is in flight this is a no-op worth making anyway: the
+        # staleness check in _on_worker_finished re-arms once it lands.
+        t.start()
+
+    def _on_auto_refresh_toggled(self, on: bool):
+        # Persistence now goes through the shared _schedule_save_settings hook,
+        # which is connected to this same toggled signal.
+        if on:
+            if self._preview is None or self._preview_stale:
+                self._auto_timer.start()
+        else:
+            self._auto_timer.stop()
+
+    def _auto_preview(self):
+        """Debounce timer slot."""
+        if getattr(self, "_headless", False):
+            return
+        chk = getattr(self, "chk_auto", None)
+        if chk is None or not chk.isChecked():
+            return
+        self._run_preview(False)
 
     # --- preview / processing ---
-    def _run_preview(self):
-        img = self.doc.image
-        if img is None:
-            QMessageBox.information(self, "No image", "Open an image first.")
+    def _run_preview(self, interactive: bool = True):
+        """Start a preview worker.
+
+        interactive=False is the auto-refresh path: it stays silent about a
+        missing image instead of popping a message box behind the user.
+        """
+        t = getattr(self, "_auto_timer", None)
+        if t is not None:
+            t.stop()
+
+        if self._busy:
+            # One worker at a time.  _on_worker_finished re-arms the timer if
+            # the controls have moved since this job started.
             return
+
+        img = getattr(self.doc, "image", None) if self.doc is not None else None
+        if img is None:
+            if interactive:
+                QMessageBox.information(self, "No image", "Open an image first.")
+            self._apply_when_ready = False
+            return
+
+        # Remember what this job is computing, so we can tell on completion
+        # whether the result still matches the controls.
+        self._job_params = self._star_stretch_params()
+
+        self._busy = True
         self._show_spinner(True)
         self.btn_preview.setEnabled(False)
         self.btn_apply.setEnabled(False)
@@ -302,24 +425,56 @@ class StarStretchDialog(QDialog):
             do_scnr=self.chk_scnr.isChecked()
         )
         self._thr.preview_ready.connect(self._on_preview_ready)
-        self._thr.finished.connect(lambda: self._show_spinner(False))
+        self._thr.finished.connect(self._on_worker_finished)
         self._thr.start()
 
     def _on_preview_ready(self, out: np.ndarray):
         out_masked = self._blend_with_mask(out)
         self._preview = out_masked
-        self.btn_preview.setEnabled(True)
-        self.btn_apply.setEnabled(True)
+
+        # Did the controls move while this was computing?
+        try:
+            self._preview_stale = (self._job_params != self._star_stretch_params())
+        except Exception:
+            self._preview_stale = False
+
         self._update_preview_pix(out_masked)
 
         mw = self._find_main_window()
         if mw and hasattr(mw, "_log"):
             mw._log("Star Stretch: preview generated.")
 
-        # NEW: if Apply was pressed before preview completed, finish now.
+        # Button re-enable and the pending-apply / pending-refresh decisions
+        # moved to _on_worker_finished: preview_ready is emitted from inside
+        # run(), so the thread is still alive here and _run_preview's
+        # single-flight guard would reject anything started from this slot.
+
+    def _on_worker_finished(self):
+        """Worker thread done: free the slot, then settle any pending work."""
+        self._busy = False
+        self._show_spinner(False)
+        self.btn_preview.setEnabled(True)
+        self.btn_apply.setEnabled(True)
+
+        # Apply was pressed before the preview landed.
         if self._apply_when_ready:
+            if self._preview is None:
+                self._apply_when_ready = False
+                return
+            if self._preview_stale:
+                # Controls moved mid-flight - recompute, then apply that result
+                # (_apply_when_ready stays set).  Converges once the user stops
+                # touching the sliders.
+                QTimer.singleShot(0, lambda: self._run_preview(False))
+                return
             self._apply_when_ready = False
-            self._finish_apply()
+            QTimer.singleShot(0, self._finish_apply)
+            return
+
+        # Auto-refresh: pick up changes made while the worker was running.
+        chk = getattr(self, "chk_auto", None)
+        if self._preview_stale and chk is not None and chk.isChecked():
+            self._auto_timer.start()
 
     def _apply_to_doc(self):
         if not self._headless and self.isVisible():
@@ -327,14 +482,17 @@ class StarStretchDialog(QDialog):
                 self._save_window_geometry()
             except Exception:
                 pass
-        # If we don't have a preview yet, compute it and auto-apply when ready.
-        if self._preview is None:
-            if getattr(self, "_thr", None) and self._thr.isRunning():
+        # If we have no preview - or the controls moved since the last one -
+        # compute a fresh result and auto-apply when it lands.  Without the
+        # staleness test, Preview -> nudge slider -> Apply committed the
+        # previous settings.
+        if self._preview is None or self._preview_stale:
+            if self._busy:
                 # already computing; just mark to apply when it lands
                 self._apply_when_ready = True
                 return
             self._apply_when_ready = True
-            self._run_preview()
+            self._run_preview(True)
             return
 
         # We do have a preview → finish immediately
@@ -386,7 +544,20 @@ class StarStretchDialog(QDialog):
                 except Exception:
                     pass
 
+        # Seeded values invalidate any cached preview.  Signals were blocked
+        # above, so _on_any_control_changed never fired - do its work here.
+        self._preview = None
+        self._preview_stale = True
+        chk = getattr(self, "chk_auto", None)
+        if chk is not None and chk.isChecked() and not getattr(self, "_headless", False):
+            self._auto_timer.start()
+
     def _finish_apply(self):
+        # No auto-refresh firing into a dialog that is about to close
+        try:
+            self._auto_timer.stop()
+        except Exception:
+            pass
         try:
             _marr, mid, mname = self._active_mask_layer()
             meta = {
@@ -452,7 +623,8 @@ class StarStretchDialog(QDialog):
                     self.doc = new_doc
                     # Reset preview for new document
                     self._preview = None
-                    self._compute_and_show_preview()
+                    self._preview_stale = True
+                    self._run_preview(False)
         except Exception:
             pass
 
@@ -627,6 +799,40 @@ class StarStretchDialog(QDialog):
                 self._save_window_geometry()
             except Exception:
                 pass
+
+        # 0a) Write out any debounced option change (e.g. a slider moved and
+        #     the dialog closed inside the 400 ms settle)
+        try:
+            self._flush_settings()
+        except Exception:
+            pass
+
+        # 0) Stop auto-refresh and make sure no preview worker outlives the
+        #    dialog.  WA_DeleteOnClose + a live QThread emitting into this
+        #    object is a crash; the block below used to wait on self._thread /
+        #    self._worker, which this dialog never sets.  The real handle is
+        #    self._thr.
+        try:
+            t = getattr(self, "_auto_timer", None)
+            if t is not None:
+                t.stop()
+        except Exception:
+            pass
+        try:
+            thr = getattr(self, "_thr", None)
+            if thr is not None and thr.isRunning():
+                try:
+                    thr.preview_ready.disconnect()
+                except Exception:
+                    pass
+                try:
+                    thr.requestInterruption()
+                except Exception:
+                    pass
+                thr.wait(3000)
+        except Exception:
+            pass
+
         # 1) Disconnect active-doc tracking (Fabio hook)
         try:
             if self._connected_current_doc_changed and hasattr(self._main, "currentDocumentChanged"):
@@ -650,6 +856,111 @@ class StarStretchDialog(QDialog):
             pass
 
         super().closeEvent(ev)
+
+    # --- option persistence -------------------------------------------------
+    #
+    # Keys live under star_stretch_ui/ to match the existing geometry key.
+    # Sliders are stored x100, the same convention Stat Stretch uses, so the
+    # stored value is the widget value and no rounding drift creeps in.
+
+    _DEFAULT_STRETCH_X100 = 500   # 5.00
+    _DEFAULT_BOOST_X100   = 100   # 1.00
+
+    def _load_settings(self):
+        """Restore every user-facing option from the previous session.
+
+        Signals are blocked for the whole push, so no handler fires and no
+        save is scheduled; the labels are therefore set explicitly here (the
+        valueChanged handlers that normally format them won't run) - the same
+        divisor trap seed_from_preset documents.
+        """
+        try:
+            s = QSettings()
+        except Exception:
+            return
+
+        widgets = [self.sld_st, self.sld_sat, self.chk_scnr, self.chk_auto]
+        for w in widgets:
+            try:
+                w.blockSignals(True)
+            except Exception:
+                pass
+
+        try:
+            try:
+                stretch = int(s.value("star_stretch_ui/stretch_amount_x100",
+                                      self._DEFAULT_STRETCH_X100))
+            except Exception:
+                stretch = self._DEFAULT_STRETCH_X100
+            stretch = max(self.sld_st.minimum(), min(self.sld_st.maximum(), stretch))
+            self.sld_st.setValue(stretch)
+            self.lbl_st.setText(f"Stretch Amount: {stretch/100.0:.2f}")
+
+            try:
+                boost = int(s.value("star_stretch_ui/color_boost_x100",
+                                    self._DEFAULT_BOOST_X100))
+            except Exception:
+                boost = self._DEFAULT_BOOST_X100
+            boost = max(self.sld_sat.minimum(), min(self.sld_sat.maximum(), boost))
+            self.sld_sat.setValue(boost)
+            self.lbl_sat.setText(f"Color Boost: {boost/100.0:.2f}")
+
+            self.chk_scnr.setChecked(bool(s.value("star_stretch_ui/scnr_green",
+                                                  False, type=bool)))
+            self.chk_auto.setChecked(bool(s.value("star_stretch_ui/auto_refresh",
+                                                  False, type=bool)))
+        except Exception:
+            pass
+        finally:
+            for w in widgets:
+                try:
+                    w.blockSignals(False)
+                except Exception:
+                    pass
+
+    def _save_settings(self, *_):
+        """Persist every user-facing option."""
+        if getattr(self, "_headless", False):
+            return
+        try:
+            s = QSettings()
+            s.setValue("star_stretch_ui/stretch_amount_x100", int(self.sld_st.value()))
+            s.setValue("star_stretch_ui/color_boost_x100", int(self.sld_sat.value()))
+            s.setValue("star_stretch_ui/scnr_green", bool(self.chk_scnr.isChecked()))
+            s.setValue("star_stretch_ui/auto_refresh", bool(self.chk_auto.isChecked()))
+            self._settings_dirty = False
+        except Exception:
+            pass
+
+    def _schedule_save_settings(self, *_):
+        """Debounce persistence: a slider drag becomes a single write.
+
+        Only reached from a real control signal, so a preset pushed in with
+        signals blocked (seed_from_preset) never marks the session dirty and
+        never overwrites the user's stored defaults.
+        """
+        if getattr(self, "_headless", False):
+            return
+        self._settings_dirty = True
+        t = getattr(self, "_settings_timer", None)
+        if t is None:
+            self._save_settings()
+            return
+        t.start()
+
+    def _flush_settings(self):
+        """Write a pending debounced save immediately (used on close)."""
+        if getattr(self, "_headless", False):
+            return
+        if not getattr(self, "_settings_dirty", False):
+            return
+        t = getattr(self, "_settings_timer", None)
+        try:
+            if t is not None and t.isActive():
+                t.stop()
+        except Exception:
+            pass
+        self._save_settings()
 
     def _restore_window_geometry(self):
         try:

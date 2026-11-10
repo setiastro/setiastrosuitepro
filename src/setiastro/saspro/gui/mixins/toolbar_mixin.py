@@ -24,7 +24,8 @@ from setiastro.saspro.resources import (
     icon_path, green_path, neutral_path, whitebalance_path, texture_clarity_path,
     morpho_path, clahe_path, starnet_path, staradd_path, LExtract_path,
     LInsert_path, rgbcombo_path, rgbextract_path, graxperticon_path,
-    cropicon_path, openfile_path, abeicon_path, undoicon_path, redoicon_path,
+    cropicon_path, openfile_path, abeicon_path, srgc_path, undoicon_path,
+    redoicon_path,
     blastericon_path, hdr_path, invert_path, fliphorizontal_path,
     flipvertical_path, rotateclockwise_path, rotatecounterclockwise_path,rotatearbitrary_path,
     rotate180_path, maskcreate_path, maskapply_path, maskremove_path, histogram_transform_path,
@@ -221,6 +222,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_ghs)
         tb_fn.addAction(self.act_satchroma)
         tb_fn.addAction(self.act_abe)
+        tb_fn.addAction(self.act_srgc)
         tb_fn.addAction(self.act_graxpert)
         tb_fn.addAction(self.act_cosmetic_correction)
         tb_fn.addAction(self.act_remove_stars)
@@ -1053,6 +1055,14 @@ class ToolbarMixin:
         self.act_abe.setIconVisibleInMenu(True)
         self.act_abe.triggered.connect(self._open_abe_tool)
 
+        self.act_srgc = QAction(QIcon(srgc_path),
+                                self.tr("Survey Gradient..."), self)
+        self.act_srgc.setStatusTip(self.tr(
+            "Survey Reference Gradient Correction — remove the part of your "
+            "background that the real sky does not explain"))
+        self.act_srgc.setIconVisibleInMenu(True)
+        self.act_srgc.triggered.connect(self._open_srgc_tool)
+
         self.act_graxpert = QAction(QIcon(graxperticon_path), self.tr("Remove Gradient (GraXpert)..."), self)
         self.act_graxpert.setIconVisibleInMenu(True)
         self.act_graxpert.setStatusTip(self.tr("Run GraXpert background extraction on the active image"))
@@ -1706,6 +1716,7 @@ class ToolbarMixin:
         reg("contsub",      self.act_contsub)
         reg("narrowband_integration", self.act_narrowband_integration)
         reg("abe",          self.act_abe)
+        reg("srgc",         self.act_srgc)
         reg("create_mask",  self.act_create_mask)
         reg("invert_mask",  self.act_invert_mask)
         reg("remove_mask",  self.act_remove_mask)

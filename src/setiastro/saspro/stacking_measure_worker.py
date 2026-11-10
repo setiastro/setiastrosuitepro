@@ -22,8 +22,11 @@ will disagree.
 """
 from __future__ import annotations
 
+import io
+import json
 import os
 import math
+import time
 import numpy as np
 import cv2
 from astropy.io import fits
@@ -363,14 +366,186 @@ def _mad_noise(arr) -> float:
     return mad * 1.4826
 
 
+# ── measurement cache (sidecar index) ────────────────────────────────────────
+# A frame's measurement is a pure function of (its pixels, the target binning,
+# the measurement code), so it can be cached. The first implementation put it
+# in the frame's own FITS header; that was wrong, and the way it was wrong is
+# worth recording.
+#
+# A FITS header is a PREFIX of the file. Adding a card past the 2880-byte
+# blocks already allocated forces astropy to re-lay-out the file, which moves
+# the data with it. Measured on 899 real 187 MB calibrated frames:
+#
+#     unstamped header: 67 cards, 5 free slots -- the stamp needed 14
+#     first stamp:      372 ms, the whole 187 MB file rewritten
+#     re-stamp:         3-6 ms, in place
+#     measure:          1.65 s
+#
+# So nearly every frame paid a full rewrite, from 36 worker processes at once,
+# on top of the 187 MB/frame reads. The drive saturated, the CPU went idle and
+# the measurement phase went from 0.25 s/frame to 0.5-1.0 s/frame. 226 of the
+# 899 had too little header room to EVER be cached. Packing the payload into
+# one long CONTINUE card is not a way out either -- astropy rejects it.
+#
+# Hence a sidecar. One JSON index for the whole stacking directory, living in
+# Measurements/ beside Calibrated/, Normalized_Images/, Aligned_Images/ and
+# Master_Light/, keyed by each frame's absolute path -- so measuring the same
+# frames from the calibrated folder or the aligned folder hits the same index.
+#
+# Validity is (size, mtime_ns). That needs one os.stat per frame and opens
+# nothing, where the header scan it replaces cost ~1.6 ms/frame. It is also a
+# STRONGER check than the old one: any edit to the file at all invalidates it,
+# where the header stamp could only notice a changed geometry or Bayer pattern.
+#
+# The parent loads the index once, filters, runs the pool on the misses, then
+# writes the index once. Workers never touch it -- that is what keeps the write
+# contention that caused the regression from coming back.
+#
+# !! BUMP MEASURE_SCHEMA_VERSION whenever the measurement changes !!
+# Any edit to _quick_preview_any, _star_count_ecc_size, _measure_fwhm_halfres,
+# _mad_noise or measure_file's statistics changes what these numbers mean, and
+# a stale cache would silently feed the old numbers to the weight scorer.
+MEASURE_SCHEMA_VERSION = 2      # 2: sidecar index (1 was the SASM* header stamp)
+
+MEASUREMENT_DIR_NAME = "Measurements"
+MEASUREMENT_INDEX_NAME = "measurements.json"
+_INDEX_MAX_ENTRIES = 100_000    # prune before this becomes a slow JSON load
+
+
+def measurement_index_path(stacking_dir) -> str | None:
+    """Where the index lives for a given stacking directory, or None."""
+    if not stacking_dir:
+        return None
+    try:
+        return os.path.join(str(stacking_dir), MEASUREMENT_DIR_NAME,
+                            MEASUREMENT_INDEX_NAME)
+    except Exception:
+        return None
+
+
+def _frame_key(fp: str) -> str:
+    return os.path.normcase(os.path.abspath(str(fp)))
+
+
+def _frame_stat(fp: str):
+    """(size, mtime_ns) or None. One stat; the file is never opened."""
+    try:
+        st = os.stat(fp)
+        return int(st.st_size), int(st.st_mtime_ns)
+    except OSError:
+        return None
+
+
+def load_measurement_index(stacking_dir) -> dict:
+    """Read the index. Any problem yields an empty index, never an exception --
+    a cache that cannot be read just means everything gets measured."""
+    path = measurement_index_path(stacking_dir)
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with io.open(path, "r", encoding="utf-8") as fh:
+            blob = json.load(fh)
+        if not isinstance(blob, dict):
+            return {}
+        if int(blob.get("schema", -1)) != MEASURE_SCHEMA_VERSION:
+            return {}               # measurement changed; the whole file is stale
+        entries = blob.get("frames")
+        return entries if isinstance(entries, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_measurement_index(stacking_dir, entries: dict) -> bool:
+    """Write the index atomically. Drops entries whose file is gone, so the
+    index cannot grow without bound as frames are deleted or re-stacked."""
+    path = measurement_index_path(stacking_dir)
+    if not path:
+        return False
+    try:
+        live = {k: v for k, v in entries.items() if os.path.exists(k)}
+        if len(live) > _INDEX_MAX_ENTRIES:
+            # keep the most recently measured
+            live = dict(sorted(live.items(),
+                               key=lambda kv: kv[1].get("t", 0),
+                               reverse=True)[:_INDEX_MAX_ENTRIES])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with io.open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"schema": MEASURE_SCHEMA_VERSION, "frames": live}, fh)
+        os.replace(tmp, path)       # atomic; a crash cannot leave a torn index
+        return True
+    except Exception:
+        try:
+            if os.path.exists(path + ".tmp"):
+                os.remove(path + ".tmp")
+        except Exception:
+            pass
+        return False
+
+
+def index_lookup(entries: dict, fp, target_xbin, target_ybin):
+    """Cached (mean, med, count, ecc, fwhm, noise) for this frame, or None.
+
+    None for every reason: not indexed, the file changed, or it was measured
+    at a different target binning. JSON round-trips Python floats exactly
+    (json uses repr), so a cache hit reproduces a fresh measurement bit for
+    bit -- which matters because these feed the weight scorer.
+    """
+    try:
+        e = entries.get(_frame_key(fp))
+        if not e:
+            return None
+        if int(e.get("xb", -1)) != int(target_xbin) or \
+                int(e.get("yb", -1)) != int(target_ybin):
+            return None
+        stat = _frame_stat(fp)
+        if stat is None or int(e.get("size", -1)) != stat[0] or \
+                int(e.get("mtime", -1)) != stat[1]:
+            return None
+        payload = (float(e["mean"]), float(e["med"]), int(e["cnt"]),
+                   float(e["ecc"]), float(e["fwhm"]), float(e["noise"]))
+    except Exception:
+        return None
+    if not all(math.isfinite(v) for v in payload):
+        return None                  # a NaN here would silently floor a weight
+    return payload
+
+
+def index_store(entries: dict, fp, target_xbin, target_ybin, payload) -> bool:
+    """Record one measurement. Returns False if it could not be recorded."""
+    try:
+        mean, med, c, ecc, size, noise = payload
+        vals = (float(mean), float(med), float(ecc), float(size), float(noise))
+        if not all(math.isfinite(v) for v in vals):
+            return False             # never cache a NaN
+        stat = _frame_stat(fp)
+        if stat is None:
+            return False
+        entries[_frame_key(fp)] = {
+            "size": stat[0], "mtime": stat[1],
+            "xb": int(target_xbin), "yb": int(target_ybin),
+            "mean": vals[0], "med": vals[1], "cnt": int(c),
+            "ecc": vals[2], "fwhm": vals[3], "noise": vals[4],
+            "t": int(time.time()),
+        }
+        return True
+    except Exception:
+        return False
+
+
 # ── the process-pool entry point ──────────────────────────────────────────────
-def measure_file(fp, target_xbin, target_ybin):
+def measure_file(fp, target_xbin, target_ybin, use_cache=False):
     """Load + measure one frame. Runs in a worker process.
 
     Returns (status, fp, payload), mirroring StackingSuite._measure_one exactly:
       ("ok",     fp, (mean, med, count, ecc, fwhm, noise))
       ("err",    fp, "<error>")    preview loaded but measurement failed
       ("noprev", fp, <error|None>) no usable image data — caller skips the frame
+
+    `use_cache` is accepted and IGNORED. It is kept so older callers and any
+    pickled job still work. Caching is now the parent's job via the sidecar
+    index above: workers that wrote the cache themselves were the cause of the
+    36-way file-write contention that made the measurement phase 4x slower.
     """
     try:
         preview = _quick_preview_any(fp, target_xbin, target_ybin)

@@ -728,6 +728,9 @@ _ALLOWED_DEPTHS = {
     "jpg":  {"8-bit"},
     "fits": ["8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"],
     "fit":  ["8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"],
+    # ".fts" is in the Save As FITS filter; without an entry here the depth
+    # the dialog picked was validated against an empty set.
+    "fts":  ["8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"],
     "tif":  {"8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"},
     "xisf": {"16-bit", "32-bit unsigned", "32-bit floating point"},
     "psb":  {"16-bit", "32-bit floating point"},
@@ -3283,16 +3286,13 @@ class DocManager(QObject):
                 a = (data - dmin) / (dmax - dmin) if dmax > dmin else np.zeros_like(data, dtype=np.float32)
 
             elif src_dtype == np.uint32:
+                # FITS stores unsigned ints as signed + BZERO = 2**(n-1)
+                # (FITS 4.0 Sect 5.2.3); astropy has already applied that by
+                # the time it yields uint32, so re-applying BZERO double
+                # counted it and the min-max renormalize then shifted the
+                # whole frame. Matches the uint16 branch above.
                 bit_depth = "32-bit unsigned"
-                bzero = float(hdr.get('BZERO', 0))
-                bscale = float(hdr.get('BSCALE', 1))
-                if bzero == 0.0 and bscale == 1.0:
-                    a = arr.astype(np.float32) / 4294967295.0
-                else:
-                    data = arr.astype(np.float32) * bscale + bzero
-                    dmin = float(data.min())
-                    dmax = float(data.max())
-                    a = (data - dmin) / (dmax - dmin) if dmax > dmin else np.zeros_like(data, dtype=np.float32)
+                a = arr.astype(np.float32) / 4294967295.0
 
             elif src_dtype == np.float32:
                 bit_depth = "32-bit floating point"

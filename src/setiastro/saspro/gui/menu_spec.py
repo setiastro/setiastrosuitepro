@@ -56,7 +56,7 @@ MENU_CONTENTS: dict[str, List[str]] = {
         "act_linear_fit", "act_morphology", "act_nbextract", "act_pedestal",
         "act_pixelmath", "act_recombine_luma", "act_remove_green",
         "act_remove_stars", "act_rgb_combine", "act_rgb_extract",
-        "act_satchroma", "act_sfcc", "act_sssc", "act_signature",
+        "act_satchroma", "act_sfcc", "act_srgc", "act_sssc", "act_signature",
         "act_star_stretch", "act_stat_stretch", "act_texture_clarity",
         "act_wavescale_de", "act_wavescale_hdr", "act_white_balance",
     ],
@@ -132,7 +132,7 @@ MENU_CONTENTS: dict[str, List[str]] = {
 SUBMENUS: dict[str, List[Tuple[str, List[str]]]] = {
     "functions": [
         ("Gradient && Background", [
-            "act_abe", "act_graxpert", "act_pedestal",
+            "act_abe", "act_srgc", "act_graxpert", "act_pedestal",
         ]),
         ("Color Calibration", [
             "act_background_neutral", "act_white_balance", "act_sfcc",

@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#8fd7c6; font-size:13px; margin:14px 0 2px 0;
+       font-weight:600; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .new { background:#15211e; border-left:3px solid #c7a24a; padding:8px 12px;
+         margin:10px 0; color:#e8ddc0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Survey Reference Gradient Correction &mdash; SRGC</h1>
+<p class="sub">Removes the part of your background that the <i>real sky</i> does
+not explain. SRGC fetches an image of your exact field from a published survey
+&mdash; or uses a frame from your own second scope &mdash; models both
+backgrounds on the same sample points, and subtracts only the residual. Real
+nebulosity survives because it is present in the reference too. Requires a plate
+solution; the survey path also needs a network connection. Non-destructive:
+nothing changes until Apply.</p>
+
+<h2>1. Why this exists</h2>
+
+<p>ADBE models your background and removes it. The problem it cannot solve is
+<b>attribution</b>. Your background is</p>
+
+<div class="matheq-hero">B_t(x,y) = s\,S(x,y) + G(x,y) + c</div>
+
+<p>where \(S\) is <b>real diffuse sky structure</b> &mdash; nebulosity, IFN,
+galactic cirrus &mdash; and \(G\) is <b>your gradient</b>: light pollution,
+airglow, a vignetting residual, moonlight. A self-contained model sees one
+surface and has no way to tell those apart, so it removes some of each. That is
+why large faint structure quietly flattens out, and it is the reason PixInsight
+funded an entire survey (MARS) to attack the same problem.</p>
+
+<p>SRGC breaks the degeneracy with outside information. It fetches a reference
+image of the same patch of sky, models its background the same way, and fits</p>
+
+<div class="matheq-hero">B_t \approx a + b\,B_r</div>
+
+<p>robustly across the frame. Whatever is left over,</p>
+
+<div class="matheq">G = B_t - (a + b\,B_r)</div>
+
+<p>is the part of your background the real sky does not account for. That is your
+gradient, and that is what gets subtracted. Nebulosity is in the reference too,
+so it is absorbed by the \(b\,B_r\) term and comes through untouched.</p>
+
+<div class="tip"><b>When to use which.</b> ADBE is offline, unconditional, and
+right for ordinary vignetting and smooth light pollution on a sparse field. Reach
+for SRGC when the field has <i>real large-scale structure you are afraid of
+losing</i> &mdash; IFN, cirrus, a big nebula filling the frame, or anything where
+ADBE's result looked suspiciously flat.</div>
+
+<h2>2. Using the tool</h2>
+
+<h3>2.1 Before you start</h3>
+
+<p class="tip"><b>Linear data is the home ground, but a stretched image is
+not a write-off.</b> SRGC models your gradient as something <i>added</i> to
+the sky and subtracts it, which is exactly true while the data is linear.
+It stays a good approximation after an ordinary stretch, because a
+stretch does almost nothing <i>curved</i> down where the background lives:
+the background occupies a sliver at the bottom of the histogram, and over a
+sliver any smooth curve is its own tangent &mdash; which is precisely what an
+additive model is. See &sect;3.7 for the measurements. What does break it is
+anything <b>spatially varying</b> &mdash; masked stretching, local contrast,
+HDR compression &mdash; because that is no longer one transfer function, so
+there is no single tangent to stand in for it.</p>
+
+<p>The image must be <b>plate-solved</b>: the reference is fetched and aligned by
+sky coordinates, so without a WCS there is nothing to look up. If the image has
+no solution SRGC offers to run the plate solver for you. With no pointing in the
+header that falls back to a <b>blind</b> solve, which searches the quad index and
+can take a few minutes &mdash; so it always asks first and never starts one on
+its own.</p>
+
+<h3>2.2 Choosing a reference</h3>
+<p><b>Reference source</b> selects between a published survey and your own
+image.</p>
+
+<h3>Survey</h3>
+<p>Pick the survey whose <i>content</i> matches your data, not simply the deepest
+one. A narrowband frame should be matched against a narrowband reference: fitting
+an H&alpha; image against a broadband continuum plane regresses your gradient
+against structure that is not in your channel.</p>
+
+<table>
+  <tr><th>Survey</th><th>Use it for</th><th>Coverage</th></tr>
+  <tr><td>NSNS visual continuum &mdash; mono</td><td>General broadband work in
+      the north. Linear intensity in Rayleighs, star-subtracted. The
+      default.</td><td>dec &ge; &minus;16&deg;</td></tr>
+  <tr><td>NSNS SHO (H&alpha; / [OIII] / [SII])</td><td>SHO-mapped narrowband
+      &mdash; each channel is matched to the line it was imaged
+      in.</td><td>dec &ge; &minus;16&deg;</td></tr>
+  <tr><td>NSNS HOO / SOO</td><td>One-shot colour behind a dual narrowband filter.
+      The Bayer matrix already sorted the passbands, so your frame <i>is</i> an
+      HOO composite and the reference is built to be one
+      too.</td><td>dec &ge; &minus;16&deg;</td></tr>
+  <tr><td>NSNS H&alpha; / [OIII] / [SII] &mdash; mono</td><td>Single-line mono
+      data.</td><td>dec &ge; &minus;16&deg;</td></tr>
+  <tr><td>DSS2 red + NSNS continuum &mdash; colour</td><td>Colour data in the
+      north. Two genuinely different planes, so each of your channels gets its
+      own reference.</td><td>dec &ge; &minus;16&deg;</td></tr>
+  <tr><td>DSS2 colour from 8-bit tiles &mdash; colour</td><td>Colour data
+      anywhere, including the south. Real red/green/blue bands out of one
+      download.</td><td>all sky</td></tr>
+  <tr><td>DSS2 red &mdash; mono</td><td>The dependable fallback. Photographic
+      plates, all sky, always there.</td><td>all sky</td></tr>
+</table>
+
+<p>The note under the dropdown describes the selected survey and leads with a
+<b>&#9888; warning</b> when it cannot currently fetch. Availability is not
+decoration: survey hosting moves, and mirrors go down. SRGC re-checks the
+unavailable entries in the background each time you open the dialog, and tells
+you if one has come back.</p>
+
+<div class="new"><b>Narrowband references are CC&#8209;BY&#8209;NC&#8209;SA.</b>
+The NSNS layers are published by Stefan Ziegenbalg under a licence with a
+<b>non-commercial</b> clause. The DSS2 and SDSS options carry no such
+restriction. If your output is commercial, use a DSS2 entry.</div>
+
+<h3>Your own image &mdash; the dual-scope case</h3>
+<p>If you run two scopes on one mount, the wide one is very likely a
+<b>better</b> reference than any survey: it saw the same sky, on the same night,
+through the same light pollution and the same airglow. A survey tells you where
+real nebulosity is. A simultaneous wide frame tells you that <i>and</i> what the
+sky was doing at the time.</p>
+
+<p>Choose it from the list of open images, or load a file directly. Two
+requirements:</p>
+<ul>
+  <li><b>It must cover your whole field.</b> A narrower reference fails the
+      coverage check rather than quietly fitting against nothing.</li>
+  <li><b>It must be plate-solved</b> &mdash; SRGC offers to solve it for you if
+      it is not.</li>
+</ul>
+
+<div class="tip"><b>The one real trap.</b> Your reference must not carry the
+<i>same</i> gradient. If both frames tilt the same way, \(b\) absorbs the tilt and
+the residual is empty &mdash; SRGC will report that it removed almost nothing.
+That is not a wrong answer, it is an honest one, and the <b>reference share</b>
+figure (&sect;3.9) tells you when it has happened.</div>
+
+<h3>2.3 The controls</h3>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Work resolution</td><td>Long side of the grid the reference is fetched
+      on and <i>both</i> backgrounds are modelled at. A gradient is low-frequency
+      by definition, and NSNS resolves ~10&Prime; anyway, so larger is slower
+      without being better. 1024 is right.</td></tr>
+  <tr><td>Background degree (0&ndash;4)</td><td>Polynomial order for both
+      background models. <b>Keep it low.</b> A high-degree model on the target
+      absorbs real structure before the reference ever gets a chance to explain
+      it, which defeats the whole method. 1&ndash;2.</td></tr>
+  <tr><td>Sample points</td><td>How many background samples are placed. One set
+      is generated and used for <i>both</i> models &mdash; see
+      &sect;3.3.</td></tr>
+  <tr><td>Patch size (px)</td><td>Window whose statistic is taken at each sample
+      point. Larger is more robust to stars, but blurs the line between sky and
+      faint extended signal.</td></tr>
+  <tr><td>Exclude brightest</td><td>Percentage of the <b>survey's</b> brightest
+      pixels that are off-limits to sampling. Raise it on a field dominated by a
+      big object; lower it on sparse fields.</td></tr>
+  <tr><td>Protect k (MAD)</td><td>Signal protection on the reference, in
+      MAD-sigma units &mdash; the same median + k&middot;MAD threshold ADBE's
+      multiscale stage uses. <b>Lower protects more.</b> Drop to 1.5&ndash;2 on a
+      field with a large bright object.</td></tr>
+  <tr><td>RBF refinement</td><td>Radial-basis refinement on both background
+      models, after the polynomial.</td></tr>
+  <tr><td>Strength (0&ndash;150%)</td><td>How much of the modelled gradient to
+      subtract. 100% is the fit. Above it deliberately over-corrects &mdash;
+      useful for telling a real gradient residual from something the reference
+      never explained.</td></tr>
+</table>
+
+<h4>Remove dust motes / reflections (optional)</h4>
+<p>Everything above is <b>additive</b> &mdash; sky added on top of your signal.
+Dust motes, internal reflections and vignetting are <b>multiplicative</b>: they
+scale what was already there, and no additive fit can take them out. Ticking
+this runs ADBE&rsquo;s multiscale stage afterwards, as a second pass, dividing
+out a band of wavelet scales. The core is ADBE&rsquo;s verbatim; what SRGC adds
+is the <i>protection</i> &mdash; see the last row.</p>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Scales (1&ndash;12)</td><td>The wavelet band the defect is estimated
+      from. 6&ndash;8 is where dust motes and reflections live: coarse enough to
+      miss stars and noise, fine enough to keep their edges. Lower catches
+      smaller, sharper defects; higher drifts toward the smooth gradient the
+      additive stage has already dealt with.</td></tr>
+  <tr><td>Include coarsest residual</td><td>Folds everything <i>coarser</i> than
+      that band into the correction as well. <b>Leave it off</b> unless a broad
+      multiplicative falloff survives the additive stage &mdash; vignetting the
+      flat missed, typically. Be more careful with it here than in ADBE: the
+      smooth background has already been removed additively, and removed against
+      a reference that says which large-scale structure is real sky. The coarsest
+      residual is exactly where that structure lives, so folding it in can divide
+      out nebulosity the survey just finished vouching for &mdash; on top of
+      correcting the gradient twice. It also costs time: the full pyramid has to
+      be built rather than stopping at the top of the band.</td></tr>
+  <tr><td>Refine strength</td><td>How much of the multiplicative correction to
+      apply. 1.00 applies it fully; ease it down if the correction flattens real
+      large-scale structure.</td></tr>
+  <tr><td>Protect k (MAD)</td><td>As above, but for this stage: what counts as
+      signal that must not be divided out. <b>Lower protects more.</b></td></tr>
+  <tr><td>Remove stars first (DarkStar)</td><td>Estimates the defect band on a
+      starless copy while the protection mask is still built on the
+      star-inclusive image. That pairing is what makes the band clean; leave it
+      on unless DarkStar is unavailable.</td></tr>
+  <tr><td>Protect real structure using the survey</td><td>The one thing SRGC
+      knows that ADBE cannot. ADBE builds its protection from the image itself,
+      so a bright extended blob looks the same whether it is a nebula or an
+      internal reflection; here the survey says which. Real structure is kept
+      from the untouched source, and anything sharp sitting on sky the survey
+      says is empty is treated as a defect. Hand-drawn exclusion zones protect
+      unconditionally, whether or not this is ticked.</td></tr>
+</table>
+
+<h3>2.4 Running it, and reading the views</h3>
+<p><b>Fetch &amp; Model</b> does the work; <b>Apply</b> commits it. The six
+view tabs are where the tool earns your trust:</p>
+
+<table>
+  <tr><th>View</th><th>What to look for</th></tr>
+  <tr><td><b>Corrected</b></td><td>The result. Tick <b>Before</b> to flick back
+      to the image as it was when the model was built &mdash; it stays a true
+      "before" even after you Apply.</td></tr>
+  <tr><td><b>Gradient removed</b></td><td>What is being subtracted. It should
+      look like a gradient: smooth, large-scale, no nebula in it. If you can see
+      your target in here, the model is eating signal &mdash; lower the degree or
+      the protect k. Carries the same <b>scale</b> control as the two background
+      views, and under <b>linear</b> it gains a reading the others do not have:
+      the gradient is already median-subtracted, so mid-grey is literally
+      <i>zero</i>. Grey means nothing was removed at that pixel, brighter means
+      subtracted, darker means added back. Under min/max that reading is lost,
+      because the darkest pixel becomes black whatever its value.</td></tr>
+  <tr><td><b>Reference</b></td><td>The fetched cutout. Confirm it is the right
+      piece of sky and the right way up. If it reports <b>MONO</b>, every channel
+      resolved to the same plane &mdash; a colour survey degraded because only
+      one of its channels could be fetched.</td></tr>
+  <tr><td><b>Reference / Target background</b></td><td>The two modelled surfaces.
+      These and <b>Gradient removed</b> each carry the same scale control at the
+      top of the tab &mdash; one setting shared by all three, since all three
+      draw a surface rather than a picture:
+      <ul>
+      <li><b>Scale: min/max</b> &mdash; the default. The surface&rsquo;s own range
+          is stretched to fill 0&ndash;1 and then tone-mapped, so a field
+          varying by 0.1% fills the screen. This is the only way to see the
+          <i>shape</i> of the gradient, and it makes a nearly-flat background
+          look violent. <b>Trust the number in the status bar, not the
+          picture.</b></li>
+      <li><b>Scale: linear</b> &mdash; \( 0.5 + (B - \mathrm{med}\,B) / 2 \), per channel, with no tone
+          map. The median sits on mid-grey and the gradient keeps its true
+          amplitude, so a 0.002 background is a barely-visible grey wash
+          &mdash; which is what it is. The status bar reports what fraction
+          of the tonal range it fills. Full black to full white here would
+          mean the background spans 1.0, i.e. something has gone wrong.
+          Per channel because an OSC background carries a different offset
+          in each, and a single global median would push R and B off grey
+          and read as a colour cast that is not in the gradient.
+          <p class="new">On the <b>Survey background</b> tab this mode shows
+          \( b\,B_r \) rather than \( B_r \) itself.
+          The reference is in the survey&rsquo;s own units &mdash; a DSS2 plate
+          arrives as 1130&ndash;20528 counts &mdash; so a true-scale mapping of
+          those numbers against a 0&ndash;1 frame is meaningless and rails every
+          pixel (a 2409-count span was reported as filling 120480% of the tonal
+          range). \( b\,B_r \) is the term the fit actually
+          subtracts, and it is in <i>your</i> units by construction, so the two
+          background tabs land on the same mapping and can be read against each
+          other: what the survey contributes, beside what you started with.
+          \( b \) keeps its sign, so an anti-correlated reference shows
+          inverted &mdash; which is how it is being subtracted. The status bar
+          still reports the raw span in survey counts as well.</p></li>
+      </ul>
+      Use min/max to judge the shape, linear to judge whether the shape is
+      worth correcting at all.</td></tr>
+  <tr><td><b>Sample points</b></td><td>Green dots are the points used; red tint
+      is vetoed by the survey. A point sitting on anything bright <i>in this
+      view</i> is sampling structure. Your own gradient is deliberately invisible
+      here &mdash; see &sect;3.4.</td></tr>
+</table>
+
+<p><b>Run diagnostics</b> probes every route for the selected survey with a tiny
+cutout and reports what each one returned. Use it when a fetch fails: it
+separates a dead host from a rejected request from a genuine footprint miss,
+which all look identical from the main error message.</p>
+
+<h3>2.5 Pushing a view out as its own document</h3>
+<p><b>Current view &#8594; new document</b>, in the button column beside
+<b>Run diagnostics</b>, hands whatever you are looking at to the main window as
+a new image document &mdash; the way ADBE can write its background out
+separately. It acts on the tab you are on, and the tooltip changes with the tab
+to say exactly what you will get. It changes nothing here: the correction is
+still only committed by <b>Apply</b>.</p>
+
+<p>Each view is a different <i>kind</i> of thing, so each one is handed over in
+the form that is actually usable, and the status bar says which:</p>
+
+<table>
+  <tr><th>Tab</th><th>What you get</th></tr>
+  <tr><td><b>Target image</b></td><td><code>_SRGC_Corrected</code> &mdash; the
+      corrected image at the current strength, full resolution, the same pixels
+      Apply would commit &mdash; except that this document is <i>new</i>, so the
+      original is left alone. With <b>Before</b> ticked you get
+      <code>_SRGC_Before</code> instead, the uncorrected snapshot the model was
+      built from, so you can keep both and blink them.</td></tr>
+  <tr><td><b>Survey reference</b></td><td><code>_SRGC_Reference</code> &mdash; the
+      fetched cutout, at <i>work</i> resolution rather than yours, because that
+      is the grid it was reprojected onto and upscaling it would invent detail
+      it never had. If its values fall outside 0&ndash;1 &mdash; a DSS2 plate
+      arrives as 1130&ndash;20528 counts &mdash; it is rescaled by its own range
+      and the range is recorded in the metadata, so it behaves like every other
+      document in SASpro. Nothing the correction used is lost: the fit absorbs
+      any linear scale (&sect;3.6).</td></tr>
+  <tr><td><b>Gradient removed</b></td><td><code>_SRGC_Gradient</code> &mdash; the
+      surface being subtracted, full resolution, in your image&rsquo;s units,
+      with <i>your median added back</i>. The gradient is median-subtracted, so
+      half of it sits below zero; shifted up to your sky level it is positive,
+      autostretch shows it, and nothing that clips at zero can eat half of it.
+      The amplitude is untouched &mdash; only a constant differs &mdash; so
+      subtract this document and restore the median and you have redone the
+      correction by hand.</td></tr>
+  <tr><td><b>Target background</b></td><td><code>_SRGC_Background</code> &mdash;
+      your modelled background, full resolution, exactly as the model made it.
+      The one surface that needs no adjusting: it is already in your units and
+      at your own sky level. This is the direct equivalent of ADBE&rsquo;s
+      background document.</td></tr>
+  <tr><td><b>Survey background</b></td><td><code>_SRGC_RefBackground</code>
+      &mdash; \( b\,B_r \), the term the fit subtracts, full
+      resolution. Not the raw survey background, for the same reason the linear
+      view does not show it: that is in survey counts and means nothing beside a
+      0&ndash;1 frame. Its median is moved to yours, so it blinks against
+      <code>_SRGC_Background</code> &mdash; what the survey contributes, beside
+      what you started with.</td></tr>
+  <tr><td><b>Sample points</b></td><td><code>_SRGC_Points</code> &mdash; the
+      point map as drawn, at work resolution. This one is a <b>picture, not
+      data</b>: the green dots and the red veto tint are painted into the display
+      render, so what you get is that render promoted to float. Good as a record
+      of what was sampled; not something to measure.</td></tr>
+</table>
+
+<p>The four full-resolution pushes sit on your pixel grid, so they inherit your
+image&rsquo;s header and its WCS and can be combined with it directly. The two
+work-grid pushes deliberately do <i>not</i> &mdash; a header whose
+<code>NAXIS</code> disagrees with the array it describes is a trap for whatever
+saves the file later. Every pushed document records which view it came from,
+the survey, the strength, the coverage and the fitted coefficients in its
+metadata.</p>
+
+<div class="tip"><b>The quickest sanity check in the tool.</b> Push
+<b>Gradient removed</b> and <b>Target background</b>, then look at them beside
+each other at the same stretch. The background is the whole sky surface; the
+gradient is only the part the survey could not explain. If those two look alike,
+the reference contributed nothing and you are doing ADBE with extra steps
+&mdash; which &sect;3.9 measures for you as the reference share.</div>
+
+<h2>3. Technical details</h2>
+<p class="tech-lead">What follows is the method rather than the interface. None
+of it is needed to use the tool.</p>
+
+<h3>3.1 Scale</h3>
+<p>The reference is fetched and both backgrounds are modelled at reduced
+resolution, 1024 px on the long side by default. This is not a shortcut. A
+gradient is by definition a low-spatial-frequency field, and the degeneracy this
+tool exists to break lives only at large scales. Working small also keeps the fit
+well conditioned and the download small. The modelled gradient is upscaled back
+to full resolution before it is subtracted.</p>
+
+<h3>3.2 Getting the reference</h3>
+<p>Every survey here is published as a <b>HiPS</b> (IVOA Hierarchical Progressive
+Survey) &mdash; the sky tiled into HEALPix cells at a pyramid of resolutions.
+SRGC reads the static tile trees directly: it maps each output pixel to a HEALPix
+index, fetches the tiles that cover the field in parallel, and samples them onto
+your WCS. It does not depend on a reprojection service.</p>
+
+<p>Each survey carries several mirror URLs, tried in order, leading with a
+non-CDS host wherever one exists. A failed route is treated by <i>kind</i>: an
+HTTP 404 retires that one path, because a mirror may carry one band and not
+another; a connection timeout retires the whole <b>host</b>, because every
+further route on it would time out too. A TCP pre-flight settles an unreachable
+host in a couple of seconds rather than waiting out the operating system's
+connect timeout.</p>
+
+<p>A fetched reference is <b>cached for the session</b>, keyed on the survey, the
+work resolution and your image's pointing and scale. Changing degree, samples,
+patch size, exclusion, protect k or strength and re-running therefore costs no
+download at all &mdash; those are exactly the knobs worth re-running.</p>
+
+<h3>3.3 One set of sample points, for both models</h3>
+<p>This is the difference between a reference-based correction that works and one
+that quietly eats nebulosity.</p>
+
+<p>Modelling the two backgrounds independently lets each chase structure in its
+own way &mdash; different noise, different resolution, different star content.
+Since the fit downstream is \(B_t \approx a + b\,B_r\), any structure one model
+follows and the other does not lands in the residual and is subtracted as
+"gradient". Sampling both at the <b>same sky positions</b> makes those errors
+common-mode, and common-mode error is precisely what the \(b\,B_r\) term exists
+to absorb.</p>
+
+<h3>3.4 The survey decides where background is</h3>
+<p>Sample points are chosen on</p>
+
+<div class="matheq">M = \max\left(\,\mathrm{norm}(B_r)\,,\ \mathrm{norm}(\mathrm{highpass}^{+}(I_t))\,\right)</div>
+
+<p>The <b>reference</b> supplies the diffuse-structure veto, and your frame
+contributes only its <b>high-pass</b>: stars, trails, sharp artefacts.</p>
+
+<p>Your own brightness deliberately gets no vote on whether a location is
+background. The target is the frame with the gradient in it &mdash; that is the
+entire premise &mdash; so treating a bright patch of light pollution as "not
+background" would starve the fit on the bright side of the gradient and bias the
+model toward the dim corner. It is also self-defeating: the gradient is the
+quantity being measured, so declining to sample where it is strong is declining
+to measure it. A high-pass is blind to a smooth gradient by construction, so a
+point sitting in the brightest corner of your light pollution is a perfectly good
+background sample, while a point on a star is not.</p>
+
+<p>On top of that, two hard vetoes are applied to the <i>reference</i>: the
+brightest <code>exclude%</code> of covered sky, and a median + k&middot;MAD
+signal mask, dilated and blurred. Both are smoothed at the patch scale first and
+have their interior holes filled &mdash; a dust lane inside a galaxy is dimmer
+than the sky outside it, so on a raw map it passes a brightness test and acts as
+a local minimum that the sampler walks straight into. Filling holes is what stops
+a point landing between M31's dust lanes. If structure dominates the frame the
+thresholds are relaxed until enough sky is samplable, and the relaxation is
+reported rather than hidden.</p>
+
+<h3>3.5 The fit</h3>
+<p>Per channel, sigma-clipped least squares for \(B_t \approx a + b\,B_r\),
+iterated with a MAD-based scale:</p>
+
+<div class="matheq">\sigma = 1.4826\,\mathrm{MAD}(r)\,,\qquad \mathrm{keep}: |r - \mathrm{med}(r)| < 2.5\,\sigma</div>
+
+<p>Clipping matters more than usual here. Anything your frame has that the
+reference does not &mdash; a satellite trail, a reflection, a processing artefact,
+a galaxy the survey is too shallow to show &mdash; would otherwise tilt the fit,
+and a tilted fit becomes a gradient that gets subtracted. Clipping removes those
+before they can.</p>
+
+<p>The fit runs over the whole covered frame, <b>including</b> the vetoed region.
+Restricting it to sample-constrained pixels looks more principled and measures
+worse: on a controlled test \(b\) fell from 0.122 to 0.081 against a known truth
+of 0.129, and recovery correlation dropped from 0.983 to 0.936. Two reasons. The
+vetoed region is not invented data &mdash; both backgrounds there are smooth
+predictions from the <i>same</i> points through the <i>same</i> kernel, so their
+extrapolation errors are correlated and cancel in a linear fit. And excluding it
+throws away the high-\(B_r\) end of the range, which is the leverage that
+determines \(b\) at all.</p>
+
+<p>Colour data is fitted per channel. Light pollution is strongly
+colour-selective, so a red sky and a blue sky need to be explained by red and
+blue structure rather than by one grey average. Against a mono reference each
+channel still solves its own \((a, b)\) &mdash; the structure is assumed to have
+the same shape in every channel and a different amplitude, which is an
+approximation, but a far better one than no reference at all.</p>
+
+<h3>3.6 Units, and why nothing needs rescaling</h3>
+<p>A survey cutout and your frame are in completely unrelated units &mdash; a
+DSS2 plate arrives as roughly 1100&ndash;20000 counts against your 0&ndash;1
+floats &mdash; which raises the obvious worry that the two sides of the fit are
+not comparable. They are, and the fit form is the reason. Because it solves
+\( B_t \approx a + b\,B_r \), any linear rescaling of
+either side is absorbed exactly:</p>
+
+<ul>
+<li>Scale <b>your</b> image by \( s \) and the fit returns
+    \( a s \) and \( b s \), so the gradient comes back as
+    \( s \cdot G \). Divide by \( s \) and you have exactly
+    what you started with.</li>
+<li>Scale the <b>reference</b> by \( p \) (plus any offset
+    \( q \)) and \( b \) simply comes back as \( b/p \),
+    with \( a \) absorbing the offset. \( a + b\,B_r \) is
+    unchanged.</li>
+</ul>
+
+<p>The sigma clipping does not break this either, because its threshold is
+MAD-based and so scales with the data. Measured: a target or reference
+rescaled by \( 10^4 \) changes the recovered gradient by about
+\( 10^{-8} \), which is float32 round-off and not a difference. So
+<b>matching the two images' scales before the fit, and undoing it afterwards,
+is provably a no-op</b> &mdash; and it is worse than neutral if done carelessly:
+rescaling a small signal onto a large pedestal cost 0.18% of the gradient span
+to float32 cancellation in the same test.</p>
+
+<p>What the fit <i>cannot</i> absorb is <b>curvature</b> &mdash; a reference that
+encodes brightness non-linearly, as a log-stretched 8-bit composite does. In
+practice this costs very little, for a structural reason: the fit runs on
+<i>background models</i>, not raw pixels, and a background spans a narrow range
+by construction. Any smooth monotone curve is close to its own tangent over a
+narrow range, and a tangent is exactly what \( a + b\,B_r \)
+fits. On a real DSS2 fetch the reference background spanned 2.2% of its own sky
+level, which puts the second-order term of a log at about 1.1% of the
+reference term &mdash; and that term explained 31% of the gradient, so roughly
+0.35% of the correction. Swapping a linear reference for a log, asinh, gamma or
+8-bit-quantised one changed recovery by <b>0.01 percentage points</b> in a
+controlled test.</p>
+
+<p>The tool therefore does not rescale anything. It <i>reports</i> instead: the
+Survey reference tab names the format it fetched, how that tree encodes
+brightness (linear, log, or high-passed) and whether it can resolve a gradient
+at all &mdash; see &sect;3.8.</p>
+
+<h3>3.7 Does it still work on stretched data?</h3>
+<p>&sect;3.6 is about a curved <i>reference</i>. This is the other half of
+the same question: a curved <i>target</i>. The answer is better than the
+additive model has any right to expect, and the reason is where the
+background sits.</p>
+
+<p>A statistical stretch lifts the background enormously &mdash; measured
+local gain <b>30&times;</b> at a 0.25 target median, <b>39&times;</b> at
+0.40 &mdash; but it lifts it almost <i>uniformly</i>. On a synthetic frame
+whose background occupied 0.0215&ndash;0.0259, the stretch departed from a
+straight line across that whole range by only <b>4.2%</b> (6.9% at a 0.40
+median) of what it did to the range. The knee is a feature of the curve
+somewhere else entirely; the background rides a nearly straight piece of it.
+That straight piece is a gain, and a gain is exactly what
+\( a + b\,B_r \) already solves for.</p>
+
+<p>End to end, with the gradient recovered and scored against the truth in
+stretched space:</p>
+
+<table>
+  <tr><th>Target</th><th>Recovery error</th><th>vs linear</th></tr>
+  <tr><td>linear (baseline)</td><td>12.5%</td><td>&mdash;</td></tr>
+  <tr><td>statistical stretch, 0.25 median</td><td>16.9%</td>
+      <td>+4.4 pts</td></tr>
+  <tr><td>statistical stretch, 0.40 median</td><td>20.4%</td>
+      <td>+7.9 pts</td></tr>
+  <tr><td>statistical stretch applied twice</td><td>16.9%</td>
+      <td>+4.4 pts</td></tr>
+  <tr><td>gamma 0.33</td><td>14.0%</td><td>+1.5 pts</td></tr>
+  <tr><td>log10 (deliberately unfair)</td><td>14.8%</td>
+      <td>+2.3 pts</td></tr>
+</table>
+
+<p>A few points per cent, against a 12.5% floor that is inherent to the
+method rather than to the stretch. And the cost <i>falls</i> as the gradient
+grows: at a gradient equal to the sky level the stretched cases scored
+<b>5.2%</b> against the linear baseline's 12.7%, because a bigger signal
+swamps the degeneracy between your gradient and real sky structure.
+Subtracting a sky-fitted surface does not damage the bright end either
+&mdash; error on the stars came out <i>lower</i> than error on the sky.</p>
+
+<p class="warn">These are simulations. They establish that the <i>shape</i>
+of the problem is benign, not that any particular real image will come out
+well. Two caveats are real: a stretch that <b>clipped the black point</b>
+has destroyed part of the background outright, and nothing recovers that;
+and a <b>spatially varying</b> edit is not one transfer function, so the
+tangent argument above does not apply to it at all.</p>
+
+<h3>3.8 Can the reference resolve your gradient?</h3>
+<p>Separate question from &sect;3.9, and not covered by it. A reference
+quantised so coarsely that the sky sits on one or two levels can still produce
+a perfectly healthy \( b \) &mdash; fitted to a staircase. FITS tiles are
+preferred wherever a tree publishes them, but some trees are 8-bit only, so the
+resolution is measured directly from the data: the quantisation step is found
+from the gaps between distinct values, and the modelled background is reported
+in units of that step.</p>
+
+<p>Noise decides how much that costs. If the per-pixel scatter is wider than one
+step, sky pixels straddle several levels and averaging a sample patch recovers
+structure far finer than the step &mdash; the quantisation is <i>dithered</i>. If
+the scatter is narrower, every sky pixel reads the same integer and the
+structure is simply gone. Four verdicts follow:</p>
+
+<table>
+  <tr><th>Verdict</th><th>Means</th></tr>
+  <tr><td><b>ample</b></td><td>32+ steps, or 8+ steps with dithering. Nothing
+      to think about.</td></tr>
+  <tr><td><b>coarse</b></td><td>8 or more steps but undithered. The gradient's
+      shape is described; its amplitude is described in that many discrete
+      steps. Prefer a FITS tree if one covers the field.</td></tr>
+  <tr><td><b>coarse-dithered</b></td><td>Fewer than 8 steps, but noise wider
+      than a step. Patch averaging recovers sub-step structure &mdash; shape
+      usable, amplitude soft.</td></tr>
+  <tr><td><b>pinned</b></td><td>Fewer than 8 steps <i>and</i> undithered. The
+      reference cannot resolve your gradient. Flagged with a warning on the
+      run summary.</td></tr>
+</table>
+
+<p>Measured on M81 with a 256 px work grid: the DSS2 red FITS tree gave a
+background spanning 91 quantisation steps with noise 48&times; the step
+(<i>ample</i>), while CDS's 8-bit DSS2 colour composite gave 8.5 steps with
+noise 0.88&times; the step (<i>coarse</i>) on the same field. Both are usable;
+only one of them is comfortable.</p>
+
+<p>This is measured from the pixels rather than inferred from the tile format,
+so it also covers a reference you supply yourself &mdash; which is the case
+where nobody knows what the data has been through.</p>
+
+<h3>3.9 Is the reference actually doing anything?</h3>
+<p>The run summary splits the background structure between the two components
+that describe it. Write \( E \) for the amplitude the reference accounted
+for and \( R \) for what was left over &mdash; your gradient:</p>
+
+<div class="matheq">E = |b| \cdot \mathrm{span}(B_r)\,,\qquad R = \mathrm{span}(G)\,,\qquad \mathrm{share} = \frac{E}{E + R}</div>
+
+<p>So the survey's share and yours sum to 100%, and neither can exceed it.</p>
+
+<p class="new">Earlier versions divided \( E \) by \( R \) alone,
+which could report a reference explaining <i>164%</i> of the gradient. That was
+not a display bug but a real one, and the reason is worth knowing:
+<b>spans do not add.</b> \( \mathrm{span}(X + Y) \) equals
+\( \mathrm{span}(X) + \mathrm{span}(Y) \) only when
+\( X \) and \( Y \) are perfectly correlated, and a fitted
+component and its residual generally are not &mdash; so \( E \) can
+exceed \( R \) with both being correct measurements of their own
+component. The ratio of one to the other is then not a fraction of anything.
+For a least-squares fit the exact orthogonal decomposition is in
+<i>quadrature</i>, \( E^2/(E^2 + R^2) \); the linear form is used here
+because these spans are robust percentile measures rather than variances (so
+exact additivity is unavailable either way), and because in the small-\( E \)
+regime where the warning fires \( E/(E+R) \) tends to \( E/R \),
+which keeps the 5% trip point calibrated where it already was. Quadrature would
+have moved it by about a factor of four.</p>
+
+<p>This is the honest self-check, and it is worth reading every time. With a
+strict veto the reference background can come out nearly flat, \(b\,B_r\)
+collapses toward a constant, and the method quietly degenerates into <b>ADBE with
+a survey-derived exclusion mask</b>. That is still a useful tool &mdash; but it is
+not reference-based correction, and the difference should be visible rather than
+assumed. A survey share near zero means one of:</p>
+<ul>
+  <li>the field genuinely has no large-scale structure, so there was nothing to
+      attribute and ADBE would have done just as well;</li>
+  <li>the only structure present got vetoed as a bright object;</li>
+  <li>or your reference carries the same gradient as the target &mdash; the
+      dual-scope trap from &sect;2.2.</li>
+</ul>
+
+<h3>3.10 Subtraction</h3>
+<p>The correction is <b>additive</b>, always. The premise is that what the
+reference fails to explain is additive sky, so dividing it out would be the wrong
+operator. The gradient is median-centred, scaled by Strength, subtracted, and the
+original median restored; the result is then rescaled if needed so nothing clips
+at either end.</p>
+
+<h3>3.11 Coverage, and what the failures mean</h3>
+<p>Pixels outside the survey footprint come back non-finite and are carried
+through honestly. A pixel is usable only where <i>every</i> reference channel has
+data, so one channel's footprint edge cannot silently fit against a hole in
+another. Below 25% coverage the run stops, and the message distinguishes the
+cases, because they have very different fixes:</p>
+<ul>
+  <li><b>Partial coverage</b> &mdash; the field runs off the edge of the survey.
+      NSNS stops at dec &minus;16&deg;; the DSS2 options are all-sky.</li>
+  <li><b>Zero usable pixels</b> &mdash; almost always a rejected or misparsed
+      request rather than a footprint miss, since a genuine miss on a partially
+      covered survey returns a mix.</li>
+  <li><b>A constant reference</b> &mdash; the cutout arrived carrying no sky
+      structure at all. A server or request problem, not a coverage one.</li>
+</ul>
+
+<h3>3.12 Notes</h3>
+<ul>
+  <li>Both background models are fitted in a <b>linear</b> domain. The relation
+      being fitted is linear, so a nonlinear display stretch between the two
+      sides of it would be wrong.</li>
+  <li>The preview renders at reduced scale with the rendered buffers cached, so
+      flicking Before/After or dragging Strength is immediate. <b>Apply always
+      runs on the full-resolution image</b> &mdash; nothing committed depends on
+      the preview path.</li>
+  <li>Apply is idempotent. Previews and Apply both work from the snapshot taken
+      when the model was built, so applying twice recommits the same pixels
+      rather than correcting twice.</li>
+  <li>The grip at the bottom-left drags out a shortcut carrying the current
+      settings; dropped on an image it runs headlessly, and right-click &rarr;
+      Edit preset opens a form for the same parameters. A preset always records a
+      <b>survey</b>: a dual-scope reference is one array in one session, and
+      there is no name a later run could resolve back to it.</li>
+  <li>Scripting: <code>ctx.run_command('srgc', {'degree': 2, 'strength': 80})</code>.
+      The headless path never starts a blind plate solve &mdash; solve the image
+      first, or use the dialog.</li>
+</ul>
+
+</body>
+</html>

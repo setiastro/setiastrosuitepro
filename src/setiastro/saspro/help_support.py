@@ -43,6 +43,7 @@ _DOC_TITLES: dict[str, str] = {
     "ghs": "Hyperbolic Stretch",
     "satchroma": "Saturation / Chroma",
     "abe": "Automatic Background Extraction (ADBE)",
+    "srgc": "Survey Reference Gradient Correction",
     "graxpert": "GraXpert",
     "cosmetic_correction": "Cosmetic Correction",
     "remove_stars": "Remove Stars",
