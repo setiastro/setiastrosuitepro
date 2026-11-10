@@ -81,14 +81,17 @@ ADBE's result looked suspiciously flat.</div>
 
 <h3>2.1 Before you start</h3>
 
-<p class="tip"><b>SRGC is for linear data.</b> It models your gradient as
-something <i>added</i> to the sky and subtracts it, which is only true while
-the data is still linear. Once an image has been stretched &mdash; and that
-could be any combination of autostretch, curves, hyperbolic tweaks, masked
-stretching, local contrast &mdash; the gradient has been bent by whatever
-transfer function you applied, and no additive model describes it any more.
-There is also no way for the tool to invert a stretch it did not perform. On
-stretched data, use ordinary ABE instead.</p>
+<p class="tip"><b>Linear data is the home ground, but a stretched image is
+not a write-off.</b> SRGC models your gradient as something <i>added</i> to
+the sky and subtracts it, which is exactly true while the data is linear.
+It stays a good approximation after an ordinary stretch, because a
+stretch does almost nothing <i>curved</i> down where the background lives:
+the background occupies a sliver at the bottom of the histogram, and over a
+sliver any smooth curve is its own tangent &mdash; which is precisely what an
+additive model is. See &sect;3.7 for the measurements. What does break it is
+anything <b>spatially varying</b> &mdash; masked stretching, local contrast,
+HDR compression &mdash; because that is no longer one transfer function, so
+there is no single tangent to stand in for it.</p>
 
 <p>The image must be <b>plate-solved</b>: the reference is fetched and aligned by
 sky coordinates, so without a WCS there is nothing to look up. If the image has
@@ -162,7 +165,7 @@ requirements:</p>
 <i>same</i> gradient. If both frames tilt the same way, \(b\) absorbs the tilt and
 the residual is empty &mdash; SRGC will report that it removed almost nothing.
 That is not a wrong answer, it is an honest one, and the <b>reference share</b>
-figure (&sect;3.6) tells you when it has happened.</div>
+figure (&sect;3.9) tells you when it has happened.</div>
 
 <h3>2.3 The controls</h3>
 <table>
@@ -359,7 +362,7 @@ channel still solves its own \((a, b)\) &mdash; the structure is assumed to have
 the same shape in every channel and a different amplitude, which is an
 approximation, but a far better one than no reference at all.</p>
 
-<h3>3.6 Units, stretches and why nothing needs rescaling</h3>
+<h3>3.6 Units, and why nothing needs rescaling</h3>
 <p>A survey cutout and your frame are in completely unrelated units &mdash; a
 DSS2 plate arrives as roughly 1100&ndash;20000 counts against your 0&ndash;1
 floats &mdash; which raises the obvious worry that the two sides of the fit are
@@ -403,10 +406,58 @@ controlled test.</p>
 <p>The tool therefore does not rescale anything. It <i>reports</i> instead: the
 Survey reference tab names the format it fetched, how that tree encodes
 brightness (linear, log, or high-passed) and whether it can resolve a gradient
-at all &mdash; see &sect;3.7.</p>
+at all &mdash; see &sect;3.8.</p>
 
-<h3>3.7 Can the reference resolve your gradient?</h3>
-<p>Separate question from &sect;3.8, and not covered by it. A reference
+<h3>3.7 Does it still work on stretched data?</h3>
+<p>&sect;3.6 is about a curved <i>reference</i>. This is the other half of
+the same question: a curved <i>target</i>. The answer is better than the
+additive model has any right to expect, and the reason is where the
+background sits.</p>
+
+<p>A statistical stretch lifts the background enormously &mdash; measured
+local gain <b>30&times;</b> at a 0.25 target median, <b>39&times;</b> at
+0.40 &mdash; but it lifts it almost <i>uniformly</i>. On a synthetic frame
+whose background occupied 0.0215&ndash;0.0259, the stretch departed from a
+straight line across that whole range by only <b>4.2%</b> (6.9% at a 0.40
+median) of what it did to the range. The knee is a feature of the curve
+somewhere else entirely; the background rides a nearly straight piece of it.
+That straight piece is a gain, and a gain is exactly what
+\( a + b\,B_r \) already solves for.</p>
+
+<p>End to end, with the gradient recovered and scored against the truth in
+stretched space:</p>
+
+<table>
+  <tr><th>Target</th><th>Recovery error</th><th>vs linear</th></tr>
+  <tr><td>linear (baseline)</td><td>12.5%</td><td>&mdash;</td></tr>
+  <tr><td>statistical stretch, 0.25 median</td><td>16.9%</td>
+      <td>+4.4 pts</td></tr>
+  <tr><td>statistical stretch, 0.40 median</td><td>20.4%</td>
+      <td>+7.9 pts</td></tr>
+  <tr><td>statistical stretch applied twice</td><td>16.9%</td>
+      <td>+4.4 pts</td></tr>
+  <tr><td>gamma 0.33</td><td>14.0%</td><td>+1.5 pts</td></tr>
+  <tr><td>log10 (deliberately unfair)</td><td>14.8%</td>
+      <td>+2.3 pts</td></tr>
+</table>
+
+<p>A few points per cent, against a 12.5% floor that is inherent to the
+method rather than to the stretch. And the cost <i>falls</i> as the gradient
+grows: at a gradient equal to the sky level the stretched cases scored
+<b>5.2%</b> against the linear baseline's 12.7%, because a bigger signal
+swamps the degeneracy between your gradient and real sky structure.
+Subtracting a sky-fitted surface does not damage the bright end either
+&mdash; error on the stars came out <i>lower</i> than error on the sky.</p>
+
+<p class="warn">These are simulations. They establish that the <i>shape</i>
+of the problem is benign, not that any particular real image will come out
+well. Two caveats are real: a stretch that <b>clipped the black point</b>
+has destroyed part of the background outright, and nothing recovers that;
+and a <b>spatially varying</b> edit is not one transfer function, so the
+tangent argument above does not apply to it at all.</p>
+
+<h3>3.8 Can the reference resolve your gradient?</h3>
+<p>Separate question from &sect;3.9, and not covered by it. A reference
 quantised so coarsely that the sky sits on one or two levels can still produce
 a perfectly healthy \( b \) &mdash; fitted to a staircase. FITS tiles are
 preferred wherever a tree publishes them, but some trees are 8-bit only, so the
@@ -445,7 +496,7 @@ only one of them is comfortable.</p>
 so it also covers a reference you supply yourself &mdash; which is the case
 where nobody knows what the data has been through.</p>
 
-<h3>3.8 Is the reference actually doing anything?</h3>
+<h3>3.9 Is the reference actually doing anything?</h3>
 <p>The run summary splits the background structure between the two components
 that describe it. Write \( E \) for the amplitude the reference accounted
 for and \( R \) for what was left over &mdash; your gradient:</p>
@@ -485,14 +536,14 @@ assumed. A survey share near zero means one of:</p>
       dual-scope trap from &sect;2.2.</li>
 </ul>
 
-<h3>3.9 Subtraction</h3>
+<h3>3.10 Subtraction</h3>
 <p>The correction is <b>additive</b>, always. The premise is that what the
 reference fails to explain is additive sky, so dividing it out would be the wrong
 operator. The gradient is median-centred, scaled by Strength, subtracted, and the
 original median restored; the result is then rescaled if needed so nothing clips
 at either end.</p>
 
-<h3>3.10 Coverage, and what the failures mean</h3>
+<h3>3.11 Coverage, and what the failures mean</h3>
 <p>Pixels outside the survey footprint come back non-finite and are carried
 through honestly. A pixel is usable only where <i>every</i> reference channel has
 data, so one channel's footprint edge cannot silently fit against a hole in
@@ -508,7 +559,7 @@ cases, because they have very different fixes:</p>
       structure at all. A server or request problem, not a coverage one.</li>
 </ul>
 
-<h3>3.11 Notes</h3>
+<h3>3.12 Notes</h3>
 <ul>
   <li>Both background models are fitted in a <b>linear</b> domain. The relation
       being fitted is linear, so a nonlinear display stretch between the two
