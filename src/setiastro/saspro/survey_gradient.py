@@ -3246,7 +3246,7 @@ class SurveyGradientDialog(QDialog):
         # Reopening the dialog is the natural "try everything again" gesture;
         # repeated runs within one session keep skipping the dead hosts.
         reset_dead_hosts()
-        self.setWindowTitle(self.tr("Survey Reference Gradient Correction (beta)"))
+        self.setWindowTitle(self.tr("Survey Reference Gradient Correction"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
