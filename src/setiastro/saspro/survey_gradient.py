@@ -3609,11 +3609,13 @@ class SurveyGradientDialog(QDialog):
 
         def _mk_bgstretch():
             c = QComboBox()
-            c.addItem(self.tr("BG: min/max"), "minmax")
-            c.addItem(self.tr("BG: linear"), "linear")
+            c.addItem(self.tr("Scale: min/max"), "minmax")
+            c.addItem(self.tr("Scale: linear"), "linear")
             c.setToolTip(
-                "How the two BACKGROUND views are displayed. Affects nothing\n"
-                "that is applied, and nothing in the other tabs.\n\n"
+                "How the SURFACE views are displayed — Gradient removed,\n"
+                "Target background, Survey background. One setting for\n"
+                "all three. Affects nothing that is applied, and nothing\n"
+                "in the other tabs.\n\n"
                 "min/max: stretch the background's own range to fill 0-1,\n"
                 "then tone-map it. Shows the SHAPE of the gradient at any\n"
                 "amplitude, and makes a nearly-flat background look dramatic.\n\n"
@@ -3680,11 +3682,14 @@ class SurveyGradientDialog(QDialog):
         _tgt.addWidget(self.pane_target, 1)
         _tgtw = QWidget(); _tgtw.setLayout(_tgt)
 
-        self.tabs.addTab(_tgtw, self.tr("Target image"))
-        self.tabs.addTab(self.pane_ref, self.tr("Survey reference"))
-        self.tabs.addTab(self.pane_grad, self.tr("Gradient removed"))
-        def _bgpage(pane):
-            """A background pane plus its own display-mode control."""
+        def _scale_page(pane):
+            """A pane plus its own min/max-or-linear scale control.
+
+            Used by every view that draws a SURFACE rather than a
+            picture: the two backgrounds and the gradient. All three
+            face the same problem -- min/max makes a nearly-flat
+            surface look violent -- and all three share one setting.
+            """
             _bb = QHBoxLayout()
             _bb.setContentsMargins(2, 2, 2, 2)
             _bb.addWidget(_mk_bgstretch())
@@ -3697,9 +3702,13 @@ class SurveyGradientDialog(QDialog):
             _bw.setLayout(_bl)
             return _bw
 
-        self.tabs.addTab(_bgpage(self.pane_bgt),
+        self.tabs.addTab(_tgtw, self.tr("Target image"))
+        self.tabs.addTab(self.pane_ref, self.tr("Survey reference"))
+        self.tabs.addTab(_scale_page(self.pane_grad),
+                         self.tr("Gradient removed"))
+        self.tabs.addTab(_scale_page(self.pane_bgt),
                          self.tr("Target background"))
-        self.tabs.addTab(_bgpage(self.pane_bgr),
+        self.tabs.addTab(_scale_page(self.pane_bgr),
                          self.tr("Survey background"))
         # _active_pane() maps a tab index onto the PANE, not the page,
         # so wrapping the panes changes nothing downstream.
@@ -4891,6 +4900,15 @@ class SurveyGradientDialog(QDialog):
 
         self.chk_before.setEnabled(mode == "Corrected")
 
+        def _sp(a2d, m=None):
+            """Robust span, the same measure the model reports."""
+            v = np.asarray(a2d, np.float32)
+            v = v[m] if (m is not None and
+                         np.asarray(m).shape[:2] == v.shape[:2]) else v.ravel()
+            v = v[np.isfinite(v)]
+            return 0.0 if v.size < 8 else float(
+                np.percentile(v, 99.5) - np.percentile(v, 0.5))
+
         # Rendered buffers are cached per view, so flicking Before/After or
         # returning to a view you have already seen is a dictionary lookup
         # rather than a correct-and-tone-map pass.
@@ -4943,7 +4961,32 @@ class SurveyGradientDialog(QDialog):
                         "redo the dust-mote refinement at the new strength.")
         elif mode == "Gradient removed":
             g = np.asarray(self._result["gradient_small"], dtype=np.float32)
-            arr = _norm01(g)
+            _gs = _sp(g)
+            if _bgmode == "linear":
+                # The gradient is already median-subtracted, so mid-grey
+                # here is literally ZERO: grey means nothing was removed
+                # at that pixel, brighter means subtracted, darker means
+                # added back. Under min/max that reading is lost, because
+                # the darkest pixel becomes black whatever its value.
+                arr = _linear_mid(g, gain=_BG_LINEAR_GAIN)
+                raw_display = True
+                self._set_status(
+                    f"Gradient span = {_gs:.5g} in your image's units. "
+                    f"Display is LINEAR at true scale (zero at mid-grey, "
+                    f"gain {_BG_LINEAR_GAIN:g}), so it fills "
+                    f"{100.0 * _gs * _BG_LINEAR_GAIN:.1f}% of the tonal "
+                    f"range. Grey = nothing removed there; brighter = "
+                    f"subtracted, darker = added back. Switch to min/max "
+                    f"to see its shape.")
+            else:
+                arr = _norm01(g)
+                self._set_status(
+                    f"Gradient span = {_gs:.5g} in your image's units. "
+                    f"Display is min-max stretched, so a gradient of any "
+                    f"size fills the screen — trust the number, not the "
+                    f"picture. If your target is visible in here, the "
+                    f"model is eating signal. Switch to linear to see "
+                    f"the true amplitude.")
         elif mode == "Reference":
             _ref = np.asarray(self._result["reference"], dtype=np.float32)
             arr = _norm01(np.nan_to_num(_ref, nan=float(np.nanmedian(_ref))))
@@ -5009,15 +5052,6 @@ class SurveyGradientDialog(QDialog):
             src = np.asarray(self._result["reference" if is_ref
                                           else "target_small"], dtype=np.float32)
             fr = self._result.get("fit_region")
-
-            def _sp(a2d, m=None):
-                v = np.asarray(a2d, np.float32)
-                v = v[m] if (m is not None and
-                             np.asarray(m).shape[:2] == v.shape[:2]) else v.ravel()
-                v = v[np.isfinite(v)]
-                return 0.0 if v.size < 8 else float(
-                    np.percentile(v, 99.5) - np.percentile(v, 0.5))
-
             bg_span = _sp(raw, fr)
             src_span = _sp(src, fr)
             pct = (100.0 * bg_span / src_span) if src_span > 0 else 0.0

@@ -211,13 +211,20 @@ dropdown is where the tool earns your trust:</p>
   <tr><td><b>Gradient removed</b></td><td>What is being subtracted. It should
       look like a gradient: smooth, large-scale, no nebula in it. If you can see
       your target in here, the model is eating signal &mdash; lower the degree or
-      the protect k.</td></tr>
+      the protect k. Carries the same <b>scale</b> control as the two background
+      views, and under <b>linear</b> it gains a reading the others do not have:
+      the gradient is already median-subtracted, so mid-grey is literally
+      <i>zero</i>. Grey means nothing was removed at that pixel, brighter means
+      subtracted, darker means added back. Under min/max that reading is lost,
+      because the darkest pixel becomes black whatever its value.</td></tr>
   <tr><td><b>Reference</b></td><td>The fetched cutout. Confirm it is the right
       piece of sky and the right way up. If it reports <b>MONO</b>, every channel
       resolved to the same plane &mdash; a colour survey degraded because only
       one of its channels could be fetched.</td></tr>
-  <tr><td><b>Reference / Target background</b></td><td>The two modelled surfaces,
-      each carrying its own display toggle at the top of the tab:
+  <tr><td><b>Reference / Target background</b></td><td>The two modelled surfaces.
+      These and <b>Gradient removed</b> each carry the same scale control at the
+      top of the tab &mdash; one setting shared by all three, since all three
+      draw a surface rather than a picture:
       <ul>
       <li><b>BG: min/max</b> &mdash; the default. The surface&rsquo;s own range
           is stretched to fill 0&ndash;1 and then tone-mapped, so a field
