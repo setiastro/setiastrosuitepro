@@ -591,6 +591,69 @@ def condition_number_warning(A: np.ndarray) -> Tuple[Optional[str], str]:
     return None, "ok"
 
 
+def match_median_linear(ch: np.ndarray, target_median: float,
+                        *, where: str = "channel") -> np.ndarray:
+    """
+    Scale `ch` by a single gain so its median lands on `target_median`.
+
+    Gain-only, on purpose. "Match output median to source" used to call
+    stretch_mono_image(), which is a midtone transfer function -- a NONLINEAR
+    stretch whose entire shape is set by the ratio target_median/median(ch).
+    That ratio is meaningful for a [0,1] image but NOT here: the NNLS output
+    is a pseudo-flux living on whatever scale pinv(A) happens to produce,
+    which has nothing to do with the source image's range. So the MTF was
+    handed an arbitrary ratio, and it fails at both ends:
+
+      * median(ch) << target -- the midtone collapses toward 0 and the MTF
+        degenerates into a step function. Measured at med=1e-4, target=0.05:
+        an input of 0.001 maps to 0.35 and 0.01 maps to 0.84. Everything
+        above the noise floor is driven to ~1 and the shadow noise is
+        expanded across the full range -- the washed-out, pepper-speckled
+        OIII frame. At med=0 exactly (the NNLS non-negativity clip can put
+        more than half the background on the floor) it is literally binary:
+        0 where the pixel is exactly 0, 1.0 everywhere else.
+
+      * median(ch) >> target -- the MTF has a pole at
+        r = med*(1-t)/(med-t), and every pixel past it comes out NEGATIVE
+        and clips to 0, so the BRIGHTEST pixels in the frame render black.
+
+    A gain is scale-invariant, so neither can happen, and it keeps the output
+    linear -- which is what the checkbox promises and what these narrowband
+    channels need downstream. Overshoot above 1.0 is left to the caller's
+    _linear_scale_to_unity(), which is also linear; in the well-behaved case
+    the NNLS output carries roughly the source dynamic range, so the gained
+    max lands near 1.0 and that guard is a no-op.
+    """
+    a = np.asarray(ch, dtype=np.float32)
+    t = float(target_median)
+    if not np.isfinite(t) or t <= 0.0:
+        return a
+
+    # Gate on "is anything finite" rather than wrapping nanmedian in
+    # errstate: an all-NaN frame raises a RuntimeWarning, which errstate
+    # does not cover.
+    has_finite = bool(a.size) and bool(np.any(np.isfinite(a)))
+    med = float(np.nanmedian(a)) if has_finite else 0.0
+    if not np.isfinite(med) or med <= 0.0:
+        # The non-negativity clip in extract_channels_nnls() can leave more
+        # than half the frame at exactly 0 -- precisely the case the MTF
+        # turned into a binary mask. The mean of the positive pixels still
+        # tracks the overall level without dividing by zero.
+        pos = a[np.isfinite(a) & (a > 0.0)]
+        med = float(pos.mean()) if pos.size else 0.0
+        if med <= 0.0:
+            print(f"[NBExtract] {where}: no positive signal; "
+                  f"median match skipped.")
+            return a
+
+    g = t / med
+    if not np.isfinite(g) or g <= 0.0:
+        return a
+    print(f"[NBExtract] {where}: median match gain {g:.4g} "
+          f"(median {med:.6g} -> {t:.6g})")
+    return (a * np.float32(g)).astype(np.float32)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Dialog
 # ─────────────────────────────────────────────────────────────────────────────
@@ -751,9 +814,9 @@ class NBExtractDialog(SFCCDialog):
         self.nb_stretch_chk = QCheckBox("Match output median to source")
         self.nb_stretch_chk.setChecked(True)
         self.nb_stretch_chk.setToolTip(
-            "Applies a statistical stretch to each extracted channel so its\n"
-            "median matches the corresponding source channel median.\n"
-            "Leave checked for a linear output that sits at the same\n"
+            "Scales each extracted channel by a single gain so its median\n"
+            "matches the corresponding source channel median.\n"
+            "Gain-only, so the output stays linear and sits at the same\n"
             "intensity level as the input image."
         )
         row_act.addWidget(self.nb_stretch_chk)
@@ -1809,19 +1872,17 @@ class NBExtractDialog(SFCCDialog):
 
         if self.nb_stretch_chk.isChecked():
             try:
-                from setiastro.saspro.imageops.stretch import stretch_mono_image
-                median_1 = float(np.median(img_float[..., fb_ch1]))
-                median_2 = float(np.median(img_float[..., fb_ch2]))
+                median_1 = float(np.nanmedian(img_float[..., fb_ch1]))
+                median_2 = float(np.nanmedian(img_float[..., fb_ch2]))
+                # Same gain-only match as the NNLS path, so one checkbox means
+                # one thing. Here the colour-corrected channel is already near
+                # the source scale, so the gain comes out close to 1.
                 if median_1 > 1e-6:
-                    line1_img = stretch_mono_image(
-                        line1_img, target_median=median_1,
-                        normalize=False, no_black_clip=True,
-                    )
+                    line1_img = match_median_linear(
+                        line1_img, median_1, where="fallback line1")
                 if median_2 > 1e-6:
-                    line2_img = stretch_mono_image(
-                        line2_img, target_median=median_2,
-                        normalize=False, no_black_clip=True,
-                    )
+                    line2_img = match_median_linear(
+                        line2_img, median_2, where="fallback line2")
             except Exception as e:
                 print(f"[NBExtract] WB fallback median match failed: {e}")
 
@@ -2132,31 +2193,24 @@ class NBExtractDialog(SFCCDialog):
         # BEFORE blending so Q operates in a consistent scale.
         if self.nb_stretch_chk.isChecked():
             try:
-                from setiastro.saspro.imageops.stretch import stretch_mono_image
+                median_1 = float(np.nanmedian(img_float[..., ch1]))
+                median_2 = float(np.nanmedian(img_float[..., ch2]))
 
-                median_1 = float(np.median(img_float[..., ch1]))
-                median_2 = float(np.median(img_float[..., ch2]))
-
+                # Gain-only. See match_median_linear() -- the MTF this used to
+                # call blew the faint line up into a noise field, because the
+                # NNLS pseudo-flux is not on the source's [0,1] scale.
                 if median_1 > 1e-6:
-                    line1_nnls = stretch_mono_image(
-                        line1_nnls, target_median=median_1,
-                        normalize=False, no_black_clip=True,
-                    )
-                    raw1 = stretch_mono_image(
-                        raw1, target_median=median_1,
-                        normalize=False, no_black_clip=True,
-                    )
+                    line1_nnls = match_median_linear(
+                        line1_nnls, median_1, where="line1 NNLS")
+                    raw1 = match_median_linear(
+                        raw1, median_1, where="line1 raw prior")
                 if median_2 > 1e-6:
-                    line2_nnls = stretch_mono_image(
-                        line2_nnls, target_median=median_2,
-                        normalize=False, no_black_clip=True,
-                    )
-                    raw2 = stretch_mono_image(
-                        raw2, target_median=median_2,
-                        normalize=False, no_black_clip=True,
-                    )
+                    line2_nnls = match_median_linear(
+                        line2_nnls, median_2, where="line2 NNLS")
+                    raw2 = match_median_linear(
+                        raw2, median_2, where="line2 raw prior")
             except Exception as e:
-                print(f"[NBExtract] Median match stretch failed (continuing): {e}")
+                print(f"[NBExtract] Median match failed (continuing): {e}")
 
         # Q was auto-set from condition number at calibration time;
         # user may have overridden in Advanced panel.

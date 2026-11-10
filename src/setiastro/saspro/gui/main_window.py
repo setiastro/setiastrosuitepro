@@ -169,7 +169,8 @@ from setiastro.saspro.resources import (
     morpho_path, clahe_path, starnet_path, staradd_path, LExtract_path,
     LInsert_path, slot0_path, slot1_path, slot2_path, slot3_path, slot4_path,
     rgbcombo_path, rgbextract_path, copyslot_path, graxperticon_path,
-    cropicon_path, openfile_path, abeicon_path, undoicon_path, redoicon_path,
+    cropicon_path, openfile_path, abeicon_path, srgc_path, undoicon_path,
+    redoicon_path,
     blastericon_path, hdr_path, invert_path, fliphorizontal_path,
     flipvertical_path, rotateclockwise_path, rotatecounterclockwise_path,
     rotate180_path, maskcreate_path, maskapply_path, maskremove_path,
@@ -3007,6 +3008,27 @@ class AstroSuiteProMainWindow(
         dlg.resize(980, 620)
         dlg.show()
 
+    def _open_srgc_tool(self):
+        """
+        Open Survey Reference Gradient Correction on the active image.
+
+        Mirrors _open_abe_tool. The dialog is non-modal and sets
+        WA_DeleteOnClose itself, so it is not retained here; it keeps the
+        main window as its parent for docman and log access.
+        """
+        from setiastro.saspro.survey_gradient import open_survey_gradient
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "No image", "Open an image first.")
+            return
+        doc = sw.widget().document
+        dlg = open_survey_gradient(self, doc)
+        try:
+            dlg.setWindowIcon(QIcon(srgc_path))
+        except Exception:
+            pass
+        return dlg
+
     def _open_background_neutral(self):
         from setiastro.saspro.backgroundneutral import BackgroundNeutralizationDialog
         sw = self.mdi.activeSubWindow()
@@ -3388,7 +3410,84 @@ class AstroSuiteProMainWindow(
         except Exception:
             doc.apply_edit(L.astype(np.float32), step_name="Extract Luminance")
 
+    def _focus_widget_text_target(self):
+        """The focused text widget Ctrl+C / Ctrl+V should act on, or None.
+
+        act_copy / act_paste are QActions parented to the main window, so Qt
+        gives them WindowShortcut context: they fire no matter which widget
+        holds focus, and the shortcut is consumed before the focused widget
+        ever sees the key. That is why Ctrl+C with text selected in a panel
+        used to copy the IMAGE and the only way to get the text was
+        right-click -> Copy. The slots below check this first.
+        """
+        try:
+            w = QApplication.focusWidget()
+        except Exception:
+            return None
+        if w is None:
+            return None
+        # Editable QComboBox and QAbstractSpinBox make their inner QLineEdit
+        # the focus proxy, so focusWidget() is normally already that line
+        # edit. Unwrap anyway in case a style does not install the proxy.
+        le = getattr(w, "lineEdit", None)
+        if callable(le):
+            try:
+                inner = le()
+            except Exception:
+                inner = None
+            if inner is not None:
+                w = inner
+        return w
+
+    @staticmethod
+    def _widget_selected_text(w):
+        """Text currently selected in `w`, or None.
+
+        Covers QLineEdit and QLabel (both expose selectedText()) and
+        QTextEdit / QPlainTextEdit (selection lives on the text cursor).
+        An image view has neither, so it falls through and Ctrl+C keeps
+        meaning "copy the image" -- which is the whole point of the binding.
+        """
+        f = getattr(w, "selectedText", None)
+        if callable(f):
+            try:
+                s = f()
+            except Exception:
+                s = None
+            if s:
+                return str(s)
+        f = getattr(w, "textCursor", None)
+        if callable(f):
+            try:
+                c = f()
+                if c.hasSelection():
+                    return c.selectedText()
+            except Exception:
+                pass
+        return None
+
     def _copy_active_to_clipboard(self):
+        # A focused widget with a live text selection wins. With nothing
+        # selected we fall through, so Ctrl+C still copies the image even
+        # when a text field happens to hold focus.
+        _w = self._focus_widget_text_target()
+        if _w is not None:
+            _sel = self._widget_selected_text(_w)
+            if _sel:
+                _cp = getattr(_w, "copy", None)
+                if callable(_cp):
+                    try:
+                        _cp()   # identical to the widget's right-click Copy
+                        return
+                    except Exception:
+                        pass
+                # QLabel is selectable but has no copy().
+                try:
+                    QApplication.clipboard().setText(_sel)
+                    return
+                except Exception:
+                    pass
+
         sw = None
         try:
             if getattr(self, "mdi", None) is not None:
@@ -3428,6 +3527,21 @@ class AstroSuiteProMainWindow(
 
 
     def _paste_clipboard_as_new_document(self):
+        # Symmetric to copy, and the same WindowShortcut problem: without
+        # this, Ctrl+V while typing in a filename or search field created a
+        # NEW DOCUMENT instead of pasting into the field. Read-only and
+        # disabled widgets fall through to the document paste.
+        _w = self._focus_widget_text_target()
+        if _w is not None and callable(getattr(_w, "paste", None)):
+            try:
+                _ro = getattr(_w, "isReadOnly", None)
+                _read_only = bool(_ro()) if callable(_ro) else False
+                if not _read_only and _w.isEnabled():
+                    _w.paste()
+                    return
+            except Exception:
+                pass
+
         cb = QApplication.clipboard()
         md = cb.mimeData()
 
@@ -7710,6 +7824,24 @@ class AstroSuiteProMainWindow(
                 self._log(f"Applied ABE preset to '{target_sw.windowTitle()}' (no exclusions)")
             except Exception as e:
                 QMessageBox.warning(self, "ABE", f"Apply failed:\n{e}")
+            return
+
+        if cid == "srgc":
+            # The one headless command that needs the network. The connect
+            # pre-flight inside survey_gradient caps a dead host, so an
+            # offline drop fails in seconds with a real message.
+            try:
+                from setiastro.saspro.srgc_preset import apply_srgc_via_preset
+                if doc is None or getattr(doc, "image", None) is None:
+                    QMessageBox.warning(self, "Survey Gradient",
+                                        "Target document has no image.")
+                    return
+                apply_srgc_via_preset(self, doc, preset or {})
+                self._log(f"Applied SRGC preset to "
+                          f"'{target_sw.windowTitle()}'")
+            except Exception as e:
+                QMessageBox.warning(self, "Survey Gradient",
+                                    f"Apply failed:\n{e}")
             return
 
         if cid == "graxpert":

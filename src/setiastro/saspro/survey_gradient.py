@@ -59,12 +59,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from PyQt6.QtCore import Qt, QSize, QSettings
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import (Qt, QSize, QSettings, QThread, pyqtSignal,
+                          QPoint, QPointF, QRectF)
+from PyQt6.QtGui import (QImage, QPixmap, QIcon, QPainter, QPen, QBrush,
+                         QColor, QPolygonF)
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QComboBox,
     QSpinBox, QDoubleSpinBox, QCheckBox, QPushButton, QGroupBox, QMessageBox,
-    QApplication, QScrollArea, QPlainTextEdit,
+    QApplication, QScrollArea, QPlainTextEdit, QFileDialog, QWidget,
+    QTabWidget, QToolButton, QSizePolicy,
 )
 
 try:
@@ -74,7 +77,17 @@ except Exception:  # pragma: no cover
 
 from astropy.wcs import WCS
 
-from setiastro.saspro.abe import abe_run, _downsample_area, _upscale_bg
+from setiastro.saspro.abe import (
+    abe_run, _downsample_area, _upscale_bg,
+    _generate_sample_points, _to_luminance, _exclude_bright_regions,
+)
+
+try:
+    # median + k*MAD -> dilate -> blur. Same protection ADBE's multiscale
+    # stage uses, so "protect k" means the same thing in both tools.
+    from setiastro.saspro.abe_multiscale_gradient import build_signal_mask
+except Exception:  # pragma: no cover
+    build_signal_mask = None
 from setiastro.saspro.autostretch import autostretch as hard_autostretch
 
 
@@ -124,6 +137,17 @@ HIPS2FITS_ENDPOINTS: list[str] = [
 # to fall through to the next one quickly rather than make the user wait out
 # a 120 s connect timeout on each.
 HIPS_TIMEOUT = 30.0
+
+# Connect pre-flight budget, seconds. SEPARATE from HIPS_TIMEOUT, and it has
+# to be: HIPS_TIMEOUT is handed to urllib, which applies it as a socket
+# timeout only once a connection is being established. A host that is simply
+# not answering is capped by the OS instead -- ~21 s on Windows (WinError
+# 10060) -- so a 30 s read timeout never gets the chance to fire, and three
+# dead CDS hosts cost ~63 s before the first error reaches the user.
+#
+# One TCP connect with an explicit short timeout settles the question in
+# under three seconds, and the answer is cached per session.
+CONNECT_TIMEOUT = 2.5
 
 # ---------------------------------------------------------------------------
 # Tracing. ON by default while this is beta — a reference fetch crosses a WCS
@@ -252,90 +276,361 @@ def _strip_sip(w: "WCS") -> "WCS":
 # deliberately lead with a NON-CDS host where one exists — simg.de serves NSNS
 # itself, and IRSA at Caltech mirrors DSS2 — so a total CDS outage is survivable.
 
+def _nsns(layer: str) -> dict:
+    return {
+        "hips": f"simg.de/P/NSNS/DR0_2/{layer}",
+        "mirrors": [
+            f"http://www.simg.de/nebulae3/dr0_2/{layer}",
+            f"https://alaskybis.cds.unistra.fr/simg.de/simg.de_P_NSNS_DR0_2_{layer}",
+            f"https://alasky.cds.unistra.fr/simg.de/simg.de_P_NSNS_DR0_2_{layer}",
+        ],
+    }
+
+
+# NOT skies.esac.esa.int/DSSColor — jpeg tiles only. An 8-bit JPEG of a colour
+# composite would reproject happily and produce a confident, wrong background.
+# Mirror hosts. These are MEASURED, not guessed — probe_mirrors.py walked the
+# candidate matrix from a real network on 2026-11-09 and the results below are
+# what actually answered:
+#
+#   UP   : irsa, casda, esa, simg, camras, irap, svo-cab
+#   DOWN : alasky, alaskybis (CDS outage), healpix.ias.u-psud.fr AND
+#          wwwfirback.ias.u-psud.fr (both IAS hostnames timed out, so IAS is
+#          not the CDS-independent fallback it looked like on paper and has
+#          been removed rather than left here to cost a timeout)
+#
+# Coverage is per-survey, not per-node, and the gaps are real:
+#   DSS2 red   : IRSA, FITS, order 9, tile fetch verified
+#   DSS2 blue  : NOT MIRRORED ANYWHERE REACHABLE. IRSA, CASDA and ESA all 404.
+#                Only the jpeg `color` composite is mirrored, which is useless
+#                here. So while CDS is down there is no blue plate, which is
+#                what the per-channel degradation in fetch_reference_channels
+#                exists to survive.
+#
+# That asymmetry is exactly why a 404 retires one URL and never the host.
+#
+# The alasky static trees use plate names rather than band names (DSS2Merged
+# for red, DSS2-blue-XJ-S for blue), so they cannot be generated from the band.
+def _dss2(band: str, alasky_name: str) -> dict:
+    return {
+        "hips": f"CDS/P/DSS2/{band}",
+        "mirrors": [
+            f"https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/{band}",
+            f"https://casda.csiro.au/hips/DSS2/{band}",
+            f"https://alaskybis.cds.unistra.fr/DSS/{alasky_name}",
+            f"https://alasky.cds.unistra.fr/DSS/{alasky_name}",
+        ],
+    }
+
+
+DSS2_RED = _dss2("red", "DSS2Merged")
+DSS2_BLUE = _dss2("blue", "DSS2-blue-XJ-S")
+
+
+# The DSS2 colour tree, as 8-bit tiles. CDS builds it from the two FITS plate
+# surveys with LINEAR cuts, recorded in its own properties:
+#     hips_rgb_red  = DSS2Merged      [1488.0  8488.8125 14666.0 Linear]
+#     hips_rgb_blue = DSS2-blue-XJ-S  [4286.0 12122.5   19959.0 Linear]
+# so band 0 is the red plate and band 2 is the blue plate, each linearly
+# scaled into 0-255. While the blue FITS tree is mirrored nowhere reachable,
+# this is the only real blue available anywhere, and for fitting a
+# low-frequency background it is entirely adequate.
+# Band 1 is CDS's synthetic green, which is a blend of the other two rather
+# than an independent measurement.
+def _dss2_colour(band: int) -> dict:
+    return {
+        "hips": "CDS/P/DSS2/color",
+        "channel": band,
+        "mirrors": [
+            "https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/color",
+            "https://casda.csiro.au/hips/DSS2/color",
+            "https://skies.esac.esa.int/DSSColor",
+            "https://alaskybis.cds.unistra.fr/DSS/DSSColor",
+            "https://alasky.cds.unistra.fr/DSS/DSSColor",
+        ],
+    }
+
+
+# SDSS9 colour, 8-bit, order 10. Built by CDS from the g/r/i FITS with a Log
+# stretch (hips_rgb_red = SDSS9 i [... Log], green = r, blue = g). A monotonic
+# curve over the narrow range a sky background occupies is close to linear and
+# is largely absorbed into b, so this is usable — softer than the real bands
+# would be, but it is band-matched to NSNS and it is reachable today.
+def _sdss9_colour(band: int) -> dict:
+    return {
+        "hips": "CDS/P/SDSS9/color",
+        "channel": band,
+        "mirrors": [
+            "https://irsa.ipac.caltech.edu/data/hips/CDS/SDSS/DR9/color",
+            "https://alaskybis.cds.unistra.fr/SDSS/DR9/color",
+            "https://alasky.cds.unistra.fr/SDSS/DR9/color",
+        ],
+    }
+
+
+# SDSS9 per-band HiPS, FITS tiles, BITPIX 16, order 10 (0.40"/px).
+#
+# This is the band-matched partner to NSNS: the NSNS continuum cameras were
+# calibrated in the SDSS g, r and i bands (Northern Sky Narrowband Survey
+# DR0.2; see the North Polar Spur paper using DR0.2, which states the visual
+# continuum was obtained in SDSS g/r/i). So pairing NSNS luminance with SDSS
+# chrominance keeps both legs in the same photometric system, which DSS2
+# photographic plates cannot do.
+#
+# Mapping follows CDS's own SDSS9 colour composite — i to red, r to green,
+# g to blue (its properties file reads
+#   hips_rgb_red = SDSS9 i / hips_rgb_green = SDSS9 r / hips_rgb_blue = SDSS9 g
+# with hipsgen inBlue=band-g inGreen=band-r inRed=band-i).
+#
+# COVERAGE, and it matters: SDSS imaging is 36.2% of sky (14,555 deg^2),
+# concentrated in the north galactic cap plus the equatorial stripes. It is
+# NOT a southern survey. Out of footprint the fetch returns non-finite and
+# the caller falls back to DSS2, which is why DSS2 stays in the registry.
+#
+# IRSA namespaces SDSS differently from DSS2. Its own hipslist gives
+#   ivo://CDS/P/SDSS9/color -> /data/hips/CDS/SDSS/DR9/color
+# i.e. "CDS/" prepended to the alasky static path (SDSS/DR9/...), whereas for
+# DSS2 it uses a tidied CDS/DSS2/<band>. Probing CDS/SDSS9/<band> and
+# SDSS/DR9/band-<band> both 404; the combination below was never tried and is
+# the one the node's own list implies. Still UNVERIFIED for the per-band trees
+# — only `color` is confirmed present, and IRSA's whole hipslist is 14 KB, so
+# it may genuinely hold no SDSS bands at all. A wrong guess costs one 404 at
+# ~220 ms, and probe_mirrors.py --only sdss settles it.
+def _sdss9(band: str) -> dict:
+    return {
+        "hips": f"CDS/P/SDSS9/{band}",
+        "mirrors": [
+            f"https://irsa.ipac.caltech.edu/data/hips/CDS/SDSS/DR9/band-{band}",
+            f"https://irsa.ipac.caltech.edu/data/hips/CDS/SDSS/DR9/{band}",
+            f"https://casda.csiro.au/hips/SDSS/DR9/band-{band}",
+            f"https://alaskybis.cds.unistra.fr/SDSS/DR9/band-{band}",
+            f"https://alasky.cds.unistra.fr/SDSS/DR9/band-{band}",
+        ],
+    }
+
+
+SDSS9_G = _sdss9("g")
+SDSS9_R = _sdss9("r")
+SDSS9_I = _sdss9("i")
+
+# `channels` is a list of 1 (mono) or 3 (R,G,B) entries. "synth" means the
+# plane is the mean of the fetched neighbours — DSS2 has red and blue plates
+# but no green, and a gradient correction on colour data needs all three.
 SURVEYS: dict[str, dict] = {
-    "NSNS Ha (north, dec > -16)": {
-        "hips": "simg.de/P/NSNS/DR0_2/halpha",
-        "mirrors": [
-            "http://www.simg.de/nebulae3/dr0_2/halpha",
-            "https://alaskybis.cds.unistra.fr/simg.de/simg.de_P_NSNS_DR0_2_halpha",
-            "https://alasky.cds.unistra.fr/simg.de/simg.de_P_NSNS_DR0_2_halpha",
-        ],
-        "note": "Northern Sky Narrowband Survey, H-alpha, linear intensity in "
-                "Rayleighs. Best match for Ha/SHO data. CC-BY-NC-SA.",
-        "dec_min": -16.0,
-        "noncommercial": True,
-    },
-    "NSNS [OIII] (north, dec > -16)": {
-        "hips": "simg.de/P/NSNS/DR0_2/oiii",
-        "mirrors": [
-            "http://www.simg.de/nebulae3/dr0_2/oiii",
-            "https://alaskybis.cds.unistra.fr/simg.de/simg.de_P_NSNS_DR0_2_oiii",
-            "https://alasky.cds.unistra.fr/simg.de/simg.de_P_NSNS_DR0_2_oiii",
-        ],
-        "note": "Northern Sky Narrowband Survey, [OIII] 500.7 nm. CC-BY-NC-SA.",
-        "dec_min": -16.0,
-        "noncommercial": True,
-    },
-    "NSNS [SII] (north, dec > -16)": {
-        "hips": "simg.de/P/NSNS/DR0_2/sii",
-        "mirrors": [
-            "http://www.simg.de/nebulae3/dr0_2/sii",
-            "https://alaskybis.cds.unistra.fr/simg.de/simg.de_P_NSNS_DR0_2_sii",
-            "https://alasky.cds.unistra.fr/simg.de/simg.de_P_NSNS_DR0_2_sii",
-        ],
-        "note": "Northern Sky Narrowband Survey, [SII] 671.7/673.0 nm. CC-BY-NC-SA.",
-        "dec_min": -16.0,
-        "noncommercial": True,
-    },
-    "NSNS visual continuum (north)": {
-        "hips": "simg.de/P/NSNS/DR0_2/vc",
-        "mirrors": [
-            "http://www.simg.de/nebulae3/dr0_2/vc",
-            "https://alaskybis.cds.unistra.fr/simg.de/simg.de_P_NSNS_DR0_2_vc",
-            "https://alasky.cds.unistra.fr/simg.de/simg.de_P_NSNS_DR0_2_vc",
-        ],
-        "note": "NSNS star-subtracted visible continuum. Use for RGB/LRGB in "
-                "the north. Star subtraction is a bonus here. CC-BY-NC-SA.",
-        "dec_min": -16.0,
-        "noncommercial": True,
-    },
-    "DSS2 red (all sky)": {
-        "hips": "CDS/P/DSS2/red",
-        "mirrors": [
-            "https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/red",
-            "https://alaskybis.cds.unistra.fr/DSS/DSS2Merged",
-            "https://alasky.cds.unistra.fr/DSS/DSS2Merged",
-            # NOT skies.esac.esa.int/DSSColor — it serves jpeg tiles only.
-            # An 8-bit JPEG of a colour composite would reproject happily and
-            # produce a confident, wrong background. Absence is safer.
-        ],
-        "note": "All-sky fallback, both hemispheres. Shallower and plate-based, "
-                "but always covered and ODbL — no licence restriction.",
+    "DSS2 colour (red / synth / blue) — all sky": {
+        "channels": [DSS2_RED, "synth", DSS2_BLUE],
+        "note": "All-sky, both hemispheres, FITS. Green is synthesised as the "
+                "mean of red and blue — crude, but it gives each of your "
+                "channels its own reference. ODbL, no licence restriction.",
         "dec_min": -90.0,
         "noncommercial": False,
     },
-    "DSS2 blue (all sky)": {
-        "hips": "CDS/P/DSS2/blue",
-        "mirrors": [
-            "https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/blue",
-            "https://alaskybis.cds.unistra.fr/DSS/DSS2-blue-XJ-S",
-            "https://alasky.cds.unistra.fr/DSS/DSS2-blue-XJ-S",
-        ],
-        "note": "All-sky fallback, blue plates. ODbL, no licence restriction.",
+    "DSS2 red + NSNS continuum (north) — colour": {
+        "channels": [DSS2_RED, _nsns("vc"), _nsns("vc")],
+        "note": "Best colour reference reachable during the CDS outage. The "
+                "red plate drives red; NSNS star-subtracted continuum drives "
+                "green and blue. Mixing surveys is fine here because each "
+                "channel solves its own offset and scale — only the SHAPE of "
+                "the structure has to be right per channel. North of -16 "
+                "only, since NSNS stops there. NSNS is CC-BY-NC-SA.",
+        "dec_min": -16.0,
+        "noncommercial": True,
+    },
+    "DSS2 colour from 8-bit tiles (all sky) — colour": {
+        "channels": [_dss2_colour(0), _dss2_colour(1), _dss2_colour(2)],
+        "note": "Real red AND real blue plates, linearly scaled into 8-bit by "
+                "CDS. 256 levels is ample for a low-frequency background, and "
+                "this is the only route to the blue plate while CDS is down. "
+                "Green is CDS's synthetic blend, not a measurement. All sky, "
+                "both hemispheres. ODbL.",
+        "dec_min": -90.0,
+        "noncommercial": False,
+    },
+    "SDSS colour from 8-bit tiles (north) — colour": {
+        "channels": [_sdss9_colour(0), _sdss9_colour(1), _sdss9_colour(2)],
+        "note": "i/r/g mapped to R/G/B, band-matched to the NSNS continuum, "
+                "from CDS's 8-bit composite. Log-stretched rather than "
+                "linear, which a background's narrow range mostly absorbs "
+                "into the scale factor. 36% of sky, north galactic cap. "
+                "Check 'reference explains' in diagnostics on this one.",
+        "dec_min": -25.0,
+        "noncommercial": False,
+    },
+    "SDSS g/r/i colour (north, 36% of sky) — colour": {
+        "channels": [SDSS9_I, SDSS9_R, SDSS9_G],
+        "note": "Band-matched broadband colour: real photometry in the same "
+                "g/r/i system the NSNS continuum was calibrated in, mapped "
+                "i/r/g to R/G/B as CDS does. Only 36% of sky — north galactic "
+                "cap plus the equatorial stripes — so outside the footprint "
+                "fall back to DSS2 colour. No licence restriction.",
+        "dec_min": -25.0,
+        "noncommercial": False,
+    },
+    "NSNS visual continuum (north) — mono": {
+        "channels": [_nsns("vc")],
+        "note": "NSNS star-subtracted visible continuum, mono (it is already "
+                "an R+G+B combination). Each of your channels still gets its "
+                "own scale factor. CC-BY-NC-SA.",
+        "dec_min": -16.0,
+        "noncommercial": True,
+    },
+    "NSNS SHO (Ha / OIII / SII) — colour": {
+        "channels": [_nsns("halpha"), _nsns("oiii"), _nsns("sii")],
+        "note": "Narrowband colour reference: Ha, [OIII], [SII] as R, G, B. "
+                "For SHO-mapped data, so each channel is matched to the line "
+                "it was actually imaged in. CC-BY-NC-SA.",
+        "dec_min": -16.0,
+        "noncommercial": True,
+    },
+    # One-shot-colour cameras behind a dual narrowband filter. The Bayer
+    # matrix sorts the two passbands for you: Ha (656 nm) lands almost
+    # entirely on the red pixels, [OIII] (501 nm) on green and blue. So the
+    # frame IS an HOO composite, and its reference has to be one too —
+    # correcting an HOO frame against a continuum plane would fit the gradient
+    # in each channel against structure that is not in that channel.
+    #
+    # SOO is the same arrangement for a filter passing [SII] rather than Ha.
+    #
+    # Both reference the same [OIII] tree twice; fetch_reference_channels
+    # dedupes by hips id so it is downloaded once.
+    #
+    # CAVEAT, and read this before trusting the result: the NSNS line maps are
+    # continuum-SUBTRACTED, and your dual-band frame is not. Whatever continuum
+    # leaks through the filter passband (wider filter, more leak) is real sky
+    # structure in your frame with no counterpart in the reference, so a
+    # single-regressor fit can attribute it to the gradient and subtract real
+    # signal — exactly the failure this tool exists to avoid. See
+    # CONTINUUM_CO_REGRESSOR below.
+    "NSNS HOO (Ha / OIII / OIII) — OSC dual-band, north": {
+        "channels": [_nsns("halpha"), _nsns("oiii"), _nsns("oiii")],
+        "note": "For one-shot-colour data behind a dual narrowband filter "
+                "passing Ha and [OIII] (L-eXtreme, L-Ultimate, ALP-T, NBZ…). "
+                "Ha to red, [OIII] to green and blue, matching what the Bayer "
+                "matrix did to your frame. CC-BY-NC-SA.",
+        "dec_min": -16.0,
+        "noncommercial": True,
+    },
+    "NSNS SOO (SII / OIII / OIII) — OSC dual-band, north": {
+        "channels": [_nsns("sii"), _nsns("oiii"), _nsns("oiii")],
+        "note": "As HOO, for a dual-band filter passing [SII] rather than Ha. "
+                "CC-BY-NC-SA.",
+        "dec_min": -16.0,
+        "noncommercial": True,
+    },
+    "NSNS Ha (north) — mono": {
+        "channels": [_nsns("halpha")],
+        "note": "NSNS H-alpha, linear intensity in Rayleighs. CC-BY-NC-SA.",
+        "dec_min": -16.0,
+        "noncommercial": True,
+    },
+    "NSNS [OIII] (north) — mono": {
+        "channels": [_nsns("oiii")],
+        "note": "NSNS [OIII] 500.7 nm. CC-BY-NC-SA.",
+        "dec_min": -16.0,
+        "noncommercial": True,
+    },
+    "NSNS [SII] (north) — mono": {
+        "channels": [_nsns("sii")],
+        "note": "NSNS [SII] 671.7/673.0 nm. CC-BY-NC-SA.",
+        "dec_min": -16.0,
+        "noncommercial": True,
+    },
+    "DSS2 red (all sky) — mono": {
+        "channels": [DSS2_RED],
+        "note": "All-sky red plates, FITS. ODbL.",
+        "dec_min": -90.0,
+        "noncommercial": False,
+    },
+    "DSS2 blue (all sky) — mono": {
+        "channels": [DSS2_BLUE],
+        "note": "All-sky blue plates, FITS. ODbL.",
         "dec_min": -90.0,
         "noncommercial": False,
     },
 }
 
+DEFAULT_SURVEY = "NSNS visual continuum (north) — mono"
+
+
+# Measured availability. probe_mirrors.py walked every candidate path from an
+# ordinary consumer connection on 2026-11-09 and then read each node's own
+# hipslist, so this is an inventory rather than an inference.
+#
+# IRSA's HiPS node holds 27 surveys in total. Its complete optical holdings:
+#     CDS/P/DSS2/red     -> /data/hips/CDS/DSS2/red      jpeg fits   <-- ONLY
+#     CDS/P/DSS2/color   -> /data/hips/CDS/DSS2/color    jpeg
+#     CDS/P/SDSS9/color  -> /data/hips/CDS/SDSS/DR9/color jpeg, order 10
+# plus 2MASS, DENIS, GALEX, IRIS, MSX, Planck, Spitzer, AllWISE, Herschel.
+# There are NO SDSS band trees and NO DSS2 blue. CASDA holds 9 surveys
+# (2MASS, DSS2 color, HI4PI, NVSS, Spitzer, SUMSS, RACS) with no optical
+# FITS at all. ESA, CAMRAS, IRAP and SVO-CAB have nothing optical either,
+# and both IAS hostnames are unreachable.
+#
+# So while CDS is down, the entire set of usable optical FITS references on
+# the open internet is five trees: NSNS vc/halpha/oiii/sii, and DSS2 red.
+# Everything else here is waiting on Strasbourg to come back.
+#
+# This is surfaced in the dialog rather than left for the user to discover by
+# watching a fetch fail.
+_AVAILABILITY = {
+    "verified": "",
+    "degraded": (
+        "⚠ DEGRADED while CDS is down: the blue plate is mirrored nowhere "
+        "reachable, so this runs on the red plate alone and the other two "
+        "channels are synthesised from it. Each channel still solves its own "
+        "scale factor, but there is no real colour information in the "
+        "reference. "
+    ),
+    "unavailable": (
+        "⚠ UNAVAILABLE while CDS is down: no mirror carries this as FITS "
+        "(IRSA has only a jpeg composite, CASDA and ESA have nothing). "
+        "Left here because it becomes the right choice when Strasbourg "
+        "returns. "
+    ),
+}
+
+_SURVEY_AVAILABILITY = {
+    "DSS2 colour (red / synth / blue) — all sky":        "degraded",
+    "SDSS g/r/i colour (north, 36% of sky) — colour":    "unavailable",
+    "DSS2 blue (all sky) — mono":                        "unavailable",
+    "SDSS colour from 8-bit tiles (north) — colour":     "stretched",
+}
+
+# The state a liveness ping cannot see, and the reason this module checks
+# /properties instead of pinging. A node that answers again after an outage
+# has NOT necessarily restored the same tile trees at the same paths, and
+# silently re-enabling a survey on that evidence would hand the user a
+# confident option that fails in a new way.
+_AVAILABILITY["moved"] = (
+    "⚠ The mirror host is answering again but its tile tree is no longer at "
+    "the registered path. The survey is probably back under a different URL "
+    "— re-run probe_mirrors.py to find it. "
+)
+
+_AVAILABILITY["stretched"] = (
+    "ℹ Log-stretched 8-bit source. Quantisation is irrelevant at these "
+    "frequencies, but the stretch is only approximately linear over the "
+    "background's range, so check what fraction of the gradient the "
+    "reference explains in diagnostics. "
+)
+
+# Prefer a reference that actually fetches today. NSNS continuum stays the
+# default (verified, linear FITS, best data in the north); the red+vc hybrid
+# is the one to reach for on colour data while CDS is down.
+DEFAULT_COLOUR_SURVEY = "DSS2 red + NSNS continuum (north) — colour"
+
+for _name, _info in SURVEYS.items():
+    _info["availability"] = _SURVEY_AVAILABILITY.get(_name, "verified")
+
 
 def mirrors_for(hips_id: str) -> list[str]:
     """Direct HiPS base URLs registered for a hips id (may be empty)."""
     for info in SURVEYS.values():
-        if info.get("hips") == hips_id:
-            return list(info.get("mirrors") or [])
+        for ch in info.get("channels") or []:
+            if isinstance(ch, dict) and ch.get("hips") == hips_id:
+                return list(ch.get("mirrors") or [])
     return []
 
-DEFAULT_SURVEY = "NSNS Ha (north, dec > -16)"
 
 
 # =============================================================================
@@ -586,6 +881,23 @@ def _hips_level_for(qw: WCS, h: int, w: int) -> int:
 # DSS2 tiles (no WCS at all in the header) be read exactly like NSNS's.
 # ---------------------------------------------------------------------------
 
+# Fetched references kept per dialog, so re-running with a different degree
+# or protect k does not re-download. A 1024x1024x3 float32 reference is
+# ~12 MB, so this is a handful of entries, not a general-purpose cache.
+_REF_CACHE_MAX = 3
+
+# Long side the PREVIEW is rendered at. The label is a few hundred pixels
+# and the pixmap is smooth-scaled down to it anyway, so correcting and
+# tone-mapping a 24 MP frame to fill it is pure waste: measured 8.0 s per
+# redraw at 6248x4168 against ~0.1 s here. Nothing is DECIDED from the
+# preview -- Apply always runs on the full-resolution snapshot.
+_PREVIEW_LONG_SIDE = 1400
+
+# Rendered 8-bit preview buffers kept per dialog. One is ~5.9 MB at the
+# long side above, and the useful set is small: Before, After, and a couple
+# of strength values the user is flicking between.
+_DISP_CACHE_MAX = 8
+
 _PROPS_CACHE: dict[str, dict] = {}
 _TILE_CACHE: dict[tuple, np.ndarray | None] = {}
 _TILE_CACHE_MAX = 256
@@ -631,6 +943,76 @@ def _deinterleave(j: np.ndarray, m: int) -> tuple[np.ndarray, np.ndarray]:
     return a, b
 
 
+def _decode_image_tile(raw: bytes, ext: str) -> np.ndarray:
+    """
+    Decode a PNG/JPEG HiPS tile to float32, (H, W) grey or (H, W, 3) RGB.
+
+    8-bit tiles are perfectly usable for this job and were wrongly excluded
+    at first. A gradient is low-frequency by definition, and a background
+    model averages thousands of pixels per sample patch, so 256 levels carry
+    far more precision than the fit needs. What actually matters is whether
+    the tree is LINEAR in the large scale:
+
+      DSS2 colour  - CDS builds it from the very FITS planes this module
+                     wants, with linear cuts recorded in its properties
+                     (hips_rgb_red = DSS2Merged [... Linear], hips_rgb_blue =
+                     DSS2-blue-XJ-S [... Linear]). So its blue channel IS the
+                     blue plate, scaled and quantised. Fine.
+      SDSS9 colour - same construction with a Log stretch. A monotonic curve
+                     over a background's narrow range is close to linear, so
+                     it is largely absorbed into b. Usable, slightly soft.
+      NSNS 8-bit   - the survey states these are "dynamic range compressed
+                     (non-linearly high-pass filtered) and tonal curve
+                     corrected". A high-pass genuinely removes the frequencies
+                     being fitted, which quantisation does not. That is the
+                     one real hazard, and reference_share measures it
+                     directly: if the structure is gone, b*span collapses and
+                     the diagnostic says so. Offered, with that caveat.
+
+    NOTE the two-way alpha handling: some HiPS PNG tiles carry transparency to
+    mark absent coverage, and treating alpha=0 as black would invent real
+    "sky is dark here" structure where there is simply no data.
+    """
+    if cv2 is None:
+        raise SurveyFetchError(
+            "cv2 is needed to read PNG/JPEG HiPS tiles and is not available.")
+    buf = np.frombuffer(raw, dtype=np.uint8)
+    img = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise ValueError(f"could not decode a {ext} tile ({len(raw)} bytes)")
+
+    img = np.asarray(img)
+    alpha = None
+    if img.ndim == 3 and img.shape[2] == 4:
+        alpha = img[..., 3]
+        img = img[..., :3]
+    if img.ndim == 3 and img.shape[2] == 3:
+        img = img[..., ::-1]          # cv2 gives BGR; the tree is RGB
+    out = img.astype(np.float32)
+    if alpha is not None:
+        # Fully transparent means "no coverage", which must read as NaN and
+        # not as zero, or the fit sees a hard dark edge that is not sky.
+        mask = alpha == 0
+        if mask.any():
+            out[mask] = np.nan
+    elif out.ndim == 3 and out.shape[2] == 3:
+        # A JPEG has no alpha, so a tree that is only published as jpeg has
+        # no way to say "nothing here" -- out-of-footprint comes back as
+        # exact (0,0,0). np.isfinite cannot tell that from data, so the
+        # coverage check passed at 100% on a field that was 40% EMPTY, and
+        # the fit then treated that void as real sky structure.
+        #
+        # Exact zero in all THREE channels is the giveaway. A stretched
+        # 8-bit sky composite is noise around some low value, never exactly
+        # 0,0,0 across a region: measured 0.0% inside the SDSS footprint
+        # against 40.4% outside it. Only applied to 3-channel tiles -- a
+        # single 0 in a mono tile is genuinely ambiguous.
+        void = np.all(out == 0.0, axis=2)
+        if void.any():
+            out[void] = np.nan
+    return out
+
+
 def _fetch_tile(base: str, order: int, npix: int, ext: str,
                 timeout: float) -> np.ndarray | None:
     """One tile as float32, or None if it is genuinely absent."""
@@ -642,27 +1024,31 @@ def _fetch_tile(base: str, order: int, npix: int, ext: str,
     arr: np.ndarray | None = None
     try:
         raw = _http_get(url, timeout=timeout)
-        import io
-        import warnings as _w
-        from astropy.io import fits
-        with _w.catch_warnings():
-            # IRSA serves tiles without the trailing FITS padding block, which
-            # astropy flags as truncated. The pixel data is all there; only the
-            # pad is missing, so the warning is noise.
-            _w.simplefilter("ignore")
-            with fits.open(io.BytesIO(raw), ignore_missing_end=True) as hdul:
-                hdu = next((x for x in hdul if getattr(x, "data", None) is not None),
-                           None)
-                if hdu is None:
-                    raise ValueError("no image HDU in tile")
-                data = np.asarray(hdu.data)
-                blank = hdu.header.get("BLANK", None)
-        arr = data.astype(np.float32)
-        if blank is not None:
-            try:
-                arr[data == int(blank)] = np.nan
-            except Exception:
-                pass
+        if ext in ("png", "jpg", "jpeg"):
+            arr = _decode_image_tile(raw, ext)
+        else:
+            import io
+            import warnings as _w
+            from astropy.io import fits
+            with _w.catch_warnings():
+                # IRSA serves tiles without the trailing FITS padding block,
+                # which astropy flags as truncated. The pixel data is all
+                # there; only the pad is missing, so the warning is noise.
+                _w.simplefilter("ignore")
+                with fits.open(io.BytesIO(raw), ignore_missing_end=True) as hdul:
+                    hdu = next(
+                        (x for x in hdul if getattr(x, "data", None) is not None),
+                        None)
+                    if hdu is None:
+                        raise ValueError("no image HDU in tile")
+                    data = np.asarray(hdu.data)
+                    blank = hdu.header.get("BLANK", None)
+            arr = data.astype(np.float32)
+            if blank is not None:
+                try:
+                    arr[data == int(blank)] = np.nan
+                except Exception:
+                    pass
     except Exception as e:
         # A 404 is ordinary: HiPS is sparse, and an absent tile means no survey
         # coverage there. Anything else is logged so a dead host or a bad path
@@ -699,12 +1085,22 @@ def _fetch_via_tiles(qw: WCS, h: int, w: int, base_url: str,
     max_order = int(props.get("hips_order", 5))
     tile_w = int(props.get("hips_tile_width", 512))
     fmts = str(props.get("hips_tile_format", "fits")).lower().split()
-    if "fits" not in fmts:
+    # FITS first when offered — linear and unquantised. Otherwise fall back to
+    # the 8-bit trees, which carry a gradient perfectly well (see
+    # _decode_image_tile). PNG before JPEG: PNG is lossless, and JPEG's block
+    # artifacts, while far below the scale of anything being fitted, are free
+    # to avoid when there is a choice.
+    ext = next((f for f in ("fits", "png", "jpeg", "jpg") if f in fmts), None)
+    if ext is None:
         raise SurveyFetchError(
-            f"{base} serves only {fmts or ['?']} tiles. This needs FITS — an "
-            "8-bit JPEG/PNG display product cannot carry the surface "
-            "brightness this method measures."
+            f"{base} advertises tile formats {fmts or ['?']}, none of which "
+            "can be read (expected one of fits, png, jpeg)."
         )
+    if ext == "jpeg":
+        ext = "jpg"          # the tile files are .jpg even when advertised as jpeg
+    is_image = ext != "fits"
+    if is_image:
+        _log(f"  using 8-bit {ext} tiles (no FITS at this tree)")
     m = int(round(np.log2(tile_w)))
     if 2 ** m != tile_w:
         raise SurveyFetchError(f"tile width {tile_w} is not a power of two")
@@ -739,19 +1135,35 @@ def _fetch_via_tiles(qw: WCS, h: int, w: int, base_url: str,
     npix_tile = idx >> (2 * m)
     j = idx & (4 ** m - 1)
     a, b = _deinterleave(j, m)
-    row = (tile_w - 1) - a
+    # ORIENTATION: the HiPS standard stores FITS tiles with the origin at the
+    # BOTTOM-left (FITS convention) and PNG/JPEG tiles at the TOP-left (image
+    # convention), so the vertical flip is opposite between them. Getting this
+    # backwards does not error — it mirrors every tile about its own centre
+    # and quietly returns scrambled sky. test_tile_orientation.py checks it
+    # against DSS2 red, which IRSA serves as both fits and jpeg.
+    row = a if is_image else (tile_w - 1) - a
     col = b
 
-    out = np.full(h * w, np.nan, dtype=np.float32)
     uniq = np.unique(npix_tile)
     _log(f"  tiles needed: {len(uniq)} at order {order}")
 
-    ext = "fits"
     with ThreadPoolExecutor(max_workers=8) as pool:
         tiles = dict(zip(
             uniq.tolist(),
             pool.map(lambda n: _fetch_tile(base, order, int(n), ext, timeout),
                      uniq.tolist())))
+
+    # Colour trees give three planes; carry them all so a caller can ask for
+    # one. DSS2 colour's blue channel is the blue plate that is mirrored
+    # nowhere as FITS, so throwing it away here would discard the only real
+    # blue available during the outage.
+    nband = 1
+    for t in tiles.values():
+        if t is not None and t.ndim == 3:
+            nband = max(nband, t.shape[2])
+
+    out = np.full((h * w, nband) if nband > 1 else (h * w,), np.nan,
+                  dtype=np.float32)
 
     got = 0
     for n in uniq.tolist():
@@ -760,11 +1172,18 @@ def _fetch_via_tiles(qw: WCS, h: int, w: int, base_url: str,
             continue
         got += 1
         sel = npix_tile == n
-        out[sel] = t[row[sel], col[sel]]
+        vals = t[row[sel], col[sel]]
+        if nband > 1:
+            if vals.ndim == 1:                 # grey tile in a colour tree
+                vals = np.repeat(vals[:, None], nband, axis=1)
+            out[sel, :] = vals[:, :nband]
+        else:
+            out[sel] = vals
 
     _log(f"  tiles ok   : {got}/{len(uniq)}")
-    res = out.reshape(h, w)
-    _log("  " + _array_stats(res, f"tiles order={order}"))
+    res = out.reshape((h, w, nband) if nband > 1 else (h, w))
+    _log("  " + _array_stats(res, f"tiles order={order}"
+                                  f"{' x%d' % nband if nband > 1 else ''}"))
     if got == 0:
         raise SurveyFetchError(
             f"none of the {len(uniq)} tiles covering this field could be "
@@ -773,8 +1192,98 @@ def _fetch_via_tiles(qw: WCS, h: int, w: int, base_url: str,
     return res
 
 
+# Hosts that did not answer at all this session. During the 2026 CDS outage a
+# colour fetch walks four CDS routes in turn and each one burns its full
+# connect timeout, so a single failed channel cost ~84 s of staring at a
+# progress bar before the error appeared. Once a host has proved unreachable
+# there is nothing to learn by waiting for it again.
+_DEAD_HOSTS: set[str] = set()
+
+
+# Result of the TCP pre-flight, per host, for this session. Separate from
+# _DEAD_HOSTS because that set also collects hosts that failed mid-transfer;
+# this one is purely 'did the socket open'.
+_HOST_ALIVE: dict[str, bool] = {}
+
+
+def reset_dead_hosts() -> None:
+    """Forget the unreachable-host list (call when the tool is reopened)."""
+    _DEAD_HOSTS.clear()
+    _HOST_ALIVE.clear()
+
+
+def _host_of(url: str) -> str:
+    """Hostname (no port) from a base URL."""
+    return url.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+
+
+def _host_reachable(url: str, *, timeout: float = CONNECT_TIMEOUT) -> bool:
+    """
+    Can we open a TCP connection to this URL's host at all?
+
+    This only ever lets us SKIP work. A refused connect is proof that every
+    further route on that host will fail; a successful one proves nothing
+    beyond 'something is listening', which is exactly why it is never used
+    to decide that a survey is available (see recheck_availability).
+
+    Cached per host for the session, and a failure also feeds _DEAD_HOSTS so
+    the existing skip paths and their user-facing message stay consistent.
+    """
+    import socket
+    import time as _time
+
+    host = _host_of(url)
+    cached = _HOST_ALIVE.get(host)
+    if cached is not None:
+        return cached
+
+    port = 80 if url.lower().startswith("http://") else 443
+    t0 = _time.monotonic()
+    try:
+        with socket.create_connection((host, port), timeout=float(timeout)):
+            ok = True
+    except Exception as e:
+        ok = False
+        _log(f"  pre-flight : {host} did not answer in "
+             f"{(_time.monotonic() - t0) * 1000:.0f} ms ({_brief(e)})")
+    _HOST_ALIVE[host] = ok
+    if not ok:
+        _DEAD_HOSTS.add(host)
+    return ok
+
+
+def _is_connection_failure(e: BaseException) -> bool:
+    """
+    True when the host never answered — timeout, refused, DNS, TLS — as
+    opposed to answering with an HTTP status.
+
+    The distinction decides whether to blacklist the HOST or only this path.
+    A 404 means the survey is not at that URL and says nothing about the
+    server's health: IRSA serves DSS2 red and 404s on blue, and blacklisting
+    IRSA over that would throw away a working mirror. A connect timeout means
+    every further route on that host will burn its timeout too.
+    """
+    from urllib.error import HTTPError as _UHTTPError, URLError as _UURLError
+
+    # Must precede every check below: urllib's HTTPError subclasses URLError,
+    # which subclasses OSError, so it would match the broad cases otherwise.
+    if isinstance(e, _UHTTPError) or type(e).__name__ == "HTTPError":
+        return False
+    if isinstance(e, _UURLError):
+        return True
+    if isinstance(e, (TimeoutError, ConnectionError, OSError)):
+        return True
+    # requests/urllib3 raise their own hierarchy that shares no base with the
+    # stdlib one, so fall back to matching the names.
+    return type(e).__name__ in {
+        "ConnectTimeout", "ReadTimeout", "Timeout", "ConnectionError",
+        "NewConnectionError", "MaxRetryError", "SSLError", "ProxyError",
+    }
+
+
 def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
-                    *, progress_cb=None, timeout: float = HIPS_TIMEOUT,
+                    *, mirrors: list[str] | None = None,
+                    progress_cb=None, timeout: float = HIPS_TIMEOUT,
                     allow_tiles: bool = True) -> np.ndarray:
     """
     Pull a reference cutout for `wcs`, trying every route we know about.
@@ -822,11 +1331,24 @@ def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
     # only route that survived the CDS outage, and the reader below is ours —
     # a missing tile is a logged 404, not a silent hole in the data.
     if allow_tiles:
-        mirrors = mirrors_for(hips_id)
+        mirrors = list(mirrors) if mirrors else mirrors_for(hips_id)
         if not mirrors:
             _log(f"no direct mirrors registered for {hips_id}")
         for base in mirrors:
             host = base.split("//", 1)[-1].split("/", 1)[0]
+            if host in _DEAD_HOSTS:
+                _log(f"-- route: direct tiles @ {host} — SKIPPED, unreachable "
+                     f"earlier this session")
+                attempts.append(f"tiles {host}: skipped (unreachable earlier)")
+                continue
+            # Cheap TCP pre-flight before committing to a 30 s read timeout
+            # the OS will pre-empt with its own ~21 s connect timeout anyway.
+            if not _host_reachable(base):
+                _log(f"-- route: direct tiles @ {host} — SKIPPED, no answer "
+                     f"within the {CONNECT_TIMEOUT:.1f}s pre-flight")
+                attempts.append(
+                    f"tiles {host}: no TCP answer within {CONNECT_TIMEOUT:.1f}s")
+                continue
             if progress_cb:
                 progress_cb(f"Reading reference tiles from {host}…")
             _log(f"-- route: direct tiles @ {host}")
@@ -842,12 +1364,28 @@ def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
                 dt = (time.monotonic() - t0) * 1000.0
                 _log(f"   FAILED after {dt:.0f} ms: {_brief(e, 300)}")
                 attempts.append(f"tiles {host} ({dt:.0f} ms): {_brief(e)}")
+                if _is_connection_failure(e):
+                    _DEAD_HOSTS.add(host)
+                    _log(f"   {host} marked unreachable for this session")
 
     # hips2fits is now the fallback: it is server-side and convenient, but it
     # is a single vendor's service layer and it was the thing that went down.
     if have_aq:
         for ep in _ordered_endpoints():
             host = ep.split("//", 1)[-1].split("/", 1)[0]
+            if host in _DEAD_HOSTS:
+                _log(f"-- route: hips2fits @ {host} — SKIPPED, unreachable "
+                     f"earlier this session")
+                attempts.append(
+                    f"hips2fits {host}: skipped (unreachable earlier)")
+                continue
+            if not _host_reachable(ep):
+                _log(f"-- route: hips2fits @ {host} — SKIPPED, no answer "
+                     f"within the {CONNECT_TIMEOUT:.1f}s pre-flight")
+                attempts.append(
+                    f"hips2fits {host}: no TCP answer within "
+                    f"{CONNECT_TIMEOUT:.1f}s")
+                continue
             if progress_cb:
                 progress_cb(f"Trying hips2fits ({host})…")
             _log(f"-- route: hips2fits @ {host}")
@@ -864,15 +1402,165 @@ def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
                 dt = (time.monotonic() - t0) * 1000.0
                 _log(f"   FAILED after {dt:.0f} ms: {_brief(e, 300)}")
                 attempts.append(f"hips2fits {host} ({dt:.0f} ms): {_brief(e)}")
+                if _is_connection_failure(e):
+                    _DEAD_HOSTS.add(host)
+                    _log(f"   {host} marked unreachable for this session")
 
     _log("ALL ROUTES FAILED")
     _log("=" * 62)
+    unreachable = sorted(_DEAD_HOSTS)
+    tail = ""
+    if unreachable:
+        tail = ("\n\nUnreachable this session: " + ", ".join(unreachable) +
+                ". These are skipped from now on rather than waiting out "
+                "each timeout again; reopen the tool to retry them.")
     raise SurveyFetchError(
         "Could not fetch a reference cutout. Every route failed:\n\n"
         + "\n".join(f"  • {a}" for a in attempts)
-        + "\n\nIf this is a CDS outage, the DSS2 options also mirror from IRSA "
-          "(Caltech), which is independent of CDS."
+        + tail
+        + "\n\nDuring a CDS outage the DSS2 and SDSS options also mirror from "
+          "IRSA (Caltech), CASDA (CSIRO, Australia) and IAS (Orsay) — but not "
+          "every band is mirrored at every site, so a 404 on one host is "
+          "normal and the next route is tried automatically."
     )
+
+
+# The hosts whose outage is the REASON the availability tags above exist.
+# Only these can produce a "moved" verdict. A 404 from a host that has been
+# up all along is not news -- it is the inventory we already measured and
+# recorded (IRSA has never carried DSS2 blue), and reporting it as "the
+# trees have moved" would fire on every single dialog open.
+_OUTAGE_HOSTS: set = {
+    _host_of(_ep) for _ep in HIPS2FITS_ENDPOINTS
+} | {"alasky.cds.unistra.fr", "alaskybis.cds.unistra.fr",
+     "cdsarc.cds.unistra.fr", "healpix.ias.u-psud.fr",
+     "wwwfirback.ias.u-psud.fr"}
+
+# Tags that mean "we could not REACH this", and so are worth re-testing.
+# "stretched" and any future quality caveat are deliberately absent: they
+# describe what the data IS, not whether it can be fetched, and clearing
+# one on a successful fetch would delete a warning that is still true.
+_RECHECKABLE_TAGS: set = {"unavailable", "degraded"}
+
+
+def _tree_state(base: str, *, need_fits: bool,
+                timeout: float = CONNECT_TIMEOUT) -> str:
+    """
+    One mirror base URL, classified: "live" | "moved" | "down".
+
+      live  the host answered, /properties exists, and it advertises a tile
+            format this reader can use for that channel.
+      moved the host answered but /properties did not resolve. The node is
+            back and the tree is somewhere else. This is the state a
+            liveness ping reports as a successful restore, and it is why
+            this function exists.
+      down  no TCP answer.
+      absent  the host answered but does not carry this tree, and never
+            did -- the measured inventory, not a change worth reporting.
+    """
+    # "moved" is only meaningful for a host that was part of the outage.
+    # Everywhere else a missing path is the known inventory, not a change.
+    missing = "moved" if _host_of(base) in _OUTAGE_HOSTS else "absent"
+    if not _host_reachable(base, timeout=timeout):
+        return "down"
+    try:
+        props = hips_properties(base, timeout=max(timeout, 5.0))
+    except Exception as e:
+        # The host answered the socket, so this is about the PATH, not the
+        # node -- unless it turns out to be a connection failure after all,
+        # in which case say so rather than claiming the tree moved.
+        return "down" if _is_connection_failure(e) else missing
+    fmts = str(props.get("hips_tile_format", "")).lower().split()
+    if need_fits:
+        return "live" if "fits" in fmts else missing
+    usable = {"fits", "png", "jpeg", "jpg"}
+    return "live" if (set(fmts) & usable) else missing
+
+
+def recheck_availability(*, timeout: float = CONNECT_TIMEOUT) -> dict:
+    """
+    Re-verify the surveys that are NOT currently tagged "verified" and
+    return {survey name: new tag} for those whose tag changed.
+
+    Only ever UPGRADES, and only tags in _RECHECKABLE_TAGS are considered.
+    A verified survey is left alone: a transient network blip must not be
+    able to grey out a working option, and the fetch path already reports a
+    real failure properly when one happens. A quality tag like "stretched"
+    is left alone too -- it is not a statement about reachability, and
+    clearing it on a successful fetch would delete a warning still true.
+
+    The check is /properties, not a ping. A host that answers tells you
+    nothing about whether its static tile trees came back at the same paths
+    after an outage, and re-enabling a survey on that evidence produces a
+    confident option that fails in a new way. /properties is one small GET
+    that proves the tree exists AND advertises a format we can read, and it
+    shares _PROPS_CACHE with the real fetch path so it costs nothing twice.
+
+    A channel carrying a "channel" key is a band selected out of an 8-bit
+    colour composite, so any readable format counts. A channel without one
+    wants its own FITS tree, and a jpeg-only mirror does not restore it.
+    """
+    changes: dict = {}
+    for name, info in SURVEYS.items():
+        current = info.get("availability", "verified")
+        if current not in _RECHECKABLE_TAGS:
+            continue
+
+        states: list[str] = []
+        for ch in info.get("channels") or []:
+            if not isinstance(ch, dict):
+                continue          # "synth" has nothing to fetch
+            need_fits = "channel" not in ch
+            per_mirror = [
+                _tree_state(m, need_fits=need_fits, timeout=timeout)
+                for m in (ch.get("mirrors") or [])
+            ]
+            if "live" in per_mirror:
+                states.append("live")
+            elif "moved" in per_mirror:
+                states.append("moved")
+            else:
+                states.append("down")
+
+        if not states:
+            continue
+        if all(s == "live" for s in states):
+            new = "verified"
+        elif "moved" in states:
+            new = "moved"
+        else:
+            new = current
+
+        if new != current:
+            changes[name] = new
+            _log(f"availability: {name!r}  {current} -> {new}")
+    if not changes:
+        _log("availability re-check: nothing changed")
+    return changes
+
+
+# QThread objects are kept here for the duration of a run. A QThread that is
+# garbage collected while still running takes the process with it, and the
+# dialog that started this one may well be closed and deleted first.
+_LIVE_PROBES: set = set()
+
+
+class _AvailabilityProbe(QThread):
+    """Runs recheck_availability() off the UI thread."""
+
+    finishedWith = pyqtSignal(dict)
+
+    def __init__(self):
+        # parent=None per SASpro's QThread rule; lifetime is held by
+        # _LIVE_PROBES, not by the dialog.
+        super().__init__(parent=None)
+
+    def run(self):
+        try:
+            self.finishedWith.emit(recheck_availability())
+        except Exception as e:
+            _log(f"availability re-check failed: {_brief(e)}")
+            self.finishedWith.emit({})
 
 
 def _brief(e: Exception, n: int = 140) -> str:
@@ -880,9 +1568,384 @@ def _brief(e: Exception, n: int = 140) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def _select_band(arr: np.ndarray, k, hips_id: str, i: int) -> np.ndarray:
+    """
+    Pick one plane out of a fetched reference.
+
+    A colour tile tree returns three planes. `channel` in a registry entry
+    says which one this target channel is fitted against — that is how DSS2
+    colour supplies a real red AND a real blue from one download, each being
+    the original plate linearly scaled.
+
+    k=None on a colour tree means "use it as mono", and the mean is taken
+    rather than a weighted luminance: the planes here are separate filters,
+    not a perceptual colour image, so weighting them by human sensitivity
+    would be meaningless.
+    """
+    a = np.asarray(arr, dtype=np.float32)
+    if a.ndim == 2:
+        if k is not None:
+            _log(f"  channel {i} asked for band {k} of {hips_id}, which is "
+                 f"mono — using it as-is")
+        return a
+    nb = a.shape[2]
+    if k is None:
+        _log(f"  channel {i} averages the {nb} bands of {hips_id}")
+        return np.nanmean(a, axis=2).astype(np.float32)
+    kk = int(np.clip(int(k), 0, nb - 1))
+    if kk != k:
+        _log(f"  channel {i} asked for band {k} of {hips_id} which has {nb}; "
+             f"using band {kk}")
+    _log(f"  channel {i} takes band {kk} of {hips_id}")
+    return a[..., kk].astype(np.float32)
+
+
+def fetch_reference_channels(wcs: WCS, out_hw: tuple[int, int],
+                             channels: list, *, progress_cb=None,
+                             timeout: float = HIPS_TIMEOUT) -> np.ndarray:
+    """
+    Fetch a 1- or 3-channel reference.
+
+    Gradient correction on colour data is a per-channel problem: light
+    pollution is strongly colour-selective, so each of the target's channels
+    needs its own reference plane and its own scale factor. A single mono
+    reference can only say "the structure here is X times brighter"; it
+    cannot say that the structure is redder than your sky but bluer than
+    your gradient.
+
+    `channels` holds 1 or 3 entries. Each is a dict with hips/mirrors, or the
+    string "synth" for a plane synthesised as the mean of the fetched ones —
+    DSS2 has red and blue plates and no green, and an absent green is worse
+    than an interpolated one when the alternative is correcting two of your
+    three channels against a plane that does not exist.
+
+    Returns (h, w) for mono or (h, w, 3) for colour.
+    """
+    h, w = int(out_hw[0]), int(out_hw[1])
+    planes: list[np.ndarray | None] = []
+    synth: list[int] = []
+
+    # Dedupe by hips id. The HOO and SOO composites both reference the same
+    # [OIII] tree for green and blue, so a naive loop would fetch and reproject
+    # it twice for an identical result. The plane is immutable downstream (the
+    # fit reads it, nothing writes to it), so aliasing the same array into two
+    # channel slots is safe and halves the download.
+    seen: dict[str, np.ndarray] = {}
+    failures: list[str] = []
+
+    for i, ch in enumerate(channels):
+        if isinstance(ch, str) and ch.lower() == "synth":
+            planes.append(None)
+            synth.append(i)
+            continue
+        hips_id = ch["hips"]
+        cached = seen.get(hips_id)
+        if cached is not None:
+            _log(f"  channel {i} reuses the already-fetched {hips_id}")
+            planes.append(_select_band(cached, ch.get("channel"), hips_id, i))
+            continue
+        if progress_cb and len(channels) > 1:
+            progress_cb(f"Reference channel {i + 1}/{len(channels)}…")
+        try:
+            plane = fetch_reference(
+                wcs, (h, w), hips_id, mirrors=ch.get("mirrors"),
+                progress_cb=progress_cb, timeout=timeout)
+        except Exception as e:
+            # One unavailable channel must not throw away the ones that
+            # worked. While CDS is down, DSS2 blue is mirrored nowhere
+            # reachable (measured: IRSA, CASDA and ESA all 404) while DSS2
+            # red fetches fine, so aborting here turned a usable red-only
+            # correction into a total failure. Degrade instead: the missing
+            # plane is synthesised from whatever did arrive, which is the
+            # same handling "synth" already gets, and every channel still
+            # solves its own (a, b).
+            _log(f"  channel {i} ({hips_id}) FAILED: {_brief(e)}")
+            _log(f"  -> degrading: this channel will be synthesised from the "
+                 f"channels that did fetch")
+            failures.append(f"channel {i} ({hips_id}): {_brief(e)}")
+            planes.append(None)
+            synth.append(i)
+            continue
+        # Cache the WHOLE fetch, unsliced, so a second channel spec pointing
+        # at the same colour tree reuses it instead of downloading it again.
+        seen[hips_id] = plane
+        planes.append(_select_band(plane, ch.get("channel"), hips_id, i))
+
+    real = [p for p in planes if p is not None]
+    if not real:
+        if failures:
+            raise SurveyFetchError(
+                "No reference channel could be fetched:\n\n"
+                + "\n".join(f"  • {f}" for f in failures)
+            )
+        raise SurveyFetchError("no real reference channels were requested")
+
+    if failures:
+        _log(f"DEGRADED: {len(failures)} of {len(channels)} reference "
+             f"channel(s) unavailable; the correction is running on "
+             f"{len(real)} real plane(s). Per-channel colour information in "
+             f"the gradient is reduced accordingly.")
+
+    for i in synth:
+        planes[i] = np.nanmean(np.stack(real, axis=0), axis=0).astype(np.float32)
+        _log(f"  channel {i} synthesised as the mean of "
+             f"{len(real)} fetched plane(s)")
+
+    if len(planes) == 1:
+        return np.asarray(planes[0], dtype=np.float32)
+    return np.stack([np.asarray(p, dtype=np.float32) for p in planes],
+                    axis=-1)
+
+
 # =============================================================================
 #                                 Robust fit
 # =============================================================================
+
+def _robust_norm01(a: np.ndarray) -> np.ndarray:
+    """
+    Percentile-normalise to [0,1] so two images with wildly different units
+    (Rayleighs vs ADU vs 16-bit plate counts) can be compared for brightness.
+    Clipped at the 1st/99.5th percentile so a handful of saturated stars
+    cannot compress everything else into the bottom of the range.
+    """
+    a = np.asarray(a, dtype=np.float32)
+    f = np.isfinite(a)
+    if not f.any():
+        return np.zeros_like(a)
+    lo, hi = np.percentile(a[f], [1.0, 99.5])
+    if not np.isfinite(hi - lo) or (hi - lo) < 1e-12:
+        return np.zeros_like(a)
+    return np.clip((a - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
+
+
+def _selection_map(tgt_small: np.ndarray, ref_small: np.ndarray,
+                   patch_size: int) -> np.ndarray:
+    """
+    The brightness map that sample points are chosen on.
+
+    THE SURVEY IS THE GROUND TRUTH for where real diffuse emission is. The
+    target's own brightness must NOT disqualify a location, because the target
+    is the frame with the gradient in it — that is the entire premise. Treating
+    a bright patch of light pollution as "not background" would starve the fit
+    on the bright side of the gradient and bias the model toward the dim
+    corner, which is the same failure ADBE's cell-bounded descent exists to
+    prevent. It is also self-defeating: the gradient is the quantity being
+    measured, so declining to sample where it is strong declines to measure it.
+
+    So the reference supplies the diffuse-structure veto, and the target
+    contributes only its HIGH-PASS — stars, satellite trails, sharp artifacts.
+    A high-pass is blind to a smooth gradient by construction, so a point sat
+    in the brightest corner of your light pollution is still a perfectly good
+    background sample, while a point on a star is not.
+
+        map = max( norm(reference),  norm(positive high-pass of target) )
+    """
+    r = _robust_norm01(ref_small)
+
+    t = _to_luminance(tgt_small) if tgt_small.ndim == 3 else tgt_small
+    t = np.asarray(t, dtype=np.float32)
+    hp = None
+    if cv2 is not None:
+        try:
+            sigma = max(2.0, float(patch_size))
+            k = int(2 * round(3 * sigma) + 1)
+            low = cv2.GaussianBlur(t, (k, k), sigma, borderType=cv2.BORDER_REPLICATE)
+            hp = np.clip(t - low, 0.0, None)      # positive excursions only
+        except Exception:
+            hp = None
+    if hp is None:
+        _log("  (no cv2: star rejection via high-pass disabled)")
+        return r
+    return np.maximum(r, _robust_norm01(hp)).astype(np.float32)
+
+
+def _sampling_mask(ref_small: np.ndarray, valid: np.ndarray, *,
+                   exclusion_fraction: float = 0.5,
+                   protect_k: float = 3.0,
+                   protect_grow: int = 3,
+                   patch_size: int = 15,
+                   min_sky_frac: float = 0.12) -> tuple[np.ndarray, dict]:
+    """
+    Where sampling is ALLOWED (True). The hard veto the sampler was missing.
+
+    Built entirely from the SURVEY, because the survey is ground truth for
+    where real emission is — the frame being corrected has a gradient in it
+    and gets no vote (see _selection_map).
+
+    Two vetoes, both already standard in this codebase rather than invented
+    here:
+
+      _exclude_bright_regions(..., 0.5)  drops the brightest half outright.
+          Already used this way in gradient_abe.py and stacking_suite.py.
+
+      build_signal_mask(k, grow)         median + k*MAD, dilated and blurred.
+          The same protection ADBE's multiscale stage uses, so "protect k"
+          means the same thing in both tools.
+
+    Two additions on top, for reasons the M31 case made obvious:
+
+    SMOOTH FIRST. A dust lane inside M31 is dimmer than the sky outside the
+    galaxy, so on a raw map it passes a brightness test AND acts as a local
+    minimum that the cell-bounded descent walks straight into. Smoothing at
+    the patch scale means "dim" is judged over a neighbourhood.
+
+    FILL HOLES. Whatever the lanes still win, binary_fill_holes closes: a
+    lane is a hole inside the galaxy's mask, and a hole inside structure is
+    structure. This is what stops a point landing between M31's dust lanes.
+
+    If structure dominates the frame the thresholds are relaxed until at
+    least `min_sky_frac` is samplable, and the relaxation is reported — a
+    field with no sky in it cannot be corrected against a reference, and the
+    user should be told rather than handed a confident fit through a galaxy.
+    """
+    r = np.nan_to_num(np.asarray(ref_small, dtype=np.float32), nan=np.nan)
+    ok = np.asarray(valid, dtype=bool) & np.isfinite(r)
+    info: dict = {"exclusion_fraction": float(exclusion_fraction),
+                  "protect_k": float(protect_k), "relaxed": False}
+    if not ok.any():
+        return ok, info
+
+    fill = float(np.median(r[ok]))
+    rs = np.where(np.isfinite(r), r, fill).astype(np.float32)
+    if cv2 is not None:
+        try:
+            sigma = max(1.5, float(patch_size) * 0.75)
+            ks = int(2 * round(3 * sigma) + 1)
+            rs = cv2.GaussianBlur(rs, (ks, ks), sigma,
+                                  borderType=cv2.BORDER_REPLICATE)
+        except Exception:
+            pass
+
+    try:
+        from scipy.ndimage import binary_fill_holes
+    except Exception:
+        binary_fill_holes = None
+
+    frac, k = float(exclusion_fraction), float(protect_k)
+    allowed = ok.copy()
+    for _ in range(14):
+        # veto 1 — the brightest `frac` of the covered sky, house pattern
+        dim_enough = np.zeros_like(ok)
+        sub = rs[ok]
+        if sub.size:
+            thresh = np.percentile(sub, 100.0 * (1.0 - max(0.0, min(frac, 0.95))))
+            dim_enough = (rs < thresh)
+        struct = ~dim_enough
+
+        # veto 2 — median + k*MAD, dilated and blurred
+        if build_signal_mask is not None and np.isfinite(k):
+            try:
+                sig = build_signal_mask(rs, k=k, grow=int(protect_grow),
+                                        blur_px=max(1.0, patch_size * 0.5))
+                struct |= (np.asarray(sig, dtype=np.float32) > 0.35)
+            except Exception as e:
+                _log(f"  build_signal_mask unavailable: {_brief(e)}")
+
+        if binary_fill_holes is not None and struct.any():
+            try:
+                struct = binary_fill_holes(struct)
+            except Exception:
+                pass
+
+        allowed = ok & ~struct
+        if float(allowed.mean()) >= min_sky_frac:
+            break
+        info["relaxed"] = True
+        frac = max(0.05, frac - 0.08)
+        k = k + 1.0
+
+    info.update(exclusion_fraction=frac, protect_k=k,
+                allowed_frac=float(allowed.mean()),
+                vetoed_frac=float((ok & ~allowed).mean()))
+    _log(f"  sampling mask: {info['allowed_frac']*100:.1f}% allowed, "
+         f"{info['vetoed_frac']*100:.1f}% vetoed "
+         f"(exclude_frac={frac:.2f}, protect_k={k:.1f}"
+         + (", RELAXED — structure dominates this field)" if info["relaxed"]
+            else ")"))
+    return allowed, info
+
+
+def _shared_sample_points(tgt_small: np.ndarray, ref_small: np.ndarray,
+                          *, valid: np.ndarray, num_samples: int,
+                          patch_size: int, exclusion_fraction: float = 0.5,
+                          protect_k: float = 3.0, protect_grow: int = 3,
+                          user_exclusion: np.ndarray | None = None,
+                          seed: int = 42) -> tuple[np.ndarray, np.ndarray, dict]:
+    """
+    One set of background sample points, used for BOTH background models.
+
+    This is the difference between a reference-based correction that works and
+    one that quietly eats nebulosity.
+
+    Modelling the two backgrounds independently lets each one chase structure
+    in its own way — different noise, different resolution (NSNS is ~10", your
+    data is sub-arcsec), different star content. The fit downstream is
+    B_t ~ a + b*B_r, so any structure one model follows and the other does not
+    lands in the residual and gets subtracted as "gradient". Sampling both at
+    the SAME sky positions makes those errors common-mode, and common-mode
+    error is exactly what the b*B_r term is there to absorb.
+
+    See _selection_map for what counts as a valid background location — in
+    short, the survey decides, not the frame being corrected.
+
+    `valid` (True = usable) keeps points out of the region where the reference
+    had no coverage and was median-filled — sampling there would be fitting an
+    invented flat value and would drag the model toward it.
+    """
+    combined = _selection_map(tgt_small, ref_small, patch_size)
+
+    allowed, info = _sampling_mask(
+        ref_small, valid,
+        exclusion_fraction=float(exclusion_fraction),
+        protect_k=float(protect_k), protect_grow=int(protect_grow),
+        patch_size=int(patch_size),
+    )
+
+    # Applied AFTER the relaxation loop inside _sampling_mask, on purpose:
+    # relaxation exists to find enough sky when the SURVEY vetoes too much,
+    # and it must not be able to claw back a region the user explicitly put
+    # off limits.
+    if user_exclusion is not None:
+        ue = np.asarray(user_exclusion, dtype=bool)
+        if ue.shape[:2] == allowed.shape[:2]:
+            before = float(allowed.mean())
+            allowed = allowed & ~ue
+            info["user_excluded_frac"] = float(ue.mean())
+            info["allowed_frac"] = float(allowed.mean())
+            _log(f"  user exclusions: samplable {before*100:.1f}% -> "
+                 f"{info['allowed_frac']*100:.1f}%")
+
+    pts = _generate_sample_points(
+        combined,
+        num_points=int(num_samples),
+        exclusion_mask=allowed,          # True = allowed, matching ADBE
+        patch_size=int(patch_size),
+        rng=np.random.default_rng(int(seed)),
+    )
+
+    # Belt and braces. _generate_sample_points falls back to a coarse grid if
+    # exclusion is so aggressive that nothing survives, and that fallback
+    # ignores the mask — which is correct for ADBE (a background model with no
+    # points is useless) but wrong here, where a point inside a galaxy is
+    # worse than a sparser fit. Drop any straggler that ended up vetoed.
+    if len(pts):
+        p = np.asarray(pts, dtype=int)
+        H, W = allowed.shape[:2]
+        keep = allowed[np.clip(p[:, 1], 0, H - 1), np.clip(p[:, 0], 0, W - 1)]
+        dropped = int((~keep).sum())
+        if dropped and int(keep.sum()) >= 12:
+            pts = p[keep]
+            _log(f"  dropped {dropped} point(s) that landed in vetoed regions")
+        elif dropped:
+            _log(f"  WARNING: {dropped} of {len(p)} points are in vetoed "
+                 f"regions but too few remain to drop them — this field is "
+                 f"mostly structure and the correction will be weak")
+
+    _log(f"shared sample points: {len(pts)} (requested {num_samples}, "
+         f"patch {patch_size}px, {info['allowed_frac']*100:.0f}% of frame "
+         f"samplable)")
+    return np.asarray(pts, dtype=np.int32), allowed, info
+
 
 def _robust_linear_fit(ref: np.ndarray, tgt: np.ndarray,
                        *, n_iter: int = 5, sigma: float = 2.5
@@ -946,14 +2009,21 @@ def survey_gradient_model(
     image: np.ndarray,
     header,
     *,
-    hips_id: str = SURVEYS[DEFAULT_SURVEY]["hips"],
+    channels: list | None = None,
     work_long_side: int = 1024,
     degree: int = 1,
     use_rbf: bool = True,
     rbf_smooth: float = 1.0,
+    num_samples: int = 200,
+    patch_size: int = 15,
+    exclusion_fraction: float = 0.5,
+    protect_k: float = 3.0,
+    protect_grow: int = 3,
+    seed: int = 42,
     min_coverage: float = 0.25,
     progress_cb=None,
     reference: np.ndarray | None = None,
+    user_exclusion: np.ndarray | None = None,
 ) -> dict:
     """
     Compute the additive gradient of `image` relative to a survey reference.
@@ -988,15 +2058,29 @@ def survey_gradient_model(
 
     # ---- reference ------------------------------------------------------
     if reference is None:
-        ref = fetch_reference(work_wcs, (h, w), hips_id, progress_cb=progress_cb)
+        if not channels:
+            channels = SURVEYS[DEFAULT_SURVEY]["channels"]
+        ref = fetch_reference_channels(work_wcs, (h, w), list(channels),
+                                       progress_cb=progress_cb)
     else:
         ref = np.asarray(reference, dtype=np.float32)
         if ref.shape[:2] != (h, w):
             raise SurveyFetchError(
                 f"Supplied reference shape {ref.shape[:2]} != work grid {(h, w)}."
             )
+    if ref.ndim == 3 and ref.shape[2] == 1:
+        ref = ref[..., 0]
+    ref_colour = (ref.ndim == 3)
 
+    # A pixel is usable only where EVERY reference channel has data, otherwise
+    # one channel's footprint edge would silently fit against a hole in another.
     valid = np.isfinite(ref)
+    if ref_colour:
+        valid = valid.all(axis=2)
+    # Luminance drives point selection and the structure veto: the veto is a
+    # statement about where real sky structure is, which is one fact about the
+    # sky, not three.
+    ref_luma = _to_luminance(ref) if ref_colour else ref
     coverage = float(valid.mean()) if valid.size else 0.0
     _log(_array_stats(ref, "reference as modelled"))
     _log(f"coverage = {coverage*100:.2f}%  (minimum {min_coverage*100:.0f}%)")
@@ -1047,38 +2131,63 @@ def survey_gradient_model(
     # is linear, so both backgrounds have to be modelled in a linear domain.
     # ABE's legacy prestretch is a nonlinear MTF-style mapping; running it here
     # would put a nonlinearity between the two sides of a linear fit.
-    if progress_cb:
-        progress_cb("Modelling image background…")
-
     img_small = _downsample_area(img, max(1, int(round(max(H, W) / max(h, w)))))
     if img_small.shape[:2] != (h, w):
         img_small = _resize_to(img_small, (h, w))
 
-    _, bg_t = abe_run(
-        img_small, degree=int(degree), num_samples=200, downsample=1,
-        patch_size=15, use_rbf=bool(use_rbf), rbf_smooth=float(rbf_smooth),
-        return_background=True, legacy_prestretch=False,
-        progress_cb=None,
-    )
-
-    if progress_cb:
-        progress_cb("Modelling reference background…")
-
     # NaN outside the footprint would poison the fit; fill with the median of
-    # the covered part so the model stays smooth, then re-mask afterwards.
+    # the covered part so the model stays smooth. The fill is NOT sampled —
+    # `valid` is passed through to the point generator below.
     ref_filled = ref.copy()
     if not valid.all():
         fill = float(np.nanmedian(ref)) if np.any(valid) else 0.0
         ref_filled[~valid] = fill
+    ref_luma_filled = (_to_luminance(ref_filled) if ref_colour else ref_filled)
 
-    _, bg_r = abe_run(
-        ref_filled, degree=int(degree), num_samples=200, downsample=1,
-        patch_size=15, use_rbf=bool(use_rbf), rbf_smooth=float(rbf_smooth),
-        return_background=True, legacy_prestretch=False,
-        progress_cb=None,
+    if progress_cb:
+        progress_cb("Choosing background sample points…")
+    # Hand-drawn exclusions are a HARD veto, applied on top of the
+    # survey-derived one. The survey decides what is real structure; this is
+    # the user overriding that for something the survey cannot know about --
+    # a dark nebula the survey is too shallow to show, a reflection, a
+    # satellite trail. It only ever REMOVES candidate pixels.
+    excl_small = None
+    if user_exclusion is not None:
+        e = np.asarray(user_exclusion)
+        if e.shape[:2] != (h, w):
+            e = _resize_to(e.astype(np.float32), (h, w)) > 0.5
+        excl_small = np.asarray(e, dtype=bool)
+        _log(f"user exclusion zones veto "
+             f"{100.0 * float(excl_small.mean()):.1f}% of the work grid")
+
+    pts, allowed, mask_info = _shared_sample_points(
+        img_small, ref_luma_filled, valid=valid,
+        user_exclusion=excl_small,
+        num_samples=int(num_samples), patch_size=int(patch_size),
+        exclusion_fraction=float(exclusion_fraction),
+        protect_k=float(protect_k), protect_grow=int(protect_grow),
+        seed=int(seed),
     )
+
+    # Both models get the SAME points. abe_run uses manual_points for the
+    # polynomial AND the RBF stage, so this pins the sampling for both stages
+    # of both fits — see _shared_sample_points for why that matters.
+    common = dict(
+        degree=int(degree), num_samples=int(num_samples), downsample=1,
+        patch_size=int(patch_size), use_rbf=bool(use_rbf),
+        rbf_smooth=float(rbf_smooth), return_background=True,
+        legacy_prestretch=False, manual_points=pts, progress_cb=None,
+    )
+
+    if progress_cb:
+        progress_cb("Modelling image background…")
+    _, bg_t = abe_run(img_small, **common)
+
+    if progress_cb:
+        progress_cb("Modelling reference background…")
+    _, bg_r = abe_run(ref_filled, **common)
     bg_r = np.asarray(bg_r, dtype=np.float32)
-    if bg_r.ndim == 3:
+    if bg_r.ndim == 3 and bg_r.shape[2] == 1:
         bg_r = bg_r[..., 0]
 
     # ---- per-channel fit -------------------------------------------------
@@ -1089,23 +2198,94 @@ def survey_gradient_model(
     if mono and bg_t.ndim == 3:
         bg_t = bg_t[..., 0]
 
-    bg_r_masked = np.where(valid, bg_r, np.nan).astype(np.float32)
+    # Fit over the whole covered frame, INCLUDING the vetoed region.
+    #
+    # Restricting this to sample-constrained pixels looks principled and is
+    # measurably worse: tried it, and b fell from 0.122 to 0.081 against a
+    # known truth of 0.129, with recovery correlation 0.983 -> 0.936. Two
+    # reasons. The vetoed region is not invented data — both backgrounds
+    # there are smooth predictions from the SAME points through the SAME
+    # kernel, so their extrapolation errors are correlated and cancel in a
+    # linear fit. And excluding it throws away the high-B_r end of the
+    # range, which is the leverage that determines b at all. Restricted-range
+    # regression, straightforwardly.
+    #
+    # `fit_region` is kept for reporting only — see the diagnostics below.
+    fit_region = np.asarray(allowed, dtype=bool) & valid
+
+    def _ref_plane(c: int) -> np.ndarray:
+        """
+        Which reference plane target channel `c` is fitted against.
+
+        Colour reference  -> channel c to channel c. Light pollution is
+            strongly colour-selective, so red sky and blue sky need to be
+            explained by red and blue structure, not by one grey average.
+        Mono reference    -> every channel against the same plane, but each
+            still solves its own (a, b). The structure is assumed to have the
+            same SHAPE in all channels and a different amplitude, which is a
+            real approximation but a far better one than no reference.
+        """
+        if bg_r.ndim == 2:
+            return bg_r
+        return bg_r[..., min(c, bg_r.shape[2] - 1)]
+
+    nch = 1 if bg_r.ndim == 2 else bg_r.shape[2]
+    _log(f"fitting {'mono' if mono else '%d' % bg_t.shape[2]} target "
+         f"channel(s) against a {nch}-channel reference "
+         f"({'matched per channel' if (not mono and nch > 1) else 'shared plane'})")
 
     coeffs: list[tuple[float, float]] = []
     if mono:
-        a, b, _ = _robust_linear_fit(bg_r_masked, bg_t)
-        grad_small = (bg_t - (a + b * bg_r)).astype(np.float32)
+        rp = bg_r if bg_r.ndim == 2 else _to_luminance(bg_r)
+        rm = np.where(valid, rp, np.nan).astype(np.float32)
+        a, b, _ = _robust_linear_fit(rm, bg_t)
+        grad_small = (bg_t - (a + b * rp)).astype(np.float32)
         grad_small -= float(np.nanmedian(grad_small))
         coeffs.append((a, b))
     else:
         planes = []
         for c in range(bg_t.shape[2]):
-            a, b, _ = _robust_linear_fit(bg_r_masked, bg_t[..., c])
-            g = (bg_t[..., c] - (a + b * bg_r)).astype(np.float32)
+            rp = _ref_plane(c)
+            rm = np.where(valid, rp, np.nan).astype(np.float32)
+            a, b, _ = _robust_linear_fit(rm, bg_t[..., c])
+            g = (bg_t[..., c] - (a + b * rp)).astype(np.float32)
             g -= float(np.nanmedian(g))
             planes.append(g)
             coeffs.append((a, b))
         grad_small = np.stack(planes, axis=-1).astype(np.float32)
+
+    # ---- is the reference actually doing anything? -----------------------
+    # Honest self-check. With a strict veto the reference background is
+    # nearly flat (a gradient-corrected survey, sampled only on sky), so
+    # b*B_r collapses toward a constant and the method quietly degenerates
+    # into ADBE with a survey-derived exclusion mask. That is still a useful
+    # tool, but it is NOT reference-based correction, and the difference
+    # should be visible rather than assumed.
+    def _span(a2d, m=None):
+        v = np.asarray(a2d, dtype=np.float32)
+        v = v[m] if m is not None else v.ravel()
+        v = v[np.isfinite(v)]
+        if v.size < 8:
+            return 0.0
+        return float(np.percentile(v, 99.5) - np.percentile(v, 0.5))
+
+    ref_span = _span(bg_r, valid)
+    grad_span = _span(grad_small)
+    explained = [abs(b) * ref_span for _, b in coeffs]
+    diag = {
+        "ref_bg_span": ref_span,
+        "gradient_span": grad_span,
+        "explained_by_reference": explained,
+        "reference_share": (max(explained) / grad_span) if grad_span > 0 else 0.0,
+    }
+    _log(f"reference bg span={ref_span:.6g}  gradient span={grad_span:.6g}  "
+         f"b*span={['%.4g' % e for e in explained]}  -> reference explains "
+         f"{diag['reference_share']*100:.1f}% of the gradient's amplitude")
+    if diag["reference_share"] < 0.05:
+        _log("  NOTE: the reference background is essentially flat, so this "
+             "run is ADBE with a survey-derived exclusion mask rather than a "
+             "reference-based correction. Expected on a field whose only "
+             "structure is a bright object that got vetoed.")
 
     # ---- back to full resolution ----------------------------------------
     if progress_cb:
@@ -1118,8 +2298,15 @@ def survey_gradient_model(
         "gradient": gradient,
         "gradient_small": grad_small,
         "reference": ref,
+        "target_small": img_small,
         "bg_target": bg_t,
         "bg_ref": bg_r,
+        "points": pts,
+        "allowed": allowed,
+        "user_exclusion": excl_small,
+        "mask_info": mask_info,
+        "diag": diag,
+        "fit_region": fit_region,
         "coeffs": coeffs,
         "coverage": coverage,
         "work_shape": (h, w),
@@ -1173,8 +2360,511 @@ def apply_survey_gradient(image: np.ndarray, gradient: np.ndarray,
 
 
 # =============================================================================
+#                       User-supplied reference (dual scope)
+# =============================================================================
+# A second scope on the same mount, shooting the same field at a shorter focal
+# length, is a BETTER gradient reference than any survey: it saw the same sky,
+# the same night, through the same light pollution and the same airglow. A
+# survey tells you where real nebulosity is; a simultaneous wide frame tells
+# you that AND what the sky was doing at the time.
+#
+# The requirement is only that it covers the target's field and is itself
+# reasonably flat -- the fit solves a + b*B_r, so a reference carrying the
+# SAME gradient would absorb it into b and leave nothing to subtract. That is
+# the one failure mode worth warning about, and reference_share already
+# measures it: a wide frame with the same gradient explains ~100% of it, which
+# reads as "nothing to correct" rather than as a wrong answer.
+
+
+def _reproject_plane(plane: np.ndarray, src_wcs: WCS, dst_wcs: WCS,
+                     out_hw: tuple[int, int]) -> np.ndarray:
+    """One plane onto the work grid. Outside the input footprint -> NaN."""
+    from reproject import reproject_interp
+    out, _ = reproject_interp(
+        (np.asarray(plane, dtype=np.float32), src_wcs),
+        dst_wcs, shape_out=(int(out_hw[0]), int(out_hw[1])),
+    )
+    return np.asarray(out, dtype=np.float32)
+
+
+def reference_from_image(img: np.ndarray, header, work_wcs: WCS,
+                         out_hw: tuple[int, int], *,
+                         progress_cb=None) -> np.ndarray:
+    """
+    Reproject the user's own frame onto the target's work grid.
+
+    Returns (h, w) for a mono input or (h, w, 3) for colour, matching what
+    fetch_reference_channels produces, so everything downstream is identical
+    whether the reference came off the internet or off a second scope.
+
+    NaN outside the input footprint is deliberate and is the same signal a
+    partially-covered survey gives: survey_gradient_model's `valid` mask and
+    its min_coverage check handle it already, so a reference frame that is
+    narrower than the target fails with the usual coverage message instead of
+    silently fitting against invented pixels.
+    """
+    src = _celestial_wcs_from_header(header)
+    if src is None:
+        raise SurveyFetchError(
+            "The reference image has no usable WCS, so it cannot be aligned "
+            "to your target. Plate-solve it first."
+        )
+
+    a = np.asarray(img, dtype=np.float32)
+    if a.ndim == 3 and a.shape[2] == 1:
+        a = a[..., 0]
+    h, w = int(out_hw[0]), int(out_hw[1])
+
+    _log("=" * 62)
+    _log(f"reference_from_image  src={a.shape}  -> grid={w}x{h}")
+    _log(_wcs_summary(src, "user reference"))
+    _log(_wcs_summary(work_wcs, "work grid"))
+
+    if progress_cb:
+        progress_cb("Reprojecting your reference onto the target grid…")
+
+    if a.ndim == 2:
+        out = _reproject_plane(a, src, work_wcs, (h, w))
+    else:
+        out = np.stack(
+            [_reproject_plane(a[..., c], src, work_wcs, (h, w))
+             for c in range(min(3, a.shape[2]))],
+            axis=-1,
+        )
+    _log("  " + _array_stats(out, "user reference reprojected"))
+    finite = float(np.isfinite(out).mean())
+    if finite <= 0.0:
+        raise SurveyFetchError(
+            "Your reference image does not overlap this field at all after "
+            "reprojection.\n\nBoth images are plate-solved, so this means "
+            "they are pointing at different parts of the sky. Check that the "
+            "reference really is the same target."
+        )
+    _log(f"  overlap    : {finite * 100:.1f}% of the work grid")
+    return out
+
+
+def ensure_solved_header(parent, img: np.ndarray, header, *, label: str,
+                         settings=None, ask: bool = True):
+    """
+    Return a header carrying a celestial WCS, plate-solving if need be.
+
+    Returns (header, solved_now). Raises SurveyFetchError when there is still
+    no WCS afterwards -- SRGC cannot do anything without one, in either image.
+
+    The solve is CONFIRMED, not automatic. A blind solve walks a quad index
+    and can run for minutes, and it needs the Gaia databases downloaded; doing
+    that silently because somebody opened a dialog would be a long unexplained
+    freeze. plate_solve_doc_inplace already falls back to the blind path on its
+    own when the header carries no pointing, so this does not reimplement any
+    of that -- it only decides whether to start it.
+    """
+    if _celestial_wcs_from_header(header) is not None:
+        return header, False
+
+    _log(f"{label}: no celestial WCS in the header")
+    if not ask:
+        raise SurveyFetchError(
+            f"{label} is not plate-solved and this run cannot ask. "
+            f"Solve it first, or run with ask=True."
+        )
+
+    if parent is not None:
+        reply = QMessageBox.question(
+            parent, "Plate solve needed",
+            f"{label} has no WCS, so the reference cannot be matched to it.\n\n"
+            f"Run the Gaia plate solver on it now?\n\n"
+            f"With no pointing in the header this falls back to a BLIND solve, "
+            f"which searches the quad index and can take a few minutes. It "
+            f"needs the Gaia databases to be downloaded.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            raise SurveyFetchError(
+                f"{label} is not plate-solved. SRGC fetches and aligns the "
+                f"reference by sky coordinates, so a solution is required."
+            )
+
+    # Lazy: plate_solver pulls in star_alignment and a good deal more, and a
+    # module-level import here would make SRGC pay for it on every app start.
+    from setiastro.saspro.plate_solver import plate_solve_doc_inplace
+    if settings is None:
+        settings = QSettings()
+
+    class _SolveDoc:
+        """The shape plate_solve_doc_inplace expects, nothing more."""
+        pass
+
+    d = _SolveDoc()
+    d.image = np.asarray(img, dtype=np.float32)
+    d.metadata = {"original_header": header} if header is not None else {}
+
+    _log(f"{label}: starting plate solve (blind if no pointing)…")
+    ok, result = plate_solve_doc_inplace(parent=parent, doc=d, settings=settings)
+    if not ok:
+        raise SurveyFetchError(
+            f"Plate solving {label.lower()} failed:\n\n{result}"
+        )
+
+    new_hdr = result
+    if _celestial_wcs_from_header(new_hdr) is None:
+        # Fall back to whatever the solver wrote into the doc metadata.
+        meta = getattr(d, "metadata", {}) or {}
+        for k in ("wcs_header", "original_header", "header"):
+            cand = meta.get(k)
+            if _celestial_wcs_from_header(cand) is not None:
+                new_hdr = cand
+                break
+    if _celestial_wcs_from_header(new_hdr) is None:
+        raise SurveyFetchError(
+            f"The plate solve of {label.lower()} reported success but produced "
+            f"no usable WCS."
+        )
+    _log(f"{label}: solved")
+    return new_hdr, True
+
+# =============================================================================
 #                                   Dialog
 # =============================================================================
+
+# =============================================================================
+#                            Interactive preview pane
+# =============================================================================
+
+
+class _PreviewLabel(QLabel):
+    """The canvas: draws the pixmap, the polygons, and the one being drawn."""
+
+    def __init__(self, pane):
+        super().__init__(alignment=Qt.AlignmentFlag.AlignCenter)
+        self._pane = pane
+        # Deliberately small: this feeds the scroll area's size hint, and a
+        # large value here is the other half of the growth ratchet above.
+        self.setMinimumSize(QSize(80, 60))
+        self.setScaledContents(False)
+        self.setMouseTracking(True)
+        # Needs focus to see the spacebar at all.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Space:
+            pane = getattr(self, "_pane", None)
+            if pane is not None:
+                pane._space_down = True
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
+    def keyReleaseEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Space:
+            pane = getattr(self, "_pane", None)
+            if pane is not None:
+                pane._space_down = False
+                self.unsetCursor()
+            ev.accept()
+            return
+        super().keyReleaseEvent(ev)
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)
+        # getattr throughout: a paint can arrive while the pane is still
+        # being built, and raising in here aborts the process.
+        pane = getattr(self, "_pane", None)
+        if pane is None or not getattr(pane, "draw_enabled", False):
+            return
+        polys = list(getattr(pane, "polygons", None) or [])
+        pending = getattr(pane, "pending", None)
+        if pending is not None and len(pending) > 1:
+            polys = polys + [pending]
+        if not polys:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor(255, 90, 90), 2)
+        p.setPen(pen)
+        p.setBrush(QBrush(QColor(255, 90, 90, 60)))
+        for poly in polys:
+            qp = QPolygonF([QPointF(*pane.image_to_widget(pt))
+                            for pt in poly])
+            if len(qp) >= 2:
+                p.drawPolygon(qp)
+        p.end()
+
+
+class _PreviewPane(QScrollArea):
+    """
+    One preview tab: a zoomable, pannable image with optional polygon
+    drawing.
+
+    Written here rather than lifted out of ABEDialog because ABE's version is
+    woven through that dialog's own event filters and state; extracting it
+    would mean refactoring a tool that works, to no benefit for either.
+    Polygons are kept in ORIGINAL IMAGE coordinates, the same convention
+    ABE uses, so the mask built from them is independent of zoom and of the
+    preview's reduced render scale.
+    """
+
+    def __init__(self, parent=None, *, drawable: bool = False):
+        super().__init__(parent)
+
+        # EVERY attribute the overridden virtuals touch is set before the
+        # first Qt call that can fire one. setWidget() alone triggers a
+        # resize and a paint, and an AttributeError raised inside a Qt
+        # virtual does not surface as a Python traceback -- PyQt aborts the
+        # process, which looks exactly like a segfault with no output.
+        self._buf = None          # rendered RGB888 uint8 (preview scale)
+        self._pm = None           # QPixmap at 1:1 of _buf
+        self._img_hw = (1, 1)     # ORIGINAL image shape the polygons live in
+        self.scale = 1.0
+        self.fit_mode = True
+        self.draw_enabled = bool(drawable)
+        self.polygons: list = []   # list of [(x, y), ...] in image coords
+        self.pending = None
+        self._panning = False
+        self._pan_from = None
+        self.on_polygons_changed = None
+        # Re-entrancy guard. _apply_scale resizes the label, which can add
+        # or remove a scrollbar, which resizes the viewport, which fires
+        # resizeEvent, which calls _apply_scale again. In fit mode the two
+        # sizes chase each other and the recursion never bottoms out -- it
+        # overflows the stack and takes the process down with no traceback.
+        self._scaling = False
+        self._space_down = False
+
+        self.setWidgetResizable(False)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Expanding)
+        self.label = _PreviewLabel(self)
+        self.setWidget(self.label)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.installEventFilter(self)
+        self.viewport().installEventFilter(self)
+
+    # ---- content ---------------------------------------------------------
+    def set_image(self, buf, img_hw=None):
+        """`buf` is an (h, w, 3) uint8 render; `img_hw` the ORIGINAL shape."""
+        self._buf = np.ascontiguousarray(buf)
+        h, w, _ = self._buf.shape
+        qi = QImage(self._buf.data, w, h, self._buf.strides[0],
+                    QImage.Format.Format_RGB888)
+        self._pm = QPixmap.fromImage(qi.copy())
+        if img_hw is not None:
+            self._img_hw = (int(img_hw[0]), int(img_hw[1]))
+        self._apply_scale()
+
+    def has_image(self) -> bool:
+        return self._pm is not None
+
+    # ---- coordinate mapping ----------------------------------------------
+    def _render_to_image(self) -> float:
+        """Original-image pixels per rendered-preview pixel."""
+        if self._buf is None:
+            return 1.0
+        return float(self._img_hw[1]) / max(1.0, float(self._buf.shape[1]))
+
+    def widget_to_image(self, x: float, y: float) -> tuple:
+        """Label coords -> ORIGINAL image coords."""
+        if self._pm is None:
+            return (0.0, 0.0)
+        pw = self._pm.width() * self.scale
+        ph = self._pm.height() * self.scale
+        ox = max(0.0, (self.label.width() - pw) / 2.0)
+        oy = max(0.0, (self.label.height() - ph) / 2.0)
+        rx = (x - ox) / max(self.scale, 1e-9)
+        ry = (y - oy) / max(self.scale, 1e-9)
+        f = self._render_to_image()
+        return (rx * f, ry * f)
+
+    def image_to_widget(self, pt) -> tuple:
+        """ORIGINAL image coords -> label coords."""
+        if self._pm is None:
+            return (0.0, 0.0)
+        f = self._render_to_image()
+        pw = self._pm.width() * self.scale
+        ph = self._pm.height() * self.scale
+        ox = max(0.0, (self.label.width() - pw) / 2.0)
+        oy = max(0.0, (self.label.height() - ph) / 2.0)
+        return (ox + (pt[0] / f) * self.scale, oy + (pt[1] / f) * self.scale)
+
+    # ---- zoom ------------------------------------------------------------
+    def _apply_scale(self):
+        if getattr(self, "_pm", None) is None or getattr(self, "_scaling", True):
+            return
+        self._scaling = True
+        try:
+            self._apply_scale_inner()
+        finally:
+            self._scaling = False
+
+    def _apply_scale_inner(self):
+        if self.fit_mode:
+            vp = self.viewport().size()
+            sx = vp.width() / max(1, self._pm.width())
+            sy = vp.height() / max(1, self._pm.height())
+            self.scale = max(0.02, min(sx, sy))
+        w = max(1, int(self._pm.width() * self.scale))
+        h = max(1, int(self._pm.height() * self.scale))
+        self.label.setPixmap(self._pm.scaled(
+            w, h, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation))
+        self.label.resize(max(w, self.viewport().width()),
+                          max(h, self.viewport().height()))
+        self.label.update()
+
+    def zoom_in(self):
+        self.fit_mode = False
+        self.scale = min(8.0, self.scale * 1.25)
+        self._apply_scale()
+
+    def zoom_out(self):
+        self.fit_mode = False
+        self.scale = max(0.02, self.scale / 1.25)
+        self._apply_scale()
+
+    def zoom_fit(self):
+        self.fit_mode = True
+        self._apply_scale()
+
+    def zoom_1_1(self):
+        """1:1 against the ORIGINAL image, not the reduced render."""
+        self.fit_mode = False
+        self.scale = min(8.0, max(0.02, self._render_to_image()))
+        self._apply_scale()
+
+    # A QScrollArea reports its child widget's sizeHint as its own, and a
+    # QLabel's sizeHint follows its pixmap. That closes a loop: a bigger
+    # pixmap -> bigger sizeHint -> the layout grants more room -> bigger
+    # viewport -> fit mode picks a bigger scale -> bigger pixmap. Each pass
+    # ratchets the dialog up a little, which is what made the window creep
+    # outward every time a polygon was released (the release repaints and
+    # pumps events, giving the layout a chance to run). Pinning the hint to
+    # a constant cuts the loop; the pane still expands to whatever the
+    # layout gives it, it just stops ASKING for more.
+    def sizeHint(self):
+        return QSize(560, 420)
+
+    def minimumSizeHint(self):
+        return QSize(240, 180)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if getattr(self, "fit_mode", False):
+            self._apply_scale()
+
+    # ---- polygons ---------------------------------------------------------
+    def clear_polygons(self):
+        self.polygons = []
+        self.pending = None
+        self.label.update()
+        self._notify()
+
+    def undo_polygon(self):
+        if self.pending is not None:
+            self.pending = None
+        elif self.polygons:
+            self.polygons.pop()
+        self.label.update()
+        self._notify()
+
+    def _notify(self):
+        if callable(self.on_polygons_changed):
+            try:
+                self.on_polygons_changed()
+            except Exception:
+                pass
+
+    def exclusion_mask(self, hw=None):
+        """
+        Bool mask, True INSIDE an exclusion zone, at `hw` (default: the
+        original image shape). None when nothing has been drawn.
+        """
+        polys = [p for p in self.polygons if p is not None and len(p) >= 3]
+        if not polys:
+            return None
+        H, W = (self._img_hw if hw is None else (int(hw[0]), int(hw[1])))
+        m = np.zeros((H, W), dtype=np.uint8)
+        sy = H / float(max(1, self._img_hw[0]))
+        sx = W / float(max(1, self._img_hw[1]))
+        if cv2 is None:
+            _log("exclusion zones need cv2 to rasterise; ignoring them")
+            return None
+        for poly in polys:
+            pts = np.array([[int(round(x * sx)), int(round(y * sy))]
+                            for (x, y) in poly], dtype=np.int32)
+            if np.unique(pts, axis=0).shape[0] < 3:
+                continue
+            cv2.fillPoly(m, [pts], 1)
+        return m.astype(bool) if m.any() else None
+
+    # ---- interaction ------------------------------------------------------
+    def eventFilter(self, obj, ev):
+        if getattr(self, "label", None) is None:
+            return False
+        et = ev.type()
+        if et == ev.Type.Wheel:
+            # Plain wheel zooms, as in ADBE -- the preview is the thing you
+            # want to scale, not scroll.
+            if self._pm is not None:
+                (self.zoom_in if ev.angleDelta().y() > 0 else self.zoom_out)()
+                ev.accept()
+                return True
+            return False
+
+        if obj is self.label and self._pm is not None:
+            if et == ev.Type.MouseButtonPress:
+                # Same convention ADBE uses, so the two tools feel alike:
+                #   left-drag                      -> draw an exclusion zone
+                #   middle-drag / Ctrl+left-drag   -> pan
+                # plus space+left-drag, which is the reflex a lot of
+                # image editors train.
+                pan = (ev.button() == Qt.MouseButton.MiddleButton
+                       or (ev.button() == Qt.MouseButton.LeftButton
+                           and ((ev.modifiers()
+                                 & Qt.KeyboardModifier.ControlModifier)
+                                or self._space_down)))
+                if (not pan) and self.draw_enabled \
+                        and ev.button() == Qt.MouseButton.LeftButton:
+                    pos = ev.position()
+                    self.pending = [self.widget_to_image(pos.x(), pos.y())]
+                    self.label.setFocus()
+                    return True
+                self._panning = True
+                self._pan_from = ev.position()
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                return True
+
+            if et == ev.Type.MouseMove:
+                if self.pending is not None:
+                    pos = ev.position()
+                    self.pending.append(self.widget_to_image(pos.x(), pos.y()))
+                    self.label.update()
+                    return True
+                if self._panning and self._pan_from is not None:
+                    d = ev.position() - self._pan_from
+                    self._pan_from = ev.position()
+                    hb = self.horizontalScrollBar()
+                    vb = self.verticalScrollBar()
+                    hb.setValue(hb.value() - int(d.x()))
+                    vb.setValue(vb.value() - int(d.y()))
+                    return True
+
+            if et == ev.Type.MouseButtonRelease:
+                if self.pending is not None:
+                    # Keep it only if it encloses something. A stray click
+                    # should not leave an invisible degenerate zone behind.
+                    if len(self.pending) >= 3:
+                        self.polygons.append(self.pending)
+                        self._notify()
+                    self.pending = None
+                    self.label.update()
+                    return True
+                self._panning = False
+                self._pan_from = None
+                self.unsetCursor()
+                return True
+        return super().eventFilter(obj, ev)
 
 class SurveyGradientDialog(QDialog):
     """
@@ -1188,6 +2878,11 @@ class SurveyGradientDialog(QDialog):
 
     def __init__(self, parent, document):
         super().__init__(parent)
+        # A host that was down last time the tool was open may be back, and a
+        # transient network drop should not permanently retire a good mirror.
+        # Reopening the dialog is the natural "try everything again" gesture;
+        # repeated runs within one session keep skipping the dead hosts.
+        reset_dead_hosts()
         self.setWindowTitle(self.tr("Survey Reference Gradient Correction (beta)"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
@@ -1204,6 +2899,8 @@ class SurveyGradientDialog(QDialog):
         self.doc = document
         self._result: dict | None = None
         self._preview_buf = None
+        self._avail_probe = None
+        self._avail_conn = None
 
         # Mirror the [SRGC] trace into the main window log so the user can
         # copy it out of the app rather than hunting for a console.
@@ -1211,10 +2908,48 @@ class SurveyGradientDialog(QDialog):
         if callable(_hostlog):
             set_log_sink(_hostlog)
 
+        # Where the reference comes from. A second scope on the same mount
+        # beats any survey for this job -- same sky, same night, same light
+        # pollution -- so it is a first-class source, not a fallback.
+        self.cmb_source = QComboBox()
+        self.cmb_source.addItem(self.tr("Survey (fetched online)"), "survey")
+        self.cmb_source.addItem(
+            self.tr("My own image (dual scope / wider frame)"), "user")
+        self.cmb_source.setToolTip(
+            "Survey: a published all-sky dataset of the same field.\n\n"
+            "My own image: a frame YOU took of the same field, typically the\n"
+            "wide scope on a dual rig. It must cover the whole target field\n"
+            "and be plate-solved (SRGC will offer to solve it if not).\n\n"
+            "A simultaneous wide frame is the better reference when you have\n"
+            "one: it saw the same sky on the same night. The one thing to\n"
+            "watch is that it must not carry the SAME gradient -- if it does,\n"
+            "b absorbs it and there is nothing left to subtract. Check the\n"
+            "reference share in diagnostics."
+        )
+        self.cmb_source.currentIndexChanged.connect(self._source_changed)
+
         self.cmb_survey = QComboBox()
         for name in SURVEYS:
-            self.cmb_survey.addItem(name, userData=SURVEYS[name]["hips"])
+            self.cmb_survey.addItem(name, userData=name)
         self.cmb_survey.currentTextChanged.connect(self._survey_changed)
+
+        # User reference: an open document, or a file on disk.
+        self._user_ref = None        # (image, header, label) once loaded
+        self._ref_cache = {}         # cache_key -> fetched reference array
+        self._disp_cache = {}        # (mode, before, strength, patch) -> (buf, status)
+        self.cmb_refdoc = QComboBox()
+        self.cmb_refdoc.setToolTip(
+            "Pick one of the images you already have open.\n"
+            "Refreshed each time this dialog is shown.")
+        self.cmb_refdoc.currentIndexChanged.connect(self._refdoc_changed)
+        self.btn_reffile = QPushButton(self.tr("From file…"))
+        self.btn_reffile.setToolTip(
+            "Load a reference frame straight off disk, without opening it\n"
+            "as a view first.")
+        self.btn_reffile.clicked.connect(self._pick_reference_file)
+        self.lbl_refinfo = QLabel("")
+        self.lbl_refinfo.setWordWrap(True)
+        self.lbl_refinfo.setStyleSheet("font-size: 10px;")
 
         self.sp_work = QSpinBox()
         self.sp_work.setRange(256, 4096)
@@ -1238,19 +2973,192 @@ class SurveyGradientDialog(QDialog):
             "which defeats the point of this tool. Degree 1-2 is right."
         )
 
+        self.sp_exclude = QSpinBox()
+        self.sp_exclude.setRange(0, 95)
+        self.sp_exclude.setSingleStep(5)
+        self.sp_exclude.setValue(50)
+        self.sp_exclude.setSuffix(" %")
+        self.sp_exclude.setToolTip(
+            "Fraction of the SURVEY's brightest pixels that are off-limits\n"
+            "to sampling (_exclude_bright_regions, same as gradient_abe and\n"
+            "the stacking suite use).\n\n"
+            "The survey decides, not your frame — your gradient must not\n"
+            "disqualify a location or the fit starves on the bright side.\n\n"
+            "Raise it on a field dominated by a big object (M31, M42).\n"
+            "Lower it on sparse fields where 50% is needlessly strict."
+        )
+
+        self.sp_protect = QDoubleSpinBox()
+        self.sp_protect.setRange(0.5, 20.0)
+        self.sp_protect.setSingleStep(0.5)
+        self.sp_protect.setValue(3.0)
+        self.sp_protect.setDecimals(1)
+        self.sp_protect.setToolTip(
+            "Signal protection on the reference, in MAD-sigma units — the\n"
+            "same median + k*MAD threshold ADBE's multiscale stage uses, so\n"
+            "k means the same thing in both tools.\n\n"
+            "Thresholded, then dilated and blurred so a structure's faint\n"
+            "wings are covered too, then interior holes are filled — which\n"
+            "is what stops a point landing in M31's dust lanes.\n\n"
+            "LOWER protects more. 3 is a reasonable default; drop to 1.5-2\n"
+            "on a field with a large bright object."
+        )
+
         self.chk_rbf = QCheckBox(self.tr("RBF refinement on both backgrounds"))
         self.chk_rbf.setChecked(True)
 
+        # ---- multiplicative refinement -----------------------------------
+        # Dust motes, internal reflections and filter-edge shadows are
+        # MULTIPLICATIVE -- a shadow scales throughput -- and they have hard
+        # edges. The additive fit above cannot touch them at any degree, and
+        # neither can any smooth background model. ADBE already solves this
+        # with a log-space multiscale band division; the same core is reused
+        # here rather than reinvented.
+        self.chk_ms = QCheckBox(self.tr("Remove dust motes / reflections "
+                                        "(multiscale, multiplicative)"))
+        self.chk_ms.setChecked(False)
+        self.chk_ms.setToolTip(
+            "A second, MULTIPLICATIVE pass for defects the additive fit\n"
+            "structurally cannot reach: dust motes, internal reflections,\n"
+            "filter-edge shadows.\n\n"
+            "These attenuate throughput rather than adding light, and they\n"
+            "have hard edges, so no background surface of any degree models\n"
+            "them. This divides out a mid-scale band instead.\n\n"
+            "Runs AFTER the gradient correction, on the corrected image.")
+        self.chk_ms.toggled.connect(self._ms_toggled)
+
+        self.sp_ms_lo = QSpinBox(); self.sp_ms_lo.setRange(1, 12)
+        self.sp_ms_lo.setValue(6)
+        self.sp_ms_hi = QSpinBox(); self.sp_ms_hi.setRange(1, 12)
+        self.sp_ms_hi.setValue(8)
+        for _sp in (self.sp_ms_lo, self.sp_ms_hi):
+            _sp.setToolTip(
+                "Wavelet scales the defect is estimated from. 6-8 is the\n"
+                "band dust motes and reflections live in: coarse enough to\n"
+                "miss stars and noise, fine enough to keep their edges.\n\n"
+                "Lower catches smaller/sharper defects; higher drifts toward\n"
+                "the smooth gradient the additive stage already removed.")
+
+        self.sp_ms_strength = QDoubleSpinBox()
+        self.sp_ms_strength.setRange(0.0, 2.0)
+        self.sp_ms_strength.setSingleStep(0.1)
+        self.sp_ms_strength.setDecimals(2)
+        self.sp_ms_strength.setValue(1.0)
+
+        self.sp_ms_protect = QDoubleSpinBox()
+        self.sp_ms_protect.setRange(0.5, 20.0)
+        self.sp_ms_protect.setSingleStep(0.5)
+        self.sp_ms_protect.setDecimals(1)
+        self.sp_ms_protect.setValue(3.0)
+        self.sp_ms_protect.setToolTip(
+            "Signal protection for the refinement, in MAD-sigma units.\n"
+            "LOWER protects more.")
+
+        self.chk_ms_stars = QCheckBox(self.tr("Remove stars first (DarkStar)"))
+        self.chk_ms_stars.setChecked(True)
+        self.chk_ms_stars.setToolTip(
+            "Estimate the defect band on a STARLESS copy so stars do not\n"
+            "pollute it, while the protection mask is still built on the\n"
+            "star-inclusive image. This pairing is what makes the band\n"
+            "clean; leave it on unless DarkStar is unavailable.")
+
+        self.chk_ms_survey_protect = QCheckBox(
+            self.tr("Protect real structure using the survey"))
+        self.chk_ms_survey_protect.setChecked(True)
+        self.chk_ms_survey_protect.setToolTip(
+            "Use the SURVEY's own veto mask to decide what must not be\n"
+            "touched by the refinement.\n\n"
+            "This is the one thing SRGC knows that ADBE cannot: ADBE builds\n"
+            "its protection from the image itself, so a bright extended blob\n"
+            "looks the same whether it is a real nebula or an internal\n"
+            "reflection. Here the survey says which it is — real structure is\n"
+            "kept from the untouched source, and anything sharp sitting on\n"
+            "sky the survey says is empty is treated as a defect.")
+
+        _msf = QFormLayout()
+        _msf.setContentsMargins(0, 0, 0, 0)
+        _band = QHBoxLayout(); _band.setContentsMargins(0, 0, 0, 0)
+        _band.addWidget(self.sp_ms_lo); _band.addWidget(QLabel("to"))
+        _band.addWidget(self.sp_ms_hi); _band.addStretch(1)
+        _bandw = QWidget(); _bandw.setLayout(_band)
+        _msf.addRow(self.tr("Scales:"), _bandw)
+        _msf.addRow(self.tr("Refine strength:"), self.sp_ms_strength)
+        _msf.addRow(self.tr("Protect k (MAD):"), self.sp_ms_protect)
+        _msf.addRow(self.chk_ms_stars)
+        _msf.addRow(self.chk_ms_survey_protect)
+        self.w_ms = QWidget(); self.w_ms.setLayout(_msf)
+        self.w_ms.setVisible(False)
+
+        self.sp_samples = QSpinBox()
+        self.sp_samples.setRange(20, 4000)
+        self.sp_samples.setSingleStep(20)
+        self.sp_samples.setValue(200)
+        self.sp_samples.setToolTip(
+            "Background sample points, placed by the same star-avoiding\n"
+            "gradient descent ADBE uses.\n\n"
+            "One set of points is generated and used for BOTH background\n"
+            "models, on the per-pixel maximum of the two images — so a point\n"
+            "only counts as background where it is dim in your frame AND in\n"
+            "the reference.\n\n"
+            "Too many points on a nebula-filled field starts sampling the\n"
+            "nebula itself; too few and the fit cannot follow a real gradient."
+        )
+
+        self.sp_patch = QSpinBox()
+        self.sp_patch.setRange(5, 151)
+        self.sp_patch.setSingleStep(2)
+        self.sp_patch.setValue(15)
+        self.sp_patch.setToolTip(
+            "Patch size in work-grid pixels for each sample point.\n\n"
+            "The descent scores a patch by its 25th percentile, so a larger\n"
+            "patch is more robust against stars but blurs the distinction\n"
+            "between sky and faint extended signal."
+        )
+
         self.sp_strength = QSpinBox()
-        self.sp_strength.setRange(0, 100)
+        # Past 100% is deliberate over-correction. No physical reason to
+        # want it, but the gradient model is an estimate, and pushing past
+        # it is a quick way to check whether the residual you are still
+        # looking at is actually the gradient or something else.
+        self.sp_strength.setRange(0, 150)
         self.sp_strength.setValue(100)
         self.sp_strength.setSuffix(" %")
+        self.sp_strength.setToolTip(
+            "Percent of the modelled gradient to subtract.\n\n"
+            "100% is the fit. Below that leaves some in; above it\n"
+            "over-corrects, tipping the sky the other way. There is no\n"
+            "physical reason to want that, but the model is an estimate\n"
+            "and pushing past it is a quick way to tell a real gradient\n"
+            "residual from something the reference never explained.")
+        # Strength changes what Corrected looks like, so it has to redraw.
+        # It never did, which is only survivable because the redraw used to
+        # be too slow to drag anyway.
+        self.sp_strength.valueChanged.connect(self._redraw)
 
         form = QFormLayout()
-        form.addRow(self.tr("Reference survey:"), self.cmb_survey)
+        form.addRow(self.tr("Reference source:"), self.cmb_source)
+
+        _refrow = QHBoxLayout()
+        _refrow.setContentsMargins(0, 0, 0, 0)
+        _refrow.addWidget(self.cmb_refdoc, 1)
+        _refrow.addWidget(self.btn_reffile, 0)
+        self.w_userref = QWidget()
+        self.w_userref.setLayout(_refrow)
+
+        self.row_survey_label = QLabel(self.tr("Reference survey:"))
+        self.row_userref_label = QLabel(self.tr("Reference image:"))
+        form.addRow(self.row_survey_label, self.cmb_survey)
+        form.addRow(self.row_userref_label, self.w_userref)
+        form.addRow("", self.lbl_refinfo)
         form.addRow(self.tr("Work resolution:"), self.sp_work)
         form.addRow(self.tr("Background degree:"), self.sp_degree)
+        form.addRow(self.tr("Sample points:"), self.sp_samples)
+        form.addRow(self.tr("Patch size (px):"), self.sp_patch)
+        form.addRow(self.tr("Exclude brightest:"), self.sp_exclude)
+        form.addRow(self.tr("Protect k (MAD):"), self.sp_protect)
         form.addRow(self.chk_rbf)
+        form.addRow(self.chk_ms)
+        form.addRow("", self.w_ms)
         form.addRow(self.tr("Strength:"), self.sp_strength)
 
         self.lbl_note = QLabel("")
@@ -1264,19 +3172,139 @@ class SurveyGradientDialog(QDialog):
         gb = QGroupBox(self.tr("Reference"))
         gb.setLayout(form)
 
-        self.lbl_preview = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
-        self.lbl_preview.setMinimumSize(QSize(420, 300))
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setWidget(self.lbl_preview)
+        # One tab per thing worth looking at, instead of a dropdown over a
+        # single canvas. Tab 1 is the one you interact with -- zoom, before/
+        # after, and drawing exclusion zones -- and the rest are read-only
+        # diagnostics, so only tab 1 carries the toolbar.
+        self.tabs = QTabWidget()
+        self.pane_target = _PreviewPane(drawable=True)
+        self.pane_ref = _PreviewPane()
+        self.pane_grad = _PreviewPane()
+        self.pane_bgt = _PreviewPane()
+        self.pane_bgr = _PreviewPane()
+        self.pane_pts = _PreviewPane()
+        self.pane_target.on_polygons_changed = self._exclusions_changed
 
-        self.cmb_view = QComboBox()
-        self.cmb_view.addItems([
-            "Corrected", "Gradient removed", "Reference", "Reference background",
-        ])
-        self.cmb_view.currentTextChanged.connect(self._redraw)
+        def _tb(txt, tip, slot):
+            b = QToolButton()
+            b.setText(txt)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            return b
 
-        self.btn_run = QPushButton(self.tr("Fetch && Model"))
+        self.lbl_draw_hint = QLabel(self.tr("\u270e drag to exclude  ·  ctrl/space/middle-drag pans  ·  wheel zooms"))
+        self.lbl_draw_hint.setStyleSheet(
+            "font-size:10px; color: palette(placeholderText);")
+        # Static text, but long: let it be squeezed instead of setting the
+        # toolbar's minimum width.
+        self.lbl_draw_hint.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                         QSizePolicy.Policy.Preferred)
+        self.lbl_draw_hint.setToolTip(
+            "Drag on the image to enclose a region that must be left alone.\n"
+            "No mode to turn on \u2014 drawing is always live, as in ADBE.\n\n"
+            "Exclusion zones do two things:\n"
+            "  \u2022 no background sample point is placed inside one, so a dark\n"
+            "    nebula or a big galaxy cannot be mistaken for sky;\n"
+            "  \u2022 the dust-mote refinement composites those pixels back from\n"
+            "    the untouched source, so nothing inside is altered.")
+
+        # Display stretch. The old behaviour (hard autostretch to a 0.4
+        # median) is punchy but unkind to faint data -- it exaggerates noise
+        # and can make a perfectly good correction look blotchy. The normal
+        # statistical stretch is gentler and is now the default; the hard
+        # one stays for when you want to see every last thing.
+        self.cmb_stretch = QComboBox()
+        self.cmb_stretch.addItem(self.tr("Normal stretch"), "normal")
+        self.cmb_stretch.addItem(self.tr("Aggressive stretch"), "aggressive")
+        self.cmb_stretch.setToolTip(
+            "How the PREVIEW is displayed. Affects nothing that is applied.\n\n"
+            "Normal: statistical stretch, unlinked, target median 0.25, no\n"
+            "black clip. What the rest of SASpro shows you.\n\n"
+            "Aggressive: hard autostretch to a 0.4 median. Shows the faintest\n"
+            "structure, at the cost of making noise look like signal.")
+        self.cmb_stretch.currentIndexChanged.connect(self._stretch_changed)
+
+        self.chk_before = QCheckBox(self.tr("Before"))
+        self.chk_before.setToolTip(
+            "Show the image as it was when this correction was modelled,\n"
+            "so you can flick between before and after.\n\n"
+            "This is the snapshot taken at model time, not the document as\n"
+            "it stands now \u2014 so it stays a true 'before' even after Apply.")
+        self.chk_before.toggled.connect(self._redraw)
+
+        _bar = QHBoxLayout()
+        _bar.setContentsMargins(2, 2, 2, 2)
+        _bar.addWidget(_tb("\u2212", "Zoom out", self.pane_target.zoom_out))
+        _bar.addWidget(_tb("+", "Zoom in", self.pane_target.zoom_in))
+        _bar.addWidget(_tb("1:1", "Zoom to the original image scale",
+                           self.pane_target.zoom_1_1))
+        _bar.addWidget(_tb("Fit", "Fit the whole frame",
+                           self.pane_target.zoom_fit))
+        _bar.addSpacing(12)
+        _bar.addWidget(self.cmb_stretch)
+        _bar.addSpacing(12)
+        _bar.addWidget(self.chk_before)
+        _bar.addSpacing(12)
+        _bar.addWidget(_tb("Undo zone", "Remove the last exclusion zone",
+                           self.pane_target.undo_polygon))
+        _bar.addWidget(_tb("Clear zones", "Remove every exclusion zone",
+                           self.pane_target.clear_polygons))
+        _bar.addSpacing(12)
+        _bar.addWidget(self.lbl_draw_hint)
+        _bar.addStretch(1)
+        self.lbl_zones = QLabel("")
+        self.lbl_zones.setStyleSheet("font-size:10px; color: palette(placeholderText);")
+        # This label's TEXT changes as zones are added, and a QLabel reports
+        # its text width as its sizeHint. Left free, going from "" to
+        # "1 exclusion zone" to "2 exclusion zones" widened the toolbar, the
+        # tab, and the whole dialog -- the window visibly grew every time a
+        # polygon was released. Pinned to the width of the longest string it
+        # will ever hold, so the layout never moves.
+        self.lbl_zones.setFixedWidth(
+            self.lbl_zones.fontMetrics().horizontalAdvance("88 exclusion zones") + 8)
+        self.lbl_zones.setAlignment(Qt.AlignmentFlag.AlignRight
+                                    | Qt.AlignmentFlag.AlignVCenter)
+        _bar.addWidget(self.lbl_zones)
+
+        _tgt = QVBoxLayout()
+        _tgt.setContentsMargins(0, 0, 0, 0)
+        _tgt.addLayout(_bar)
+        _tgt.addWidget(self.pane_target, 1)
+        _tgtw = QWidget(); _tgtw.setLayout(_tgt)
+
+        self.tabs.addTab(_tgtw, self.tr("Target image"))
+        self.tabs.addTab(self.pane_ref, self.tr("Survey reference"))
+        self.tabs.addTab(self.pane_grad, self.tr("Gradient removed"))
+        self.tabs.addTab(self.pane_bgt, self.tr("Target background"))
+        self.tabs.addTab(self.pane_bgr, self.tr("Survey background"))
+        self.tabs.addTab(self.pane_pts, self.tr("Sample points"))
+        self.tabs.setTabToolTip(0, "The result, and where you draw exclusions.")
+        self.tabs.setTabToolTip(1, "The fetched reference. Check it is the "
+                                   "right sky and the right way up.")
+        self.tabs.setTabToolTip(2, "What is being subtracted. If you can see "
+                                   "your target in here, the model is eating "
+                                   "signal.")
+        self.tabs.setTabToolTip(3, "Your modelled background.")
+        self.tabs.setTabToolTip(4, "The survey's modelled background.")
+        self.tabs.setTabToolTip(5, "Green = points used, red tint = vetoed.")
+        self.tabs.currentChanged.connect(self._redraw)
+
+        # The old dropdown is gone; _redraw still speaks in these names, so
+        # the tab index maps back onto them.
+        self._TAB_MODES = ["Corrected", "Reference", "Gradient removed",
+                           "Target background", "Reference background",
+                           "Sample points"]
+
+        self.btn_fetch = QPushButton(self.tr("1. Fetch Reference"))
+        self.btn_fetch.setToolTip(
+            "Pull the reference for this field and show it, WITHOUT doing\n"
+            "the correction.\n\n"
+            "Worth doing first on an unfamiliar field: survey coverage is\n"
+            "uneven, and a reference that is empty, plate-damaged or simply\n"
+            "has no structure where your data does is better found out now\n"
+            "than after a full model run. The fetch is cached, so carrying\n"
+            "on costs no second download.")
+        self.btn_run = QPushButton(self.tr("2. Model && Correct"))
         self.btn_apply = QPushButton(self.tr("Apply"))
         self.btn_diag = QPushButton(self.tr("Run diagnostics"))
         self.btn_diag.setToolTip(
@@ -1288,6 +3316,7 @@ class SurveyGradientDialog(QDialog):
         )
         self.btn_close = QPushButton(self.tr("Close"))
         self.btn_apply.setEnabled(False)
+        self.btn_fetch.clicked.connect(self._do_fetch_reference)
         self.btn_run.clicked.connect(self._do_run)
         self.btn_apply.clicked.connect(self._do_apply)
         self.btn_diag.clicked.connect(self._do_diagnostics)
@@ -1296,15 +3325,30 @@ class SurveyGradientDialog(QDialog):
         self.status = QLabel("Ready")
         self.status.setWordWrap(True)
 
-        rowv = QHBoxLayout()
-        rowv.addWidget(QLabel(self.tr("View:")))
-        rowv.addWidget(self.cmb_view, 1)
 
         rowb = QHBoxLayout()
+        rowb.addWidget(self.btn_fetch)
         rowb.addWidget(self.btn_run)
         rowb.addWidget(self.btn_apply)
         rowb.addStretch(1)
         rowb.addWidget(self.btn_close)
+
+        # PI-style grip: drag onto the canvas for a shortcut carrying these
+        # exact settings, or straight onto an image to run them headlessly.
+        # Deferred import -- shortcuts.py imports a good deal of the GUI.
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            from setiastro.saspro.resources import srgc_path
+            self.preset_drag_handle = PresetDragHandle(
+                "srgc", self._srgc_params, icon=QIcon(srgc_path),
+                tooltip=self.tr(
+                    "Drag to the canvas to create an SRGC shortcut\n"
+                    "with these exact settings.\n"
+                    "Drop directly on an image to apply them headlessly."),
+                parent=self)
+        except Exception as _e:
+            _log(f"preset drag handle unavailable: {_brief(_e)}")
+            self.preset_drag_handle = None
 
         rowd = QHBoxLayout()
         rowd.addWidget(self.btn_diag)
@@ -1313,45 +3357,342 @@ class SurveyGradientDialog(QDialog):
         left = QVBoxLayout()
         left.addWidget(gb)
         left.addWidget(self.lbl_note)
-        left.addLayout(rowv)
         left.addLayout(rowb)
         left.addLayout(rowd)
         left.addWidget(self.status)
         left.addStretch(1)
 
+        # The grip goes AFTER the stretch, so it pins to the lower-left
+        # corner below the status label rather than floating wherever the
+        # controls above happen to end. Same placement ADBE uses.
+        if self.preset_drag_handle is not None:
+            grip_row = QHBoxLayout()
+            grip_row.setContentsMargins(0, 0, 0, 0)
+            grip_row.addWidget(self.preset_drag_handle)
+            grip_row.addStretch(1)
+            left.addLayout(grip_row)
+
+        # The status label wraps, and a wrapping QLabel still reports the
+        # full unwrapped text as its hint unless the column is bounded.
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                  QSizePolicy.Policy.Preferred)
+        self.lbl_note.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                    QSizePolicy.Policy.Preferred)
+
         main = QHBoxLayout(self)
-        lw = QVBoxLayout()
+        _lwrap = QWidget()
+        _lwrap.setMaximumWidth(460)
+        lw = QVBoxLayout(_lwrap)
+        lw.setContentsMargins(0, 0, 0, 0)
         lw.addLayout(left)
-        main.addLayout(lw, 0)
-        main.addWidget(self.scroll, 1)
+        main.addWidget(_lwrap, 0)
+        main.addWidget(self.tabs, 1)
 
         self.resize(1000, 620)
         self._load_settings()
         self._survey_changed(self.cmb_survey.currentText())
+        self._refresh_reference_docs()
+        self._source_changed()
+        self._show_source_now()
+        self._start_availability_probe()
+
+    # ---- availability ---------------------------------------------------
+    def _start_availability_probe(self):
+        """
+        Ask, once per dialog open and off the UI thread, whether the surveys
+        currently tagged unavailable have come back.
+
+        Backgrounded because the answer is worth a few seconds but the dialog
+        is not worth blocking for them: with CDS down the pre-flight settles
+        every dead host in ~2.5 s, and with CDS up the /properties checks are
+        a few hundred ms each.
+        """
+        try:
+            self._avail_probe = _AvailabilityProbe()
+            _LIVE_PROBES.add(self._avail_probe)
+            self._avail_probe.finished.connect(
+                lambda p=self._avail_probe: _LIVE_PROBES.discard(p))
+            self._avail_probe.finishedWith.connect(self._on_availability)
+            self._avail_conn = True
+            self._avail_probe.start()
+        except Exception as e:
+            _log(f"could not start the availability probe: {_brief(e)}")
+            self._avail_probe = None
+            self._avail_conn = None
+
+    def _on_availability(self, changes: dict):
+        """Adopt whatever the probe found and tell the user if it matters."""
+        if not changes:
+            return
+        for name, tag in changes.items():
+            info = SURVEYS.get(name)
+            if info is not None:
+                info["availability"] = tag
+
+        try:
+            cur = self.cmb_survey.currentText()
+            if cur in changes:
+                self._survey_changed(cur)
+            back = sorted(n for n, t in changes.items() if t == "verified")
+            moved = sorted(n for n, t in changes.items() if t == "moved")
+            if back:
+                # Built outside the f-string: nested same-quotes inside
+                # one is PEP 701, i.e. Python 3.12+, and this file has to
+                # parse on the older interpreter the Intel-mac build uses.
+                _names = "; ".join(back)
+                self._set_status(
+                    f"Reachable again: {_names}. "
+                    f"Re-run probe_mirrors.py to see what else has returned.")
+            elif moved:
+                self._set_status(
+                    f"{len(moved)} survey(s): the mirror host is answering "
+                    f"again but its tile trees have moved. Re-run "
+                    f"probe_mirrors.py to find the new paths.")
+        except Exception:
+            pass
+
+    def closeEvent(self, ev):
+        """
+        Detach the background probe before this dialog is destroyed.
+
+        WA_DeleteOnClose is set above, so a signal arriving from the probe
+        after close would be delivered to a deleted C++ object. The thread
+        itself is NOT waited on -- _LIVE_PROBES keeps it alive until it
+        finishes on its own, so closing the dialog never blocks on a socket.
+        """
+        p = getattr(self, "_avail_probe", None)
+        if p is not None and getattr(self, "_avail_conn", None):
+            try:
+                p.finishedWith.disconnect(self._on_availability)
+            except Exception:
+                pass
+        self._avail_conn = None
+        self._avail_probe = None
+        try:
+            super().closeEvent(ev)
+        except Exception:
+            ev.accept()
 
     # ---- settings -------------------------------------------------------
     def _load_settings(self):
+        # Guard the save handlers: setValue below emits, and without this
+        # the act of loading would write every default straight back out.
+        self._loading_settings = True
+        try:
+            self._load_settings_inner()
+        finally:
+            self._loading_settings = False
+
+    def _load_settings_inner(self):
         s = QSettings()
         name = str(s.value("srgc/survey", DEFAULT_SURVEY))
         if self.cmb_survey.findText(name) >= 0:
             self.cmb_survey.setCurrentText(name)
+        _src = str(s.value("srgc/source", "survey"))
+        _i = self.cmb_source.findData(_src)
+        if _i >= 0:
+            self.cmb_source.blockSignals(True)
+            self.cmb_source.setCurrentIndex(_i)
+            self.cmb_source.blockSignals(False)
         self.sp_work.setValue(int(s.value("srgc/work", 1024)))
         self.sp_degree.setValue(int(s.value("srgc/degree", 1)))
+        self.sp_samples.setValue(int(s.value("srgc/samples", 200)))
+        self.sp_patch.setValue(int(s.value("srgc/patch", 15)))
+        self.sp_exclude.setValue(int(s.value("srgc/exclude", 50)))
+        self.sp_protect.setValue(float(s.value("srgc/protect", 3.0)))
         self.chk_rbf.setChecked(bool(s.value("srgc/rbf", True, type=bool)))
         self.sp_strength.setValue(int(s.value("srgc/strength", 100)))
+        self.chk_ms.setChecked(bool(s.value("srgc/ms", False, type=bool)))
+        self.sp_ms_lo.setValue(int(s.value("srgc/ms_lo", 6)))
+        self.sp_ms_hi.setValue(int(s.value("srgc/ms_hi", 8)))
+        self.sp_ms_strength.setValue(float(s.value("srgc/ms_strength", 1.0)))
+        self.sp_ms_protect.setValue(float(s.value("srgc/ms_protect", 3.0)))
+        self.chk_ms_stars.setChecked(
+            bool(s.value("srgc/ms_stars", True, type=bool)))
+        self.chk_ms_survey_protect.setChecked(
+            bool(s.value("srgc/ms_survey_protect", True, type=bool)))
+        self._ms_toggled(self.chk_ms.isChecked())
+        _sm = str(s.value("srgc/stretch_mode", "normal"))
+        _si = self.cmb_stretch.findData(_sm)
+        if _si >= 0:
+            self.cmb_stretch.blockSignals(True)
+            self.cmb_stretch.setCurrentIndex(_si)
+            self.cmb_stretch.blockSignals(False)
 
-    def _save_settings(self):
+        # Save on CHANGE, not only when something is run. Settings that
+        # only persist via _do_run silently lose anything a user tweaks and
+        # then closes without running -- which is most of a tuning session.
+        for _w in (self.sp_work, self.sp_degree, self.sp_samples,
+                   self.sp_patch, self.sp_exclude, self.sp_protect,
+                   self.sp_strength, self.sp_ms_lo, self.sp_ms_hi,
+                   self.sp_ms_strength, self.sp_ms_protect):
+            _w.valueChanged.connect(self._save_settings)
+        for _c in (self.chk_rbf, self.chk_ms, self.chk_ms_stars,
+                   self.chk_ms_survey_protect):
+            _c.toggled.connect(self._save_settings)
+
+    def _save_settings(self, *_args):
+        # *_args: wired to valueChanged/toggled, which pass a value.
+        if getattr(self, "_loading_settings", False):
+            return
         s = QSettings()
         s.setValue("srgc/survey", self.cmb_survey.currentText())
+        s.setValue("srgc/source", self._source())
+        s.setValue("srgc/ms", self.chk_ms.isChecked())
+        s.setValue("srgc/ms_lo", self.sp_ms_lo.value())
+        s.setValue("srgc/ms_hi", self.sp_ms_hi.value())
+        s.setValue("srgc/ms_strength", float(self.sp_ms_strength.value()))
+        s.setValue("srgc/ms_protect", float(self.sp_ms_protect.value()))
+        s.setValue("srgc/ms_stars", self.chk_ms_stars.isChecked())
+        s.setValue("srgc/ms_survey_protect",
+                   self.chk_ms_survey_protect.isChecked())
+        s.setValue("srgc/stretch_mode",
+                   str(self.cmb_stretch.currentData() or "normal"))
         s.setValue("srgc/work", self.sp_work.value())
         s.setValue("srgc/degree", self.sp_degree.value())
+        s.setValue("srgc/samples", self.sp_samples.value())
+        s.setValue("srgc/patch", self.sp_patch.value())
+        s.setValue("srgc/exclude", self.sp_exclude.value())
+        s.setValue("srgc/protect", float(self.sp_protect.value()))
         s.setValue("srgc/rbf", self.chk_rbf.isChecked())
         s.setValue("srgc/strength", self.sp_strength.value())
+
+    def _channels(self) -> list:
+        """Channel spec for the selected survey (1 entry = mono, 3 = colour)."""
+        name = self.cmb_survey.currentData() or self.cmb_survey.currentText()
+        info = SURVEYS.get(str(name)) or SURVEYS[DEFAULT_SURVEY]
+        return list(info.get("channels") or [])
+
+    # ---- reference source ------------------------------------------------
+    def _source(self) -> str:
+        return str(self.cmb_source.currentData() or "survey")
+
+    def _source_changed(self, *_):
+        """Show only the controls that belong to the selected source."""
+        user = (self._source() == "user")
+        for wdg in (self.row_survey_label, self.cmb_survey):
+            wdg.setVisible(not user)
+        for wdg in (self.row_userref_label, self.w_userref, self.lbl_refinfo):
+            wdg.setVisible(user)
+        if user:
+            self.lbl_note.setText(
+                "Your own frame of this field, reprojected onto the work "
+                "grid. It must COVER the whole target field — a narrower "
+                "reference fails the coverage check — and it must not carry "
+                "the same gradient, or b will absorb it and leave nothing "
+                "to subtract. Check the reference share in diagnostics.")
+        else:
+            self._survey_changed(self.cmb_survey.currentText())
+        self._save_settings()
+
+    def _open_documents(self) -> list:
+        """(name, doc) for every open document except the one being corrected."""
+        mw = self._main
+        dm = getattr(mw, "docman", None) or getattr(mw, "doc_manager", None)
+        out = []
+        if dm is None:
+            return out
+        try:
+            docs = list(dm.all_documents())
+        except Exception:
+            docs = []
+            for attr in ("documents", "_documents", "docs"):
+                try:
+                    docs = list(getattr(dm, attr))
+                    break
+                except Exception:
+                    continue
+        for d in docs:
+            if d is self.doc or getattr(d, "image", None) is None:
+                continue
+            try:
+                nm = d.display_name()
+            except Exception:
+                nm = getattr(d, "name", None) or repr(d)
+            out.append((str(nm), d))
+        return out
+
+    def _refresh_reference_docs(self):
+        """Repopulate the open-document list, keeping any current pick."""
+        prev = self.cmb_refdoc.currentData()
+        self.cmb_refdoc.blockSignals(True)
+        self.cmb_refdoc.clear()
+        self.cmb_refdoc.addItem(self.tr("— choose an open image —"), None)
+        for nm, d in self._open_documents():
+            self.cmb_refdoc.addItem(nm, d)
+        if prev is not None:
+            i = self.cmb_refdoc.findData(prev)
+            if i >= 0:
+                self.cmb_refdoc.setCurrentIndex(i)
+        self.cmb_refdoc.blockSignals(False)
+
+    def _refdoc_changed(self, *_):
+        d = self.cmb_refdoc.currentData()
+        if d is None:
+            return
+        meta = getattr(d, "metadata", None) or {}
+        hdr = (meta.get("wcs_header") or meta.get("original_header")
+               or meta.get("header"))
+        self._set_user_reference(getattr(d, "image", None), hdr,
+                                 self.cmb_refdoc.currentText())
+
+    def _pick_reference_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.tr("Choose a reference image"), "",
+            self.tr("Images (*.fit *.fits *.fts *.xisf *.tif *.tiff *.png "
+                    "*.jpg *.jpeg *.cr2 *.cr3 *.nef *.arw *.dng);;"
+                    "All files (*)"))
+        if not path:
+            return
+        try:
+            from setiastro.saspro.legacy.image_manager import load_image
+            img, hdr, _bd, _mono = load_image(path)
+        except Exception as e:
+            QMessageBox.warning(self, self.tr("Reference image"),
+                                f"Could not load that file:\n\n{e}")
+            return
+        if img is None:
+            QMessageBox.warning(self, self.tr("Reference image"),
+                                "That file produced no image data.")
+            return
+        import os
+        self.cmb_refdoc.blockSignals(True)
+        self.cmb_refdoc.setCurrentIndex(0)
+        self.cmb_refdoc.blockSignals(False)
+        self._set_user_reference(img, hdr, os.path.basename(path))
+
+    def _set_user_reference(self, img, hdr, label: str):
+        """Adopt a reference and say plainly what is and is not known about it."""
+        if img is None:
+            self._user_ref = None
+            self.lbl_refinfo.setText("")
+            return
+        a = np.asarray(img)
+        self._user_ref = (a, hdr, str(label))
+        solved = _celestial_wcs_from_header(hdr) is not None
+        kind = "colour" if (a.ndim == 3 and a.shape[2] >= 3) else "mono"
+        self.lbl_refinfo.setText(
+            f"{label} — {a.shape[1]}×{a.shape[0]} {kind}, "
+            + ("plate-solved ✓" if solved
+               else "NOT plate-solved — SRGC will offer to solve it"))
+
+    def showEvent(self, ev):
+        # The set of open documents changes behind this dialog, and it is
+        # non-modal, so refresh on every show rather than only at build time.
+        try:
+            self._refresh_reference_docs()
+        except Exception:
+            pass
+        super().showEvent(ev)
 
     def _survey_changed(self, name: str):
         info = SURVEYS.get(name)
         if info:
-            self.lbl_note.setText(info["note"])
+            # Lead with availability when there is something to warn about, so
+            # a survey that cannot currently fetch says so before the user
+            # spends a minute watching it fail.
+            prefix = _AVAILABILITY.get(info.get("availability", "verified"), "")
+            self.lbl_note.setText(prefix + info["note"])
         self._save_settings()
 
     def _set_status(self, text: str):
@@ -1376,6 +3717,240 @@ class SurveyGradientDialog(QDialog):
                 or meta.get("header"))
 
     # ---- run ------------------------------------------------------------
+    def _do_fetch_reference(self):
+        """
+        Step 1: get the reference and show it. No modelling, no correction.
+
+        Survey coverage is uneven and the reference is the one input the
+        user cannot inspect in advance. Fetching it on its own turns "the
+        correction did something strange" into "that reference is no good
+        for this field", which is a much easier thing to act on. The result
+        goes into the same session cache the model run reads, so saying yes
+        afterwards costs no second download.
+        """
+        img = self._source_float()
+        if img is None:
+            QMessageBox.information(self, "No image",
+                                    "No image in the active document.")
+            return
+        self._save_settings()
+        self.btn_fetch.setEnabled(False)
+        self.btn_run.setEnabled(False)
+        try:
+            hdr = self._header()
+            hdr, _solved = ensure_solved_header(
+                self, img, hdr, label="This image", settings=QSettings())
+            if _solved:
+                self._adopt_solved_header(hdr)
+
+            H, W = np.asarray(img).shape[:2]
+            h, w = _work_shape(H, W, int(self.sp_work.value()))
+            work_wcs = _rescaled_wcs(
+                _celestial_wcs_from_header(hdr), (H, W), (h, w))
+
+            if self._source() == "user":
+                ref = self._prepare_user_reference(img, hdr)
+                where = "your own image"
+            else:
+                key = self._ref_cache_key(img, hdr)
+                ref = self._ref_cache.get(key)
+                if ref is None:
+                    ref = fetch_reference_channels(
+                        work_wcs, (h, w), list(self._channels()),
+                        progress_cb=self._set_status)
+                    self._ref_cache[key] = ref
+                    while len(self._ref_cache) > _REF_CACHE_MAX:
+                        self._ref_cache.pop(next(iter(self._ref_cache)))
+                else:
+                    _log("reference served from the session cache")
+                where = self.cmb_survey.currentText()
+        except SurveyFetchError as e:
+            self._set_status("Fetch failed")
+            QMessageBox.warning(self, "Survey reference", str(e))
+            self.btn_fetch.setEnabled(True); self.btn_run.setEnabled(True)
+            return
+        except Exception as e:
+            self._set_status("Error")
+            QMessageBox.critical(self, "Survey reference", repr(e))
+            self.btn_fetch.setEnabled(True); self.btn_run.setEnabled(True)
+            return
+
+        self.btn_fetch.setEnabled(True)
+        self.btn_run.setEnabled(True)
+        self.btn_apply.setEnabled(False)
+
+        # A preview-only result. Deliberately carries no gradient, so Apply
+        # stays disabled and no other view can be opened on half a run.
+        self._result = {"reference": np.asarray(ref, dtype=np.float32),
+                        "work_shape": (h, w), "preview_only": True}
+        self._disp_cache.clear()
+        self.tabs.blockSignals(True)
+        self.tabs.setCurrentIndex(1)          # Survey reference
+        self.tabs.blockSignals(False)
+        self._redraw()
+        self._set_status(self._describe_reference(ref, where))
+
+    def _ms_toggled(self, on: bool):
+        self.w_ms.setVisible(bool(on))
+
+    def _run_multiscale(self, img):
+        """
+        Divide out sharp multiplicative defects, after the additive fit.
+
+        Reuses ADBE's multiscale core verbatim -- it is tested, it is
+        already the right operator, and a second implementation of a
+        log-space band division would only be a second thing to get wrong.
+
+        What SRGC adds is the PROTECTION. ADBE builds its mask from the
+        image alone, so a bright extended blob looks identical whether it is
+        a real nebula or an internal reflection. SRGC already has a veto
+        mask derived from the actual sky, so it can say which: real
+        structure is composited back from the untouched source, while
+        anything sharp sitting where the survey says there is only sky is
+        treated as a defect.
+        """
+        from setiastro.saspro.abe_multiscale_gradient import (
+            multiscale_gradient_correct)
+
+        strength = self.sp_strength.value() / 100.0
+        base = apply_survey_gradient(img, self._result["gradient"], strength)
+
+        lo = int(self.sp_ms_lo.value())
+        hi = int(self.sp_ms_hi.value())
+        if hi < lo:
+            lo, hi = hi, lo
+
+        # Protection mask is built on the STAR-INCLUSIVE image, the band is
+        # estimated on a starless copy. Same pairing ADBE uses, and the
+        # reason the band comes out clean.
+        mask_from = base
+        estimate_from = base
+        if self.chk_ms_stars.isChecked():
+            self._set_status("Refinement: removing stars (DarkStar)…")
+            try:
+                from setiastro.saspro.remove_stars import (
+                    darkstar_starless_from_array)
+                # Returns (starless, stars_or_None, was_mono) -- unpack it,
+                # and tolerate a None starless rather than feeding a tuple
+                # into the band estimator.
+                _starless, _stars, _mono = darkstar_starless_from_array(
+                    base, use_gpu=True,
+                    status_cb=lambda m: self._set_status(
+                        f"Refinement: DarkStar {m}"))
+                if _starless is None:
+                    raise RuntimeError("DarkStar returned no starless image")
+                estimate_from = np.asarray(_starless, dtype=np.float32)
+                _log("multiscale: estimating on a DarkStar starless copy")
+            except Exception as e:
+                _log(f"multiscale: DarkStar unavailable ({_brief(e)}); "
+                     f"estimating on the star-inclusive image")
+                self._set_status(
+                    "Refinement: DarkStar unavailable — estimating with "
+                    "stars in. Expect a softer result.")
+
+        # The survey-derived veto, upscaled to full resolution. True there
+        # means "real structure", which is exactly what protect_blend_mask
+        # wants: keep the ORIGINAL pixels.
+        H, W = np.asarray(base).shape[:2]
+        protect = None
+        if self.chk_ms_survey_protect.isChecked():
+            allowed = self._result.get("allowed")
+            if allowed is not None:
+                a = (~np.asarray(allowed, dtype=bool)).astype(np.float32)
+                protect = _resize_to(a, (H, W)) > 0.5
+                _log(f"multiscale: survey-derived protection covers "
+                     f"{100.0 * float(protect.mean()):.1f}% of the frame")
+
+        # Hand-drawn zones protect UNCONDITIONALLY, whether or not the
+        # survey-derived veto is in use: the user drew them precisely
+        # because they know something the survey does not.
+        drawn = self._exclusion_mask_for(base)
+        if drawn is not None:
+            protect = drawn if protect is None else (protect | drawn)
+            _log(f"multiscale: {len(self.pane_target.polygons)} drawn "
+                 f"zone(s) added to the protection")
+
+        self._set_status("Refinement: dividing out the defect band…")
+        out = multiscale_gradient_correct(
+            base,
+            estimate_from=estimate_from,
+            mask_from=mask_from,
+            band_lo=lo, band_hi=hi,
+            strength=float(self.sp_ms_strength.value()),
+            protect_k=float(self.sp_ms_protect.value()),
+            protect_blend_mask=protect,
+            estimate_downsample=1,
+            progress_cb=lambda m: self._set_status(f"Refinement: {m}"),
+        )
+        if isinstance(out, tuple):
+            out = out[0]
+        out = np.asarray(out, dtype=np.float32)
+
+        # Stored finished, with the strength it was computed at: the band is
+        # estimated FROM the corrected image, so it is not valid for a
+        # different additive strength. _redraw says so rather than showing a
+        # stale frame as if it were current.
+        self._result["corrected_full"] = out
+        self._result["ms_strength"] = int(self.sp_strength.value())
+        _ph, _pw = _work_shape(out.shape[0], out.shape[1], _PREVIEW_LONG_SIDE)
+        self._result["preview_corrected"] = (
+            out if (_ph, _pw) == out.shape[:2] else _resize_to(out, (_ph, _pw)))
+        _log("multiscale refinement applied")
+
+    @staticmethod
+    def _describe_reference(ref: np.ndarray, where: str) -> str:
+        """
+        A one-line verdict on a fetched reference, before any modelling.
+
+        Coverage and CONTRAST are the two things that decide whether this
+        reference can do anything. A plane that is covered but flat carries
+        no structure to regress against, and the run would degenerate into
+        ADBE with a survey-derived mask -- which is worth knowing before
+        spending a model run rather than after.
+        """
+        a = np.asarray(ref, dtype=np.float32)
+        fin = np.isfinite(a)
+        cov = float(fin.mean()) * 100.0 if a.size else 0.0
+        if not fin.any():
+            return (f"Reference from {where}: NO usable pixels. This field "
+                    f"is outside the survey, or the request was rejected — "
+                    f"Run diagnostics to tell which.")
+        v = a[fin]
+        lo, hi = np.percentile(v, [0.5, 99.5])
+        span = float(hi - lo)
+        med = float(np.median(v))
+        rel = (span / abs(med)) if abs(med) > 1e-12 else 0.0
+        # Coverage first: it is the one that decides whether the run is
+        # worth starting, and it only became trustworthy for 8-bit trees
+        # once exact-black was read as no-data (see _decode_image_tile).
+        if cov < 99.0:
+            gap = (f"  ⚠ {100.0 - cov:.0f}% of this reference has NO DATA"
+                   f" — the survey does not cover all of this field")
+        else:
+            gap = ""
+        verdict = ("flat — little structure to fit against; expect this run "
+                   "to behave like ADBE with a survey-derived mask"
+                   if rel < 0.05 else
+                   "has structure to fit against")
+        if rel > 5.0:
+            # Sky structure spans a factor of a few. Ten times its own
+            # level usually means something instrumental is in frame --
+            # mosaic seams, a plate edge, a scan stripe. Said, not acted
+            # on: the picture in this tab is the real check.
+            verdict += ("; that is a very wide range for sky — check this "
+                        "tab for mosaic seams or plate edges before "
+                        "trusting it")
+        planes = 1 if a.ndim == 2 else a.shape[2]
+        mono = ""
+        if a.ndim == 3 and planes >= 2:
+            p0 = np.nan_to_num(a[..., 0])
+            if all(np.allclose(p0, np.nan_to_num(a[..., c]), rtol=1e-5)
+                   for c in range(1, planes)):
+                mono = "  ·  MONO (all channels are the same plane)"
+        return (f"Reference from {where}  ·  coverage {cov:.1f}%  ·  "
+                f"contrast {rel * 100:.1f}% of its own level — {verdict}"
+                f"{mono}{gap}")
+
     def _do_run(self):
         img = self._source_float()
         if img is None:
@@ -1383,24 +3958,46 @@ class SurveyGradientDialog(QDialog):
             return
 
         hdr = self._header()
-        if hdr is None:
-            QMessageBox.warning(
-                self, "No plate solution",
-                "This document has no WCS. Plate-solve it first — the reference "
-                "is fetched by sky coordinates."
-            )
-            return
 
         self._save_settings()
         self.btn_run.setEnabled(False)
         self.btn_apply.setEnabled(False)
+        user_ref = None
+        cached_ref = None
+        cache_key = None
         try:
+            # The target must be solved whichever source is used: a survey is
+            # fetched by sky coordinates, and a user frame is reprojected onto
+            # the target WCS. Offer the solver instead of just refusing.
+            hdr, _solved = ensure_solved_header(
+                self, img, hdr, label="This image", settings=QSettings())
+            if _solved:
+                self._adopt_solved_header(hdr)
+
+            if self._source() == "user":
+                user_ref = self._prepare_user_reference(img, hdr)
+            else:
+                cache_key = self._ref_cache_key(img, hdr)
+                cached_ref = self._ref_cache.get(cache_key)
+                if cached_ref is not None:
+                    _log("reference served from the session cache "
+                         "(no fetch)")
+                    self._set_status(
+                        "Reusing the reference already fetched for these "
+                        "settings — no download.")
+
             self._result = survey_gradient_model(
                 img, hdr,
-                hips_id=self.cmb_survey.currentData(),
+                channels=(None if user_ref is not None else self._channels()),
+                reference=(user_ref if user_ref is not None else cached_ref),
+                user_exclusion=self._exclusion_mask_for(img),
                 work_long_side=int(self.sp_work.value()),
                 degree=int(self.sp_degree.value()),
                 use_rbf=bool(self.chk_rbf.isChecked()),
+                num_samples=int(self.sp_samples.value()),
+                patch_size=int(self.sp_patch.value()),
+                exclusion_fraction=self.sp_exclude.value() / 100.0,
+                protect_k=float(self.sp_protect.value()),
                 progress_cb=self._set_status,
             )
         except SurveyFetchError as e:
@@ -1417,15 +4014,166 @@ class SurveyGradientDialog(QDialog):
         self.btn_run.setEnabled(True)
         self.btn_apply.setEnabled(True)
 
+        # Snapshot of exactly what was corrected. Every preview below works
+        # off this, NOT off self.doc.image: once Apply commits, the document
+        # IS the corrected image, and re-deriving "Corrected" from it would
+        # subtract the same gradient a second time. It is also what makes
+        # the Before toggle honest after an Apply.
+        self._result["source"] = np.asarray(img, dtype=np.float32)
+
+        # Preview-scale copies of the two things the Corrected/Before views
+        # need, built once per run instead of per redraw.
+        _src = self._result["source"]
+        _H, _W = _src.shape[:2]
+        _ph, _pw = _work_shape(_H, _W, _PREVIEW_LONG_SIDE)
+        if (_ph, _pw) != (_H, _W):
+            self._result["preview_source"] = _resize_to(_src, (_ph, _pw))
+            self._result["preview_gradient"] = _resize_to(
+                np.asarray(self._result["gradient"], np.float32), (_ph, _pw))
+        else:
+            self._result["preview_source"] = _src
+            self._result["preview_gradient"] = np.asarray(
+                self._result["gradient"], np.float32)
+        self._disp_cache.clear()
+
+        # Keep the fetched reference so tweaking degree / protect k / samples
+        # and re-running does not pull it down the wire again. Keyed on the
+        # things that actually change WHAT was fetched — survey, work grid,
+        # image geometry and pointing — so any of those invalidates it.
+        try:
+            self._ref_cache[cache_key] = self._result["reference"]
+            while len(self._ref_cache) > _REF_CACHE_MAX:
+                self._ref_cache.pop(next(iter(self._ref_cache)))
+        except Exception:
+            pass
+
+        # Second, MULTIPLICATIVE stage. Runs on the already-corrected image
+        # because it is a different operator on a different defect class:
+        # the additive fit removes what the sky does not explain, this
+        # divides out what the optics attenuated.
+        if self.chk_ms.isChecked():
+            try:
+                self._run_multiscale(img)
+            except Exception as e:
+                _log(f"multiscale refinement failed: {_brief(e)}")
+                QMessageBox.warning(
+                    self, "Dust mote refinement",
+                    f"The gradient correction succeeded, but the "
+                    f"multiplicative refinement failed:\n\n{e}\n\n"
+                    f"The additive result is still available.")
+
+        self.chk_before.setEnabled(True)
         cov = self._result["coverage"] * 100.0
         cs = ", ".join(f"b={b:.3g}" for _, b in self._result["coeffs"])
         g = self._result["gradient"]
+        # reference_share is the number that says whether this was a
+        # REFERENCE-based correction at all, so it belongs on screen rather
+        # than buried in the log. Near zero means the reference explained
+        # nothing and the run degenerated into ADBE with a survey mask.
+        _share = (self._result.get("diag") or {}).get("reference_share", 0.0)
+        _warn = ("  ·  ⚠ the reference explains almost none of this — "
+                 "treat it as ADBE with a survey-derived mask"
+                 if _share < 0.05 else "")
         self._set_status(
             f"Coverage {cov:.1f}%  ·  work {self._result['work_shape'][1]}×"
             f"{self._result['work_shape'][0]}  ·  {cs}  ·  "
+            f"reference explains {_share * 100:.0f}%  ·  "
             f"gradient peak-to-peak {float(np.nanmax(g) - np.nanmin(g)):.4f}"
+            f"{_warn}"
         )
         self._redraw()
+
+    def _ref_cache_key(self, img, hdr):
+        """
+        What uniquely determines the fetched reference.
+
+        Survey, work grid, image shape and the pointing/scale of the WCS.
+        Anything the user can change that does NOT appear here — degree,
+        sample count, patch size, exclusion, protect k, RBF, strength — is
+        applied to the SAME reference, which is the whole point: those are
+        the knobs people re-run, and re-downloading for them is pure waste.
+        """
+        shape = tuple(np.asarray(img).shape[:2])
+        wcs_fp = None
+        try:
+            w = _celestial_wcs_from_header(hdr)
+            if w is not None:
+                wcs_fp = (
+                    tuple(np.round(np.asarray(w.wcs.crval, float), 9)),
+                    tuple(np.round(np.asarray(w.wcs.crpix, float), 6)),
+                    tuple(str(c) for c in w.wcs.ctype),
+                    tuple(np.round(
+                        np.asarray(w.wcs.cd if w.wcs.has_cd()
+                                   else w.wcs.cdelt, float).ravel(), 12)),
+                )
+        except Exception:
+            wcs_fp = None
+        return (self.cmb_survey.currentText(),
+                int(self.sp_work.value()), shape, wcs_fp)
+
+    def _adopt_solved_header(self, hdr):
+        """Keep a freshly-solved header on the document, not just in memory."""
+        try:
+            meta = getattr(self.doc, "metadata", None)
+            if isinstance(meta, dict):
+                meta["wcs_header"] = hdr
+                meta.setdefault("original_header", hdr)
+        except Exception:
+            pass
+
+    def _prepare_user_reference(self, img, target_hdr):
+        """
+        Turn the chosen frame into a reference plane on the work grid.
+
+        Solved first (offering the solver if it is not), then reprojected.
+        Returns the array survey_gradient_model takes as `reference=`.
+        """
+        if not self._user_ref:
+            raise SurveyFetchError(
+                "No reference image chosen. Pick one of your open images or "
+                "load a file.")
+        ref_img, ref_hdr, label = self._user_ref
+
+        ref_hdr, solved = ensure_solved_header(
+            self, ref_img, ref_hdr, label=f"The reference image ({label})",
+            settings=QSettings())
+        if solved:
+            self._user_ref = (ref_img, ref_hdr, label)
+            self._set_user_reference(ref_img, ref_hdr, label)
+
+        H, W = np.asarray(img).shape[:2]
+        h, w = _work_shape(H, W, int(self.sp_work.value()))
+        work_wcs = _rescaled_wcs(
+            _celestial_wcs_from_header(target_hdr), (H, W), (h, w))
+
+        a = np.asarray(ref_img, dtype=np.float32)
+        if np.issubdtype(np.asarray(ref_img).dtype, np.integer):
+            a = a / float(np.iinfo(np.asarray(ref_img).dtype).max)
+        return reference_from_image(a, ref_hdr, work_wcs, (h, w),
+                                    progress_cb=self._set_status)
+
+    # ---- preset ---------------------------------------------------------
+    def _srgc_params(self) -> dict:
+        """
+        The current UI as a preset, for the drag grip and headless replay.
+
+        A user-supplied reference is deliberately NOT serialisable: it is a
+        specific array in this session, not a name a later run could resolve.
+        A preset dragged while "my own image" is selected therefore records
+        the survey settings, and says so, rather than silently producing a
+        shortcut that would quietly do something different.
+        """
+        return {
+            "survey": self.cmb_survey.currentText(),
+            "work_long_side": int(self.sp_work.value()),
+            "degree": int(self.sp_degree.value()),
+            "rbf": bool(self.chk_rbf.isChecked()),
+            "samples": int(self.sp_samples.value()),
+            "patch": int(self.sp_patch.value()),
+            "exclude": int(self.sp_exclude.value()),
+            "protect_k": float(self.sp_protect.value()),
+            "strength": int(self.sp_strength.value()),
+        }
 
     # ---- diagnostics ----------------------------------------------------
     def _do_diagnostics(self):
@@ -1511,7 +4259,7 @@ class SurveyGradientDialog(QDialog):
                 lines.append(f"field centre               : ? ({_brief(e)})")
 
             # -- probe every route with a small cutout
-            hips_id = self.cmb_survey.currentData()
+            chans = self._channels()
             ph, pw = 64, 64
             probe = _rescaled_wcs(wcs, (H, W), (ph, pw))
             try:
@@ -1519,42 +4267,49 @@ class SurveyGradientDialog(QDialog):
             except Exception:
                 pass
 
-            lines.append("")
-            lines.append(f"probing routes for: {hips_id}   ({pw}x{ph} cutout)")
-            lines.append("-" * 64)
-
             any_ok = False
-            for ep in _ordered_endpoints():
-                host = ep.split("//", 1)[-1].split("/", 1)[0]
-                t0 = time.monotonic()
-                try:
-                    a = _fetch_via_hips2fits(probe, ph, pw, hips_id, ep,
-                                             HIPS_TIMEOUT)
-                    dt = (time.monotonic() - t0) * 1000
-                    lines.append(f"hips2fits {host}")
-                    lines.append(f"   OK {dt:.0f} ms  {_array_stats(a)}")
-                    any_ok = True
-                except Exception as e:
-                    dt = (time.monotonic() - t0) * 1000
-                    lines.append(f"hips2fits {host}")
-                    lines.append(f"   FAIL {dt:.0f} ms  {_brief(e, 300)}")
-                QApplication.processEvents()
+            for ci, ch in enumerate(chans):
+                lines.append("")
+                if not isinstance(ch, dict):
+                    lines.append(f"channel {ci}: SYNTHESISED (mean of the "
+                                 f"fetched planes) — nothing to probe")
+                    continue
+                hips_id = ch["hips"]
+                lines.append(f"channel {ci}: {hips_id}   ({pw}x{ph} cutout)")
+                lines.append("-" * 64)
 
-            for base in mirrors_for(hips_id):
-                host = base.split("//", 1)[-1].split("/", 1)[0]
-                t0 = time.monotonic()
-                try:
-                    a = _fetch_via_tiles(probe, ph, pw, base)
-                    dt = (time.monotonic() - t0) * 1000
-                    lines.append(f"tiles {host}")
-                    lines.append(f"   OK {dt:.0f} ms  {_array_stats(a)}")
-                    any_ok = True
-                except Exception as e:
-                    dt = (time.monotonic() - t0) * 1000
-                    lines.append(f"tiles {host}")
-                    lines.append(f"   FAIL {dt:.0f} ms  {_brief(e, 300)}")
-                QApplication.processEvents()
+                for ep in _ordered_endpoints():
+                    host = ep.split("//", 1)[-1].split("/", 1)[0]
+                    t0 = time.monotonic()
+                    try:
+                        a = _fetch_via_hips2fits(probe, ph, pw, hips_id, ep,
+                                                 HIPS_TIMEOUT)
+                        dt = (time.monotonic() - t0) * 1000
+                        lines.append(f"  hips2fits {host}")
+                        lines.append(f"     OK {dt:.0f} ms  {_array_stats(a)}")
+                        any_ok = True
+                    except Exception as e:
+                        dt = (time.monotonic() - t0) * 1000
+                        lines.append(f"  hips2fits {host}")
+                        lines.append(f"     FAIL {dt:.0f} ms  {_brief(e, 300)}")
+                    QApplication.processEvents()
 
+                for base in (ch.get("mirrors") or []):
+                    host = base.split("//", 1)[-1].split("/", 1)[0]
+                    t0 = time.monotonic()
+                    try:
+                        a = _fetch_via_tiles(probe, ph, pw, base)
+                        dt = (time.monotonic() - t0) * 1000
+                        lines.append(f"  tiles {host}")
+                        lines.append(f"     OK {dt:.0f} ms  {_array_stats(a)}")
+                        any_ok = True
+                    except Exception as e:
+                        dt = (time.monotonic() - t0) * 1000
+                        lines.append(f"  tiles {host}")
+                        lines.append(f"     FAIL {dt:.0f} ms  {_brief(e, 300)}")
+                    QApplication.processEvents()
+
+            lines.append("")
             lines.append("-" * 64)
             lines.append("at least one route returned data: "
                          f"{'YES' if any_ok else 'NO'}")
@@ -1602,51 +4357,354 @@ class SurveyGradientDialog(QDialog):
     # ---- preview --------------------------------------------------------
     def _redraw(self, *_):
         if self._result is None:
+            # Nothing modelled yet: tab 1 still shows the source so zones
+            # can be drawn, and the other tabs have nothing to say.
+            if int(self.tabs.currentIndex()) == 0 \
+                    and not self.pane_target.has_image():
+                self._show_source_now()
             return
-        mode = self.cmb_view.currentText()
-        img = self._source_float()
+        idx = int(self.tabs.currentIndex())
+        mode = self._TAB_MODES[idx] if 0 <= idx < len(self._TAB_MODES) \
+            else "Corrected"
+        if self._result.get("preview_only") and mode != "Reference":
+            # Step 1 fetched a reference but nothing has been modelled, so
+            # there is no gradient, no background and no sample points to
+            # show. Say so instead of raising a KeyError.
+            self._set_status(
+                "Only the reference has been fetched so far — "
+                "run '2. Model && Correct' to see this view.")
+            return
+        overlay_pts = False
+        # The snapshot taken when the model was built, never the live
+        # document. After Apply the document already HAS the correction in
+        # it, and correcting it again here would show a doubly-corrected
+        # frame that no file will ever contain.
+        img = self._result.get("source")
+        if img is None:
+            img = self._source_float()
         if img is None:
             return
 
-        if mode == "Corrected":
-            arr = apply_survey_gradient(img, self._result["gradient"],
-                                        self.sp_strength.value() / 100.0)
+        self.chk_before.setEnabled(mode == "Corrected")
+
+        # Rendered buffers are cached per view, so flicking Before/After or
+        # returning to a view you have already seen is a dictionary lookup
+        # rather than a correct-and-tone-map pass.
+        _key = (mode, bool(self.chk_before.isChecked()),
+                int(self.sp_strength.value()), int(self.sp_patch.value()))
+        _hit = self._disp_cache.get(_key)
+        if _hit is not None:
+            _buf, _st = _hit
+            if _st:
+                self._set_status(_st)
+            self._show_buffer(_buf)
+            return
+
+        # Corrected and Before work at PREVIEW scale. Apply still uses the
+        # full-resolution snapshot, so nothing committed depends on this.
+        pimg = self._result.get("preview_source")
+        if pimg is None:
+            pimg = img
+        # .get, not [] : a fetch-only run has a reference and no gradient,
+        # and the Reference view is legitimately reachable in that state.
+        pgrad = self._result.get("preview_gradient")
+        if pgrad is None:
+            pgrad = self._result.get("gradient")
+
+        if mode == "Corrected" and self.chk_before.isChecked():
+            arr = np.asarray(pimg, dtype=np.float32)
+            self._set_status(
+                "BEFORE — the image as it was when this correction was "
+                "modelled. Untick to see the result.")
+        elif mode == "Corrected":
+            _pc = self._result.get("preview_corrected")
+            _stale = (self._result.get("ms_strength") is not None
+                      and int(self._result["ms_strength"])
+                      != int(self.sp_strength.value()))
+            if _pc is not None and not _stale:
+                arr = np.asarray(_pc, dtype=np.float32)
+            else:
+                arr = apply_survey_gradient(pimg, pgrad,
+                                            self.sp_strength.value() / 100.0)
+                if _stale:
+                    self._set_status(
+                        "Strength changed — this preview is the additive "
+                        "correction only. Re-run '2. Model && Correct' to "
+                        "redo the dust-mote refinement at the new strength.")
         elif mode == "Gradient removed":
             g = np.asarray(self._result["gradient_small"], dtype=np.float32)
             arr = _norm01(g)
         elif mode == "Reference":
-            arr = _norm01(np.nan_to_num(self._result["reference"],
-                                        nan=float(np.nanmedian(self._result["reference"]))))
+            _ref = np.asarray(self._result["reference"], dtype=np.float32)
+            arr = _norm01(np.nan_to_num(_ref, nan=float(np.nanmedian(_ref))))
+            # Say WHY it is grey, when it is. A colour survey whose
+            # channels all failed but one degrades to that survivor
+            # replicated across all three slots -- an honest picture of a
+            # mono reference, and a baffling one to look at after picking
+            # something with "colour" in its name. The degradation is
+            # logged by fetch_reference_channels but never reaches here,
+            # so detect it from the planes themselves.
+            if _ref.ndim == 3 and _ref.shape[2] >= 2:
+                _p0 = np.nan_to_num(_ref[..., 0])
+                _same = sum(
+                    1 for _c in range(1, _ref.shape[2])
+                    if np.allclose(_p0, np.nan_to_num(_ref[..., _c]),
+                                   rtol=1e-5, atol=0.0))
+                if _same == _ref.shape[2] - 1:
+                    self._set_status(
+                        f"Reference is MONO: all {_ref.shape[2]} channels "
+                        f"resolved to the same plane, so this preview is "
+                        f"grey because the DATA is grey — not because the "
+                        f"view is. A colour survey degrades to this when "
+                        f"every channel but one fails to fetch and the "
+                        f"rest are synthesised from the survivor; the "
+                        f"[SRGC] log names which one failed. For a "
+                        f"reference with real colour, pick a survey whose "
+                        f"note above carries no ⚠.")
+        elif mode == "Sample points":
+            # Exactly the map the points were chosen on: the survey's diffuse
+            # structure, plus only the SHARP part of your frame. Your gradient
+            # is deliberately invisible here — a point in the brightest corner
+            # of your light pollution is a good sample. A point on anything
+            # bright in THIS view is sampling structure, which is the catch.
+            _rf = np.asarray(self._result["reference"], dtype=np.float32)
+            _rf = np.nan_to_num(_rf, nan=float(np.nanmedian(_rf)))
+            if _rf.ndim == 3:
+                _rf = _to_luminance(_rf)
+            arr = _selection_map(self._result.get("target_small"), _rf,
+                                 int(self.sp_patch.value()))
+            overlay_pts = True
         else:
-            arr = _norm01(np.asarray(self._result["bg_ref"], dtype=np.float32))
+            # Background views are min-max normalised AND autostretched, so a
+            # field varying by 0.1% fills the full tonal range and looks like
+            # structure. The numbers below are the only honest read — report
+            # them rather than letting the picture lie.
+            is_ref = mode.startswith("Reference")
+            raw = np.asarray(self._result["bg_ref" if is_ref else "bg_target"],
+                             dtype=np.float32)
+            src = np.asarray(self._result["reference" if is_ref
+                                          else "target_small"], dtype=np.float32)
+            fr = self._result.get("fit_region")
+
+            def _sp(a2d, m=None):
+                v = np.asarray(a2d, np.float32)
+                v = v[m] if (m is not None and
+                             np.asarray(m).shape[:2] == v.shape[:2]) else v.ravel()
+                v = v[np.isfinite(v)]
+                return 0.0 if v.size < 8 else float(
+                    np.percentile(v, 99.5) - np.percentile(v, 0.5))
+
+            bg_span = _sp(raw, fr)
+            src_span = _sp(src, fr)
+            pct = (100.0 * bg_span / src_span) if src_span > 0 else 0.0
+            d = self._result.get("diag") or {}
+            note = ""
+            if is_ref:
+                share = d.get("reference_share", 0.0) * 100.0
+                note = (f"  Explains {share:.0f}% of the gradient amplitude."
+                        + ("  Essentially flat — this run is ADBE with a "
+                           "survey-derived mask." if share < 5 else ""))
+            self._set_status(
+                f"{'Reference' if is_ref else 'Target'} background span = "
+                f"{bg_span:.5g} ({pct:.2f}% of that image's own range). "
+                f"Display is min-max stretched, so flatness is invisible — "
+                f"trust the number, not the picture.{note}"
+            )
+            arr = _norm01(raw)
 
         try:
-            disp = hard_autostretch(arr, target_median=0.4, sigma=2,
-                                    linked=False, use_24bit=True)
-            disp = np.asarray(disp, dtype=np.float32)
-        except Exception:
+            # Note for the aggressive path: use_24bit builds a 2**24-entry
+            # LUT, ~1.6 s of FIXED cost independent of image size, for a
+            # buffer written out as 8-bit and then scaled down to a few
+            # hundred pixels. Off. Not bit-identical (max 6/255 on a
+            # synthetic worst case) but 32x faster, and the difference does
+            # not survive the scale-down.
+            disp = np.asarray(self._display_stretch(arr), dtype=np.float32)
+        except Exception as e:
+            _log(f"display stretch failed: {_brief(e)}")
             disp = np.clip(arr, 0.0, 1.0)
 
         if disp.ndim == 2:
             disp = np.repeat(disp[..., None], 3, axis=2)
         buf = np.ascontiguousarray((np.clip(disp, 0, 1) * 255).astype(np.uint8))
+
+        if overlay_pts:
+            Hs, Ws = buf.shape[:2]
+            # Red tint = vetoed by the survey, matching ADBE's protection
+            # preview convention. Green dots = points that survived.
+            allowed = self._result.get("allowed")
+            vetoed_pct = 0.0
+            if allowed is not None and np.asarray(allowed).shape[:2] == (Hs, Ws):
+                veto = ~np.asarray(allowed, dtype=bool)
+                vetoed_pct = float(veto.mean()) * 100.0
+                tint = buf.astype(np.float32)
+                tint[veto, 0] = np.minimum(255.0, tint[veto, 0] * 0.55 + 150.0)
+                tint[veto, 1] *= 0.45
+                tint[veto, 2] *= 0.45
+                buf = np.ascontiguousarray(tint.astype(np.uint8))
+
+            pts = self._result.get("points")
+            n = 0
+            if pts is not None and len(pts):
+                p = np.asarray(pts, dtype=int)
+                n = len(p)
+                for px, py in p:
+                    y0, y1 = max(0, py - 2), min(Hs, py + 3)
+                    x0, x1 = max(0, px - 2), min(Ws, px + 3)
+                    if y0 < y1 and x0 < x1:
+                        buf[y0:y1, x0:x1] = (60, 255, 90)
+
+            info = self._result.get("mask_info") or {}
+            extra = ""
+            if info.get("relaxed"):
+                extra = ("  RELAXED — structure dominates this field, so the "
+                         "veto was loosened to keep enough sky; treat the "
+                         "result with suspicion.")
+            self._set_status(
+                f"{n} points (green). {vetoed_pct:.0f}% vetoed by the survey "
+                f"(red): brightest "
+                f"{info.get('exclusion_fraction', 0.5)*100:.0f}% plus "
+                f"median+{info.get('protect_k', 3.0):.1f}·MAD, holes filled."
+                + extra
+            )
+        # Cache what was rendered AND the status that went with it, so a
+        # replay restores the same reading, not a stale one from whichever
+        # view was drawn last.
+        try:
+            self._disp_cache[_key] = (buf, self.status.text())
+            while len(self._disp_cache) > _DISP_CACHE_MAX:
+                self._disp_cache.pop(next(iter(self._disp_cache)))
+        except Exception:
+            pass
+        self._show_buffer(buf)
+
+    def _stretch_changed(self, *_):
+        """A different display stretch invalidates every cached render."""
+        self._save_settings()
+        self._disp_cache.clear()
+        if self._result is None:
+            self.pane_target._pm = None
+            self._show_source_now()
+        else:
+            self._redraw()
+
+    def _display_stretch(self, arr):
+        """
+        Tone-map a [0,1] array for display, per the chosen mode.
+
+        Display only. Nothing that gets applied to the document passes
+        through here.
+        """
+        a = np.asarray(arr, dtype=np.float32)
+        mode = str(self.cmb_stretch.currentData() or "normal")
+        if mode == "aggressive":
+            return hard_autostretch(a, target_median=0.4, sigma=2,
+                                    linked=False, use_24bit=False)
+        # Normal: the ordinary statistical stretch, unlinked, 0.25, and no
+        # black clip -- clipping the black point on a preview hides exactly
+        # the low-level structure you are trying to judge.
+        from setiastro.saspro.imageops.stretch import (
+            stretch_mono_image, stretch_color_image)
+        if a.ndim == 3 and a.shape[2] >= 3:
+            return stretch_color_image(a, target_median=0.25, linked=False,
+                                       normalize=False, no_black_clip=True)
+        if a.ndim == 3:
+            a = a[..., 0]
+        return stretch_mono_image(a, target_median=0.25, normalize=False,
+                                  no_black_clip=True)
+
+    def _show_source_now(self):
+        """
+        Put the target image in tab 1 before anything has been modelled.
+
+        Exclusion zones are an INPUT to the model -- they change where
+        sampling is allowed and what the refinement may touch -- so they
+        have to be drawable before the first run, which means there has to
+        be something on screen to draw on.
+        """
+        try:
+            img = self._source_float()
+            if img is None:
+                return
+            a = np.asarray(img, dtype=np.float32)
+            H, W = a.shape[:2]
+            ph, pw = _work_shape(H, W, _PREVIEW_LONG_SIDE)
+            small = a if (ph, pw) == (H, W) else _resize_to(a, (ph, pw))
+            buf = self._render_buffer(small)
+            self.pane_target.set_image(buf, img_hw=(H, W))
+            self._set_status(
+                "Draw exclusion zones now if you need them, then "
+                "'1. Fetch Reference' or '2. Model && Correct'.")
+        except Exception as e:
+            _log(f"could not show the source image: {_brief(e)}")
+
+    def _render_buffer(self, arr) -> np.ndarray:
+        """Stretch a float image into an RGB888 buffer for display."""
+        a = np.asarray(arr, dtype=np.float32)
+        try:
+            d = np.asarray(self._display_stretch(_norm01(a)), dtype=np.float32)
+        except Exception as e:
+            _log(f"display stretch failed: {_brief(e)}")
+            d = np.clip(a, 0.0, 1.0)
+        if d.ndim == 2:
+            d = np.repeat(d[..., None], 3, axis=2)
+        return np.ascontiguousarray((np.clip(d, 0, 1) * 255).astype(np.uint8))
+
+    def _active_pane(self):
+        return {0: self.pane_target, 1: self.pane_ref, 2: self.pane_grad,
+                3: self.pane_bgt, 4: self.pane_bgr,
+                5: self.pane_pts}.get(int(self.tabs.currentIndex()),
+                                      self.pane_target)
+
+    def _show_buffer(self, buf: np.ndarray):
+        """Hand an already-rendered RGB888 buffer to the active tab."""
         self._preview_buf = buf
-        h, w, _ = buf.shape
-        qimg = QImage(buf.data, w, h, buf.strides[0], QImage.Format.Format_RGB888)
-        pm = QPixmap.fromImage(qimg).scaled(
-            self.lbl_preview.size(), Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation)
-        self.lbl_preview.setPixmap(pm)
+        src = self._result.get("source") if self._result else None
+        img_hw = (np.asarray(src).shape[:2] if src is not None
+                  else buf.shape[:2])
+        self._active_pane().set_image(buf, img_hw=img_hw)
+
+    def _exclusion_mask_for(self, img):
+        """Hand-drawn zones as a bool mask at the image's own resolution."""
+        try:
+            hw = np.asarray(img).shape[:2]
+            return self.pane_target.exclusion_mask(hw=hw)
+        except Exception as e:
+            _log(f"could not rasterise the exclusion zones: {_brief(e)}")
+            return None
+
+    def _exclusions_changed(self):
+        """Exclusions change the model, so the current result is stale."""
+        n = len(self.pane_target.polygons)
+        self.lbl_zones.setText("" if not n else
+                               f"{n} exclusion zone{'s' if n != 1 else ''}")
+        if self._result is not None and not self._result.get("preview_only"):
+            self._set_status(
+                f"{n} exclusion zone(s) drawn — re-run '2. Model && "
+                f"Correct' so they take effect on the sampling and the "
+                f"dust-mote refinement.")
 
     # ---- apply ----------------------------------------------------------
     def _do_apply(self):
         if self._result is None:
             return
-        img = self._source_float()
+        # Same snapshot the preview used. Applying twice from the live
+        # document would subtract the gradient twice; this way a second
+        # Apply is idempotent — it recommits the same corrected pixels.
+        img = self._result.get("source")
+        if img is None:
+            img = self._source_float()
         if img is None:
             return
         strength = self.sp_strength.value() / 100.0
-        out = apply_survey_gradient(img, self._result["gradient"], strength)
+        # Commit the refined full-resolution result when the refinement ran
+        # at this strength; otherwise the additive correction alone.
+        _cf = self._result.get("corrected_full")
+        if (_cf is not None and self._result.get("ms_strength") is not None
+                and int(self._result["ms_strength"]) == int(self.sp_strength.value())):
+            out = np.asarray(_cf, dtype=np.float32)
+        else:
+            out = apply_survey_gradient(img, self._result["gradient"], strength)
 
         name = self.cmb_survey.currentText()
         step = f"Survey Gradient ({name}, {int(strength*100)}%)"
@@ -1654,7 +4712,8 @@ class SurveyGradientDialog(QDialog):
             "step_name": "SurveyGradient",
             "survey_gradient": {
                 "survey": name,
-                "hips": self.cmb_survey.currentData(),
+                "channels": [c["hips"] if isinstance(c, dict) else c
+                             for c in self._channels()],
                 "work_long_side": int(self.sp_work.value()),
                 "degree": int(self.sp_degree.value()),
                 "rbf": bool(self.chk_rbf.isChecked()),

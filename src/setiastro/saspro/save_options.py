@@ -47,7 +47,7 @@ def _norm_ext(target_ext: str) -> str:
     if "." in raw_ext:
         raw_ext = raw_ext.split(".")[-1]
 
-    if raw_ext in ("fit", "fits", "fz", "fits.gz", "fit.gz"):
+    if raw_ext in ("fit", "fits", "fts", "fz", "fits.gz", "fit.gz"):
         return "fits"
     if raw_ext in ("tif", "tiff"):
         return "tif"

@@ -80,6 +80,9 @@ COMMAND_ID_ALIASES: dict[str, str] = {
     # ---- background / color ----
     "abe": "abe",
     "automatic_background_extraction": "abe",
+    "srgc": "srgc",
+    "survey_gradient": "srgc",
+    "survey_reference_gradient_correction": "srgc",
     "graxpert": "graxpert",
     "grax": "graxpert",
     "remove_gradient_graxpert": "graxpert",

@@ -764,9 +764,13 @@ def load_fits_extension(path: str, key: str | int):
         elif data.dtype == np.uint16:
             bit_depth = "16-bit"; img = data.astype(np.float32) / 65535.0
         elif data.dtype == np.uint32:
-            bit_depth = "32-bit unsigned"; 
-            bzero  = hdu.header.get('BZERO', 0); bscale = hdu.header.get('BSCALE', 1)
-            img = data.astype(np.float32) * bscale + bzero
+            # A uint32 array means the FITS unsigned convention (signed storage
+            # + BZERO = 2**31) was already applied for us, so the samples are
+            # physical -- do NOT add BZERO again. This also normalizes to [0,1]
+            # like the uint8/uint16 cases; it used to return raw 0..2**32-1,
+            # which every downstream [0,1] consumer read as pure white.
+            bit_depth = "32-bit unsigned"
+            img = data.astype(np.float32) / 4294967295.0
         elif data.dtype == np.int32:
             bit_depth = "32-bit signed";
             bzero  = hdu.header.get('BZERO', 0); bscale = hdu.header.get('BSCALE', 1)
@@ -2202,21 +2206,19 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                         bit_depth = "32-bit unsigned"
                         print("Identified 32-bit unsigned FITS image.")
 
-                        bzero  = float(original_header.get('BZERO', 0))
-                        bscale = float(original_header.get('BSCALE', 1))
-
-                        if bzero == 0.0 and bscale == 1.0:
-                            # Literal 0..2^32-1 data → map directly to [0,1]
-                            image = image_data.astype(np.float32) / 4294967295.0
-                        else:
-                            # Non-trivial BSCALE/BZERO: reconstruct physical values, then normalize
-                            data = image_data.astype(np.float32) * bscale + bzero
-                            dmin = float(data.min())
-                            dmax = float(data.max())
-                            if dmax > dmin:
-                                image = (data - dmin) / (dmax - dmin)
-                            else:
-                                image = np.zeros_like(data, dtype=np.float32)
+                        # FITS has no unsigned integer type. The standard
+                        # (FITS 4.0, Sect 5.2.3) stores unsigned values as
+                        # SIGNED with BZERO = 2**(n-1), and that offset is
+                        # ALREADY applied by the time we are handed a uint32
+                        # array -- receiving one is precisely what tells us the
+                        # convention was in force. Re-applying BZERO here double
+                        # counted the offset and then min-max renormalized, so
+                        # SASpro could not read back its own 32-bit-unsigned
+                        # FITS: 0.0501 max error on a file whose bytes decode
+                        # exactly under the standard's own formula. Same
+                        # treatment as the uint8/uint16 branches above, which
+                        # were always right.
+                        image = image_data.astype(np.float32) / 4294967295.0
 
 
                     elif image_data.dtype == np.float32:
@@ -3625,6 +3627,31 @@ def _normalize_format(fmt: str) -> str:
     if f == "psb": f = "psb"
     return f
 
+
+# Extension spellings each output format legitimately answers to. A format
+# normalizes to ONE canonical name ("tiff" -> "tif"), but the file the user
+# asked for keeps its own spelling: ".tiff" and ".tif" are the same container,
+# and so are ".jpeg"/".jpg" and ".fits"/".fit"/".fts".
+#
+# Rewriting the extension to the canonical one meant Save As on a file opened
+# as "foo.tiff" wrote a NEW "foo.tif" and left "foo.tiff" untouched on disk.
+# Reopening the original then showed the pre-save header, which looks exactly
+# like "saving lost my WCS" -- the WCS was fine, it was in the other file.
+_FORMAT_EXT_GROUPS = (
+    ("tif", "tiff"),
+    ("jpg", "jpeg"),
+    ("fits", "fit", "fts"),
+)
+
+
+def _exts_for_format(fmt: str) -> tuple:
+    """Every extension acceptable for `fmt` (always includes fmt itself)."""
+    for grp in _FORMAT_EXT_GROUPS:
+        if fmt in grp:
+            return grp
+    return (fmt,)
+
+
 def _is_header_obj(h) -> bool:
     """True if h looks like a FITS header-ish object."""
     return isinstance(h, (fits.Header, dict))
@@ -3932,23 +3959,188 @@ def _build_fits_header_for_export(data_for_fits, original_header=None, wcs_heade
     return _apply_fits_shape_keywords(fits_header, data_for_fits)
 
 
+# ---------------------------------------------------------------------
+# Integer encodes: scale, don't clip
+# ---------------------------------------------------------------------
+# An integer encoding maps [0,1] onto 0..full_scale, so every sample above 1.0
+# clips to white. A hair over 1.0 is processing overshoot and clipping it is
+# the right answer. Data on a WHOLLY different scale is not overshoot:
+#   * a float frame still carrying 0..65535 ADU (Siril writes 32-bit that way)
+#   * a rejection-count / NCOMBINE layer holding frame counts, which
+#     doc_manager deliberately keeps un-normalized
+# Clipping those collapsed nearly every pixel to full scale and wrote a flat
+# white frame with no error and no warning -- measured mean 230 -> 65242 on a
+# 0..65535 float saved as 16-bit. Rescale that case and say so in the log.
+#
+# The threshold is deliberately loose: real scales are 255 / 65535 / 2^32-1 or
+# raw ADU, all far above it, while a processed [0,1] image rarely overshoots
+# past ~2. At or below it the result is bit-identical to the old clip-only
+# code, so the normal save path is untouched.
+_INT_ENCODE_OVERSHOOT_OK = 2.0
+
+
+def _coerce_unit_range(arr, *, where: str = "image"):
+    """Rescale `arr` into [0,1] only if it is plainly on a different scale."""
+    a = np.asarray(arr)
+    if not a.size:
+        return a
+    try:
+        mx = float(np.nanmax(a))
+        mn = float(np.nanmin(a))
+    except Exception:
+        return a
+    if not np.isfinite(mx) or mx <= _INT_ENCODE_OVERSHOOT_OK:
+        return a
+    lo = mn if (np.isfinite(mn) and mn < 0.0) else 0.0
+    span = mx - lo
+    if span <= 0.0:
+        return a
+    print(f"[save_image] {where}: data range {mn:.6g}..{mx:.6g} is not [0,1]; "
+          f"rescaling for the integer encode (clipping would have written a "
+          f"flat white frame).")
+    return (a - lo) / span
+
+
+def _quantize_unit_to_int(arr, full_scale, dtype, *, where: str = "image"):
+    """Map a nominally-[0,1] float image onto 0..full_scale as `dtype`."""
+    u = np.clip(_coerce_unit_range(arr, where=where), 0, 1)
+    try:
+        hi = float(np.iinfo(dtype).max)
+    except Exception:
+        hi = float(full_scale)
+
+    # float32 carries a 24-bit mantissa, so float32(1.0) * (2**32 - 1) rounds
+    # UP to 2**32, which does not fit in uint32 and wraps to 0 on the cast:
+    # every SATURATED pixel in a 32-bit-unsigned export came back black.
+    # Targets wider than the mantissa get scaled in float64 and clamped to the
+    # true maximum first. 255 and 65535 are exact in float32, so the 8/16-bit
+    # paths keep their original arithmetic untouched.
+    if hi > float(1 << 24):
+        out = u.astype(np.float64) * float(full_scale)
+        np.clip(out, 0.0, hi, out=out)
+    else:
+        out = u * full_scale
+    return out.astype(dtype)
+
+
 def _quantize_fits_data(data_for_fits: np.ndarray, bit_depth: str) -> tuple[np.ndarray, int]:
     bd = (bit_depth or "32-bit floating point").lower()
 
     if bd == "8-bit":
-        out = (np.clip(data_for_fits, 0, 1) * 255.0).astype(np.uint8)
+        out = _quantize_unit_to_int(data_for_fits, 255.0, np.uint8, where="fits")
         return np.ascontiguousarray(out), 8
 
     if bd == "16-bit":
-        out = (np.clip(data_for_fits, 0, 1) * 65535.0).astype(np.uint16)
+        out = _quantize_unit_to_int(data_for_fits, 65535.0, np.uint16, where="fits")
         return np.ascontiguousarray(out), 16
 
     if bd == "32-bit unsigned":
-        out = (np.clip(data_for_fits, 0, 1) * 4294967295.0).astype(np.uint32)
+        out = _quantize_unit_to_int(data_for_fits, 4294967295.0, np.uint32, where="fits")
         return np.ascontiguousarray(out), 32
 
     out = np.asarray(data_for_fits, dtype=np.float32, order="C")
     return out, -32
+
+
+# ---------------------------------------------------------------------
+# Data-range / display-level cards
+# ---------------------------------------------------------------------
+# These name ABSOLUTE pixel levels, so they only mean anything in the data
+# scale they were written for:
+#   DATAMIN / DATAMAX   FITS standard -- the extremes present in the array
+#   CBLACK  / CWHITE    Siril's display range
+#   MIPS-LO / MIPS-HI   MaxIm DL's display range
+#
+# SASpro normalizes to [0,1] on open (_normalize_image_01 divides by the data
+# max) and rescales to the chosen bit depth on save. A file that arrived
+# scaled 0..65535 -- Siril writes 32-bit float that way -- was therefore
+# written back at 0..1 with DATAMAX=65535 and CBLACK=9 riding along unchanged.
+# Every pixel then sits far below the stated black point, so a reader that
+# honours these cards shows pure black even under autostretch. Reported on a
+# Siril stack: the pixels were correct, the header lied about their scale.
+_FITS_LEVEL_CARDS = ("CBLACK", "CWHITE", "MIPS-LO", "MIPS-HI")
+
+
+def _sync_fits_level_cards(hdr, data_to_write, bitpix: int) -> None:
+    """Make the level cards agree with the data actually being written.
+
+    DATAMIN/DATAMAX are taken from the array. The display pairs are mapped
+    affinely from the OLD DATAMIN..DATAMAX onto the new range, which is what
+    carries a meaningful black point across a change of scale -- and which
+    correctly leaves them ALONE when the scale round-trips (a 0..65535 source
+    saved back as 16-bit maps 1:1). With no usable old range to map from they
+    are deleted instead: a reader that finds no black point computes its own,
+    whereas one that finds a stale black point clips the frame to nothing.
+
+    Mutates `hdr` in place.
+    """
+    try:
+        arr = np.asarray(data_to_write)
+        if arr.size == 0:
+            return
+        new_min = float(np.nanmin(arr))
+        new_max = float(np.nanmax(arr))
+    except Exception:
+        return
+    if not (np.isfinite(new_min) and np.isfinite(new_max)):
+        return
+
+    # Read the incoming range BEFORE overwriting it -- it is the scale the
+    # display cards below were written against.
+    old_min = _try_float_scalar(hdr.get("DATAMIN"))
+    old_max = _try_float_scalar(hdr.get("DATAMAX"))
+
+    # Integer encodings get integer levels; float keeps full precision.
+    _fmt = (lambda v: int(round(v))) if bitpix > 0 else (lambda v: float(v))
+
+    try:
+        hdr["DATAMIN"] = (_fmt(new_min), "Minimum data value")
+        hdr["DATAMAX"] = (_fmt(new_max), "Maximum data value")
+    except Exception:
+        pass
+
+    present = [k for k in _FITS_LEVEL_CARDS if k in hdr]
+    if not present:
+        return
+
+    old_span = None if (old_min is None or old_max is None) else (old_max - old_min)
+    new_span = new_max - new_min
+    if old_span is None or old_span <= 0.0 or new_span <= 0.0:
+        for k in present:
+            try:
+                del hdr[k]
+            except Exception:
+                pass
+        try:
+            hdr.add_history("SASpro: dropped display-level cards (%s) - no source "
+                            "data range to rescale from" % ", ".join(present))
+        except Exception:
+            pass
+        return
+
+    ratio = new_span / old_span
+    # Treat "same scale" with float32 slack, not exact equality. A float32
+    # round-trip perturbs the span by ~2e-7 relative, and an exact test turned
+    # that into a real rescale -- CBLACK crept 9.0 -> 9.0016 on every save.
+    # Genuine scale changes here are factors of 255/65535/2**32, nowhere near.
+    _scale = max(1.0, abs(new_span))
+    if abs(ratio - 1.0) <= 1e-6 and abs(old_min - new_min) <= 1e-6 * _scale:
+        return      # same scale in and out; leave the cards untouched
+
+    for k in present:
+        v = _try_float_scalar(hdr.get(k))
+        if v is None:
+            continue
+        try:
+            hdr[k] = _fmt((v - old_min) * ratio + new_min)
+        except Exception:
+            pass
+    try:
+        hdr.add_history("SASpro: rescaled %s from %g..%g to %g..%g"
+                        % (", ".join(present), old_min, old_max, new_min, new_max))
+    except Exception:
+        pass
+
 
 def _sanitize_fits_colname(name: str, fallback: str = "COL") -> str:
     txt = str(name or fallback).strip()
@@ -4217,6 +4409,7 @@ def save_fits_bundle(
         fits_header["BITPIX"] = int(bitpix)
         fits_header["BSCALE"] = 1.0
         fits_header["BZERO"] = 0.0
+        _sync_fits_level_cards(fits_header, data_to_write, int(bitpix))
 
         try:
             fits_header["BUNDTYPE"] = "IMAGE"
@@ -4384,12 +4577,15 @@ def save_image(img_array,
     if isinstance(original_header, str) and original_header in _BIT_DEPTH_STRS and _is_header_obj(bit_depth):
         original_header, bit_depth = bit_depth, original_header
 
-    # Normalize format and extension
+    # Normalize the FORMAT, but keep the filename's own extension spelling.
+    # Only replace the extension when it isn't a spelling of this format at
+    # all; an alias (.tiff for tif, .jpeg for jpg, .fts for fits) is the name
+    # the user chose, not a mistake to correct. See _FORMAT_EXT_GROUPS.
     fmt = _normalize_format(original_format)
-    base, _ = os.path.splitext(filename)
-    out_ext = "jpg" if fmt == "jpg" else ("tif" if fmt == "tif" else fmt)
-    if not filename.lower().endswith(f".{out_ext}"):
-        filename = f"{base}.{out_ext}"
+    base, _cur = os.path.splitext(filename)
+    cur_ext = _cur.lower().lstrip(".")
+    if cur_ext not in _exts_for_format(fmt):
+        filename = f"{base}.{fmt}"
 
     # Ensure correct byte order for numpy data
     img_array = ensure_native_byte_order(img_array)
@@ -4427,8 +4623,11 @@ def save_image(img_array,
         # PNG/JPG — always write 8-bit preview-style data
         # ---------------------------------------------------------------------
         if fmt == "png":
+            # Fix the scale before the ICC transform: lcms works in [0,1] and
+            # would clamp out-of-range data before we ever reach the encode.
+            img_array = _coerce_unit_range(img_array, where=fmt)
             img_array = _maybe_convert_export_profile(img_array, export_opts, bit_depth="8-bit")
-            img = Image.fromarray((np.clip(img_array, 0, 1) * 255).astype(np.uint8))
+            img = Image.fromarray(_quantize_unit_to_int(img_array, 255, np.uint8, where=fmt))
             _png_kwargs = {}
             if export_opts.get("embed_icc", True):
                 _icc = _export_icc_profile_bytes(export_opts.get("icc_color_space", "P3"))
@@ -4446,8 +4645,9 @@ def save_image(img_array,
             return
 
         if fmt == "jpg":
+            img_array = _coerce_unit_range(img_array, where=fmt)
             img_array = _maybe_convert_export_profile(img_array, export_opts, bit_depth="8-bit")
-            img = Image.fromarray((np.clip(img_array, 0, 1) * 255).astype(np.uint8))
+            img = Image.fromarray(_quantize_unit_to_int(img_array, 255, np.uint8, where=fmt))
 
             q = 95 if jpeg_quality is None else int(jpeg_quality)
             q = max(1, min(100, q))
@@ -4492,6 +4692,8 @@ def save_image(img_array,
         if fmt == "webp":
             from setiastro.saspro.imageops.webp_io import save_webp
 
+            # WebP is 8-bit only, and save_webp does its own [0,1] scaling.
+            img_array = _coerce_unit_range(img_array, where=fmt)
             img_array = _maybe_convert_export_profile(img_array, export_opts, bit_depth="8-bit")
 
             lossless = bool(export_opts.get("webp_lossless", True))
@@ -4539,6 +4741,12 @@ def save_image(img_array,
         # ---------------------------------------------------------------------
         if fmt in ("tif",):
             bd = bit_depth or "32-bit floating point"
+            if bd != "32-bit floating point":
+                # Integer encode, so fix the scale now (also ahead of the ICC
+                # transform). 32-bit float TIFF is left EXACTLY as handed over:
+                # count / NCOMBINE layers and ADU-scale data must round-trip
+                # verbatim, which is why this is gated on the depth.
+                img_array = _coerce_unit_range(img_array, where=fmt)
             img_array = _maybe_convert_export_profile(img_array, export_opts, bit_depth=bd)
 
             # --- DPI / resolution metadata ---
@@ -4592,11 +4800,11 @@ def save_image(img_array,
                     kwargs["description"] = _meta_text
                     kwargs["metadata"] = None   # keep tifffile from overwriting ImageDescription
             if bd == "8-bit":
-                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 255).astype(np.uint8), **kwargs)
+                tiff.imwrite(filename, _quantize_unit_to_int(img_array, 255, np.uint8, where=fmt), **kwargs)
             elif bd == "16-bit":
-                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 65535).astype(np.uint16), **kwargs)
+                tiff.imwrite(filename, _quantize_unit_to_int(img_array, 65535, np.uint16, where=fmt), **kwargs)
             elif bd == "32-bit unsigned":
-                tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 4294967295).astype(np.uint32), **kwargs)
+                tiff.imwrite(filename, _quantize_unit_to_int(img_array, 4294967295, np.uint32, where=fmt), **kwargs)
             elif bd == "32-bit floating point":
                 tiff.imwrite(filename, img_array.astype(np.float32), **kwargs)
             else:
@@ -4607,7 +4815,9 @@ def save_image(img_array,
         # ---------------------------------------------------------------------
         # FITS — honor bit_depth like TIFF (8/16/32U/32f)
         # ---------------------------------------------------------------------
-        if fmt in ("fit", "fits"):
+        # ".fts" is advertised by the Save As FITS filter, so it has to be
+        # writable here too -- it used to raise "Unsupported file format".
+        if fmt in ("fit", "fits", "fts"):
             # Helper to build minimal valid header
             def _minimal_fits_header(h: int, w: int, is_rgb: bool) -> fits.Header:
                 hdr = fits.Header()
@@ -4755,13 +4965,13 @@ def save_image(img_array,
             bd = (bit_depth or "32-bit floating point").lower()
 
             if bd == "8-bit":
-                data_to_write = (np.clip(base_data, 0, 1) * 255).astype(np.uint8)
+                data_to_write = _quantize_unit_to_int(base_data, 255, np.uint8, where=fmt)
                 fits_header["BITPIX"] = 8
             elif bd == "16-bit":
-                data_to_write = (np.clip(base_data, 0, 1) * 65535).astype(np.uint16)
+                data_to_write = _quantize_unit_to_int(base_data, 65535, np.uint16, where=fmt)
                 fits_header["BITPIX"] = 16
             elif bd == "32-bit unsigned":
-                data_to_write = (np.clip(base_data, 0, 1) * 4294967295).astype(np.uint32)
+                data_to_write = _quantize_unit_to_int(base_data, 4294967295, np.uint32, where=fmt)
                 fits_header["BITPIX"] = 32
             else:
                 # default / 32-bit float
@@ -4771,6 +4981,11 @@ def save_image(img_array,
             # Linear scaling for all these
             fits_header["BSCALE"] = 1.0
             fits_header["BZERO"]  = 0.0
+
+            # DATAMIN/DATAMAX/CBLACK/CWHITE/MIPS-* describe absolute levels and
+            # must follow the scale we just quantized to, not the source file's.
+            _sync_fits_level_cards(fits_header, data_to_write,
+                                   int(fits_header["BITPIX"]))
 
             # --- Write with the same robust path you already had ---
             hdu = fits.PrimaryHDU(data_to_write, header=fits_header)
@@ -4857,9 +5072,9 @@ def save_image(img_array,
         if fmt == "xisf":
             bd = bit_depth or "32-bit floating point"
             if bd == "16-bit":
-                processed_image = (np.clip(img_array, 0, 1) * 65535).astype(np.uint16)
+                processed_image = _quantize_unit_to_int(img_array, 65535, np.uint16, where=fmt)
             elif bd == "32-bit unsigned":
-                processed_image = (np.clip(img_array, 0, 1) * 4294967295).astype(np.uint32)
+                processed_image = _quantize_unit_to_int(img_array, 4294967295, np.uint32, where=fmt)
             else:
                 processed_image = img_array.astype(np.float32)
 
@@ -5009,6 +5224,8 @@ def save_image(img_array,
             if not filename.lower().endswith(".psb"):
                 filename = f"{base}.psb"
 
+            if psb_depth != 32:
+                img_array = _coerce_unit_range(img_array, where=fmt)
             save_psb(filename, img_array, depth=psb_depth)
             print(f"Saved {psb_depth}-bit PSB image to: {filename}")
             return
@@ -5034,6 +5251,8 @@ def save_image(img_array,
             # metadata maps into namespaced syq.* keys, so we don't guess —
             # only pixels + a provenance note are written until the white paper
             # lands. write_syq stamps syq.processing.software itself.
+            if bd in ("8-bit", "16-bit"):
+                arr = _coerce_unit_range(arr, where=fmt)
             write_syq(arr, filename, bit_depth=bd, compress=False)
             print(f"Saved {bd} SYQ image to: {filename}")
             return

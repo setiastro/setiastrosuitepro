@@ -26,8 +26,16 @@ from PyQt6.QtWidgets import (
 )
 from bisect import bisect_right
 # 3rd-party (your code already expects these)
+import gc
 import cv2
 import sep
+
+# psutil is bundled, but the memory guard degrades to a no-op without it
+# rather than refusing to load frames it cannot measure.
+try:
+    import psutil
+except Exception:
+    psutil = None
 sep.set_extract_pixstack(20000000)
 import pyqtgraph as pg
 from collections import OrderedDict
@@ -50,7 +58,9 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
 
 from setiastro.saspro.star_metrics import measure_stars_sep
-from setiastro.saspro.blink_fast_read import read_downsampled, probe_header
+from setiastro.saspro.blink_fast_read import (
+    read_downsampled, probe_header, MIN_STEP as _FAST_MIN_STEP,
+)
 from setiastro.saspro.blink_stream import FrameCache, prefetch_window
 
 def _try_raise_fd_limit() -> None:
@@ -222,6 +232,130 @@ def _blink_storage_dtype():
     lever is the 1:2 / 1:4 / 1:8 buttons, which cut 4x / 16x / 64x.
     """
     return np.uint16
+
+
+def _blink_mem_guard_enabled() -> bool:
+    """Kill switch for the PreLoad memory guard (QSettings 'blink/mem_guard').
+
+    On by default. Off means PreLoad behaves exactly as it did before the
+    guard existed, including running the machine out of memory -- which is
+    occasionally what someone with a lot of swap actually wants.
+    """
+    try:
+        return bool(QSettings().value("blink/mem_guard", True, type=bool))
+    except Exception:
+        return True
+
+
+def _blink_mem_headroom_frac() -> float:
+    """Fraction of currently-available RAM PreLoad may plan to fill.
+
+    0.70 leaves three tenths of what is free right now for the OS, the rest of
+    SASpro, and the decode working set. Raising it toward 1.0 trades safety
+    margin for the ability to PreLoad bigger folders.
+    """
+    try:
+        v = float(QSettings().value("blink/mem_headroom", 0.70, type=float))
+    except Exception:
+        v = 0.70
+    return min(0.95, max(0.10, v))
+
+
+def _blink_available_bytes():
+    """``(available, total)`` physical memory, or ``(None, None)`` if unknown.
+
+    'available' rather than 'free' on purpose: free excludes reclaimable page
+    cache, which would read as catastrophically low on any machine that has
+    been reading FITS files all evening.
+    """
+    if psutil is None:
+        return None, None
+    try:
+        vm = psutil.virtual_memory()
+        return int(vm.available), int(vm.total)
+    except Exception:
+        return None, None
+
+
+def _blink_fmt_bytes(n) -> str:
+    """Bytes as something that fits in a sentence."""
+    try:
+        n = float(n)
+    except Exception:
+        return "?"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024.0 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} TB"
+
+
+_BLINK_PROBE_SAMPLE = 12
+
+
+def _blink_estimate_frame_bytes(paths, load_scale, *, itemsize=2,
+                                sample=_BLINK_PROBE_SAMPLE):
+    """Mean STORED bytes per frame, from a sample of cheap header probes.
+
+    Returns ``(bytes_per_frame, probed_count)``, or ``(None, 0)`` when nothing
+    in the sample reports a geometry. FITS and XISF both answer from a header
+    block in well under a millisecond; TIFF / PNG / RAW have no cheap size at
+    all, and those loads fall to the in-flight guard instead.
+
+    Channels are counted the way ``_load_one_image`` will end up STORING them,
+    not the way they sit on disk: NAXIS3=3 stays three, and a BAYERPAT frame
+    becomes three through the debayer -- unless the luminance CFA mode collapses
+    it, which only applies where the strided reader engages.
+
+    The mean, not the max: for the usual one-camera folder they are the same
+    number, and for a mixed folder the mean is the honest estimator of the total
+    while the max would push people into Stream who did not need to be there.
+    """
+    n = len(paths)
+    if n == 0:
+        return None, 0
+
+    k = min(int(sample), n)
+    if k <= 1:
+        idxs = [0]
+    else:
+        idxs = sorted({int(round(i * (n - 1) / (k - 1))) for i in range(k)})
+
+    scale = max(1, int(load_scale or 1))
+    cfa_luma = (_blink_cfa_mode() == "luminance" and scale >= _FAST_MIN_STEP)
+
+    sizes = []
+    for i in idxs:
+        try:
+            hdr, wh = probe_header(paths[i])
+        except Exception:
+            continue
+        if not wh:
+            continue
+        try:
+            w, h = int(wh[0]), int(wh[1])
+        except Exception:
+            continue
+        if w <= 0 or h <= 0:
+            continue
+
+        ch = 1
+        try:
+            if hdr is not None:
+                naxis = int(hdr.get("NAXIS", 2) or 2)
+                naxis3 = int(hdr.get("NAXIS3", 1) or 1)
+                if naxis == 3 and naxis3 == 3:
+                    ch = 3
+                elif str(hdr.get("BAYERPAT", "") or "").strip():
+                    ch = 1 if cfa_luma else 3
+        except Exception:
+            ch = 1
+
+        sizes.append(max(1, h // scale) * max(1, w // scale) * ch * itemsize)
+
+    if not sizes:
+        return None, 0
+    return int(sum(sizes) / len(sizes)), len(sizes)
 
 
 def _clamp(v, lo, hi):
@@ -1928,6 +2062,181 @@ class BlinkTab(QWidget):
         elif not on and self.loaded_images:
             self.loading_label.setText(self.tr(
                 "PreLoad applies on the next load."))
+
+    # ------------------------------------------------------------------
+    # Memory guard: keep PreLoad from running the machine out of RAM
+    # ------------------------------------------------------------------
+    def _force_stream_mode(self, title: str, text: str, *, ask: bool = False) -> bool:
+        """Switch to Stream because PreLoad will not fit. True if switched.
+
+        ``ask`` is for the pre-flight check, where nothing has been decoded yet
+        and the estimate can legitimately be wrong -- a machine with plenty of
+        swap, or a container that misreports available memory. The in-flight
+        guard never asks: by the time it fires the memory is already going.
+        """
+        if ask:
+            btn = QMessageBox.question(
+                self, title,
+                text + "\n\n" + self.tr("Switch to Stream mode?"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if btn != QMessageBox.StandardButton.Yes:
+                print("[Blink] memory guard declined by user; PreLoading anyway")
+                return False
+        else:
+            QMessageBox.warning(self, title, text)
+
+        self._set_stream_mode(True)
+        # Sync the radios without re-entering _set_stream_mode through the
+        # toggled connection.
+        for rb, state in ((self.rb_stream, True), (self.rb_preload, False)):
+            try:
+                rb.blockSignals(True)
+                rb.setChecked(state)
+            except Exception:
+                pass
+            finally:
+                try:
+                    rb.blockSignals(False)
+                except Exception:
+                    pass
+        return True
+
+    def _preflight_stream_switch(self, file_paths, *, appending: bool) -> bool:
+        """Estimate the PreLoad before decoding anything. True if we switched.
+
+        Costs a dozen header probes. Returns False -- meaning carry on with
+        PreLoad -- when the guard is off, memory is unknown, the formats cannot
+        be probed, the estimate fits, or the user overrode the offer.
+        """
+        self._mem_per_frame_hint = None
+        if self._stream_mode or not _blink_mem_guard_enabled():
+            return False
+
+        avail, _total = _blink_available_bytes()
+        if not avail:
+            return False
+
+        per_frame, probed = _blink_estimate_frame_bytes(
+            file_paths, self._load_scale)
+        if not per_frame:
+            return False        # unprobeable: the in-flight guard covers it
+        self._mem_per_frame_hint = per_frame
+
+        # Frames already resident still occupy the same RAM.
+        held = 0
+        if appending:
+            for entry in self.loaded_images:
+                arr = entry.get("image_data")
+                held += int(getattr(arr, "nbytes", 0) or 0)
+
+        n = len(file_paths)
+        need = per_frame * n + held
+        budget = int(avail * _blink_mem_headroom_frac())
+        if need <= budget:
+            return False
+
+        print(f"[Blink] memory guard: {n} frames x "
+              f"{_blink_fmt_bytes(per_frame)} (probed {probed}) = "
+              f"{_blink_fmt_bytes(need)}, budget {_blink_fmt_bytes(budget)} "
+              f"of {_blink_fmt_bytes(avail)} available")
+
+        return self._force_stream_mode(
+            self.tr("Not enough memory to PreLoad"),
+            self.tr(
+                "PreLoading these {n} frames at 1:{scale} needs about {need} "
+                "of memory, and only {avail} is free right now. Loading them "
+                "all would very likely have the system kill SASpro.\n\n"
+                "Stream mode opens the folder immediately and decodes each "
+                "frame as you select it, so memory stays flat no matter how "
+                "many subs there are.\n\n"
+                "To PreLoad instead: free some memory, or pick a smaller "
+                "\"Load at:\" setting (1:2 quarters the cost, 1:4 sixteenths "
+                "it)."
+            ).format(n=n, scale=max(1, int(self._load_scale or 1)),
+                     need=_blink_fmt_bytes(need),
+                     avail=_blink_fmt_bytes(avail)),
+            ask=True,
+        )
+
+    def _mem_worker_cap(self, per_frame_bytes):
+        """Pool width that the decode working set can afford, or None.
+
+        Each worker holds the full-resolution frame as float32 plus copies
+        through the debayer and the stretch, which dwarfs the uint16 frame it
+        finally stores. Sixty of those at once is its own OOM, reached before
+        the in-flight projection has three frames to extrapolate from.
+
+        Deliberately conservative: at 1:4 and 1:8 the strided reader usually
+        never materializes a full-resolution frame at all, but it is allowed to
+        decline per file and fall through to the full read, so the bound has to
+        assume the expensive path.
+        """
+        if not _blink_mem_guard_enabled() or not per_frame_bytes:
+            return None
+        avail, _total = _blink_available_bytes()
+        if not avail:
+            return None
+
+        scale = max(1, int(self._load_scale or 1))
+        working = int(per_frame_bytes) * (scale * scale) * 2 * 3
+        if working <= 0:
+            return None
+        return max(1, int((avail * 0.5) // working))
+
+    def _mem_trip(self, bytes_so_far: int, done: int, total: int):
+        """Reason to abandon this PreLoad, or None to carry on.
+
+        Two conditions. The projection stops the load while the memory is still
+        there, which is the whole point -- waiting for 'available' to actually
+        run out means racing the OOM killer. The floor is the backstop for when
+        the projection is wrong, including every format that could not be
+        pre-flighted.
+        """
+        if not _blink_mem_guard_enabled():
+            return None
+        avail, total_ram = _blink_available_bytes()
+        if not avail:
+            return None
+
+        floor = max(512 << 20, int((total_ram or 0) * 0.08))
+        if avail <= floor:
+            return "floor"
+
+        if done >= 3 and total > done:
+            per = bytes_so_far / float(done)
+            remaining_need = per * (total - done)
+            if remaining_need > int(avail * _blink_mem_headroom_frac()):
+                return "projection"
+        return None
+
+    def _mem_abandon_preload(self, reason: str, done: int, total: int):
+        """Tell the user why their PreLoad became a Stream."""
+        avail, _total = _blink_available_bytes()
+        print(f"[Blink] memory guard tripped ({reason}) after {done}/{total} "
+              f"frames; {_blink_fmt_bytes(avail)} available")
+
+        if reason == "floor":
+            why = self.tr(
+                "Memory ran low after {done} of {total} frames ({avail} left)."
+            ).format(done=done, total=total, avail=_blink_fmt_bytes(avail))
+        else:
+            why = self.tr(
+                "After {done} of {total} frames it was clear the rest would "
+                "not fit in the {avail} still available."
+            ).format(done=done, total=total, avail=_blink_fmt_bytes(avail))
+
+        self._force_stream_mode(
+            self.tr("Switched to Stream to avoid running out of memory"),
+            why + "\n\n" + self.tr(
+                "Blink released the frames it had decoded and switched to "
+                "Stream, which decodes each frame as you select it. Nothing "
+                "was lost -- every frame is still listed.\n\n"
+                "For a PreLoad of this folder, use a smaller \"Load at:\" "
+                "setting or free some memory first."
+            ),
+        )
 
     def _shutdown_stream_cache(self):
         if self._stream_cache is not None:
@@ -4337,6 +4646,14 @@ class BlinkTab(QWidget):
                 append=True)
             return
 
+        # Appending counts the resident frames against the budget too.
+        if self._preflight_stream_switch(file_paths, appending=True):
+            self._stream_scan(
+                sorted(file_paths,
+                       key=lambda p: self._natural_key(os.path.basename(p))),
+                append=True)
+            return
+
         total_new = len(file_paths)
         self.progress_bar.setRange(0, total_new)
         self.progress_bar.setValue(0)
@@ -4345,8 +4662,14 @@ class BlinkTab(QWidget):
         # Throttle UI updates so paints aren't starved when total_new is large.
         # Aim for ~100 updates over the whole load regardless of file count.
         step = max(1, total_new // 100)
+        # Hoisted so the memory guard can hand the unprocessed tail to
+        # _stream_scan if it has to bail part way through.
+        ordered = sorted(file_paths,
+                         key=lambda p: self._natural_key(os.path.basename(p)))
+        mem_bytes = 0
+        mem_last_check = time.monotonic()
 
-        for i, path in enumerate(sorted(file_paths, key=lambda p: self._natural_key(os.path.basename(p)))):
+        for i, path in enumerate(ordered):
             try:
                 _, hdr, bit_depth, is_mono, stored, back = self._load_one_image(path, target_dtype, self._load_scale)
             except Exception as e:
@@ -4374,6 +4697,30 @@ class BlinkTab(QWidget):
             if done == total_new or (done % step) == 0:
                 self.progress_bar.setValue(done)
                 QApplication.processEvents()
+
+            # Same guard as the parallel path. Switching to Stream drops the
+            # pixels of everything already appended, which is exactly what
+            # needs to happen here, and the tail is streamed instead.
+            mem_bytes += int(getattr(stored, "nbytes", 0) or 0)
+            _now = time.monotonic()
+            if _now - mem_last_check >= 0.25:
+                mem_last_check = _now
+                trip = self._mem_trip(mem_bytes, done, total_new)
+                if trip:
+                    # Release the pixels BEFORE putting a dialog on screen: Qt
+                    # needs memory of its own to draw one, and _set_stream_mode
+                    # would not free these until after it was dismissed.
+                    for entry in self.loaded_images:
+                        entry["image_data"] = None
+                    gc.collect()
+                    self._mem_abandon_preload(trip, done, total_new)
+                    tail = ordered[done:]
+                    if tail:
+                        self._stream_scan(tail, append=True)
+                    else:
+                        self._rebuild_tree_from_loaded()
+                        self.imagesChanged.emit(len(self.loaded_images))
+                    return
 
         # update status
         self.loading_label.setText(self.tr("Loaded {0} images.").format(len(self.loaded_images)))
@@ -4888,6 +5235,12 @@ class BlinkTab(QWidget):
             self._stream_scan(file_paths, append=False)
             return
 
+        # Would PreLoading this folder run the machine out of memory? Asked
+        # before anything is decoded; may switch us into Stream.
+        if self._preflight_stream_switch(file_paths, appending=False):
+            self._stream_scan(file_paths, append=False)
+            return
+
         total = len(file_paths)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -4904,6 +5257,13 @@ class BlinkTab(QWidget):
         completed = []
         attempt = 0
         last_pct = -1
+
+        # Memory guard state. mem_bytes is what the decoded frames have
+        # actually cost, which beats any estimate once frames start landing.
+        mem_bytes = 0
+        mem_tripped = None
+        mem_last_check = time.monotonic()
+        futures = {}
 
         # Make sure numba's threading layer is resolved & recorded before we
         # fan out — otherwise the lock's decision falls back to an OS guess
@@ -4942,6 +5302,13 @@ class BlinkTab(QWidget):
                 reserved_cpus = min(4, max(1, int(total_cpus * 0.25)))
                 max_workers = max(1, min(total_cpus - reserved_cpus, 60))
 
+            # The decoders' own working set can OOM before a single frame has
+            # been stored, so the pool is sized against free RAM as well as CPU.
+            _cap = self._mem_worker_cap(getattr(self, "_mem_per_frame_hint", None))
+            if _cap is not None and _cap < max_workers:
+                print(f"[Blink] memory guard: pool {max_workers} -> {_cap} workers")
+                max_workers = _cap
+
             futures = {}
             failed = []
 
@@ -4955,6 +5322,8 @@ class BlinkTab(QWidget):
                     try:
                         result = fut.result()
                         completed.append(result)
+                        # result[4] is the stored frame
+                        mem_bytes += int(getattr(result[4], "nbytes", 0) or 0)
                         done = len(completed)
                         pct = int(100 * done / total)
                         if pct != last_pct:
@@ -4965,11 +5334,37 @@ class BlinkTab(QWidget):
                         print(f"[WARN][Attempt {attempt}] Failed to load {path}: {e}")
                         failed.append(path)
 
+                    # Throttled: virtual_memory() is a syscall and this loop
+                    # runs once per frame.
+                    _now = time.monotonic()
+                    if _now - mem_last_check >= 0.25:
+                        mem_last_check = _now
+                        mem_tripped = self._mem_trip(mem_bytes, len(completed), total)
+                        if mem_tripped:
+                            # Cancel what has not started. The handful already
+                            # running will finish and be dropped unread.
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            break
+
+            if mem_tripped:
+                break
+
             remaining = failed
             attempt += 1
             if remaining:
                 print(f"[Retry] {len(remaining)} images will be retried after {RETRY_DELAY}s...")
                 non_blocking_sleep(RETRY_DELAY)
+
+        if mem_tripped:
+            # Drop the decoded frames. The futures hold references too, so
+            # clearing `completed` alone would free nothing.
+            done_n = len(completed)
+            completed.clear()
+            futures.clear()
+            gc.collect()
+            self._mem_abandon_preload(mem_tripped, done_n, total)
+            self._stream_scan(file_paths, append=False)
+            return
 
         if remaining:
             print(f"[FAILURE] These files failed to load after {MAX_RETRIES} retries:")
