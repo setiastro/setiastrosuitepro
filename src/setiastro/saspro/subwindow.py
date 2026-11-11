@@ -958,7 +958,13 @@ class ImageSubWindow(QWidget):
         # if you cache bg opacity or other display keys here, re-read them too
         # self._bg_opacity = s.value("display/bg_opacity", 50, type=int) / 100.0
 
-        # force redraw
+        # force redraw. The canvas is a child with its own paintEvent, and it
+        # reads _smooth_zoom from there, so updating only the subwindow leaves
+        # the new setting unpainted until something else happens to dirty it.
+        try:
+            self.label.update()
+        except Exception:
+            pass
         self.update()
 
     # ----- link drag payload -----
@@ -4415,6 +4421,28 @@ class ImageSubWindow(QWidget):
         if lbl is not None:
             lbl.hide()
 
+    def _set_canvas_interacting(self, on: bool):
+        """Tell the canvas a gesture is in progress.
+
+        Fast (nearest) blits while the wheel is still turning or a pan is
+        being dragged; the smooth one is for when it stops -- which is the
+        whole of what "smooth zoom FINAL redraw" promises. The canvas has
+        had set_interacting() since it was written and nothing ever called
+        it, so it sat False forever; that was harmless only because the
+        smooth blit was capped at scale < 1.0. It is not capped now.
+
+        Does nothing on the plain-QLabel path, which has no such notion.
+        """
+        lbl = getattr(self, "label", None)
+        fn = getattr(lbl, "set_interacting", None)
+        if fn is None:
+            return
+        try:
+            fn(bool(on))
+            lbl.update()
+        except RuntimeError:
+            pass
+
     def _request_zoom_redraw(self):
         if getattr(self, "_zoom_timer", None) is None:
             self._zoom_timer = QTimer(self)
@@ -4428,11 +4456,13 @@ class ImageSubWindow(QWidget):
         if self._zoom_settle_needs_rebuild():
             self._show_recalc_overlay()
 
+        self._set_canvas_interacting(True)
         self._zoom_timer.start(500)
 
 
     def _apply_zoom_redraw(self):
         if getattr(self, "_pm_src", None) is None:
+            self._set_canvas_interacting(False)
             self._hide_recalc_overlay()
             return
         try:
@@ -4446,6 +4476,7 @@ class ImageSubWindow(QWidget):
                 # just give the smooth final present the settle used to provide.
                 self._present_scaled(interactive=False)
         finally:
+            self._set_canvas_interacting(False)
             self._hide_recalc_overlay()
 
 
@@ -4755,6 +4786,7 @@ class ImageSubWindow(QWidget):
 
             # normal pan mode
             self._dragging = True
+            self._set_canvas_interacting(True)
             self._pan_live = True   
             self._drag_start = e.pos()
 
@@ -5195,6 +5227,7 @@ class ImageSubWindow(QWidget):
         if e.button() == Qt.MouseButton.LeftButton:
             self._dragging = False
             self._pan_live = False
+            self._set_canvas_interacting(False)
             self._readout_dragging = False
             self._hide_loupe()
             self._emit_view_transform()
