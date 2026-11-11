@@ -5428,12 +5428,34 @@ class StarRegistrationThread(QThread):
         self.align_model = str(self.align_prefs.get("model", "affine")).lower()
         self.h_reproj   = float(self.align_prefs.get("h_reproj", 3.0))
         self.det_sigma   = float(self.align_prefs.get("det_sigma", 12.0))
+        # Optional per-file override, keyed normcase(normpath(path)). The
+        # stacking suite fills this in with a sigma fitted per filter group;
+        # anything not listed falls back to self.det_sigma above.
+        self.det_sigma_by_file = {}
         self.limit_stars = int(self.align_prefs.get("limit_stars", 500))
         self.minarea     = int(self.align_prefs.get("minarea", 10))
         self.downsample = int(self.align_prefs.get("downsample", 3))
         self.drizzle_xforms = {}  # {orig_norm_path: (kind, matrix)}
         self.min_fwhm        = float(self.align_prefs.get("min_fwhm", 1.2))
         self.max_ellipticity = float(self.align_prefs.get("max_ellipticity", 0.6))
+
+    def _sigma_for(self, path) -> float:
+        """Detection sigma for one frame.
+
+        Narrowband frames need a far lower threshold than broadband ones, and a
+        single global sigma fitted on whichever frame scored highest leaves the
+        faint filters with nothing to match on. Falls back to the global value
+        whenever no per-file entry exists, so an empty map changes nothing.
+        """
+        try:
+            m = getattr(self, "det_sigma_by_file", None)
+            if m:
+                v = m.get(os.path.normcase(os.path.normpath(str(path))))
+                if v:
+                    return float(v)
+        except Exception:
+            pass
+        return float(self.det_sigma)
 
     @staticmethod
     def _aa_model_and_residual(src_gray: np.ndarray,
@@ -6029,7 +6051,7 @@ class StarRegistrationThread(QThread):
                 current_path,
                 current_transform,
                 self._ref_ds_npy, int(Wref_ds), int(Href_ds),
-                resample_flag, float(self.det_sigma),
+                resample_flag, self._sigma_for(current_path),
                 int(self.limit_stars) if self.limit_stars is not None else None,
                 int(self.minarea),
                 refine_model, float(self.h_reproj),
@@ -6315,7 +6337,7 @@ class StarRegistrationThread(QThread):
                 np.asarray(A, np.float64),
                 float(self.h_reproj),
                 self.output_directory,
-                float(self.det_sigma),
+                self._sigma_for(orig_path),
                 int(self.minarea),
                 int(self.limit_stars) if self.limit_stars is not None else None,
                 float(getattr(self, "min_fwhm", 1.2)),

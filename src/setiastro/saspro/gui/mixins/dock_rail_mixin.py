@@ -91,8 +91,7 @@ _PANEL_ICON_FILES: dict[str, str] = {
     "ConsoleDock":         "consolepanel",
     "StatusLogDock":       "stackingpanel",   # "Stacking Log"
     "WindowShelfDock":     "minimizedpanel",  # "Minimized Views"
-    "MinimapDock":         "minimappanel",   # drawn in code until artwork
-                                             # lands as minimappanel.png
+    "MinimapDock":         "minimappanel",
     # System Log and Command Search have no stable objectName here; matched by
     # title below.
 }

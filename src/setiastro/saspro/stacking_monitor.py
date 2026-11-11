@@ -16,7 +16,7 @@ import shutil
 import time
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QSettings, pyqtSlot, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QSettings, pyqtSlot, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPushButton,
@@ -447,6 +447,17 @@ class StackingMonitorDialog(QDialog):
         self._running_active: bool = False
         self._running_caption: str = "Running"
 
+        # ── is a run live? ────────────────────────────────────────────────
+        # Whether rows may be wiped for a new run used to be read off
+        # _tick_timer.isActive(), which is a repaint timer: closing the
+        # window stopped it, and the next phase of a RUNNING pipeline then
+        # took itself for a fresh start and cleared the table under it.
+        # Live-ness is its own fact. start_run arms it, every terminal
+        # state drops it, and a RUNNING message re-arms it the same way it
+        # re-arms the timer (drizzle and MFDeconv begin after a soft
+        # finish_run).
+        self._run_live: bool = False
+
         # ── disk-budget state (persistent label; live-polled on tick) ──
         self._disk_dir: Optional[str] = None   # volume to poll for free space
         self._disk_est: int = 0                # estimated bytes for current step
@@ -699,13 +710,27 @@ class StackingMonitorDialog(QDialog):
 
     # ---------------------------------------------------------------- bus
     def _connect_bus(self):
+        """Attach to the app-wide log bus. Safe to call again.
+
+        Every row in this table is built from a bus message, and nothing
+        else about the window depends on the bus -- so a monitor that is
+        not connected still looks alive. It ticks, the disk budget
+        updates, the summary line says In Progress, and the table stays
+        empty however long the stack runs. That is worth being hard to
+        get into: this is called on every show as well as at
+        construction, and re-attaching is a no-op when it is already on
+        the right bus.
+        """
         from PyQt6.QtWidgets import QApplication
         app = QApplication.instance()
-        if app and hasattr(app, "_sasd_log_bus"):
-            self._log_bus = app._sasd_log_bus
-            self._log_bus.posted.connect(
-                self._on_message, Qt.ConnectionType.QueuedConnection
-            )
+        bus = getattr(app, "_sasd_log_bus", None) if app is not None else None
+        if bus is None or self._log_bus is bus:
+            return
+        self._disconnect_bus()
+        self._log_bus = bus
+        self._log_bus.posted.connect(
+            self._on_message, Qt.ConnectionType.QueuedConnection
+        )
 
     def _disconnect_bus(self):
         if self._log_bus is not None:
@@ -727,9 +752,26 @@ class StackingMonitorDialog(QDialog):
         except Exception:
             pass
 
+    def is_run_live(self) -> bool:
+        """True while this monitor is showing a run that has not ended.
+
+        What callers should ask before deciding to start a fresh run:
+        start_run() wipes the table, and doing that to a pipeline that is
+        still working is how the monitor used to go blank mid-stack.
+        """
+        return bool(self._run_live)
+
+    def resume_run(self):
+        """Pick a run back up without wiping what is already on the table."""
+        self._run_live = True
+        if not self._tick_timer.isActive():
+            self._tick_timer.start()
+        self._set_stop_available(True)
+
     def start_run(self):
         self.clear()
         self._run_start = time.monotonic()
+        self._run_live = True
         self._set_stop_available(True)
         self._tick_timer.start()
         # Replace the "Ready." placeholder with a simple in-progress state.
@@ -802,8 +844,10 @@ class StackingMonitorDialog(QDialog):
         total_s = self._mmss(self._process_seconds())
 
         # Soft finish: hand the summary line over to a phase caption. If a
-        # later phase posts a running op, _on_message re-arms the live label.
+        # later phase posts a running op, _on_message re-arms the live label
+        # and the run with it.
         self._running_active = False
+        self._run_live = False
 
         # Show as "integration complete" rather than fully done,
         # since drizzle/MFD may still follow
@@ -829,6 +873,7 @@ class StackingMonitorDialog(QDialog):
         self._open.clear()
         self._tick_timer.stop()
         self._running_active = False
+        self._run_live = False
 
         total_s = self._mmss(self._process_seconds())
 
@@ -859,6 +904,7 @@ class StackingMonitorDialog(QDialog):
         self._open.clear()
         self._tick_timer.stop()
         self._running_active = False
+        self._run_live = False
         total_s = self._mmss(self._process_seconds())
         self._lbl_total.setText(f"⏹ Stopped by user ({total_s})")
         self._lbl_total.setStyleSheet("color:#ffa726; font-size:12px; font-weight:bold;")
@@ -870,6 +916,7 @@ class StackingMonitorDialog(QDialog):
         self._open.clear()
         self._run_start = None
         self._running_active = False
+        self._run_live = False
         self._lbl_total.setText("Ready.")
         self._lbl_total.setStyleSheet(f"color:{_DIM};font-size:10px;")
         self.clear_disk_budget()
@@ -898,6 +945,7 @@ class StackingMonitorDialog(QDialog):
                 self._set_stop_available(True)
             if not self._tick_timer.isActive():
                 self._tick_timer.start()
+            self._run_live = True
             # A running op after a soft finish means a later phase (drizzle,
             # MFDeconv, a fresh mosaic set) has begun — flip the summary line
             # back to a live running caption so a stale "…done" doesn't linger.
@@ -1054,10 +1102,53 @@ class StackingMonitorDialog(QDialog):
         if g:
             self.restoreGeometry(g)
 
+    def _ensure_on_screen(self):
+        """Pull the window back if its remembered spot is off the desktop.
+
+        Only when it is entirely off -- a window deliberately parked half
+        over an edge is left exactly where it was put. Restoring onto a
+        display that is no longer attached, or a spot saved while it hung
+        off the side, otherwise makes "show the monitor" look like a
+        button that does nothing.
+        """
+        try:
+            from PyQt6.QtWidgets import QApplication
+            frame = self.frameGeometry()
+            if frame.isEmpty():
+                return
+            for scr in QApplication.screens():
+                if scr.availableGeometry().intersects(frame):
+                    return
+            scr = self.screen() or QApplication.primaryScreen()
+            if scr is None:
+                return
+            area = scr.availableGeometry()
+            self.move(area.center() - QPoint(self.width() // 2,
+                                             self.height() // 2))
+        except Exception:
+            pass
+
+    def showEvent(self, event):
+        # Reopened, possibly after a close that stopped the clock: get the
+        # bus back (a no-op if it was never lost) and restart the ticking
+        # if the run it is showing is still going.
+        self._connect_bus()
+        if self._run_live and not self._tick_timer.isActive():
+            self._tick_timer.start()
+        self._ensure_on_screen()
+        super().showEvent(event)
+
     def closeEvent(self, event):
+        # The ticking is only a repaint, so it can stop while the window is
+        # gone -- showEvent starts it again. The BUS stays connected: it is
+        # where every row comes from, so dropping it here left the dialog
+        # permanently deaf (it is a cached singleton, not destroyed on
+        # close), and a run closed and reopened came back as an empty
+        # table. Staying attached also means the rows carry on being
+        # recorded while the window is shut, so reopening shows the whole
+        # run rather than the part that happened to be watched.
         self._tick_timer.stop()
         self._settings.setValue("StackingMonitor/geometry", self.saveGeometry())
-        self._disconnect_bus()
         event.accept()
 
     def hideEvent(self, event):

@@ -7778,6 +7778,16 @@ class StackingSuiteDialog(QDialog):
         self.log_btn.clicked.connect(self._show_log_window)
         header_row.addWidget(self.log_btn)
 
+        self.monitor_btn = QToolButton(self)
+        self.monitor_btn.setText(self.tr("Monitor"))
+        self.monitor_btn.setToolTip(self.tr(
+            "Show the Stacking Execution Monitor.\n"
+            "It keeps recording while it is closed, so a run you dismissed "
+            "comes back whole."
+        ))
+        self.monitor_btn.clicked.connect(self._show_exec_monitor)
+        header_row.addWidget(self.monitor_btn)
+
         # In-tool documentation button, flush right of Open Log
         self.btn_help = make_help_button("stacking_suite", self)
         header_row.addWidget(self.btn_help)
@@ -7858,6 +7868,30 @@ class StackingSuiteDialog(QDialog):
             self._exec_monitor = StackingMonitorDialog(parent=self)
         return self._exec_monitor
 
+    def _show_exec_monitor(self):
+        """Put the Execution Monitor back on screen, and nothing else.
+
+        Deliberately not _start_exec_monitor: that one decides whether a
+        fresh run begins, and somebody asking to see the monitor is never
+        asking to wipe it. If nothing has run yet they get an idle one,
+        which is a fair answer to the question.
+        """
+        try:
+            m = self._get_exec_monitor()
+        except Exception as e:
+            self.update_status(
+                self.tr(f"⚠️ Could not open the Execution Monitor: {e}")
+            )
+            return
+        try:
+            if m.isMinimized():
+                m.showNormal()
+            m.show()
+            m.raise_()
+            m.activateWindow()
+        except Exception:
+            pass
+
     def _start_exec_monitor(self):
         m = self._get_exec_monitor()
         # Force-clear any stale connection (from a previous run or a different
@@ -7877,16 +7911,21 @@ class StackingSuiteDialog(QDialog):
         # wipe rows / restart the elapsed timer when set 2+ re-enters.
         if getattr(self, "_reg_queue", None) and getattr(self, "_reg_queue_pos", 0) > 0:
             try:
-                if not m._tick_timer.isActive():
-                    m._tick_timer.start()
-                m._set_stop_available(True)
+                m.resume_run()
                 self._exec_monitor_pipeline_active = True
             except Exception:
                 pass
             m.show()
             m.raise_()
             return
-        if m._run_start is not None and m._tick_timer.isActive():
+        # Every operation that can start a pipeline comes through here, so
+        # this is the one decision that matters: a fresh run (wipe the
+        # table) or the next phase of one already going (leave it alone).
+        # It used to be read off the monitor's 1 Hz repaint timer, which
+        # answers a different question -- closing the monitor window, or
+        # any gap between a soft finish and the next phase's first log
+        # message, said "not running" and the table was wiped mid-stack.
+        if m.is_run_live():
             m.show()
             m.raise_()
             return
@@ -21036,6 +21075,80 @@ class StackingSuiteDialog(QDialog):
             mx = float(a.max()) if a.size else 1.0
             return a / max(mx, 1e-12)
 
+    # ── 0.0 no-data sentinel telemetry ────────────────────────────────────
+    # Dark subtraction clips negatives to 0.0, and 0.0 is exactly the value the
+    # integration kernels treat as no-data ("0.0 and non-finite samples are
+    # treated as no-data"). So an over-subtracting master dark does not merely
+    # darken those pixels, it removes them from the stack — and because it is
+    # the same sensor sites in every frame, coverage thins coherently instead
+    # of averaging out. Measure it per frame and say so at the end.
+    def _zeroclip_reset(self):
+        self._zeroclip_fracs = []
+
+    def _note_zero_clip(self, light_data, fi):
+        """Record the fraction of pixels sitting exactly on 0.0 after calibration.
+
+        Only counted when a master dark was actually applied; without one a 0.0
+        pixel means something else entirely.
+        """
+        try:
+            if not (isinstance(fi, dict) and fi.get("master_dark_path")):
+                return
+            a = light_data
+            if not isinstance(a, np.ndarray):
+                try:
+                    a = a.detach().cpu().numpy()
+                except Exception:
+                    return
+            if a.size <= 0:
+                return
+            frac = float(np.count_nonzero(a == 0.0)) / float(a.size)
+            fr = getattr(self, "_zeroclip_fracs", None)
+            if fr is None:
+                fr = self._zeroclip_fracs = []
+            fr.append(frac)          # list.append is atomic under the GIL
+        except Exception:
+            pass
+
+    def _report_zero_clip(self):
+        """Loud warning when dark subtraction is eating more than 1% of pixels."""
+        try:
+            fracs = list(getattr(self, "_zeroclip_fracs", None) or [])
+            self._zeroclip_fracs = []
+            if not fracs:
+                return
+            n = len(fracs)
+            mean_f = sum(fracs) / float(n)
+            max_f = max(fracs)
+            over = sum(1 for f in fracs if f >= 0.01)
+
+            if mean_f < 0.01:
+                self.update_status(self.tr(
+                    f"🧮 Dark subtraction left {mean_f * 100:.2f}% of pixels at 0.0 on "
+                    f"average (worst frame {max_f * 100:.2f}%) across {n} frame(s)."
+                ))
+                return
+
+            self.update_status(self.tr(
+                "⚠️ ═══════════════════════════════════════════════════════════════\n"
+                "⚠️  MASTER DARK IS LIKELY OVER-SUBTRACTING\n"
+                f"⚠️  {mean_f * 100:.2f}% of pixels per frame were driven to 0.0 by dark "
+                f"subtraction\n"
+                f"⚠️  (worst frame {max_f * 100:.2f}%, {over} of {n} frame(s) above 1%).\n"
+                "⚠️\n"
+                "⚠️  0.0 is the no-data value, so those pixels are EXCLUDED from\n"
+                "⚠️  integration in every frame. They are the same sensor sites every\n"
+                "⚠️  time, so this thins coverage in the darkest parts of the field\n"
+                "⚠️  rather than simply darkening it.\n"
+                "⚠️\n"
+                "⚠️  Check the master dark matches the lights on exposure, gain, offset\n"
+                "⚠️  and sensor temperature — or tick 'Apply Pedestal' on this page and\n"
+                "⚠️  raise the Pedestal value until this falls below 1%.\n"
+                "⚠️ ═══════════════════════════════════════════════════════════════"
+            ))
+        except Exception:
+            pass
+
     def _calibrate_lights_cpu(self, frame_infos, calibrated_dir, total_files,
                                master_bias_np, interactive_flat, do_satellite,
                                hot_sigma, cold_sigma, protect_sigma=5.0,
@@ -21436,6 +21549,7 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
 
+                self._note_zero_clip(light_data, fi)
                 calibrated_filename = _cal_out_name(fi["light_file"], calibrated_dir)
                 write_calibrated_fast(calibrated_filename, light_data, hdr, is_mono)
                 if _nan_probe_enabled():
@@ -21473,6 +21587,7 @@ class StackingSuiteDialog(QDialog):
         group_adjusted_flat_np.clear()
         gc.collect()
 
+        self._report_zero_clip()
         self.update_status(self.tr("✅ Calibration Complete!"))
         QApplication.processEvents()
 
@@ -22378,6 +22493,7 @@ class StackingSuiteDialog(QDialog):
         # free raw flat numpy — no longer needed
         flat_raws.clear()
 
+        self._zeroclip_reset()
         self.update_status(
             self.tr(f"🔧 Calibration frames ready. Starting pipeline on {total_files} frame(s)…")
         )
@@ -22513,6 +22629,7 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
 
+                self._note_zero_clip(light_data, fi)
                 calibrated_filename = _cal_out_name(fi["light_file"], calibrated_dir)
                 with _cal_timer("save"):
                     write_calibrated_fast(calibrated_filename, light_data, hdr, is_mono)
@@ -23174,6 +23291,7 @@ class StackingSuiteDialog(QDialog):
         # In the satellite path, Phase-1 completion was already signalled by
         # "📷 Calibration pipeline complete." before Phase 2; re-emitting here
         # would spawn a duplicate (empty-group) row in the monitor.
+        self._report_zero_clip()
         if not do_satellite:
             self.update_status(self.tr("✅ Calibration Complete!"))
         QApplication.processEvents()
@@ -26990,6 +27108,7 @@ class StackingSuiteDialog(QDialog):
 
             # best-scored frame per filter, then that frame's target
             self._norm_target_by_filter = {}   # filter -> (t_med, t_min, t_rgb)
+            self._align_det_sigma_by_filter = {}   # filter -> detection sigma
             _best_by_filter = {}               # filter -> (score, fp)
             for _fp in measured_frames:
                 _filt = self._norm_filter_by_frame.get(os.path.normpath(_fp), "Unknown")
@@ -27016,6 +27135,36 @@ class StackingSuiteDialog(QDialog):
                             _bimg = np.squeeze(_bimg, axis=-1)
                     _tm, _tmin, _trgb = _compute_norm_target(_bimg)
                     self._norm_target_by_filter[_filt] = (_tm, _tmin, _trgb)
+
+                    # Per-filter star detection sigma.
+                    #
+                    # The global auto-pick further down fits ONE frame - the
+                    # single highest-scoring reference, which in a mixed LRGB+SHO
+                    # run is essentially always broadband. It returns the
+                    # STRICTEST sigma at which that frame still yields
+                    # limit_stars detections, i.e. it parks the reference exactly
+                    # on its own control-point cap with no headroom. A narrowband
+                    # frame carries a fraction of that star count, so the sigma
+                    # fitted on L or R leaves it with nothing to match on and
+                    # every narrowband frame fails registration.
+                    #
+                    # _bimg is this filter's own target frame and is already
+                    # loaded and debayered here, so fitting per filter is free.
+                    try:
+                        if bool(self.settings.value("stacking/align/auto_threshold", False, type=bool)):
+                            _ms = int(self.settings.value("stacking/align/limit_stars", 100, type=int))
+                            _ma = int(self.settings.value("stacking/align/minarea", 10, type=int))
+                            _sig = _auto_pick_sep_sigma(_Luma(_bimg), max_stars=_ms, minarea=_ma)
+                            if _sig is not None:
+                                self._align_det_sigma_by_filter[_filt] = float(_sig)
+                                self.update_status(self.tr(
+                                    f"\U0001F3AF Filter '{_filt}' detection threshold: {float(_sig):g}\u03C3"
+                                ))
+                    except Exception as _e_sig:
+                        self.update_status(self.tr(
+                            f"\u26A0\uFE0F Per-filter detection threshold failed for '{_filt}': "
+                            f"{_e_sig}; using the global value."
+                        ))
                     self.update_status(self.tr(
                         f"\U0001F4CA Filter '{_filt}' target \u2190 {os.path.basename(_fp)} "
                         f"(score={_sc:.4f}): norm-median={_tm:.6f}"
@@ -28058,6 +28207,35 @@ class StackingSuiteDialog(QDialog):
 
             self.update_status(self.tr("📏 Phase: Star alignment starting…"))
 
+            # Resolve the per-filter detection sigmas onto the NORMALIZED frame
+            # paths the registration thread actually opens. _orig2norm is keyed
+            # normcase(normpath(src)); _norm_filter_by_frame is keyed normpath(src)
+            # without normcase, so fold both to normcase before matching.
+            _sig_by_file = {}
+            try:
+                _sig_by_filter = getattr(self, "_align_det_sigma_by_filter", None) or {}
+                if _sig_by_filter:
+                    _filt_by_src = {
+                        os.path.normcase(str(_k)): _v
+                        for _k, _v in (getattr(self, "_norm_filter_by_frame", None) or {}).items()
+                    }
+                    for _src, _dst in (getattr(self, "_orig2norm", None) or {}).items():
+                        _s = _sig_by_filter.get(_filt_by_src.get(os.path.normcase(str(_src))))
+                        if _s:
+                            _sig_by_file[os.path.normcase(os.path.normpath(str(_dst)))] = float(_s)
+                    if _sig_by_file:
+                        self.update_status(self.tr(
+                            "\U0001F3AF Per-filter detection thresholds: "
+                            + ", ".join(f"{_k}={_v:g}\u03C3"
+                                        for _k, _v in sorted(_sig_by_filter.items()))
+                        ))
+            except Exception as _e_map:
+                _sig_by_file = {}
+                self.update_status(self.tr(
+                    f"\u26A0\uFE0F Could not map per-filter detection thresholds ({_e_map}); "
+                    f"using one global value."
+                ))
+
             self.alignment_thread = StarRegistrationThread(
                 ref_path,  
                 normalized_files,
@@ -28066,6 +28244,13 @@ class StackingSuiteDialog(QDialog):
                 shift_tolerance=shift_tol,
                 parent_window=self
             )
+            # Empty dict is harmless: StarRegistrationThread falls back to the
+            # single global det_sigma for any frame it does not find here.
+            try:
+                self.alignment_thread.det_sigma_by_file = _sig_by_file
+            except Exception:
+                pass
+
             try:
                 self.alignment_thread.progress_update.disconnect(self.update_status)
             except TypeError:

@@ -316,6 +316,7 @@ class Icons:
     PANEL_EXPLORER  = property(lambda self: _resource_path('explorerpanel.png'))
     PANEL_HEADER    = property(lambda self: _resource_path('headerpanel.png'))
     PANEL_LAYERS    = property(lambda self: _resource_path('layerspanel.png'))
+    PANEL_MINIMAP   = property(lambda self: _resource_path('minimappanel.png'))
     PANEL_MINIMIZED = property(lambda self: _resource_path('minimizedpanel.png'))
     PANEL_MONITOR   = property(lambda self: _resource_path('monitorpanel.png'))
     PANEL_STACKING  = property(lambda self: _resource_path('stackingpanel.png'))

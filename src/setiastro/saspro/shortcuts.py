@@ -1709,6 +1709,24 @@ class ShortcutManager:
             except Exception:
                 pass
 
+    def _home_offset(self) -> QPoint:
+        """Room the canvas has inserted at its home corner.
+
+        A view dragged left of the workspace's top-left corner makes the
+        canvas grow there, and because chips are stored in canvas
+        coordinates, every chip's number goes up by the same amount
+        (mdi_canvas.CanvasController.home_shift). It is bookkeeping, not a
+        placement anyone made, so it comes back out before a position is
+        written anywhere.
+        """
+        try:
+            canvas = getattr(self.mdi, "canvas", None)
+            if canvas is not None:
+                return canvas.home_shift()
+        except Exception:
+            pass
+        return QPoint(0, 0)
+
     def _collect_live_items(self) -> list[dict]:
         """
         Collect visible shortcut widgets into a serializable list.
@@ -1716,6 +1734,7 @@ class ShortcutManager:
         For each shortcut we also try to inline its preset (if any) so that
         function bundles and other per-instance presets can be exported.
         """
+        shift = self._home_offset()
         data = []
         for sid, w in list(self.widgets.items()):
             if _is_dead(w):
@@ -1728,14 +1747,15 @@ class ShortcutManager:
 
                 # Persist the user's intended position, not a temporarily
                 # clamped one, so saving while the window is shrunk doesn't bake
-                # the squashed layout in.
+                # the squashed layout in. Same for room inserted at the
+                # canvas's home corner.
                 p = getattr(w, "_desired_pos", None) or w.pos()
                 item = {
                     "id": sid,
                     "command_id": getattr(w, "command_id", None),
                     "label": w.text(),
-                    "x": int(p.x()),
-                    "y": int(p.y()),
+                    "x": max(0, int(p.x()) - shift.x()),
+                    "y": max(0, int(p.y()) - shift.y()),
                 }
 
                 # Try to inline per-instance preset
@@ -2186,6 +2206,10 @@ class ShortcutManager:
         if self._loading:
             return
 
+        # Store positions as they were placed, not as a workspace that
+        # has grown at its home corner currently numbers them.
+        shift = self._home_offset()
+
         data = []
         for sid, w in list(self.widgets.items()):
             if _is_dead(w):
@@ -2209,8 +2233,8 @@ class ShortcutManager:
                     "id": sid,
                     "command_id": w.command_id,
                     "label": w.text(),
-                    "x": int(desired.x()),
-                    "y": int(desired.y()),
+                    "x": max(0, int(desired.x()) - shift.x()),
+                    "y": max(0, int(desired.y()) - shift.y()),
                 })
             except RuntimeError:
                 self.widgets.pop(sid, None)

@@ -17,6 +17,8 @@ signal, so a drag in progress has to be sampled.
 """
 from __future__ import annotations
 
+import os
+
 from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QDockWidget, QSizePolicy, QWidget
@@ -25,10 +27,22 @@ from PyQt6.QtWidgets import QDockWidget, QSizePolicy, QWidget
 def minimap_icon(size: int = 24) -> QIcon:
     """The dock's rail icon.
 
-    Drawn here so the feature does not wait on artwork: drop a
-    `minimap.png` into the images folder and register it in resources.py
-    to override it, and an icon pack can then theme it like any other.
+    The artwork is `minimappanel.png` with the rest of the rail family,
+    so an icon pack themes it like any other panel. The painted version
+    below is the fallback, and is what this looked like before the
+    artwork landed -- keep it working: it is what a stripped or
+    half-installed copy falls back to.
     """
+    try:
+        from setiastro.saspro.resources import get_icon_path
+        path = get_icon_path("minimappanel")
+        if path and os.path.exists(path):
+            ic = QIcon(path)
+            if not ic.isNull():
+                return ic
+    except Exception:
+        pass
+
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
