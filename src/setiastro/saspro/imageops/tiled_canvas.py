@@ -228,9 +228,27 @@ class TiledImageCanvas(ViewportImageCanvas):
             if rect.isEmpty():
                 return
 
-            # Interactive gestures: fast (nearest) scaling; smooth on settle.
-            # Upscaling (zoom-in) always stays nearest for crisp pixels.
-            smooth = (not self._interacting) and (scale < 1.0)
+            # "Smooth zoom final redraw", and nothing else, decides this.
+            #
+            # This canvas paints itself, so _present_scaled returns before
+            # its own _smooth_zoom branch is ever reached -- reading the
+            # owner's flag here is what makes the setting mean anything
+            # while the viewport canvas is on, and it is on by default.
+            #
+            # There used to be an unconditional `and scale < 1.0` here, so
+            # zooming IN stayed nearest however the setting was set. That is
+            # the direction where the difference is obvious, and the
+            # whole-pixmap path this replaced smoothed at any scale -- which
+            # is why the checkbox appeared to work only with the WCS grid
+            # up, the one case still routed through that path. Crisp pixels
+            # on zoom-in is what switching the setting OFF is for.
+            #
+            # _interacting is the "after zoom" half: fast while the wheel is
+            # still turning or a pan is being dragged, smooth once it stops.
+            # The owner drives it from _request_zoom_redraw /
+            # _apply_zoom_redraw and from the pan press/release.
+            smooth = (bool(getattr(self._owner, "_smooth_zoom", True))
+                      and not self._interacting)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, smooth)
 
             # Backdrop proxy: approximate image under any not-yet-built tile.
