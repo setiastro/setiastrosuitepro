@@ -25987,19 +25987,30 @@ class StackingSuiteDialog(QDialog):
 
             return cropped
 
-        def _auto_pick_sep_sigma(ref_luma_2d: np.ndarray, max_stars: int, minarea: int) -> float | None:
+        def _auto_pick_sep_sigma(ref_luma_2d: np.ndarray, max_stars: int, minarea: int,
+                                 label: str = "reference") -> float | None:
             """
-            Try sigma thresholds [50,25,12,6,3] on the reference luma and choose the
+            Try sigma thresholds [50,25,12,6,3] on the given luma and choose the
             HIGHEST sigma that still yields detections >= max_stars.
 
             Rationale:
             - We want enough stars (>= max_stars), but at the cleanest threshold (highest sigma).
-            - If even 3σ yields fewer than max_stars, return 3σ (best we can do without going noisier).
+            - If even 3\u03C3 yields fewer than max_stars, return 3\u03C3 (best we can do without going noisier).
             Returns chosen sigma, or None if SEP unavailable / failure.
+
+            Once the trial loop is reached this ALWAYS returns a value - 3\u03C3 at
+            worst - so a None means something genuinely broke. Every path that
+            returns None now says which one, and the 3\u03C3 floor announces itself
+            too, because a filter that could not reach max_stars at the loosest
+            threshold is star-poor and worth knowing about before registration.
             """
             try:
                 import sep
-            except Exception:
+            except Exception as _e_sep:
+                self.update_status(self.tr(
+                    f"\u26A0\uFE0F Auto threshold for '{label}': SEP unavailable ({_e_sep}). "
+                    f"Falling back to the configured Star detect \u03C3."
+                ))
                 return None
 
             try:
@@ -26009,6 +26020,11 @@ class StackingSuiteDialog(QDialog):
                 data = x - bkg.back()
                 rms  = float(bkg.globalrms)
                 if not np.isfinite(rms) or rms <= 0:
+                    self.update_status(self.tr(
+                        f"\u26A0\uFE0F Auto threshold for '{label}': background RMS came back "
+                        f"{rms!r} - the target frame looks blank or constant. "
+                        f"Falling back to the configured Star detect \u03C3."
+                    ))
                     return None
 
                 trial = [50.0, 25.0, 12.0, 6.0, 3.0]
@@ -26028,13 +26044,20 @@ class StackingSuiteDialog(QDialog):
                         return float(sig)
 
                 # If we never reached max_stars, return the lowest sigma (3σ) to maximize detections.
+                # Say so: this is the floor, not a fit, and it means the frame is star-poor.
+                self.update_status(self.tr(
+                    f"\u2139\uFE0F Auto threshold for '{label}': bottomed out at {trial[-1]:g}\u03C3 "
+                    f"with {last_n} star(s), wanted {int(max_stars)}. Using {trial[-1]:g}\u03C3."
+                ))
                 return float(trial[-1])
 
-            except Exception:
+            except Exception as _e_pick:
+                self.update_status(self.tr(
+                    f"\u26A0\uFE0F Auto threshold for '{label}' failed: "
+                    f"{type(_e_pick).__name__}: {_e_pick}. "
+                    f"Falling back to the configured Star detect \u03C3."
+                ))
                 return None
-
-
-
         if getattr(self, "_registration_busy", False):
             self.update_status(self.tr("⏸ Registration already running; ignoring extra click."))
             return
@@ -27154,7 +27177,8 @@ class StackingSuiteDialog(QDialog):
                         if bool(self.settings.value("stacking/align/auto_threshold", False, type=bool)):
                             _ms = int(self.settings.value("stacking/align/limit_stars", 100, type=int))
                             _ma = int(self.settings.value("stacking/align/minarea", 10, type=int))
-                            _sig = _auto_pick_sep_sigma(_Luma(_bimg), max_stars=_ms, minarea=_ma)
+                            _sig = _auto_pick_sep_sigma(_Luma(_bimg), max_stars=_ms,
+                                                        minarea=_ma, label=str(_filt))
                             if _sig is not None:
                                 self._align_det_sigma_by_filter[_filt] = float(_sig)
                                 self.update_status(self.tr(
@@ -28224,11 +28248,32 @@ class StackingSuiteDialog(QDialog):
                         if _s:
                             _sig_by_file[os.path.normcase(os.path.normpath(str(_dst)))] = float(_s)
                     if _sig_by_file:
-                        self.update_status(self.tr(
-                            "\U0001F3AF Per-filter detection thresholds: "
-                            + ", ".join(f"{_k}={_v:g}\u03C3"
-                                        for _k, _v in sorted(_sig_by_filter.items()))
-                        ))
+                        # Name any filter that has frames in this run but never got a
+                        # fit, so a silently-failed target frame cannot quietly put a
+                        # narrowband filter back on the broadband threshold.
+                        _missing = sorted({
+                            _f for _f in (
+                                _filt_by_src.get(os.path.normcase(str(_k0)))
+                                for _k0 in (getattr(self, "_orig2norm", None) or {})
+                            )
+                            if _f and _f not in _sig_by_filter
+                        })
+                        _msg = ("\U0001F3AF Per-filter detection thresholds: "
+                                + ", ".join(f"{_k}={_v:g}\u03C3"
+                                            for _k, _v in sorted(_sig_by_filter.items())))
+                        if _missing:
+                            _gs = getattr(self, "_align_det_sigma_effective", None)
+                            if not _gs:
+                                try:
+                                    _gs = float(self.settings.value(
+                                        "stacking/align/det_sigma", 12.0, type=float))
+                                except Exception:
+                                    _gs = None
+                            _gtxt = (f"{float(_gs):g}\u03C3" if _gs
+                                     else "the configured Star detect \u03C3")
+                            _msg += ("   |   \u26A0\uFE0F no fit, falling back to "
+                                     + _gtxt + ": " + ", ".join(_missing))
+                        self.update_status(self.tr(_msg))
             except Exception as _e_map:
                 _sig_by_file = {}
                 self.update_status(self.tr(
