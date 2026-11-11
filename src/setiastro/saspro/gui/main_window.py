@@ -599,8 +599,13 @@ class AstroSuiteProMainWindow(
         def _draw_transparent_bg(event):
             painter = QPainter(self.mdi.viewport())
 
+            # The viewport, not self.mdi.rect(): once the canvas
+            # scrollbars take their strip the two differ, and painting to
+            # the area's rect centres the backdrop off by that much.
+            vp_rect = self.mdi.viewport().rect()
+
             # Base fill (same as default app background color)
-            painter.fillRect(self.mdi.rect(), QColor("#1e1e1e"))
+            painter.fillRect(vp_rect, QColor("#1e1e1e"))
 
             # Choose which pixmap to draw: custom if available, else default
             pix = None
@@ -611,7 +616,7 @@ class AstroSuiteProMainWindow(
 
             if pix is not None and not pix.isNull():
                 # scale to cover MDI area while preserving aspect ratio
-                target = self.mdi.size()
+                target = vp_rect.size()
                 if target.width() > 0 and target.height() > 0:
                     scaled = pix.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
                 else:
@@ -621,17 +626,29 @@ class AstroSuiteProMainWindow(
                 opacity_float = max(0.0, min(1.0, float(opacity_percent) / 100.0))
                 painter.setOpacity(opacity_float)
 
-                x = (self.mdi.width() - scaled.width()) // 2
-                y = (self.mdi.height() - scaled.height()) // 2
+                x = (vp_rect.width() - scaled.width()) // 2
+                y = (vp_rect.height() - scaled.height()) // 2
                 painter.drawPixmap(x, y, scaled)
 
         self.mdi.paintEvent = _draw_transparent_bg
 
         self.mdi.subWindowActivated.connect(self._remember_active_pair)
+        self.mdi.subWindowActivated.connect(self._reveal_activated_view)
         self.mdi.backgroundDoubleClicked.connect(self.open_files)   # <- new
         QShortcut(QKeySequence("Ctrl+PgDown"), self, activated=self._toggle_last_active_view)
         QShortcut(QKeySequence("Ctrl+PgUp"), self, activated=self._toggle_last_active_view)
         self.setCentralWidget(self.mdi)
+
+        # Pannable workspace. The chip overlay does not exist yet (the
+        # ShortcutManager is built with the toolbar), so the canvas is
+        # given a provider and adopts it when it appears -- which also
+        # covers a project load rebuilding the manager.
+        from setiastro.saspro.mdi_canvas import CanvasController
+        self.canvas = CanvasController(self.mdi, self)
+        self.mdi.attach_canvas(self.canvas)
+        self.canvas.set_layer_provider(
+            lambda: getattr(getattr(self, "shortcuts", None), "canvas", None))
+
         self._snap = MdiSnapController(self.mdi, threshold_px=8)
 
         self.window_shelf = WindowShelf(self)
@@ -650,6 +667,7 @@ class AstroSuiteProMainWindow(
         self._init_header_viewer_dock()
         self._init_layers_dock()
         self._init_resource_monitor_dock()
+        self._init_minimap_dock()
         self._shutting_down = False
         self._init_status_log_dock()
         self._init_log_dock()
@@ -1476,7 +1494,10 @@ class AstroSuiteProMainWindow(
 
     def _cascade_views(self):
         """Cascade all subwindows and auto-fit their contents."""
+        self._canvas_home()
         self._cascade_subwindows_custom()
+
+        self._collapse_canvas()
 
     def _cascade_subwindows_custom(self, *, size_factor: float = 0.6, offset: int = 30):
         """
@@ -1585,11 +1606,14 @@ class AstroSuiteProMainWindow(
                 pass
 
     def _tile_views(self):
+        self._canvas_home()
         self.mdi.tileSubWindows()
         self._auto_fit_all_subwindows()
+        self._collapse_canvas()
 
     def _tile_views_direction(self, direction: str):
         """direction: 'v' for vertical columns, 'h' for horizontal rows"""
+        self._canvas_home()
         subs = self._visible_subwindows()
         if not subs:
             return
@@ -1611,8 +1635,11 @@ class AstroSuiteProMainWindow(
         self._auto_fit_all_subwindows()
 
 
+        self._collapse_canvas()
+
     def _tile_views_grid(self):
         """Arrange near-square grid across the MDI area."""
+        self._canvas_home()
         subs = self._visible_subwindows()
         if not subs:
             return
@@ -1634,6 +1661,8 @@ class AstroSuiteProMainWindow(
             sw.setGeometry(origin_x + c*cell_w, origin_y + r*cell_h, cell_w, cell_h)
 
         self._auto_fit_all_subwindows()
+
+        self._collapse_canvas()
 
     def _ensure_view_panels_menu(self):
         if getattr(self, "_shutting_down", False):
@@ -2068,6 +2097,17 @@ class AstroSuiteProMainWindow(
                     self.shortcuts.canvas.setFocus()
                 except Exception:
                     pass
+
+        # The workspace itself is part of the desktop being replaced: go
+        # home and shrink, so the project's own layout decides how far the
+        # canvas has to reach rather than inheriting the last one's pan.
+        c = getattr(self, "canvas", None)
+        if c is not None:
+            try:
+                c.pan_to(0, 0)
+                c.reset_bounds()
+            except Exception:
+                pass
         return True
 
     def _do_load_project_path(self, path: str):
@@ -4966,7 +5006,11 @@ class AstroSuiteProMainWindow(
 
     def _open_contsub_tool(self):
         from setiastro.saspro.continuum_subtract import ContinuumSubtractTab
-        w = ContinuumSubtractTab(doc_manager=self.docman)
+        # parent=self + the Window flag: a parentless top-level drops behind
+        # the main window the moment the main window is clicked. Same pattern
+        # as _open_freqsep_tool.
+        w = ContinuumSubtractTab(doc_manager=self.docman, parent=self)
+        w.setWindowFlag(Qt.WindowType.Window, True)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w.setWindowTitle("Continuum Subtract")
         try:
@@ -9814,6 +9858,24 @@ class AstroSuiteProMainWindow(
         self._mdi_open_batch = max(0, self._mdi_open_batch - 1)
         if self._mdi_open_batch == 0:
             self._mdi_next_pos = None
+
+    def _reveal_activated_view(self, sw):
+        """Pan to a view activated from somewhere other than the canvas.
+
+        Picking a view from the Window menu or the shelf has to show it.
+        Only fires when the view is entirely off-screen, so clicking a
+        half-visible window never yanks the workspace sideways.
+        """
+        c = getattr(self, "canvas", None)
+        if c is None or sw is None:
+            return
+        try:
+            vp = self.mdi.viewport().rect()
+            if vp.intersects(sw.geometry()):
+                return
+            c.ensure_visible(sw)
+        except (RuntimeError, AttributeError):
+            pass
 
     def _mdi_compute_initial_pos(self) -> QPoint:
         area = (self.mdi.viewport().geometry() if self.mdi.viewport() else self.mdi.contentsRect())

@@ -2,7 +2,8 @@
 from __future__ import annotations
 from PyQt6.QtCore import Qt, QRect, QPoint, QObject, QEvent, QSize
 from PyQt6.QtGui import QPainter, QPen, QPalette
-from PyQt6.QtWidgets import QWidget, QMdiArea, QMdiSubWindow
+from PyQt6.QtWidgets import (QApplication, QWidget, QMdiArea,
+                             QMdiSubWindow)
 
 def _dpi_scaled(widget: QWidget, px: int) -> int:
     try:
@@ -253,6 +254,15 @@ class MdiSnapController(QObject):
         if t in (QEvent.Type.Move, QEvent.Type.Resize):
             if not self._snap_enabled:
                 self.overlay.set_guides([])
+                return super().eventFilter(obj, ev)
+
+            # Only a user drag snaps. Move/Resize also arrive for geometry
+            # nothing dragged -- restoring a project, panning the canvas,
+            # tiling -- and pulling THAT to a neighbour's edge silently
+            # moves windows away from where they were put. A subwindow can
+            # only be dragged or resized with the left button down.
+            if not (QApplication.mouseButtons()
+                    & Qt.MouseButton.LeftButton):
                 return super().eventFilter(obj, ev)
 
             xs, ys, _rects, _vp = self._collect_edges(ignore=obj)

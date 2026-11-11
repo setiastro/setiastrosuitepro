@@ -126,15 +126,52 @@ against structure that is not in your channel.</p>
       too.</td><td>dec &ge; &minus;16&deg;</td></tr>
   <tr><td>NSNS H&alpha; / [OIII] / [SII] &mdash; mono</td><td>Single-line mono
       data.</td><td>dec &ge; &minus;16&deg;</td></tr>
+  <tr><td>NSNS OHS ([OIII] / H&alpha; / [SII])</td><td>Data mapped in the
+      <b>OHS</b> palette, which the SHO entry cannot match &mdash; it pairs the
+      channels the other way round. One download instead of three, at the cost
+      of an 8-bit tonal curve.</td><td>dec &ge; &minus;16&deg;</td></tr>
+  <tr><td>NSNS HBR (H&alpha; / blue cont / red cont)</td><td>Colour data where
+      H&alpha; dominates one channel. The only NSNS tree that separates the
+      blue and red continuum &mdash; <i>vc</i> combines
+      them.</td><td>dec &ge; &minus;16&deg;</td></tr>
+  <tr><td>NSNS RGB continuum &mdash; colour</td><td>Broadband colour in the
+      north with a real three-colour reference &mdash; neither a photographic
+      plate nor 36% of sky. 8-bit tonal curve and partial star
+      subtraction.</td><td>dec &ge; &minus;16&deg;</td></tr>
+  <tr><td>SHASSA H&alpha; &mdash; mono</td><td><b>Narrowband in the south.</b>
+      The Southern H&alpha; Sky Survey Atlas, continuum subtracted, linear FITS
+      at 0.8&prime; &mdash; a real survey, seven times finer than the
+      Finkbeiner composite.</td><td>dec &le; +15&deg;</td></tr>
+  <tr><td>VTSS H&alpha; &mdash; mono</td><td>Northern H&alpha; at 1.6&prime;,
+      linear FITS in Rayleighs. Ten times coarser than NSNS, so reach for it
+      when the non-commercial clause is a problem, or as a second
+      opinion.</td><td>northern</td></tr>
   <tr><td>DSS2 red + NSNS continuum &mdash; colour</td><td>Colour data in the
       north. Two genuinely different planes, so each of your channels gets its
       own reference.</td><td>dec &ge; &minus;16&deg;</td></tr>
   <tr><td>DSS2 colour from 8-bit tiles &mdash; colour</td><td>Colour data
       anywhere, including the south. Real red/green/blue bands out of one
       download.</td><td>all sky</td></tr>
+  <tr><td>Finkbeiner H&alpha; composite &mdash; mono</td><td><b>Narrowband in
+      the south.</b> WHAM + VTSS + SHASSA combined into one full-sky H&alpha;
+      map (Finkbeiner 2003), linear FITS in Rayleighs. Every other narrowband
+      option stops at dec &minus;16&deg;. Native resolution is ~6&prime;, so it
+      constrains a gradient across a wide field and has little to say across
+      half a degree &mdash; check the survey/yours split.</td><td>all sky</td></tr>
   <tr><td>DSS2 red &mdash; mono</td><td>The dependable fallback. Photographic
       plates, all sky, always there.</td><td>all sky</td></tr>
+  <tr><td>HI4PI neutral hydrogen &mdash; mono</td><td><b>Not an optical
+      survey.</b> 21&nbsp;cm HI column density as a <i>cirrus template</i>:
+      the HI traces the galactic structure a gradient fit must not mistake for
+      a gradient, and light pollution is not in it, so what the fit leaves
+      behind is the gradient. The HI-to-optical ratio varies across the sky
+      &mdash; read it as a prior, not a measurement.</td><td>all sky</td></tr>
 </table>
+
+<div class="new"><b>Southern narrowband, in order.</b> SHASSA first, below dec
++15&deg; and inside its footprint. The Finkbeiner composite above that, or
+wherever SHASSA has nothing &mdash; it is all-sky but coarse. Every NSNS entry
+stops at dec &minus;16&deg;.</div>
 
 <p>The note under the dropdown describes the selected survey and leads with a
 <b>&#9888; warning</b> when it cannot currently fetch. Availability is not
@@ -142,10 +179,14 @@ decoration: survey hosting moves, and mirrors go down. SRGC re-checks the
 unavailable entries in the background each time you open the dialog, and tells
 you if one has come back.</p>
 
-<div class="new"><b>Narrowband references are CC&#8209;BY&#8209;NC&#8209;SA.</b>
-The NSNS layers are published by Stefan Ziegenbalg under a licence with a
-<b>non-commercial</b> clause. The DSS2 and SDSS options carry no such
-restriction. If your output is commercial, use a DSS2 entry.</div>
+<div class="new"><b>Every NSNS entry is
+CC&#8209;BY&#8209;NC&#8209;SA.</b>
+The NSNS layers &mdash; the linear ones and the colour composites alike
+&mdash; are published by Stefan Ziegenbalg under a licence with a
+<b>non-commercial</b> clause. The DSS2, SDSS, SHASSA, VTSS, Finkbeiner and
+HI4PI options carry no such restriction. For commercial output on narrowband
+data use SHASSA in the south, VTSS or the Finkbeiner composite in the
+north.</div>
 
 <h3>Your own image &mdash; the dual-scope case</h3>
 <p>If you run two scopes on one mount, the wide one is very likely a
@@ -671,7 +712,8 @@ another. Below 25% coverage the run stops, and the message distinguishes the
 cases, because they have very different fixes:</p>
 <ul>
   <li><b>Partial coverage</b> &mdash; the field runs off the edge of the survey.
-      NSNS stops at dec &minus;16&deg;; the DSS2 options are all-sky.</li>
+      NSNS stops at dec &minus;16&deg;; the DSS2 options and the Finkbeiner
+      H&alpha; composite are all-sky.</li>
   <li><b>Zero usable pixels</b> &mdash; almost always a rejected or misparsed
       request rather than a footprint miss, since a genuine miss on a partially
       covered survey returns a mix.</li>

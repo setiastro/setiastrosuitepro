@@ -1309,9 +1309,15 @@ class ShortcutCanvas(QWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)      
 
     def eventFilter(self, obj, ev):
-        # keep sized with viewport
+        # keep sized with the viewport -- unless a canvas owns our
+        # geometry, in which case we are the size of the whole workspace
+        # and it decides where we sit.
         if obj is self.parent() and ev.type() == ev.Type.Resize:
-            self.setGeometry(self.parent().rect())
+            canvas = getattr(getattr(self._mgr, "mdi", None), "canvas", None)
+            if canvas is None:
+                self.setGeometry(self.parent().rect())
+            else:
+                canvas.schedule_refresh()
             try:
                 self._mgr.reflow_into_view()
             except Exception:

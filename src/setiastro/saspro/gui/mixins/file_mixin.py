@@ -1063,6 +1063,7 @@ class FileMixin:
                 getattr(self, "shortcuts", None),
                 getattr(self, "mdi", None),
                 compress,
+                getattr(self, "window_shelf", None),
                 parent=self,
             )
 

@@ -53,8 +53,43 @@ class ViewMixin:
 
     def _tile_views(self):
         """Tile all subwindows."""
+        self._canvas_home()
         self.mdi.tileSubWindows()
         self._auto_fit_all_subwindows()
+        self._collapse_canvas()
+
+    def _canvas_home(self):
+        """Pan the workspace back to its origin before a tidy-up.
+
+        Tile and Cascade lay windows out from the viewport's top-left,
+        which is the canvas origin only while the canvas is unpanned.
+        Going home first moves views and chips together, so nothing
+        shifts relative to anything else, and the layout that follows
+        lands at the origin where the canvas can then collapse around it.
+        """
+        c = getattr(self, "canvas", None)
+        if c is not None:
+            try:
+                c.pan_to(0, 0)
+            except Exception:
+                pass
+
+    def _collapse_canvas(self):
+        """Shrink the workspace back around what is left on it.
+
+        The canvas only grows by itself, deliberately -- one that
+        collapsed whenever you tidied up would make the scrollbars jump
+        while you worked. Tiling IS tidying up, and it repositions every
+        view, so together with Cascade it is also the way back from a
+        view dragged off into the dark: these are the few places the
+        canvas is allowed to come back in.
+        """
+        c = getattr(self, "canvas", None)
+        if c is not None:
+            try:
+                c.reset_bounds()
+            except Exception:
+                pass
 
     def _tile_views_direction(self, direction: str):
         """

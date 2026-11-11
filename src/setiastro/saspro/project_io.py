@@ -329,8 +329,19 @@ class ProjectWriter:
         saved_state = {}
         if shelf is not None:
             try:
-                minimized_set = set(getattr(shelf, "_item2sub", {}).values())
-                saved_state = getattr(shelf, "_saved_state", {})
+                # The shelf keys both of its maps by the subwindow's
+                # _shelf_token -- there is no _item2sub. Reading that name
+                # gave an empty set, so a shelved view was saved as an
+                # ordinary one, at whatever geometry it had while hidden.
+                tok2sub = getattr(shelf, "_tok2sub", {}) or {}
+                by_tok = getattr(shelf, "_saved_state", {}) or {}
+                for tok, sub in tok2sub.items():
+                    if sub is None:
+                        continue
+                    minimized_set.add(sub)
+                    st = by_tok.get(tok)
+                    if st:
+                        saved_state[sub] = st
             except Exception:
                 pass
 
@@ -340,10 +351,26 @@ class ProjectWriter:
             except Exception:
                 active_sw = None
 
+            # Views are stored in canvas coordinates. A subwindow's own
+            # geometry is relative to the viewport, which moves as the
+            # workspace is panned, so a project saved while panned would
+            # otherwise come back shifted by the pan.
+            try:
+                canvas_off = QPoint(mdi.canvas.offset())
+            except Exception:
+                canvas_off = QPoint(0, 0)
+
             for sw in getattr(mdi, "subWindowList", lambda: [])():
                 try:
                     view = sw.widget()
-                    doc = getattr(view, "document", None)
+                    # base_document is the real ImageDocument; view.document
+                    # is a _DocProxy that resolves to the ROI doc while a
+                    # preview tab is active. Matching on the proxy never hit
+                    # id_map, so every view was skipped here.
+                    doc = getattr(view, "base_document", None)
+                    if doc is None:
+                        doc = getattr(view, "document", None)
+                    doc = getattr(doc, "_base_doc", doc)
                     if doc not in id_map:
                         continue
 
@@ -360,6 +387,12 @@ class ProjectWriter:
                         # normal/maximized windows
                         was_max = was_max or bool(sw.isMaximized())
                         rect = sw.normalGeometry() if was_max else sw.geometry()
+                        if not rect.isValid() or rect.isEmpty():
+                            # Qt stores no normal geometry for a window it
+                            # maximized itself when the maximized slot moved
+                            # across on activation.
+                            rect = sw.geometry()
+                        rect = rect.translated(canvas_off)   # -> canvas
 
                     ui["views"].append({
                         "doc_id": id_map[doc],
@@ -833,21 +866,86 @@ class ProjectReader:
             except Exception:
                 continue
 
-            # geometry from project
+            # geometry from the project
+            is_min = bool(v.get("minimized", False))
+            rect = None
             try:
-                is_min = bool(v.get("minimized", False))
-
+                w = int(v.get("w", 0))
+                h = int(v.get("h", 0))
+                if w > 0 and h > 0:
+                    rect = QRect(int(v.get("x", 0)), int(v.get("y", 0)), w, h)
             except Exception:
-                pass
+                rect = None
+
+            if rect is not None:
+                self._place_subwindow(sw, rect, bool(v.get("was_max", False)))
+            if is_min:
+                self._shelve_subwindow(sw, shelf)
 
             if v.get("doc_id") == active_id and not is_min:
                 active_sw = sw
+
+        # Grow the workspace around anything restored past its edge, then
+        # re-fit the zooms, which were computed for the default geometry
+        # the views were spawned at rather than the one they now have.
+        try:
+            canvas = getattr(getattr(self.mw, "mdi", None), "canvas", None)
+            if canvas is not None:
+                canvas.refresh()
+        except Exception:
+            pass
+        try:
+            self.mw._auto_fit_all_subwindows()
+        except Exception:
+            pass
 
         if active_sw and not _is_dead(self.mw):
             try:
                 self.mw.mdi.setActiveSubWindow(active_sw)
             except Exception:
                 pass
+
+    def _place_subwindow(self, sw, rect: QRect, was_max: bool):
+        """Put a restored view back at the size and place it was saved.
+
+        Saved coordinates are canvas coordinates, so they come back
+        through the current pan offset; opening a project normally starts
+        from an unpanned canvas, where the two are the same.
+        """
+        from PyQt6.QtCore import Qt
+        try:
+            off = QPoint(self.mw.mdi.canvas.offset())
+        except Exception:
+            off = QPoint(0, 0)
+        target = QRect(rect.x() - off.x(), rect.y() - off.y(),
+                       max(120, rect.width()), max(80, rect.height()))
+        try:
+            sw.setWindowState(Qt.WindowState.WindowNoState)
+            sw.showNormal()
+            sw.setGeometry(target)
+            if was_max:
+                # Set the geometry first: Qt keeps it as the restore-down
+                # rectangle, so un-maximizing lands back where it was.
+                sw.showMaximized()
+        except Exception:
+            pass
+
+    def _shelve_subwindow(self, sw, shelf):
+        """Send a restored view straight to the Minimized Views shelf.
+
+        Same three steps MinimizeInterceptor takes for a live minimize --
+        capture the geometry, hide, then list it -- so the shelf entry
+        restores to the geometry the project saved rather than to
+        wherever the view was spawned.
+        """
+        if shelf is None:
+            return
+        try:
+            shelf.pre_capture_state(sw)
+            sw.hide()
+            shelf.add_entry(sw)
+        except Exception:
+            pass
 
 
 class LegacyProjectReader:

@@ -297,6 +297,30 @@ _TREE_ENCODING: dict[str, tuple[str, str]] = {
         "CDS built this from the DSS2 FITS planes with linear cuts "
         "(recorded in its properties), so it is the plate, scaled and "
         "quantised to 8 bits."),
+    # The NSNS 8-bit colour composites. Their properties say "Linear",
+    # but that describes how hipsgen packed already-processed input into
+    # 8 bits. The survey page is explicit that every *8 tree carries "a
+    # non-linear tonal curve and compressed dynamic range for easy
+    # visualization", on top of the star subtraction.
+    "simg.de/P/NSNS/DR0_2/rgb8": (
+        "tonal",
+        "An 8-bit visualisation tree: tonal curve applied and stars "
+        "partially subtracted. The curve is monotone, so a background's "
+        "narrow range is largely absorbed into the fitted scale, but the "
+        "compression is the same one the linear NSNS layers avoid. Use "
+        "the linear trees when your data is mono."),
+    "simg.de/P/NSNS/DR0_2/ohs8": (
+        "tonal",
+        "An 8-bit visualisation tree: tonal curve applied, and the "
+        "brightest stars are deliberately added back to mark "
+        "continuum-contaminated regions. The three linear line trees are "
+        "the photometric route; this one is a single download."),
+    "simg.de/P/NSNS/DR0_2/hbr8": (
+        "tonal",
+        "An 8-bit visualisation tree: tonal curve applied, stars "
+        "partially subtracted. Its value is the separate blue and red "
+        "continuum planes, which no linear NSNS tree exposes — vc is "
+        "their combination."),
     "CDS/P/SDSS9/color": (
         "log",
         "CDS applied a Log stretch building this composite. A monotone "
@@ -321,6 +345,26 @@ def _tree_encoding(hips_id: str) -> tuple[str, str]:
     return ("linear", "")
 
 
+# INVENTORY, 2026-11-11. simg.de's own index lists exactly these trees:
+#   halpha  oiii  sii  vc            linear FITS, Rayleighs      <- we use
+#   sn_halpha sn_oiii sn_sii sn_vc   linear FITS, VARIANCE
+#   halpha8 oiii8 sii8               8-bit PNG, non-linear
+#   rgb8 ohs8 hbr8                   8-bit PNG colour, non-linear
+# So there is no fifth line map and no H-beta: the four linear layers below
+# are the whole of NSNS's photometric output and all four are registered.
+#
+# The *8 trees are what the Stellarium hips config points at, and the survey
+# page is explicit that they carry "a non-linear tonal curve and compressed
+# dynamic range for easy visualization". Their properties say "Linear", but
+# that describes how hipsgen mapped already-curved input into 8 bits, not the
+# intensity. They stay out.
+#
+# The sn_ trees are per-pixel variance (R^2, or R^2 nm^-2 for the continuum),
+# normalised to 30" pixels, derived from the stacking sample variance with
+# channel mixing from continuum subtraction accounted for. They are not
+# references and nothing here fetches them -- noted because they are exactly
+# what a weighted fit would want, and because "NSNS has no error information"
+# would otherwise look true from this file.
 def _nsns(layer: str) -> dict:
     return {
         "hips": f"simg.de/P/NSNS/DR0_2/{layer}",
@@ -332,8 +376,10 @@ def _nsns(layer: str) -> dict:
     }
 
 
-# NOT skies.esac.esa.int/DSSColor — jpeg tiles only. An 8-bit JPEG of a colour
-# composite would reproject happily and produce a confident, wrong background.
+# NOT skies.esac.esa.int/DSSColor as a mirror for the FITS band trees below —
+# it is jpeg only, and an 8-bit JPEG standing in for a linear FITS plane would
+# reproject happily and produce a confident, wrong background. It IS a valid
+# mirror for the colour entry further down, which asks for 8-bit tiles.
 # Mirror hosts. These are MEASURED, not guessed — probe_mirrors.py walked the
 # candidate matrix from a real network on 2026-11-09 and the results below are
 # what actually answered:
@@ -390,6 +436,12 @@ def _dss2_colour(band: int) -> dict:
             "https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/color",
             "https://casda.csiro.au/hips/DSS2/color",
             "https://skies.esac.esa.int/DSSColor",
+            # Stellarium's own copy of ivo://CDS/P/DSS2/color, order 9,
+            # re-encoded as webp and served from CloudFront. Verified
+            # 2026-11-11: properties in 168 ms, tiles decode 512x512x3.
+            # A fourth non-CDS host for the one entry that still reaches
+            # the blue plate while Strasbourg is down.
+            "https://data.stellarium.org/surveys/dss",
             "https://alaskybis.cds.unistra.fr/DSS/DSSColor",
             "https://alasky.cds.unistra.fr/DSS/DSSColor",
         ],
@@ -407,6 +459,10 @@ def _sdss9_colour(band: int) -> dict:
         "channel": band,
         "mirrors": [
             "https://irsa.ipac.caltech.edu/data/hips/CDS/SDSS/DR9/color",
+            # ESA's node lists ivo://CDS/P/SDSS9/color at its own path.
+            # Verified 2026-11-11: order 10, jpeg, 36% sky. Until now this
+            # entry had IRSA as its only non-CDS route.
+            "https://skies.esac.esa.int/SDSS9Color",
             "https://alaskybis.cds.unistra.fr/SDSS/DR9/color",
             "https://alasky.cds.unistra.fr/SDSS/DR9/color",
         ],
@@ -435,12 +491,14 @@ def _sdss9_colour(band: int) -> dict:
 # IRSA namespaces SDSS differently from DSS2. Its own hipslist gives
 #   ivo://CDS/P/SDSS9/color -> /data/hips/CDS/SDSS/DR9/color
 # i.e. "CDS/" prepended to the alasky static path (SDSS/DR9/...), whereas for
-# DSS2 it uses a tidied CDS/DSS2/<band>. Probing CDS/SDSS9/<band> and
-# SDSS/DR9/band-<band> both 404; the combination below was never tried and is
-# the one the node's own list implies. Still UNVERIFIED for the per-band trees
-# — only `color` is confirmed present, and IRSA's whole hipslist is 14 KB, so
-# it may genuinely hold no SDSS bands at all. A wrong guess costs one 404 at
-# ~220 ms, and probe_mirrors.py --only sdss settles it.
+# DSS2 it uses a tidied CDS/DSS2/<band>.
+#
+# SETTLED 2026-11-11, so nobody probes it a third time: IRSA carries NO SDSS
+# band tree. /CDS/SDSS/DR9/band-g and /CDS/SDSS/DR9/g both 404 in ~240 ms, as
+# does CASDA's /SDSS/DR9/band-g. Only `color` exists off-CDS. The non-CDS
+# entries below are therefore known-dead rather than unverified; they are kept
+# because a 404 costs one fast round trip and because the shape is right if a
+# node ever does publish the bands.
 def _sdss9(band: str) -> dict:
     return {
         "hips": f"CDS/P/SDSS9/{band}",
@@ -452,6 +510,108 @@ def _sdss9(band: str) -> dict:
             f"https://alasky.cds.unistra.fr/SDSS/DR9/band-{band}",
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# The all-sky H-alpha composite, and the only narrowband reference that
+# reaches the southern sky.
+#
+# Finkbeiner (2003, ApJS 146 407) assembled WHAM, VTSS and SHASSA into one
+# full-sky H-alpha map. CDS publishes it as linear FITS, BITPIX -32, in
+# Rayleighs, galactic frame, moc_sky_fraction = 1.
+#
+# WHY IT MATTERS HERE: NSNS stops at dec -16, and SHS (SuperCOSMOS
+# H-alpha) is mirrored NOWHERE off CDS -- probed at ESA, IRSA and CASDA on
+# 2026-11-11, all 404. SHASSA, found at CADE in the same sweep, is the
+# better southern reference by a factor of seven in resolution, so this
+# composite is not the southern first choice: it is the one that covers
+# EVERYWHERE, including above dec +15 where SHASSA stops and the holes
+# SHASSA leaves inside its own footprint.
+#
+# RESOLUTION, and say it plainly: the native map is ~6 arcmin (WHAM is 1
+# degree, VTSS 1.6 arcmin, SHASSA 4 arcmin; the composite is smoothed to a
+# common beam). The HiPS samples it at 3.4 arcmin. Across a 3-degree field
+# that is ~50 independent samples per axis, which constrains a gradient
+# comfortably; across a 30-arcmin field it is ~9, and the fit is then
+# leaning on very little. That is a caveat on field size, not on the data,
+# and it is in the note the dialog shows.
+#
+# Mirrors: ESA only, and deliberately so. The alasky path for this tree
+# cannot be confirmed while CDS is down, and a guessed URL that 404s is
+# worse than no URL -- hips2fits reaches it by id the moment CDS returns.
+FINKBEINER_HA = {
+    "hips": "CDS/P/Finkbeiner",
+    "mirrors": [
+        # Verified 2026-11-11: properties + tiles, 128 px tiles at order 3,
+        # 100% finite, 0.64-127 R on three sample tiles.
+        "https://skies.esac.esa.int/FinkbeinerHa",
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
+# CADE — the Centre d'Analyse de Données Étendues at IRAP, which exists to
+# publish extended-emission maps as HiPS. Nothing to do with CDS, up at
+# ~500 ms through the outage, and the only reachable host for the southern
+# H-alpha survey.
+def _cade(name: str) -> str:
+    return f"https://cade.irap.omp.eu/documents/Ancillary/4Aladin/{name}"
+
+
+# SHASSA, continuum subtracted. THE southern narrowband reference: the
+# Southern H-Alpha Sky Survey Atlas covers declinations below +15 at 0.8
+# arcmin, continuum-corrected, in deciRayleighs. Linear FITS, BITPIX -32,
+# order 4 x 512 px tiles (25.8"/px sampling), galactic frame, 64% of sky.
+#
+# This is 7x finer than the Finkbeiner composite and it is a real survey
+# rather than a smoothed merge of three, so for a southern narrowband frame
+# it is the first choice and Finkbeiner is the fallback above dec +15 or
+# where SHASSA has no coverage.
+#
+# Verified 2026-11-11 via CADE. No CDS id exists for it — CADE registers it
+# as ivo://ov-gso/P/SHASSA — so hips2fits may or may not resolve the id; the
+# direct tree is the route that is known to work.
+#
+# WATCH THE RANGE: hips_data_range is -211257 to 194168 dR, i.e. there are
+# large negative and positive excursions around bright stars where the
+# continuum subtraction broke down. The robust fit handles them, but they
+# are why the reference preview can look harsh before stretching.
+SHASSA_HA = {
+    "hips": "ov-gso/P/SHASSA",
+    "mirrors": [_cade("SHASSA")],
+}
+
+# VTSS, the northern counterpart: 1.6 arcmin, Rayleighs, linear FITS.
+# Coarser than NSNS by a factor of ten, so it is not the northern default —
+# its value is that it carries no non-commercial clause, which every NSNS
+# layer does. Two mirrors, neither of them CDS.
+VTSS_HA = {
+    "hips": "CDS/P/VTSS/Ha",
+    "mirrors": [_cade("VTSS"), "https://skies.esac.esa.int/VTSSHa"],
+}
+
+# HI4PI: the merged EBHIS + GASS 21 cm survey, neutral hydrogen column
+# density over the whole sky at 16.2 arcmin, linear FITS in cm^-2.
+#
+# NOT an optical reference, and the dialog says so. It is a TEMPLATE: the
+# HI column traces galactic cirrus, which is exactly the real structure a
+# gradient fit must not mistake for a gradient. Fitting against it asks
+# "which part of my background follows the galactic ISM?" — and because
+# light pollution and moonlight are not in an HI map, whatever is left over
+# is the gradient. The ratio of HI column to optical surface brightness is
+# not constant across the sky, so treat the result as a prior rather than a
+# measurement, and read the survey/yours split.
+HI4PI_NHI = {
+    "hips": "CDS/P/HI4PI/NHI",
+    "mirrors": ["https://skies.esac.esa.int/HI4PI"],
+}
+
+
+def _nsns_band(layer: str, band: int) -> dict:
+    """One plane of an NSNS 8-bit colour tree."""
+    d = _nsns(layer)
+    d["channel"] = int(band)
+    return d
 
 
 SDSS9_G = _sdss9("g")
@@ -580,6 +740,87 @@ SURVEYS: dict[str, dict] = {
         "dec_min": -16.0,
         "noncommercial": True,
     },
+    "SHASSA Ha (south, dec < +15) — mono": {
+        "channels": [SHASSA_HA],
+        "note": "Southern H-alpha Sky Survey Atlas, continuum subtracted, "
+                "linear FITS in deciRayleighs at 0.8 arcmin. The southern "
+                "narrowband reference — a real survey rather than a merge, "
+                "and seven times finer than the Finkbeiner composite. Below "
+                "dec +15 only; above that, or where SHASSA has no coverage, "
+                "use Finkbeiner. No licence restriction.",
+        "dec_min": -90.0,
+        "dec_max": 15.0,
+        "noncommercial": False,
+    },
+    "VTSS Ha (north, 1.6 arcmin) — mono": {
+        "channels": [VTSS_HA],
+        "note": "Virginia Tech Spectral-line Survey H-alpha, linear FITS in "
+                "Rayleighs. Ten times coarser than NSNS, so reach for it "
+                "when the non-commercial clause on NSNS is a problem, or as "
+                "a second opinion. Northern sky; outside its footprint the "
+                "fetch returns non-finite and the coverage check says so.",
+        "dec_min": -30.0,
+        "noncommercial": False,
+    },
+    "NSNS RGB continuum (north) — colour": {
+        "channels": [_nsns_band("rgb8", 0), _nsns_band("rgb8", 1),
+                     _nsns_band("rgb8", 2)],
+        "note": "Real three-colour broadband continuum from NSNS itself, "
+                "65% of sky, from one download. The northern colour "
+                "reference that is neither a photographic plate nor 36% of "
+                "sky — but it is an 8-bit visualisation tree with a tonal "
+                "curve and partial star subtraction, so check the "
+                "survey/yours structure split. CC-BY-NC-SA.",
+        "dec_min": -16.0,
+        "noncommercial": True,
+    },
+    "NSNS OHS ([OIII] / Ha / [SII]) — colour": {
+        "channels": [_nsns_band("ohs8", 0), _nsns_band("ohs8", 1),
+                     _nsns_band("ohs8", 2)],
+        "note": "For data mapped in the OHS palette — [OIII] to red, "
+                "H-alpha to green, [SII] to blue — which the SHO entry "
+                "cannot match, since it pairs the channels the other way "
+                "round. One download instead of three, at the cost of the "
+                "8-bit tonal curve. CC-BY-NC-SA.",
+        "dec_min": -16.0,
+        "noncommercial": True,
+    },
+    "NSNS HBR (Ha / blue cont / red cont) — colour": {
+        "channels": [_nsns_band("hbr8", 0), _nsns_band("hbr8", 1),
+                     _nsns_band("hbr8", 2)],
+        "note": "H-alpha to red, blue continuum to green, red continuum to "
+                "blue. The only NSNS tree that separates the blue and red "
+                "continuum — vc combines them — so it suits colour data "
+                "where H-alpha dominates one channel. 8-bit tonal curve. "
+                "CC-BY-NC-SA.",
+        "dec_min": -16.0,
+        "noncommercial": True,
+    },
+    "HI4PI neutral hydrogen (all sky) — mono": {
+        "channels": [HI4PI_NHI],
+        "note": "21 cm HI column density, all sky, linear FITS at 16 "
+                "arcmin. NOT an optical reference — a cirrus template. The "
+                "HI column traces the galactic dust and gas that a gradient "
+                "fit must not mistake for a gradient, and light pollution "
+                "is not in it, so what the fit leaves behind is the "
+                "gradient. The HI-to-optical ratio varies across the sky; "
+                "read this as a prior, not a measurement. No restriction.",
+        "dec_min": -90.0,
+        "noncommercial": False,
+    },
+    "Finkbeiner Ha composite (all sky) — mono": {
+        "channels": [FINKBEINER_HA],
+        "note": "All-sky H-alpha: WHAM + VTSS + SHASSA combined by "
+                "Finkbeiner (2003), linear FITS in Rayleighs. The "
+                "narrowband option that covers everywhere — reach for it "
+                "above dec +15, where SHASSA stops, or wherever SHASSA has "
+                "no coverage. Native resolution is ~6 arcmin, so it "
+                "constrains a gradient across a wide field but has little "
+                "to say across half a degree; check the survey/yours "
+                "structure split. No licence restriction.",
+        "dec_min": -90.0,
+        "noncommercial": False,
+    },
     "DSS2 red (all sky) — mono": {
         "channels": [DSS2_RED],
         "note": "All-sky red plates, FITS. ODbL.",
@@ -600,6 +841,12 @@ DEFAULT_SURVEY = "NSNS visual continuum (north) — mono"
 # Measured availability. probe_mirrors.py walked every candidate path from an
 # ordinary consumer connection on 2026-11-09 and then read each node's own
 # hipslist, so this is an inventory rather than an inference.
+#
+# RE-WALKED 2026-11-11: unchanged. alasky and alaskybis still time out — the
+# CDS outage is into its third day, so everything below still applies. IRSA
+# and CASDA answered in ~250 ms and still carry no SDSS band tree and no DSS2
+# blue. One thing was added: data.stellarium.org serves the DSS2 colour tree
+# as webp from CloudFront, and is now a mirror on that entry.
 #
 # IRSA's HiPS node holds 27 surveys in total. Its complete optical holdings:
 #     CDS/P/DSS2/red     -> /data/hips/CDS/DSS2/red      jpeg fits   <-- ONLY
@@ -639,6 +886,10 @@ _SURVEY_AVAILABILITY = {
     "SDSS g/r/i colour (north, 36% of sky) — colour":    "unavailable",
     "DSS2 blue (all sky) — mono":                        "unavailable",
     "SDSS colour from 8-bit tiles (north) — colour":     "stretched",
+    "NSNS RGB continuum (north) — colour":               "curved",
+    "NSNS OHS ([OIII] / Ha / [SII]) — colour":           "curved",
+    "NSNS HBR (Ha / blue cont / red cont) — colour":     "curved",
+    "HI4PI neutral hydrogen (all sky) — mono":           "tracer",
 }
 
 # The state a liveness ping cannot see, and the reason this module checks
@@ -650,6 +901,24 @@ _AVAILABILITY["moved"] = (
     "⚠ The mirror host is answering again but its tile tree is no longer at "
     "the registered path. The survey is probably back under a different URL "
     "— re-run probe_mirrors.py to find it. "
+)
+
+_AVAILABILITY["curved"] = (
+    "ℹ 8-bit visualisation tree: a non-linear tonal curve and compressed "
+    "dynamic range, per the survey's own description, plus partial star "
+    "subtraction. The curve is monotone and a background occupies a narrow "
+    "range, so most of it is absorbed into the fitted scale — but this is "
+    "the compression the linear trees exist to avoid. Check the "
+    "survey/yours structure split. "
+)
+
+_AVAILABILITY["tracer"] = (
+    "ℹ Not an optical survey — a tracer of the same structure at another "
+    "wavelength. The fit solves its own scale and offset, so the units do "
+    "not matter, but the ratio between this and optical sky brightness is "
+    "not constant across the sky. Use it to separate real galactic cirrus "
+    "from your gradient, and read the survey/yours split before trusting "
+    "the amount. "
 )
 
 _AVAILABILITY["stretched"] = (
@@ -1069,7 +1338,7 @@ def _fetch_tile(base: str, order: int, npix: int, ext: str,
     arr: np.ndarray | None = None
     try:
         raw = _http_get(url, timeout=timeout)
-        if ext in ("png", "jpg", "jpeg"):
+        if ext in ("png", "jpg", "jpeg", "webp"):
             arr = _decode_image_tile(raw, ext)
         else:
             import io
@@ -1135,12 +1404,16 @@ def _fetch_via_tiles(qw: WCS, h: int, w: int, base_url: str,
     # the 8-bit trees, which carry a gradient perfectly well (see
     # _decode_image_tile). PNG before JPEG: PNG is lossless, and JPEG's block
     # artifacts, while far below the scale of anything being fitted, are free
-    # to avoid when there is a choice.
-    ext = next((f for f in ("fits", "png", "jpeg", "jpg") if f in fmts), None)
+    # to avoid when there is a choice. WEBP last, for the same reason as JPEG
+    # — it is the only format Stellarium's DSS mirror publishes, and cv2
+    # decodes it from libwebp bundled in the wheel, so there is no system
+    # dependency to go missing on a user's machine.
+    ext = next((f for f in ("fits", "png", "jpeg", "jpg", "webp") if f in fmts),
+               None)
     if ext is None:
         raise SurveyFetchError(
             f"{base} advertises tile formats {fmts or ['?']}, none of which "
-            "can be read (expected one of fits, png, jpeg)."
+            "can be read (expected one of fits, png, jpeg, webp)."
         )
     if ext == "jpeg":
         ext = "jpg"          # the tile files are .jpg even when advertised as jpeg
@@ -1340,6 +1613,48 @@ def _is_connection_failure(e: BaseException) -> bool:
     }
 
 
+# float32 squares to inf above ~1.8e19, and several measurements around
+# the fit square the reference plane. Leave headroom: 1e18 squared is
+# 1e36, comfortably inside float32's 3.4e38.
+_F32_SQUARE_SAFE = 1e18
+
+
+def _tame_magnitude(data: np.ndarray, hips_id: str,
+                    info: dict | None = None) -> np.ndarray:
+    """Scale down a reference whose units are astronomically large.
+
+    HI4PI is a column density in cm^-2, so a cutout sits around 2e21. The
+    fit casts to float64 and survives that, but std, the quantisation
+    probe and the structure split all work in float32 and came back inf.
+
+    Dividing by a constant is free here: the model is tgt = a + b*ref, so
+    the solver absorbs it into b and every number it reports is
+    unchanged. Only the reference's own displayed units move, which is
+    why the factor is logged and recorded in the provenance.
+    """
+    try:
+        a = np.asarray(data)
+        fin = np.isfinite(a)
+        if not fin.any():
+            return data
+        peak = float(np.max(np.abs(a[fin]).astype(np.float64)))
+    except Exception:
+        return data
+    if not np.isfinite(peak) or peak <= _F32_SQUARE_SAFE:
+        return data
+
+    # A power of ten, so the scaled values still read as the originals
+    # with the decimal point moved.
+    import math
+    k = 10.0 ** math.ceil(math.log10(peak / 1e6))
+    out = (np.asarray(data, dtype=np.float32) / np.float32(k))
+    _log(f"   scaled by 1/{k:.0e} — {hips_id} peaks at {peak:.3g}, which "
+         f"float32 cannot square. The fit absorbs it into b.")
+    if info is not None:
+        info["rescaled_by"] = float(k)
+    return out
+
+
 def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
                     *, mirrors: list[str] | None = None,
                     progress_cb=None, timeout: float = HIPS_TIMEOUT,
@@ -1424,7 +1739,7 @@ def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
                     info.update({"host": host, "hips": hips_id})
                 if progress_cb:
                     progress_cb(f"Reference built from {host} tiles.")
-                return data
+                return _tame_magnitude(data, hips_id, info)
             except Exception as e:
                 dt = (time.monotonic() - t0) * 1000.0
                 _log(f"   FAILED after {dt:.0f} ms: {_brief(e, 300)}")
@@ -1468,7 +1783,7 @@ def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
                                  "hips": hips_id})
                 if progress_cb:
                     progress_cb(f"Reference received from {host}.")
-                return data
+                return _tame_magnitude(data, hips_id, info)
             except Exception as e:
                 dt = (time.monotonic() - t0) * 1000.0
                 _log(f"   FAILED after {dt:.0f} ms: {_brief(e, 300)}")
@@ -1544,7 +1859,7 @@ def _tree_state(base: str, *, need_fits: bool,
     fmts = str(props.get("hips_tile_format", "")).lower().split()
     if need_fits:
         return "live" if "fits" in fmts else missing
-    usable = {"fits", "png", "jpeg", "jpg"}
+    usable = {"fits", "png", "jpeg", "jpg", "webp"}
     return "live" if (set(fmts) & usable) else missing
 
 
@@ -4826,9 +5141,21 @@ class SurveyGradientDialog(QDialog):
                              f"RA={c.ra.deg:.5f}  Dec={c.dec.deg:+.5f}")
                 info = SURVEYS.get(self.cmb_survey.currentText(), {})
                 dmin = info.get("dec_min")
-                if dmin is not None:
-                    inside = c.dec.deg >= float(dmin)
-                    lines.append(f"survey dec limit           : >= {dmin:+.0f}  "
+                dmax = info.get("dec_max")
+                if dmin is not None or dmax is not None:
+                    # SHASSA's limit is an upper one — reporting ">= -90,
+                    # INSIDE" for a field at dec +60 would be worse than
+                    # saying nothing.
+                    lo = -90.0 if dmin is None else float(dmin)
+                    hi = 90.0 if dmax is None else float(dmax)
+                    inside = lo <= c.dec.deg <= hi
+                    if dmax is None:
+                        rng = f">= {lo:+.0f}"
+                    elif dmin is None or lo <= -90.0:
+                        rng = f"<= {hi:+.0f}"
+                    else:
+                        rng = f"{lo:+.0f} .. {hi:+.0f}"
+                    lines.append(f"survey dec limit           : {rng}  "
                                  f"-> field is {'INSIDE' if inside else 'OUTSIDE'}")
             except Exception as e:
                 lines.append(f"field centre               : ? ({_brief(e)})")

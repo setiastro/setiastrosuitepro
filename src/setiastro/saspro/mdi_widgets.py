@@ -15,8 +15,10 @@ import weakref
 from typing import Optional
 
 from PyQt6 import sip
-from PyQt6.QtWidgets import QMdiArea, QListWidget, QMenu, QApplication
-from PyQt6.QtCore import Qt, pyqtSignal, QObject
+from PyQt6.QtWidgets import (
+    QMdiArea, QListWidget, QMenu, QApplication, QScrollBar,
+)
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QRect
 
 from setiastro.saspro.dnd_mime import (
     MIME_VIEWSTATE, MIME_CMD, MIME_MASK, MIME_ASTROMETRY, MIME_LINKVIEW
@@ -40,9 +42,97 @@ class MdiArea(QMdiArea):
     astrometryDropped = pyqtSignal(dict, object)
     linkViewDropped = pyqtSignal(dict, object)
 
+    SCROLLBAR_PX = 12
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setAcceptDrops(True)
+
+        # The pannable workspace. Set by the main window once the shortcut
+        # layer exists; everything here degrades to plain MDI without it.
+        self.canvas = None
+
+        # Our own scrollbars. Qt's are left off for the reasons in
+        # mdi_canvas.py -- these are driven by the canvas controller and
+        # describe the canvas, not the bounding box of the windows.
+        self._hbar = QScrollBar(Qt.Orientation.Horizontal, self)
+        self._vbar = QScrollBar(Qt.Orientation.Vertical, self)
+        for _b in (self._hbar, self._vbar):
+            _b.setVisible(False)
+            _b.setCursor(Qt.CursorShape.ArrowCursor)
+        self._hbar.valueChanged.connect(self._on_hbar)
+        self._vbar.valueChanged.connect(self._on_vbar)
+        self._bar_guard = False
+
+    # ── canvas scrollbars ────────────────────────────────────────────────
+
+    def attach_canvas(self, canvas):
+        self.canvas = canvas
+        self._layout_scrollbars()
+
+    def _on_hbar(self, value):
+        if self._bar_guard or self.canvas is None:
+            return
+        self.canvas.on_hscroll(value)
+
+    def _on_vbar(self, value):
+        if self._bar_guard or self.canvas is None:
+            return
+        self.canvas.on_vscroll(value)
+
+    def sync_canvas_scrollbars(self, *, h_max, h_val, h_page,
+                               v_max, v_val, v_page):
+        """Called by the canvas controller after any pan or growth."""
+        self._bar_guard = True
+        try:
+            self._hbar.setRange(0, int(h_max))
+            self._hbar.setPageStep(max(1, int(h_page)))
+            self._hbar.setSingleStep(max(1, int(h_page) // 12))
+            self._hbar.setValue(int(h_val))
+            self._vbar.setRange(0, int(v_max))
+            self._vbar.setPageStep(max(1, int(v_page)))
+            self._vbar.setSingleStep(max(1, int(v_page) // 12))
+            self._vbar.setValue(int(v_val))
+        finally:
+            self._bar_guard = False
+
+        want_h = self._hbar.maximum() > 0
+        want_v = self._vbar.maximum() > 0
+        if (want_h != self._hbar.isVisible()) or \
+                (want_v != self._vbar.isVisible()):
+            self._hbar.setVisible(want_h)
+            self._vbar.setVisible(want_v)
+            self._layout_scrollbars()
+
+    def _layout_scrollbars(self):
+        px = int(self.SCROLLBAR_PX)
+        bottom = px if self._hbar.isVisible() else 0
+        right = px if self._vbar.isVisible() else 0
+        try:
+            self.setViewportMargins(0, 0, right, bottom)
+        except Exception:
+            pass
+        r = self.rect()
+        if self._vbar.isVisible():
+            self._vbar.setGeometry(QRect(r.right() - px + 1, r.top(), px,
+                                         max(0, r.height() - bottom)))
+            self._vbar.raise_()
+        if self._hbar.isVisible():
+            self._hbar.setGeometry(QRect(r.left(), r.bottom() - px + 1,
+                                         max(0, r.width() - right), px))
+            self._hbar.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._layout_scrollbars()
+
+    def wheelEvent(self, event):
+        # Only reaches us when no view consumed it, i.e. the cursor is over
+        # the workspace background.
+        if self.canvas is not None and self.canvas.wheel_pan(event):
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def dragEnterEvent(self, e):
         md = e.mimeData()

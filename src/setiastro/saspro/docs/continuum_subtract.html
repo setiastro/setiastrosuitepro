@@ -90,19 +90,14 @@ Load&nbsp;NB&nbsp;+ matching&nbsp;continuum &rarr; <b>Execute</b> &rarr; calibra
       <li><b>No black clip</b> &mdash; use the image minimum as the black point instead of <code>median &minus; &sigma;</code>. Default on, preserves faint background signal.</li>
     </ul>
   </li>
-  <li><b>Advanced &#9656;</b> &mdash; expands to show:
-    <ul>
-      <li><b>WB star detect threshold</b> &mdash; &sigma; above background for star detection in the white-balance fit (0.5&ndash;50, default 5.0). Lower = more stars (and more noise in the fit); higher = cleaner but fewer anchors.</li>
-      <li><b>Continuum Q factor</b> &mdash; the <i>default</i> Q used to open the Q Preview dialog (0.10&ndash;2.00, default 0.80). The dialog lets you override per-filter; this just sets where the slider starts.</li>
-    </ul>
-  </li>
+  <li><b>WB star target</b> &mdash; how many stars the white-balance fit aims to work from (default 500). Detection &sigma; is automatic. SEP is run down the ladder &sigma; = 200 &rarr; 100 &rarr; 50 &rarr; 20 &rarr; 10 &rarr; 5 &rarr; 3, strictest first, and the first rung that finds at least the target number of stars (default 500) is the one the white-balance fit uses. If no rung reaches the target, the most sensitive one is used. Click the number to change it: raise it for a tighter fit on rich fields, lower it if a sparse field is driving detection down into the noise. The resolved &sigma; is reported in the status line and again in WB Diagnostics.</li>
 </ul>
 
 <h3>Execute, then the Q Preview dialog</h3>
-<p>Clicking <b>Execute</b> kicks off one calibration thread per loaded filter (background neutralization, red/green matching, star-based WB fit, downsampled preview). When all filters have calibrated, the <b>Interactive Q Preview</b> dialog opens:</p>
+<p>Clicking <b>Execute</b> kicks off one calibration thread per loaded filter (background neutralization, red/green matching, star-based WB fit, downsampled preview). When all filters have calibrated, the <b>Interactive Q Preview</b> dialog opens &mdash; and <b>WB Diagnostics opens beside it</b>, tiled, so the numbers describing the fit are in front of you while you choose Q rather than afterwards. Neither window blocks the other or the rest of SASpro.</p>
 <ul>
   <li><b>Filter dropdown</b> &mdash; switch between loaded filters.</li>
-  <li><b>Q slider</b> (0.10&ndash;2.00) &mdash; moves the subtraction constant for the active filter.</li>
+  <li><b>Q slider</b> (0.10&ndash;2.00) &mdash; moves the subtraction constant for the active filter. It opens at <b>Q&nbsp;=&nbsp;1.00</b>, which after a correct star-based white balance is the mathematically pure value (see &sect;2.5): stars cancel exactly and line emission survives untouched. Tune away from it when the WB fit was marginal &mdash; the slope and scatter in WB Diagnostics tell you whether it was.</li>
   <li><b>Autostretch</b> &mdash; applies a mono stretch to the preview so you can see faint residuals clearly. Does not affect the final output; purely a display aid.</li>
   <li><b>Zoom controls</b> &mdash; zoom-out / zoom-in / 1:1 / fit-to-view, driven by the standard SASpro ZoomableGraphicsView. First render fits; subsequent slider updates leave your zoom alone.</li>
   <li><b>Accept &mdash; Run Final</b> &mdash; commits per-filter Q values and launches the final-subtract threads at full resolution. <b>Cancel</b> aborts without computing finals.</li>
@@ -114,15 +109,37 @@ Load&nbsp;NB&nbsp;+ matching&nbsp;continuum &rarr; <b>Execute</b> &rarr; calibra
 <p>When the final subtracts finish, each filter becomes a new document in SASpro titled <code>&lt;filter&gt;_ContSub</code> (and <code>&lt;filter&gt; (starless)_ContSub</code> if a starless partner was supplied). The original FITS header travels with the result; bit depth is 32-bit float.</p>
 
 <h3>WB Diagnostics</h3>
-<p>Enabled after the first result lands. Opens a scrollable grid, one card per filter, each with two 256&times;256 thumbnails:</p>
+<p>Opens automatically alongside the Q Preview dialog, and from the <b>WB Diagnostics&hellip;</b> button at any time once a calibration has run &mdash; the cards are built when each filter calibrates, not after the subtraction, so they are available at the point the Q decision is made. Opens a resizable, <b>modeless</b> window &mdash; the rest of SASpro stays usable while it is open, so you can hold it alongside the result it describes. One tab per filter, each showing two images side by side on a draggable split; both scale with the window, so give it room and the scatter is actually readable. Filters that finish after you open it add their own tabs as they land.</p>
+<p><b>Starry frames only.</b> A starless frame is handed its starry partner's recipe and never fits stars of its own, and a starless-only run never fits stars at all &mdash; neither has a white balance to diagnose, so neither gets a tab.</p>
 <ul>
-  <li><b>scatter</b> &mdash; NB flux vs broadband flux for every detected WB star, with the best-fit line overlaid. A tight line close to the diagonal means a clean WB fit; a cloud or sloped line indicates poor star-colour statistics (bad threshold, too few stars, or heavy gradient residuals).</li>
-  <li><b>overlay</b> &mdash; the balanced image with the stars actually used in the fit marked. Lets you catch cases where the detector locked onto hot pixels, satellite trails, or saturated cores.</li>
+  <li><b>Star flux fit</b> (left) &mdash; measured NB flux against broadband flux for every detected WB star, <i>before</i> white balance. The red line is the fit; the pale wedge either side of it is the &plusmn;&sigma; boundary the fit converged on; hollow grey rings are the stars that fell outside it, or that were clipped high or sat at the noise floor. Click it to open the detail viewer.</li>
+  <li><b>Fit quality</b> (right) &mdash; the numbers, in three blocks.</li>
 </ul>
-<p>Click either thumbnail to open the <b>Detail View</b> dialog &mdash; zoomable, with Autostretch and <b>Push to New Document</b> buttons so you can hand the diagnostic image onwards for inspection.</p>
+
+<p><b>After white balance.</b> These describe the <i>balanced</i> star samples, and they are the ones that matter:</p>
+<ul>
+  <li><b>Slope</b> &mdash; 1.0000 means the white balance landed exactly, and stars then cancel at <code>Q = 1</code> by construction. How far it sits from 1.0 is how far the white balance missed.</li>
+  <li><b>Star residual at Q&nbsp;=&nbsp;1</b> &mdash; what an average star keeps of itself after subtraction at Q&nbsp;=&nbsp;1: positive means stars are left bright, negative means they are dug dark. The <i>sign</i> is the useful part while you work the slider &mdash; it tells you which way the stars will err before you can see it. <b>Read it as a consequence, not as an instruction to move Q.</b> Q scales the continuum across the <i>whole image</i>, so buying a cleaner star by raising it costs the same fraction of continuum everywhere else, line emission included. A residual here means the white balance did not fully land, and that is where to look.</li>
+  <li><b>Offset</b> &mdash; should be ~0. A real offset means the two backgrounds did not neutralise to the same level.</li>
+  <li><b>Scatter</b> &mdash; robust (MAD) spread of the balanced stars about the line, as a fraction of flux. Even a perfectly placed line leaves this much residual on an average star, because no single Q removes a spread. The verdict grades on <i>both</i> this and the residual above: a few percent of either is ordinary on a real frame.</li>
+  <li><b>R&sup2;</b> &mdash; on the surviving stars. Reads high on any tight line; use it to catch a fit that has gone loose, not as proof that one is right.</li>
+</ul>
+
+<p><b>As measured (before WB).</b> The same fit on the raw samples &mdash; this is the line drawn on the plot. Its slope is your field's NB/BB star flux ratio, i.e. how much dimmer the narrowband frame is than the continuum for an ordinary star. <b>It is not expected to be 1</b>; 0.2&ndash;0.5 is perfectly ordinary. <b>Flux span</b> is the broadband flux range the surviving stars cover: a fit anchored over a decade of flux is worth far more than one anchored over the faintest few percent.</p>
+
+<p><b>Star sample.</b> How many stars SEP found and what became of them: how many were <b>saturated</b> (&ge;&nbsp;0.95 in either axis, no colour information left), how many sat <b>at the noise floor</b>, and how many were <b>&sigma;-clipped outliers</b> &mdash; stars with usable photometry that still fell outside the wedge. That last number is the interesting one: non-linear bright stars, blends, or genuine emission-line objects.</p>
+
+<p>The noise floor is <b>measured on your frame</b>, not fixed: a star has to clear its own background by an aperture SNR of 5 to contribute. A constant threshold cannot work for both linear and stretched data &mdash; the fixed 0.005 this replaced threw away 3944 of 4452 detected stars on a real linear H&alpha; frame, not because their photometry was unusable but because linear narrowband data lives near zero. Hover the row to see the two floors actually applied.</p>
+
+<p><b>Regions covered</b> and <b>Busiest region</b> answer a question the other numbers cannot: <i>where in the frame</i> the fit came from. A line drawn entirely from one crowded corner, or from the one region with nebulosity in it, can be perfectly tight and still not describe the rest of the image. The frame is divided into a 4&times;4 grid; even coverage would put about 6&percnt; of the fitted stars in each cell. Before fitting, over-represented cells are <b>thinned</b> to twice the typical cell's count &mdash; and within a cell the survivors are spread across the flux range rather than taken brightest-first, since keeping only the brightest would hand the fit exactly the non-linear tail the &sigma; clip exists to remove. An evenly spread field is left alone.</p>
+
+<div class="tip"><b>There used to be a second image panel here</b> showing the detected stars ringed on the frame. It existed to troubleshoot star detection back when that was the weak link. With automatic &sigma; selection and a clipped fit it no longer told you anything the numbers above do not &mdash; and it was expensive: building it was more than half the cost of every white-balance call (measured at 2.2&nbsp;s against 1.0&nbsp;s on an 1100&times;1100 frame with ~900 stars), plus a full-resolution image held in memory per filter for as long as the panel stayed open.</div>
+<p>Click either image to open the <b>Detail View</b> dialog &mdash; zoomable, with Autostretch and <b>Push to New Document</b> buttons so you can hand the diagnostic image onwards for inspection.</p>
 
 <h3>Clear Images</h3>
 <p>Dumps every loaded slot and resets labels. The processing options stay as you set them.</p>
+
+<div class="tip"><b>Your settings are remembered.</b> Every option in this panel &mdash; the checkboxes, denoise strength, the star target and the window size &mdash; is written when you change it and restored the next time you open the tool. Only the loaded images start empty. Q is not among them: it belongs to the Q Preview dialog, per filter, and starts at 1.00 every run.</div>
 
 <h2>2. Technical details</h2>
 <p class="tech-lead">The subtraction pipeline, per filter, in order.</p>
@@ -158,7 +175,8 @@ Load&nbsp;NB&nbsp;+ matching&nbsp;continuum &rarr; <b>Execute</b> &rarr; calibra
 <p class="cap">fitted independently for each channel <code>c &in; {R, G, B}</code>.</p>
 <p>fitted by least squares against the pre- and post-WB sample pairs for each channel:</p>
 <div class="matheq">(a_c,b_c) = \arg\min_{a,b}\sum_i \left(a\,x_{c,i} + b - y_{c,i}\right)^2</div>
-<p>Star detection uses a SEP-based detector at the user-set &sigma; threshold; a cache lets subsequent runs reuse the detection on the same frame. Both the fit coefficients and the detected-star overlay are stored in the <code>recipe</code> dict and surfaced in WB Diagnostics (&sect;1 &mdash; WB Diagnostics).</p>
+<p>The line on that plot is fitted in three stages. First a hard clip: any star saturated (&gt; 0.95) or below the frame's measured noise floor in <i>either</i> axis has lost its photometry and is dropped outright. Second, spatial thinning, so no region of the frame can decide the line on its own. Then an iterative MAD-&sigma; clip in <b>slope space</b> &mdash; fit, measure the robust scatter of residual/flux about the line, drop whatever lies outside <code>y = (m &plusmn; 2.5&sigma;)x</code>, refit, and repeat until nothing more is dropped. The second stage is what removes the bright tail that bends the line: those stars are <i>inside</i> the hard clip, so the first stage never sees them, and a single unweighted least-squares pass simply follows them upward. The clip is proportional rather than a fixed-width band because star scatter about this line is proportional &mdash; a fixed band spends good faint stars to hold the same line. Below the median flux of the survivors the criterion reverts to a constant band, since a fractional residual is meaningless near zero flux.</p>
+<p>Star detection is a SEP-based detector run as a &sigma; waterfall: <code>sep.extract</code> is called at each rung of &sigma; = 200, 100, 50, 20, 10, 5, 3 in turn and the first result with at least the target star count is kept, so a dense Milky Way field and a sparse high-latitude one both end up with a workable number of anchors instead of one setting serving neither. Each filter resolves its own &sigma; against its own data &mdash; the shared detection cache in <code>starbasedwhitebalance</code> is keyed on image shape, which would otherwise hand Ha, SII and OIII (all the same shape, and calibrated in parallel) whichever filter happened to detect first. The resolved &sigma;, the fit coefficients and the detected-star overlay are all stored in the <code>recipe</code> dict and surfaced in WB Diagnostics (&sect;1 &mdash; WB Diagnostics).</p>
 
 <h3>2.5 Linear subtraction</h3>
 <p>Once calibration is done and you've chosen Q, the per-pixel subtraction is:</p>

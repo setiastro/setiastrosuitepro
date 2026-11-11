@@ -100,11 +100,24 @@ def _robust_slope_fit(
     sigma: float = 2.5,
     max_iter: int = 5,
     min_points: int = 10,
+    relative: bool = False,
+    x_ref: Optional[float] = None,
 ) -> tuple[float, float, np.ndarray]:
     """
     Iterative MAD-sigma-clipped fit of gb ≈ slope*rb + intercept.
     Caller is responsible for pre-rejecting saturated samples via
     _photometric_keep_mask BEFORE handing (rb, gb) in here.
+
+    relative=False (default) clips on the residual itself: one band of
+    constant width about the line, which is right when the scatter does
+    not depend on x -- the R/B vs G/B plane the WB solve works in.
+
+    relative=True clips on residual / max(|x|, x_ref): a wedge, i.e.
+    y = (slope +/- sigma*scale)*x, which is what you want when the scatter
+    grows with flux. x_ref (default: the median |x| of the surviving
+    points, fixed after the first pass) keeps the criterion from exploding
+    near x = 0, where a fractional residual is meaningless -- below x_ref
+    it is a constant band again.
 
     Returns (slope, intercept, final_keep_mask). Falls back to a plain
     lstsq if too few points survive.
@@ -119,11 +132,17 @@ def _robust_slope_fit(
         s, i = np.polyfit(rb[keep], gb[keep], 1)
         return float(s), float(i), keep
 
+    _x_ref = None if x_ref is None else max(float(x_ref), 1e-9)
+
     for _ in range(max_iter):
         xi, yi = rb[keep], gb[keep]
         A = np.stack([xi, np.ones_like(xi)], axis=1)
         (slope, intercept), *_ = np.linalg.lstsq(A, yi, rcond=None)
         resid = yi - (slope * xi + intercept)
+        if relative:
+            if _x_ref is None:
+                _x_ref = max(float(np.median(np.abs(xi))), 1e-9)
+            resid = resid / np.maximum(np.abs(xi), _x_ref)
         mad = float(np.median(np.abs(resid - np.median(resid))))
         scale = 1.4826 * mad if mad > 0 else float(np.std(resid))
         if scale <= 1e-9:
@@ -748,6 +767,8 @@ def apply_star_based_white_balance(
     autostretch: bool = True,
     reuse_cached_sources: bool = False,
     return_star_colors: bool = False,
+    return_positions: bool = False,
+    with_overlay: bool = True,
     use_color_matrix: bool = False,       # ← new
     matrix_strength: float = 0.7,         # ← how hard the 3x3 rotates
     # ── Auto-σ waterfall ────────────────────────────────────────────────
@@ -773,6 +794,17 @@ def apply_star_based_white_balance(
         `auto_sigma=True`.
     autostretch : bool
         If True, overlay is built from an autostretched BN view for visibility.
+    return_positions : bool
+        Append an (N,2) float32 array of star centroids (x, y) in image
+        pixels to the returned tuple, row-aligned with the sample arrays.
+        For callers that need to know how the fitted stars are distributed
+        across the frame, not just what they measured.
+    with_overlay : bool
+        Build the star overlay at all. False returns None in its place and
+        skips the full-resolution stretch, the per-star ellipse pass and
+        two full-image colour conversions -- which on a dense field is the
+        bulk of this call. For callers that only want the balanced image
+        and the star samples.
     reuse_cached_sources : bool
         Reuse detections only if image shape and threshold match. Disabled
         automatically when `auto_sigma=True` since the resolved σ isn't
@@ -934,11 +966,16 @@ def apply_star_based_white_balance(
         raise ValueError("No stellar samples remained after circular median sampling.")
 
     # ------------------------------------------------------------------
-    # 4) Build preview overlay
+    # 4) Build preview overlay (skipped entirely when not asked for)
     # ------------------------------------------------------------------
-    disp = stretch_color_image(bg_neutral.copy(), 0.25) if autostretch else bg_neutral.copy()
+    overlay_rgb = None
+    disp = (None if not with_overlay else
+            (stretch_color_image(bg_neutral.copy(), 0.25) if autostretch
+             else bg_neutral.copy()))
 
-    if cv2 is not None:
+    if not with_overlay:
+        pass
+    elif cv2 is not None:
         overlay_bgr = cv2.cvtColor((disp * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
         for i in range(len(sources)):
             cx = float(sources["x"][i])
@@ -1085,20 +1122,32 @@ def apply_star_based_white_balance(
 
     star_count = int(len(bn_star_pixels))
 
+    overlay_out = (None if overlay_rgb is None
+                   else overlay_rgb.astype(np.float32, copy=False))
+
+    # sources has been filtered by keep_idx above, so it is row-aligned
+    # with both sample arrays.
+    if return_positions:
+        xy = np.stack([np.asarray(sources["x"], dtype=np.float32),
+                       np.asarray(sources["y"], dtype=np.float32)], axis=1)
+    else:
+        xy = None
+
     if return_star_colors:
-        return (
+        out = (
             balanced,
             star_count,
-            overlay_rgb.astype(np.float32, copy=False),
+            overlay_out,
             np.asarray(raw_star_pixels, dtype=np.float32),
             np.asarray(after_star_pixels, dtype=np.float32),
         )
-
-    return (
-        balanced,
-        star_count,
-        overlay_rgb.astype(np.float32, copy=False),
-    )
+    else:
+        out = (
+            balanced,
+            star_count,
+            overlay_out,
+        )
+    return (out + (xy,)) if return_positions else out
 
 from PyQt6.QtCore import QThread, pyqtSignal as _pyqtSignal
 

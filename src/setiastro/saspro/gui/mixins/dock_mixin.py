@@ -297,6 +297,31 @@ class DockMixin:
         except Exception:
             pass
 
+    def _init_minimap_dock(self):
+        """Workspace overview: the canvas drawn to scale, with the visible
+        part as a box you can drag."""
+        try:
+            from setiastro.saspro.widgets.minimap_dock import MinimapDock
+        except Exception as e:
+            print(f"WARNING: Could not initialize Workspace Map dock: {e}")
+            self.minimap_dock = None
+            return
+
+        self.minimap_dock = MinimapDock(self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,
+                           self.minimap_dock)
+        try:
+            anchor = (getattr(self, "resource_monitor_dock", None)
+                      or getattr(self, "header_dock", None)
+                      or getattr(self, "layers_dock", None))
+            if anchor is not None:
+                self.tabifyDockWidget(anchor, self.minimap_dock)
+        except Exception:
+            pass
+        # Off by default: it is a navigation aid for a workspace that has
+        # grown, not something every session needs taking up a panel.
+        self.minimap_dock.hide()
+
     def _init_resource_monitor_dock(self):
         """Initialize the System Resource Monitor as a standard utility dock."""
         try:
