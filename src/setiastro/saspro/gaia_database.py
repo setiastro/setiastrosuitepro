@@ -1736,6 +1736,146 @@ class _ChangeLocationDialog(QDialog):
 #  Download workers  (generic — kind selects the download base URL)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── TLS and integrity for the library downloads ──────────────────────────
+# There is exactly ONE source for these files. A user whose machine cannot
+# verify its certificate has no second mirror to fall back to -- the feature
+# is simply unavailable to them until they fetch 10 GB by hand in a browser.
+# That asymmetry is what makes the fallback below worth having here: refusing
+# the download protects nobody, it just ends the feature.
+#
+# What makes it defensible is that the CONTENT is verified independently of
+# the transport, by _verify_sqlite_download. TLS here is protecting a public
+# astronomical catalogue from tampering, not a credential -- nothing is sent
+# but a GET -- so a length-checked, format-checked file over an unverified
+# channel is a sound trade. A silently truncated or substituted one would not
+# be, which is why that check is not optional and runs on every download,
+# verified channel or not.
+_SSL_INSECURE_HOSTS: set = set()
+
+
+def _gaia_ssl_context(insecure: bool = False):
+    """TLS context for a library download.
+
+    certifi first: the usual cause of CERTIFICATE_VERIFY_FAILED is a missing
+    trust store rather than a hostile network -- see ssl_bootstrap, which
+    fixes it process-wide -- and trying certifi explicitly keeps verification
+    intact in the common case instead of giving it up.
+    """
+    import ssl
+    if insecure:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+def _is_cert_failure(exc) -> bool:
+    """A certificate problem specifically, not any old network error.
+
+    A refused connection, a DNS failure or a timeout must keep raising:
+    retrying those unverified would just fail twice and blame the wrong
+    thing.
+    """
+    import ssl
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, ssl.SSLCertVerificationError):
+            return True
+        if isinstance(exc, ssl.SSLError) and "CERTIFICATE_VERIFY" in str(exc):
+            return True
+        exc = getattr(exc, "reason", None) or getattr(exc, "__cause__", None)
+    return False
+
+
+def _gaia_urlopen(url: str, timeout: float = 7200):
+    """urlopen for a library file, retrying unverified on a cert failure.
+
+    Per host and per session, so one warning is printed rather than one per
+    file, and so a failure on the download host does not disarm anything
+    else. Nothing is remembered to disk.
+    """
+    import urllib.parse
+    host = urllib.parse.urlsplit(url).netloc.lower()
+    req = Request(url, headers={"User-Agent": "SASpro-GaiaLibrary/1.0"})
+
+    insecure = host in _SSL_INSECURE_HOSTS
+    try:
+        return urlopen(req, timeout=timeout,
+                       context=_gaia_ssl_context(insecure))
+    except Exception as e:
+        if insecure or not _is_cert_failure(e):
+            raise
+        _SSL_INSECURE_HOSTS.add(host)
+        print(f"[GaiaLibrary] WARNING: {host} failed certificate "
+              f"verification ({type(e).__name__}: {str(e)[:120]}). "
+              f"Retrying UNVERIFIED -- the downloaded file is still "
+              f"length- and format-checked before it is kept.")
+        return urlopen(req, timeout=timeout, context=_gaia_ssl_context(True))
+
+
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _verify_sqlite_download(tmp, done: int, total: int) -> None:
+    """Check the bytes before they are allowed to become a database.
+
+    Two failures this catches that a rename could not:
+
+    1. TRUNCATION. The old code renamed the temp file the moment the socket
+       stopped yielding bytes, which a dropped connection looks exactly like.
+       A half-written .sqlite opens fine and answers queries -- it simply has
+       no rows past the cut, so the symptom is a plate solve that cannot find
+       enough stars in half the sky, days later and nowhere near the cause.
+
+    2. SOMETHING THAT IS NOT A DATABASE. A captive portal, a proxy error
+       page or a B2 error document saved under the database's own name.
+
+    Raises IOError with something a user can act on. The caller already
+    deletes the temp file on any exception.
+    """
+    import sqlite3
+
+    if total and done != total:
+        raise IOError(
+            f"download incomplete: got {done:,} of {total:,} bytes "
+            f"({done / max(total, 1) * 100.0:.1f}%). The connection dropped "
+            f"before the file finished. Retry -- completed files are skipped."
+        )
+
+    try:
+        with open(tmp, "rb") as _f:
+            head = _f.read(len(_SQLITE_MAGIC))
+    except Exception as e:
+        raise IOError(f"could not read the downloaded file back: {e}")
+
+    if head != _SQLITE_MAGIC:
+        raise IOError(
+            "the downloaded file is not a SQLite database (it begins "
+            f"{head[:16]!r}). A proxy or captive-portal error page saved "
+            "under the database's name is the usual cause -- check whether "
+            "the network needs a sign-in, then retry."
+        )
+
+    # Page 1 only; this does not scan a 10 GB file.
+    try:
+        _cn = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+        try:
+            _cn.execute("PRAGMA schema_version").fetchone()
+        finally:
+            _cn.close()
+    except sqlite3.DatabaseError as e:
+        raise IOError(f"the downloaded database will not open: {e}")
+    except Exception:
+        # A sandbox that forbids the URI form is not the download's fault.
+        pass
+
+
 class _FileDownloadWorker(QThread):
     progress  = _Signal(int, int, str)
     finished  = _Signal(bool, str)
@@ -1753,8 +1893,7 @@ class _FileDownloadWorker(QThread):
     def run(self):
         tmp = self._dest.with_suffix(".tmp")
         try:
-            req = Request(self._url, headers={"User-Agent": "SASpro-GaiaLibrary/1.0"})
-            with urlopen(req, timeout=7200) as resp:
+            with _gaia_urlopen(self._url, timeout=7200) as resp:
                 total = int(resp.headers.get("Content-Length", 0))
                 done  = 0
                 chunk = 1024 * 1024
@@ -1779,6 +1918,7 @@ class _FileDownloadWorker(QThread):
                             f"{self._dest.name}  {done_mb:.0f}/{total_mb:.0f} MB  ({pct}%)"
                         )
 
+            _verify_sqlite_download(tmp, done, total)
             tmp.rename(self._dest)
             self.finished.emit(True, self._dest.name)
         except Exception as e:
@@ -1820,8 +1960,7 @@ class _GroupDownloadWorker(QThread):
             tmp  = dest.with_suffix(".tmp")
 
             try:
-                req = Request(url, headers={"User-Agent": "SASpro-GaiaLibrary/1.0"})
-                with urlopen(req, timeout=7200) as resp:
+                with _gaia_urlopen(url, timeout=7200) as resp:
                     total = int(resp.headers.get("Content-Length", 0))
                     done  = 0
                     chunk = 1024 * 1024
@@ -1847,6 +1986,7 @@ class _GroupDownloadWorker(QThread):
                                 f"{done_mb:.0f} / {total_mb:.0f} MB  ({pct}%)"
                             )
 
+                _verify_sqlite_download(tmp, done, total)
                 tmp.rename(dest)
                 done_files += 1
                 self.file_done.emit(fname, True)

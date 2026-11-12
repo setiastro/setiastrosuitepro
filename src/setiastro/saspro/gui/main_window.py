@@ -3057,11 +3057,18 @@ class AstroSuiteProMainWindow(
         main window as its parent for docman and log access.
         """
         from setiastro.saspro.survey_gradient import open_survey_gradient
+        # Opens with no document when nothing is active, rather than
+        # refusing. The grip in this dialog is dragged onto a View Bundle to
+        # run SRGC across a bundle of FILES, which needs the dialog open to
+        # drag from but needs no image of its own. The dialog adopts the
+        # active view if one appears later.
         sw = self.mdi.activeSubWindow()
-        if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
-            return
-        doc = sw.widget().document
+        doc = None
+        if sw is not None:
+            try:
+                doc = sw.widget().document
+            except Exception:
+                doc = None
         dlg = open_survey_gradient(self, doc)
         try:
             dlg.setWindowIcon(QIcon(srgc_path))
@@ -7287,6 +7294,42 @@ class AstroSuiteProMainWindow(
     # --- Command drop handling ----------------------------------------
 
 
+    def _headless_command_run(self):
+        """Context manager marking a dropped-command run as headless.
+
+        A View Bundle applies one shortcut to every view or file in the
+        bundle. Without this, a command that fails on all of them shows one
+        modal box PER ITEM, and the failure never reaches the bundle loop --
+        the handlers below swallow it into a dialog and return normally, so
+        the loop counts the item as applied and (for file-backed bundles)
+        writes the UNCHANGED image back over the original. A silent
+        overwrite reported as success.
+
+        Entered by view_bundle around its dispatch. Depth-counted because a
+        Function Bundle nests steps inside one run.
+        """
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            self._headless_cmd_depth = getattr(self, "_headless_cmd_depth", 0) + 1
+            try:
+                yield
+            finally:
+                self._headless_cmd_depth = max(
+                    0, getattr(self, "_headless_cmd_depth", 1) - 1)
+        return _cm()
+
+    def _drop_failed(self, title: str, text: str) -> None:
+        """Report a dropped-command failure to whoever is driving.
+
+        Interactive: a message box, as before. Headless: raise, so the
+        bundle runner can count it, log it, and NOT save the file.
+        """
+        if getattr(self, "_headless_cmd_depth", 0) > 0:
+            raise RuntimeError(f"{title}: {text}")
+        QMessageBox.warning(self, title, text)
+
     def _handle_command_drop(self, payload: dict, target_sw):
         # --- Debug: track raw calls ---
         cid_raw = (payload or {}).get("command_id")
@@ -7877,15 +7920,14 @@ class AstroSuiteProMainWindow(
             try:
                 from setiastro.saspro.srgc_preset import apply_srgc_via_preset
                 if doc is None or getattr(doc, "image", None) is None:
-                    QMessageBox.warning(self, "Survey Gradient",
-                                        "Target document has no image.")
+                    self._drop_failed("Survey Gradient",
+                                      "Target document has no image.")
                     return
                 apply_srgc_via_preset(self, doc, preset or {})
                 self._log(f"Applied SRGC preset to "
                           f"'{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Survey Gradient",
-                                    f"Apply failed:\n{e}")
+                self._drop_failed("Survey Gradient", f"Apply failed:\n{e}")
             return
 
         if cid == "graxpert":

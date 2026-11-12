@@ -590,7 +590,18 @@ def _parse_header_blob_to_header(blob: str) -> Header:
 
 
 def _strip_wcs_keys(h: Header) -> Header:
-    """Return a copy without WCS/SIP keys (so ASTAP can write fresh)."""
+    """Return a copy without WCS/SIP keys (so ASTAP can write fresh).
+
+    SOLV* goes too. Those cards describe ONE solve -- its residual, its
+    95th percentile, its star count -- and only the in-house Gaia solver
+    writes them. Leaving them on the acquisition base meant a later solve by
+    a different solver inherited them wholesale: ASTAP or astrometry.net
+    produces no "RMS vs Gaia DR3", so the success dialog went on reporting
+    the PREVIOUS solver's residual and star count beside the new solution's
+    centre and scale. Two solves of one file then read as agreeing on
+    quality when they had never been measured the same way, and a bad solve
+    could hand its numbers to the good one that replaced it.
+    """
     h = h.copy()
     for key in list(h.keys()):
         ku = key.upper()
@@ -600,7 +611,7 @@ def _strip_wcs_keys(h: Header) -> Header:
             "WCSAXES", "LATPOLE", "LONPOLE", "EQUINOX",
             "PV1_", "PV2_", "SIP",
             "A_ORDER", "B_ORDER", "AP_ORDER", "BP_ORDER",
-            "A_", "B_", "AP_", "BP_", "PLTSOLVD"
+            "A_", "B_", "AP_", "BP_", "PLTSOLVD", "SOLV"
         ):
             if ku.startswith(prefix):
                 h.pop(key, None)
@@ -1440,9 +1451,23 @@ def _merge_wcs_into_base_header(base_header: Header | None, wcs_header: Header |
     #
     # which tracks the numerically measured north angle to 0.06 deg, and to
     # better than 0.01 deg once a real solution's skew is present.
+    #
+    # Two changes from the original form of this block. It used to run
+    # only when CROTA was MISSING, which let a stale CROTA2 from the input
+    # file outlive the solve that disproved it -- and _ensure_wcs_cd_matrix
+    # reads CROTA2 back as the orientation on any later load that finds no
+    # matrix. After a solve the CD *is* the answer, so CROTA is rewritten
+    # from it every time.
+    #
+    # FLIPPED is written alongside, because a position angle cannot carry
+    # parity on its own: the +180 below folds the det > 0 case onto the
+    # same number the det < 0 case gives. det > 0 is the ordinary state of
+    # a top-down frame -- it is what the solve popup calls "Parity:
+    # flipped". Without this card the synthesis in _ensure_wcs_cd_matrix
+    # rebuilds every such header mirrored; with it, PA + FLIPPED
+    # reconstruct the original CD exactly, on both parities.
     try:
-        if ("CROTA1" not in merged or "CROTA2" not in merged) and \
-           ("CD1_1" in merged and "CD1_2" in merged):
+        if "CD1_1" in merged and "CD1_2" in merged:
             _c11 = float(merged["CD1_1"])
             _c12 = float(merged["CD1_2"])
             _c21 = float(merged.get("CD2_1", 0.0))
@@ -1454,6 +1479,7 @@ def _merge_wcs_into_base_header(base_header: Header | None, wcs_header: Header |
             rot %= 360.0
             merged["CROTA1"] = rot
             merged["CROTA2"] = rot
+            merged["FLIPPED"] = bool(_det > 0)
     except Exception:
         pass
 

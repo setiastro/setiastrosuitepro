@@ -25,12 +25,15 @@ from __future__ import annotations
 
 import numpy as np
 
+from PyQt6.QtCore import QSettings
+
 from .survey_gradient import (
     SURVEYS,
     DEFAULT_SURVEY,
     SurveyFetchError,
     survey_gradient_model,
     apply_survey_gradient,
+    ensure_solved_header,
     reset_dead_hosts,
 )
 
@@ -99,15 +102,37 @@ def apply_srgc_via_preset(main_window, doc, preset: dict | None = None):
     img = _doc_image_float01(doc)
     if img is None:
         raise SurveyFetchError("Target document has no image data.")
-    hdr = _header_of(doc)
-    if hdr is None:
-        raise SurveyFetchError(
-            "This image has no WCS. SRGC fetches its reference by sky "
-            "coordinates, so plate-solve it first.\n\n"
-            "Open the SRGC dialog if you want it to offer to solve for you — "
-            "a blind solve can take minutes and is never started from a "
-            "dropped preset without asking."
-        )
+    # Solve it ourselves when it is not solved.
+    #
+    # This used to refuse, on the reasoning that a blind solve takes minutes
+    # and should not start without being asked. But the asking already
+    # happened: dropping the grip onto a bundle of files IS the instruction.
+    # A View Bundle should not have to know that SRGC needs a WCS, and the
+    # alternative -- refusing on every unsolved file -- is not a safer
+    # outcome, just a useless one.
+    #
+    # parent=None is what makes it headless: ensure_solved_header only puts
+    # up its confirmation when it has somebody to ask, and otherwise goes
+    # straight to plate_solve_doc_inplace, which falls back to the blind
+    # path by itself when the header carries no pointing.
+    hdr, _solved = ensure_solved_header(
+        None, img, _header_of(doc), label="This image",
+        settings=QSettings(), ask=True)
+
+    if _solved:
+        # Keep the solution on the document, so it is still there when a
+        # file-backed bundle run saves this image back to disk -- otherwise
+        # the next run over the same files pays for the solve all over again.
+        try:
+            from setiastro.saspro.plate_solver import (
+                _post_solve_metadata_cleanup)
+            meta = getattr(doc, "metadata", None)
+            if isinstance(meta, dict):
+                _post_solve_metadata_cleanup(meta, hdr)
+        except Exception as _e:
+            meta = getattr(doc, "metadata", None)
+            if isinstance(meta, dict):
+                meta["original_header"] = hdr
 
     # A host that was down for an earlier drop may be up now, and a dropped
     # preset is a fresh user gesture, same as reopening the dialog.
@@ -204,8 +229,11 @@ def open_srgc_with_preset(main_window, preset: dict | None = None):
                 doc = None
             if doc is not None:
                 break
-    if doc is None or getattr(doc, "image", None) is None:
-        raise SurveyFetchError("Open an image first.")
+    # doc may be None: the dialog opens pointed at nothing and adopts a
+    # view if one becomes active. Double-clicking a shortcut to inspect its
+    # settings is a reasonable thing to do with no image open.
+    if doc is not None and getattr(doc, "image", None) is None:
+        doc = None
 
     dlg = open_survey_gradient(main_window, doc)
     p = srgc_params_from_preset(preset)

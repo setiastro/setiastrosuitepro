@@ -9,7 +9,8 @@ from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QE
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem,QApplication,
     QPushButton, QSplitter, QLabel, QAbstractItemView, QDialogButtonBox,
-    QCheckBox, QFrame, QSizePolicy, QMenu, QInputDialog, QFileDialog
+    QCheckBox, QFrame, QSizePolicy, QMenu, QInputDialog, QFileDialog,
+    QProgressBar
 )
 import traceback
 from PyQt6.QtWidgets import QMessageBox as _QMB
@@ -578,7 +579,15 @@ def _apply_one_shortcut_to_doc(mw, doc, payload: dict):
     if callable(handle):
         # Pass a fake subwindow whose widget() returns our headless view
         fake_sw = _FakeSubWindow(view)
-        handle(payload, target_sw=fake_sw)
+        # Tell the main window nobody is watching: failures must come back
+        # as exceptions so this run can count them and skip the save,
+        # instead of becoming one modal box per item in the bundle.
+        _mark = getattr(mw, "_headless_command_run", None)
+        if callable(_mark):
+            with _mark():
+                handle(payload, target_sw=fake_sw)
+        else:
+            handle(payload, target_sw=fake_sw)
         return
 
     # 2) Secondary: explicit apply-to-view hook
@@ -590,6 +599,110 @@ def _apply_one_shortcut_to_doc(mw, doc, payload: dict):
     # 3) Last-resort: let the shim try a no-op-safe apply_command
     view.apply_command(cid, payload.get("preset") or {})
 
+
+
+class _BundleProgress(QDialog):
+    """Live progress for a bundle run, with a working Cancel.
+
+    Modeless on purpose. The run itself is synchronous on the GUI thread --
+    it has to be, because it calls straight into _handle_command_drop, which
+    touches widgets and can open dialogs of its own, none of which is safe
+    off the main thread. So responsiveness comes from pumping the event loop
+    between items rather than from a worker, and this window is what that
+    pumping has to show for itself.
+
+    Cancel takes effect at the next item boundary: a fetch or a blind solve
+    already in flight is not interruptible, so the honest thing is to say
+    "finishing this one" rather than pretend the button stopped it.
+    """
+
+    def __init__(self, parent, title: str, total: int):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
+        self.cancelled = False
+        self._total = max(1, int(total))
+        self._done = 0
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+
+        self._lbl_item = QLabel(self.tr("Starting…"))
+        self._lbl_item.setWordWrap(True)
+        lay.addWidget(self._lbl_item)
+
+        self._bar = QProgressBar()
+        self._bar.setRange(0, self._total)
+        self._bar.setValue(0)
+        self._bar.setFormat("%v / %m")
+        lay.addWidget(self._bar)
+
+        self._lbl_sub = QLabel("")
+        self._lbl_sub.setStyleSheet("color:#888; font-size:11px;")
+        self._lbl_sub.setWordWrap(True)
+        lay.addWidget(self._lbl_sub)
+
+        self._lbl_tally = QLabel("")
+        self._lbl_tally.setStyleSheet("color:#888; font-size:11px;")
+        lay.addWidget(self._lbl_tally)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._btn_cancel = QPushButton(self.tr("Cancel"))
+        self._btn_cancel.clicked.connect(self._on_cancel)
+        row.addWidget(self._btn_cancel)
+        lay.addLayout(row)
+
+        self.resize(460, 170)
+
+    # -- driving it ------------------------------------------------------
+    def begin_item(self, label: str):
+        self._lbl_item.setText(label)
+        self._lbl_sub.setText("")
+        self.pump()
+
+    def sub(self, text: str):
+        """Phase within one item: loading, applying, saving."""
+        self._lbl_sub.setText(str(text))
+        self.pump()
+
+    def end_item(self, ok_count: int, fail_count: int):
+        self._done += 1
+        self._bar.setValue(min(self._done, self._total))
+        bits = []
+        if ok_count:
+            bits.append(self.tr("{0} done").format(ok_count))
+        if fail_count:
+            bits.append(self.tr("{0} failed").format(fail_count))
+        self._lbl_tally.setText("  ·  ".join(bits))
+        self.pump()
+
+    def pump(self):
+        # 0 ms: repaint and deliver the Cancel click without inviting the
+        # user to start something else mid-run.
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
+
+    def _on_cancel(self):
+        self.cancelled = True
+        self._btn_cancel.setEnabled(False)
+        self._lbl_sub.setText(
+            self.tr("Cancelling — finishing the current item first…"))
+        self.pump()
+
+    def closeEvent(self, e):
+        # Closing the window means the same thing as pressing Cancel.
+        self.cancelled = True
+        super().closeEvent(e)
+
+    def finish(self):
+        try:
+            self.close()
+            self.deleteLater()
+        except Exception:
+            pass
 
 
 # ----------------------------- ViewBundleDialog -----------------------------
@@ -1366,6 +1479,16 @@ class ViewBundleDialog(QDialog):
         view_errors: list[str] = []
         file_errors: list[str] = []
 
+        # Nothing used to be shown until the summary, so a bundle of a dozen
+        # files -- each of which can plate-solve and fetch a survey -- looked
+        # like a hung app for minutes and then announced it was finished.
+        _total_targets = len(ptrs) + len(file_paths)
+        prog = _BundleProgress(
+            self, self.tr("Applying “{0}” to {1} target(s)").format(
+                cmd, _total_targets), _total_targets)
+        prog.show()
+        prog.pump()
+
         # ---------- Apply to OPEN VIEWS ----------
         if cmd == "function_bundle":
             try:
@@ -1376,9 +1499,14 @@ class ViewBundleDialog(QDialog):
 
             if norm_steps:
                 for ptr in ptrs:
+                    if prog.cancelled:
+                        break
                     _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
                     if sw is None:
+                        prog.end_item(view_applied, len(view_errors))
                         continue
+                    prog.begin_item(self.tr("View: {0}").format(
+                        sw.windowTitle() or "view"))
                     try:
                         if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
                             mw.mdi.setActiveSubWindow(sw)
@@ -1387,18 +1515,26 @@ class ViewBundleDialog(QDialog):
                             w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
                         QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
 
-                        for st in norm_steps:
+                        for _i, st in enumerate(norm_steps, 1):
+                            prog.sub(self.tr("step {0}/{1}: {2}").format(
+                                _i, len(norm_steps), st.get("command_id")))
                             mw._handle_command_drop(st, target_sw=sw)
                             QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 0)
                         view_applied += 1
                     except Exception as e:
                         view_errors.append(str(e))
+                    prog.end_item(view_applied, len(view_errors))
             # else: no steps → we’ll still try files below
         else:
             for ptr in ptrs:
+                if prog.cancelled:
+                    break
                 _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
                 if sw is None:
+                    prog.end_item(view_applied, len(view_errors))
                     continue
+                prog.begin_item(self.tr("View: {0}").format(
+                    sw.windowTitle() or "view"))
                 try:
                     if hasattr(mw, "mdi") and mw.mdi.activeSubWindow() is not sw:
                         mw.mdi.setActiveSubWindow(sw)
@@ -1412,23 +1548,42 @@ class ViewBundleDialog(QDialog):
                     view_applied += 1
                 except Exception as e:
                     view_errors.append(str(e))
+                prog.end_item(view_applied, len(view_errors))
 
         # start total with views
         total_applied = view_applied
 
         # ---------- Apply to FILE PATHS ----------
         if file_paths:
-            for p in file_paths:
+            for _n, p in enumerate(file_paths, 1):
+                if prog.cancelled:
+                    break
+                prog.begin_item(self.tr("File {0}/{1}: {2}").format(
+                    _n, len(file_paths), os.path.basename(p)))
                 try:
-                    self._apply_payload_to_single_file(payload, p, overwrite=True, out_dir=None)
+                    self._apply_payload_to_single_file(
+                        payload, p, overwrite=True, out_dir=None,
+                        status_cb=prog.sub)
                     file_ok += 1
                 except Exception as e:
                     tb = traceback.format_exc(limit=6)
                     file_errors.append(f"{os.path.basename(p)}: {e.__class__.__name__}: {e}\n{tb}")
+                prog.end_item(view_applied + file_ok,
+                              len(view_errors) + len(file_errors))
 
             total_applied += file_ok
 
         # ---------- Final summary ----------
+        _was_cancelled = prog.cancelled
+        prog.finish()
+
+        if _was_cancelled:
+            _QMB.information(
+                self, "Apply",
+                f"Cancelled.\n\nApplied to {total_applied} target(s) before "
+                f"stopping; the rest were left untouched.")
+            return
+
         if total_applied == 0 and not (view_errors or file_errors):
             _QMB.information(self, "Apply", "No valid targets in the bundle.")
             return
@@ -1466,7 +1621,8 @@ class ViewBundleDialog(QDialog):
                 else os.path.join(out_dir, os.path.basename(src_path)))
 
     def _apply_payload_to_single_file(self, payload: dict, path: str,
-                                    overwrite: bool = True, out_dir: Optional[str] = None) -> bool:
+                                    overwrite: bool = True, out_dir: Optional[str] = None,
+                                    status_cb=None) -> bool:
         """
         Headless batch that avoids DocManager completely:
         - load with legacy I/O
@@ -1478,7 +1634,15 @@ class ViewBundleDialog(QDialog):
         if mw is None:
             raise RuntimeError("Main window not available")
 
+        def _say(msg: str):
+            if callable(status_cb):
+                try:
+                    status_cb(msg)
+                except Exception:
+                    pass
+
         # 1) load from disk (no signals, no UI)
+        _say("loading…")
         img, header, bit_depth, is_mono = load_image(path)
         if img is None:
             raise RuntimeError(f"Could not load: {path}")
@@ -1503,12 +1667,15 @@ class ViewBundleDialog(QDialog):
             steps = [s for s in (pl.get("steps") or []) if isinstance(s, dict) and s.get("command_id")]
             if not steps:
                 raise RuntimeError("Function Bundle has no usable steps")
-            for st in steps:
+            for _i, st in enumerate(steps, 1):
+                _say(f"step {_i}/{len(steps)}: {st.get('command_id')}")
                 _apply_one_shortcut_to_doc(mw, doc, st)
         elif cid != "bundle":  # ignore nested bundles
+            _say(f"applying {cid}…")
             _apply_one_shortcut_to_doc(mw, doc, pl)
 
         # 3) save back (still no UI)
+        _say("saving…")
         target_path = self._resolve_file_target(path, overwrite, out_dir)
         ext = os.path.splitext(target_path)[1].lower().lstrip(".")
         # use legacy writer directly; mirror DocManager’s parameter mapping

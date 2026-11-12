@@ -134,6 +134,19 @@ if getattr(sys, "frozen", False) and not os.environ.get("SASPRO_SKIP_PYTHON_PREF
 # the first parallel JIT compile (the warmup_jit crash); this demotes TBB so
 # numba resolves to omp/workqueue instead. No-op on unaffected Python/OS combos.
 from setiastro.saspro import numba_bootstrap  # noqa: E402,F401  (import for side effect)
+
+# -- TLS trust store -------------------------------------------------------
+# Must run before anything opens an https connection, and it is safe this
+# early because it imports no C extension (certifi is a path and a .pem; this
+# does not import ssl). On macOS the python.org interpreters have no trust
+# store until someone runs Install Certificates.command, so every urllib call
+# -- the Gaia database downloads, the survey fetches, the minor-body manifest
+# -- fails CERTIFICATE_VERIFY_FAILED while requests and astroquery work,
+# because those default to certifi and urllib does not. This hands urllib the
+# same bundle. Additive on Windows, and skipped if the variables are already
+# set.
+from setiastro.saspro import ssl_bootstrap  # noqa: E402
+ssl_bootstrap.apply()
 # -*- coding: utf-8 -*-
 """
 Seti Astro Suite Pro - Main Entry Point Module
