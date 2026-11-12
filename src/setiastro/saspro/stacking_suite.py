@@ -32619,12 +32619,21 @@ class StackingSuiteDialog(QDialog):
         has_cdelt = ("CDELT1" in header) and ("CDELT2" in header)
         if has_cd:
             return header
-        if has_pc and has_cdelt:
+        if has_cdelt:
+            # CDELT is a complete linear transform on its own -- the PC it
+            # pairs with defaults to the identity, and a CROTA2 beside it is
+            # the AIPS form. Requiring has_pc here let a header carrying real
+            # astrometry as CDELT with no CD fall through to the rebuild
+            # below, which scrubs CDELT and substitutes a PIXSCALE/POSANGLE
+            # guess. Same defect, and same fix, as _ensure_wcs_cd_matrix in
+            # legacy/image_manager.py -- these two are kept in step.
+            #
             # Reject the astropy-default PC=I, CDELT=1.0 deg sentinel
             # (that header can only have come from a prior broken write).
             try:
                 cdelt1 = float(header["CDELT1"]); cdelt2 = float(header["CDELT2"])
-                pc11   = float(header["PC1_1"]);  pc22   = float(header["PC2_2"])
+                pc11   = float(header.get("PC1_1", 1.0))
+                pc22   = float(header.get("PC2_2", 1.0))
                 default_sentinel = (
                     abs(cdelt1 - 1.0) < 1e-9 and abs(cdelt2 - 1.0) < 1e-9
                     and abs(pc11) < 10.0 and abs(pc22) < 10.0

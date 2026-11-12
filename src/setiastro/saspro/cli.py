@@ -473,6 +473,15 @@ def _run_report(argv: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
+    # Same trust-store bootstrap the GUI entry does, because the headless
+    # paths reach the network too (plate solving, catalogue pulls). Cheap,
+    # idempotent, and a no-op once the GUI entry has already run it.
+    try:
+        from setiastro.saspro import ssl_bootstrap
+        ssl_bootstrap.apply()
+    except Exception:
+        pass
+
     if not argv:
         return _launch_gui()
 

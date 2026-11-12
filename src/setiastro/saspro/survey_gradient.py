@@ -1217,12 +1217,94 @@ _TILE_CACHE: dict[tuple, np.ndarray | None] = {}
 _TILE_CACHE_MAX = 256
 
 
+# Hosts whose certificate could not be verified this session, and which we
+# have therefore agreed to talk to unverified. Per host and per session: one
+# bad mirror does not disarm the others, and nothing is remembered to disk.
+_SSL_INSECURE_HOSTS: set[str] = set()
+
+
+def _ssl_context(insecure: bool = False):
+    """TLS context for a survey fetch.
+
+    The usual cause of CERTIFICATE_VERIFY_FAILED here is not a hostile
+    network, it is a missing trust store: a frozen build that ships no CA
+    bundle, or a Python whose store was never populated. certifi carries one
+    and is already present (requests and astroquery both depend on it), so
+    trying it first fixes the common case WITH verification intact rather
+    than by giving it up.
+    """
+    import ssl
+    if insecure:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+def _is_cert_failure(exc) -> bool:
+    """A certificate problem specifically, not any old network error.
+
+    Only this class of failure earns the retry below. A refused connection,
+    a timeout or a 500 means the mirror is down, and pretending otherwise
+    would just fetch it twice before reporting the same thing.
+    """
+    import ssl
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, ssl.SSLCertVerificationError):
+            return True
+        if isinstance(exc, ssl.SSLError) and "CERTIFICATE_VERIFY" in str(exc):
+            return True
+        exc = getattr(exc, "reason", None) or getattr(exc, "__cause__", None)
+    return False
+
+
 def _http_get(url: str, timeout: float = HIPS_TIMEOUT) -> bytes:
+    """GET a survey URL, falling back to an unverified connection if the
+    certificate cannot be checked.
+
+    This is deliberately scoped to SRGC's own survey fetches and changes
+    nothing else in SASpro: no global
+    ssl._create_default_https_context override, so the Gaia downloads, the
+    update check and the minor-body manifest keep verifying as before.
+
+    The fallback is safe to make automatic HERE because of what these
+    requests are: unauthenticated GETs of public survey imagery, carrying no
+    credentials and no user data. The worst a tampered reply can do is give
+    the background model wrong pixels -- which the coverage, contrast and
+    quantisation checks downstream already have to survive, because mirrors
+    serve rescaled and re-encoded data anyway. It would NOT be safe to
+    generalise this to anything that sends a token or writes a file to disk.
+    """
     import urllib.request
+    import urllib.parse
+
+    host = urllib.parse.urlsplit(url).netloc.lower()
     req = urllib.request.Request(
         url, headers={"User-Agent": "SASpro-SurveyGradient"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+
+    insecure = host in _SSL_INSECURE_HOSTS
+    try:
+        with urllib.request.urlopen(
+                req, timeout=timeout,
+                context=_ssl_context(insecure)) as r:
+            return r.read()
+    except Exception as e:
+        if insecure or not _is_cert_failure(e):
+            raise
+        _SSL_INSECURE_HOSTS.add(host)
+        _log(f"  WARNING: {host} failed certificate verification "
+             f"({_brief(e)}); retrying UNVERIFIED and staying unverified for "
+             f"this host for the rest of the session")
+        with urllib.request.urlopen(
+                req, timeout=timeout, context=_ssl_context(True)) as r:
+            return r.read()
 
 
 def hips_properties(base_url: str, *, timeout: float = HIPS_TIMEOUT) -> dict:
@@ -2118,15 +2200,22 @@ def fetch_reference_channels(wcs: WCS, out_hw: tuple[int, int],
 #                                 Robust fit
 # =============================================================================
 
-def _robust_norm01(a: np.ndarray) -> np.ndarray:
+def _robust_norm01(a: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
     """
     Percentile-normalise to [0,1] so two images with wildly different units
     (Rayleighs vs ADU vs 16-bit plate counts) can be compared for brightness.
     Clipped at the 1st/99.5th percentile so a handful of saturated stars
     cannot compress everything else into the bottom of the range.
+
+    `mask` (True = usable) confines the percentiles to real pixels. On a
+    mosaic panel more than half the frame can be no-data, and a block of
+    zeros that size drags the 1st percentile onto the border rather than
+    onto the sky.
     """
     a = np.asarray(a, dtype=np.float32)
     f = np.isfinite(a)
+    if mask is not None and np.asarray(mask).shape == a.shape[:2]:
+        f = f & np.asarray(mask, dtype=bool)
     if not f.any():
         return np.zeros_like(a)
     lo, hi = np.percentile(a[f], [1.0, 99.5])
@@ -2136,7 +2225,8 @@ def _robust_norm01(a: np.ndarray) -> np.ndarray:
 
 
 def _selection_map(tgt_small: np.ndarray, ref_small: np.ndarray,
-                   patch_size: int) -> np.ndarray:
+                   patch_size: int,
+                   data_mask: np.ndarray | None = None) -> np.ndarray:
     """
     The brightness map that sample points are chosen on.
 
@@ -2161,19 +2251,49 @@ def _selection_map(tgt_small: np.ndarray, ref_small: np.ndarray,
 
     t = _to_luminance(tgt_small) if tgt_small.ndim == 3 else tgt_small
     t = np.asarray(t, dtype=np.float32)
+
+    m = None
+    if data_mask is not None:
+        _m = np.asarray(data_mask, dtype=bool)
+        if _m.shape == t.shape[:2] and not _m.all():
+            m = _m.astype(np.float32)
+
     hp = None
     if cv2 is not None:
         try:
             sigma = max(2.0, float(patch_size))
             k = int(2 * round(3 * sigma) + 1)
-            low = cv2.GaussianBlur(t, (k, k), sigma, borderType=cv2.BORDER_REPLICATE)
+            if m is None:
+                low = cv2.GaussianBlur(t, (k, k), sigma,
+                                       borderType=cv2.BORDER_REPLICATE)
+            else:
+                # NORMALISED convolution. A plain blur across a mosaic
+                # panel's border averages sky with the 0.0 surround, so
+                # `low` collapses near the edge and t - low lights up a
+                # band 3*sigma wide INSIDE the panel -- which this map
+                # reads as structure, so the sampler then refuses to put
+                # points anywhere near the edge. With sigma = patch_size
+                # that band is most of a narrow panel, and the model ends
+                # up constrained only in the middle of it.
+                #
+                # Dividing the blurred data by the blurred mask averages
+                # over the real pixels ONLY, so the edge stops being a
+                # step and the high-pass goes back to meaning "stars and
+                # sharp artifacts", which is all it is here for.
+                num = cv2.GaussianBlur(t * m, (k, k), sigma,
+                                       borderType=cv2.BORDER_REPLICATE)
+                den = cv2.GaussianBlur(m, (k, k), sigma,
+                                       borderType=cv2.BORDER_REPLICATE)
+                low = np.where(den > 1e-3, num / np.maximum(den, 1e-3), t)
             hp = np.clip(t - low, 0.0, None)      # positive excursions only
+            if m is not None:
+                hp = hp * m                       # no-data contributes nothing
         except Exception:
             hp = None
     if hp is None:
         _log("  (no cv2: star rejection via high-pass disabled)")
         return r
-    return np.maximum(r, _robust_norm01(hp)).astype(np.float32)
+    return np.maximum(r, _robust_norm01(hp, data_mask)).astype(np.float32)
 
 
 def _sampling_mask(ref_small: np.ndarray, valid: np.ndarray, *,
@@ -2309,7 +2429,8 @@ def _shared_sample_points(tgt_small: np.ndarray, ref_small: np.ndarray,
     had no coverage and was median-filled — sampling there would be fitting an
     invented flat value and would drag the model toward it.
     """
-    combined = _selection_map(tgt_small, ref_small, patch_size)
+    combined = _selection_map(tgt_small, ref_small, patch_size,
+                              data_mask=valid)
 
     allowed, info = _sampling_mask(
         ref_small, valid,
@@ -2654,11 +2775,32 @@ def survey_gradient_model(
     valid = np.isfinite(ref)
     if ref_colour:
         valid = valid.all(axis=2)
+
+    # The survey's own footprint, kept separate from the mask the fit uses.
+    # It is what the coverage report and the min_coverage check below are
+    # about, and saying "the reference covers only 38% of this field"
+    # because a mosaic panel is 62% black would be a lie about the survey.
+    ref_valid = valid
+
+    # 0.0 is no-data everywhere in SASpro. Those pixels are not dark sky with
+    # a gradient over them, so they must not reach the sample chooser or the
+    # fit -- both are gated on `valid` from here down.
+    _has_data = _work_data_mask(img, (h, w))
+    if not _has_data.all():
+        _log(f"no-data: {100.0 * (1.0 - float(_has_data.mean())):.2f}% of the "
+             f"work grid is 0.0 in the target; excluded from sampling, from "
+             f"the fit and from the reported spans")
+        valid = valid & _has_data
+        if not valid.any():
+            raise SurveyFetchError(
+                "Every pixel the survey covers is 0.0 (no-data) in this "
+                "image, so there is no sky here to fit a background to."
+            )
     # Luminance drives point selection and the structure veto: the veto is a
     # statement about where real sky structure is, which is one fact about the
     # sky, not three.
     ref_luma = _to_luminance(ref) if ref_colour else ref
-    coverage = float(valid.mean()) if valid.size else 0.0
+    coverage = float(ref_valid.mean()) if ref_valid.size else 0.0
     _log(_array_stats(ref, "reference as modelled"))
     _log(f"coverage = {coverage*100:.2f}%  (minimum {min_coverage*100:.0f}%)")
 
@@ -2712,13 +2854,26 @@ def survey_gradient_model(
     if img_small.shape[:2] != (h, w):
         img_small = _resize_to(img_small, (h, w))
 
+    # The same treatment the reference gets just below, for the same reason.
+    # ABE does NOT model from the sample points alone, so leaving a mosaic
+    # panel's 0.0 surround in place bends the modelled background down into
+    # the border: measured at 22% shape error over the panel, with the
+    # modelled and true backgrounds correlating only 0.85. Filling the
+    # no-data with the median of the real pixels removes the cliff. The fill
+    # is never sampled -- `valid` already excludes it -- so it informs
+    # nothing; it only stops the absence from informing everything.
+    if not _has_data.all():
+        _fill_t = _median_where(img_small, _has_data)
+        _m = _has_data[..., None] if img_small.ndim == 3 else _has_data
+        img_small = np.where(_m, img_small, _fill_t).astype(np.float32)
+
     # NaN outside the footprint would poison the fit; fill with the median of
     # the covered part so the model stays smooth. The fill is NOT sampled —
     # `valid` is passed through to the point generator below.
     ref_filled = ref.copy()
-    if not valid.all():
-        fill = float(np.nanmedian(ref)) if np.any(valid) else 0.0
-        ref_filled[~valid] = fill
+    if not ref_valid.all():
+        fill = float(np.nanmedian(ref)) if np.any(ref_valid) else 0.0
+        ref_filled[~ref_valid] = fill
     ref_luma_filled = (_to_luminance(ref_filled) if ref_colour else ref_filled)
 
     if progress_cb:
@@ -2817,7 +2972,7 @@ def survey_gradient_model(
         rm = np.where(valid, rp, np.nan).astype(np.float32)
         a, b, _ = _robust_linear_fit(rm, bg_t)
         grad_small = (bg_t - (a + b * rp)).astype(np.float32)
-        grad_small -= float(np.nanmedian(grad_small))
+        grad_small -= _median_where(grad_small, valid)
         coeffs.append((a, b))
     else:
         planes = []
@@ -2826,7 +2981,7 @@ def survey_gradient_model(
             rm = np.where(valid, rp, np.nan).astype(np.float32)
             a, b, _ = _robust_linear_fit(rm, bg_t[..., c])
             g = (bg_t[..., c] - (a + b * rp)).astype(np.float32)
-            g -= float(np.nanmedian(g))
+            g -= _median_where(g, valid)
             planes.append(g)
             coeffs.append((a, b))
         grad_small = np.stack(planes, axis=-1).astype(np.float32)
@@ -2847,7 +3002,7 @@ def survey_gradient_model(
         return float(np.percentile(v, 99.5) - np.percentile(v, 0.5))
 
     ref_span = _span(bg_r, valid)
-    grad_span = _span(grad_small)
+    grad_span = _span(grad_small, valid)
     explained = [abs(b) * ref_span for _, b in coeffs]
 
     # Two amplitudes, split into shares that sum to 1:
@@ -3005,6 +3160,59 @@ def _resize_to(a: np.ndarray, hw: tuple[int, int]) -> np.ndarray:
     return np.stack([a[..., c][ys][:, xs] for c in range(a.shape[2])], axis=-1).astype(np.float32)
 
 
+def _work_data_mask(img: np.ndarray, hw: tuple[int, int]) -> np.ndarray:
+    """Which work-grid pixels are backed by real data all the way down.
+
+    0.0 is no-data throughout SASpro, and on a mosaic panel that is most of
+    the frame -- the black surround is not dark sky with a gradient over it,
+    there is nothing there at all. Fitting a background across it models the
+    border instead of the sky.
+
+    A work pixel survives only if EVERY full-resolution pixel inside it is
+    non-zero, so the partly covered pixels along a panel edge, whose average
+    is a blend of sky and nothing, go too. On colour, a zero in ANY channel
+    disqualifies the pixel: for fitting, one channel with no data is reason
+    enough not to trust it.
+    """
+    a = np.asarray(img)
+    nz = (a != 0.0) if a.ndim == 2 else np.all(a != 0.0, axis=2)
+    h, w = int(hw[0]), int(hw[1])
+    if nz.all():
+        return np.ones((h, w), dtype=bool)
+    H, W = a.shape[:2]
+    frac = _downsample_area(nz.astype(np.float32),
+                            max(1, int(round(max(H, W) / max(h, w)))))
+    frac = np.asarray(frac, dtype=np.float32)
+    if frac.ndim == 3:
+        frac = frac[..., 0]
+    if frac.shape[:2] != (h, w):
+        frac = _resize_to(frac, (h, w))
+    return frac >= 0.999
+
+
+def _nodata_pixels(img: np.ndarray) -> np.ndarray | None:
+    """Full-resolution no-data mask, or None when the frame is fully covered.
+
+    Stricter than _work_data_mask on purpose: this one decides what is FORCED
+    BACK to 0.0 after a correction, so it only claims a colour pixel when
+    every channel is zero. Zeroing a pixel that still holds data in two of
+    three channels would be destroying data to tidy up a border.
+    """
+    a = np.asarray(img)
+    nd = (a == 0.0) if a.ndim == 2 else np.all(a == 0.0, axis=2)
+    return nd if nd.any() else None
+
+
+def _median_where(a: np.ndarray, m: np.ndarray | None) -> float:
+    """Median over the usable pixels only."""
+    v = np.asarray(a, dtype=np.float32)
+    if m is not None and np.asarray(m).shape == v.shape[:2]:
+        v = v[np.asarray(m, dtype=bool)]
+    v = np.asarray(v).ravel()
+    v = v[np.isfinite(v)]
+    return float(np.median(v)) if v.size else 0.0
+
+
 def apply_survey_gradient(image: np.ndarray, gradient: np.ndarray,
                           strength: float = 1.0) -> np.ndarray:
     """
@@ -3013,6 +3221,14 @@ def apply_survey_gradient(image: np.ndarray, gradient: np.ndarray,
     Additive, always. The whole premise is that what the reference fails to
     explain is additive sky, so dividing it out would be the wrong operator
     (and is the mistake the old SFCC gradient beta made).
+
+    No-data (0.0) pixels take no part in this and come back out at 0.0. Every
+    statistic below is measured over the real pixels only: on a mosaic panel
+    that is 60% black the plain median IS 0.0, so the median-restore step
+    would be reading the border rather than the sky, and the negative-minimum
+    rescue would lift the whole surround onto a pedestal -- quietly turning
+    "no data here" into "faint signal here" for every downstream stage that
+    reads the 0.0 convention.
     """
     img = np.asarray(image, dtype=np.float32)
     g = np.asarray(gradient, dtype=np.float32)
@@ -3021,20 +3237,34 @@ def apply_survey_gradient(image: np.ndarray, gradient: np.ndarray,
     if img.ndim == 2 and g.ndim == 3:
         g = g[..., 0]
 
-    med_before = float(np.nanmedian(img))
+    nodata = _nodata_pixels(img)
+    keep = None if nodata is None else ~nodata
+
+    def _stat(fn, a) -> float:
+        v = np.asarray(a, dtype=np.float32)
+        if keep is not None and keep.shape == v.shape[:2]:
+            v = v[keep]
+        v = np.asarray(v).ravel()
+        v = v[np.isfinite(v)]
+        return float(fn(v)) if v.size else 0.0
+
+    med_before = _stat(np.median, img)
     out = img - float(strength) * g
-    med_after = float(np.nanmedian(out))
+    med_after = _stat(np.median, out)
     out = out + (med_before - med_after)
 
-    mn = float(np.nanmin(out))
+    mn = _stat(np.min, out)
     if mn < 0.0:
         out = out - mn
-    mx = float(np.nanmax(out))
+    mx = _stat(np.max, out)
     if mx > 1.0:
         p = med_before - min(0.0, mn)
         denom = max(mx - p, 1e-8)
         out = p + (out - p) * ((1.0 - p) / denom)
-    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+    out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+    if nodata is not None:
+        out[nodata] = 0.0
+    return out
 
 
 # =============================================================================
@@ -4727,6 +4957,17 @@ class SurveyGradientDialog(QDialog):
         if isinstance(out, tuple):
             out = out[0]
         out = np.asarray(out, dtype=np.float32)
+
+        # The refinement divides in log space, where the black surround of a
+        # mosaic panel is a pole. apply_survey_gradient already handed `base`
+        # its 0.0s intact; put them back afterwards so the panel border is
+        # still exactly no-data and not whatever the band estimator made of
+        # the edge.
+        _nd = _nodata_pixels(img)
+        if _nd is not None:
+            out[_nd] = 0.0
+            _log(f"multiscale: no-data restored to 0.0 over "
+                 f"{100.0 * float(_nd.mean()):.1f}% of the frame")
 
         # Stored finished, with the strength it was computed at: the band is
         # estimated FROM the corrected image, so it is not valid for a

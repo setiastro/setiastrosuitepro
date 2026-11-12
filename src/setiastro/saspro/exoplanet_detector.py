@@ -164,6 +164,67 @@ def _new_simbad():
     return s
 
 
+def _vizier_effective_url(v) -> str:
+    """The URL this Vizier client will actually hit.
+
+    Ground truth rather than attribute-guessing: astroquery builds the
+    request from its own server field, so reading back the attribute we
+    just set would confirm nothing when that attribute is the dead one.
+    Returns "" if the private helper is not available.
+    """
+    fn = getattr(v, "_server_to_url", None)
+    if callable(fn):
+        for args in ((), ("votable",)):
+            try:
+                return str(fn(*args))
+            except Exception:
+                continue
+    return ""
+
+
+def _apply_vizier_server(v, host: str) -> bool:
+    """Point a Vizier client at `host` under every spelling astroquery has
+    used, and report whether it actually took.
+
+    astroquery renamed this exactly the way it renamed TIMEOUT -> timeout:
+    the legacy class attribute `VIZIER_SERVER` became a `server` property
+    backed by `conf.server`. Setting only the old name creates a dead
+    attribute while queries keep going to the default host -- silently,
+    which is how a mirror selection can look applied and do nothing. That
+    is why the VizieR mirror dropdown appeared to have no effect during
+    the CDS outage.
+
+    conf.server is set too, not just the instance: new Vizier() objects
+    inherit their server from conf, and the module-level `Vizier` singleton
+    (which magnitude_tool's APASS query uses) reads the same place.
+    """
+    if not host:
+        return False
+    try:
+        import astroquery.vizier as _aqv
+        try:
+            _aqv.conf.server = host
+        except Exception:
+            pass
+    except Exception:
+        pass
+    for setter in (
+        lambda: setattr(v, "server", host),          # modern property
+        lambda: setattr(v, "_server", host),         # its backing field
+        lambda: setattr(v, "VIZIER_SERVER", host),   # legacy attribute
+    ):
+        try:
+            setter()
+        except Exception:
+            pass
+    url = _vizier_effective_url(v)
+    applied = bool(url) and (host in url)
+    if url and not applied:
+        print(f"[DEBUG] VizieR mirror {host!r} did NOT take -- client will "
+              f"query {url!r}")
+    return applied
+
+
 def _new_vizier(**kwargs):
     """
     Build a bounded Vizier client pointed at the chosen VizieR mirror.
@@ -176,9 +237,12 @@ def _new_vizier(**kwargs):
     kwargs.setdefault("timeout", int(_VIZIER_TIMEOUT_S))
     v = Vizier(**kwargs)
     try:
-        v.VIZIER_SERVER = cds_health.vizier_server()
+        _host = cds_health.vizier_server()
     except Exception:
-        pass
+        _host = ""
+    # Assigning VIZIER_SERVER alone is a no-op on current astroquery; see
+    # _apply_vizier_server for why, and for what it sets instead.
+    _apply_vizier_server(v, _host)
     return v
 
 
@@ -196,12 +260,13 @@ def _configure_vizier_timeout():
     for setter in (
         lambda: setattr(Vizier, "TIMEOUT", int(_VIZIER_TIMEOUT_S)),
         lambda: setattr(Vizier, "timeout", int(_VIZIER_TIMEOUT_S)),
-        lambda: setattr(Vizier, "VIZIER_SERVER", host),
     ):
         try:
             setter()
         except Exception:
             pass
+    # VIZIER_SERVER on its own is a no-op on current astroquery.
+    _apply_vizier_server(Vizier, host)
 
 
 def _extract_ra_dec_from_header(h: fits.Header):
@@ -1420,11 +1485,41 @@ class ExoPlanetWindow(QDialog):
         cds_form.addRow("", self.cds_pin_cb)
 
         self.cds_vizier_combo = QComboBox()
-        self.cds_vizier_combo.addItem("Automatic (Strasbourg)", "")
+        try:
+            _vz_now = str(cds_health.vizier_server() or "")
+        except Exception:
+            _vz_now = ""
+        self.cds_vizier_combo.addItem(
+            f"Automatic ({_vz_now})" if _vz_now else "Automatic", "")
         for _host in cds_health.VIZIER_MIRRORS:
             self.cds_vizier_combo.addItem(_host, _host)
-        _vi = self.cds_vizier_combo.findData(cds_health.vizier_server())
+        # Select from the STORED PREFERENCE, never from the resolved host.
+        # vizier_server() resolves "Automatic" to a concrete hostname, so
+        # findData() on it landed on a real mirror row -- and because OK
+        # writes the combo's data back unconditionally, merely opening this
+        # dialog and pressing OK silently converted Automatic into a pinned
+        # mirror and killed the failover. An unknown preference falls back
+        # to Automatic, which is the safe direction: the worst case is that
+        # someone who deliberately pinned a mirror picks it again.
+        _vz_pref = ""
+        for _getter in ("vizier_preference", "vizier_server_preference"):
+            _fn = getattr(cds_health, _getter, None)
+            if callable(_fn):
+                try:
+                    _r = _fn()
+                    _vz_pref = str((_r[0] if isinstance(_r, tuple) else _r) or "")
+                    break
+                except Exception:
+                    pass
+        _vi = self.cds_vizier_combo.findData(_vz_pref) if _vz_pref else 0
         self.cds_vizier_combo.setCurrentIndex(_vi if _vi > 0 else 0)
+        self.cds_vizier_combo.setToolTip(
+            "Which VizieR mirror serves APASS, UCAC4 and VSX -- the catalogs "
+            "that supply comparison-star magnitudes for the ensemble zero "
+            "point.\n\n"
+            "During a Strasbourg outage the mirrors still serve the viz-bin "
+            "interface astroquery uses (only VizieR's TAP service is "
+            "unmirrored), so picking one here can bring the ensemble back.")
         cds_form.addRow("VizieR mirror (VSX, APASS):", self.cds_vizier_combo)
 
         self.cds_status_label = QLabel(cds_health.status_text())
@@ -3913,6 +4008,76 @@ class ExoPlanetWindow(QDialog):
             self.raw_flux_err_rgb = raw_flux_err_rgb
 
     # ------------------------------------------------------------------
+    # Catalog-lookup failure reporting.
+    #
+    # The APASS/UCAC4 tiers below used to swallow every exception with a
+    # bare `except: pass`. A total VizieR outage was therefore
+    # indistinguishable from a genuinely sparse field: the ensemble just
+    # quietly became a single-comparison measurement with nothing anywhere
+    # saying why -- which is exactly how the CDS outage presented. These
+    # record the reason so the export can put it in front of the user AND
+    # in the AAVSO NOTES field.
+    # ------------------------------------------------------------------
+    def _note_catalog_failure(self, source, err):
+        """Record (and log) one failed catalog tier. Never raises."""
+        try:
+            _first = str(err).splitlines()[0] if str(err) else ""
+            msg = f"{source}: {type(err).__name__}: {_first}".strip().rstrip(":")
+        except Exception:
+            msg = f"{source}: lookup failed"
+        try:
+            if getattr(self, "_catalog_errors", None) is None:
+                self._catalog_errors = []
+            if msg not in self._catalog_errors:
+                self._catalog_errors.append(msg)
+            print(f"[DEBUG] catalog tier failed -- {msg}")
+        except Exception:
+            pass
+
+    def _catalog_failure_note(self, prefix="; catalog lookup failed: "):
+        """One-line summary for the AAVSO NOTES field, or "" if all tiers
+        answered. Commas are stripped -- NOTES is comma-delimited."""
+        errs = getattr(self, "_catalog_errors", None) or []
+        if not errs:
+            return ""
+        return (prefix + "; ".join(errs[:3])).replace(",", ";")
+
+    def _warn_catalog_unavailable(self, n_resolved, n_tried):
+        """Say that the ensemble is being skipped because the catalog lookup
+        FAILED, not because the field is thin. Fires at most once per export,
+        and only when a tier actually errored."""
+        errs = getattr(self, "_catalog_errors", None) or []
+        if not errs or getattr(self, "_catalog_warned", False):
+            return
+        self._catalog_warned = True
+        try:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Comparison Catalog Unavailable")
+            box.setText(
+                f"Only {n_resolved} of {n_tried} field stars got a catalog "
+                f"magnitude, so the ensemble zero point (needs 3) will be "
+                f"skipped and this export falls back to a single comparison "
+                f"star."
+            )
+            box.setInformativeText(
+                "This is a catalog lookup failure, not a thin field: APASS "
+                "and/or UCAC4 could not be reached.\n\n"
+                "Try another mirror under the wrench \u2192 CDS / SIMBAD "
+                "\u2192 VizieR mirror. During a Strasbourg outage the "
+                "mirrors still serve the viz-bin interface this tool uses; "
+                "only VizieR's TAP service is unmirrored.\n\n"
+                "Offline alternative: open this frame as a document and run "
+                "the Magnitude tool's Step 1 (Fetch Catalog Stars). That "
+                "caches comparison magnitudes from the local Gaia XP "
+                "library and needs no network at all."
+            )
+            box.setDetailedText("\n".join(errs))
+            box.exec()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
     # Per-channel comparison-star catalog mags (extends the V-only helper).
     # Returns {member_index: {"V": float|None, "B": float|None, "R": float|None,
     #                         "R_is_sloan": bool, "source": str}}
@@ -3925,6 +4090,8 @@ class ExoPlanetWindow(QDialog):
         Sloan r' (for AAVSO NOTES honesty)."""
         import numpy as _np
         out = {}
+        self._catalog_errors = []
+        self._catalog_warned = False
         members = [int(m) for m in members if 0 <= int(m) < len(self.star_positions)]
         if not members:
             return out
@@ -4034,8 +4201,11 @@ class ExoPlanetWindow(QDialog):
                         tbl["Vmag"], tbl["Bmag"], rvals,
                         r_is_sloan=True, source="APASS9",
                     )
-            except Exception:
-                pass
+                else:
+                    self._note_catalog_failure(
+                        "APASS9", RuntimeError("query returned no tables"))
+            except Exception as _e:
+                self._note_catalog_failure("APASS9", _e)
 
         # 3) UCAC4 — Vmag (APASS-derived), Bmag, rmag (Sloan) → R proxy
         if any(m not in out for m in mkeys):
@@ -4054,8 +4224,11 @@ class ExoPlanetWindow(QDialog):
                         tbl["Vmag"], tbl["Bmag"], rvals,
                         r_is_sloan=True, source="UCAC4",
                     )
-            except Exception:
-                pass
+                else:
+                    self._note_catalog_failure(
+                        "UCAC4", RuntimeError("query returned no tables"))
+            except Exception as _e:
+                self._note_catalog_failure("UCAC4", _e)
 
         return out
 
@@ -4211,6 +4384,8 @@ class ExoPlanetWindow(QDialog):
         comp_members = [m for m in _all_indices
                         if m != idx and m != k_idx and m not in _flagged]
         cmap = self._catalog_bvr_mags_for_members(comp_members, wcs)
+        if len(cmap) < 3:
+            self._warn_catalog_unavailable(len(cmap), len(comp_members))
 
         LOGC = 2.5 / np.log(10.0)
         floor = float(sys_floor or 0.0)
@@ -4322,7 +4497,8 @@ class ExoPlanetWindow(QDialog):
                         f"({band_key}={c_mag:.3f}); err incl {floor:.2f}floor"
                         f"; ensemble not used: {comp_idx_all.size} of "
                         f"{len(comp_members)} field stars had a catalog "
-                        f"{band_key} (need 3)")
+                        f"{band_key} (need 3)"
+                        + self._catalog_failure_note())
                 if ch == "R" and r_note_extra:
                     note += r_note_extra
                 # NOT an ensemble: classic differential photometry, so CNAME is
@@ -4353,7 +4529,8 @@ class ExoPlanetWindow(QDialog):
                 note = (f"{filt}: check-star fallback vs {kname}"
                         f"; err incl {floor:.2f}floor"
                         f"; no field star had a catalog {band_key} "
-                        f"({len(comp_members)} tried)")
+                        f"({len(comp_members)} tried)"
+                        + self._catalog_failure_note())
                 # The check star is doing double duty as the comparison
                 # here, so it belongs in the comps[RA/Dec] provenance --
                 # otherwise that line comes out empty and the submission
@@ -4541,6 +4718,8 @@ class ExoPlanetWindow(QDialog):
         """
         import numpy as _np
         out = {}
+        self._catalog_errors = []
+        self._catalog_warned = False
         members = [int(m) for m in members if 0 <= int(m) < len(self.star_positions)]
         if not members:
             return out
@@ -4622,8 +4801,11 @@ class ExoPlanetWindow(QDialog):
                 if res:
                     tbl = res[0]
                     _apply_catalog(tbl["RAJ2000"], tbl["DEJ2000"], tbl["Vmag"], source)
-            except Exception:
-                pass
+                else:
+                    self._note_catalog_failure(
+                        source, RuntimeError("query returned no tables"))
+            except Exception as _e:
+                self._note_catalog_failure(source, _e)
 
         return out
 
@@ -4806,6 +4988,8 @@ class ExoPlanetWindow(QDialog):
         vmap = self._catalog_vmags_for_members(comp_members, wcs)   # {idx: (V, source)}
         comp_idx = np.array([m for m in comp_members if m in vmap], dtype=int)
         comp_mag = np.array([vmap[m][0] for m in comp_idx], dtype=float)
+        if comp_idx.size < 3:
+            self._warn_catalog_unavailable(int(comp_idx.size), len(comp_members))
 
         LOGC   = 2.5 / np.log(10.0)
         floor  = float(getattr(self, "sys_floor_mag", 0.10) or 0.0)
@@ -4916,7 +5100,8 @@ class ExoPlanetWindow(QDialog):
                            f"err incl {floor:.2f} floor; "
                            f"ensemble not used: {comp_idx.size} of "
                            f"{len(comp_members)} field stars had a catalog V "
-                           f"(need 3)")
+                           f"(need 3)"
+                           + self._catalog_failure_note())
             _cn_fb = _comp_radec_labels([k_idx])
             if _cn_fb:
                 note_field += f"; comp[RA/Dec]: {_cn_fb}"

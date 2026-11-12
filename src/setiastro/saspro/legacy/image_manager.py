@@ -1585,10 +1585,55 @@ def _flip_vertical_wcs_header(hdr, naxis2):
         except Exception:
             pass
     # Negate the 2nd column of the linear transform (CD or PC form)
+    has_cd = any(k in h for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2"))
+    has_pc = any(k in h for k in ("PC1_1", "PC1_2", "PC2_1", "PC2_2"))
     for k in ("CD1_2", "CD2_2", "PC1_2", "PC2_2"):
         if k in h:
             try:
                 h[k] = -float(h[k])
+            except Exception:
+                pass
+
+    # No CD and no PC means the transform is CDELT with an IMPLICIT identity
+    # PC, so the loop above found nothing to negate and the WCS stayed
+    # bottom-up on top-down pixels -- a vertical mirror, with no error and
+    # nothing in the log. Negating CDELT2 is that same column-2 negation,
+    # written in the only form this header has.
+    #
+    # It is also right for the AIPS form (CDELT + CROTA2). Solving
+    #     [[c1*cos, -c2*sin], [c1*sin, c2*cos]]   with column 2 negated
+    # for a new (c1', c2', theta') gives theta unchanged and c2' = -c2, so
+    # CROTA2 must NOT be touched here: negating it as well would undo the
+    # flip on a rotated frame and leave an unrotated one still mirrored.
+    if not has_cd and not has_pc:
+        if "CDELT2" in h:
+            try:
+                h["CDELT2"] = -float(h["CDELT2"])
+            except Exception:
+                pass
+        else:
+            # Nothing astropy can read at all. The only orientation this
+            # header still carries is the acquisition hints, which
+            # _ensure_wcs_cd_matrix synthesizes a CD from later in the same
+            # load -- so they have to move too, or that matrix describes the
+            # file as it sat on disk rather than the array we now hold.
+            # Negating column 2 of the matrix the synthesis WOULD build,
+            # and solving for the (angle, parity) pair that produces it,
+            # gives theta -> 180 - theta with the parity toggled. It comes
+            # out the same from either starting parity. Plain -theta is the
+            # tempting answer and is wrong by exactly 180 degrees.
+            for k in ("POSANGLE", "ORIENTAT", "ANGLE", "CROTA1", "CROTA2"):
+                if k in h:
+                    try:
+                        h[k] = (180.0 - float(h[k])) % 360.0
+                    except Exception:
+                        pass
+            try:
+                _cur = h.get("FLIPPED", False)
+                if isinstance(_cur, str):
+                    _cur = _cur.strip().lower() in ("true", "t", "yes", "y", "1")
+                h["FLIPPED"] = (not bool(_cur),
+                                "Toggled by SASpro BOTTOM-UP->TOP-DOWN flip")
             except Exception:
                 pass
     # SIP: v-exponent parity flips A/AP; B/BP additionally negate overall
@@ -1689,12 +1734,22 @@ def _ensure_wcs_cd_matrix(hdr: fits.Header) -> bool:
         return False
 
     scrub_defaults = False
-    if has_pc and has_cdelt:
+    if has_cdelt:
+        # CDELT is a COMPLETE linear transform on its own: the PC matrix it
+        # pairs with defaults to the identity, and a CROTA2 beside it is the
+        # AIPS form. Requiring has_pc here meant a header whose astrometry is
+        # carried as CDELT (with or without CROTA2) and no CD -- which is what
+        # an XISF/PixInsight header converts to -- fell past this guard into
+        # the synthesis below, which DELETES CDELT1/CDELT2 and replaces a real
+        # solution with one guessed from PIXSCALE/POSANGLE. Wherever the two
+        # disagreed the image came back rotated, silently.
+        #
         # Detect the astropy default sentinel: PC~I, CDELT~1.0 deg, and
         # PIXSCALE (if present) disagrees by >20% with CDELT magnitude.
         try:
             cdelt1 = float(hdr["CDELT1"]); cdelt2 = float(hdr["CDELT2"])
-            pc11   = float(hdr["PC1_1"]);  pc22   = float(hdr["PC2_2"])
+            pc11   = float(hdr.get("PC1_1", 1.0))
+            pc22   = float(hdr.get("PC2_2", 1.0))
             default_sentinel = (
                 abs(cdelt1 - 1.0) < 1e-9 and abs(cdelt2 - 1.0) < 1e-9
                 and abs(pc11) < 10.0 and abs(pc22) < 10.0
