@@ -36,7 +36,7 @@ from setiastro.saspro.resources import (
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path, slap_path,satchroma_path, fx_path,
-    satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
+    satellite_path, imagecombine_path, hdrcomposition_path, wims_path, wimi_path, linearfit_path, snr_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,rcastro_path,sssc_path,
     selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path, cosmeticcorrection_path,
 )
@@ -1259,7 +1259,7 @@ class ToolbarMixin:
         self.act_image_combine.setStatusTip(self.tr("Blend two open images (replace A or create new)"))
         self.act_image_combine.triggered.connect(self._open_image_combine)
 
-        self.act_hdr_composition = QAction(QIcon(hdr_path), self.tr("HDR Composition..."), self)
+        self.act_hdr_composition = QAction(QIcon(hdrcomposition_path), self.tr("HDR Composition..."), self)
         self.act_hdr_composition.setIconVisibleInMenu(True)
         self.act_hdr_composition.setStatusTip(self.tr(
             "Replace saturated pixels in a long exposure with a scaled shorter exposure"

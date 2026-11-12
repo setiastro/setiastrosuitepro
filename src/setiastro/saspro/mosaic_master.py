@@ -24,6 +24,9 @@ import traceback
 import warnings
 import threading as _threading
 
+# Returned by the blind-solve chain when the user pressed Cancel.
+_SOLVE_CANCELLED = object()
+
 import numpy as np
 import numpy.ma as ma
 import requests
@@ -52,7 +55,6 @@ from setiastro.saspro.legacy.image_manager import load_image, save_image
 from setiastro.saspro.blink_comparator_pro import CustomDoubleSpinBox, CustomSpinBox
 from setiastro.saspro.abe import (
     _generate_sample_points as abe_generate_sample_points,
-    abe_run,
 )
 from setiastro.saspro.help_support import make_help_button
 try:
@@ -1677,7 +1679,7 @@ class MosaicMasterDialog(QDialog):
             "....   view automatically — no manual tuning.\n"
             "....Fast — Homography: one global transform per panel. Quicker, but only\n"
             "....   exact for SIP-free TAN panels.\n"
-            "3) Optionally crop every panel, then run ADBE (checkboxes below)\n"
+            "3) Optionally crop every panel, then run SRGC after plate solving\n"
             "4) Align & Create Mosaic\n"
             "5) Save to New View\n"
             "\n"
@@ -1795,14 +1797,14 @@ class MosaicMasterDialog(QDialog):
         self.wcsOnlyCheckBox.stateChanged.connect(_on_wcs_only_changed)
 
         # ------------------------------------------------------------------
-        # Pre-process: same crop on every panel, then ADBE, then the
-        # pipeline below. Both are off unless the user checks them.
+        # Pre-process: same crop on every panel, then (after plate solving)
+        # optional SRGC. Both are off unless the user checks them.
         # ------------------------------------------------------------------
         self.cropEachCheckBox = QCheckBox("Crop each image")
         self.cropEachCheckBox.setToolTip(
             "Cut the same pixel margins off every panel before anything else.\n"
             "An existing plate solution is shifted with the crop, so it stays valid.\n"
-            "Runs first, then ADBE if that box is checked, then plate solving and alignment."
+            "Runs first, then plate solving, then SRGC if that box is checked."
         )
         self.cropEachCheckBox.setChecked(qs_bool(self.settings, "mosaic/crop_each", False))
         layout.addWidget(self.cropEachCheckBox)
@@ -1863,17 +1865,57 @@ class MosaicMasterDialog(QDialog):
             sb.valueChanged.connect(lambda _v: _persist_crop_settings())
         _sync_crop_enabled(self.cropEachCheckBox.isChecked())
 
-        self.adbeEachCheckBox = QCheckBox("Run ADBE on each image")
-        self.adbeEachCheckBox.setToolTip(
-            "Run Automatic (Dynamic) Background Extraction on every panel\n"
-            "after the crop and before plate solving and alignment.\n"
-            "Uses the ADBE defaults: polynomial degree 2, RBF refinement, subtract."
+        # Prefer the new key; an older mosaic/adbe_each preference still turns
+        # background correction on, so people who already used that path keep it.
+        _srgc_default = qs_bool(
+            self.settings, "mosaic/srgc_each",
+            qs_bool(self.settings, "mosaic/adbe_each", False),
         )
-        self.adbeEachCheckBox.setChecked(qs_bool(self.settings, "mosaic/adbe_each", False))
-        self.adbeEachCheckBox.toggled.connect(
-            lambda on: (self.settings.setValue("mosaic/adbe_each", bool(on)),
-                        self.settings.sync()))
-        layout.addWidget(self.adbeEachCheckBox)
+        self.srgcEachCheckBox = QCheckBox("Run SRGC on each image")
+        self.srgcEachCheckBox.setToolTip(
+            "Survey Reference Gradient Correction on every panel after it is\n"
+            "plate-solved. Fetches a public survey cutout for that field and\n"
+            "subtracts only the additive gradient the survey does not explain.\n"
+            "Needs a network connection and a usable WCS on each panel."
+        )
+        self.srgcEachCheckBox.setChecked(_srgc_default)
+        layout.addWidget(self.srgcEachCheckBox)
+
+        srgc_row = QHBoxLayout()
+        srgc_row.setContentsMargins(22, 0, 0, 0)
+        srgc_row.addWidget(QLabel("Survey:"))
+        self.srgcSurveyCombo = QComboBox()
+        self.srgcSurveyCombo.setMinimumWidth(280)
+        try:
+            from setiastro.saspro.survey_gradient import SURVEYS, DEFAULT_SURVEY
+            for name in SURVEYS:
+                self.srgcSurveyCombo.addItem(name)
+            preferred = str(self.settings.value(
+                "mosaic/srgc_survey",
+                self.settings.value("srgc/survey", DEFAULT_SURVEY),
+            ) or DEFAULT_SURVEY)
+            idx = self.srgcSurveyCombo.findText(preferred)
+            self.srgcSurveyCombo.setCurrentIndex(idx if idx >= 0 else 0)
+        except Exception as e:
+            self.srgcSurveyCombo.addItem("DSS2 colour (red / synth / blue) — all sky")
+            print(f"[Mosaic] SRGC survey list unavailable: {e}")
+        self.srgcSurveyCombo.setToolTip(
+            "Which public survey feeds the reference for every panel.\n"
+            "DSS2 colour is all-sky. NSNS options are northern only."
+        )
+        self.srgcSurveyCombo.currentTextChanged.connect(
+            lambda name: (self.settings.setValue("mosaic/srgc_survey", str(name)),
+                          self.settings.sync()))
+        srgc_row.addWidget(self.srgcSurveyCombo, 1)
+        layout.addLayout(srgc_row)
+
+        def _sync_srgc_enabled(on):
+            self.srgcSurveyCombo.setEnabled(bool(on))
+            self.settings.setValue("mosaic/srgc_each", bool(on))
+            self.settings.sync()
+
+        self.srgcEachCheckBox.toggled.connect(_sync_srgc_enabled)
+        _sync_srgc_enabled(self.srgcEachCheckBox.isChecked())
 
         # ------------------------------------------------------------------
         # Other controls
@@ -2840,7 +2882,7 @@ class MosaicMasterDialog(QDialog):
         return WCS(nh, relax=True)
 
 
-    # ---------- Pre-process (crop, then ADBE) ----------
+    # ---------- Pre-process (crop) and post-solve SRGC ----------
     def _stash_panel_sources(self):
         """Remember each panel as it was loaded, so a later run can re-crop
         from the original instead of cropping the already-cropped pixels."""
@@ -2928,72 +2970,204 @@ class MosaicMasterDialog(QDialog):
             header, wcs, x0, y0, new_w, new_h)
         return cropped, new_header, new_wcs
 
-    def _run_adbe_on_panel(self, img):
-        """Headless ADBE with the dialog defaults (degree 2, RBF, subtract)."""
-        corrected = abe_run(
-            np.asarray(img, dtype=np.float32),
-            degree=2,
-            num_samples=120,
-            downsample=8,
-            patch_size=15,
-            use_rbf=True,
-            rbf_smooth=1.0,
-            exclusion_mask=None,
-            return_background=False,
-            legacy_prestretch=True,
-            correction_mode="subtract",
-            ignore_nodata=True,
-            nodata_pad_px=4,
+    def _header_for_srgc(self, item):
+        """Header carrying the panel's current plate solution for SRGC."""
+        hdr = item.get("header")
+        if isinstance(hdr, Header):
+            return hdr
+        if hdr is not None:
+            cleaned = sanitize_wcs_header(hdr) or coerce_to_header(hdr)
+            if cleaned is not None:
+                return cleaned
+        wcs = item.get("wcs")
+        if wcs is not None:
+            try:
+                return wcs.to_header(relax=True)
+            except Exception:
+                pass
+        return None
+
+    def _run_srgc_on_panel(self, item, *, params, progress_cb=None):
+        """Headless SRGC on one solved panel. Raises on hard failure."""
+        from setiastro.saspro.survey_gradient import (
+            SURVEYS, DEFAULT_SURVEY, SurveyFetchError,
+            survey_gradient_model, apply_survey_gradient, reset_dead_hosts,
         )
-        return np.asarray(corrected, dtype=np.float32)
+        from setiastro.saspro.srgc_preset import srgc_params_from_preset
+
+        params = srgc_params_from_preset(params)
+        survey = params["survey"]
+        info = SURVEYS.get(survey) or SURVEYS[DEFAULT_SURVEY]
+        hdr = self._header_for_srgc(item)
+        if hdr is None:
+            raise SurveyFetchError(
+                "No usable WCS on this panel. Plate-solve it first — "
+                "SRGC fetches the reference by sky coordinates."
+            )
+        reset_dead_hosts()
+        img = np.asarray(item["image"], dtype=np.float32)
+        res = survey_gradient_model(
+            img, hdr,
+            channels=list(info.get("channels") or []),
+            work_long_side=params["work_long_side"],
+            degree=params["degree"],
+            use_rbf=params["rbf"],
+            num_samples=params["samples"],
+            patch_size=params["patch"],
+            exclusion_fraction=params["exclude"] / 100.0,
+            protect_k=params["protect_k"],
+            progress_cb=progress_cb,
+        )
+        strength = params["strength"] / 100.0
+        out = apply_survey_gradient(img, res["gradient"], strength)
+        item["image"] = np.asarray(out, dtype=np.float32)
+        return res
+
+    def _srgc_panels(self, *, tick=None) -> bool:
+        """Run SRGC on every panel that has a WCS. Optional.
+
+        ``tick(value, text)`` advances an outer progress dialog when given
+        (the Align path already has one open). Otherwise a short dialog is
+        created here. Returns False only when the user cancels. A failed
+        panel keeps its pre-SRGC pixels and the mosaic continues.
+        """
+        if not bool(self.srgcEachCheckBox.isChecked()):
+            return True
+
+        targets = [it for it in self.loaded_images if it.get("wcs") is not None]
+        if not targets:
+            QMessageBox.warning(
+                self, "Mosaic Master",
+                "SRGC is checked, but no panel has a usable plate solution.\n"
+                "Solve the panels first, or uncheck SRGC.")
+            return True
+
+        skipped = len(self.loaded_images) - len(targets)
+        survey = str(self.srgcSurveyCombo.currentText() or "")
+        params = {
+            "survey": survey,
+            "work_long_side": int(self.settings.value("srgc/work_long_side", 1024)),
+            "degree": int(self.settings.value("srgc/degree", 1)),
+            "rbf": qs_bool(self.settings, "srgc/rbf", True),
+            "samples": int(self.settings.value("srgc/samples", 200)),
+            "patch": int(self.settings.value("srgc/patch", 15)),
+            "exclude": int(self.settings.value("srgc/exclude", 50)),
+            "protect_k": float(self.settings.value("srgc/protect_k", 3.0)),
+            "strength": int(self.settings.value("srgc/strength", 100)),
+        }
+
+        n = len(targets)
+        own_progress = None
+        if tick is None:
+            own_progress = QProgressDialog("SRGC on panels...", "Cancel", 0, n, self)
+            own_progress.setWindowTitle("Mosaic Master")
+            own_progress.setWindowModality(Qt.WindowModality.WindowModal)
+            own_progress.setAutoClose(False)
+            own_progress.setAutoReset(False)
+            own_progress.setMinimumDuration(0)
+            own_progress.setValue(0)
+            own_progress.show()
+            QApplication.processEvents()
+
+            def tick(value=None, text=None, _p=own_progress):
+                if text is not None:
+                    _p.setLabelText(text)
+                    self.status_label.setText(text)
+                if value is not None:
+                    _p.setValue(int(value))
+                QApplication.processEvents()
+                return not _p.wasCanceled()
+
+        failures = []
+        try:
+            if not tick(0, f"SRGC 0/{n}..."):
+                self.status_label.setText("Cancelled.")
+                return False
+            for i, item in enumerate(targets):
+                label = self._item_label(item)
+                if not tick(i, f"SRGC {i + 1}/{n}: {label}"):
+                    self.status_label.setText("Cancelled.")
+                    return False
+
+                def _cb(msg, _label=label, _tick=tick):
+                    _tick(text=f"SRGC {_label}: {msg}")
+
+                try:
+                    res = self._run_srgc_on_panel(
+                        item, params=params, progress_cb=_cb)
+                    cov = float(res.get("coverage", 0.0)) * 100.0
+                    print(f"[Mosaic] SRGC done: {label} "
+                          f"(survey={params['survey']}, coverage={cov:.1f}%)")
+                except Exception as e:
+                    failures.append(f"{label}: {e}")
+                    print(f"[Mosaic] SRGC failed for {label}: {e}")
+            tick(n, f"SRGC done ({n} panel{'s' if n != 1 else ''}).")
+        finally:
+            if own_progress is not None:
+                try:
+                    own_progress.close()
+                except Exception:
+                    pass
+                QApplication.processEvents()
+
+        if skipped:
+            print(f"[Mosaic] SRGC skipped {skipped} panel(s) with no WCS.")
+        if failures:
+            shown = "\n".join(failures[:8])
+            extra = ""
+            if len(failures) > 8:
+                extra = f"\n… and {len(failures) - 8} more."
+            QMessageBox.warning(
+                self, "Mosaic Master",
+                "SRGC failed on some panels. Those panels keep their pixels "
+                "from before SRGC, and the mosaic will continue.\n\n"
+                + shown + extra)
+        return True
 
     def _preprocess_panels(self) -> bool:
-        """Crop every panel, then run ADBE. Both are optional.
+        """Crop every panel. Optional.
 
         Returns False when the user cancels or the crop cannot be applied.
         Re-runs always start from the images as loaded, so changing the
-        margins does not crop an already cropped panel.
+        margins does not crop an already cropped panel. SRGC runs later,
+        after plate solving, because it needs a WCS.
         """
         do_crop = bool(self.cropEachCheckBox.isChecked())
-        do_adbe = bool(self.adbeEachCheckBox.isChecked())
-        if not do_crop and not do_adbe:
+        if not do_crop:
             if any("_src_image" in it for it in self.loaded_images):
                 self._restore_panel_sources()
                 self._sync_list_labels()
                 self.status_label.setText(f"{len(self.loaded_images)} images loaded.")
             return True
 
-        left = right = top = bottom = 0
-        if do_crop:
-            left = int(self.cropLeftSpin.value())
-            right = int(self.cropRightSpin.value())
-            top = int(self.cropTopSpin.value())
-            bottom = int(self.cropBottomSpin.value())
-            if left == right == top == bottom == 0:
-                QMessageBox.warning(
-                    self, "Mosaic Master",
-                    "Crop each image is checked, but every margin is 0.\n"
-                    "Set how many pixels to remove from each edge, or uncheck the option.")
-                return False
+        left = int(self.cropLeftSpin.value())
+        right = int(self.cropRightSpin.value())
+        top = int(self.cropTopSpin.value())
+        bottom = int(self.cropBottomSpin.value())
+        if left == right == top == bottom == 0:
+            QMessageBox.warning(
+                self, "Mosaic Master",
+                "Crop each image is checked, but every margin is 0.\n"
+                "Set how many pixels to remove from each edge, or uncheck the option.")
+            return False
 
-            too_small = []
-            for item in self.loaded_images:
-                src = item["_src_image"] if "_src_image" in item else item["image"]
-                h, w = src.shape[:2]
-                if (w - left - right) < 32 or (h - top - bottom) < 32:
-                    too_small.append(f"{self._item_label(item)} ({w}×{h})")
-            if too_small:
-                QMessageBox.warning(
-                    self, "Mosaic Master",
-                    "Those margins would leave less than 32 pixels on:\n\n"
-                    + "\n".join(too_small))
-                return False
+        too_small = []
+        for item in self.loaded_images:
+            src = item["_src_image"] if "_src_image" in item else item["image"]
+            h, w = src.shape[:2]
+            if (w - left - right) < 32 or (h - top - bottom) < 32:
+                too_small.append(f"{self._item_label(item)} ({w}×{h})")
+        if too_small:
+            QMessageBox.warning(
+                self, "Mosaic Master",
+                "Those margins would leave less than 32 pixels on:\n\n"
+                + "\n".join(too_small))
+            return False
 
         self._stash_panel_sources()
 
         n = len(self.loaded_images)
-        steps = n * ((1 if do_crop else 0) + (1 if do_adbe else 0))
-        progress = QProgressDialog("Preparing panels...", "Cancel", 0, max(1, steps), self)
+        progress = QProgressDialog("Preparing panels...", "Cancel", 0, max(1, n), self)
         progress.setWindowTitle("Mosaic Master")
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setAutoClose(False)
@@ -3009,51 +3183,24 @@ class MosaicMasterDialog(QDialog):
             self.status_label.setText("Cancelled.")
             return False
 
-        step = 0
-        failures = []
         try:
-            if do_crop:
-                for item in self.loaded_images:
-                    if progress.wasCanceled():
-                        return _cancelled()
-                    label = self._item_label(item)
-                    step += 1
-                    progress.setLabelText(f"Cropping {step}/{n}: {label}")
-                    self.status_label.setText(f"Cropping {label}...")
-                    progress.setValue(step)
-                    QApplication.processEvents()
-                    img, header, wcs = self._crop_panel(
-                        item["_src_image"], item.get("_src_header"),
-                        item.get("_src_wcs"), left, right, top, bottom)
-                    item["image"] = img
-                    item["header"] = header
-                    item["wcs"] = wcs
-                    print(f"[Mosaic] cropped {label} by "
-                          f"L{left} R{right} T{top} B{bottom} -> "
-                          f"{img.shape[1]}×{img.shape[0]}")
-            else:
-                for item in self.loaded_images:
-                    item["image"] = item["_src_image"]
-                    item["header"] = item.get("_src_header")
-                    item["wcs"] = item.get("_src_wcs")
-
-            if do_adbe:
-                for i, item in enumerate(self.loaded_images):
-                    if progress.wasCanceled():
-                        return _cancelled()
-                    label = self._item_label(item)
-                    step += 1
-                    progress.setLabelText(
-                        f"ADBE {i + 1}/{n}: {label}")
-                    self.status_label.setText(f"ADBE on {label}...")
-                    progress.setValue(step)
-                    QApplication.processEvents()
-                    try:
-                        item["image"] = self._run_adbe_on_panel(item["image"])
-                        print(f"[Mosaic] ADBE done: {label}")
-                    except Exception as e:
-                        failures.append(f"{label}: {e}")
-                        print(f"[Mosaic] ADBE failed for {label}: {e}")
+            for step, item in enumerate(self.loaded_images, start=1):
+                if progress.wasCanceled():
+                    return _cancelled()
+                label = self._item_label(item)
+                progress.setLabelText(f"Cropping {step}/{n}: {label}")
+                self.status_label.setText(f"Cropping {label}...")
+                progress.setValue(step)
+                QApplication.processEvents()
+                img, header, wcs = self._crop_panel(
+                    item["_src_image"], item.get("_src_header"),
+                    item.get("_src_wcs"), left, right, top, bottom)
+                item["image"] = img
+                item["header"] = header
+                item["wcs"] = wcs
+                print(f"[Mosaic] cropped {label} by "
+                      f"L{left} R{right} T{top} B{bottom} -> "
+                      f"{img.shape[1]}×{img.shape[0]}")
         except Exception as e:
             self._restore_panel_sources()
             self._sync_list_labels()
@@ -3071,16 +3218,6 @@ class MosaicMasterDialog(QDialog):
 
         self._sync_list_labels()
         self._refresh_sip_autodisable()
-        if failures:
-            shown = "\n".join(failures[:8])
-            extra = ""
-            if len(failures) > 8:
-                extra = f"\n… and {len(failures) - 8} more."
-            QMessageBox.warning(
-                self, "Mosaic Master",
-                "ADBE failed on some panels. Those panels keep their pixels "
-                "from before ADBE, and the mosaic will continue.\n\n"
-                + shown + extra)
         return True
 
     # ---------- Align (Entry Point) ----------
@@ -3089,12 +3226,15 @@ class MosaicMasterDialog(QDialog):
             QMessageBox.warning(self, "Align", "No images to align.")
             return
 
-        # Crop, then ADBE, then whichever pipeline is selected.
+        # Crop first. SRGC needs a WCS, so it runs after plate solving below.
         if not self._preprocess_panels():
             return
 
-        # Seestar mode is its own pipeline
+        # Seestar mode is its own pipeline. SRGC still helps when panels
+        # already carry a plate solution.
         if self.seestarCheckBox.isChecked():
+            if not self._srgc_panels():
+                return
             self.align_images_seestar_mode()
             return
         try:
@@ -3158,6 +3298,7 @@ class MosaicMasterDialog(QDialog):
             progress.setRange(0, len(images_to_process))
             _tick(0, f"Plate solving 0/{len(images_to_process)}...")
 
+        self._solve_cancel_event().clear()
         for _i_solve, item in enumerate(images_to_process):
             if not _tick(_i_solve,
                          f"Plate solving {_i_solve + 1}/{len(images_to_process)}: "
@@ -3171,6 +3312,10 @@ class MosaicMasterDialog(QDialog):
             # header here goes through dict() and rejects the plate solver's
             # own FOCALLEN history card, so a finished solve was thrown away.
             solved_header = self.perform_blind_solve(item)
+            if solved_header is _SOLVE_CANCELLED:
+                _finish()
+                self.status_label.setText("Cancelled.")
+                return
             if solved_header is not None and item.get("wcs") is None:
                 try:
                     solved_header = self._normalize_wcs_header(
@@ -3185,6 +3330,17 @@ class MosaicMasterDialog(QDialog):
 
         # newly-solved panels may now carry (or lack) SIP -- refresh the default
         self._refresh_sip_autodisable()
+
+        # ------------------------------------------------------------
+        # 1b) SRGC — needs the plate solution from above
+        # ------------------------------------------------------------
+        if bool(self.srgcEachCheckBox.isChecked()):
+            progress.setRange(0, max(1, sum(
+                1 for it in self.loaded_images if it.get("wcs") is not None)))
+            if not self._srgc_panels(tick=_tick):
+                _finish()
+                return
+
         # ------------------------------------------------------------
         # 2) Gather WCS-valid panels
         # ------------------------------------------------------------
@@ -5372,6 +5528,32 @@ class MosaicMasterDialog(QDialog):
         except Exception:
             pass
         QApplication.processEvents()
+        self._solve_was_cancelled()
+
+    def _solve_cancel_event(self):
+        event = getattr(self, "_solve_cancel", None)
+        if event is None:
+            event = _threading.Event()
+            self._solve_cancel = event
+        return event
+
+    def _solve_was_cancelled(self) -> bool:
+        """True once the plate-solve progress dialog has been cancelled.
+
+        The flag stays set so the in-house worker, which only notices at its
+        next status line, and the Astrometry.net poll loop see the same answer.
+        """
+        event = self._solve_cancel_event()
+        if event.is_set():
+            return True
+        try:
+            for dlg in self.findChildren(QProgressDialog):
+                if dlg.isVisible() and dlg.wasCanceled():
+                    event.set()
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _fits_shape_matches(self, filepath, image_shape) -> bool:
         """True only when `filepath` is a FITS file of the same pixel size.
@@ -5441,16 +5623,17 @@ class MosaicMasterDialog(QDialog):
         except Exception as e:
             print(f"[Mosaic] could not write WCS back to {filepath}: {e}")
 
-    def _store_solved_header(self, item, solved_header, calibration_data=None):
+    def _store_solved_header(self, item, solved_header, _calibration_data=None):
         dest = str(item.get("path", "") or "")
         if not self._fits_shape_matches(dest, item["image"].shape):
             print("[Mosaic] Blind solve succeeded; not updating the file on disk "
                   "(view, non-FITS, or the image size no longer matches the file).")
             return
-        if calibration_data is not None:
-            self.update_fits_with_wcs(dest, calibration_data, solved_header)
-        else:
-            self._write_wcs_cards(dest, solved_header)
+        # Same writer for both solvers. The old Astrometry.net path painted a
+        # new TAN solution over whatever SIP was already in the file, and the
+        # next load applied both. The header kept in memory is the solution
+        # that has to land on disk.
+        self._write_wcs_cards(dest, solved_header)
 
     def _panel_seed_header(self, item):
         """Header kept only for its pixel scale. The position is ignored."""
@@ -5484,6 +5667,7 @@ class MosaicMasterDialog(QDialog):
                 seed if isinstance(seed, Header) else None,
                 force_blind=True,
                 status_cb=self._set_solve_status,
+                cancel_event=self._solve_cancel_event(),
             )
         except Exception as e:
             traceback.print_exc()
@@ -5495,6 +5679,9 @@ class MosaicMasterDialog(QDialog):
             except Exception:
                 pass
 
+        if self._solve_was_cancelled() or res == "cancelled":
+            print(f"[Mosaic] in-house blind solve cancelled for {label}.")
+            return _SOLVE_CANCELLED
         if not ok or not isinstance(res, Header):
             print(f"[Mosaic] in-house blind solve failed for {label}: {res}")
             return None
@@ -5527,8 +5714,12 @@ class MosaicMasterDialog(QDialog):
         that fails.
         """
         solved = self._blind_solve_inhouse(item)
+        if solved is _SOLVE_CANCELLED:
+            return _SOLVE_CANCELLED
         if solved is not None:
             return solved
+        if self._solve_was_cancelled():
+            return _SOLVE_CANCELLED
         self._set_solve_status(
             f"In-house blind solve failed for {self._item_label(item)}. "
             "Falling back to Astrometry.net...")
@@ -5536,7 +5727,11 @@ class MosaicMasterDialog(QDialog):
 
     def _blind_solve_astrometry(self, item):
         """
-        Blind solve with Astrometry.net, construct WCS, keep SIP, and (optionally) update on-disk FITS.
+        Blind solve with Astrometry.net and store that TAN solution.
+
+        Any SIP already in the file is removed. The calibration record has no
+        distortion of its own, and leaving the old polynomial in place would
+        bend the new pointing.
         """
         while True:
             self._set_solve_status("Status: Logging in to Astrometry.net...")
@@ -5571,6 +5766,8 @@ class MosaicMasterDialog(QDialog):
 
             try:
                 subid = self.upload_image_to_astrometry(upload_path, session_key)
+                if self._solve_was_cancelled():
+                    return _SOLVE_CANCELLED
                 if not subid:
                     if QMessageBox.question(self, "Upload Failed",
                                             "Image upload failed or no subid returned. Try again?",
@@ -5580,6 +5777,8 @@ class MosaicMasterDialog(QDialog):
 
                 self._set_solve_status("Status: Waiting for job ID...")
                 job_id = self.poll_submission_status(subid)
+                if job_id is _SOLVE_CANCELLED:
+                    return _SOLVE_CANCELLED
                 if not job_id:
                     if QMessageBox.question(self, "Blind Solve Failed",
                                             "Failed to retrieve job ID from Astrometry.net. Try again?",
@@ -5589,6 +5788,8 @@ class MosaicMasterDialog(QDialog):
 
                 self._set_solve_status("Status: Retrieving calibration data...")
                 calibration_data = self.poll_calibration_data(job_id)
+                if calibration_data is _SOLVE_CANCELLED:
+                    return _SOLVE_CANCELLED
                 if not calibration_data:
                     if QMessageBox.question(self, "Blind Solve Failed",
                                             "Calibration data did not arrive from Astrometry.net. Try again?",
@@ -5603,10 +5804,12 @@ class MosaicMasterDialog(QDialog):
                     except Exception:
                         pass
 
-        # Build + normalize header, keep SIP, and build WCS with relax=True
+        # Astrometry.net reports a TAN solution. Writing it has to remove any
+        # SIP already in the file; stacking the two is done by _write_wcs_cards.
         wcs_header = self.construct_wcs_header(calibration_data, item["image"].shape)
         wcs_header = self._normalize_wcs_header(wcs_header, item["image"].shape)
         item["wcs"] = self._build_wcs(wcs_header, item["image"].shape)
+        item["header"] = wcs_header
         self._store_solved_header(item, wcs_header, calibration_data)
         return wcs_header
 
@@ -5664,6 +5867,8 @@ class MosaicMasterDialog(QDialog):
         from setiastro.saspro.main_helpers import non_blocking_sleep
         url = ASTROMETRY_API_URL + f"submissions/{subid}"
         for attempt in range(90):  # up to ~15 minutes
+            if self._solve_was_cancelled():
+                return _SOLVE_CANCELLED
             response = robust_api_request("GET", url)
             if response:
                 jobs = response.get("jobs", [])
@@ -5671,6 +5876,8 @@ class MosaicMasterDialog(QDialog):
                     return jobs[0]
             print(f"Polling attempt {attempt+1}: Job ID not ready yet.")
             non_blocking_sleep(10)
+            if self._solve_was_cancelled():
+                return _SOLVE_CANCELLED
         QMessageBox.critical(self, "Blind Solve Failed", "Failed to retrieve job ID from Astrometry.net after multiple attempts.")
         return None
 
@@ -5678,12 +5885,16 @@ class MosaicMasterDialog(QDialog):
         from setiastro.saspro.main_helpers import non_blocking_sleep
         url = ASTROMETRY_API_URL + f"jobs/{job_id}/calibration/"
         for attempt in range(90):
+            if self._solve_was_cancelled():
+                return _SOLVE_CANCELLED
             response = robust_api_request("GET", url)
             if response and 'ra' in response and 'dec' in response:
                 print("Calibration data retrieved:", response)
                 return response
             print(f"Calibration data not available yet (attempt {attempt+1})")
             non_blocking_sleep(10)
+            if self._solve_was_cancelled():
+                return _SOLVE_CANCELLED
         QMessageBox.critical(self, "Blind Solve Failed", "Calibration data did not complete in the expected timeframe.")
         return None
 
@@ -5707,42 +5918,16 @@ class MosaicMasterDialog(QDialog):
         return h
 
     def update_fits_with_wcs(self, filepath, calibration_data, wcs_header):
-        if not filepath.lower().endswith(('.fits','.fit')):
-            print("Not a FITS, skipping WCS update.")
+        """Write ``wcs_header`` into the file, replacing any previous solution.
+
+        Older code overwrote CRVAL/CD and left A_ORDER / PV in place, so a new
+        TAN solution was evaluated with the previous distortion. NAXIS is left
+        alone: a colour FITS stays a colour FITS.
+        """
+        if wcs_header is None:
+            print("Not updating FITS: no solved header.")
             return
-        try:
-            with fits.open(filepath, mode='update') as hdul:
-                hdr = hdul[0].header
-                if 'NAXIS3' in hdr:
-                    del hdr['NAXIS3']
-                hdr['NAXIS'] = 2
-                hdr['CTYPE1'] = 'RA---TAN'
-                hdr['CTYPE2'] = 'DEC--TAN'
-                hdr['CRVAL1'] = calibration_data['ra']
-                hdr['CRVAL2'] = calibration_data['dec']
-                # Determine H and W based on the data's dimensionality.
-                if hdul[0].data.ndim == 3:
-                    # Assume data are stored as (channels, height, width)
-                    _, H, W = hdul[0].data.shape
-                else:
-                    H, W = hdul[0].data.shape[:2]
-                hdr['CRPIX1'] = W/2.0
-                hdr['CRPIX2'] = H/2.0
-                scale = calibration_data['pixscale']/3600.0
-                orientation = math.radians(calibration_data.get('orientation', 0.0))
-                hdr['CD1_1'] = -scale * np.cos(orientation)
-                hdr['CD1_2'] = scale * np.sin(orientation)
-                hdr['CD2_1'] = -scale * np.sin(orientation)
-                hdr['CD2_2'] = -scale * np.cos(orientation)
-                hdr['WCSAXES'] = 2
-                hdr['RADECSYS'] = 'ICRS'
-                hdul.flush()
-                print("WCS updated in FITS.")
-            # Re-open to verify changes:
-            with fits.open(filepath) as hdul_verify:
-                print("Updated header keys:", hdul_verify[0].header.keys())
-        except Exception as e:
-            print(f"Error updating FITS with WCS: {e}")
+        self._write_wcs_cards(filepath, wcs_header)
 
     # ---------- Blind Solve via ASTAP ----------
     def attempt_astap_solve(self, item):

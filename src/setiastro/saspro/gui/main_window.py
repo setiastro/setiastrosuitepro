@@ -183,7 +183,7 @@ from setiastro.saspro.resources import (
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path, unwarp_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,flythrough_path,
-    satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,surfacemosaic_path,
+    satellite_path, imagecombine_path, hdrcomposition_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,surfacemosaic_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path, slap_path, satchroma_path, fx_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,sssc_path,
@@ -5049,17 +5049,22 @@ class AstroSuiteProMainWindow(
         w.resize(900, 650)
         w.show()                       # <- modeless; no exec(), no result_preset()
 
-    def _open_hdr_composition(self):
-        from setiastro.saspro.hdr_composition import HDRCompositionDialog
-        w = HDRCompositionDialog(self)
-        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        try:
-            w.setWindowIcon(QIcon(hdr_path))
-        except Exception:
-            pass
-        w.resize(560, 520)
-        w.show()
+    def _open_hdr_composition(self, preset: dict | None = None):
+        from setiastro.saspro.hdr_composition_preset import open_hdr_composition_with_preset
+        open_hdr_composition_with_preset(self, preset)
 
+    def _apply_hdr_composition_from_preset(self, preset: dict | None = None, *, target_doc=None):
+        """Headless HDR Composition (command drop / replay). Always creates a new view."""
+        from setiastro.saspro.hdr_composition import HDRCompositionError
+        from setiastro.saspro.hdr_composition_preset import apply_hdr_composition_via_preset
+        try:
+            apply_hdr_composition_via_preset(
+                self, preset or {}, target_doc=target_doc, ask_order=False,
+            )
+        except HDRCompositionError as exc:
+            QMessageBox.warning(self, "HDR Composition", str(exc))
+        except Exception as exc:
+            QMessageBox.critical(self, "HDR Composition", f"Failed:\n{exc}")
 
     def _apply_image_combine_from_preset(self, preset: dict, *, target_doc=None):
         """
@@ -6949,6 +6954,27 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     print("Convo replay-on-base failed:", e)
             return  # <- IMPORTANT: don't fall through to _handle_command_drop
+        if cid == "hdr_composition":
+            try:
+                self._apply_hdr_composition_from_preset(
+                    preset if isinstance(preset, dict) else {},
+                    target_doc=base_doc,
+                )
+                try:
+                    self._log(
+                        f"[Replay] HDR Composition replay-on-base of "
+                        f"'{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self, "HDR Composition", f"Replay-on-base failed:\n{e}",
+                    )
+                except Exception:
+                    print("HDR Composition replay-on-base failed:", e)
+            return
         if cid == "wavescale_hdr":
             try:
                 from setiastro.saspro.wavescale_hdr_preset import run_wavescale_hdr_via_preset
@@ -8671,7 +8697,21 @@ class AstroSuiteProMainWindow(
                 QMessageBox.warning(self, "Debayer failed", str(e))
             return   
         if cid == "hdr_composition":
-            self._open_hdr_composition()
+            if target_sw is None:
+                # Double-click / bare invoke → open the dialog (seeded from preset)
+                self._open_hdr_composition(preset if isinstance(preset, dict) else None)
+                return
+            view = target_sw.widget()
+            doc = getattr(view, "document", None)
+            if doc is None or getattr(doc, "image", None) is None:
+                QMessageBox.information(self, "HDR Composition", "Target view has no image.")
+                return
+            try:
+                self._apply_hdr_composition_from_preset(
+                    dict(preset or {}), target_doc=doc,
+                )
+            except Exception as e:
+                QMessageBox.warning(self, "HDR Composition", f"Preset apply failed:\n{e}")
             return
         if cid == "image_combine":
             if target_sw is None:

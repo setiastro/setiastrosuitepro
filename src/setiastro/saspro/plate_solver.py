@@ -2673,21 +2673,38 @@ def _hough_match_catalog_to_image(
 
 # ---------- Threaded Gaia solve ----------
 
+class SolveCancelled(BaseException):
+    """The user cancelled a running solve.
+
+    This is a BaseException on purpose. The solver catches Exception around
+    almost every step; a normal Exception raised from the status callback
+    would be reported as a failed fit instead of a cancel.
+    """
+
+
 class _GaiaSolveWorker(QThread):
     """Runs the in-house Gaia DR3 solve off the GUI thread."""
     status = pyqtSignal(str)
     done = pyqtSignal(bool, object)   # (ok, Header|error_str)
 
     def __init__(self, image: np.ndarray, seed_header, settings_scope=None,
-                 parent=None, force_blind: "bool | None" = None):
+                 parent=None, force_blind: "bool | None" = None,
+                 cancel_event=None):
         super().__init__(parent)
         self._image = image
         self._seed_header = seed_header
         self._force_blind = force_blind
+        self._cancel_event = cancel_event
         # Capture the org/app name so the worker thread opens the same
         # QSettings file as the caller (avoids the "SASpro" vs
         # "Seti Astro Suite Pro" mismatch when the main app uses QSettings()).
         self._settings_scope = settings_scope  # (org, app) tuple or None
+
+    def _status(self, text: str) -> None:
+        event = self._cancel_event
+        if event is not None and event.is_set():
+            raise SolveCancelled()
+        self.status.emit(text)
 
     def run(self):
         try:
@@ -2702,9 +2719,11 @@ class _GaiaSolveWorker(QThread):
             ok, res = _solve_with_GAIA(
                 self._image, self._seed_header,
                 parent=None, settings=settings,
-                status_cb=self.status.emit,
+                status_cb=self._status,
                 force_blind=self._force_blind,
             )
+        except SolveCancelled:
+            ok, res = False, "cancelled"
         except Exception as e:
             import traceback; traceback.print_exc()
             ok, res = False, f"Gaia DR3 solver: worker exception: {e}"
@@ -2712,13 +2731,14 @@ class _GaiaSolveWorker(QThread):
 
 def _solve_with_GAIA_threaded(parent, settings, image, seed_header,
                               force_blind: "bool | None" = None,
-                              status_cb=None) -> tuple[bool, "Header | str"]:
+                              status_cb=None, cancel_event=None) -> tuple[bool, "Header | str"]:
     """
     Same signature/contract as _solve_with_GAIA but runs it in a QThread,
     spinning a local event loop so the UI stays responsive. Synchronous to
     the caller — the fallback chain doesn't need restructuring.
 
     status_cb, when given, receives the same status lines as the dialog.
+    cancel_event, when set, stops the solve at the next status line.
     """
     result = {}
     loop = QEventLoop()
@@ -2737,7 +2757,7 @@ def _solve_with_GAIA_threaded(parent, settings, image, seed_header,
             pass
 
     worker = _GaiaSolveWorker(image, seed_header, settings_scope=_scope,
-                              force_blind=force_blind)
+                              force_blind=force_blind, cancel_event=cancel_event)
 
     def _on_status(text):
         _set_status_ui(parent, text)

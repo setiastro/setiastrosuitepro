@@ -35,12 +35,13 @@ The inputs stay in their own files. Apply writes a new view, <b>HDR Composition<
 <h2>1. What you need open</h2>
 <ul>
   <li>At least two views of the <b>same filter</b>, already registered to each other. Stellar Alignment does that.</li>
-  <li>Same width and height, both mono or both RGB.</li>
+  <li>Both mono or both RGB. The same width and height is the normal case. A frame a pixel or two larger is kept only where the pixels still line up; the plate solution moves with that overlap.</li>
   <li>Linear data. A stretched short exposure will not match the long one, and the scale factor will be wrong.</li>
 </ul>
 
-<h2>2. Order</h2>
-<p>The top of the list is the base, and it must be the <b>longest</b> exposure. <b>Sort by exposure</b> uses <code>EXPTIME</code> / <code>EXPOSURE</code> from the header. If a view has no exposure keyword, drag it with <b>Up</b> / <b>Down</b> so the longest is first, then the next shorter, and so on. Uncheck any view you want to leave out.</p>
+<h2>2. Which views</h2>
+<p>The list starts empty. Pick a view in the dropdown and press <b>Add</b>. Only the views in the list are combined; other open views are left alone. <b>Remove</b> takes the selected row back out. <b>Refresh</b> updates the dropdown after you open another image.</p>
+<p>The top of the list is the base, and it must be the <b>longest</b> exposure. <b>Sort by exposure</b> uses <code>EXPTIME</code> / <code>EXPOSURE</code> from the header. A view with no exposure keyword stays at the bottom of that sort. Move it with <b>Up</b> / <b>Down</b> so the longest is first. Apply asks before continuing when the top of the list may not be the longest.</p>
 
 <h2>3. What Apply does</h2>
 <ol>

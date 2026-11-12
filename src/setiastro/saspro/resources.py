@@ -511,6 +511,7 @@ _LEGACY_ICON_MAP = {
     'cosmic_path': 'cosmic.png',
     'satellite_path': 'cosmicsat.png',
     'imagecombine_path': 'imagecombine.png',
+    'hdrcomposition_path': 'hdrcomposition.png',
     'wrench_path': 'wrench_icon.png',
     'eye_icon_path': 'eye.png',
     'disk_icon_path': 'disk.png',
