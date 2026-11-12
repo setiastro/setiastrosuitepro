@@ -57,6 +57,8 @@
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 
 from PyQt6.QtCore import (Qt, QSize, QSettings, QThread, pyqtSignal,
@@ -3352,6 +3354,53 @@ def reference_from_image(img: np.ndarray, header, work_wcs: WCS,
     return out
 
 
+def _widget_alive(w) -> bool:
+    """False once Qt has deleted the C++ object behind a Python wrapper."""
+    if w is None:
+        return False
+    try:
+        from PyQt6 import sip
+    except Exception:
+        return True                      # cannot tell; assume it is there
+    try:
+        return not sip.isdeleted(w)
+    except Exception:
+        return True
+
+
+def _guard_deleted(fn):
+    """Let a slot finish quietly if its dialog was closed underneath it.
+
+    SRGC's long steps pump the event loop for a long time: a survey fetch
+    walks several mirrors, and ensure_solved_header can put up a modal
+    question and then run a BLIND plate solve that takes minutes. Any of
+    that is long enough for the user to close the dialog, and the call site
+    sets WA_DeleteOnClose, so by the time the work returns `self` wraps a
+    freed C++ object. The next self.<widget> raises
+
+        RuntimeError: wrapped C/C++ object of type SurveyGradientDialog
+        has been deleted
+
+    which reached users as an Unhandled Exception box -- and twice over,
+    because the except/finally arms that re-enable the buttons raise the
+    same thing again on the way out.
+
+    Closing a dialog is a normal thing to do, not a fault, so this swallows
+    exactly that RuntimeError and lets anything else through untouched.
+    """
+    @functools.wraps(fn)
+    def _wrapped(self, *a, **kw):
+        try:
+            return fn(self, *a, **kw)
+        except RuntimeError as e:
+            if "has been deleted" in str(e):
+                _log(f"{fn.__name__}: dialog closed while it was running; "
+                     f"abandoning quietly")
+                return None
+            raise
+    return _wrapped
+
+
 def ensure_solved_header(parent, img: np.ndarray, header, *, label: str,
                          settings=None, ask: bool = True):
     """
@@ -4441,6 +4490,83 @@ class SurveyGradientDialog(QDialog):
         self._source_changed()
         self._show_source_now()
         self._start_availability_probe()
+        self._install_active_view_follow()
+        self._refresh_target_label()
+
+    # ---- no-document mode -----------------------------------------------
+    def _install_active_view_follow(self):
+        """Adopt the active view, but only while we have no document.
+
+        This dialog can be opened with nothing open, so its grip can be
+        dragged onto a View Bundle -- the bundle brings its own targets and
+        never looks at self.doc. Having opened it empty, though, the obvious
+        next move is to open an image, and a tool that then still insisted
+        there was none would be wrong.
+
+        It stops following the moment it has a document. Re-pointing on
+        every view change would silently retarget a dialog that already
+        holds a fetched reference and a modelled result for a DIFFERENT
+        image, and Apply would then commit it to the wrong one.
+        """
+        self._follow_conn = None
+        main = self._main
+        if self.doc is not None or main is None:
+            return
+        if not hasattr(main, "currentDocumentChanged"):
+            return
+        try:
+            main.currentDocumentChanged.connect(self._on_active_doc_changed)
+            self._follow_conn = True
+        except Exception:
+            self._follow_conn = None
+
+    def _on_active_doc_changed(self, doc):
+        if self.doc is not None:
+            return
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+        self.doc = doc
+        # One document is all this hook is for; holding the connection open
+        # would let a later view change retarget a dialog mid-session.
+        self._drop_active_view_follow()
+        self._refresh_target_label()
+        self._set_status(self.tr("Target adopted from the active view."))
+
+    def _drop_active_view_follow(self):
+        """Disconnect, guarded. Forgetting this is how the hook outlives the
+        dialog and fires on a deleted object."""
+        if not getattr(self, "_follow_conn", None):
+            return
+        self._follow_conn = None
+        try:
+            self._main.currentDocumentChanged.disconnect(
+                self._on_active_doc_changed)
+        except Exception:
+            pass
+
+    def _refresh_target_label(self):
+        """Say which image this dialog is pointed at, including 'none'."""
+        base = self.tr("Survey Reference Gradient Correction")
+        name = None
+        if self.doc is not None:
+            for attr in ("display_name", "name"):
+                v = getattr(self.doc, attr, None)
+                try:
+                    name = v() if callable(v) else v
+                except Exception:
+                    name = None
+                if name:
+                    break
+        if name:
+            self.setWindowTitle(f"{base} - {name}")
+        else:
+            self.setWindowTitle(
+                f"{base} - {self.tr('no image (drag the grip to a bundle)')}")
+        try:
+            for _b in (self.btn_fetch, self.btn_run):
+                _b.setEnabled(self.doc is not None)
+        except Exception:
+            pass
 
     # ---- availability ---------------------------------------------------
     def _start_availability_probe(self):
@@ -4514,6 +4640,7 @@ class SurveyGradientDialog(QDialog):
                 pass
         self._avail_conn = None
         self._avail_probe = None
+        self._drop_active_view_follow()
         try:
             super().closeEvent(ev)
         except Exception:
@@ -4757,6 +4884,11 @@ class SurveyGradientDialog(QDialog):
 
     # ---- data -----------------------------------------------------------
     def _source_float(self) -> np.ndarray | None:
+        # None when the dialog was opened with no active view. Every caller
+        # already handles that -- it is the state the tool opens in when the
+        # user wants the grip rather than a correction.
+        if self.doc is None or getattr(self.doc, "image", None) is None:
+            return None
         src = np.asarray(self.doc.image)
         if src is None or src.size == 0:
             return None
@@ -4770,6 +4902,7 @@ class SurveyGradientDialog(QDialog):
                 or meta.get("header"))
 
     # ---- run ------------------------------------------------------------
+    @_guard_deleted
     def _do_fetch_reference(self):
         """
         Step 1: get the reference and show it. No modelling, no correction.
@@ -4793,6 +4926,10 @@ class SurveyGradientDialog(QDialog):
             hdr = self._header()
             hdr, _solved = ensure_solved_header(
                 self, img, hdr, label="This image", settings=QSettings())
+            # That call can have been a modal question followed by a blind
+            # solve. Check we still exist before spending a fetch on it.
+            if not _widget_alive(self):
+                return
             if _solved:
                 self._adopt_solved_header(hdr)
 
@@ -5040,6 +5177,7 @@ class SurveyGradientDialog(QDialog):
                 f"contrast {rel * 100:.1f}% of its own level — {verdict}"
                 f"{prov}{mono}{gap}")
 
+    @_guard_deleted
     def _do_run(self):
         img = self._source_float()
         if img is None:
@@ -5060,6 +5198,8 @@ class SurveyGradientDialog(QDialog):
             # the target WCS. Offer the solver instead of just refusing.
             hdr, _solved = ensure_solved_header(
                 self, img, hdr, label="This image", settings=QSettings())
+            if not _widget_alive(self):
+                return
             if _solved:
                 self._adopt_solved_header(hdr)
 
@@ -5252,6 +5392,7 @@ class SurveyGradientDialog(QDialog):
         except Exception:
             pass
 
+    @_guard_deleted
     def _prepare_user_reference(self, img, target_hdr):
         """
         Turn the chosen frame into a reference plane on the work grid.
@@ -5268,6 +5409,8 @@ class SurveyGradientDialog(QDialog):
         ref_hdr, solved = ensure_solved_header(
             self, ref_img, ref_hdr, label=f"The reference image ({label})",
             settings=QSettings())
+        if not _widget_alive(self):
+            raise SurveyFetchError("The dialog was closed during the solve.")
         if solved:
             self._user_ref = (ref_img, ref_hdr, label)
             self._set_user_reference(ref_img, ref_hdr, label)
@@ -6267,6 +6410,13 @@ class SurveyGradientDialog(QDialog):
         return _newdoc
 
     def _do_apply(self):
+        if self.doc is None:
+            QMessageBox.information(
+                self, self.tr("No image"),
+                self.tr("This dialog is not pointed at an image. Open one, "
+                        "or drag the grip onto a view bundle to run on its "
+                        "files."))
+            return
         if self._result is None:
             return
         # Same snapshot the preview used. Applying twice from the live
