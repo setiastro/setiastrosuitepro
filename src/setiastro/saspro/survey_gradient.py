@@ -67,7 +67,7 @@ import inspect
 import numpy as np
 
 from PyQt6.QtCore import (Qt, QSize, QSettings, QThread, pyqtSignal,
-                          QPoint, QPointF, QRectF)
+                          QPoint, QPointF, QRectF, QObject)
 from PyQt6.QtGui import (QImage, QPixmap, QIcon, QPainter, QPen, QBrush,
                          QColor, QPolygonF)
 from PyQt6.QtWidgets import (
@@ -179,10 +179,49 @@ DEBUG = True
 _LOG_SINK = None   # set_log_sink() points this at the main window's _log
 
 
+class _SinkRelay(QObject):
+    """Carries log lines from worker threads to the GUI thread.
+
+    The sink is the main window's _log, which appends to a QListWidget. The
+    availability probe and the fetch workers log from their own QThreads, and
+    calling a widget from there is undefined behaviour -- it is what printed
+    'QBasicTimer::start: Timers cannot be started from another thread'.
+    Created on the GUI thread, so the connection below is queued for any
+    emitter that is not.
+    """
+
+    line = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__(None)
+        self.line.connect(self._deliver)
+
+    def _deliver(self, text: str):
+        sink = _LOG_SINK
+        if sink is not None:
+            try:
+                sink(text)
+            except Exception:
+                pass
+
+
+_SINK_RELAY = None
+
+
+def _on_gui_thread() -> bool:
+    import threading
+    return threading.current_thread() is threading.main_thread()
+
+
 def set_log_sink(fn) -> None:
     """Route trace lines to the host app's log in addition to stdout."""
-    global _LOG_SINK
+    global _LOG_SINK, _SINK_RELAY
     _LOG_SINK = fn
+    if fn is not None and _SINK_RELAY is None and _on_gui_thread():
+        try:
+            _SINK_RELAY = _SinkRelay()
+        except Exception:
+            _SINK_RELAY = None
 
 
 def _log(msg: str) -> None:
@@ -195,7 +234,11 @@ def _log(msg: str) -> None:
         pass
     if _LOG_SINK is not None:
         try:
-            _LOG_SINK(line)
+            if _on_gui_thread():
+                _LOG_SINK(line)
+            elif _SINK_RELAY is not None:
+                _SINK_RELAY.line.emit(line)      # queued to the GUI thread
+            # else: stdout already has it; never call the sink off-thread
         except Exception:
             pass
 
@@ -929,9 +972,9 @@ _SURVEY_AVAILABILITY = {
 # silently re-enabling a survey on that evidence would hand the user a
 # confident option that fails in a new way.
 _AVAILABILITY["moved"] = (
-    "⚠ The mirror host is answering again but its tile tree is no longer at "
-    "the registered path. The survey is probably back under a different URL "
-    "— re-run probe_mirrors.py to find it. "
+    "⚠ MOVED: the survey's host is serving again, but the survey registry "
+    "now lists this tree at a different address than SASpro knows, so "
+    "fetches will fail until SASpro is updated with the new location. "
 )
 
 _AVAILABILITY["curved"] = (
@@ -1935,6 +1978,52 @@ _OUTAGE_HOSTS: set = {
      "cdsarc.cds.unistra.fr", "healpix.ias.u-psud.fr",
      "wwwfirback.ias.u-psud.fr"}
 
+# CDS's registry (MocServer). It kept answering through the outage that took
+# the tile trees down, and it is the one authoritative answer to "where does
+# this tree live now": every record lists its hips_service_url(s).
+_HIPS_REGISTRY = "https://alasky.cds.unistra.fr/MocServer/query"
+
+
+def _norm_tree_url(u: str) -> tuple:
+    """(host, path) with scheme, case and trailing slash ignored."""
+    s = str(u).strip().split("//", 1)[-1].rstrip("/")
+    host, _, path = s.partition("/")
+    host = host.split(":", 1)[0].lower()
+    if host == "alasky.u-strasbg.fr":            # the registry's old alias
+        host = "alasky.cds.unistra.fr"
+    return host, "/" + path
+
+
+def _registered_urls(hips_id: str, *, timeout: float,
+                     cache: dict | None = None) -> list | None:
+    """
+    Base URLs the CDS registry lists for `hips_id` (hips_service_url,
+    hips_service_url_1, ...). None when the registry cannot be asked or has
+    no record -- i.e. no evidence either way.
+    """
+    if not hips_id:
+        return None
+    if cache is not None and hips_id in cache:
+        return cache[hips_id]
+    import urllib.parse
+    urls = None
+    try:
+        q = urllib.parse.urlencode({"ID": hips_id, "get": "record"})
+        raw = _http_get(f"{_HIPS_REGISTRY}?{q}", timeout=max(timeout, 5.0))
+        found = []
+        for ln in raw.decode("utf-8", "replace").splitlines():
+            k, sep, v = ln.partition("=")
+            if sep and k.strip().startswith("hips_service_url") and v.strip():
+                found.append(v.strip().rstrip("/"))
+        urls = found or None
+    except Exception as e:
+        _log(f"  registry   : could not ask about {hips_id} ({_brief(e)})")
+        urls = None
+    if cache is not None:
+        cache[hips_id] = urls
+    return urls
+
+
 # Tags that mean "we could not REACH this", and so are worth re-testing.
 # "stretched" and any future quality caveat are deliberately absent: they
 # describe what the data IS, not whether it can be fetched, and clearing
@@ -1943,23 +2032,26 @@ _RECHECKABLE_TAGS: set = {"unavailable", "degraded"}
 
 
 def _tree_state(base: str, *, need_fits: bool,
-                timeout: float = CONNECT_TIMEOUT) -> str:
+                timeout: float = CONNECT_TIMEOUT,
+                hips_id: str | None = None,
+                registry: dict | None = None) -> str:
     """
     One mirror base URL, classified: "live" | "moved" | "down".
 
       live  the host answered, /properties exists, and it advertises a tile
             format this reader can use for that channel.
-      moved the host answered but /properties did not resolve. The node is
-            back and the tree is somewhere else. This is the state a
-            liveness ping reports as a successful restore, and it is why
-            this function exists.
-      down  no TCP answer.
+      moved the host answered, /properties did not resolve, AND the CDS
+            registry now lists this tree on that host at a different path.
+            The node is back and the tree is somewhere else.
+      down  no TCP answer -- or an outage host that answers but does not
+            serve the tree at the address the registry still gives for it.
+            alasky did exactly this on 2026-11-13: a stub front page and a
+            404 for every tree, its own hipslist included. A 404 alone is
+            not evidence of a move.
       absent  the host answered but does not carry this tree, and never
             did -- the measured inventory, not a change worth reporting.
     """
-    # "moved" is only meaningful for a host that was part of the outage.
-    # Everywhere else a missing path is the known inventory, not a change.
-    missing = "moved" if _host_of(base) in _OUTAGE_HOSTS else "absent"
+    host = _host_of(base)
     if not _host_reachable(base, timeout=timeout):
         return "down"
     try:
@@ -1968,12 +2060,31 @@ def _tree_state(base: str, *, need_fits: bool,
         # The host answered the socket, so this is about the PATH, not the
         # node -- unless it turns out to be a connection failure after all,
         # in which case say so rather than claiming the tree moved.
-        return "down" if _is_connection_failure(e) else missing
+        if _is_connection_failure(e):
+            return "down"
+        if host not in _OUTAGE_HOSTS:
+            # Everywhere else a missing path is the known inventory.
+            return "absent"
+        # An outage host answering 404 is only a MOVE if the registry says
+        # the tree now lives somewhere else on it. Otherwise the host is up
+        # but still not serving -- the outage, not news.
+        regs = _registered_urls(hips_id, timeout=timeout, cache=registry)
+        here = _norm_tree_url(base)
+        elsewhere = [u for u in (regs or [])
+                     if _norm_tree_url(u)[0] == here[0]
+                     and _norm_tree_url(u) != here]
+        if elsewhere:
+            _log(f"  registry   : {hips_id} now at {elsewhere[0]} "
+                 f"(SASpro has {base})")
+            return "moved"
+        return "down"
     fmts = str(props.get("hips_tile_format", "")).lower().split()
     if need_fits:
-        return "live" if "fits" in fmts else missing
+        # The tree is there; it just has no FITS. That is what it carries,
+        # not a relocation.
+        return "live" if "fits" in fmts else "absent"
     usable = {"fits", "png", "jpeg", "jpg", "webp"}
-    return "live" if (set(fmts) & usable) else missing
+    return "live" if (set(fmts) & usable) else "absent"
 
 
 def recheck_availability(*, timeout: float = CONNECT_TIMEOUT) -> dict:
@@ -2000,6 +2111,7 @@ def recheck_availability(*, timeout: float = CONNECT_TIMEOUT) -> dict:
     wants its own FITS tree, and a jpeg-only mirror does not restore it.
     """
     changes: dict = {}
+    registry: dict = {}           # one registry lookup per hips id per run
     for name, info in SURVEYS.items():
         current = info.get("availability", "verified")
         if current not in _RECHECKABLE_TAGS:
@@ -2011,7 +2123,8 @@ def recheck_availability(*, timeout: float = CONNECT_TIMEOUT) -> dict:
                 continue          # "synth" has nothing to fetch
             need_fits = "channel" not in ch
             per_mirror = [
-                _tree_state(m, need_fits=need_fits, timeout=timeout)
+                _tree_state(m, need_fits=need_fits, timeout=timeout,
+                            hips_id=ch.get("hips"), registry=registry)
                 for m in (ch.get("mirrors") or [])
             ]
             if "live" in per_mirror:
@@ -4654,14 +4767,12 @@ class SurveyGradientDialog(QDialog):
                 # one is PEP 701, i.e. Python 3.12+, and this file has to
                 # parse on the older interpreter the Intel-mac build uses.
                 _names = "; ".join(back)
-                self._set_status(
-                    f"Reachable again: {_names}. "
-                    f"Re-run probe_mirrors.py to see what else has returned.")
+                self._set_status(f"Reachable again: {_names}.")
             elif moved:
                 self._set_status(
-                    f"{len(moved)} survey(s): the mirror host is answering "
-                    f"again but its tile trees have moved. Re-run "
-                    f"probe_mirrors.py to find the new paths.")
+                    f"{len(moved)} survey(s) are back online at a new address "
+                    f"SASpro does not know yet, and stay unavailable until "
+                    f"an update. The new address is in the log.")
         except Exception:
             pass
 

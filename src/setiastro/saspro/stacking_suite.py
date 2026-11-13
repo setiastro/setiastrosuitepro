@@ -10466,19 +10466,79 @@ class StackingSuiteDialog(QDialog):
         self.drop_shrink_spin.setDecimals(3)
         self.drop_shrink_spin.setValue(self._get_drizzle_pixfrac())
         self.drop_shrink_spin.valueChanged.connect(lambda v: self._set_drizzle_pixfrac(v))
+        self.drop_shrink_spin.setToolTip(self.tr(
+            "Drop shrink (pixfrac), and it drives all three kernels: the side\n"
+            "of the square drop, the radius of the circular one, and -- unless\n"
+            "you pin σ below -- the Gaussian, at σ = 0.5 x drop shrink."))
         fl_dz.addRow(self.tr("Kernel width:"), self.drop_shrink_spin)
 
-        # Optional: a separate σ for Gaussian (if you want it distinct)
+        # The Gaussian width follows drop shrink (σ = 0.5 * drop shrink, in
+        # input px), so one control means the same thing for every kernel. The
+        # kernels read sigma_out = gaussian_sigma * scale and never look at
+        # drop shrink themselves, so this is the only place the link exists.
+        # The spin below is an explicit override for anyone who wants to pin
+        # an absolute σ instead.
+        self.gauss_sigma_auto_cb = QCheckBox(
+            self.tr("Gaussian σ follows drop shrink  (σ = 0.5 x drop shrink)"))
         self.gauss_sigma_spin = QDoubleSpinBox()
         self.gauss_sigma_spin.setRange(0.05, 3.0)
         self.gauss_sigma_spin.setDecimals(3)
         self.gauss_sigma_spin.setSingleStep(0.05)
-        self.gauss_sigma_spin.setValue(self.settings.value("stacking/drizzle_gauss_sigma",
-                                                        self.drop_shrink_spin.value()*0.5, type=float))
+        _gs_manual = self._drizzle_gauss_manual()
+        self.gauss_sigma_auto_cb.setChecked(not _gs_manual)
+        self.gauss_sigma_spin.setValue(
+            self.settings.value("stacking/drizzle_gauss_sigma", 0.325, type=float)
+            if _gs_manual
+            else max(0.05, 0.5 * float(self.drop_shrink_spin.value())))
+        self.gauss_sigma_spin.setToolTip(self.tr(
+            "Gaussian width in INPUT pixels. Deposited FWHM is\n"
+            "2.355 x σ x drizzle scale. Untick the box above to pin it."))
+        fl_dz.addRow(self.gauss_sigma_auto_cb)
         fl_dz.addRow(self.tr("Gaussian σ (px):"), self.gauss_sigma_spin)
 
+        self._drizzle_gauss_hint = QLabel("")
+        try:
+            self._drizzle_gauss_hint.setStyleSheet("color: palette(mid);")
+        except Exception:
+            pass
+        fl_dz.addRow("", self._drizzle_gauss_hint)
+
+        def _update_gauss_hint():
+            # FWHM = 2.3548 * sigma * drizzle scale, exactly. Deliberately no
+            # "equivalent square drop" here: matching a Gaussian to a box by
+            # coverage is not linear in sigma and the answer moves with
+            # drizzle scale, so one number would be wrong somewhere.
+            try:
+                sg = float(self.gauss_sigma_spin.value())
+            except Exception:
+                return
+            fwhm = 2.3548 * sg
+            self._drizzle_gauss_hint.setText(self.tr(
+                "deposited FWHM %.2f input px  =  %.2f px at 2x, %.2f px at 3x")
+                % (fwhm, fwhm * 2.0, fwhm * 3.0))
+
+        def _sync_gauss_sigma():
+            _auto = self.gauss_sigma_auto_cb.isChecked()
+            _is_gauss = self.drizzle_kernel_combo.currentIndex() == 2
+            self.gauss_sigma_spin.setEnabled(_is_gauss and not _auto)
+            if _auto:
+                _v = max(0.05, 0.5 * float(self.drop_shrink_spin.value()))
+                if abs(float(self.gauss_sigma_spin.value()) - _v) > 1e-9:
+                    _b = self.gauss_sigma_spin.blockSignals(True)
+                    self.gauss_sigma_spin.setValue(_v)
+                    self.gauss_sigma_spin.blockSignals(_b)
+            _update_gauss_hint()
+
         def _toggle_gauss_sigma():
-            self.gauss_sigma_spin.setEnabled(self.drizzle_kernel_combo.currentIndex()==2)
+            _is_gauss = self.drizzle_kernel_combo.currentIndex() == 2
+            self.gauss_sigma_auto_cb.setEnabled(_is_gauss)
+            self.gauss_sigma_auto_cb.setVisible(_is_gauss)
+            self._drizzle_gauss_hint.setVisible(_is_gauss)
+            _sync_gauss_sigma()
+
+        self.drop_shrink_spin.valueChanged.connect(lambda _ : _sync_gauss_sigma())
+        self.gauss_sigma_auto_cb.toggled.connect(lambda _ : _sync_gauss_sigma())
+        self.gauss_sigma_spin.valueChanged.connect(lambda _ : _update_gauss_hint())
         _toggle_gauss_sigma()
         self.drizzle_kernel_combo.currentIndexChanged.connect(lambda _ : _toggle_gauss_sigma())
 
@@ -11361,6 +11421,7 @@ class StackingSuiteDialog(QDialog):
         kidx = self.drizzle_kernel_combo.currentIndex()
         kname = "square" if kidx == 0 else ("circular" if kidx == 1 else "gaussian")
         self.settings.setValue("stacking/drizzle_kernel",             kname)
+        self.settings.setValue("stacking/drizzle_gauss_manual",       bool(not self.gauss_sigma_auto_cb.isChecked()))
         self.settings.setValue("stacking/drizzle_gauss_sigma",        float(self.gauss_sigma_spin.value()))
         self.settings.setValue("stacking/comet_hclip_k",              float(self.comet_hclip_k.value()))
         self.settings.setValue("stacking/comet_hclip_p",              float(self.comet_hclip_p.value()))
@@ -11411,6 +11472,50 @@ class StackingSuiteDialog(QDialog):
             pass
         
     # --- Drizzle config: single source of truth ---
+    def _drizzle_gauss_manual(self) -> bool:
+        """True when the user has pinned an explicit Gaussian sigma.
+
+        One-time migration. Before this, the sigma spin DEFAULTED to
+        drop_shrink * 0.5 and then froze at whatever it happened to show the
+        first time the settings dialog was saved. A stored sigma that the old
+        default would not have produced was therefore set on purpose -- typed
+        by the user, or carried in by a settings profile (which ships 0.325
+        against drop shrink 0.9). Those stay honoured as overrides; anything
+        that merely echoes the old default goes back to tracking drop shrink,
+        which reproduces the same number anyway.
+        """
+        s = self.settings
+        if s.value("stacking/drizzle_gauss_manual", None) is None:
+            manual = False
+            try:
+                prev = s.value("stacking/drizzle_gauss_sigma", None, type=float)
+                if prev is not None:
+                    manual = abs(float(prev)
+                                 - 0.5 * self._get_drizzle_pixfrac()) > 1e-3
+            except Exception:
+                manual = False
+            s.setValue("stacking/drizzle_gauss_manual", bool(manual))
+            return bool(manual)
+        try:
+            return bool(s.value("stacking/drizzle_gauss_manual", False, type=bool))
+        except Exception:
+            return False
+
+    def _drizzle_gauss_sigma(self, drop_shrink: float) -> float:
+        """Gaussian kernel sigma, in INPUT pixels, for a given drop shrink.
+
+        Both deposit kernels use sigma_out = gaussian_sigma * scale, so this
+        is the only route by which drop shrink reaches the Gaussian. The
+        deposited FWHM is 2.355 * sigma * drizzle scale.
+        """
+        if self._drizzle_gauss_manual():
+            try:
+                return float(self.settings.value(
+                    "stacking/drizzle_gauss_sigma", 0.325, type=float))
+            except Exception:
+                return 0.325
+        return max(0.0, 0.5 * float(drop_shrink))
+
     def _get_drizzle_pixfrac(self) -> float:
         s = self.settings
         # new canonical -> old aliases -> default
@@ -37371,9 +37476,11 @@ class StackingSuiteDialog(QDialog):
 
         # ---- kernel config from settings ----
         kernel_name = (self.settings.value("stacking/drizzle_kernel", "square", type=str) or "square").lower()
-        gauss_sigma = self.settings.value(
-            "stacking/drizzle_gauss_sigma", float(drop_shrink) * 0.5, type=float
-        )
+        # The Gaussian kernel takes its width from here and nowhere else
+        # (sigma_out = gaussian_sigma * scale in both backends). By default
+        # this tracks drop shrink at sigma = 0.5 * drop shrink, so pixfrac
+        # means something for every kernel; a pinned sigma is kept.
+        gauss_sigma = self._drizzle_gauss_sigma(drop_shrink)
         if kernel_name.startswith("gauss"):
             _kcode = 2
         elif kernel_name.startswith("circ"):

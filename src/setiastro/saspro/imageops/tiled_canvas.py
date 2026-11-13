@@ -19,6 +19,13 @@
 #     approximate image rather than a gap, and a far zoom-out can skip building
 #     every tile.
 #   * Tiles are LRU-evicted once the cache exceeds CACHE_BUDGET_BYTES.
+#   * Zoomed out, tiles come from a coarser MIP LEVEL: at level L a tile covers
+#     TILE_DIM * 2**L source px and is rasterized at ~TILE_DIM px, chosen so a
+#     tile pixel is never smaller than a screen pixel. Without this a fit-to-
+#     window view of a 12k-wide frame needs every one of ~1600 source-res tiles
+#     (~400 MB, over budget), so each paint evicted what the next one needed
+#     and every repaint re-rasterized the whole frame -- seconds per paint, on
+#     every view switch, dock collapse or menu close.
 #
 # Owner contract (ImageSubWindow):
 #   owner.scale                      -> float, current zoom (widget = src*scale)
@@ -35,6 +42,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
 
 from PyQt6.QtCore import Qt, QRectF
@@ -82,6 +90,26 @@ def tile_source_rect(tx, ty, tile_dim, src_w, src_h):
     return (sx, sy, sw, sh)
 
 
+def mip_level_for_scale(scale, tile_dim, src_w, src_h):
+    """Coarsest level whose tiles still carry at least one pixel per screen
+    pixel: L = floor(log2(1/scale)), 0 when zoomed to 1:1 or closer, and
+    never past the level where one tile already spans the whole image."""
+    if scale <= 0 or scale >= 1.0:
+        return 0
+    level = int(math.floor(math.log2(1.0 / scale) + 1e-9))
+    longest = max(1, int(src_w), int(src_h))
+    cap = 0
+    while (tile_dim << cap) < longest:
+        cap += 1
+    return max(0, min(level, cap))
+
+
+def level_tile_out_size(sw, sh, level):
+    """Rasterized size of a level-`level` tile whose source extent is sw x sh."""
+    f = 1 << int(level)
+    return max(1, -(-int(sw) // f)), max(1, -(-int(sh) // f))
+
+
 def evict_to_budget(od: "OrderedDict", budget_bytes: int, bytes_of):
     """Pop oldest entries from an insertion-ordered dict until the summed
     bytes_of(value) is within budget. Returns the number evicted. Assumes the
@@ -105,6 +133,7 @@ class TiledImageCanvas(ViewportImageCanvas):
         self._src_w = 0
         self._src_h = 0
         self._tiles: "OrderedDict[tuple, QPixmap]" = OrderedDict()
+        self._tile_bytes = 0                     # running total of _tiles
         self._proxy = None                       # QPixmap backdrop (small)
         self._proxy_dirty = True
         self._interacting = False                # fast filter during gestures
@@ -120,7 +149,7 @@ class TiledImageCanvas(ViewportImageCanvas):
         if (src_w, src_h) != (self._src_w, self._src_h):
             # A different image/source: the tile grid changes meaning -> reset.
             self._src_w, self._src_h = src_w, src_h
-            self._tiles.clear()
+            self._drop_tiles()
             self._proxy = None
             self._proxy_dirty = True
         if (w, h) != (self._full_w, self._full_h):
@@ -134,7 +163,7 @@ class TiledImageCanvas(ViewportImageCanvas):
     def invalidate(self):
         """LUT/data changed: drop cached tiles and the proxy so they rebuild
         with the new mapping. Call this where _render used to rebuild _pm_src."""
-        self._tiles.clear()
+        self._drop_tiles()
         self._proxy = None
         self._proxy_dirty = True
         self.update()
@@ -155,7 +184,7 @@ class TiledImageCanvas(ViewportImageCanvas):
 
     def clear(self):                                     # type: ignore[override]
         self._override_pm = None
-        self._tiles.clear()
+        self._drop_tiles()
         self._proxy = None
         self._proxy_dirty = True
         self._full_w = self._full_h = 1
@@ -164,6 +193,19 @@ class TiledImageCanvas(ViewportImageCanvas):
         self.update()
 
     # -- tile / proxy management ------------------------------------------- #
+    def _drop_tiles(self):
+        self._tiles.clear()
+        self._tile_bytes = 0
+
+    def _evict(self):
+        # Running total, not a re-sum: summing every cached pixmap on every
+        # miss made a full-frame fill quadratic in the tile count.
+        while self._tile_bytes > CACHE_BUDGET_BYTES and len(self._tiles) > 1:
+            _key, old = self._tiles.popitem(last=False)   # oldest
+            self._tile_bytes -= self._pm_bytes(old)
+        if not self._tiles:
+            self._tile_bytes = 0
+
     @staticmethod
     def _pm_bytes(pm) -> int:
         try:
@@ -190,26 +232,40 @@ class TiledImageCanvas(ViewportImageCanvas):
                 Qt.TransformationMode.SmoothTransformation,
             )
 
-    def _get_tile(self, tx, ty):
-        key = (tx, ty)
+    def _get_tile(self, level, tx, ty):
+        key = (level, tx, ty)
         pm = self._tiles.get(key)
         if pm is not None:
             self._tiles.move_to_end(key)         # LRU touch
             return pm
-        rect = tile_source_rect(tx, ty, TILE_DIM, self._src_w, self._src_h)
+        rect = tile_source_rect(tx, ty, TILE_DIM << level, self._src_w, self._src_h)
         if rect is None:
             return None
         # Stage 2 seam: dispatch this to a QThreadPool and return None until the
         # finished tile lands (proxy covers it meanwhile). Stage 1 fills inline.
+        qimg = None
         try:
-            qimg = self._owner._render_source_tile(*rect)
+            if level <= 0:
+                qimg = self._owner._render_source_tile(*rect)
+            else:
+                ow, oh = level_tile_out_size(rect[2], rect[3], level)
+                try:
+                    qimg = self._owner._render_source_tile(*rect, out_w=ow, out_h=oh)
+                except TypeError:
+                    # an owner that only renders at source resolution
+                    qimg = self._owner._render_source_tile(*rect)
+                    if qimg is not None and not qimg.isNull():
+                        qimg = qimg.scaled(
+                            ow, oh, Qt.AspectRatioMode.IgnoreAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation)
         except Exception:
             qimg = None
         if qimg is None or qimg.isNull():
             return None
         pm = QPixmap.fromImage(qimg)
         self._tiles[key] = pm
-        evict_to_budget(self._tiles, CACHE_BUDGET_BYTES, self._pm_bytes)
+        self._tile_bytes += self._pm_bytes(pm)
+        self._evict()
         return pm
 
     # -- painting ----------------------------------------------------------- #
@@ -260,22 +316,28 @@ class TiledImageCanvas(ViewportImageCanvas):
                     QRectF(0.0, 0.0, float(self._proxy.width()), float(self._proxy.height())),
                 )
 
+            level = mip_level_for_scale(scale, TILE_DIM, self._src_w, self._src_h)
+            dim = TILE_DIM << level              # source px per tile at this level
             rng = visible_tile_range(
                 rect.x(), rect.y(), rect.width(), rect.height(),
-                scale, TILE_DIM, self._src_w, self._src_h,
+                scale, dim, self._src_w, self._src_h,
             )
             if rng is None:
                 return
             tx0, ty0, tx1, ty1 = rng
             for ty in range(ty0, ty1 + 1):
                 for tx in range(tx0, tx1 + 1):
-                    pm = self._get_tile(tx, ty)
+                    pm = self._get_tile(level, tx, ty)
                     if pm is None:
                         continue          #sasproxy shows through
-                    dx = (tx * TILE_DIM) * scale
-                    dy = (ty * TILE_DIM) * scale
+                    src = tile_source_rect(tx, ty, dim, self._src_w, self._src_h)
+                    if src is None:
+                        continue
+                    # Destination from the SOURCE extent: a coarse-level
+                    # pixmap is smaller than the area it stands for.
                     p.drawPixmap(
-                        QRectF(dx, dy, pm.width() * scale, pm.height() * scale),
+                        QRectF(src[0] * scale, src[1] * scale,
+                               src[2] * scale, src[3] * scale),
                         pm,
                         QRectF(0.0, 0.0, float(pm.width()), float(pm.height())),
                     )
