@@ -1,5 +1,9 @@
 # saspro/survey_gradient.py — Survey Reference Gradient Correction (SRGC)
 # -----------------------------------------------------------------------------
+# SetiAstro Suite Pro — Survey Reference Gradient Correction (SRGC)
+# Copyright (C) SetiAstro / Franklin Marek — www.setiastro.com
+# Licensed under GPLv3.
+# -----------------------------------------------------------------------------
 # Additive gradient correction against a free, publicly available all-sky
 # reference survey.
 #
@@ -103,18 +107,30 @@ from setiastro.saspro.autostretch import autostretch as hard_autostretch
 # lets a colour-selective gradient like red light pollution come out).
 
 #
-# LICENSING — READ BEFORE SHIPPING
-# --------------------------------
+# LICENSING
+# ---------
 # NSNS is published by Stefan Ziegenbalg under CC-BY-NC-SA 4.0. The NC clause
-# is NON-COMMERCIAL. SASpro is a paid product, so routing NSNS through it needs
-# a decision you have to make deliberately — fetching at runtime on the user's
-# behalf is arguably not redistribution, but "arguably" is not a licence. Get
-# written permission from Ziegenbalg, or gate the NSNS entries behind a notice,
-# before this ships in a build you sell.
+# is NON-COMMERCIAL, and it is not an obstacle here: SASpro is free and open
+# source under GPLv3, so nothing about routing NSNS through it is directed
+# toward commercial advantage.
 #
-# DSS2 carries no such restriction and is the safe default for a shipping
-# product, which is why it is listed and why nothing here hard-defaults to NSNS
-# without the user choosing it.
+# The other two clauses are satisfied by how this module already works.
+# BY: the survey is named in the provenance line and in the registry notes, so
+# every run reports what it pulled from. SA: share-alike attaches to a
+# distributed ADAPTATION of the data, and nothing here distributes one. The
+# reference is fetched at runtime from CDS on the user's behalf, never bundled
+# or shipped, and what gets subtracted from the frame is precisely the residual
+# the survey FAILED to explain, so no survey pixel data survives into the
+# output.
+#
+# The `noncommercial` flags in the registry below stay regardless. They
+# describe the DATA licence, not SASpro's, and a user who plans to sell a print
+# deserves to see which references carry the clause.
+#
+# All of this rests on SASpro being GPLv3. Revisit if that ever changes.
+#
+# DSS2 carries no such restriction at all, which is why it is listed and why
+# nothing here hard-defaults to NSNS without the user choosing it.
 #
 # `hips` ids verified against the CDS MOCServer and simg.de/nebulae3/dr0_2.
 # These are the LINEAR-INTENSITY FITS layers, not the 8-bit PNG display
@@ -255,17 +271,29 @@ def _strip_sip(w: "WCS") -> "WCS":
     return w
 
 #
-# LICENSING — READ BEFORE SHIPPING
-# --------------------------------
+# LICENSING
+# ---------
 # NSNS is published by Stefan Ziegenbalg under CC-BY-NC-SA 4.0. The NC clause
-# is NON-COMMERCIAL. SASpro is a paid product, so routing NSNS through it needs
-# a decision you have to make deliberately — fetching at runtime on the user's
-# behalf is arguably not redistribution, but "arguably" is not a licence. Get
-# written permission from Ziegenbalg, or gate the NSNS entries behind a notice,
-# before this ships in a build you sell.
+# is NON-COMMERCIAL, and it is not an obstacle here: SASpro is free and open
+# source under GPLv3, so nothing about routing NSNS through it is directed
+# toward commercial advantage.
 #
-# DSS2 carries no such restriction (ODbL) and is the safe default for a
-# shipping product, which is why it is listed.
+# The other two clauses are satisfied by how this module already works.
+# BY: the survey is named in the provenance line and in the registry notes, so
+# every run reports what it pulled from. SA: share-alike attaches to a
+# distributed ADAPTATION of the data, and nothing here distributes one. The
+# reference is fetched at runtime from CDS on the user's behalf, never bundled
+# or shipped, and what gets subtracted from the frame is precisely the residual
+# the survey FAILED to explain, so no survey pixel data survives into the
+# output.
+#
+# The `noncommercial` flags in the registry stay regardless. They describe the
+# DATA licence, not SASpro's, and a user who plans to sell a print deserves to
+# see which references carry the clause.
+#
+# All of this rests on SASpro being GPLv3. Revisit if that ever changes.
+#
+# DSS2 carries no such restriction (ODbL), which is why it is listed.
 #
 # `hips` ids verified against the CDS MOCServer and simg.de/nebulae3/dr0_2.
 # These are the LINEAR-INTENSITY FITS layers, not the 8-bit PNG display

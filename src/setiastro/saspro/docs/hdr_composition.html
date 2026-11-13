@@ -29,7 +29,7 @@
 <p class="sub">Build one linear frame from two or more aligned exposures of the same filter. Saturated cores in the long exposure are replaced by the shorter exposures, scaled to the same flux.</p>
 
 <div class="hero">
-The inputs stay in their own files. Apply writes a new view, <b>HDR Composition</b>. That view is still linear, and star cores can sit above 1. Autostretch shows the recovered structure. A later stretch (Statistical Stretch, Hyperbolic Stretch, Curves, WaveScale HDR) brings it into the display range for good.
+The inputs stay in their own files. Apply writes a new view, <b>HDR Composition</b>. That view is still linear and still inside 0&ndash;1: when the recovered cores push the peak above 1, the whole frame is divided by that peak, which is a linear scale and so changes no ratio in the image. Autostretch shows the recovered structure. A later stretch (Statistical Stretch, Hyperbolic Stretch, Curves, WaveScale HDR) brings it into the display range for good.
 </div>
 
 <h2>1. What you need open</h2>

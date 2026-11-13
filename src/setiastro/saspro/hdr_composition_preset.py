@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 from setiastro.saspro.hdr_composition import (
     HDRCompositionError,
     compose_hdr,
-    exposure_order_warning,
+    exposure_seconds,
     exposure_seconds,
     publish_hdr_composition,
 )
@@ -168,22 +168,9 @@ def apply_hdr_composition_via_preset(
             "Name them in doc_titles (longest first), or open two registered frames."
         )
 
-    warning = exposure_order_warning(docs)
-    if warning and ask_order and main_window is not None:
-        answer = QMessageBox.question(
-            main_window, "HDR Composition",
-            warning + "\n\nApply anyway?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return None
-    elif warning and hasattr(main_window, "_log"):
-        try:
-            main_window._log(f"[HDR Composition] {warning}")
-        except Exception:
-            pass
-
+    # No order question any more: compose_hdr ranks the frames by their own
+    # measured exposure, so a dropped preset or a bundle run no longer needs
+    # somebody present to confirm that the list is the right way up.
     images = [doc.image for doc in docs]
     names = [_doc_name(doc) for doc in docs]
     result, mask, steps = compose_hdr(
@@ -192,7 +179,17 @@ def apply_hdr_composition_via_preset(
         growth=params["growth"],
         smoothness=params["smoothness"],
         names=names,
+        exposures=[exposure_seconds(doc) for doc in docs],
     )
+    order = list((steps[0].get("order") if steps else None) or range(len(docs)))
+    if hasattr(main_window, "_log"):
+        try:
+            main_window._log(
+                "[HDR Composition] composed longest-first: "
+                + ", ".join(names[i] for i in order)
+            )
+        except Exception:
+            pass
 
     dm = (
         getattr(main_window, "doc_manager", None)
@@ -200,8 +197,8 @@ def apply_hdr_composition_via_preset(
         or getattr(main_window, "dm", None)
     )
     summary = publish_hdr_composition(
-        main_window, dm, docs[0], result, mask, steps,
-        open_mask=params["open_mask"],
+        main_window, dm, docs[order[0]] if order else docs[0], result, mask,
+        steps, open_mask=params["open_mask"],
     )
     if summary is None:
         raise HDRCompositionError("No document manager.")

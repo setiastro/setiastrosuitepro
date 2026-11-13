@@ -10,6 +10,7 @@ signal as clipped.
 from __future__ import annotations
 
 import copy
+import re
 
 import numpy as np
 from scipy.ndimage import binary_dilation, distance_transform_edt, gaussian_filter
@@ -28,23 +29,119 @@ class HDRCompositionError(ValueError):
     """The frames cannot be composed with the current settings."""
 
 
-_EXP_KEYS = ("EXPTIME", "EXPOSURE", "EXPOSURETIME", "XPOSURE", "EXP-TIME", "EXP_TIME")
+# Exposure keywords in preference order. The spread is not padding: N.I.N.A.
+# and SGP write EXPTIME, ASCOM/MaxIm EXPOSURE, ESO and some PixInsight exports
+# XPOSURE, older SBIG gear EXP-TIME, EXIF-derived loads ExposureTime, and XISF
+# carries its property ids with the namespace still attached. Matching is on a
+# normalised form, so EXP-TIME, EXP_TIME and "Exp Time" all land on EXPTIME.
+_EXP_KEYS = (
+    "EXPTIME", "EXPOSURE", "XPOSURE", "EXPOSURETIME", "EXP-TIME", "EXP_TIME",
+    "EXPTIMES", "EXPOSURE_TIME", "ITIME", "INTTIME", "INTEGTIM", "EXP",
+    "Instrument:ExposureTime", "Exposure:Time", "EXIF:ExposureTime",
+)
+
+# Where a header can be hiding on a document. A view loaded from FITS keeps
+# fits_header; one restored from a project or duplicated may only have the
+# JSON-safe __header_snapshot__; XISF and EXIF loads nest their keywords one
+# level down. The old reader looked at four of these and missed the rest,
+# which is how an open view ends up reading "exposure unknown".
+_META_HEADER_KEYS = (
+    "fits_header", "original_header", "header", "wcs_header", "roi_wcs_header",
+    "image_meta", "file_meta", "exif", "exif_meta", "raw_meta",
+)
+_NESTED_KEYS = ("FITSKeywords", "fits_keywords", "XISFProperties",
+                "xisf_properties", "properties", "exif", "EXIF")
+
+# Values that mean "there is no exposure here". SASpro's own stacker writes
+# the literal string when it cannot find one (see stacking_suite).
+_EXP_NULLS = {"", "unknown", "none", "n/a", "na", "null", "-"}
 # High-pass correlation of a real match (a clipped long exposure against its
 # short one) sits near 0.9. A one-pixel miss on sharp stars is only a little
 # lower, so the chosen shift has to beat "leave them where they are" as well.
 _ALIGN_MIN_SCORE = 0.75
 _ALIGN_MARGIN = 0.04
+# Two frames whose measured exposures are within this factor of each other
+# are treated as the same length and keep the order they were given.
+_ORDER_TIE = 1.05
+_LOG_TIE = float(np.log(_ORDER_TIE))
+
 _ROLE_DOC = Qt.ItemDataRole.UserRole
 _ROLE_EXP = Qt.ItemDataRole.UserRole + 1
 
 
+def _norm_key(key) -> str:
+    """EXP-TIME, exp_time and "Exp Time" all normalise to EXPTIME."""
+    return re.sub(r"[^A-Z0-9]", "", str(key).upper())
+
+
+# setdefault, not a comprehension: EXP-TIME and EXP_TIME normalise to the
+# same EXPTIME, and the last one written would otherwise sink the canonical
+# spelling below EXPOSURE. A frame carrying both then reported the wrong one.
+_EXP_RANK: dict[str, int] = {}
+for _i, _k in enumerate(_EXP_KEYS):
+    _EXP_RANK.setdefault(_norm_key(_k), _i)
+
+
 def _as_float(value) -> float | None:
+    """Seconds from a header value, or None.
+
+    Real headers do not hold tidy floats. A FITS card arrives as
+    (value, comment), an XISF property as {"value": ...}, and capture
+    software writes the unit into the string often enough that a bare
+    float() throws away perfectly good exposures: "300 s" and the EXIF
+    shutter fraction "1/125" both used to read as unknown.
+
+    (blink_comparator_pro carries the same parser for its own grouping. It
+    is not imported here because that module pulls in sep, cv2 and
+    pyqtgraph, which this tool has no other reason to load.)
+    """
     if isinstance(value, (list, tuple)):
         value = value[0] if value else None
     if isinstance(value, dict):
         value = value.get("value", value.get("Value"))
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else None
+        if isinstance(value, dict):
+            value = value.get("value", value.get("Value"))
+    if value is None or isinstance(value, bool):
+        return None
+
+    scale = 1.0
+    if isinstance(value, str):
+        s = value.strip().replace("\u2212", "-")
+        if s.lower() in _EXP_NULLS:
+            return None
+        low = s.lower()
+        # Unit suffixes, longest first so "msec" is not read as "sec".
+        for suffix, mult in (("milliseconds", 1e-3), ("millisecond", 1e-3),
+                             ("microseconds", 1e-6), ("microsecond", 1e-6),
+                             ("seconds", 1.0), ("second", 1.0),
+                             ("msec", 1e-3), ("usec", 1e-6), ("secs", 1.0),
+                             ("sec", 1.0), ("ms", 1e-3), ("us", 1e-6),
+                             ("\u00b5s", 1e-6), ("s", 1.0)):
+            if low.endswith(suffix):
+                head = s[: -len(suffix)].rstrip()
+                # Only strip the unit when a number really precedes it, so a
+                # text value is never mangled into a number.
+                if head and (head[-1].isdigit() or head[-1] == "."):
+                    s, scale = head, mult
+                    break
+        s = s.strip()
+        if "," in s and "." not in s:      # European decimal comma
+            s = s.replace(",", ".")
+        if not s:
+            return None
+        try:
+            if "/" in s:                   # EXIF shutter fraction, "1/125"
+                top, bot = s.split("/", 1)
+                value = float(top) / float(bot)
+            else:
+                value = float(s)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+
     try:
-        out = float(value)
+        out = float(value) * scale
     except (TypeError, ValueError):
         return None
     if not np.isfinite(out) or out <= 0.0:
@@ -52,77 +149,83 @@ def _as_float(value) -> float | None:
     return out
 
 
-def _header_value(header, key: str):
-    if header is None:
-        return None
-    if isinstance(header, dict):
-        if key in header:
-            return header[key]
-        fits_kw = header.get("FITSKeywords") or header.get("fits_keywords")
-        if isinstance(fits_kw, dict) and key in fits_kw:
-            entry = fits_kw[key]
-            if isinstance(entry, list) and entry:
-                entry = entry[0]
-            if isinstance(entry, dict):
-                return entry.get("value", entry.get("Value"))
-            return entry
-        return None
-    try:
-        if key in header:
-            return header[key]
+def _mapping_items(obj):
+    """(key, value) pairs from a header, a dict, or a snapshot block."""
+    if obj is None or isinstance(obj, (str, bytes, int, float, bool)):
+        return ()
+    # The JSON-safe snapshot a duplicated or project-restored view carries.
+    if isinstance(obj, dict) and "format" in obj:
+        fmt = obj.get("format")
+        if fmt == "fits-cards":
+            cards = obj.get("cards") or []
+            return [(c[0], c[1]) for c in cards
+                    if isinstance(c, (list, tuple)) and len(c) >= 2]
+        if fmt == "dict":
+            items = obj.get("items")
+            if isinstance(items, dict):
+                return list(items.items())
+    if isinstance(obj, dict):
+        return list(obj.items())
+    try:                                   # astropy Header and friends
+        return list(obj.items())
     except Exception:
-        return None
+        return ()
+
+
+def _scan_for_exposure(obj, _depth: int = 0) -> float | None:
+    """Best exposure in one mapping: the highest-ranked keyword that parses."""
+    best_rank, best_val = None, None
+    nested = []
+    for key, value in _mapping_items(obj):
+        rank = _EXP_RANK.get(_norm_key(key))
+        if rank is not None and (best_rank is None or rank < best_rank):
+            parsed = _as_float(value)
+            if parsed is not None:
+                best_rank, best_val = rank, parsed
+        if (_depth < 2 and isinstance(key, str)
+                and key in _NESTED_KEYS and value is not None):
+            nested.append(value)
+    if best_val is not None:
+        return best_val
+    for sub in nested:
+        found = _scan_for_exposure(sub, _depth + 1)
+        if found is not None:
+            return found
     return None
 
 
 def exposure_seconds(doc) -> float | None:
-    """Exposure time in seconds from document metadata or its FITS/XISF header."""
-    meta = getattr(doc, "metadata", None) or {}
+    """Exposure time in seconds, from wherever this document happens to keep it.
+
+    The order is deliberate: metadata the app set itself, then each header the
+    document may carry, then the serialised snapshot. The first container that
+    yields a usable number wins, so a view that has been through a tool and no
+    longer has a live header still reports the exposure its file came with.
+    """
+    meta = getattr(doc, "metadata", None)
     if not isinstance(meta, dict):
         meta = {}
-    for key in ("EXPTIME", "EXPOSURE", "exptime", "exposure"):
-        found = _as_float(meta.get(key))
+
+    found = _scan_for_exposure(meta)
+    if found is not None:
+        return found
+
+    for key in _META_HEADER_KEYS:
+        found = _scan_for_exposure(meta.get(key))
         if found is not None:
             return found
-    header = None
-    for key in ("original_header", "fits_header", "wcs_header", "header"):
-        if meta.get(key) is not None:
-            header = meta.get(key)
-            break
-    if header is None:
-        return None
-    for key in _EXP_KEYS:
-        found = _as_float(_header_value(header, key))
+
+    found = _scan_for_exposure(meta.get("__header_snapshot__"))
+    if found is not None:
+        return found
+
+    # Last resort: a header hanging off the document itself rather than its
+    # metadata, which is how some callers build a doc by hand.
+    for attr in ("header", "fits_header", "original_header"):
+        found = _scan_for_exposure(getattr(doc, attr, None))
         if found is not None:
             return found
     return None
-
-
-def exposure_order_warning(docs) -> str | None:
-    """Why the current order may not be longest-first, or None when it is safe."""
-    rows = [(_doc_name(doc), exposure_seconds(doc)) for doc in docs]
-    if len(rows) < 2:
-        return None
-    unknown = [name for name, exp in rows if exp is None]
-    known = [(name, exp) for name, exp in rows if exp is not None]
-    lines = []
-    if unknown:
-        listed = ", ".join(unknown)
-        lines.append(
-            f"No exposure time was found for {listed}. "
-            "Sort leaves those views at the bottom, so the longest exposure may not be first."
-        )
-    if known:
-        longest_name, longest = max(known, key=lambda row: row[1])
-        _first_name, first_exp = rows[0]
-        if first_exp is None or first_exp < longest:
-            lines.append(
-                f"{longest_name} is the longest exposure with a time in the header. "
-                "The top of the list has to be the longest exposure."
-            )
-    if not lines:
-        return None
-    return " ".join(lines)
 
 
 def _as_hwc(image: np.ndarray) -> np.ndarray:
@@ -496,6 +599,129 @@ def _fit_planes(long_plane: np.ndarray, short_plane: np.ndarray,
     return _fit_scale(xs, ys)
 
 
+def measure_relative_exposure(planes: list[np.ndarray],
+                              threshold: float = 0.8) -> list[float | None]:
+    """Relative exposure of each frame, measured from its own pixels.
+
+    Normalised so the first frame is 1.0; a frame that collected twice the
+    signal comes back as 2.0. None where no usable fit was possible.
+
+    This is the same quantity the composition itself needs -- it fits
+    ``long = scale * short + offset`` and scales the short frame up by it --
+    so measuring the order costs nothing conceptually new, and it is right
+    even when the headers are missing, wrong, or disagree about units.
+    Clipped pixels are excluded from both frames: a saturated core carries
+    no ratio information, only the clip level.
+    """
+    flats = [p.mean(axis=2) if p.ndim == 3 else np.asarray(p) for p in planes]
+    if not flats:
+        return []
+    pivot = flats[0]
+    out: list[float | None] = [1.0]
+    for other in flats[1:]:
+        usable = np.isfinite(pivot) & np.isfinite(other)
+        usable &= (pivot < float(threshold)) & (other < float(threshold))
+        usable &= pivot > -0.05
+        usable &= other > -0.05
+        # Shared zero borders (registration margins) carry no scale either.
+        usable &= ~((np.abs(pivot) < 1e-6) & (np.abs(other) < 1e-6))
+        if int(usable.sum()) < 64:
+            out.append(None)
+            continue
+        # Fit it both ways round and take the geometric mean.
+        #
+        # A single ordinary fit is biased by the noise in whatever sits on
+        # its x axis: the slope is pulled toward zero, which makes the
+        # NOISIER frame look longer than it is. That is the one direction
+        # that matters, because it pushes the shortest frame toward the base
+        # position. The two biases are reciprocal, so their geometric mean
+        # (the reduced-major-axis slope) cancels them to first order.
+        xs, ys = _sample_valid(usable, other, pivot)
+        forward = _fit_scale(xs, ys)        # pivot = a * other + b   -> 1/a
+        backward = _fit_scale(ys, xs)       # other = c * pivot + d   ->  c
+        ratios = []
+        if forward is not None and np.isfinite(forward[0]) and forward[0] > 1e-6:
+            ratios.append(1.0 / float(forward[0]))
+        if backward is not None and np.isfinite(backward[0]) and backward[0] > 1e-6:
+            ratios.append(float(backward[0]))
+        if not ratios:
+            out.append(None)
+            continue
+        out.append(float(np.exp(np.mean(np.log(ratios)))))
+    return out
+
+
+def hdr_order(planes: list[np.ndarray], *, threshold: float = 0.8,
+              exposures: list | None = None) -> tuple[list[int], dict]:
+    """Indices of ``planes`` from longest exposure to shortest.
+
+    Measurement decides. Header exposure times only place frames the fit
+    could not measure, and a frame with neither keeps its given position at
+    the end of the list -- it cannot be trusted as the base, which is the one
+    position where being wrong ruins the result.
+
+    Frames within ``_ORDER_TIE`` of each other are treated as equal and keep
+    the order they were given, so two takes of the same length (or a view and
+    its duplicate) do not shuffle on measurement noise.
+    """
+    n = len(planes)
+    if n < 2:
+        return list(range(n)), {"measured": [1.0] * n, "source": "single"}
+
+    measured = measure_relative_exposure(planes, threshold)
+
+    header_rel: list[float | None] = [None] * n
+    if exposures:
+        vals = []
+        for value in list(exposures)[:n]:
+            try:
+                f = float(value)
+            except (TypeError, ValueError):
+                f = None
+            vals.append(f if (f is not None and np.isfinite(f) and f > 0) else None)
+        vals += [None] * (n - len(vals))
+        anchor = next((v for v in vals if v is not None), None)
+        if anchor:
+            header_rel = [None if v is None else v / anchor for v in vals]
+
+    keys: list[float | None] = []
+    sources: list[str] = []
+    for i in range(n):
+        if measured[i] is not None:
+            keys.append(float(measured[i]))
+            sources.append("measured")
+        elif header_rel[i] is not None:
+            keys.append(float(header_rel[i]))
+            sources.append("header")
+        else:
+            keys.append(None)
+            sources.append("unknown")
+
+    known = [(i, k) for i, k in enumerate(keys) if k is not None]
+    unknown = [i for i, k in enumerate(keys) if k is None]
+
+    def _rank(item):
+        i, k = item
+        # A LOG grid, because "the same length" is a ratio, not a difference:
+        # 0.22 and 0.12 are nearly a factor of two apart and must not land in
+        # one bucket, while 1.00 and 1.02 must. Within a bucket the header
+        # time breaks the tie if there is one, and failing that the sort is
+        # stable, so frames keep the order they were given.
+        bucket = -round(float(np.log(max(float(k), 1e-9))) / _LOG_TIE)
+        hinted = header_rel[i]
+        return (bucket, -(float(hinted) if hinted is not None else 0.0))
+
+    order = [i for i, _ in sorted(known, key=_rank)] + unknown
+    info = {
+        "measured": measured,
+        "header_relative": header_rel,
+        "keys": keys,
+        "sources": sources,
+        "order": order,
+    }
+    return order, info
+
+
 def compose_hdr(
     images: list[np.ndarray],
     *,
@@ -503,12 +729,30 @@ def compose_hdr(
     growth: int = 1,
     smoothness: float = 7.0,
     names: list[str] | None = None,
+    exposures: list | None = None,
+    auto_order: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, list[dict]]:
-    """Compose ``images`` from longest exposure to shortest.
+    """Compose ``images``, longest exposure first.
 
-    Returns ``(image, mask, steps)``. ``image`` is linear and may exceed 1.
+    The caller does not have to supply them in that order. With
+    ``auto_order`` the frames are ranked by their measured relative exposure
+    (see :func:`hdr_order`), because getting this wrong is not a subtle
+    error: compose the other way round and the short frame becomes the base,
+    so there is nothing to recover and the long frame is scaled *down* into
+    its own clipped cores. ``exposures`` is an optional list of header times,
+    used only where measurement could not decide.
+
+    Returns ``(image, mask, steps)``. ``image`` is linear and within 0-1:
+    when the recovered cores push the peak above 1 the whole frame is divided
+    by that peak, recorded as ``steps[0]["rescaled_by"]``. That division is
+    linear, so it changes no ratio in the image; it only keeps the result
+    inside the range the rest of SASpro assumes.
     ``mask`` is the maximum replacement weight. Each step records per-channel
-    ``scales`` / ``offsets`` (``None`` when that channel had nothing to replace).
+    ``scales`` / ``offsets`` (``None`` when that channel had nothing to
+    replace). ``steps[0]`` also carries ``order`` -- the indices of ``images``
+    in the order they were actually composed -- plus ``order_names`` and the
+    measured ratios, so a caller can report what it did and pick the frame
+    the result is based on.
     """
     if len(images) < 2:
         raise HDRCompositionError("HDR composition needs at least two images.")
@@ -521,6 +765,22 @@ def compose_hdr(
     if len(labels) != len(planes):
         labels = [f"Image {i + 1}" for i in range(len(planes))]
     planes, size_note, crop_origin = _match_planes(planes, labels)
+
+    order = list(range(len(planes)))
+    order_info: dict = {}
+    if auto_order and len(planes) > 1:
+        order, order_info = hdr_order(planes, threshold=threshold,
+                                      exposures=exposures)
+        if order != list(range(len(planes))):
+            # Re-match from the new base: _match_planes measures every shift
+            # against planes[0] and returns the overlap origin in ITS pixel
+            # grid, and that origin is what crops the base document's WCS.
+            # Reusing the old one would hand the result a header cropped
+            # against a different frame.
+            source = [_as_hwc(img) for img in images]
+            source = [source[i] for i in order]
+            labels = [labels[i] for i in order]
+            planes, size_note, crop_origin = _match_planes(source, labels)
 
     current = planes[0].copy()
     saturated = current >= threshold
@@ -568,10 +828,32 @@ def compose_hdr(
             "offsets": offsets,
             "replaced": replaced,
         })
+    if steps:
+        steps[0]["order"] = list(order)
+        steps[0]["order_names"] = list(labels)
+        if order_info:
+            steps[0]["order_measured"] = order_info.get("measured")
+            steps[0]["order_sources"] = order_info.get("sources")
     if size_note and steps:
         steps[0]["size_note"] = size_note
         steps[0]["crop_origin"] = (int(crop_origin[0]), int(crop_origin[1]))
         steps[0]["crop_size"] = (int(planes[0].shape[1]), int(planes[0].shape[0]))
+
+    # Bring the peak back to 1.0.
+    #
+    # The composition really does reconstruct signal above the clip level --
+    # that is the entire point of it -- but the rest of SASpro treats 1.0 as
+    # full scale, and a view running to 2.6 misbehaves downstream: a
+    # statistical stretch of it comes back with negative pixels. One division
+    # by the peak costs nothing real. It is linear, so every ratio in the
+    # frame survives untouched, and the recovered cores are still there to be
+    # pulled out by whatever stretch comes next -- they just no longer sit
+    # outside the range every other tool assumes.
+    peak = float(np.nanmax(current)) if current.size else 0.0
+    if np.isfinite(peak) and peak > 1.0:
+        current = current / peak
+        if steps:
+            steps[0]["rescaled_by"] = peak
 
     image = current[..., 0] if nch == 1 else current
     return image.astype(np.float32, copy=False), combined, steps
@@ -602,6 +884,13 @@ def _format_steps(steps: list[dict], nch: int) -> str:
                 parts.append(f"{label} ×{scale:.3f} {offset:+.4f}")
         lines.append(
             f"{step['name']}: {', '.join(parts)} — {100.0 * float(step['replaced']):.2f}% replaced"
+        )
+    rescaled = next((step.get("rescaled_by") for step in steps
+                     if step.get("rescaled_by")), None)
+    if rescaled:
+        lines.append(
+            f"Recovered peak was {float(rescaled):.3f}; the result was divided "
+            f"by it to land in 0–1."
         )
     return "\n".join(lines)
 
@@ -759,8 +1048,9 @@ class HDRCompositionDialog(QDialog):
 
         root = QVBoxLayout(self)
         root.addWidget(QLabel(
-            "Add the views to combine. Longest exposure at the top. "
-            "Frames must already be registered and still linear. "
+            "Add the views to combine, in any order \u2014 the longest exposure is "
+            "worked out from the frames themselves. "
+            "They must already be registered and still linear. "
             "A frame a pixel or two larger is kept where the pixels still line up."
         ))
 
@@ -827,7 +1117,7 @@ class HDRCompositionDialog(QDialog):
         root.addLayout(form)
 
         self.lbl_status = QLabel(
-            "The result stays linear and can exceed 1. Autostretch shows the recovered cores."
+            "The result stays linear and in the 0\u20131 range. Autostretch shows the recovered cores."
         )
         self.lbl_status.setWordWrap(True)
         root.addWidget(self.lbl_status)
@@ -1003,6 +1293,24 @@ class HDRCompositionDialog(QDialog):
                 "Those views were left at the bottom. Move the longest exposure to the top."
             )
 
+    def _show_detected_order(self, order: list[int]) -> None:
+        """Put the list in the order the frames were actually composed.
+
+        The engine decides the order, so leaving the list showing something
+        else would be lying about what just happened.
+        """
+        try:
+            if list(order) == list(range(self.list.count())):
+                return
+            items = [self.list.item(row) for row in range(self.list.count())]
+            if len(order) != len(items):
+                return
+            taken = [self.list.takeItem(0) for _ in range(self.list.count())]
+            for index in order:
+                self.list.addItem(taken[index])
+        except Exception:
+            pass
+
     def _move(self, delta: int):
         row = self.list.currentRow()
         target = row + int(delta)
@@ -1025,16 +1333,6 @@ class HDRCompositionDialog(QDialog):
         if len(docs) < 2:
             QMessageBox.information(self, "HDR Composition", "Add at least two views.")
             return
-        warning = exposure_order_warning(docs)
-        if warning:
-            answer = QMessageBox.question(
-                self, "HDR Composition",
-                warning + "\n\nApply anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
         images = []
         for doc in docs:
             images.append(np.asarray(doc.image))
@@ -1048,6 +1346,7 @@ class HDRCompositionDialog(QDialog):
                 growth=int(self.sp_growth.value()),
                 smoothness=float(self.sp_smooth.value()),
                 names=names,
+                exposures=[exposure_seconds(doc) for doc in docs],
             )
         except HDRCompositionError as exc:
             QMessageBox.warning(self, "HDR Composition", str(exc))
@@ -1058,8 +1357,14 @@ class HDRCompositionDialog(QDialog):
         finally:
             QApplication.restoreOverrideCursor()
 
+        # The result is built on the longest frame, so that is the document
+        # whose header and WCS it should inherit.
+        order = list((steps[0].get("order") if steps else None) or range(len(docs)))
+        base_doc = docs[order[0]] if order else docs[0]
+        self._show_detected_order(order)
+
         summary = publish_hdr_composition(
-            self.mw, self.dm, docs[0], result, mask, steps,
+            self.mw, self.dm, base_doc, result, mask, steps,
             open_mask=bool(self.chk_mask.isChecked()),
         )
         if summary is None:
