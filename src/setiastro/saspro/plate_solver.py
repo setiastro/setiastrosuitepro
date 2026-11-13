@@ -118,6 +118,40 @@ def set_status_popup_enabled(on: bool) -> None:
     SUPPRESS_STATUS_POPUP = not bool(on)
 
 
+def _popup_alive(p) -> bool:
+    """True if `p` is a Python wrapper whose C++ widget still exists."""
+    if p is None:
+        return False
+    try:
+        p.isVisible()
+        return True
+    except RuntimeError:
+        return False
+
+
+def _popup_host(parent):
+    """Pick a parent that will outlive the popup.
+
+    The popup is a module-level singleton, so it is reused across solves,
+    but a Qt child dies with its parent. Handing it whatever dialog happened
+    to be active -- the SRGC window, Mosaic Master, a crop dialog -- means
+    the next headless solve finds a wrapper around a freed widget. Prefer
+    the main window, which is around for the life of the session.
+    """
+    try:
+        for top in QApplication.topLevelWidgets():
+            if top.inherits("QMainWindow") and top.isVisible():
+                return top
+    except Exception:
+        pass
+    if isinstance(parent, QWidget):
+        try:
+            return parent.window()
+        except Exception:
+            return parent
+    return QApplication.activeWindow()
+
+
 def _status_popup_open(parent, text: str = ""):
     """Show (or create) the singleton status popup for headless runs."""
     global _STATUS_POPUP
@@ -133,20 +167,36 @@ def _status_popup_open(parent, text: str = ""):
             except Exception:
                 pass
         return None
+    # A previous solve may have parented this to a dialog that has since
+    # been closed, in which case Qt destroyed it and only the Python
+    # wrapper is left. Touching that raises "wrapped C/C++ object of type
+    # QLabel has been deleted", which reached users as a failed SRGC drop.
+    if not _popup_alive(_STATUS_POPUP):
+        _STATUS_POPUP = None
     if _STATUS_POPUP is None:
-        host = parent if isinstance(parent, QWidget) else QApplication.activeWindow()
-        _STATUS_POPUP = _SolveStatusPopup(host)
-    if text:
-        _STATUS_POPUP.update_text(text)
-    _STATUS_POPUP.show()
-    _STATUS_POPUP.raise_()
-    QApplication.processEvents()
+        _STATUS_POPUP = _SolveStatusPopup(_popup_host(parent))
+    try:
+        if text:
+            _STATUS_POPUP.update_text(text)
+        _STATUS_POPUP.show()
+        _STATUS_POPUP.raise_()
+        QApplication.processEvents()
+    except RuntimeError:
+        # Destroyed between the check and here -- a solve is not worth
+        # losing over its own progress window.
+        _STATUS_POPUP = None
+        return None
     return _STATUS_POPUP
 
 def _status_popup_update(text: str):
     global _STATUS_POPUP
-    if _STATUS_POPUP is not None:
+    if not _popup_alive(_STATUS_POPUP):
+        _STATUS_POPUP = None
+        return
+    try:
         _STATUS_POPUP.update_text(text)
+    except RuntimeError:
+        _STATUS_POPUP = None
 
 def _status_popup_close():
     global _STATUS_POPUP
@@ -156,6 +206,8 @@ def _status_popup_close():
         _STATUS_POPUP.hide()
     except Exception:
         pass
+    if not _popup_alive(_STATUS_POPUP):
+        _STATUS_POPUP = None
 
 
 def _sleep_ui(ms: int):
