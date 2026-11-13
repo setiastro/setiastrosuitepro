@@ -186,7 +186,18 @@ def _render_latex_png(latex: str, color: str, fontsize: int) -> "str | None":
         return cached
     try:
         import hashlib
+        import logging as _logging
         import matplotlib
+        # mathtext narrates every glyph it substitutes at INFO ("Substituting
+        # symbol M from STIXNonUnicode"), so one docs page with a handful of
+        # equations floods the console with lines nobody can act on. Quiet it
+        # here, at the only place SASpro renders math, so it holds whichever
+        # entry point opened the docs.
+        for _n in ("matplotlib.mathtext", "matplotlib.font_manager"):
+            try:
+                _logging.getLogger(_n).setLevel(_logging.WARNING)
+            except Exception:
+                pass
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         h = hashlib.md5(repr(key).encode("utf-8")).hexdigest()[:16]

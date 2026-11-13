@@ -1685,6 +1685,17 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
         logging.info("PyInstaller bundle: %s", hasattr(sys, "_MEIPASS"))
     except Exception as e:
         print(f"Warning: could not initialize file logging at {log_file_path}: {e}")
+
+    # Root is at INFO so SASpro's own lines land in the log; libraries treat
+    # INFO as a running commentary and would bury them. Parent levels cover
+    # the children (matplotlib -> matplotlib.mathtext), and WARNING still
+    # gets through, so nothing actionable is lost.
+    for _noisy in ("matplotlib", "PIL", "fontTools", "urllib3", "asyncio",
+                   "numexpr", "OpenGL"):
+        try:
+            logging.getLogger(_noisy).setLevel(logging.WARNING)
+        except Exception:
+            pass
         
 
     # Setup crash handlers and app icon
