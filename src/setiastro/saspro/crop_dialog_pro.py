@@ -24,6 +24,39 @@ from setiastro.saspro.resources import get_icon_path
 
 _ROTATION_CURSOR = None
 
+
+def shared_axis_crop(src: np.ndarray, bounds: tuple[int, int, int, int]) -> tuple[np.ndarray, np.ndarray]:
+    """Crop ``src`` to the primary pixel rectangle, padding when ``src`` is smaller.
+
+    Every frame in a batch then has the same width and height. The translation
+    uses the primary origin, so the plate solution of each frame describes the
+    same crop window.
+    """
+    x0, x1, y0, y1 = (int(v) for v in bounds)
+    out_w = x1 - x0
+    out_h = y1 - y0
+    if out_w < 1 or out_h < 1:
+        raise ValueError("empty crop")
+    src = np.asarray(src)
+    height, width = src.shape[:2]
+    ix0 = max(0, min(width, x0))
+    iy0 = max(0, min(height, y0))
+    ix1 = max(ix0, min(width, x1))
+    iy1 = max(iy0, min(height, y1))
+    if src.ndim == 2:
+        dest = np.zeros((out_h, out_w), dtype=np.float32)
+    else:
+        dest = np.zeros((out_h, out_w) + tuple(src.shape[2:]), dtype=np.float32)
+    if ix1 > ix0 and iy1 > iy0:
+        patch = np.asarray(src[iy0:iy1, ix0:ix1], dtype=np.float32)
+        dy = iy0 - y0
+        dx = ix0 - x0
+        dest[dy:dy + patch.shape[0], dx:dx + patch.shape[1]] = patch
+    matrix = np.array([[1.0, 0.0, -float(x0)],
+                       [0.0, 1.0, -float(y0)],
+                       [0.0, 0.0,  1.0]], dtype=np.float32)
+    return dest, matrix
+
 def _rotation_cursor() -> QCursor:
     """A curved-arrow 'rotate' cursor, built once and cached."""
     global _ROTATION_CURSOR
@@ -1648,6 +1681,14 @@ class CropDialogPro(QDialog):
             dtype=np.float32,
         )
         norm = src_this / np.array([self._orig_w, self._orig_h], dtype=np.float32)
+        primary_h = int(self._orig_h)
+        primary_w = int(self._orig_w)
+        primary_pts = norm * np.array([primary_w, primary_h], dtype=np.float32)
+        primary_axis = self._quad_is_axis_aligned(primary_pts)
+        primary_bounds = (
+            self._int_bounds_from_quad(primary_pts, primary_w, primary_h)
+            if primary_axis else None
+        )
 
         ok = QMessageBox.question(
             self, self.tr("Confirm Batch"), source_label,
@@ -1666,10 +1707,19 @@ class CropDialogPro(QDialog):
                 src01 = img.astype(np.float32, copy=False)
 
             h, w    = src01.shape[:2]
+            # Registered frames are often 1 px apart after a previous crop.
+            # Reuse the primary pixel rectangle so every result has one size.
+            close = abs(int(h) - primary_h) <= 4 and abs(int(w) - primary_w) <= 4
             src_pts = norm * np.array([w, h], dtype=np.float32)
 
             axis_aligned = self._quad_is_axis_aligned(src_pts)
-            if axis_aligned:
+            if primary_axis and primary_bounds is not None and close:
+                # Same pixel rectangle as the primary, padded with zeros when
+                # this frame is a pixel or two smaller. Clamping used to shrink
+                # only that frame, so the batch no longer shared one size.
+                cropped, M = shared_axis_crop(src01, primary_bounds)
+                h_out, w_out = int(cropped.shape[0]), int(cropped.shape[1])
+            elif axis_aligned:
                 b = self._int_bounds_from_quad(src_pts, w, h)
                 if b is None: continue
                 x0, x1, y0, y1 = b

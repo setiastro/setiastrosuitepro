@@ -613,7 +613,7 @@ _PRESET_UI_IDS = {
     "resize_canvas","canvas_resize","texture_clarity","aberrationai",
     "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools","rcastro",
     "satchroma","fx","unwarp","pedestal","cosmetic_correction",
-    "export_fits","plate_solve","create_mask","srgc",
+    "export_fits","plate_solve","create_mask","srgc","hdr_composition",
 }
 
 def _has_preset_editor_for_command(command_id: str) -> bool:
@@ -636,6 +636,9 @@ def _preset_opener_for_command(command_id: str):
     if command_id == "srgc":
         from setiastro.saspro.srgc_preset import open_srgc_with_preset
         return open_srgc_with_preset
+    if command_id == "hdr_composition":
+        from setiastro.saspro.hdr_composition_preset import open_hdr_composition_with_preset
+        return open_hdr_composition_with_preset
     if command_id == "stat_stretch":
         from setiastro.saspro.stat_stretch import open_stat_stretch_with_preset
         return open_stat_stretch_with_preset
@@ -985,6 +988,13 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
     if command_id == "image_combine":
         dlg = _ImageCombinePresetDialog(parent, initial=cur or {
             "mode":"Blend","opacity":1.0,"luma_only":False,"output":"replace","docB_title":""
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "hdr_composition":
+        from setiastro.saspro.hdr_composition_preset import HDRCompositionPresetDialog
+        dlg = HDRCompositionPresetDialog(parent, initial=cur or {
+            "threshold": 0.8, "growth": 1, "smoothness": 7.0, "open_mask": False,
         })
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 

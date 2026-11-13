@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+</style>
+</head>
+<body>
+
+<h1>HDR Composition</h1>
+<p class="sub">Build one linear frame from two or more aligned exposures of the same filter. Saturated cores in the long exposure are replaced by the shorter exposures, scaled to the same flux.</p>
+
+<div class="hero">
+The inputs stay in their own files. Apply writes a new view, <b>HDR Composition</b>. That view is still linear, and star cores can sit above 1. Autostretch shows the recovered structure. A later stretch (Statistical Stretch, Hyperbolic Stretch, Curves, WaveScale HDR) brings it into the display range for good.
+</div>
+
+<h2>1. What you need open</h2>
+<ul>
+  <li>At least two views of the <b>same filter</b>, already registered to each other. Stellar Alignment does that.</li>
+  <li>Both mono or both RGB. The same width and height is the normal case. A frame a pixel or two larger is kept only where the pixels still line up; the plate solution moves with that overlap.</li>
+  <li>Linear data. A stretched short exposure will not match the long one, and the scale factor will be wrong.</li>
+</ul>
+
+<h2>2. Which views</h2>
+<p>The list starts empty. Pick a view in the dropdown and press <b>Add</b>. Only the views in the list are combined; other open views are left alone. <b>Remove</b> takes the selected row back out. <b>Refresh</b> updates the dropdown after you open another image.</p>
+<p>The top of the list is the base, and it must be the <b>longest</b> exposure. <b>Sort by exposure</b> uses <code>EXPTIME</code> / <code>EXPOSURE</code> from the header. A view with no exposure keyword stays at the bottom of that sort. Move it with <b>Up</b> / <b>Down</b> so the longest is first. Apply asks before continuing when the top of the list may not be the longest.</p>
+
+<h2>3. What Apply does</h2>
+<ol>
+  <li>Marks pixels at or above <b>Binarizing threshold</b> as saturated, per channel.</li>
+  <li>Grows that mask by <b>Mask growth</b> pixels, then feathers it over <b>Mask smoothness</b> pixels. The core of the mask stays fully replaced.</li>
+  <li>Measures <code>long ≈ scale × short + offset</code> on the unsaturated overlap. Sky does not have to match beforehand; the offset absorbs a pedestal difference.</li>
+  <li>Writes <code>scale × short + offset</code> into the saturated pixels.</li>
+  <li>Repeats with the next shorter frame, only where the previous short frame was clipped too. Recovered pixels above the threshold are kept.</li>
+</ol>
+
+<h2>4. Controls</h2>
+<h3>Binarizing threshold</h3>
+<p>Default 0.800. Lower it when cores clip earlier than that, for example a stack whose stars flatten at 0.6. Raise it only when bright-but-real pixels are being replaced.</p>
+<h3>Mask growth</h3>
+<p>Default 1 px. Increase it when a halo of blooming or a hard ring remains just outside the replaced core.</p>
+<h3>Mask smoothness</h3>
+<p>Default 7 px. This is the width of the blend, not a blur of the picture. The interior of a saturated core is still taken entirely from the short exposure.</p>
+<h3>Also open the replacement mask</h3>
+<p>Writes a second mono view, white where the short exposures contributed. Use it to see whether the threshold caught the cores you care about.</p>
+
+<div class="tip">
+The status line under the buttons reports the fitted scale and offset per channel, and the fraction of pixels replaced. A scale near the exposure ratio (300 s / 30 s → about ×10) is a good sign. A scale near 1 on very different exposures means the frames are not linear, not registered, or not the same filter.
+</div>
+
+<div class="warn">
+This is not WaveScale HDR. WaveScale HDR compresses the bright range of a single image. HDR Composition merges different exposure times before that stretch.
+</div>
+
+</body>
+</html>

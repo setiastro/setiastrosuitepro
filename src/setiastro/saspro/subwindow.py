@@ -1811,7 +1811,9 @@ class ImageSubWindow(QWidget):
                 mx = float(arr_f.max()) if arr_f.size else 1.0
             except Exception:
                 mx = 1.0
-            if mx > 5.0:
+            # Screen stretch only. Linear data above 1 (HDR composition) must
+            # still reach the LUT, which clips its input to [0, 1].
+            if np.isfinite(mx) and mx > 1.0:
                 arr_f = arr_f / mx
             lut = getattr(self, "_autostretch_lut_cache", None)
             try:
@@ -3421,7 +3423,9 @@ class ImageSubWindow(QWidget):
         if self.autostretch_enabled:
             arr_f = vis_src.astype(np.float32, copy=False)
             mx = float(arr_f.max()) if arr_f.size else 1.0
-            if mx > 5.0:
+            # Screen stretch only. Linear data above 1 (HDR composition) must
+            # still reach the LUT, which clips its input to [0, 1].
+            if np.isfinite(mx) and mx > 1.0:
                 arr_f = arr_f / mx
                 small = resize_for_display(arr_f, out_w, out_h)
 
@@ -3893,7 +3897,9 @@ class ImageSubWindow(QWidget):
             arr_f = a.astype(np.float32, copy=False)
 
         mx = float(arr_f.max()) if arr_f.size else 1.0
-        if mx > 5.0:
+        # Screen stretch only. Linear data above 1 (HDR composition) must
+        # still reach the LUT, which clips its input to [0, 1].
+        if np.isfinite(mx) and mx > 1.0:
             arr_f = arr_f / mx
 
         out = apply_autostretch_lut(

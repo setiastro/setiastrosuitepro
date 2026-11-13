@@ -201,6 +201,9 @@ COMMAND_ID_ALIASES: dict[str, str] = {
     # ---- combine / alignment / astrometry ----
     "image_combine": "image_combine",
     "image combine": "image_combine",
+    "hdr_composition": "hdr_composition",
+    "hdr composition": "hdr_composition",
+    "hdrcomposition": "hdr_composition",
     "star_alignment": "star_align",
     "align_stars": "star_align",
     "star align": "star_align",

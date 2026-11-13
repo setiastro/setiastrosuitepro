@@ -66,6 +66,7 @@ MENU_CONTENTS: dict[str, List[str]] = {
     ],
     "tools": [
         "act_blink", "act_contsub", "act_freqsep", "act_image_combine",
+        "act_hdr_composition",
         "act_multiscale_decomp", "act_narrowband_integration",
         "act_narrowband_normalization", "act_nbtorgb", "act_ppp",
         "act_selective_color", "act_selective_lum", "act_slap_toolkit",
@@ -179,7 +180,7 @@ SUBMENUS: dict[str, List[Tuple[str, List[str]]]] = {
             "act_blink", "act_magnitude", "act_snr",
         ]),
         ("Compositing", [
-            "act_image_combine", "act_slap_toolkit",
+            "act_image_combine", "act_hdr_composition", "act_slap_toolkit",
         ]),
         ("Bundles", [
             "act_view_bundles", "act_function_bundles",
