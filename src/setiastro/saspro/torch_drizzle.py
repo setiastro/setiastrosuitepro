@@ -6,6 +6,75 @@ import math
 import numpy as np
 
 
+def _lb_clip(torch, p, q, t0, t1, ok):
+    """One Liang-Barsky half-plane step: keep the part of the segment with
+    p * t <= q."""
+    zero = p == 0
+    ok = ok & (~zero | (q >= 0))
+    safe = torch.where(zero, torch.ones_like(p), p)
+    r = q / safe
+    t0 = torch.where((~zero) & (p < 0), torch.maximum(t0, r), t0)
+    t1 = torch.where((~zero) & (p > 0), torch.minimum(t1, r), t1)
+    return t0, t1, ok
+
+
+def _seg_term(torch, ax, ay, dx, dy, t0, t1, ok):
+    """Shoelace contribution of the surviving piece of one segment."""
+    px = ax + t0 * dx
+    py = ay + t0 * dy
+    rx = ax + t1 * dx
+    ry = ay + t1 * dy
+    term = px * ry - rx * py
+    return torch.where(ok & (t1 > t0), term, torch.zeros_like(term))
+
+
+def _quad_cell_area(torch, qx, qy, x0, y0):
+    """Exact area shared by a CCW convex quad and the unit cell at (x0, y0).
+
+    qx/qy are lists of four tensors broadcastable against the cell grid.
+    Green's theorem, same as _quad_cell_overlap in numba_utils: the boundary
+    of the intersection is the quad's edges inside the cell plus the cell's
+    edges inside the quad, and each piece is one straight segment.
+    """
+    x1 = x0 + 1.0
+    y1 = y0 + 1.0
+    acc = torch.zeros_like(x0)
+
+    for i in range(4):
+        j = (i + 1) & 3
+        ax = qx[i]
+        ay = qy[i]
+        dx = qx[j] - ax
+        dy = qy[j] - ay
+        t0 = torch.zeros_like(x0)
+        t1 = torch.ones_like(x0)
+        ok = torch.ones_like(x0, dtype=torch.bool)
+        t0, t1, ok = _lb_clip(torch, -dx, ax - x0, t0, t1, ok)
+        t0, t1, ok = _lb_clip(torch, dx, x1 - ax, t0, t1, ok)
+        t0, t1, ok = _lb_clip(torch, -dy, ay - y0, t0, t1, ok)
+        t0, t1, ok = _lb_clip(torch, dy, y1 - ay, t0, t1, ok)
+        acc = acc + _seg_term(torch, ax, ay, dx, dy, t0, t1, ok)
+
+    for ax, ay, bx, by in ((x0, y0, x1, y0), (x1, y0, x1, y1),
+                           (x1, y1, x0, y1), (x0, y1, x0, y0)):
+        dx = bx - ax
+        dy = by - ay
+        t0 = torch.zeros_like(x0)
+        t1 = torch.ones_like(x0)
+        ok = torch.ones_like(x0, dtype=torch.bool)
+        for i in range(4):
+            j = (i + 1) & 3
+            ex = qx[j] - qx[i]
+            ey = qy[j] - qy[i]
+            fa = ex * (ay - qy[i]) - ey * (ax - qx[i])
+            fd = ex * dy - ey * dx
+            t0, t1, ok = _lb_clip(torch, -fd, fa, t0, t1, ok)
+        acc = acc + _seg_term(torch, ax, ay, dx, dy, t0, t1, ok)
+
+    return torch.clamp(0.5 * acc, min=0.0)
+
+
+
 class DrizzleAccumulator:
     """Keep numerator/coverage resident across frames; download only the result.
 
@@ -71,8 +140,17 @@ class DrizzleAccumulator:
         self.scale = float(scale)
         self.kernel = int(kernel)
         radius = 0.5 * float(pixfrac) * self.scale
+        self.pixfrac = float(pixfrac)
+        self.radius = radius
         self.sigma = max(float(sigma) * self.scale if kernel == 2 else radius, 1e-6)
-        self.rmax = max(0, int(math.ceil(3 * self.sigma if kernel == 2 else radius)))
+        if kernel == 2:
+            self.rmax = max(0, int(math.ceil(3 * self.sigma)))
+        elif kernel == 3:
+            # worst case for a pure rotation; add() recomputes it per frame
+            # from the transform's own linear part
+            self.rmax = int(math.ceil(radius * 1.4143)) + 1
+        else:
+            self.rmax = max(0, int(math.ceil(radius)))
         if (2 * self.rmax + 1) ** 2 > 4096:
             raise ValueError("Drizzle footprint exceeds GPU scratch budget")
         dt = torch.float64 if np.dtype(dtype) == np.float64 else torch.float32
@@ -90,12 +168,23 @@ class DrizzleAccumulator:
         # Match the CPU's float32 transform products, then do footprint math
         # in double on CUDA/CPU. MPS/DirectML only support float32 coordinates.
         coord_dtype = torch.float64 if self.dev.type in ("cuda", "cpu") else torch.float32
-        m = torch.as_tensor(np.asarray(transform, np.float32), device=self.dev)
+        tm = np.asarray(transform, np.float32)
+        m = torch.as_tensor(tm, device=self.dev)
         flat = image.reshape(-1, c)
-        side = 2 * self.rmax + 1
+        rmax = self.rmax
+        if self.kernel == 3:
+            # the exact drop turns with the frame, so size the footprint from
+            # the transform, exactly as the numba kernel does
+            _ex = abs(float(tm[0, 0])) + abs(float(tm[0, 1]))
+            _ey = abs(float(tm[1, 0])) + abs(float(tm[1, 1]))
+            rmax = int(math.ceil(self.radius * (_ex if _ex > _ey else _ey))) + 1
+            if (2 * rmax + 1) ** 2 > 4096:
+                raise ValueError("Drizzle footprint exceeds GPU scratch budget")
+        side = 2 * rmax + 1
         # Limit footprint scratch independently of image dimensions/pixfrac.
-        block = max(64, min(32768, 1_048_576 // (side * side)))
-        offset = torch.arange(-self.rmax, self.rmax + 1, device=self.dev)
+        budget = 262_144 if self.kernel == 3 else 1_048_576
+        block = max(64, min(32768, budget // (side * side)))
+        offset = torch.arange(-rmax, rmax + 1, device=self.dev)
         oy, ox = torch.meshgrid(offset, offset, indexing="ij")
         ox, oy = ox.reshape(1, -1), oy.reshape(1, -1)
         out_h, out_w = self.shape[:2]
@@ -114,7 +203,7 @@ class DrizzleAccumulator:
                 ww = torch.where(ww == 0, 1e-12, ww).to(coord_dtype)
                 xx = px.to(coord_dtype) / ww * self.scale
                 yy = py.to(coord_dtype) / ww * self.scale
-                if self.rmax == 0:
+                if rmax == 0:
                     tx, ty = xx.long()[:, None], yy.long()[:, None]
                     weights = torch.ones_like(tx, dtype=coord_dtype)
                 else:
@@ -128,6 +217,39 @@ class DrizzleAccumulator:
                         overlap_y = (torch.minimum(ty + 1, yy[:, None] + self.sigma)
                                      - torch.maximum(ty, yy[:, None] - self.sigma)).clamp_min(0)
                         weights = overlap_x * overlap_y
+                    elif self.kernel == 3:
+                        # exact drop: the quad image of the shrunk input pixel
+                        hh = 0.5 * self.pixfrac
+                        qxs = []
+                        qys = []
+                        for ddx, ddy in ((-hh, -hh), (hh, -hh),
+                                         (hh, hh), (-hh, hh)):
+                            ux = x + ddx
+                            uy = y + ddy
+                            cpx = m[0, 0] * ux + m[0, 1] * uy + m[0, 2]
+                            cpy = m[1, 0] * ux + m[1, 1] * uy + m[1, 2]
+                            cww = m[2, 0] * ux + m[2, 1] * uy + m[2, 2]
+                            cww = torch.where(cww == 0, 1e-12, cww).to(coord_dtype)
+                            qxs.append(
+                                (cpx.to(coord_dtype) / cww * self.scale)[:, None])
+                            qys.append(
+                                (cpy.to(coord_dtype) / cww * self.scale)[:, None])
+                        sgn = torch.zeros_like(qxs[0])
+                        for i4 in range(4):
+                            j4 = (i4 + 1) & 3
+                            sgn = sgn + qxs[i4] * qys[j4] - qxs[j4] * qys[i4]
+                        flip = sgn < 0
+                        n1x = torch.where(flip, qxs[3], qxs[1])
+                        n1y = torch.where(flip, qys[3], qys[1])
+                        n3x = torch.where(flip, qxs[1], qxs[3])
+                        n3y = torch.where(flip, qys[1], qys[3])
+                        qxs[1] = n1x
+                        qys[1] = n1y
+                        qxs[3] = n3x
+                        qys[3] = n3y
+                        weights = _quad_cell_area(torch, qxs, qys,
+                                                  tx.to(coord_dtype),
+                                                  ty.to(coord_dtype))
                     elif self.kernel == 1:
                         weights = ((dx * dx + dy * dy) <= self.sigma**2).to(coord_dtype)
                     else:
@@ -144,8 +266,8 @@ class DrizzleAccumulator:
                 # int(Xo),int(Yo), provided the footprint intersects the canvas.
                 fallback = total[:, 0] <= 1e-12
                 fx, fy = xx.long(), yy.long()
-                intersects = ((xx + self.rmax).floor() >= 0) & ((xx - self.rmax).floor() < out_w)
-                intersects &= ((yy + self.rmax).floor() >= 0) & ((yy - self.rmax).floor() < out_h)
+                intersects = ((xx + rmax).floor() >= 0) & ((xx - rmax).floor() < out_w)
+                intersects &= ((yy + rmax).floor() >= 0) & ((yy - rmax).floor() < out_h)
                 fallback &= intersects & (fx >= 0) & (fx < out_w) & (fy >= 0) & (fy < out_h)
                 normalized[:, 0] = torch.where(fallback, 1.0, normalized[:, 0])
                 target[:, 0] = torch.where(fallback, fy * out_w + fx, target[:, 0])

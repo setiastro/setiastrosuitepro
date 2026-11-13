@@ -2101,13 +2101,18 @@ def compute_star_count_fast_preview(preview_2d: np.ndarray, *, return_size: bool
     for frame weighting, not calibrated to arcsec.
     """
     import sep
+    from setiastro.saspro.sep_tiled import extract_auto
     data = np.ascontiguousarray(np.asarray(preview_2d, dtype=np.float32))
-    # Room for every pixel: a dense field must not overflow sep's buffer.
-    # Only ever raised, since other sep users share the process setting.
-    if sep.get_extract_pixstack() < data.size:
-        sep.set_extract_pixstack(int(data.size))
     bkg = sep.Background(data)
-    cat = sep.extract(data - bkg.back(), 5.0, err=bkg.globalrms, minarea=5)
+    # extract_auto, not one sep.extract: SEP's per-call cost grows faster than
+    # the object count, and on a ~3000-star preview it was ~1 s a frame and
+    # capped the whole measurement phase at ~5 frames/s however many worker
+    # processes ran. A dense field is extracted in overlapping strips; a
+    # sparse one is the same single call as before. The pixel stack is raised
+    # only as far as needed (never lowered -- other sep users share it), and
+    # an overflow is retried at full size, so no frame is ever truncated.
+    # See sep_tiled for the equivalence measurements.
+    cat = extract_auto(sep, data - bkg.back(), 5.0, err=bkg.globalrms, minarea=5)
     if len(cat) == 0:
         return (0, 0.0, 0.0) if return_size else (0, 0.0)
     a = np.maximum(cat["a"], 1e-12)
@@ -4941,9 +4946,21 @@ def drizzle_deposit_kernel_mono_proj(
             M[a, b] = transform[a, b]
 
     radius = 0.5 * drop_shrink * drizzle_factor
+    # never let the quad collapse: at drop shrink 0 this degenerates to a
+    # point deposit, which is what kernel_code 0 does there too
+    qhalf = 0.5 * drop_shrink
+    if qhalf < 1e-4:
+        qhalf = 1e-4
     if kernel_code == 2:
         sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
         rmax = int(math.ceil(3.0 * sigma_out))
+    elif kernel_code == 3:
+        # the exact drop turns with the frame, so its bounding box grows by
+        # (|m00| + |m01|) per axis -- sqrt(2) for a pure rotation at 45 deg
+        sigma_out = max(radius, 1e-6)
+        _ex = abs(M[0, 0]) + abs(M[0, 1])
+        _ey = abs(M[1, 0]) + abs(M[1, 1])
+        rmax = int(math.ceil(radius * (_ex if _ex > _ey else _ey))) + 1
     else:
         sigma_out = max(radius, 1e-6)
         rmax = int(math.ceil(radius))
@@ -4964,6 +4981,8 @@ def drizzle_deposit_kernel_mono_proj(
 
         # one scratch tile per band (not per pixel)
         scratch = np.empty((tile_side, tile_side), dtype=np.float32)
+        qxs = np.empty(4, dtype=np.float64)
+        qys = np.empty(4, dtype=np.float64)
 
         for y in range(H):
             for x in range(W):
@@ -4982,8 +5001,15 @@ def drizzle_deposit_kernel_mono_proj(
                         coverage_buffer[oy, ox] += frame_weight
                     continue
 
-                min_x = int(math.floor(Xo - rmax)); max_x = int(math.floor(Xo + rmax))
-                min_y = int(math.floor(Yo - rmax)); max_y = int(math.floor(Yo + rmax))
+                if kernel_code == 3:
+                    if _drop_quad_proj(M, x, y, qhalf, drizzle_factor,
+                                       qxs, qys) <= 0.0:
+                        continue
+                    min_x = int(math.floor(qxs.min())); max_x = int(math.floor(qxs.max()))
+                    min_y = int(math.floor(qys.min())); max_y = int(math.floor(qys.max()))
+                else:
+                    min_x = int(math.floor(Xo - rmax)); max_x = int(math.floor(Xo + rmax))
+                    min_y = int(math.floor(Yo - rmax)); max_y = int(math.floor(Yo + rmax))
                 if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
                     continue
                 if min_x < 0: min_x = 0
@@ -5000,9 +5026,14 @@ def drizzle_deposit_kernel_mono_proj(
                     continue
 
                 tile = scratch[:Ht, :Wt]
-                sum_w, cnt = _drizzle_kernel_weights_preallocated(
-                    kernel_code, Xo, Yo, min_x, max_x, min_y, max_y, sigma_out, tile
-                )
+                if kernel_code == 3:
+                    sum_w, cnt = _drizzle_quad_weights_preallocated(
+                        qxs, qys, min_x, max_x, min_y, max_y, tile
+                    )
+                else:
+                    sum_w, cnt = _drizzle_kernel_weights_preallocated(
+                        kernel_code, Xo, Yo, min_x, max_x, min_y, max_y, sigma_out, tile
+                    )
                 if cnt == 0 or sum_w <= 1e-12:
                     ox = int(Xo); oy = int(Yo)
                     if yb0 <= oy < yb1 and 0 <= ox < outW:
@@ -5049,9 +5080,21 @@ def drizzle_deposit_color_kernel_proj(
             M[a, b] = transform[a, b]
 
     radius = 0.5 * drop_shrink * drizzle_factor
+    # never let the quad collapse: at drop shrink 0 this degenerates to a
+    # point deposit, which is what kernel_code 0 does there too
+    qhalf = 0.5 * drop_shrink
+    if qhalf < 1e-4:
+        qhalf = 1e-4
     if kernel_code == 2:
         sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
         rmax = int(math.ceil(3.0 * sigma_out))
+    elif kernel_code == 3:
+        # the exact drop turns with the frame, so its bounding box grows by
+        # (|m00| + |m01|) per axis -- sqrt(2) for a pure rotation at 45 deg
+        sigma_out = max(radius, 1e-6)
+        _ex = abs(M[0, 0]) + abs(M[0, 1])
+        _ey = abs(M[1, 0]) + abs(M[1, 1])
+        rmax = int(math.ceil(radius * (_ex if _ex > _ey else _ey))) + 1
     else:
         sigma_out = max(radius, 1e-6)
         rmax = int(math.ceil(radius))
@@ -5071,6 +5114,8 @@ def drizzle_deposit_color_kernel_proj(
             continue
 
         scratch = np.empty((tile_side, tile_side), dtype=np.float32)
+        qxs = np.empty(4, dtype=np.float64)
+        qys = np.empty(4, dtype=np.float64)
 
         for y in range(H):
             for x in range(W):
@@ -5095,8 +5140,15 @@ def drizzle_deposit_color_kernel_proj(
                                 coverage_buffer[oy, ox, c] += frame_weight
                     continue
 
-                min_x = int(math.floor(Xo - rmax)); max_x = int(math.floor(Xo + rmax))
-                min_y = int(math.floor(Yo - rmax)); max_y = int(math.floor(Yo + rmax))
+                if kernel_code == 3:
+                    if _drop_quad_proj(M, x, y, qhalf, drizzle_factor,
+                                       qxs, qys) <= 0.0:
+                        continue
+                    min_x = int(math.floor(qxs.min())); max_x = int(math.floor(qxs.max()))
+                    min_y = int(math.floor(qys.min())); max_y = int(math.floor(qys.max()))
+                else:
+                    min_x = int(math.floor(Xo - rmax)); max_x = int(math.floor(Xo + rmax))
+                    min_y = int(math.floor(Yo - rmax)); max_y = int(math.floor(Yo + rmax))
                 if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
                     continue
                 if min_x < 0: min_x = 0
@@ -5112,9 +5164,14 @@ def drizzle_deposit_color_kernel_proj(
                     continue
 
                 tile = scratch[:Ht, :Wt]
-                sum_w, cnt = _drizzle_kernel_weights_preallocated(
-                    kernel_code, Xo, Yo, min_x, max_x, min_y, max_y, sigma_out, tile
-                )
+                if kernel_code == 3:
+                    sum_w, cnt = _drizzle_quad_weights_preallocated(
+                        qxs, qys, min_x, max_x, min_y, max_y, tile
+                    )
+                else:
+                    sum_w, cnt = _drizzle_kernel_weights_preallocated(
+                        kernel_code, Xo, Yo, min_x, max_x, min_y, max_y, sigma_out, tile
+                    )
                 if cnt == 0 or sum_w <= 1e-12:
                     ox = int(Xo); oy = int(Yo)
                     if yb0 <= oy < yb1 and 0 <= ox < outW:
@@ -5321,6 +5378,234 @@ def finalize_drizzle_3d(drizzle_buffer, coverage_buffer, final_out):
                 else:
                     final_out[y, x, cidx] = drizzle_buffer[y, x, cidx] / cov
     return final_out
+
+# ---------------------------------------------------------------------------
+# kernel_code 3: the exact drop, i.e. the image of the shrunk input pixel
+# under the full 3x3 transform.
+#
+# kernel_code 0 deposits an axis-aligned square of side pixfrac*scale centred
+# on the mapped pixel. Right area, right centroid, right width -- but the
+# corners never turn with the frame, so the drops stop tiling the output as
+# soon as there is field rotation. kernel_code 3 keeps the drop's true
+# orientation and clips it exactly against each output cell.
+#
+# The overlap is Green's theorem rather than polygon clipping, so the inner
+# loop needs no vertex list and no allocation: eight parametric segment
+# clips. torch_drizzle.py uses the same formulation so the CPU and GPU
+# accumulators agree.
+# ---------------------------------------------------------------------------
+
+
+@njit(fastmath=True)
+def _drop_quad_proj(M, x, y, half, scale, qx, qy):
+    """Corners of the shrunk input pixel, mapped into output coords.
+
+    Fills qx/qy (length 4) counter-clockwise and returns the quad's area.
+    A non-positive area means the transform collapsed the pixel.
+    """
+    for k in range(4):
+        if k == 0:
+            dx = -half
+            dy = -half
+        elif k == 1:
+            dx = half
+            dy = -half
+        elif k == 2:
+            dx = half
+            dy = half
+        else:
+            dx = -half
+            dy = half
+        Px, Py = _project_3x3(M, np.float32(x + dx), np.float32(y + dy))
+        qx[k] = Px * scale
+        qy[k] = Py * scale
+
+    s = 0.0
+    for i in range(4):
+        j = (i + 1) & 3
+        s += qx[i] * qy[j] - qx[j] * qy[i]
+    if s < 0.0:
+        # counter-clockwise, so every half-plane test has one consistent sign
+        sx = qx[1]
+        sy = qy[1]
+        qx[1] = qx[3]
+        qy[1] = qy[3]
+        qx[3] = sx
+        qy[3] = sy
+        s = -s
+    return 0.5 * s
+
+
+@njit(fastmath=True)
+def _quad_cell_overlap(qx, qy, x0, y0):
+    """Area shared by a CCW convex quad and the unit cell rooted at (x0, y0)."""
+    x1 = x0 + 1.0
+    y1 = y0 + 1.0
+
+    # --- cheap accept/reject first ---
+    # Along each quad edge the half-plane value over the cell is linear, so
+    # its extremes over the four cell corners come from one evaluation plus
+    # two adds. If the cell is wholly outside any edge the overlap is 0; if
+    # it is wholly inside all four it is exactly 1. Both are the same values
+    # the full clip below would return, so this changes nothing numerically.
+    n_in = 0
+    for i in range(4):
+        j = (i + 1) & 3
+        A = qx[j] - qx[i]
+        B = -(qy[j] - qy[i])
+        c00 = A * (y0 - qy[i]) + B * (x0 - qx[i])
+        lo = c00
+        hi = c00
+        if A < 0.0:
+            lo += A
+        else:
+            hi += A
+        if B < 0.0:
+            lo += B
+        else:
+            hi += B
+        if hi < 0.0:
+            return 0.0
+        if lo >= 0.0:
+            n_in += 1
+    if n_in == 4:
+        return 1.0
+
+    acc = 0.0
+
+    # --- the quad's own edges, clipped to the cell (Liang-Barsky) ---
+    for i in range(4):
+        j = (i + 1) & 3
+        ax = qx[i]
+        ay = qy[i]
+        dx = qx[j] - ax
+        dy = qy[j] - ay
+        t0 = 0.0
+        t1 = 1.0
+        ok = True
+        for e in range(4):
+            if e == 0:
+                p = -dx
+                q = ax - x0
+            elif e == 1:
+                p = dx
+                q = x1 - ax
+            elif e == 2:
+                p = -dy
+                q = ay - y0
+            else:
+                p = dy
+                q = y1 - ay
+            if p == 0.0:
+                if q < 0.0:
+                    ok = False
+                    break
+            else:
+                r = q / p
+                if p < 0.0:
+                    if r > t1:
+                        ok = False
+                        break
+                    if r > t0:
+                        t0 = r
+                else:
+                    if r < t0:
+                        ok = False
+                        break
+                    if r < t1:
+                        t1 = r
+        if ok and t1 > t0:
+            px = ax + t0 * dx
+            py = ay + t0 * dy
+            rx = ax + t1 * dx
+            ry = ay + t1 * dy
+            acc += px * ry - rx * py
+
+    # --- the cell's edges, clipped to the quad's four half-planes ---
+    for s in range(4):
+        if s == 0:
+            ax = x0
+            ay = y0
+            bx = x1
+            by = y0
+        elif s == 1:
+            ax = x1
+            ay = y0
+            bx = x1
+            by = y1
+        elif s == 2:
+            ax = x1
+            ay = y1
+            bx = x0
+            by = y1
+        else:
+            ax = x0
+            ay = y1
+            bx = x0
+            by = y0
+        dx = bx - ax
+        dy = by - ay
+        t0 = 0.0
+        t1 = 1.0
+        ok = True
+        for i in range(4):
+            j = (i + 1) & 3
+            ex = qx[j] - qx[i]
+            ey = qy[j] - qy[i]
+            fa = ex * (ay - qy[i]) - ey * (ax - qx[i])
+            fd = ex * dy - ey * dx
+            if fd == 0.0:
+                if fa < 0.0:
+                    ok = False
+                    break
+            else:
+                r = -fa / fd
+                if fd > 0.0:
+                    if r > t1:
+                        ok = False
+                        break
+                    if r > t0:
+                        t0 = r
+                else:
+                    if r < t0:
+                        ok = False
+                        break
+                    if r < t1:
+                        t1 = r
+        if ok and t1 > t0:
+            px = ax + t0 * dx
+            py = ay + t0 * dy
+            rx = ax + t1 * dx
+            ry = ay + t1 * dy
+            acc += px * ry - rx * py
+
+    acc *= 0.5
+    if acc <= 0.0:
+        return 0.0
+    return acc
+
+
+@njit(fastmath=True)
+def _drizzle_quad_weights_preallocated(qx, qy, min_x, max_x, min_y, max_y,
+                                       weights_out):
+    """Same contract as _drizzle_kernel_weights_preallocated, for the exact
+    drop: fill the tile and return (sum of weights, non-zero count)."""
+    H = max_y - min_y + 1
+    W = max_x - min_x + 1
+    sum_w = 0.0
+    cnt = 0
+    for j in range(H):
+        oy = min_y + j
+        for i in range(W):
+            ox = min_x + i
+            w = _quad_cell_overlap(qx, qy, np.float64(ox), np.float64(oy))
+            weights_out[j, i] = w
+            sum_w += w
+            if w > 0.0:
+                cnt += 1
+    return sum_w, cnt
+
+
 
 @njit(fastmath=True)
 def _drizzle_kernel_weights_preallocated(

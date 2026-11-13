@@ -9,13 +9,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
+from PyQt6.QtGui import QIcon, QImage, QPixmap, QPainter, QPen, QColor, QPalette
 from PyQt6.QtWidgets import (
     QMessageBox, QInputDialog, QDialog,
     QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
     QSpinBox, QDoubleSpinBox, QComboBox, QDialogButtonBox,
-    QGridLayout, QCheckBox, QStackedLayout, QWidget
+    QGridLayout, QCheckBox, QStackedLayout, QWidget, QSlider, QSizePolicy
 )
 
 # Import numba-accelerated functions
@@ -499,6 +499,439 @@ class ResizeCanvasDialog(QDialog):
             "height_percent": float(self.spn_h_pct.value()),
         }
 
+class _RotateCanvas(QWidget):
+    """Live rotation preview with a grab handle.
+
+    Drag anywhere in the view to rotate; the ring handle is there to show
+    where the grip is and which way is zero. Positive is CCW, matching the
+    rotation the apply step performs.
+    """
+
+    angleChanged = pyqtSignal(float)
+
+    HANDLE_R = 9          # knob radius, px
+    GRAB_SLOP = 16        # how close to the knob still counts as grabbing it
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._base: QPixmap | None = None
+        self._angle = 0.0
+        self._drag_from = None          # (cursor_angle_ccw, angle_at_press)
+        self.setMinimumSize(440, 340)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    # ── state ────────────────────────────────────────────────────────────
+    def set_base(self, pm: QPixmap | None):
+        self._base = pm
+        self.update()
+
+    def angle(self) -> float:
+        return self._angle
+
+    def set_angle(self, deg: float, *, emit: bool = True):
+        deg = float(deg)
+        # keep it in (-180, 180]: the same rotation, said the short way
+        deg = ((deg + 180.0) % 360.0) - 180.0
+        if abs(deg - self._angle) < 1e-9:
+            return
+        self._angle = deg
+        self.update()
+        if emit:
+            self.angleChanged.emit(deg)
+
+    # ── geometry helpers ─────────────────────────────────────────────────
+    def _center(self) -> QPointF:
+        return QPointF(self.width() * 0.5, self.height() * 0.5)
+
+    def _ring_radius(self) -> float:
+        return max(40.0, min(self.width(), self.height()) * 0.5 - 18.0)
+
+    def _cursor_angle(self, pos) -> float:
+        """Screen position -> CCW-positive degrees. Screen y runs down, so
+        the visual CCW direction is the negative of the raw atan2."""
+        c = self._center()
+        dx = float(pos.x()) - c.x()
+        dy = float(pos.y()) - c.y()
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            return self._angle
+        return -math.degrees(math.atan2(dy, dx))
+
+    def _knob_pos(self) -> QPointF:
+        c = self._center()
+        r = self._ring_radius()
+        a = math.radians(-self._angle)
+        return QPointF(c.x() + r * math.cos(a), c.y() + r * math.sin(a))
+
+    @staticmethod
+    def _snap(deg: float, mods) -> float:
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            return round(deg / 15.0) * 15.0          # common angles
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            return round(deg * 10.0) / 10.0          # fine
+        return round(deg)                            # whole degrees by default
+
+    # ── interaction ──────────────────────────────────────────────────────
+    def mousePressEvent(self, ev):
+        if ev.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(ev)
+            return
+        self._drag_from = (self._cursor_angle(ev.position()), self._angle)
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        ev.accept()
+
+    def mouseMoveEvent(self, ev):
+        if self._drag_from is None:
+            return
+        start_cursor, start_angle = self._drag_from
+        delta = self._cursor_angle(ev.position()) - start_cursor
+        # unwrap: a drag across the +/-180 seam must not jump a full turn
+        delta = ((delta + 180.0) % 360.0) - 180.0
+        self.set_angle(self._snap(start_angle + delta, ev.modifiers()))
+        ev.accept()
+
+    def mouseReleaseEvent(self, ev):
+        self._drag_from = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        ev.accept()
+
+    def mouseDoubleClickEvent(self, ev):
+        self.set_angle(0.0)
+        ev.accept()
+
+    def wheelEvent(self, ev):
+        step = 0.1 if (ev.modifiers() & Qt.KeyboardModifier.ShiftModifier) else 1.0
+        notches = ev.angleDelta().y() / 120.0
+        if notches:
+            self.set_angle(self._angle + notches * step)
+            ev.accept()
+        else:
+            super().wheelEvent(ev)
+
+    def keyPressEvent(self, ev):
+        step = 0.1 if (ev.modifiers() & Qt.KeyboardModifier.ShiftModifier) else 1.0
+        k = ev.key()
+        if k in (Qt.Key.Key_Left, Qt.Key.Key_Up):
+            self.set_angle(self._angle + step)
+        elif k in (Qt.Key.Key_Right, Qt.Key.Key_Down):
+            self.set_angle(self._angle - step)
+        elif k in (Qt.Key.Key_0, Qt.Key.Key_Home):
+            self.set_angle(0.0)
+        else:
+            super().keyPressEvent(ev)
+            return
+        ev.accept()
+
+    # ── paint ────────────────────────────────────────────────────────────
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        p.fillRect(self.rect(), QColor(24, 24, 28))
+
+        if self._base is None or self._base.isNull():
+            p.setPen(QColor(160, 160, 170))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No preview")
+            return
+
+        bw, bh = self._base.width(), self._base.height()
+        a = math.radians(self._angle)
+        ca, sa = abs(math.cos(a)), abs(math.sin(a))
+        rot_w = bw * ca + bh * sa              # bounding box of the result
+        rot_h = bw * sa + bh * ca
+
+        margin = self.HANDLE_R + 10
+        avail_w = max(1.0, self.width() - 2 * margin)
+        avail_h = max(1.0, self.height() - 2 * margin)
+        scale = min(avail_w / rot_w, avail_h / rot_h, 1.0e6)
+
+        c = self._center()
+
+        # the grown canvas the rotation will produce
+        p.save()
+        p.translate(c)
+        box = QRectF(-rot_w * scale * 0.5, -rot_h * scale * 0.5,
+                     rot_w * scale, rot_h * scale)
+        p.setPen(QPen(QColor(90, 90, 100), 1, Qt.PenStyle.DashLine))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(box)
+        p.restore()
+
+        # the image itself
+        p.save()
+        p.translate(c)
+        p.rotate(-self._angle)                 # screen y is down: negate for CCW
+        p.scale(scale, scale)
+        p.drawPixmap(QPointF(-bw * 0.5, -bh * 0.5), self._base)
+        p.restore()
+
+        # ── the grip ─────────────────────────────────────────────────────
+        r = self._ring_radius()
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(255, 255, 255, 36), 1, Qt.PenStyle.DotLine))
+        p.drawEllipse(c, r, r)
+
+        # every 15 deg, longer at the cardinals
+        p.setPen(QPen(QColor(255, 255, 255, 60), 1))
+        for t in range(0, 360, 15):
+            th = math.radians(t)
+            inner = r - (7 if t % 45 == 0 else 4)
+            p.drawLine(QPointF(c.x() + inner * math.cos(th), c.y() + inner * math.sin(th)),
+                       QPointF(c.x() + r * math.cos(th), c.y() + r * math.sin(th)))
+
+        # zero reference, pointing right
+        p.setPen(QPen(QColor(150, 150, 160), 1, Qt.PenStyle.DashLine))
+        p.drawLine(c, QPointF(c.x() + r, c.y()))
+
+        accent = QColor(94, 183, 255)
+        if abs(self._angle) > 1e-6:            # arc swept so far
+            p.setPen(QPen(QColor(94, 183, 255, 120), 3))
+            rect = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
+            p.drawArc(rect, 0, int(round(self._angle * 16)))
+
+        knob = self._knob_pos()
+        p.setPen(QPen(accent, 2))
+        p.drawLine(c, knob)
+        p.setBrush(accent if self._drag_from is None else QColor(255, 255, 255))
+        p.setPen(QPen(QColor(16, 16, 20), 2))
+        p.drawEllipse(knob, self.HANDLE_R, self.HANDLE_R)
+
+        # readout
+        p.setPen(QColor(235, 235, 240))
+        f = p.font()
+        f.setPointSizeF(max(9.0, f.pointSizeF() + 1.0))
+        f.setBold(True)
+        p.setFont(f)
+        txt = f"{self._angle:+.1f}°".replace("+0.0", "0.0")
+        p.drawText(QRectF(8, 6, self.width() - 16, 22),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, txt)
+
+
+class RotateDialog(QDialog):
+    """Rotate by eye: drag the image around, read the angle off the dial."""
+
+    PREVIEW_MAX = 720     # longest preview edge, px
+
+    def __init__(self, parent=None, *, image=None, icon: QIcon | None = None,
+                 initial: float = 0.0):
+        super().__init__(parent)
+        self.setWindowTitle("Rotate")
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        if icon:
+            self.setWindowIcon(icon)
+
+        self._src = np.asarray(image) if image is not None else None
+        self._src_h, self._src_w = (self._src.shape[:2] if self._src is not None
+                                    else (0, 0))
+        self._pm_raw: QPixmap | None = None
+        self._pm_stretched: QPixmap | None = None
+
+        lay = QVBoxLayout(self)
+
+        self.canvas = _RotateCanvas(self)
+        lay.addWidget(self.canvas, 1)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Angle"))
+        self.slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.slider.setRange(-1800, 1800)          # tenths of a degree
+        self.slider.setSingleStep(10)
+        self.slider.setPageStep(150)
+        self.slider.setTickInterval(450)
+        self.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        row.addWidget(self.slider, 1)
+        self.spin = QDoubleSpinBox(self)
+        self.spin.setRange(-180.0, 180.0)
+        self.spin.setDecimals(2)
+        self.spin.setSingleStep(1.0)
+        self.spin.setSuffix(" °")
+        self.spin.setKeyboardTracking(False)
+        row.addWidget(self.spin)
+        self.btn_reset = QPushButton("Reset", self)
+        row.addWidget(self.btn_reset)
+        lay.addLayout(row)
+
+        hint = QLabel(
+            "Drag the image to rotate · whole degrees by default · "
+            "Shift = 0.1° · Ctrl = snap to 15° · "
+            "wheel or arrows nudge · double-click resets", self)
+        hint.setWordWrap(True)
+        try:
+            pal = hint.palette()
+            col = pal.color(QPalette.ColorRole.WindowText)
+            col.setAlpha(170)
+            pal.setColor(QPalette.ColorRole.WindowText, col)
+            hint.setPalette(pal)
+        except Exception:
+            pass
+        lay.addWidget(hint)
+
+        bottom = QHBoxLayout()
+        self.chk_stretch = QCheckBox("Autostretch preview", self)
+        self.chk_stretch.setChecked(True)
+        self.chk_stretch.setToolTip(
+            "Display only — the rotation is applied to the linear data.")
+        bottom.addWidget(self.chk_stretch)
+        bottom.addStretch(1)
+        self.lbl_size = QLabel("", self)
+        bottom.addWidget(self.lbl_size)
+        lay.addLayout(bottom)
+
+        self._accepted_angle: float | None = None
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                              QDialogButtonBox.StandardButton.Cancel, self)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+        self.canvas.angleChanged.connect(self._on_canvas_angle)
+        self.slider.valueChanged.connect(self._on_slider)
+        self.spin.valueChanged.connect(self._on_spin)
+        self.btn_reset.clicked.connect(lambda: self._set_angle(0.0))
+        self.chk_stretch.toggled.connect(self._refresh_preview)
+
+        self._syncing = False
+        self._build_previews()
+        self._refresh_preview()
+        self._set_angle(float(initial))
+        self.resize(760, 680)
+
+    # ── preview ──────────────────────────────────────────────────────────
+    def _build_previews(self):
+        src = self._src
+        if src is None:
+            return
+        try:
+            a = np.asarray(src, dtype=np.float32)
+            if a.ndim == 3 and a.shape[2] == 1:
+                a = a[..., 0]
+            if a.ndim == 3 and a.shape[2] > 3:
+                a = a[..., :3]
+
+            h, w = a.shape[:2]
+            longest = max(h, w)
+            if longest > self.PREVIEW_MAX and cv2 is not None:
+                f = self.PREVIEW_MAX / float(longest)
+                a = cv2.resize(a, (max(1, int(round(w * f))), max(1, int(round(h * f)))),
+                               interpolation=cv2.INTER_AREA)
+
+            self._pm_raw = self._to_pixmap(np.clip(a, 0.0, 1.0))
+            self._pm_stretched = self._to_pixmap(self._stretch(a))
+        except Exception:
+            self._pm_raw = self._pm_raw or None
+            self._pm_stretched = self._pm_stretched or self._pm_raw
+
+    @staticmethod
+    def _stretch(a: np.ndarray) -> np.ndarray:
+        """Display stretch only. Needs [0,1] in, so scale first if the data
+        runs hot rather than clipping the highlights away."""
+        x = np.asarray(a, dtype=np.float32)
+        peak = float(np.nanmax(x)) if x.size else 1.0
+        if np.isfinite(peak) and peak > 1.0:
+            x = x / peak
+        x = np.clip(np.nan_to_num(x, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+        try:
+            from setiastro.saspro.imageops.stretch import histogram_style_autostretch
+            if x.ndim == 3 and x.shape[2] == 3:
+                return np.asarray(histogram_style_autostretch(x, 3.0), dtype=np.float32)
+            if x.ndim == 2:
+                return np.asarray(histogram_style_autostretch(x, 3.0), dtype=np.float32)
+        except Exception:
+            pass
+        lo, hi = float(np.nanmin(x)), float(np.nanmax(x))
+        if hi - lo <= 1e-6:
+            return np.zeros_like(x)
+        return ((x - lo) / (hi - lo)).astype(np.float32)
+
+    @staticmethod
+    def _to_pixmap(a: np.ndarray) -> QPixmap | None:
+        x = np.clip(np.asarray(a, dtype=np.float32), 0.0, 1.0)
+        if x.ndim == 2:
+            x = np.repeat(x[..., None], 3, axis=2)
+        u8 = np.ascontiguousarray((x * 255.0 + 0.5).astype(np.uint8))
+        h, w = u8.shape[:2]
+        qi = QImage(u8.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+        return QPixmap.fromImage(qi)
+
+    def _refresh_preview(self):
+        pm = self._pm_stretched if self.chk_stretch.isChecked() else self._pm_raw
+        self.canvas.set_base(pm)
+
+    # ── angle plumbing ───────────────────────────────────────────────────
+    def _set_angle(self, deg: float):
+        self.canvas.set_angle(deg)
+        self._on_canvas_angle(self.canvas.angle())
+
+    def _on_canvas_angle(self, deg: float):
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            self.slider.setValue(int(round(deg * 10.0)))
+            self.spin.setValue(float(deg))
+        finally:
+            self._syncing = False
+        self._update_size_label(deg)
+
+    def _on_slider(self, v: int):
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            deg = v / 10.0
+            self.canvas.set_angle(deg, emit=False)
+            self.spin.setValue(deg)
+        finally:
+            self._syncing = False
+        self._update_size_label(self.canvas.angle())
+
+    def _on_spin(self, v: float):
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            self.canvas.set_angle(v, emit=False)
+            self.slider.setValue(int(round(v * 10.0)))
+        finally:
+            self._syncing = False
+        self._update_size_label(self.canvas.angle())
+
+    def _update_size_label(self, deg: float):
+        if not self._src_w or not self._src_h:
+            self.lbl_size.setText("")
+            return
+        ow, oh = self.output_size(deg)
+        self.lbl_size.setText(
+            f"{self._src_w} × {self._src_h}  →  {ow} × {oh}")
+
+    def output_size(self, deg: float | None = None) -> tuple[int, int]:
+        """Same bounding-box math the apply step uses, so the label matches."""
+        if deg is None:
+            deg = self.angle()
+        w, h = float(self._src_w), float(self._src_h)
+        a = math.radians(float(deg))
+        ca, sa = abs(math.cos(a)), abs(math.sin(a))
+        return (int(math.ceil((w - 1) * ca + (h - 1) * sa + 1.0)),
+                int(math.ceil((w - 1) * sa + (h - 1) * ca + 1.0)))
+
+    def accept(self):
+        # Latch the value before the widgets can go away, so the caller can
+        # still read it from a dialog that has already been torn down.
+        try:
+            self._accepted_angle = float(self.spin.value())
+        except RuntimeError:
+            pass
+        super().accept()
+
+    def angle(self) -> float:
+        if self._accepted_angle is not None:
+            return float(self._accepted_angle)
+        return float(self.spin.value())
+
+
 class GeometryMixin:
     """
     Mixin for geometry operations.
@@ -668,25 +1101,22 @@ class GeometryMixin:
             QMessageBox.warning(self, self.tr("Rotate..."), self.tr("OpenCV (cv2) is required for arbitrary rotation."))
             return
 
-        dlg = QInputDialog(self)
-        dlg.setWindowTitle(self.tr("Rotate..."))
-        dlg.setLabelText(self.tr("Angle in degrees (positive = CCW):"))
-        dlg.setInputMode(QInputDialog.InputMode.DoubleInput)
-        dlg.setDoubleRange(-360.0, 360.0)
-        dlg.setDoubleDecimals(2)
-        dlg.setDoubleValue(0.0)
-        dlg.setWindowFlag(Qt.WindowType.Window, True)
-
+        icon = None
         try:
             from setiastro.saspro.resources import rotatearbitrary_path
-            dlg.setWindowIcon(QIcon(rotatearbitrary_path))
+            icon = QIcon(rotatearbitrary_path)
         except Exception:
             pass
 
-        if dlg.exec() != QDialog.DialogCode.Accepted:
+        dlg = RotateDialog(self, image=doc.image, icon=icon, initial=0.0)
+        accepted = dlg.exec() == QDialog.DialogCode.Accepted
+        angle = float(dlg.angle()) if accepted else 0.0
+        dlg.deleteLater()
+        if not accepted:
             return
 
-        angle = float(dlg.doubleValue())
+        if abs(angle) < 1e-6:
+            return
         try:
             self._apply_geom_rot_any_to_doc(doc, angle_deg=angle)
             self._log(f"Rotate ({angle:g}°) applied to active view")

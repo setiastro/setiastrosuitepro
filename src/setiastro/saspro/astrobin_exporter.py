@@ -38,6 +38,64 @@ except Exception:
 
 ASTROBIN_FILTER_URL = "https://app.astrobin.com/equipment/explorer/filter?page=1"
 
+# AstroBin "temperature" is ambient air °C and is only accepted in this range.
+# https://welcome.astrobin.com/importing-acquisitions-from-csv
+_AMBIENT_MIN_C = -88.0
+_AMBIENT_MAX_C = 58.0
+# FOCTEMP first. A ZWO EAF with no probe reports -127 and NINA still writes it;
+# that value is outside the range above, so we fall back to AMBTEMP.
+_FOCUSER_TEMP_KEYS = ("FOCTEMP", "FOCUSTEM")
+_AMBIENT_KEYS = (
+    "AMBTEMP", "AMBIENT", "ATEMP", "AMB-TEMP", "AIRTEMP", "ENVTEMP", "EXTTEMP",
+)
+
+
+def _finite_float(x) -> Optional[float]:
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    if v != v or v == float("inf") or v == float("-inf"):
+        return None
+    return v
+
+
+def plausible_ambient_c(x) -> Optional[float]:
+    """Ambient °C inside AstroBin's accepted range, otherwise None."""
+    v = _finite_float(x)
+    if v is None or v < _AMBIENT_MIN_C or v > _AMBIENT_MAX_C:
+        return None
+    return v
+
+
+def _header_ambient_key(header, keys) -> Optional[float]:
+    for key in keys:
+        try:
+            present = key in header
+        except Exception:
+            present = False
+        if not present:
+            continue
+        v = plausible_ambient_c(header.get(key))
+        if v is not None:
+            return v
+    return None
+
+
+def ambient_celsius_from_header(header) -> Optional[float]:
+    """°C for the AstroBin temperature column, or None.
+
+    Uses FOCTEMP / FOCUSTEM when the value is inside AstroBin's ambient range.
+    Otherwise falls back to AMBTEMP (and the other air-temperature keywords),
+    which drops the ZWO EAF sentinel -127.
+    """
+    if header is None:
+        return None
+    foc = _header_ambient_key(header, _FOCUSER_TEMP_KEYS)
+    if foc is not None:
+        return foc
+    return _header_ambient_key(header, _AMBIENT_KEYS)
+
 # Try to honor your project path name if present; otherwise, fall back next to this file.
 
 
@@ -835,7 +893,7 @@ class AstrobinExportTab(QWidget):
                         "ISO": str(h.get("ISO", "0")),
                         "BINNING": binning,
                         "CCD_TEMP": self._safe_float(h.get("CCD-TEMP", 0.0)),
-                        "FOCTEMP": self._safe_float(h.get("FOCTEMP", 0.0)),
+                        "AMBIENT": ambient_celsius_from_header(h),
                         "DARK": str(h.get("DARK", "0")),
                         "FLAT": str(h.get("FLAT", "0")),
                         "FLATDARK": str(h.get("FLATDARK", "0")),
@@ -868,7 +926,11 @@ class AstrobinExportTab(QWidget):
                     ccd_temp = self._safe_float(
                         flat.get("CCD-TEMP", self._xisf_search_props(image_meta, ["ccd-temp","sensor","temperature"], default=0.0))
                     )
-                    foc_temp = self._safe_float(flat.get("FOCTEMP", 0.0))
+                    ambient = ambient_celsius_from_header(flat)
+                    if ambient is None:
+                        ambient = plausible_ambient_c(self._xisf_search_props(
+                            image_meta, ["ambtemp", "ambient", "airtemp", "envtemp"], default=None
+                        ))
                     dateobs = str(flat.get("DATE-OBS", "")) or ""
 
                     rec = {
@@ -880,7 +942,7 @@ class AstrobinExportTab(QWidget):
                         "ISO": str(iso_val if iso_val is not None else "0"),
                         "BINNING": binning,
                         "CCD_TEMP": ccd_temp,
-                        "FOCTEMP": foc_temp,
+                        "AMBIENT": ambient,
                         "DARK": str(flat.get("DARK", "0")),
                         "FLAT": str(flat.get("FLAT", "0")),
                         "FLATDARK": str(flat.get("FLATDARK", "0")),
@@ -1078,14 +1140,17 @@ class AstrobinExportTab(QWidget):
             item['meanSqm'] = self._fallback(rec["MEAN_SQM"], g_sqm)
             item['meanFwhm'] = self._fallback(rec["MEAN_FWHM"], g_fwhm)
 
-            if rec["FOCTEMP"]:
-                item['temperature_sum'] += float(rec["FOCTEMP"])
+            amb = rec.get("AMBIENT")
+            if amb is not None:
+                item['temperature_sum'] += float(amb)
                 item['temp_count'] += 1
             item['number'] += 1
 
         out = []
         for (_date, _fid, _exp), v in agg.items():
-            temp = int(round(v['temperature_sum'] / v['temp_count'])) if v['temp_count'] > 0 else 0
+            # Blank when no physical ambient was found (e.g. only FOCTEMP=-127),
+            # so a missing probe is not published as 0 °C or as the EAF sentinel.
+            temp = int(round(v['temperature_sum'] / v['temp_count'])) if v['temp_count'] > 0 else ""
             row = {
                 'date': v['date'], 'filter': v['filter'], 'number': v['number'],
                 'duration': v['duration'], 'gain': v['gain'], 'iso': v['iso'],

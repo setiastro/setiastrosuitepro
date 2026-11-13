@@ -1811,7 +1811,9 @@ class ImageSubWindow(QWidget):
                 mx = float(arr_f.max()) if arr_f.size else 1.0
             except Exception:
                 mx = 1.0
-            if mx > 5.0:
+            # Screen stretch only. Linear data above 1 (HDR composition) must
+            # still reach the LUT, which clips its input to [0, 1].
+            if np.isfinite(mx) and mx > 1.0:
                 arr_f = arr_f / mx
             lut = getattr(self, "_autostretch_lut_cache", None)
             try:
@@ -3421,7 +3423,9 @@ class ImageSubWindow(QWidget):
         if self.autostretch_enabled:
             arr_f = vis_src.astype(np.float32, copy=False)
             mx = float(arr_f.max()) if arr_f.size else 1.0
-            if mx > 5.0:
+            # Screen stretch only. Linear data above 1 (HDR composition) must
+            # still reach the LUT, which clips its input to [0, 1].
+            if np.isfinite(mx) and mx > 1.0:
                 arr_f = arr_f / mx
                 small = resize_for_display(arr_f, out_w, out_h)
 
@@ -3689,10 +3693,12 @@ class ImageSubWindow(QWidget):
             pass
         return qimg, ox, oy
 
-    def _render_source_tile(self, sx, sy, sw, sh):
-        """Source-resolution RGB of a tile (sx, sy, sw, sh), LUT + mask applied,
-        with NO geometric scaling -- TiledImageCanvas scales cached tiles on
-        blit. Same stretch/mask path as _rasterize_widget_rect, minus the resize.
+    def _render_source_tile(self, sx, sy, sw, sh, out_w=None, out_h=None):
+        """RGB of a tile (sx, sy, sw, sh), LUT + mask applied. At source
+        resolution by default -- TiledImageCanvas scales cached tiles on blit.
+        With out_w/out_h (a zoomed-out mip level) the crop is area-averaged
+        down to that size FIRST, exactly as _rasterize_widget_rect does, so the
+        LUT and uint8 conversion run on the small result, not the full crop.
         Returns a QImage (or None)."""
         arr = self._current_display_source()
         if arr is None:
@@ -3713,6 +3719,11 @@ class ImageSubWindow(QWidget):
         if np.issubdtype(a.dtype, np.integer):
             info = np.iinfo(a.dtype)
             vis = crop.astype(np.float32) / float(max(1, info.max))
+
+        if out_w is not None and out_h is not None:
+            ow = max(1, int(out_w)); oh = max(1, int(out_h))
+            if ow < sw or oh < sh:
+                vis = resize_for_display(vis, ow, oh)
 
         lut = getattr(self, "_autostretch_lut_cache", None)
         if getattr(self, "autostretch_enabled", False) and lut is not None:
@@ -3893,7 +3904,9 @@ class ImageSubWindow(QWidget):
             arr_f = a.astype(np.float32, copy=False)
 
         mx = float(arr_f.max()) if arr_f.size else 1.0
-        if mx > 5.0:
+        # Screen stretch only. Linear data above 1 (HDR composition) must
+        # still reach the LUT, which clips its input to [0, 1].
+        if np.isfinite(mx) and mx > 1.0:
             arr_f = arr_f / mx
 
         out = apply_autostretch_lut(
