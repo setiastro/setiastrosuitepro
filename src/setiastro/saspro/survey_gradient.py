@@ -58,6 +58,7 @@
 from __future__ import annotations
 
 import functools
+import inspect
 
 import numpy as np
 
@@ -3388,8 +3389,21 @@ def _guard_deleted(fn):
     Closing a dialog is a normal thing to do, not a fault, so this swallows
     exactly that RuntimeError and lets anything else through untouched.
     """
+    # PyQt sizes a signal's argument list to the slot's own signature, so a
+    # bare *args wrapper reads as "send me everything": clicked(bool) then
+    # lands on a method declared `def _do_fetch_reference(self)` and raises
+    # TypeError before the guard below ever gets a say. Match the wrapped
+    # function's real arity and drop the extras, the way PyQt would have.
+    try:
+        _spec = inspect.getfullargspec(fn)
+        _maxpos = None if _spec.varargs else max(0, len(_spec.args) - 1)
+    except TypeError:
+        _maxpos = None
+
     @functools.wraps(fn)
     def _wrapped(self, *a, **kw):
+        if _maxpos is not None and len(a) > _maxpos:
+            a = a[:_maxpos]
         try:
             return fn(self, *a, **kw)
         except RuntimeError as e:
