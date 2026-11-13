@@ -405,7 +405,8 @@ def _mad_noise(arr) -> float:
 # Any edit to _quick_preview_any, _star_count_ecc_size, _measure_fwhm_halfres,
 # _mad_noise or measure_file's statistics changes what these numbers mean, and
 # a stale cache would silently feed the old numbers to the weight scorer.
-MEASURE_SCHEMA_VERSION = 2      # 2: sidecar index (1 was the SASM* header stamp)
+MEASURE_SCHEMA_VERSION = 3      # 3: dense fields star-counted in strips (sep_tiled)
+                                # 2: sidecar index (1 was the SASM* header stamp)
 
 MEASUREMENT_DIR_NAME = "Measurements"
 MEASUREMENT_INDEX_NAME = "measurements.json"

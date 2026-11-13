@@ -2101,13 +2101,18 @@ def compute_star_count_fast_preview(preview_2d: np.ndarray, *, return_size: bool
     for frame weighting, not calibrated to arcsec.
     """
     import sep
+    from setiastro.saspro.sep_tiled import extract_auto
     data = np.ascontiguousarray(np.asarray(preview_2d, dtype=np.float32))
-    # Room for every pixel: a dense field must not overflow sep's buffer.
-    # Only ever raised, since other sep users share the process setting.
-    if sep.get_extract_pixstack() < data.size:
-        sep.set_extract_pixstack(int(data.size))
     bkg = sep.Background(data)
-    cat = sep.extract(data - bkg.back(), 5.0, err=bkg.globalrms, minarea=5)
+    # extract_auto, not one sep.extract: SEP's per-call cost grows faster than
+    # the object count, and on a ~3000-star preview it was ~1 s a frame and
+    # capped the whole measurement phase at ~5 frames/s however many worker
+    # processes ran. A dense field is extracted in overlapping strips; a
+    # sparse one is the same single call as before. The pixel stack is raised
+    # only as far as needed (never lowered -- other sep users share it), and
+    # an overflow is retried at full size, so no frame is ever truncated.
+    # See sep_tiled for the equivalence measurements.
+    cat = extract_auto(sep, data - bkg.back(), 5.0, err=bkg.globalrms, minarea=5)
     if len(cat) == 0:
         return (0, 0.0, 0.0) if return_size else (0, 0.0)
     a = np.maximum(cat["a"], 1e-12)

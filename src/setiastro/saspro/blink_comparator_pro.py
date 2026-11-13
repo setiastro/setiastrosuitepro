@@ -733,11 +733,14 @@ class MetricsPanel(QWidget):
 
 
     @staticmethod
-    def _compute_one(i_entry):
+    def _compute_one(i_entry, measure=None):
+        """One frame's metrics. ``measure`` runs the SEP core on the 2x
+        downsampled frame -- in a worker process when compute_all_metrics has
+        a pool, else blink_measure_worker.measure_ds in this thread."""
         import cv2
-        import sep
         import numpy as np
         import math
+        from setiastro.saspro.blink_measure_worker import measure_ds as _measure_ds
 
         # (idx, entry) in PreLoad; (idx, entry, loader) in Stream, where
         # loader(idx) -> ndarray|None decodes the frame just in time and is
@@ -861,57 +864,19 @@ class MetricsPanel(QWidget):
             new_w = max(16, int(w0 // 2))
             new_h = max(16, int(h0 // 2))
             ds = cv2.resize(data, (new_w, new_h), interpolation=cv2.INTER_AREA).astype(np.float32, copy=False)
+            # Only the quarter-size frame goes on from here. Drop the full-res
+            # references first: in Stream mode this thread may now wait on a
+            # worker process, and should not hold a decoded frame while it does.
+            data = None
+            img = None
 
-            bkg = sep.Background(ds)
-            back = bkg.back()
-            try:
-                gr = float(bkg.globalrms)
-            except Exception:
-                try:
-                    gr = float(np.nanmedian(np.asarray(bkg.rms(), dtype=np.float32)))
-                except Exception:
-                    gr = np.nan
-            if not np.isfinite(gr) or gr <= 0:
-                gr = None
-
-            candidates = [
-                (7.0, 4),
-                (5.0, 4),
-                (4.0, 3),
-                (3.5, 2),
-            ]
-            cat = None
-            for thr, minarea in candidates:
-                try:
-                    cat = sep.extract(
-                        ds - back,
-                        thresh=float(thr),
-                        err=gr,
-                        minarea=int(minarea),
-                        clean=True,
-                        deblend_nthresh=32,
-                    )
-                except Exception:
-                    cat = None
-                if cat is not None and len(cat) > 0:
-                    break
-
-            if cat is None or len(cat) == 0:
+            res = (measure or _measure_ds)(ds)
+            if res is None:
                 orig_back = entry.get("orig_background", np.nan)
                 return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0, _temp_c, _bg_rate
 
-            a = np.maximum(cat["a"].astype(np.float32, copy=False), 1e-12)
-            b = np.maximum(cat["b"].astype(np.float32, copy=False), 0.0)
-
-            sig = np.sqrt(a * b).astype(np.float32, copy=False)
-            fwhm_ds = float(np.nanmedian(2.3548 * sig))
+            fwhm_ds, ecc, star_cnt = res
             fwhm = fwhm_ds * 2.0 * load_scale
-
-            q = np.clip(b / a, 0.0, 1.0)
-            e_true = np.sqrt(np.maximum(0.0, 1.0 - q * q))
-            ecc = float(np.nanmedian(e_true))
-
-            star_cnt = int(len(cat))
             orig_back = entry.get("orig_background", np.nan)
 
             bg = float(orig_back) if np.isfinite(orig_back) and orig_back > 0 else 1e-6
@@ -990,12 +955,15 @@ class MetricsPanel(QWidget):
         cpu = os.cpu_count() or 1
 
         # ----------------------------
-        # 3) Worker sizing by contention-aware heuristic
+        # 3) Where the SEP core runs, and how many frames are in flight
         # ----------------------------
-        #sasprofiling shows SEP's internal C allocator serializes under heavy
-        # threading on large images — more workers = more contention = slower
-        # wall time. RAM is not the constraint; allocator lock contention is.
-        # Empirically 4-6 workers is the sweet spot for bin-2 downsampled frames.
+        # SEP holds the GIL for all of sep.Background / sep.extract, which are
+        # ~90% of a frame. Measured: 8 threads ran either at x0.9-1.0 of
+        # serial, and the whole pass sat on ONE core at any worker count.
+        # (The old note here blamed SEP's allocator; it was the GIL.) So the
+        # SEP core runs in a process pool -- as the stacking measurement phase
+        # does -- while threads here do the cheap part: load/decode, channel
+        # mean, the 2x downsample, and shipping the quarter-size frame across.
         _first = loaded_images[0].get("image_data")
         if _first is not None:
             h0, w0 = _first.shape[:2]
@@ -1005,34 +973,116 @@ class MetricsPanel(QWidget):
             h0, w0 = 2048, 2048
         ds_pixels = (h0 // 2) * (w0 // 2)
 
-        if ds_pixels > 8_000_000:       # >8MP downsampled (e.g. 5644x8288 -> ~11.7MP)
-            workers = min(4, cpu)
-        elif ds_pixels > 4_000_000:     # >4MP downsampled
-            workers = min(6, cpu)
-        elif ds_pixels > 1_000_000:     # >1MP downsampled
-            workers = min(8, cpu)
-        else:                           # small frames, contention minimal
-            workers = min(12, cpu)
+        pool = None
+        procs = 0
+        if n >= 4:               # below this, spawning children costs more than it saves
+            use_procs = True
+            try:
+                from setiastro.saspro.worker_env import (
+                    check_process_pools, process_pools_ok)
+                check_process_pools(log_fn=lambda m: print(f"[Blink] {m}"))
+                use_procs = process_pools_ok()
+            except Exception:
+                pass             # no preflight available: try, and fall back below
+            if use_procs:
+                try:
+                    import multiprocessing as _mp
+                    from concurrent.futures import ProcessPoolExecutor
+                    procs = max(1, min(cpu, n))
+                    pool = ProcessPoolExecutor(
+                        max_workers=procs,
+                        mp_context=_mp.get_context("spawn"))  # safe with Qt everywhere
+                except Exception as e:
+                    print(f"[Blink] process pool unavailable "
+                          f"({type(e).__name__}: {e}); measuring on threads")
+                    pool = None
+                    procs = 0
 
+        if pool is not None:
+            # One thread per busy worker process, plus two so the next frame's
+            # load/downsample overlaps the current measurement. Each in-flight
+            # thread can briefly hold a full-res working copy (uint16 -> float,
+            # colour mean, or a Stream-mode decode), so cap by free RAM.
+            workers = min(n, procs + 2)
+            per_thread = h0 * w0 * (12 if loader is not None else 8)
+            try:
+                import psutil
+                avail = int(psutil.virtual_memory().available)
+                workers = max(2, min(workers, int(avail * 0.5) // max(1, per_thread)))
+            except Exception:
+                workers = min(workers, 8)
+        else:
+            # Thread-only fallback: SEP serializes on the GIL, so extra threads
+            # buy little; these are the previous caps.
+            if ds_pixels > 8_000_000:       # >8MP downsampled (e.g. 5644x8288 -> ~11.7MP)
+                workers = min(4, cpu)
+            elif ds_pixels > 4_000_000:     # >4MP downsampled
+                workers = min(6, cpu)
+            elif ds_pixels > 1_000_000:     # >1MP downsampled
+                workers = min(8, cpu)
+            else:                           # small frames
+                workers = min(12, cpu)
+            if loader is not None:
+                # Streaming: every in-flight frame is a full-resolution array
+                # held at once. Keep the fan-out tight.
+                workers = min(workers, 4)
         workers = max(1, workers)
 
         if loader is not None:
-            # Streaming: decoding dominates, and every in-flight frame is a
-            # full-resolution array held at once. Keep the fan-out tight so
-            # peak memory stays near workers x frame size rather than n x it.
-            workers = max(1, min(workers, 4))
             tasks = [(i, loaded_images[i], loader) for i in range(n)]
         else:
             tasks = [(i, loaded_images[i]) for i in range(n)]
         done = 0
         canceled = False
 
+        from concurrent.futures import CancelledError as _Cancelled
+        from concurrent.futures import BrokenExecutor as _Broken
+        from setiastro.saspro.blink_measure_worker import measure_ds as _measure_ds
+        _state = {"cancel": False, "broken": False}
+
+        def _measure(ds):
+            """SEP core in a worker process; in this thread if the pool is
+            gone or broken, so a pool failure never costs a measurement."""
+            if _state["cancel"]:
+                raise _Cancelled()
+            if pool is None or _state["broken"]:
+                return _measure_ds(ds)
+            try:
+                fut = pool.submit(_measure_ds, ds)
+            except RuntimeError:                 # shut down, or broken
+                if _state["cancel"]:
+                    raise _Cancelled()
+                _state["broken"] = True
+                return _measure_ds(ds)
+            try:
+                return fut.result()
+            except _Broken as e:
+                if not _state["broken"]:
+                    print(f"[Blink] worker process failed ({type(e).__name__}); "
+                          f"finishing on threads")
+                _state["broken"] = True
+                return _measure_ds(ds)
+
+        if pool is not None:
+            print(f"[Blink] measuring {n} frames: SEP in {procs} processes, "
+                  f"{workers} load/downsample threads")
+        else:
+            print(f"[Blink] measuring {n} frames on {workers} threads")
+
         try:
             with ThreadPoolExecutor(max_workers=workers) as exe:
-                futures = {exe.submit(self._compute_one, t): t[0] for t in tasks}
+                futures = {exe.submit(self._compute_one, t, _measure): t[0] for t in tasks}
                 for fut in as_completed(futures):
                     if prog.wasCanceled():
                         canceled = True
+                        # Drop everything not yet started. Without this the
+                        # executor's exit ran every queued frame to completion
+                        # before Cancel took effect.
+                        _state["cancel"] = True
+                        for f in futures:
+                            f.cancel()
+                        if pool is not None:
+                            pool.shutdown(wait=False, cancel_futures=True)
                         break
 
                     try:
@@ -1055,6 +1105,16 @@ class MetricsPanel(QWidget):
                     prog.setValue(done)
                     QApplication.processEvents()
         finally:
+            if pool is not None:
+                # Wait for the children after a finished run: the work is done,
+                # so they exit at once, and none is left idle to outlive the
+                # app (a spawned worker whose parent dies never sees EOF on its
+                # queue and lives on). On Cancel, return now; the in-flight
+                # frames finish and the workers exit in the background.
+                try:
+                    pool.shutdown(wait=not canceled, cancel_futures=True)
+                except Exception:
+                    pass
             prog.close()
 
         if canceled:
