@@ -388,6 +388,7 @@ class LiveStackWindow(QDialog):
         self._wrench_path = wrench_path
         self._spinner_path = spinner_path
         self.setWindowTitle("Live Stacking")
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.resize(900, 600)
 
         # ─── State Variables ─────────────────────────────────────
@@ -1985,7 +1986,58 @@ class LiveStackWindow(QDialog):
         except Exception:
             pass
 
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         event.accept()
+
+    def _release_memory(self):
+        """Drop stack buffers / preview frame so RAM can be reclaimed on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        # Break QApplication → bound-method → self retention.
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                try:
+                    app.aboutToQuit.disconnect(self.stop_live)
+                except (TypeError, RuntimeError):
+                    pass
+        except Exception:
+            pass
+
+        self.current_stack = None
+        self.master_dark = None
+        self.master_flat = None
+        try:
+            self.filter_stacks.clear()
+            self.filter_counts.clear()
+            self.filter_buffers.clear()
+            self.filter_mus.clear()
+            self.filter_m2s.clear()
+            self.master_flats.clear()
+        except Exception:
+            pass
+        self._last_frame_bytes = None
+        self._docman = None
+
+        try:
+            self.pixmap_item.setPixmap(QPixmap())
+        except Exception:
+            pass
+        try:
+            self.scene.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
 
     def update_preview(self, array: np.ndarray):

@@ -2317,7 +2317,43 @@ class MultiscaleDecompDialog(QDialog):
         except Exception:
             pass
 
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop working/preview layers and scene pixmaps on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self._image_work = None
+        self._image = None
+        self._orig_for_mask = None
+        self._preview_img = None
+        self._cached_layers = None
+        self._cached_residual = None
+        self._cached_coarse = None
+        self._layer_noise = None
+        self._doc = None
+
+        try:
+            self.pix_base.setPixmap(QPixmap())
+            self.pix_roi.setPixmap(QPixmap())
+        except Exception:
+            pass
+        try:
+            self.scene.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     def _on_close_clicked(self):
         try: self._save_window_state()

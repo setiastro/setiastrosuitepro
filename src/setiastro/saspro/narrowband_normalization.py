@@ -2089,4 +2089,36 @@ class NarrowbandNormalization(QWidget):
             self._calc_seq += 1
         except Exception:
             pass
+        try:
+            if self._debounce is not None:
+                self._debounce.stop()
+        except Exception:
+            pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(e)
+
+    def _release_memory(self):
+        """Drop channel arrays and preview pixmap so RAM can be reclaimed on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self.ha = self.oiii = self.sii = self.osc1 = self.osc2 = None
+        self._source_doc = None
+        self.final = None
+        self._base_pm = None
+        self.doc_manager = None
+        self._worker = None
+        try:
+            self.preview.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass

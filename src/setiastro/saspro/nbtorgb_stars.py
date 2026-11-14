@@ -155,7 +155,32 @@ class NBtoRGBStars(QWidget):
             self._save_ui_state()
         except Exception:
             pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(e)
+
+    def _release_memory(self):
+        """Drop channel arrays and preview pixmap so RAM can be reclaimed on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self.ha = self.oiii = self.sii = self.osc = None
+        self.final = None
+        self._base_pm = None
+        self.doc_manager = None
+        try:
+            self.preview.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     # ---------------- UI ----------------
     def _build_ui(self):

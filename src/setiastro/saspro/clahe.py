@@ -1364,6 +1364,8 @@ def open_clahe_with_preset(main_window, preset: dict | None = None):
 
     try:
         main_window._clahe_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+        dlg.destroyed.connect(
+            lambda *_: setattr(main_window, "_clahe_dialog", None))
     except Exception:
         pass
 

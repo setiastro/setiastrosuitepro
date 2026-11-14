@@ -591,6 +591,8 @@ def open_halo_b_gon_with_preset(main_window, preset: dict | None = None):
         pass
     try:
         main_window._halo_b_gon_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+        dlg.destroyed.connect(
+            lambda *_: setattr(main_window, "_halo_b_gon_dialog", None))
     except Exception:
         pass
     dlg.show(); dlg.raise_(); dlg.activateWindow()
