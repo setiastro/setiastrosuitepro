@@ -2522,7 +2522,35 @@ class BlinkTab(QWidget):
         except Exception:
             pass
 
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(e)
+
+    def _release_memory(self):
+        """Drop decoded frames so Blink's RAM footprint can shrink on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        try:
+            for entry in list(getattr(self, "loaded_images", []) or []):
+                if isinstance(entry, dict):
+                    entry["image_data"] = None
+                    entry.pop("sat_overlay_mask", None)
+        except Exception:
+            pass
+        try:
+            self.loaded_images.clear()
+        except Exception:
+            self.loaded_images = []
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     def initUI(self):
         main_layout = QHBoxLayout(self)

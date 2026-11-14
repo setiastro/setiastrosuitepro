@@ -3175,7 +3175,36 @@ class CurvesDialogPro(QDialog):
                 self._save_popout_geometry(win)
         except Exception: pass
         self._cleanup_connections()
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop full/preview image buffers and pixmap so RAM can be reclaimed."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self._full_img = None
+        self._preview_img = None
+        self._preview_orig = None
+        self._preview_proc = None
+        self._last_preview = None
+        self._pix = None
+        self._cdf = None
+        self._cdf_rgb = None
+        try:
+            self.label.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     def _cleanup_connections(self):
         try:

@@ -354,7 +354,37 @@ class StarSpikesDialogPro(QDialog):
         except Exception:
             pass
         self._follow_conn = False
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop source/result buffers and preview pixmap on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self.final_image = None
+        self._img_src = None
+        self._img_src_doc = None
+        self._result_doc = None
+        self.doc = None
+        try:
+            self.pix.setPixmap(QPixmap())
+        except Exception:
+            pass
+        try:
+            self.scene.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     # ---------- data/preset ----------
     def _load_active_image(self):

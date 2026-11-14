@@ -4520,7 +4520,33 @@ class ImagePeekerDialogPro(QDialog):
             self._set_busy_cursor(False)
         except Exception:
             pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop mosaic / preview float buffers on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        pane = getattr(self, "preview_pane", None)
+        if pane is not None:
+            try:
+                pane._image_array = None
+                pane.original_image = None
+                pane.stretched_image = None
+                pane.image_label.clear()
+            except Exception:
+                pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     def _set_busy(self, on: bool, text: str = ""):
         if not text: text = self.tr("Processing…")
