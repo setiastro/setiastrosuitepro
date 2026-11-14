@@ -3346,7 +3346,9 @@ class ABEDialog(QDialog):
         self._last_preview = None
         self._preview_qimg = None
         self._overlay = None
+        self._base_pixmap = None
         self.doc = None
+        self._main = None
         try:
             self.preview_label.clear()
         except Exception:

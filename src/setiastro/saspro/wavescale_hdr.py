@@ -745,7 +745,55 @@ class WaveScaleHDRDialogPro(QDialog):
         self.mask_win.setWindowTitle(
             self.tr("HDR Mask (L × Active Mask)") if self._get_doc_active_mask_2d() is not None else self.tr("HDR Mask (L-based)")
         )
-        self.mask_win.update_mask(mask_comb)     
+        self.mask_win.update_mask(mask_comb)
+
+    def closeEvent(self, ev):
+        try:
+            thr = getattr(self, "thread", None)
+            if thr is not None and thr.isRunning():
+                thr.quit()
+                thr.wait(2000)
+        except Exception:
+            pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
+        super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop full-frame RGB/LAB buffers and preview pixmap on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self.original_rgb = None
+        self.preview_rgb = None
+        self._lab_original = None
+        self._L_original = None
+        self._last_preview = None
+        self._doc = None
+        self.worker = None
+        try:
+            if getattr(self, "mask_win", None) is not None:
+                self.mask_win.close()
+                self.mask_win = None
+        except Exception:
+            pass
+        try:
+            self.pix.setPixmap(QPixmap())
+        except Exception:
+            pass
+        try:
+            self.scene.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
 def open_wavescale_hdr_with_preset(main_window, preset: dict | None = None):
     from PyQt6.QtGui import QIcon  # noqa: F401  (icon_path is a str here)

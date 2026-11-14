@@ -1584,30 +1584,35 @@ class _CurvesWorker(QThread):
         self._invoker = invoker
 
     def run(self):
-        if self._legacy_single:
-            out = self.image01
-            if out.ndim == 2 or (out.ndim == 3 and out.shape[2] == 1):
-                lut = (self.luts.get("K") or self.luts.get("R")
-                       or self.luts.get("G") or self.luts.get("B"))
-                if lut is not None:
-                    idx = np.clip((out*(len(lut)-1)).astype(np.int32), 0, len(lut)-1)
-                    out = lut[idx]
+        try:
+            if self._legacy_single:
+                out = self.image01
+                if out.ndim == 2 or (out.ndim == 3 and out.shape[2] == 1):
+                    lut = (self.luts.get("K") or self.luts.get("R")
+                           or self.luts.get("G") or self.luts.get("B"))
+                    if lut is not None:
+                        idx = np.clip((out*(len(lut)-1)).astype(np.int32), 0, len(lut)-1)
+                        out = lut[idx]
+                    self.done.emit(out.astype(np.float32, copy=False))
+                    return
+                out = out.copy()
+                lutK = self.luts.get("K")
+                for ci, k in enumerate(("R","G","B")):
+                    lut = self.luts.get(k, lutK)
+                    if lut is not None:
+                        idx = np.clip((out[...,ci]*(len(lut)-1)).astype(np.int32), 0, len(lut)-1)
+                        out[...,ci] = lut[idx]
                 self.done.emit(out.astype(np.float32, copy=False))
                 return
-            out = out.copy()
-            lutK = self.luts.get("K")
-            for ci, k in enumerate(("R","G","B")):
-                lut = self.luts.get(k, lutK)
-                if lut is not None:
-                    idx = np.clip((out[...,ci]*(len(lut)-1)).astype(np.int32), 0, len(lut)-1)
-                    out[...,ci] = lut[idx]
-            self.done.emit(out.astype(np.float32, copy=False))
-            return
 
-        if self._invoker is None:
-            self.done.emit(self.image01)
-            return
-        self.done.emit(self._invoker._apply_all_curves_once(self.image01, self.luts))
+            if self._invoker is None:
+                out = self.image01
+                self.done.emit(out)
+                return
+            out = self._invoker._apply_all_curves_once(self.image01, self.luts)
+            self.done.emit(out)
+        finally:
+            self.image01 = None  # drop full-frame working copy ASAP
 
 
 # ── CurvesDialogPro (unchanged except CommaToDotLineEdit removed — unused) ────
@@ -3173,6 +3178,16 @@ class CurvesDialogPro(QDialog):
                 try: win.closed.disconnect(self._pop_in_panel)
                 except Exception: pass
                 self._save_popout_geometry(win)
+                # Re-dock / tear down the detached panel before we drop buffers.
+                try:
+                    self._pop_in_panel()
+                except Exception:
+                    try:
+                        win.hide()
+                        win.deleteLater()
+                    except Exception:
+                        pass
+                    self._popout_win = None
         except Exception: pass
         self._cleanup_connections()
         try:
@@ -3192,11 +3207,19 @@ class CurvesDialogPro(QDialog):
         self._preview_orig = None
         self._preview_proc = None
         self._last_preview = None
+        self._hist_base = None
         self._pix = None
         self._cdf = None
         self._cdf_rgb = None
+        self.doc = None
+        self._main = None
         try:
             self.label.clear()
+        except Exception:
+            pass
+        try:
+            self.hist.set_reference_image(None)
+            self.hist.set_result(clear_result=True)
         except Exception:
             pass
 
