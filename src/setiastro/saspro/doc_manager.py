@@ -4033,7 +4033,8 @@ class DocManager(QObject):
         bit_depth_override: str | None = None,
         jpeg_quality: int | None = None,   # <-- NEW
         export_opts: dict | None = None,
-    ):
+        retarget_document: bool = True,
+    ) -> bool:
         """
         Save the given ImageDocument to 'path'.
 
@@ -4042,13 +4043,20 @@ class DocManager(QObject):
 
         bit_depth:
             Legacy positional argument; still honored if override is None.
+
+        retarget_document:
+            True (Save As) — update file_path / bit_depth / dirty to match
+            the written file.
+            False (Export) — write a copy only; leave the working document
+            pointed at its master (e.g. 32-bit FITS/XISF).
+
+        Returns:
+            True if the document was retargeted, False for export-only writes.
         """
         ext = _normalize_ext(os.path.splitext(path)[1])
         img = doc.image
         meta = doc.metadata or {}
         export_opts = dict(export_opts or {})
-        if jpeg_quality is not None:
-            meta["jpeg_quality"] = int(jpeg_quality)
         # ── MASSIVE DEBUG: show everything we know coming in ───────────────
         debug_dump_metadata_print(meta, context="save_document: BEFORE HEADER PICK")
 
@@ -4105,8 +4113,10 @@ class DocManager(QObject):
 
         wcs_hdr = _to_fits_header(meta.get("wcs_header"))
 
-        # --- If export requested resize, pre-scale WCS in the headers we pass ---
-        # This keeps in-memory metadata aligned with the file written.
+        # --- If resize requested, pre-scale WCS in the headers we pass ------
+        # For Save As (retarget) this keeps in-memory metadata aligned with
+        # the file written. For Export we still pass scaled headers to the
+        # encoder, but must not write them back onto the document.
         try:
             mode = (export_opts.get("resize_mode") or "none").lower()
             h0, w0 = img.shape[:2]
@@ -4150,7 +4160,13 @@ class DocManager(QObject):
             export_opts=export_opts,
         )
 
+        if not retarget_document:
+            print(f"[save_document] Exported without retargeting document: {path}")
+            return False
+
         # ── Update metadata in memory to match what we just wrote ─────────
+        if jpeg_quality is not None:
+            meta["jpeg_quality"] = int(jpeg_quality)
         meta["file_path"] = path
         meta["original_format"] = ext
         meta["bit_depth"] = final_bit_depth
@@ -4176,6 +4192,7 @@ class DocManager(QObject):
 
         if hasattr(doc, "changed"):
             doc.changed.emit()
+        return True
 
     def _current_view_title_for_doc(self, source_doc: ImageDocument) -> str | None:
         """

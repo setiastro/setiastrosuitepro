@@ -222,6 +222,9 @@ COMMAND_ID_ALIASES: dict[str, str] = {
     "export fits": "export_fits",
     "save_fits": "export_fits",
     "save as fits": "export_fits",
+    "export_image": "export_image",
+    "export image": "export_image",
+    "export": "export_image",
 }
 
 

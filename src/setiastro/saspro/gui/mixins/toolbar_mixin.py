@@ -98,6 +98,16 @@ class ToolbarMixin:
             save_menu.addAction(self.act_save_jpeg)
             save_menu.addAction(self.act_save_webp)
             save_menu.addAction(self.act_save_psb)
+            save_menu.addSeparator()
+            save_menu.addAction(self.act_export_image)
+            export_submenu = save_menu.addMenu(self.tr("Export Format"))
+            export_submenu.addAction(self.act_export_fits_fmt)
+            export_submenu.addAction(self.act_export_xisf_fmt)
+            export_submenu.addAction(self.act_export_tiff_fmt)
+            export_submenu.addAction(self.act_export_png_fmt)
+            export_submenu.addAction(self.act_export_jpeg_fmt)
+            export_submenu.addAction(self.act_export_webp_fmt)
+            export_submenu.addAction(self.act_export_psb_fmt)
             btn_save.setMenu(save_menu)
             btn_save.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)        
         # Unified Save: main click = instant Checkpoint, dropdown = full dialog
@@ -673,6 +683,16 @@ class ToolbarMixin:
                 save_menu.addAction(self.act_save_jpeg)
                 save_menu.addAction(self.act_save_webp)
                 save_menu.addAction(self.act_save_psb)
+                save_menu.addSeparator()
+                save_menu.addAction(self.act_export_image)
+                export_submenu = save_menu.addMenu(self.tr("Export Format"))
+                export_submenu.addAction(self.act_export_fits_fmt)
+                export_submenu.addAction(self.act_export_xisf_fmt)
+                export_submenu.addAction(self.act_export_tiff_fmt)
+                export_submenu.addAction(self.act_export_png_fmt)
+                export_submenu.addAction(self.act_export_jpeg_fmt)
+                export_submenu.addAction(self.act_export_webp_fmt)
+                export_submenu.addAction(self.act_export_psb_fmt)
                 btn_save.setMenu(save_menu)
                 btn_save.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
 
@@ -797,7 +817,9 @@ class ToolbarMixin:
         self.act_save = QAction(QIcon(disk_path), self.tr("Save As..."), self)
         self.act_save.setIconVisibleInMenu(True)
         self.act_save.setShortcut(QKeySequence.StandardKey.SaveAs)
-        self.act_save.setStatusTip(self.tr("Save the active image"))
+        self.act_save.setStatusTip(
+            self.tr("Save the active image and switch the document to that file")
+        )
         self.act_save.triggered.connect(self.save_active)
         # Save As format submenu actions
         self.act_save_fits  = QAction(self.tr("FITS (.fits)"),  self)
@@ -817,6 +839,31 @@ class ToolbarMixin:
         self.act_save_jpeg.triggered.connect(lambda: self.save_active_as_format("jpeg"))
         self.act_save_webp.triggered.connect(lambda: self.save_active_as_format("webp"))
         self.act_save_psb.triggered.connect(lambda: self.save_active_as_format("psb"))
+
+        # Export Image — write a copy without retargeting the working document
+        self.act_export_image = QAction(self.tr("Export Image..."), self)
+        self.act_export_image.setIconVisibleInMenu(True)
+        self.act_export_image.setStatusTip(
+            self.tr(
+                "Write a copy of the active image without changing the working "
+                "document (keeps the 32-bit master for the project)"
+            )
+        )
+        self.act_export_image.triggered.connect(self.export_active)
+        self.act_export_fits_fmt  = QAction(self.tr("FITS (.fits)"),  self)
+        self.act_export_xisf_fmt  = QAction(self.tr("XISF (.xisf)"),  self)
+        self.act_export_tiff_fmt  = QAction(self.tr("TIFF (.tiff)"),  self)
+        self.act_export_png_fmt   = QAction(self.tr("PNG (.png)"),    self)
+        self.act_export_jpeg_fmt  = QAction(self.tr("JPEG (.jpg)"),   self)
+        self.act_export_webp_fmt  = QAction(self.tr("WebP (.webp)"),  self)
+        self.act_export_psb_fmt   = QAction(self.tr("Photoshop Large Doc (.psb)"), self)
+        self.act_export_fits_fmt.triggered.connect(lambda: self.export_active_as_format("fits"))
+        self.act_export_xisf_fmt.triggered.connect(lambda: self.export_active_as_format("xisf"))
+        self.act_export_tiff_fmt.triggered.connect(lambda: self.export_active_as_format("tiff"))
+        self.act_export_png_fmt.triggered.connect(lambda: self.export_active_as_format("png"))
+        self.act_export_jpeg_fmt.triggered.connect(lambda: self.export_active_as_format("jpeg"))
+        self.act_export_webp_fmt.triggered.connect(lambda: self.export_active_as_format("webp"))
+        self.act_export_psb_fmt.triggered.connect(lambda: self.export_active_as_format("psb"))
 
         self.act_export_fits_bundle = QAction(self.tr("Export FITS Bundle..."), self)
         self.act_export_fits_bundle.setStatusTip(
@@ -1701,6 +1748,7 @@ class ToolbarMixin:
         # register whatever you want draggable/launchable
         reg("open",           self.act_open)
         reg("save_as",        self.act_save)
+        reg("export_image",   self.act_export_image)
         reg("checkpoint_save", self.act_checkpoint_now)
         reg("export_fits",    self.act_export_fits)
         reg("undo",           self.act_undo)
