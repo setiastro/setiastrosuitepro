@@ -2786,4 +2786,30 @@ class SignatureInsertDialogPro(QDialog):
             self._save_persistent_ui()
         except Exception:
             pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(e)
+
+    def _release_memory(self):
+        """Drop scene pixmaps / insert items so RAM can be reclaimed on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        try:
+            self.inserts.clear()
+        except Exception:
+            self.inserts = []
+        self.doc = None
+        try:
+            self.scene.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
