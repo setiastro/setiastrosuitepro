@@ -55,6 +55,10 @@ class PaletteAdjustDialog(QDialog):
         self._dragging = False
         self._last_pos = QPoint()
 
+        # Original palette pixmap for A/B compare (checkbox off).
+        self._orig_pixmap = QPixmap.fromImage(self.owner._to_qimage(self.base_rgb))
+        self._adj_pixmap = None
+
         vlayout = QVBoxLayout(self)
 
         # Zoom controls
@@ -85,6 +89,16 @@ class PaletteAdjustDialog(QDialog):
         self.preview_label.installEventFilter(self)
         vlayout.addWidget(self.preview_area, stretch=1)
 
+        # Show adjusted vs original palette
+        self.chk_show_adj = QCheckBox("Show adjustment", self)
+        self.chk_show_adj.setChecked(True)
+        self.chk_show_adj.setToolTip(
+            "Checked: preview the intensity-adjusted palette.\n"
+            "Unchecked: show the original (unadjusted) palette."
+        )
+        self.chk_show_adj.toggled.connect(self._on_show_adjustment_toggled)
+        vlayout.addWidget(self.chk_show_adj)
+
         # Sliders
         for name in ("Ha","OIII","SII"):
             row = QHBoxLayout()
@@ -111,6 +125,14 @@ class PaletteAdjustDialog(QDialog):
         self.sii_factor  = self._sii_slider.value()/100.0
         self._debounce.start()
 
+    def _on_show_adjustment_toggled(self, _checked: bool):
+        self._rescale_pixmap()
+
+    def _active_pixmap(self) -> QPixmap | None:
+        if self.chk_show_adj.isChecked():
+            return self._adj_pixmap if self._adj_pixmap is not None else self._orig_pixmap
+        return self._orig_pixmap
+
     def _update_preview(self):
         ha = (self.ha_src   * self.ha_factor)   if self.ha_src   is not None else None
         oo = (self.oiii_src * self.oiii_factor) if self.oiii_src is not None else None
@@ -136,14 +158,16 @@ class PaletteAdjustDialog(QDialog):
         img = np.clip(img/m, 0.0, 1.0)
 
         qimg = self.owner._to_qimage(img)
-        self._base_pixmap = QPixmap.fromImage(qimg)
+        self._adj_pixmap = QPixmap.fromImage(qimg)
         self._rescale_pixmap()
 
     def _rescale_pixmap(self):
-        if not hasattr(self, "_base_pixmap"): return
-        w = int(self._base_pixmap.width()  * self.zoom_factor)
-        h = int(self._base_pixmap.height() * self.zoom_factor)
-        scaled = self._base_pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        pm = self._active_pixmap()
+        if pm is None:
+            return
+        w = int(pm.width()  * self.zoom_factor)
+        h = int(pm.height() * self.zoom_factor)
+        scaled = pm.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         self._current_pixmap = scaled
         self.preview_label.setPixmap(scaled)
         self.preview_label.resize(scaled.size())
@@ -153,10 +177,10 @@ class PaletteAdjustDialog(QDialog):
         self._rescale_pixmap()
 
     def _fit_to_preview(self):
-        if not hasattr(self, "_base_pixmap"):
+        pm = self._active_pixmap()
+        if pm is None:
             return
         vp = self.preview_area.viewport().size()
-        pm = self._base_pixmap.size()
         if pm.width() <= 0 or pm.height() <= 0:
             return
         k = min(vp.width() / pm.width(), vp.height() / pm.height())
@@ -217,7 +241,8 @@ class PaletteAdjustDialog(QDialog):
         self.base_rgb = None
         self.ha_src = self.oiii_src = self.sii_src = None
         self.owner = None
-        self._base_pixmap = None
+        self._orig_pixmap = None
+        self._adj_pixmap = None
         self._current_pixmap = None
         try:
             self.preview_label.clear()

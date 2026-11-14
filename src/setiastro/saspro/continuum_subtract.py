@@ -2550,6 +2550,18 @@ class ContinuumSubtractTab(QWidget):
         self._calib_threads = {}
         self._final_threads = []
 
+        # Full-res balanced RGB lives in _calib_entries; drop it explicitly.
+        try:
+            for entry in list((getattr(self, "_calib_entries", None) or {}).values()):
+                if isinstance(entry, dict):
+                    entry["balanced"] = None
+                    entry["preview"] = None
+                    entry.pop("raw_star_pixels", None)
+                    entry.pop("after_star_pixels", None)
+            self._calib_entries = {}
+        except Exception:
+            self._calib_entries = {}
+
         try:
             from setiastro.saspro.free_torch_memory import trim_process_memory
             trim_process_memory()

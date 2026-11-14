@@ -2546,6 +2546,23 @@ class BlinkTab(QWidget):
         except Exception:
             self.loaded_images = []
 
+        self.current_pixmap = None
+        try:
+            self.preview_label.clear()
+        except Exception:
+            pass
+        # Zoom panel keeps a shared ref to the full preview pixmap.
+        try:
+            zp = getattr(self, "zoom_panel", None) or getattr(self, "_zoom_panel", None)
+            if zp is not None:
+                zp._source_pixmap = None
+                try:
+                    zp.clear()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         try:
             from setiastro.saspro.free_torch_memory import trim_process_memory
             trim_process_memory()

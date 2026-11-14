@@ -741,7 +741,39 @@ class CLAHEDialogPro(QDialog):
             self._sig.failed.disconnect(self._on_preview_failed)
         except Exception:
             pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop full-frame orig/preview buffers and pixmaps on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self.orig = None
+        self._disp_base = None
+        self._preview = None
+        self._pm_before = None
+        self._pm_after = None
+        self._pm_sbs = None
+        self.doc = None
+        try:
+            self.pix.setPixmap(QPixmap())
+        except Exception:
+            pass
+        try:
+            self._pix_after.setPixmap(QPixmap())
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     # ---------------- favorites ----------------
     def _fav_label(self, p: dict) -> str:
