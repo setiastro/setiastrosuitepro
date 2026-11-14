@@ -18,7 +18,7 @@ from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QMdiArea, QListWidget, QMenu, QApplication, QScrollBar,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QObject, QRect
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QPoint, QRect
 
 from setiastro.saspro.dnd_mime import (
     MIME_VIEWSTATE, MIME_CMD, MIME_MASK, MIME_ASTROMETRY, MIME_LINKVIEW
@@ -174,6 +174,13 @@ class MdiArea(QMdiArea):
             except Exception:
                 e.ignore()
                 return
+            # Where the icon was actually let go, in VIEWPORT coordinates --
+            # subwindows are children of the viewport, so this is the space a
+            # spawn position has to be expressed in. The handler used to take
+            # QCursor.pos() read after QDrag.exec() had already returned,
+            # which is wherever the pointer happened to be by then rather
+            # than where the drop landed.
+            self.lastViewStateDropPos = QPoint(vp_pos)
             self.viewStateDropped.emit(state, target)
             e.acceptProposedAction()
             return

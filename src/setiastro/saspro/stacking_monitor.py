@@ -179,6 +179,17 @@ _r(r"📏 Phase: Star alignment complete",            "Registration",      _ST_O
 _r(r"Alignment summary: (\d+ succeeded)",           "Registration",      _ST_OK,   1)
 _r(r"🚨 Rejected \d+ frame",                        "Registration",      _ST_WARN)
 
+# ── Aperture Flux Normalization (local normalization) ─────────────────────
+# Runs per integration group, between registration and integration, and is
+# finished before "Starting integration for group" so the Integration row's
+# clock does not include it. Its own "⚠️ AFN: …" notes are mapped here so
+# they update this row instead of spawning stray rows on the generic ^⚠️
+# catch-all at the bottom.
+_r(r"🔆 Phase: Aperture flux normalization for '(.+?)'", "Aperture Flux Norm", _ST_RUNNING, 1)
+_r(r"⚠️ Aperture flux normalization skipped for '([^']+)'", "Aperture Flux Norm", _ST_WARN, 1)
+_r(r"✅ Aperture flux normalization ready for '([^']+)'",   "Aperture Flux Norm", _ST_OK,   1)
+_r(r"🔆 AFN|⚠️ AFN",                                     "Aperture Flux Norm", _ST_RUNNING)
+
 # ── Integration ───────────────────────────────────────────────────────────
 _r(r"📏 Phase: Integration starting",               "Integration",       _ST_RUNNING)
 _r(r"Starting integration for group '(.+?)' with",  "Integration",       _ST_RUNNING, 1)

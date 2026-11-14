@@ -8129,6 +8129,17 @@ class StackingSuiteDialog(QDialog):
 
 
     def _ensure_log_visible_once(self):
+        """Open the Stacking Log dock on startup, only if the user asked for it.
+
+        This used to fire unconditionally, from back when the log was the only
+        window into what a run was doing. The execution monitor covers that
+        now, so forcing the dock open every time just took space from someone
+        who had deliberately closed it. Settings → 'Auto-show the Stacking
+        Log' brings the old behaviour back; otherwise the toolbar button is
+        still there whenever the detail is wanted.
+        """
+        if not self.settings.value("stacking/auto_show_log", False, type=bool):
+            return
         dock = _get_log_dock()
         if dock:
             dock.setVisible(True)
@@ -9972,6 +9983,19 @@ class StackingSuiteDialog(QDialog):
         )
         fl_general.addRow(self.low_ram_safe_mode_cb)
 
+        self.auto_show_log_cb = QCheckBox(self.tr("Auto-show the Stacking Log"))
+        self.auto_show_log_cb.setToolTip(self.tr(
+            "Open and raise the Stacking Log dock whenever the Stacking Suite\n"
+            "is opened.\n\n"
+            "Off by default: the execution monitor already shows what a run is\n"
+            "doing, and the log is one click away on the main toolbar whenever\n"
+            "you want the detail."
+        ))
+        self.auto_show_log_cb.setChecked(
+            self.settings.value("stacking/auto_show_log", False, type=bool)
+        )
+        fl_general.addRow(self.auto_show_log_cb)
+
         self.completion_sound_cb = QCheckBox(self.tr("Play a sound when stacking finishes"))
         self.completion_sound_cb.setToolTip(self.tr(
             "Chime when the completion summary appears, so a long stack you\n"
@@ -10448,6 +10472,41 @@ class StackingSuiteDialog(QDialog):
         _toggle_gain_row()
 
         left_col.addWidget(gb_normgrad)
+
+        # --- Local Normalization (Aperture Flux) ---
+        gb_afn = QGroupBox(self.tr("Local Normalization (Aperture Flux)"))
+        fl_afn = QFormLayout(gb_afn)
+        self.afn_enable_cb = QCheckBox(self.tr("Aperture Flux Normalization"))
+        self.afn_enable_cb.setToolTip(self.tr(
+            "Matches every registered frame to the whole set, region by region,\n"
+            "before integration.\n\n"
+            "Stars are measured in every frame. How their brightness changes\n"
+            "across the field maps where a frame was dimmed - thin cloud, haze,\n"
+            "the extinction gradient across a wide field, dew, a flat from\n"
+            "another night - and the frame is brightened back to match. Each\n"
+            "frame earns only as much detail in its map as its own stars\n"
+            "support: a clear frame gets a single overall scale.\n\n"
+            "Ignores registration borders (0.0) entirely. Works alongside\n"
+            "ABE Poly² or instead of it. Not yet applied to drizzle output."
+        ))
+        self.afn_enable_cb.setChecked(
+            self.settings.value("stacking/afn/enabled", False, type=bool))
+        fl_afn.addRow(self.afn_enable_cb)
+        self.afn_additive_cb = QCheckBox(self.tr("Also match the sky background"))
+        self.afn_additive_cb.setToolTip(self.tr(
+            "After the brightness is matched, also take out differences in sky\n"
+            "glow between frames - light pollution, moon, airglow - relative to\n"
+            "the set. The target cancels in that comparison, so nebulae and\n"
+            "galaxies are not mistaken for gradient.\n\n"
+            "The set's own common gradient is left for ABE Poly² or for\n"
+            "gradient tools on the finished stack."
+        ))
+        self.afn_additive_cb.setChecked(
+            self.settings.value("stacking/afn/additive", True, type=bool))
+        fl_afn.addRow(self.afn_additive_cb)
+        self.afn_additive_cb.setEnabled(self.afn_enable_cb.isChecked())
+        self.afn_enable_cb.toggled.connect(self.afn_additive_cb.setEnabled)
+        left_col.addWidget(gb_afn)
 
         gb_drizzle = QGroupBox(self.tr("Drizzle"))
         fl_dz = QFormLayout(gb_drizzle)
@@ -11312,6 +11371,8 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/chunk_width",          self.chunk_width)
         self.settings.setValue("stacking/low_ram_safe_mode",
                                bool(self.low_ram_safe_mode_cb.isChecked()))
+        self.settings.setValue("stacking/auto_show_log",
+                               bool(self.auto_show_log_cb.isChecked()))
         self.settings.setValue("stacking/completion_sound",
                                bool(self.completion_sound_cb.isChecked()))
         self.settings.setValue("stacking/completion_sound_file",
@@ -11368,6 +11429,8 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/grad_poly2/min_strength", float(self.grad_min_strength.value()))
         self.settings.setValue("stacking/grad_poly2/gain_lo",      float(self.grad_gain_lo.value()))
         self.settings.setValue("stacking/grad_poly2/gain_hi",      float(self.grad_gain_hi.value()))
+        self.settings.setValue("stacking/afn/enabled",  bool(self.afn_enable_cb.isChecked()))
+        self.settings.setValue("stacking/afn/additive", bool(self.afn_additive_cb.isChecked()))
 
         self.settings.setValue("stacking/cosmetic/custom_enable",  self.cosm_enable_cb.isChecked())
         self.settings.setValue("stacking/cosmetic/hot_sigma",      float(self.cosm_hot_sigma.value()))
@@ -38188,6 +38251,132 @@ class StackingSuiteDialog(QDialog):
             log(f"⚠️ geometry audit failed (non-fatal): {ae}")
         return bad
 
+    @staticmethod
+    def _afn_frame_hwc(path):
+        """(H, W, C) of a registered frame exactly as the tile reader sees it.
+
+        _MMImage.shape is the ON-DISK shape for FITS, so a colour frame can
+        report (3, H, W); the spatial and colour axes are recorded separately.
+        C follows the integration's own rule: 3 if colour, else 1.
+        """
+        src = _MMImage(path)
+        try:
+            shp = tuple(int(s) for s in src.shape)
+            if len(shp) == 2:
+                return shp[0], shp[1], 1
+            if getattr(src, "_kind", "") == "fits":
+                sa = src._spat_axes
+                return shp[sa[0]], shp[sa[1]], (3 if src._color_axis is not None else 1)
+            return shp[0], shp[1], (3 if shp[2] == 3 else 1)
+        finally:
+            try:
+                src.close()
+            except Exception:
+                pass
+
+    def _afn_orientation_labels(self, file_list):
+        """Which side of the meridian flip each frame was taken on.
+
+        Returns one label per frame ("0"/"1", or None where it cannot be
+        told), or None when the set does not span a flip. A brightness
+        pattern fixed to the optics shows up mirrored on the other side of a
+        flip, so AFN balances its reference across the two sides.
+
+        1. SASpro's own verdict first: normalization stamps SASROT180 on the
+           frames it rotated because it judged them flipped against its
+           reference. This is also the only reliable source after that
+           rotation, because the rot180 header sync TOGGLES FLIPPED and the
+           pier-side cards -- on real SGP frames, FLIPPED reads True on the
+           rotated frames only because SASpro toggled it.
+        2. No frame rotated (registration absorbed the flip): detect it the
+           way normalization does, by pier side or position angle against
+           the first frame that has one.
+        """
+        hdrs = []
+        for p in file_list:
+            try:
+                hdrs.append(fits.getheader(p))
+            except Exception:
+                hdrs.append(None)
+        rot = [bool(h.get("SASROT180", False)) if h is not None else False
+               for h in hdrs]
+        if any(rot) and not all(rot):
+            return ["1" if r else "0" for r in rot]
+
+        pss = [self._extract_pierside(h) if h is not None else None for h in hdrs]
+        pas = [self._extract_pa_deg(h) if h is not None else None for h in hdrs]
+        ref_ps = next((s for s in pss if s is not None), None)
+        ref_pa = next((a for a in pas if a is not None), None)
+        labels = []
+        for ps, pa in zip(pss, pas):
+            if ps is not None and ref_ps is not None:
+                labels.append("1" if self._pierside_flip(ps, ref_ps) else "0")
+            elif pa is not None and ref_pa is not None:
+                labels.append("1" if self._angdiff(pa, ref_pa) > 90.0 else "0")
+            else:
+                labels.append(None)
+        if len({l for l in labels if l is not None}) < 2:
+            return None
+        return labels
+
+    def _afn_models_for_group(self, group_key, file_list, log):
+        """Aperture Flux Normalization for one integration group.
+
+        Returns one model per frame (aligned with file_list), or None to
+        integrate exactly as before -- because AFN is off, the group is too
+        small, too few stars were found, or anything at all went wrong. A
+        failure here never costs the user their stack.
+        """
+        if not self.settings.value("stacking/afn/enabled", False, type=bool):
+            return None
+        from setiastro.saspro.aperture_flux_normalization import (
+            build_models_for_group)
+        additive = self.settings.value("stacking/afn/additive", True, type=bool)
+        cache_dir = None
+        sd = (getattr(self, "stacking_directory", "") or "").strip()
+        if sd:
+            cache_dir = os.path.join(sd, "Measurements", "afn")
+
+        log(f"🔆 Phase: Aperture flux normalization for '{group_key}' "
+            f"({len(file_list)} frames)")
+        try:
+            hwc = self._afn_frame_hwc(file_list[0])
+            try:
+                orientation = self._afn_orientation_labels(file_list)
+            except Exception:
+                orientation = None          # no balancing beats no AFN
+            # Fit across every core in a spawn pool when process pools work
+            # here -- the same preflight the measurement phase relies on.
+            # Fitting is many small numpy calls, so threads stall on the GIL.
+            processes = 0
+            try:
+                from setiastro.saspro.worker_env import (
+                    check_process_pools, process_pools_ok)
+                check_process_pools(log_fn=log)
+                if process_pools_ok():
+                    processes = max(1, min(32, os.cpu_count() or 1))
+            except Exception:
+                processes = 0
+            models = build_models_for_group(
+                file_list, _MMImage, shape_hwc=hwc, cache_dir=cache_dir,
+                additive=bool(additive), log=log,
+                cancelled=lambda: bool(self._cancelled()),
+                orientation=orientation, processes=processes)
+        except InterruptedError:
+            raise StackCancelled()
+        except StackCancelled:
+            raise
+        except Exception as e:                       # noqa: BLE001
+            log(f"⚠️ Aperture flux normalization skipped for '{group_key}': "
+                f"{type(e).__name__}: {e}")
+            return None
+        if models is None:
+            log(f"⚠️ Aperture flux normalization skipped for '{group_key}': "
+                f"not enough frames or stars to build the maps.")
+            return None
+        log(f"✅ Aperture flux normalization ready for '{group_key}'")
+        return models
+
     def normal_integration_with_rejection(
         self,
         group_key,
@@ -38210,6 +38399,19 @@ class StackingSuiteDialog(QDialog):
         collect_per_file = bool(collect_per_file_rejections)
         per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
         log = status_cb or (lambda *_: None)
+
+        # Aperture Flux Normalization: the phase between registration and
+        # integration. Runs (and finishes) BEFORE the integration announces
+        # itself, so the execution monitor's Integration clock does not tick
+        # through the measuring. None = integrate exactly as before.
+        afn_models = (self._afn_models_for_group(group_key, file_list, log)
+                      if file_list else None)
+        # Bound here, unconditionally and at the top: an import anywhere in
+        # this function makes the name local to ALL of it, and the tile
+        # readers below are closures that run much later.
+        from setiastro.saspro.aperture_flux_normalization import (
+            apply_tile_inplace as _afn_apply_tile)
+
         log(f"Starting integration for group '{group_key}' with {len(file_list)} files.")
         if not file_list:
             return None, {}, None
@@ -38231,6 +38433,18 @@ class StackingSuiteDialog(QDialog):
         self._audit_group_geometry(group_key, file_list, ref_file,
                                    height, width, log)
 
+        # The maps were measured through the tile reader; make sure they
+        # describe the frames the integration is about to read. A mismatch
+        # would scale the wrong pixels, so it drops AFN rather than guessing.
+        if afn_models is not None:
+            _hw = afn_models[0].info.get("hw")
+            _c = int(afn_models[0].gain.shape[0])
+            if (len(afn_models) != N or _hw is None
+                    or tuple(_hw) != (int(height), int(width)) or _c != channels):
+                log(f"⚠️ AFN: maps ({_hw}, {_c} ch) do not match the integration "
+                    f"({height}x{width}, {channels} ch) — integrating without them.")
+                afn_models = None
+
         algo = (algo_override or self.rejection_algorithm)
 
         use_gpu = (
@@ -38250,6 +38464,7 @@ class StackingSuiteDialog(QDialog):
                 status_cb=status_cb,
                 algo_override=algo_override,
                 collect_per_file_rejections=collect_per_file_rejections,
+                afn_models=afn_models,
             )
 
         # ── NORMAL (fast mmap) PATH ────────────────────────────────────────────
@@ -38307,6 +38522,7 @@ class StackingSuiteDialog(QDialog):
                     status_cb=status_cb,
                     algo_override=algo_override,
                     collect_per_file_rejections=collect_per_file_rejections,
+                    afn_models=afn_models,
                 )
             log(f"⚠️ Failed to open images (memmap): {e}")
             log(f"💡 If you are stacking a large number of frames, enable "
@@ -38398,6 +38614,10 @@ class StackingSuiteDialog(QDialog):
 
         def _read_one_frame(i, src, ts, ms, y0, y1, x0, x1):
             src.read_tile_into(ts[i], y0, y1, x0, x1, channels)
+            if afn_models is not None:
+                # Corrected in the reader thread, before the tile reaches
+                # either reducer, so CPU and GPU integration see the same data.
+                _afn_apply_tile(ts[i], afn_models[i], y0, y1, x0, x1)
             mfull = satmask_full_list[i]
             if mfull is not None:
                 ms[i, :, :] = mfull[y0:y1, x0:x1]
@@ -38747,6 +38967,7 @@ class StackingSuiteDialog(QDialog):
                 status_cb=status_cb,
                 algo_override=algo_override,
                 collect_per_file_rejections=collect_per_file_rejections,
+                afn_models=afn_models,
             )
 
         finally:
@@ -38847,6 +39068,7 @@ class StackingSuiteDialog(QDialog):
         *,
         algo_override: str | None = None,
         collect_per_file_rejections: bool = False,
+        afn_models=None,
     ):
         """
         Low RAM Safe Mode integration — seek-based tile reader.
@@ -38863,6 +39085,8 @@ class StackingSuiteDialog(QDialog):
         import numpy as np
         from astropy.io import fits
         from concurrent.futures import ThreadPoolExecutor as _TPE
+        from setiastro.saspro.aperture_flux_normalization import (
+            apply_tile_inplace as _afn_apply_tile)
 
         collect_per_file = bool(collect_per_file_rejections)
         per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
@@ -38960,6 +39184,11 @@ class StackingSuiteDialog(QDialog):
                     y0, y1, x0, x1, channels,
                     fh=fh
                 )
+                if afn_models is not None:
+                    # Same correction as the fast path, so Low RAM Safe Mode
+                    # and the too-many-open-files fallback stack identically.
+                    _afn_apply_tile(buf_stack[i, :th, :tw, :channels],
+                                    afn_models[i], y0, y1, x0, x1)
                 mfull = satmask_full_list[i]
                 if mfull is not None:
                     mask_buf[i, :th, :tw] = mfull[y0:y1, x0:x1]

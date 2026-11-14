@@ -1480,23 +1480,27 @@ class MetricsWindow(QWidget):
 
     def _rebuild_groups_from_images(self):
         """Rebuild the FILTER combobox from current _all_images, keep current if possible."""
-        cur = self.group_combo.currentText()
+        # Track the group *id*, not the display text: ids are stable while the
+        # "All" row's text is translated.
+        cur = self._current_group_id()
         self.group_combo.blockSignals(True)
         self.group_combo.clear()
-        self.group_combo.addItem(self.tr("All"))
+        # Every row MUST carry its id as userData, exactly as set_images does.
+        # Without it currentData() is None for every row, _current_group_id()
+        # falls back to "__ALL__", and selecting a filter stops changing the
+        # plot until the window is reopened and metrics recomputed.
+        self.group_combo.addItem(self.tr("All"), "__ALL__")
         seen = set()
         for entry in self._all_images:
             filt = (entry.get('header', {}) or {}).get('FILTER', 'Unknown')
             if filt not in seen:
-                self.group_combo.addItem(filt)
+                self.group_combo.addItem(filt, filt)  # display=filt, id=filt
                 seen.add(filt)
+            self._thresholds_per_group.setdefault(filt, [None] * 7)
         self.group_combo.blockSignals(False)
-        # restore selection if still valid
-        idx = self.group_combo.findText(cur)
-        if idx >= 0:
-            self.group_combo.setCurrentIndex(idx)
-        else:
-            self.group_combo.setCurrentIndex(0)
+        # restore the previous group if it still has frames, else fall back to All
+        idx = self.group_combo.findData(cur)
+        self.group_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
     def remove_indices(self, removed: List[int]):
         """

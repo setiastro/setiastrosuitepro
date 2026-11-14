@@ -870,7 +870,101 @@ class AstroSuiteProMainWindow(
             pass
         self._schedule_undo_redo_label_refresh()
 
-    def _promote_roi_preview_to_real_doc(self, st: dict, preview_doc) -> None:
+    def _apply_display_stretch_from_state(self, view, st: dict) -> None:
+        """Copy a dragged view's display stretch onto `view`.
+
+        Display-only state, so nothing here touches pixels. Two things it has
+        to get right that the old inline version did not:
+
+          * the parameters are set BEFORE autostretch is switched on, so the
+            stretch is computed with the target/sigma/profile that were in
+            use, not the defaults and then a re-render, and
+          * autostretch is explicitly switched OFF when the source had it
+            off, instead of being left at whatever a brand-new view defaults
+            to. "Inherit the stretch" has to include inheriting its absence.
+
+        Order matters: set_autostretch_profile() OVERWRITES target and sigma
+        with that profile's preset, so the profile goes on first and the
+        source's own target/sigma are written over it. The other way round
+        copies the preset instead of what the view was actually showing.
+        """
+        if view is None:
+            return
+        for setter, key, cast in (
+            ("set_autostretch_profile", "autostretch_profile", str),
+            ("set_autostretch_linked",  "autostretch_linked",  bool),
+            ("set_autostretch_target",  "autostretch_target",  float),
+            ("set_autostretch_sigma",   "autostretch_sigma",   float),
+        ):
+            if key in st and hasattr(view, setter):
+                try:
+                    getattr(view, setter)(cast(st[key]))
+                except Exception:
+                    pass
+        if hasattr(view, "set_autostretch"):
+            try:
+                view.set_autostretch(bool(st.get("autostretch", False)))
+            except Exception:
+                pass
+
+    def _viewstate_drop_pos(self):
+        """Viewport-space point where the last view-icon drop landed."""
+        pos = getattr(self.mdi, "lastViewStateDropPos", None)
+        if pos is not None:
+            return pos
+        # Fallback for callers that never went through MdiArea.dropEvent.
+        g = getattr(self, "_pending_spawn_cursor_pos", None)
+        if g is None:
+            return None
+        try:
+            vp = self.mdi.viewport() or self.mdi
+            return vp.mapFromGlobal(g)
+        except Exception:
+            return None
+
+    def _place_subwindow_at_drop(self, sw, drop_pos=None) -> None:
+        """Move a freshly spawned subwindow to where the icon was dropped.
+
+        Deliberately NOT clamped to the visible viewport. The workspace
+        canvas grows to fit its windows, so a drop near an edge should land
+        exactly where it was dropped and let the canvas expand around it --
+        pulling the window back inside would move it away from the cursor to
+        solve a problem the canvas already solves. Only negative coordinates
+        are floored, since the canvas grows right and down, not up and left.
+        """
+        if sw is None:
+            return
+        if drop_pos is None:
+            drop_pos = self._viewstate_drop_pos()
+        if drop_pos is None:
+            return
+
+        def _move(again: bool = True):
+            try:
+                if sw is None or sw.parent() is None:
+                    return
+                w = sw.width()
+                sw.move(max(0, drop_pos.x() - w // 2),
+                        max(0, drop_pos.y() - 16))
+                # A new view usually resizes itself once more (fit-to-window,
+                # first layout) right after this, and the x position is
+                # centred on the width, so re-centre once the size settles.
+                if again:
+                    QTimer.singleShot(0, lambda: _move(False))
+            except RuntimeError:
+                pass
+            except Exception:
+                pass
+
+        _move()
+        self._pending_spawn_cursor_pos = None
+        try:
+            self.mdi.lastViewStateDropPos = None
+        except Exception:
+            pass
+
+    def _promote_roi_preview_to_real_doc(self, st: dict, preview_doc,
+                                         drop_pos=None) -> None:
         dm = self.doc_manager
 
         # ---- 1) Get pixels — crop from base doc using ROI coords ----
@@ -1057,46 +1151,62 @@ class AstroSuiteProMainWindow(
         # We already have a correct, final ROI header.
 
         # ---- 6) Find the subwindow that doc_manager already spawned ----
-        sw = None
-        try:
+        #
+        # Via _find_subwindow_for_doc, NOT a hand-rolled `view.document is
+        # new_doc` scan: a view holds a _DocProxy, so identity against the
+        # document we just created never matched and this whole step was
+        # silently skipped. That is why a promoted ROI came up with the
+        # default stretch instead of the one its tab was being shown with.
+        #
+        # Deferred with a retry for the same reason the plain-duplicate path
+        # defers: the spawn is synchronous today, but the view's first layout
+        # is not, and the view transform needs a laid-out label to position
+        # against.
+        if drop_pos is None:
+            drop_pos = self._viewstate_drop_pos()
 
-            for sub in self.mdi.subWindowList():
-                w = sub.widget() if hasattr(sub, "widget") else None
-                d = getattr(w, "document", None)
-                # DEBUG: print each candidate
-
-                if d is new_doc:
-                    sw = sub
-
-                    break
+        def _apply_when_ready(tries_left: int = 40):
+            sw = self._find_subwindow_for_doc(new_doc)
             if sw is None:
+                if tries_left > 0:
+                    QTimer.singleShot(0, lambda: _apply_when_ready(tries_left - 1))
+                else:
+                    self._log("[viewstate-drop ROI] no view appeared for the "
+                              "promoted ROI; display state not applied.")
+                return
+
+            wv = sw.widget() if hasattr(sw, "widget") else None
+
+            # ---- 7) Apply the source tab's display state ----
+            self._apply_display_stretch_from_state(wv, st)
+            if wv is not None and hasattr(wv, "set_view_transform"):
+                try:
+                    wv.set_view_transform(
+                        float(st.get("scale", 1.0)),
+                        int(st.get("hval", 0)),
+                        int(st.get("vval", 0)),
+                        from_link=False,
+                    )
+                except Exception:
+                    pass
+
+            # ---- 8) Spawn it where the icon was dropped ----
+            self._place_subwindow_at_drop(sw, drop_pos)
+            try:
+                self.mdi.setActiveSubWindow(sw)
+            except Exception:
                 pass
-        except Exception as e:
-            print("[Main] ROI promotion: error searching for subwindow:", e)
 
-        # ---- 7) Apply viewstate to that subwindow ----
-        if sw and hasattr(sw, "widget"):
-
-            wv = sw.widget()
-            if st.get("autostretch") and hasattr(wv, "set_autostretch"):
-
-                wv.set_autostretch(True)
-                if hasattr(wv, "set_autostretch_target"):
-                    wv.set_autostretch_target(float(st.get("autostretch_target", 0.25)))
-            if hasattr(wv, "set_view_transform"):
-
-                wv.set_view_transform(
-                    float(st.get("scale", 1.0)),
-                    int(st.get("hval", 0)),
-                    int(st.get("vval", 0)),
-                    from_link=False,
-                )
-        else:
-            pass
+        QTimer.singleShot(0, _apply_when_ready)
 
 
     def _on_mdi_viewstate_drop(self, st: dict, target_sw: object | None):
         dm = self.doc_manager
+
+        # Read the drop point now, while MdiArea.dropEvent has just recorded
+        # it. Everything that places a window is deferred, and by the time
+        # those callbacks run the pointer has moved on.
+        drop_pos = self._viewstate_drop_pos()
 
         uid     = st.get("doc_uid")
         doc_ptr = st.get("doc_ptr")
@@ -1154,7 +1264,8 @@ class AstroSuiteProMainWindow(
                         print(f"[DUP DEBUG] roi_doc_ptr resolution failed: {e}")
 
                 try:
-                    self._promote_roi_preview_to_real_doc(st, doc)
+                    self._promote_roi_preview_to_real_doc(st, doc,
+                                                          drop_pos=drop_pos)
                     return
                 except Exception as e:
                     self._log(f"[viewstate-drop ROI] promotion failed: {e}")
@@ -1169,21 +1280,15 @@ class AstroSuiteProMainWindow(
                 doc, new_name=f"{base_name}_duplicate"
             )
 
-            def _apply_when_ready():
+            def _apply_when_ready(tries_left: int = 40):
                 sw = self._find_subwindow_for_doc(new_doc)
                 if not sw:
-                    QTimer.singleShot(0, _apply_when_ready)
+                    if tries_left > 0:
+                        QTimer.singleShot(
+                            0, lambda: _apply_when_ready(tries_left - 1))
                     return
                 self._apply_view_state_to_view(sw.widget(), st)
-                try:
-                    drop_pos = getattr(self, "_pending_spawn_cursor_pos", None)
-                    if drop_pos is not None:
-                        mdi_pos = self.mdi.mapFromGlobal(drop_pos)
-                        sw.move(max(0, mdi_pos.x() - sw.width() // 2),
-                                max(0, mdi_pos.y() - 16))
-                    self._pending_spawn_cursor_pos = None
-                except Exception:
-                    pass
+                self._place_subwindow_at_drop(sw, drop_pos)
                 self.mdi.setActiveSubWindow(sw)
                 self._log(f"Duplicated -> '{new_doc.display_name()}'")
 
@@ -10571,8 +10676,8 @@ class AstroSuiteProMainWindow(
         if not hasattr(view, "scroll"):
             return
         try:
-            view.set_autostretch(state.get("autostretch", getattr(view, "autostretch_enabled", False)))
-            view.set_autostretch_target(state.get("autostretch_target", getattr(view, "autostretch_target", 0.25)))
+            # Target/sigma/profile/linked too, not just the on/off flag.
+            self._apply_display_stretch_from_state(view, state)
             view.set_scale(state.get("scale", getattr(view, "scale", 1.0)))
             QApplication.processEvents()
             view.scroll.horizontalScrollBar().setValue(int(state.get("hval", 0)))

@@ -2970,6 +2970,134 @@ def _fmt_mag(v):
         return ""
 
 
+# ---------------------------------------------------------------------------
+# Results-tree sorting
+#
+# Every cell in the results tree is a display string, so the default
+# QTreeWidgetItem compares them lexically: "1.076 Gly" lands above "875.98 Mly"
+# because "1" < "8", and 10.5 mag lands above 9.2. These helpers give the tree a
+# numeric sort that understands the units the columns actually print.
+# ---------------------------------------------------------------------------
+
+# Light-years per unit. Distances are printed in ly/kly/Mly/Gly by
+# format_distance_ly, and minor bodies carry a distance_display in AU.
+_WIMI_LY_PER_UNIT = {
+    "ly": 1.0, "kly": 1e3, "mly": 1e6, "gly": 1e9,
+    "pc": 3.261563777, "kpc": 3.261563777e3,
+    "mpc": 3.261563777e6, "gpc": 3.261563777e9,
+    "au": 1.0 / 63241.077088,
+}
+
+# Arcseconds per unit, for the Diameter column (f"{x:.2f}'" or f"{x:.1f}\"").
+_WIMI_ARCSEC_PER_UNIT = {
+    '"': 1.0, "''": 1.0, "arcsec": 1.0, "as": 1.0,
+    "'": 60.0, "arcmin": 60.0, "am": 60.0,
+    "deg": 3600.0, "°": 3600.0,
+}
+
+# A cell that is a bare number, optionally followed by a unit, and nothing else.
+# Anchored on purpose: an object named "NGC 1234" must NOT be read as 1234, or
+# the Name column would sort by catalogue number and ignore the catalogue.
+_WIMI_NUMERIC_CELL = re.compile(
+    r"""^\s*(?:z\s*=\s*)?                     # optional "z = " from the redshift column
+         ([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)
+         \s*([A-Za-z'\"°]*)\s*$          # optional unit
+    """,
+    re.VERBOSE,
+)
+
+_WIMI_BLANK_CELLS = {"", "-", "--", "—", "n/a", "na", "none", "nan", "inf", "-inf"}
+
+_WIMI_NAT_SPLIT = re.compile(r"(\d+)")
+
+
+def _wimi_cell_is_blank(text) -> bool:
+    """True for the placeholders the columns use when there is no value."""
+    return str(text).strip().lower() in _WIMI_BLANK_CELLS
+
+
+def _wimi_sort_value(text):
+    """Numeric sort value for a results-tree cell, or None if it is not numeric.
+
+    Units are folded to one scale per quantity, so a column may mix them:
+    distances all reduce to light-years (875.98 Mly < 1.076 Gly) and diameters
+    to arcseconds (45.0" < 12.00'). An unrecognised unit returns None so the
+    cell falls back to a text compare rather than being ranked by a number that
+    means something else.
+    """
+    s = str(text).strip()
+    if not s or _wimi_cell_is_blank(s):
+        return None
+    m = _WIMI_NUMERIC_CELL.match(s)
+    if not m:
+        return None
+    try:
+        v = float(m.group(1))
+    except ValueError:
+        return None
+    if not np.isfinite(v):
+        return None
+    unit = (m.group(2) or "").strip()
+    if not unit:
+        return v
+    key = unit.lower()
+    if key in _WIMI_LY_PER_UNIT:
+        return v * _WIMI_LY_PER_UNIT[key]
+    if unit in _WIMI_ARCSEC_PER_UNIT:
+        return v * _WIMI_ARCSEC_PER_UNIT[unit]
+    if key in _WIMI_ARCSEC_PER_UNIT:
+        return v * _WIMI_ARCSEC_PER_UNIT[key]
+    return None
+
+
+def _wimi_natural_key(text):
+    """Case-insensitive key that keeps digit runs in numeric order (M 9 < M 31)."""
+    try:
+        return [int(p) if p.isdigit() else p.lower()
+                for p in _WIMI_NAT_SPLIT.split(str(text))]
+    except Exception:
+        return [str(text).lower()]
+
+
+class WimiResultItem(QTreeWidgetItem):
+    """A results-tree row that sorts each column by what the column means.
+
+    Numeric cells compare as numbers with their units folded to one scale;
+    anything else compares as natural, case-insensitive text. Cells with no
+    value sink to the bottom whichever way the column is sorted, so clicking a
+    header never buries the real results under a block of em dashes.
+    """
+
+    def __lt__(self, other):
+        try:
+            tree = self.treeWidget()
+            col = tree.sortColumn() if tree is not None else 0
+            a_txt = self.text(col)
+            b_txt = other.text(col)
+
+            a_blank = _wimi_cell_is_blank(a_txt)
+            b_blank = _wimi_cell_is_blank(b_txt)
+            if a_blank or b_blank:
+                if a_blank and b_blank:
+                    return False
+                descending = (
+                    tree is not None
+                    and tree.header().sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
+                )
+                # Qt reverses the comparison for a descending sort, so a blank
+                # has to compare as the smallest value there to still land last.
+                return a_blank if descending else b_blank
+
+            a_val = _wimi_sort_value(a_txt)
+            b_val = _wimi_sort_value(b_txt)
+            if a_val is not None and b_val is not None:
+                return a_val < b_val
+            return _wimi_natural_key(a_txt) < _wimi_natural_key(b_txt)
+        except Exception:
+            return super().__lt__(other)
+
+
+
 class MinorBodyDownloadWorker(QThread):
     """
     Background worker to download/update the minor-body catalog.
@@ -3404,6 +3532,29 @@ class SimbadQueryWorker(QThread):
         if self._cancel:
             raise RuntimeError("Query cancelled by user")
 
+    def _direct_tap(self):
+        """Last resort: run the same ADQL straight at SIMBAD's TAP endpoint.
+
+        astroquery wraps pyvo, which has its own session, redirect and job
+        handling, so "astroquery raised" and "SIMBAD is down" are different
+        statements. cds_health talks to /simbad/sim-tap/sync directly and
+        keeps working in exactly those cases - worth one try before telling
+        the user the archive is unreachable.
+        """
+        for host in (cds_health.current_server(), *cds_health.MIRRORS):
+            if self._cancel:
+                return None
+            self.stage.emit(f"Retrying SIMBAD directly via {host}…")
+            try:
+                table = cds_health.query_tap_direct(self._tap_query,
+                                                    server=host)
+            except Exception:
+                table = None
+            if table is not None:
+                self.stage.emit(f"SIMBAD answered directly via {host}.")
+                return table
+        return None
+
     def run(self):
         try:
             # ——— Stage 1: TAP query with retries ———
@@ -3428,14 +3579,28 @@ class SimbadQueryWorker(QThread):
                     # Retrying costs a full timeout per attempt to re-learn
                     # something we already know, so stop on the first one.
                     # Server-side errors (5xx, rate-limit) are still retried.
-                    if cds_health.note_failure(e, context="simbad/query_tap"):
+                    if cds_health.note_failure(
+                            e, context="simbad/query_tap",
+                            status_cb=lambda m: self.stage.emit(m)):
+                        # Every mirror refused the astroquery path. Before
+                        # declaring CDS down, try the endpoint the health
+                        # probe itself uses — it has a different client
+                        # stack and sometimes answers when this one will not.
+                        result = self._direct_tap()
+                        if result is not None:
+                            last_err = None
+                            cds_health.note_success()
+                            break
                         self.failed.emit(
                             "SIMBAD is unreachable (connection failed).\n\n"
-                            "CDS appears to be down — further retries would "
-                            "only wait out the same timeout.\n\n"
-                            f"{type(e).__name__}: {e}"
+                            "Every CDS mirror was tried, including a direct "
+                            "TAP request.\n\n"
+                            f"{type(e).__name__}: {e}\n\n"
+                            f"{cds_health.status_detail()}"
                         )
                         return
+                    # A different mirror may now be configured; the next
+                    # attempt goes there rather than back to the dead one.
                     if attempt < self._max_attempts:
                         self.stage.emit(
                             f"TAP attempt {attempt} failed ({type(e).__name__}); "
@@ -3451,11 +3616,16 @@ class SimbadQueryWorker(QThread):
                             slept += step
 
             if last_err is not None:
-                self.failed.emit(
-                    "SIMBAD TAP service unreachable after "
-                    f"{self._max_attempts} attempts.\n\nLast error:\n{last_err}"
-                )
-                return
+                result = self._direct_tap()
+                if result is None:
+                    self.failed.emit(
+                        "SIMBAD TAP service unreachable after "
+                        f"{self._max_attempts} attempts.\n\n"
+                        f"Last error:\n{last_err}\n\n"
+                        f"{cds_health.status_detail()}"
+                    )
+                    return
+                cds_health.note_success()
 
             self._check_cancel()
 
@@ -7128,7 +7298,7 @@ class WIMIDialog(QDialog):
         self.results_tree.clear()
         for obj in self.results:
             z_cell, plx_cell, dist_cell = wimi_result_columns(obj)
-            item = QTreeWidgetItem([
+            item = WimiResultItem([
                 str(obj['ra']),
                 str(obj['dec']),
                 obj['name'],
@@ -9657,12 +9827,14 @@ class WIMIDialog(QDialog):
             self.status_label.setText("Status: SIMBAD unavailable.")
             QMessageBox.warning(
                 self, "SIMBAD Unavailable",
-                "SIMBAD is not responding on either CDS mirror.\n\n"
+                "SIMBAD could not be reached.\n\n"
                 f"{cds_health.status_text()}\n\n"
+                "Mirrors tried:\n"
+                f"{cds_health.status_detail()}\n\n"
                 "CDS (Strasbourg) has scheduled and unscheduled outages; "
                 "check https://cds.unistra.fr/ and try again later.\n\n"
-                "Minor-body search and the local Gaia DR3 augment both work "
-                "offline and are unaffected.")
+                "Minor-body search, the deep VizieR search and the local "
+                "Gaia DR3 augment do not depend on SIMBAD.")
             return
         simbad_host = _configure_simbad_endpoint()
 
@@ -10001,7 +10173,7 @@ class WIMIDialog(QDialog):
                 if _cancelled():
                     break
                 z_cell, plx_cell, dist_cell = wimi_result_columns(obj)
-                item = QTreeWidgetItem([
+                item = WimiResultItem([
                     str(obj['ra']),
                     str(obj['dec']),
                     obj['name'],
@@ -10113,51 +10285,91 @@ class WIMIDialog(QDialog):
         coord = SkyCoord(ra_center, dec_center, unit="deg")
         unique_entries = {}
 
-        # VizieR is a CDS service and goes down with SIMBAD, so the same
-        # breaker covers it. This loop hits 12 catalogs sequentially on the
-        # GUI thread with no timeout — during an outage that is 12 full TCP
-        # timeouts with a frozen window. Probe once, bound the per-query
-        # timeout, and abandon the loop the moment the breaker opens.
-        if not cds_health.simbad_available(
-                status_cb=lambda m: (self.status_label.setText(f"Status: {m}"),
-                                     QApplication.processEvents())):
-            self.status_label.setText("Status: CDS unavailable.")
+        # VizieR has its own hosts and its own endpoint (/viz-bin/votable),
+        # so it gets its own health check. Gating this on SIMBAD was wrong in
+        # both directions: a SIMBAD TAP outage disabled a VizieR search that
+        # would have worked, and a healthy SIMBAD said nothing about whether
+        # the VizieR host we were about to query 12 times was answering.
+        #
+        # This loop hits 12 catalogs sequentially on the GUI thread, so an
+        # unreachable host means 12 full timeouts behind a frozen window.
+        # prepare_vizier races the mirror list, picks one that just served a
+        # real query, and points astroquery at it.
+        _vz_status = lambda m: (self.status_label.setText(f"Status: {m}"),
+                                QApplication.processEvents())
+        vizier_host = cds_health.prepare_vizier(status_cb=_vz_status,
+                                                timeout=45.0)
+        if not vizier_host:
+            self.status_label.setText("Status: VizieR unavailable.")
             QMessageBox.warning(
-                self, "CDS Unavailable",
-                "VizieR (CDS, Strasbourg) is not responding.\n\n"
-                f"{cds_health.status_text()}\n\n"
-                "The deep VizieR search needs the CDS archive. "
+                self, "VizieR Unavailable",
+                "No VizieR mirror answered a query.\n\n"
+                f"{cds_health.vizier_status_text()}\n\n"
+                "Mirrors tried:\n"
+                f"{cds_health.vizier_status_detail()}\n\n"
+                "The deep VizieR search needs one of these. "
                 "Try again later.")
             return
+        self.status_label.setText(f"Status: VizieR — using {vizier_host}")
+        QApplication.processEvents()
         try:
             Vizier.TIMEOUT = 45
         except Exception:
             pass
         _vz_budget = cds_health.Budget(150.0)
+        # Catalogues the chosen mirror returned nothing for. Worth reporting:
+        # VizieR mirrors are PARTIAL, so a failover can quietly halve the
+        # result count. Measured 2026-11-14, vizier.cfa.harvard.edu serves
+        # HyperLEDA and GLADE+ but answers empty or errors for Gaia EDR3,
+        # 2MASS, UCAC4 and SDSS -- a user who saw only "fewer objects" would
+        # reasonably blame the search rather than the mirror.
+        _vz_missing: list = []
 
         try:
             for catalog_id in catalog_ids:
-                if _vz_budget.expired() or not cds_health.simbad_available():
+                if _vz_budget.expired():
                     self.status_label.setText(
-                        "Status: CDS unavailable — VizieR search stopped early.")
+                        "Status: time budget spent — VizieR search stopped early.")
                     QApplication.processEvents()
                     break
-                self.status_label.setText(
-                    "Status: VizieR — querying "
-                    f"{CATALOG_NAMES.get(catalog_id, catalog_id)}…")
+                cat_name = CATALOG_NAMES.get(catalog_id, catalog_id)
+                self.status_label.setText(f"Status: VizieR — querying {cat_name}…")
                 QApplication.processEvents()
-                try:
-                    result = Vizier.query_region(
-                        coord, radius=radius_arcmin * u.arcmin, catalog=catalog_id
-                    )
-                except Exception as e:
-                    if cds_health.note_failure(e, context=f"vizier/{catalog_id}"):
-                        self.status_label.setText(
-                            "Status: VizieR unreachable — stopping search.")
-                        QApplication.processEvents()
+
+                # Two tries per catalogue, because the second one happens on
+                # a DIFFERENT mirror: note_vizier_failure re-races the list
+                # and re-points astroquery, so a host dying halfway through
+                # the 12 catalogues costs one catalogue, not the search.
+                result = None
+                for _vz_try in (1, 2):
+                    try:
+                        result = Vizier.query_region(
+                            coord, radius=radius_arcmin * u.arcmin,
+                            catalog=catalog_id
+                        )
                         break
+                    except Exception as e:
+                        give_up = cds_health.note_vizier_failure(
+                            e, context=f"vizier/{catalog_id}",
+                            status_cb=_vz_status)
+                        if give_up:
+                            self.status_label.setText(
+                                "Status: no VizieR mirror left — stopping search.")
+                            QApplication.processEvents()
+                            break
+                        if _vz_try == 1:
+                            self.status_label.setText(
+                                f"Status: VizieR — retrying {cat_name} on "
+                                f"{cds_health.vizier_server()}…")
+                            QApplication.processEvents()
+                if result is None and cds_health.vizier_status_text().startswith(
+                        "VizieR: unavailable"):
+                    break
+                if result is None:
+                    _vz_missing.append(cat_name)
                     continue   # this one catalog failed; try the rest
                 if not result:
+                    _vz_missing.append(cat_name)
                     continue
 
                 for row in result[0]:
@@ -10250,6 +10462,25 @@ class WIMIDialog(QDialog):
             self.query_results = all_results
             self.update_results_tree()
             self.update_object_count()
+
+            if _vz_missing and vizier_host != cds_health.VIZIER_MIRRORS[0]:
+                self.status_label.setText(
+                    f"Status: VizieR ({vizier_host}) — {len(all_results)} "
+                    f"objects; {len(_vz_missing)} catalogues unavailable on "
+                    f"this mirror.")
+                QMessageBox.information(
+                    self, "Deep VizieR Search — Partial Mirror",
+                    f"Found {len(all_results)} objects using the VizieR "
+                    f"mirror {vizier_host}, because the primary "
+                    f"({cds_health.VIZIER_MIRRORS[0]}) did not answer.\n\n"
+                    "Mirrors do not all carry every catalogue. These returned "
+                    "nothing here, and may return results once the primary "
+                    "is back:\n\n  • "
+                    + "\n  • ".join(_vz_missing))
+            else:
+                self.status_label.setText(
+                    f"Status: VizieR ({vizier_host}) — "
+                    f"{len(all_results)} objects.")
 
         except Exception as err:
             QMessageBox.critical(self, "Vizier Search Failed", f"Failed to query Vizier: {err}")
