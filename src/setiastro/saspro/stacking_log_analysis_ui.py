@@ -34,6 +34,95 @@ from setiastro.saspro.stacking_log_analysis import (
 
 __all__ = ["StackingLogAnalysisTab"]
 
+
+def _models_text(models) -> str:
+    return ", ".join(f"{name} {n}" for name, n in models) if models else "—"
+
+
+def _afn_readout(a) -> str:
+    """Plain-language account of what AFN measured and did for one group."""
+    esc = lambda s: (str(s).replace("&", "&amp;").replace("<", "&lt;")
+                     .replace(">", "&gt;"))
+    out = [f"<b>{esc(a.group)}</b>"]
+    if a.status == "skipped":
+        out.append(f"<span style='color:#c9913a'>Skipped: {esc(a.skip_reason)}.</span> "
+                   "This group was integrated exactly as it would be without AFN.")
+        return "<br>".join(out)
+    if a.status != "ready":
+        out.append("<span style='color:#c9913a'>The log ends before AFN finished "
+                   "for this group.</span>")
+
+    # what it measured
+    if a.stars is not None:
+        out.append(
+            f"<b>Measured:</b> {a.stars} stars (of {a.detections} detected) in "
+            f"every frame, FWHM {a.fwhm:.2f} px, aperture radius {a.aperture:.1f} px "
+            f"with a sky annulus of {esc(a.annulus)} px; sky in a {esc(a.grid)} grid "
+            f"of {a.cell} px cells.")
+    elif a.meas_cached:
+        out.append("<b>Measured:</b> reused the cached measurements from an "
+                   "earlier run of the same frames.")
+
+    # flip
+    if a.balanced:
+        out.append(
+            f"<b>Meridian flip:</b> frames came from both sides of the flip "
+            f"({esc(a.balanced)}). The reference was balanced between them, so a "
+            f"flat error that flips with the mount cancels instead of being "
+            f"copied to every frame.")
+
+    # brightness
+    const = a.model_share("constant")
+    if a.star_gain_median is not None:
+        if (const is not None and const >= 0.75
+                and a.star_gain_median < 1.0):
+            out.append(
+                f"<b>Brightness:</b> the frames already agreed. "
+                f"{int(round(const * 100))}% of them needed only a single overall "
+                f"scale, so AFN made almost no spatial correction here.")
+        else:
+            size = ("a small" if a.star_gain_median < 2 else
+                    "a moderate" if a.star_gain_median < 10 else "a large")
+            out.append(
+                f"<b>Brightness:</b> {size} correction. Frames differed across the "
+                f"field by a median of {a.field_median:.1f}% (most: "
+                f"{a.field_max:.1f}%). The maps predicted stars they were not "
+                f"fitted to {a.star_gain_median:.1f}% better than a single overall "
+                f"scale; {a.star_gain_p90:.1f}% for the most-corrected tenth of "
+                f"frames.")
+        out.append(f"&nbsp;&nbsp;Map detail chosen per frame: "
+                   f"{esc(_models_text(a.bright_models))}.")
+
+    # sky
+    if a.sky_gain_median is not None:
+        out.append(
+            f"<b>Sky:</b> differences in sky glow between frames were matched; "
+            f"the sky maps predicted sky they were not fitted to "
+            f"{a.sky_gain_median:.1f}% better than one overall offset.")
+        out.append(f"&nbsp;&nbsp;Map detail chosen per frame: "
+                   f"{esc(_models_text(a.sky_models))}.")
+
+    if a.clamped:
+        out.append(f"{a.clamped} map(s) were held to the range their stars "
+                   f"support where they would otherwise have extrapolated "
+                   f"(normal near frame edges).")
+    if a.maps_cached:
+        out.append("The maps themselves were reused from cache.")
+
+    # cost
+    bits = []
+    if a.seconds is not None:
+        bits.append(f"took {fmt_hms(a.seconds)}")
+    if a.t_measure is not None:
+        bits.append(f"measuring {a.t_measure:.1f} s, fitting {a.t_fit:.1f} s")
+    if a.processes:
+        bits.append(f"across {a.processes} processes")
+    if bits:
+        out.append("<b>Cost:</b> " + ", ".join(bits) + ".")
+    for n in a.notes:
+        out.append(f"<span style='color:#c9913a'>{esc(n)}</span>")
+    return "<br>".join(out)
+
 _PHASE_COLORS = [
     "#4F83CC", "#58A55C", "#C9913A", "#9B59B6",
     "#D9534F", "#17A2B8", "#8D6E63", "#7F8C8D",
@@ -216,6 +305,7 @@ class StackingLogAnalysisTab(QWidget):
         self._build_timeline()
         self._build_problems()
         self._build_groups()
+        self._build_afn()
         self._build_masters()
         self._build_frames()
         self._build_raw()
@@ -299,6 +389,29 @@ class StackingLogAnalysisTab(QWidget):
         self.lbl_groups_note.setWordWrap(True)
         lay.addWidget(self.lbl_groups_note)
         self.inner.addTab(w, self.tr("Groups"))
+
+    def _build_afn(self):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        self.lbl_afn_head = QLabel("")
+        self.lbl_afn_head.setWordWrap(True)
+        lay.addWidget(self.lbl_afn_head)
+        self.tbl_afn = self._mk_table()
+        self.tbl_afn.itemSelectionChanged.connect(self._on_afn_pick)
+        lay.addWidget(self.tbl_afn, 1)
+        self.lbl_afn_detail = QLabel("")
+        self.lbl_afn_detail.setWordWrap(True)
+        self.lbl_afn_detail.setTextFormat(Qt.TextFormat.RichText)
+        self.lbl_afn_detail.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.lbl_afn_detail.setStyleSheet("padding:4px 2px;")
+        lay.addWidget(self.lbl_afn_detail, 1)
+        self._afn_rows = []
+        self.inner.addTab(w, self.tr("Local Normalization"))
+
+    def _on_afn_pick(self):
+        rows = sorted({i.row() for i in self.tbl_afn.selectedItems()})
+        if rows and rows[0] < len(self._afn_rows):
+            self.lbl_afn_detail.setText(_afn_readout(self._afn_rows[rows[0]]))
 
     def _build_masters(self):
         w = QWidget()
@@ -628,6 +741,9 @@ class StackingLogAnalysisTab(QWidget):
                     f"tree held for: {', '.join(shorts)} — check Problems "
                     f"for frames that failed alignment.") if shorts else "")
 
+        # --- local normalization (Aperture Flux Normalization)
+        self._fill_afn(rep)
+
         # --- masters (calibration masters AND integrated master lights)
         mrows = []
         _outs = master_outputs(rep)
@@ -722,6 +838,63 @@ class StackingLogAnalysisTab(QWidget):
             self.tr(f"⚠️ {len(rep.parse_errors)} line(s) matched a "
                     f"rule but could not be interpreted: "
                     f"{rep.parse_errors[0]}") if rep.parse_errors else "")
+
+    def _fill_afn(self, rep):
+        groups = list(getattr(rep, "afn", {}).values())
+        self._afn_rows = groups
+        if not groups:
+            _fill(self.tbl_afn, (self.tr("Group"),), [])
+            self.lbl_afn_head.setText(self.tr(
+                "Aperture Flux Normalization was not used in this run. It "
+                "matches every registered frame to the whole set, region by "
+                "region, before integration. Turn it on in Stacking Settings "
+                "→ <b>Local Normalization (Aperture Flux)</b>."))
+            self.lbl_afn_detail.setText("")
+            return
+
+        ready = [a for a in groups if a.status == "ready"]
+        secs = sum(a.seconds for a in groups if a.seconds is not None)
+        self.lbl_afn_head.setText(self.tr(
+            f"<b>Aperture Flux Normalization</b> — {len(ready)} of "
+            f"{len(groups)} group(s) normalized, {fmt_hms(secs)} in total. "
+            "Each frame gets two maps: a <b>brightness</b> map from its stars "
+            "(dimming: cloud, haze, dew, flats) and a <b>sky</b> map from its "
+            "background (glow: light pollution, moon, airglow). "
+            "<i>Held-out</i> figures score each map on stars or sky it was "
+            "not fitted to. Select a row for details."))
+
+        def num(v, fmt):
+            return "—" if v is None else fmt.format(v)
+
+        rows = []
+        R = Qt.AlignmentFlag.AlignRight
+        for a in groups:
+            st = {"ready": self.tr("normalized"), "skipped": self.tr("skipped"),
+                  "running": self.tr("incomplete")}.get(a.status, a.status)
+            fg = None if a.status == "ready" else "#c9913a"
+            rows.append((
+                _item(a.group, bold=True),
+                _item(num(a.frames, "{}"), align=R),
+                _item(st, fg=fg),
+                _item(("cached" if a.stars is None and a.meas_cached
+                       else num(a.stars, "{}")), align=R),
+                _item(a.balanced or "—", align=R),
+                _item(("—" if a.field_median is None else
+                       f"{a.field_median:.1f}% / {a.field_max:.1f}%"), align=R),
+                _item(("—" if a.star_gain_median is None else
+                       f"{a.star_gain_median:.1f}% / {a.star_gain_p90:.1f}%"), align=R),
+                _item(num(a.sky_gain_median, "{:.1f}%"), align=R),
+                _item(fmt_hms(a.seconds), align=R),
+            ))
+        _fill(self.tbl_afn,
+              (self.tr("Group"), self.tr("Frames"), self.tr("Status"),
+               self.tr("Stars"), self.tr("Flip balance"),
+               self.tr("Brightness across field\n(median / max)"),
+               self.tr("Held-out stars better\n(median / 90th)"),
+               self.tr("Held-out sky\nbetter"), self.tr("Time")),
+              rows, stretch_col=0)
+        self.tbl_afn.selectRow(0)
+        self.lbl_afn_detail.setText(_afn_readout(groups[0]))
 
     @staticmethod
     def _pct(part, total):

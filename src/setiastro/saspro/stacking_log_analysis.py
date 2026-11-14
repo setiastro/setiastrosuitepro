@@ -89,6 +89,9 @@ SEVERITY_OVERRIDES = {
     "finalize_rejected": SEV_WARN,
     "offgrid_drop": SEV_WARN,
     "geom_audit_bad": SEV_ERROR,
+    # AFN holding a map to the range its stars support is a safety rail
+    # working as designed, not a problem with the run.
+    "afn_clamped": SEV_INFO,
     "cancelled": SEV_WARN,
 }
 
@@ -214,6 +217,67 @@ class FrameStat:
 
 
 @dataclass
+class AFNGroup:
+    """What Aperture Flux Normalization measured and decided for one group."""
+
+    group: str
+    frames: int | None = None
+    t_start: float | None = None
+    t_end: float | None = None
+    status: str = "running"            # "ready" | "skipped" | "running"
+    skip_reason: str = ""
+    stars: int | None = None
+    detections: int | None = None
+    fwhm: float | None = None
+    aperture: float | None = None
+    annulus: str = ""
+    grid: str = ""
+    cell: int | None = None
+    processes: int | None = None
+    balanced: str = ""                  # "131 / 272" when flip-balanced
+    meas_cached: bool = False
+    maps_cached: bool = False
+    bright_models: list = field(default_factory=list)   # [(name, count)]
+    field_median: float | None = None   # % brightness variation across field
+    field_max: float | None = None
+    star_gain_median: float | None = None   # held-out % better than global
+    star_gain_p90: float | None = None
+    sky_models: list = field(default_factory=list)      # [(name, count)]
+    sky_gain_median: float | None = None
+    clamped: int | None = None
+    t_measure: float | None = None
+    t_fit: float | None = None
+    notes: list = field(default_factory=list)
+
+    @property
+    def seconds(self):
+        if self.t_start is None or self.t_end is None:
+            return None
+        return max(0.0, self.t_end - self.t_start)
+
+    def model_share(self, name: str) -> float | None:
+        tot = sum(n for _m, n in self.bright_models)
+        if not tot:
+            return None
+        return sum(n for m, n in self.bright_models if m == name) / tot
+
+
+def _model_counts(s: str) -> list:
+    """'plane 146, constant 108, smooth 0.20 20' -> [('plane',146), ...]."""
+    out = []
+    for part in (s or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name, _, n = part.rpartition(" ")
+        try:
+            out.append((name.strip(), int(n)))
+        except ValueError:
+            continue
+    return out
+
+
+@dataclass
 class StackingRunReport:
     path: str = ""
     started: str = ""
@@ -232,6 +296,8 @@ class StackingRunReport:
     _cur_master: object = None                         # parser scratch
     _cur_int_group: str = ""                           # parser scratch
     _cur_drizzle_group: str = ""                       # parser scratch
+    afn: "OrderedDict[str, AFNGroup]" = field(default_factory=OrderedDict)
+    _cur_afn_group: str = ""                           # parser scratch
 
     facts: "OrderedDict[str, str]" = field(default_factory=OrderedDict)
     counters: Counter = field(default_factory=Counter)
@@ -333,6 +399,46 @@ def _shape(t: str) -> str:
 RULES: list = [
     # run / environment
     ("log_opened",      re.compile(r"Log file opened:\s*(?P<path>.+)$")),
+
+    # --- Aperture Flux Normalization (local normalization) -------------
+    # Ahead of the generic rules: its lines carry words ("Phase:", "maps",
+    # "fitted") other rules would otherwise claim first. Most lines do not
+    # name the group; they follow its "Phase:" line and belong to it.
+    ("afn_start",       re.compile(
+        r"Phase:\s*Aperture flux normalization for\s+'(?P<g>[^']+)'\s*"
+        r"\((?P<n>\d+)\s+frames\)")),
+    ("afn_ready",       re.compile(
+        r"Aperture flux normalization ready for\s+'(?P<g>[^']+)'")),
+    ("afn_skipped",     re.compile(
+        r"Aperture flux normalization skipped for\s+'(?P<g>[^']+)':\s*(?P<why>.+?)\s*$")),
+    ("afn_stars",       re.compile(
+        r"AFN:\s*(?P<stars>\d+)\s+photometry stars\s*\(of\s*(?P<det>\d+)\s+detections\),\s*"
+        r"FWHM\s*(?P<fwhm>[\d.]+)px,\s*aperture r=(?P<ap>[\d.]+)px,\s*"
+        r"annulus\s*(?P<ann>[\d.]+-[\d.]+)px,\s*grid\s*(?P<grid>\d+x\d+)\s*@\s*(?P<cell>\d+)px")),
+    ("afn_procs",       re.compile(r"AFN:\s*using\s+(?P<p>\d+)\s+processes")),
+    ("afn_fit_procs",   re.compile(
+        r"AFN:\s*fitting\s+(?P<n>\d+)\s+frames across\s+(?P<p>\d+)\s+processes")),
+    ("afn_balanced",    re.compile(
+        r"AFN:\s*reference balanced across\s+(?P<k>\d+)\s+meridian-flip orientations\s*"
+        r"\((?P<sizes>[\d /]+?)\s*frames\)")),
+    ("afn_meas_cached", re.compile(r"AFN:\s*reusing cached measurements for\s+(?P<n>\d+)")),
+    ("afn_maps_cached", re.compile(r"AFN:\s*reusing cached maps for\s+(?P<n>\d+)")),
+    ("afn_measuring",   re.compile(r"AFN measuring\s+(?P<i>\d+)/(?P<n>\d+)")),
+    ("afn_fitted",      re.compile(
+        r"AFN fitted\s+(?P<n>\d+)\s+frames:\s*brightness maps\s*(?P<models>.+?);\s*"
+        r"field variation median\s*(?P<med>[-\d.]+)%,\s*max\s*(?P<max>[-\d.]+)%")),
+    ("afn_star_gain",   re.compile(
+        r"AFN held-out star prediction vs a global scale:\s*median\s*(?P<med>[-\d.]+)%\s*better,\s*"
+        r"90th\s*(?P<p90>[-\d.]+)%")),
+    ("afn_sky_maps",    re.compile(r"AFN sky maps:\s*(?P<models>.+?)\s*$")),
+    ("afn_sky_gain",    re.compile(
+        r"AFN held-out sky prediction vs a global offset:\s*median\s*(?P<med>[-\d.]+)%")),
+    ("afn_clamped",     re.compile(r"AFN:\s*(?P<n>\d+)\s+map\(s\) were held to the range")),
+    ("afn_timing",      re.compile(
+        r"AFN timing:\s*measure\s*(?P<m>[\d.]+)s,\s*fit\s*(?P<f>[\d.]+)s")),
+    ("afn_too_few",     re.compile(
+        r"AFN:\s*(?P<n>\d+)\s+frame\(s\)\s*.\s*a set median needs at least")),
+    ("afn_note",        re.compile(r"AFN[: ]\s*(?P<note>.+?)\s*$")),
 
     # --- round 6: plate solving the finished masters -------------------
     ("plate_solve_go",  re.compile(
@@ -634,6 +740,7 @@ MODE_RULES: list = [
     ("Sub rejection",        ("sub_reject_one", "sub_reject_sum")),
     ("Pixel-scale normalize", ("pixscale_norm", "target_scale")),
     ("Background extraction", ("abe", "abe_config", "abe_done")),
+    ("Aperture flux normalization", ("afn_start", "afn_ready")),
     ("Star alignment",       ("align_model", "aa_delta")),
     ("Meridian flip",        ("flip", "flip_plain")),
     ("Skip registration",    ("skip_reg", "ext_prereg")),
@@ -782,6 +889,7 @@ def parse_stacking_log(path: str, *, keep_transient: bool = False
             ph.t_end = end_t
 
     rep.modes = _detect_modes(rep, matched_ids, text)
+    _afn_fact(rep)
     return rep
 
 
@@ -803,6 +911,83 @@ def _close_phase(rep: StackingRunReport, name: str, t) -> None:
         if ph.t_end is None:
             ph.t_end = t
             return
+
+
+def _apply_afn(rep: StackingRunReport, rid: str, m, g: dict, ll: LogLine) -> None:
+    """Aperture Flux Normalization lines -> rep.afn[group].
+
+    Only the start/ready/skipped lines name their group; everything in
+    between belongs to the group whose Phase line came last.
+    """
+    if rid in ("afn_start", "afn_ready", "afn_skipped"):
+        name = (g.get("g") or "").strip()
+        a = rep.afn.get(name)
+        if a is None:
+            a = rep.afn[name] = AFNGroup(group=name)
+        if rid == "afn_start":
+            a.frames = _i(g.get("n"))
+            a.t_start = ll.t
+            a.status = "running"
+            rep._cur_afn_group = name
+        else:
+            a.t_end = ll.t
+            a.status = "ready" if rid == "afn_ready" else "skipped"
+            if rid == "afn_skipped":
+                a.skip_reason = (g.get("why") or "").strip()
+            rep._cur_afn_group = ""
+        return
+
+    a = rep.afn.get(rep._cur_afn_group)
+    if a is None:
+        return                                   # an AFN line outside any group
+    if rid == "afn_stars":
+        a.stars, a.detections = _i(g.get("stars")), _i(g.get("det"))
+        a.fwhm, a.aperture = _f(g.get("fwhm")), _f(g.get("ap"))
+        a.annulus, a.grid, a.cell = g.get("ann", ""), g.get("grid", ""), _i(g.get("cell"))
+    elif rid in ("afn_procs", "afn_fit_procs"):
+        a.processes = max(a.processes or 0, _i(g.get("p")) or 0) or None
+    elif rid == "afn_balanced":
+        a.balanced = " / ".join(s.strip() for s in (g.get("sizes") or "").split("/"))
+    elif rid == "afn_meas_cached":
+        a.meas_cached = True
+    elif rid == "afn_maps_cached":
+        a.maps_cached = True
+    elif rid == "afn_fitted":
+        a.bright_models = _model_counts(g.get("models", ""))
+        a.field_median, a.field_max = _f(g.get("med")), _f(g.get("max"))
+    elif rid == "afn_star_gain":
+        a.star_gain_median, a.star_gain_p90 = _f(g.get("med")), _f(g.get("p90"))
+    elif rid == "afn_sky_maps":
+        a.sky_models = _model_counts(g.get("models", ""))
+    elif rid == "afn_sky_gain":
+        a.sky_gain_median = _f(g.get("med"))
+    elif rid == "afn_clamped":
+        a.clamped = _i(g.get("n"))
+    elif rid == "afn_timing":
+        a.t_measure, a.t_fit = _f(g.get("m")), _f(g.get("f"))
+    elif rid in ("afn_too_few", "afn_note"):
+        a.notes.append(ll.text.strip())
+
+
+def _afn_fact(rep: StackingRunReport) -> None:
+    """One summary line for the Summary tab's facts table."""
+    if not rep.afn:
+        return
+    groups = list(rep.afn.values())
+    ready = [a for a in groups if a.status == "ready"]
+    skipped = [a for a in groups if a.status == "skipped"]
+    parts = [f"on — {len(ready)} of {len(groups)} group(s) normalized"]
+    if skipped:
+        parts.append(f"{len(skipped)} skipped")
+    gains = [a.star_gain_median for a in ready if a.star_gain_median is not None]
+    if gains:
+        best = max(ready, key=lambda a: a.star_gain_median or -1e9)
+        parts.append(f"largest brightness correction: {best.group.split(' ')[0]} "
+                     f"({best.star_gain_median:.0f}% better than a global scale)")
+    secs = [a.seconds for a in groups if a.seconds is not None]
+    if secs:
+        parts.append(f"{fmt_hms(sum(secs))} total")
+    rep.facts["Aperture flux normalization"] = "; ".join(parts)
 
 
 def _apply(rep: StackingRunReport, rid: str, m, ll: LogLine) -> None:
@@ -899,6 +1084,10 @@ def _apply(rep: StackingRunReport, rid: str, m, ll: LogLine) -> None:
         _open_phase(rep, (g.get("name") or "").strip(), ll.t)
     elif rid == "phase_done":
         _close_phase(rep, (g.get("name") or "").strip().rstrip("."), ll.t)
+
+    # ---- Aperture Flux Normalization ----
+    elif rid.startswith("afn_"):
+        _apply_afn(rep, rid, m, g, ll)
 
     # ---- groups ----
     elif rid == "group_files":
