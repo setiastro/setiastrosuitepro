@@ -47,6 +47,22 @@ PRODUCT_LABELS = {
     "nxt": "NoiseXTerminator",
 }
 
+
+def _release_ram_before_rcastro() -> None:
+    """
+    Free torch caches / trigger GC before the long rc-astro subprocess.
+
+    Callers must drop their prep arrays (img / img_rgb) first — the input
+    TIFF is already on disk. doc.image stays resident for undo/apply.
+    """
+    try:
+        from setiastro.saspro.free_torch_memory import _free_torch_memory
+        _free_torch_memory()
+    except Exception:
+        import gc
+        gc.collect()
+
+
 def _prefer_high_perf_gpu(exe_path: str) -> None:
     if platform.system() != "Windows" or not exe_path:
         return
@@ -1577,6 +1593,11 @@ class RCAstroDialog(QDialog):
                 f"Failed to write input TIFF:\n{e}")
             return
 
+        # TIFF is on disk — drop prep arrays + torch caches before rc-astro
+        # allocates its own host buffers (can be 10–20 GB for large SXT runs).
+        img = img_rgb = None
+        _release_ram_before_rcastro()
+
         # ── rc-astro output naming convention: <input>-<product>.tif ─────────
         output_path = os.path.join(work_dir, f"input-{product}.tif")
         stars_path  = os.path.join(work_dir, f"input-{product}-stars.tif")
@@ -1719,6 +1740,7 @@ def _on_finished(main_dlg, doc, return_code, dlg,
             if original_rgb is None:
                 raise RuntimeError("could not reload original input TIFF")
             stars_img = _compute_stars(original_rgb, result, unscreen)
+            del original_rgb
             if is_mono and stars_img.ndim == 3:
                 stars_img = stars_img.mean(axis=2).astype(np.float32)
             save_image(
@@ -1726,6 +1748,7 @@ def _on_finished(main_dlg, doc, return_code, dlg,
                 "tif", "32-bit floating point", None, False,
                 image_meta=None, file_meta=None,
             )
+            del stars_img
             dlg.append("Built stars-only image "
                        f"({'unscreen' if unscreen else 'subtraction'}).\n")
         except Exception as e:
@@ -2156,6 +2179,10 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
         shutil.rmtree(work_dir, ignore_errors=True)
         QMessageBox.critical(main, "RC-Astro", f"Failed to write temp TIFF:\n{e}")
         return
+
+    # TIFF is on disk — drop prep arrays + torch caches before rc-astro runs.
+    img = img_rgb = None
+    _release_ram_before_rcastro()
 
     # Determine correct flag for installed CLI version
     uses_device = bool(s.value("rcastro/uses_device_flag", True, type=bool))
