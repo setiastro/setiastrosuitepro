@@ -1279,6 +1279,8 @@ def open_fx_with_preset(main_window, preset: dict | None = None):
         pass
     try:
         main_window._fx_dialog = dlg   # retain against GC
+        dlg.destroyed.connect(
+            lambda *_: setattr(main_window, "_fx_dialog", None))
     except Exception:
         pass
     dlg.show(); dlg.raise_(); dlg.activateWindow()

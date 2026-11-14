@@ -770,7 +770,36 @@ class HistogramTransformDialogPro(QDialog):
             self._save_ui_state()
         except Exception:
             pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(e)
+
+    def _release_memory(self):
+        """Drop full/preview image buffers and pixmap on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self._img = None
+        self._base = None
+        self._preview_base = None
+        self._out = None
+        self._base_pm = None
+        self._h0 = None
+        self._h0_rgb = None
+        self.document = None
+        try:
+            self.lbl_preview.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     def _save_ui_state(self):
         if getattr(self, "_restoring_ui", False) or not getattr(self, "_geom_restored", False):

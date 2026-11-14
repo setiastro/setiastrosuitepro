@@ -131,6 +131,7 @@ class CloneStampDialogPro(QDialog):
             self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setMinimumSize(900, 650)
         self._stroke_dirty_patches = []
         self._stroke_dirty_mask = set()
@@ -884,13 +885,46 @@ class CloneStampDialogPro(QDialog):
             self._save_window_geometry()
         except Exception:
             pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
+        super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop full-frame buffers and preview pixmap so RAM can be reclaimed."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
         self._image = None
         self._display_raw = None
         self._display_stretched = None
         self._display = None
-        self._undo.clear()
-        self._redo.clear()
+        self._doc = None
+        try:
+            self._undo.clear()
+        except Exception:
+            self._undo = []
+        try:
+            self._redo.clear()
+        except Exception:
+            self._redo = []
         self._mask_cache = None
         self._stroke_dirty_patches = []
         self._stroke_dirty_mask = set()
-        super().closeEvent(ev)
+
+        try:
+            self.pix.setPixmap(QPixmap())
+        except Exception:
+            pass
+        try:
+            self.scene.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass

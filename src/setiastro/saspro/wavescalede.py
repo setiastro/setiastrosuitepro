@@ -648,6 +648,53 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         except Exception:
             pass
 
+    def closeEvent(self, ev):
+        try:
+            thr = getattr(self, "thread", None)
+            if thr is not None and thr.isRunning():
+                thr.quit()
+                thr.wait(2000)
+        except Exception:
+            pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
+        super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop full-frame RGB buffers and preview pixmap on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self.original = None
+        self.preview = None
+        self._L_original = None
+        self._last_preview = None
+        self._doc = None
+        self.worker = None
+        try:
+            if getattr(self, "mask_win", None) is not None:
+                self.mask_win.close()
+                self.mask_win = None
+        except Exception:
+            pass
+        try:
+            self.pix.setPixmap(QPixmap())
+        except Exception:
+            pass
+        try:
+            self.scene.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Installer helpers
@@ -758,6 +805,8 @@ def open_wavescalede_with_preset(main_window, preset: dict | None = None):
 
     try:
         main_window._wavescalede_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+        dlg.destroyed.connect(
+            lambda *_: setattr(main_window, "_wavescalede_dialog", None))
     except Exception:
         pass
 

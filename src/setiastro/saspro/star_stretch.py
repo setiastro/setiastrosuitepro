@@ -855,7 +855,33 @@ class StarStretchDialog(QDialog):
         except Exception:
             pass
 
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop preview buffer and pixmap on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self._preview = None
+        self._pix = None
+        self._thr = None
+        self.doc = None
+        self._main = None
+        try:
+            self.label.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     # --- option persistence -------------------------------------------------
     #

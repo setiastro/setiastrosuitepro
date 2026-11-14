@@ -473,6 +473,408 @@ def _star_count_ecc_size(preview, **kwargs):
     return c, ecc, size
 
 
+def _robust_median_sigma(values) -> tuple[float, float]:
+    """Median and robust σ (1.4826·MAD). σ is 0 when the middle of the set agrees."""
+    a = np.asarray(list(values), dtype=np.float64)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return float("nan"), float("nan")
+    med = float(np.median(a))
+    if a.size < 2:
+        return med, float("nan")
+    mad = float(np.median(np.abs(a - med)))
+    return med, 1.4826 * mad
+
+
+_NB_FILTER = re.compile(
+    r"h[\s\-_]*a(?:lpha)?|h[\s\-_]*b(?:eta)?|o[\s\-_]*iii|o[\s\-_]*3"
+    r"|s[\s\-_]*ii|s[\s\-_]*2|n[\s\-_]*ii",
+    re.IGNORECASE,
+)
+_STAR_USABLE = 12
+_STAR_REF_MIN = 25
+
+
+def _finite(value) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+    return v if np.isfinite(v) else float("nan")
+
+
+def _quality_measured(sample: dict) -> bool:
+    """A frame with a finite sky and star count can enter the references."""
+    if not sample.get("ok", True):
+        return False
+    return np.isfinite(_finite(sample.get("sky"))) and np.isfinite(_finite(sample.get("stars")))
+
+
+def _is_narrowband_filter(name: str) -> bool:
+    return bool(_NB_FILTER.search(str(name or "")))
+
+
+def _quality_group_key(sample: dict):
+    return (
+        str(sample.get("obj") or ""),
+        str(sample.get("filt") or ""),
+        str(sample.get("exposure") or ""),
+        sample.get("bin"),
+        sample.get("size"),
+    )
+
+
+def _ang_sep_deg(ra1, dec1, ra2, dec2) -> float:
+    dra = (ra1 - ra2 + 180.0) % 360.0 - 180.0
+    dra *= math.cos(math.radians((dec1 + dec2) / 2.0))
+    return math.hypot(dra, dec1 - dec2)
+
+
+def _pointing_of(sample: dict):
+    ra = _finite(sample.get("ra"))
+    dec = _finite(sample.get("dec"))
+    if np.isfinite(ra) and np.isfinite(dec):
+        return ra, dec
+    return None
+
+
+def _field_deg_of(samples: list[dict]) -> float:
+    vals = [_finite(s.get("field")) for s in samples]
+    vals = [v for v in vals if np.isfinite(v) and v > 0]
+    if not vals:
+        return float("nan")
+    return float(np.median(vals))
+
+
+def _field_is_stable(samples: list[dict]) -> bool:
+    """True when pointings fit in a quarter of the field, or pointing is missing."""
+    pts = [_pointing_of(s) for s in samples]
+    if any(p is None for p in pts):
+        return True
+    field = _field_deg_of(samples)
+    if not np.isfinite(field):
+        return True
+    limit = 0.25 * field
+    for i, a in enumerate(pts):
+        for b in pts[i + 1:]:
+            if _ang_sep_deg(a[0], a[1], b[0], b[1]) > limit:
+                return False
+    return True
+
+
+def _above_ref(value, med, sigma, *, abs_floor: float, rel: float | None = None) -> bool:
+    """Above the reference by an absolute gap, a relative gap, and 3 robust σ."""
+    if not (np.isfinite(value) and np.isfinite(med)):
+        return False
+    if value < med + abs_floor:
+        return False
+    if rel is not None and value < med * rel:
+        return False
+    if np.isfinite(sigma) and sigma > 0 and value < med + 3.0 * sigma:
+        return False
+    return True
+
+
+def _empty_quality():
+    return {"symptoms": [], "verdict": None, "note": None}
+
+
+def _group_reference(samples: list[dict]) -> dict:
+    skies = np.asarray([_finite(s.get("sky")) for s in samples], dtype=np.float64)
+    stars = np.asarray([_finite(s.get("stars")) for s in samples], dtype=np.float64)
+    sky_med, sky_sig = _robust_median_sigma(skies)
+    sky_low = float(np.percentile(skies, 10)) if skies.size else float("nan")
+    usable = stars >= _STAR_USABLE
+    star_ref = float(np.percentile(stars[usable], 90)) if int(usable.sum()) >= 4 else float("nan")
+    shaped = [s for s in samples if _finite(s.get("stars")) >= _STAR_USABLE]
+    ecc_med, ecc_sig = _robust_median_sigma(
+        _finite(s.get("ecc")) for s in shaped if np.isfinite(_finite(s.get("ecc")))
+    )
+    fwhm_med, fwhm_sig = _robust_median_sigma(
+        _finite(s.get("fwhm")) for s in shaped if _finite(s.get("fwhm")) > 0
+    )
+    return {
+        "sky_low": sky_low,
+        "sky_med": sky_med,
+        "sky_sig": sky_sig,
+        "star_ref": star_ref,
+        "ecc_med": ecc_med,
+        "ecc_sig": ecc_sig,
+        "fwhm_med": fwhm_med,
+        "fwhm_sig": fwhm_sig,
+        "stable": _field_is_stable(samples),
+        "usable_n": int(usable.sum()),
+    }
+
+
+def _sky_percent(sky, sky_low) -> float:
+    if not (np.isfinite(sky) and np.isfinite(sky_low) and sky_low > 1e-9):
+        return float("nan")
+    return 100.0 * (sky - sky_low) / sky_low
+
+
+def _judge_frame(sample: dict, ref: dict) -> dict:
+    """Symptoms are independent. The verdict is the first condemning one."""
+    out = _empty_quality()
+    stars = _finite(sample.get("stars"))
+    sky = _finite(sample.get("sky"))
+    ecc = _finite(sample.get("ecc"))
+    fwhm = _finite(sample.get("fwhm"))
+    pct = _sky_percent(sky, ref["sky_low"])
+    symptoms: list[dict] = []
+
+    if np.isfinite(pct) and pct >= 200.0 and _above_ref(
+        sky, ref["sky_med"], ref["sky_sig"], abs_floor=0.0,
+    ):
+        symptoms.append({"code": "sky_extreme", "pct": pct})
+    elif np.isfinite(pct) and 35.0 <= pct < 200.0:
+        symptoms.append({"code": "sky_moderate", "pct": pct})
+
+    star_ref = ref["star_ref"]
+    # A thinner count than the best frames is normal: the same FWHM and
+    # eccentricity come back with half the detections. The integration weight
+    # already ranks that. Pre-flag only condemns a frame whose field is gone
+    # (under 12 detections) while the rest of the group still has a real one.
+    if ref["stable"] and np.isfinite(star_ref) and star_ref >= _STAR_REF_MIN:
+        if stars <= 0:
+            symptoms.append({"code": "no_stars", "stars": 0, "star_ref": star_ref})
+        elif stars < _STAR_USABLE:
+            symptoms.append({
+                "code": "few_stars", "stars": int(round(stars)), "star_ref": star_ref,
+            })
+
+    if stars >= _STAR_USABLE:
+        soft = fwhm > 0 and _above_ref(
+            fwhm, ref["fwhm_med"], ref["fwhm_sig"], abs_floor=0.5, rel=1.35,
+        )
+        trailed = _above_ref(ecc, ref["ecc_med"], ref["ecc_sig"], abs_floor=0.10)
+        if soft:
+            symptoms.append({
+                "code": "soft", "fwhm": fwhm, "fwhm_med": ref["fwhm_med"],
+            })
+        if trailed:
+            symptoms.append({
+                "code": "eccentricity", "ecc": ecc, "ecc_med": ref["ecc_med"],
+            })
+
+    out["symptoms"] = symptoms
+    by_code = {s["code"]: s for s in symptoms}
+    if "sky_extreme" in by_code:
+        out["verdict"] = by_code["sky_extreme"]
+    elif "no_stars" in by_code:
+        out["verdict"] = by_code["no_stars"]
+    elif "few_stars" in by_code:
+        out["verdict"] = by_code["few_stars"]
+    elif "soft" in by_code and "eccentricity" in by_code:
+        out["verdict"] = {
+            "code": "trailing",
+            "ecc": by_code["eccentricity"]["ecc"],
+            "ecc_med": by_code["eccentricity"]["ecc_med"],
+            "fwhm": by_code["soft"]["fwhm"],
+            "fwhm_med": by_code["soft"]["fwhm_med"],
+        }
+    elif "eccentricity" in by_code:
+        out["verdict"] = by_code["eccentricity"]
+    elif "soft" in by_code:
+        out["verdict"] = by_code["soft"]
+    return out
+
+
+def _apply_safety_net(results: list[dict], measured: list[int], ref: dict) -> None:
+    """A homogeneous night cut through the middle keeps only the extreme frames."""
+    star_ref = ref["star_ref"]
+    if not (np.isfinite(star_ref) and star_ref >= _STAR_REF_MIN and len(measured) >= 20):
+        return
+    flagged = [i for i in measured if results[i]["verdict"]]
+    if len(flagged) / len(measured) <= 0.40:
+        return
+    for i in flagged:
+        code = results[i]["verdict"]["code"]
+        if code in ("sky_extreme", "no_stars"):
+            continue
+        results[i]["verdict"] = None
+        results[i]["symptoms"] = [
+            s for s in results[i]["symptoms"] if s["code"] == "sky_moderate"
+        ]
+
+
+def _apply_only_cover(results: list[dict], samples: list[dict], measured: list[int]) -> None:
+    """A condemned frame alone on its corner of sky stays in, with a note."""
+    field = _field_deg_of([samples[i] for i in measured])
+    if not np.isfinite(field) or field <= 0:
+        return
+    limit = 0.25 * field
+    points = {i: _pointing_of(samples[i]) for i in measured}
+    if any(p is None for p in points.values()):
+        return
+    for i in measured:
+        verdict = results[i]["verdict"]
+        if not verdict or verdict.get("code") == "no_star_field":
+            continue
+        ra, dec = points[i]
+        alone = True
+        for j, other in points.items():
+            if j == i:
+                continue
+            if _ang_sep_deg(ra, dec, other[0], other[1]) <= limit:
+                alone = False
+                break
+        if not alone:
+            continue
+        results[i]["verdict"] = None
+        results[i]["symptoms"] = [
+            s for s in results[i]["symptoms"] if s["code"] == "sky_moderate"
+        ]
+        results[i]["note"] = {"code": "only_cover"}
+
+
+def quality_flag_reasons(samples: list[dict]) -> list[dict]:
+    """Diagnose each light, then verdict only the frames an operator would drop.
+
+    Samples of one Blink session. Grouping uses ``obj``, ``filt``, ``exposure``,
+    ``bin`` and ``size`` when a sample carries them. A group of fewer than four
+    measured frames is left alone. Unreadable frames stay out of the references
+    and receive no verdict.
+
+    Each result is ``{"symptoms", "verdict", "note"}``. ``verdict`` is the one
+    condemning reason, or None. A brighter-but-not-extreme sky is a symptom
+    and, when it does not condemn the frame, a note. Weights and score-outlier
+    rejection are untouched: this only marks frames.
+    """
+    results = [_empty_quality() for _ in samples]
+    groups: dict = {}
+    for i, sample in enumerate(samples):
+        groups.setdefault(_quality_group_key(sample), []).append(i)
+
+    prepared = []
+    for key, idxs in groups.items():
+        measured = [i for i in idxs if _quality_measured(samples[i])]
+        if len(measured) < 4:
+            continue
+        ref = _group_reference([samples[i] for i in measured])
+        prepared.append((key, idxs, measured, ref))
+
+    by_obj: dict = {}
+    for key, idxs, measured, ref in prepared:
+        obj = key[0]
+        if obj:
+            by_obj.setdefault(obj, []).append((key, ref))
+
+    for key, idxs, measured, ref in prepared:
+        obj = key[0]
+        filt = key[1]
+        if ref["usable_n"] < 4:
+            if not _is_narrowband_filter(filt):
+                reason = {"code": "no_star_field"}
+            else:
+                reason = None
+                for sib_key, sib in by_obj.get(obj, []):
+                    if sib_key == key:
+                        continue
+                    sib_ref = sib["star_ref"]
+                    if not (np.isfinite(sib_ref) and sib_ref >= _STAR_REF_MIN):
+                        continue
+                    skies = [_finite(samples[i].get("sky")) for i in measured]
+                    sky_med = float(np.median(skies))
+                    low = sib["sky_low"]
+                    if np.isfinite(low) and low > 1e-9 and sky_med >= 2.0 * low:
+                        reason = {"code": "no_stars_bright"}
+                        break
+            if reason is None:
+                continue
+            for i in measured:
+                results[i] = {
+                    "symptoms": [reason],
+                    "verdict": dict(reason),
+                    "note": None,
+                }
+            continue
+
+        for i in measured:
+            results[i] = _judge_frame(samples[i], ref)
+        _apply_safety_net(results, measured, ref)
+        _apply_only_cover(results, samples, measured)
+    return results
+
+
+def format_quality_reason(result, tr=None) -> tuple[str, str]:
+    """Verdict text and neutral note for the Quality column.
+
+    The verdict is the condemning reason. A note is a symptom that does not
+    flag the frame. ``tr`` translates each phrase.
+    """
+    tr = tr or (lambda s: s)
+    if not isinstance(result, dict):
+        return "", ""
+
+    def _one(flag) -> str:
+        if not flag:
+            return ""
+        code = flag.get("code")
+        if code == "sky_moderate":
+            return tr("brighter sky (+{0:.0f}%)").format(flag["pct"])
+        if code == "sky_extreme":
+            return tr("very bright sky (+{0:.0f}%)").format(flag["pct"])
+        if code == "few_stars":
+            return tr("few stars ({0} vs {1:.0f})").format(flag["stars"], flag["star_ref"])
+        if code == "no_stars":
+            return tr("no stars (high end {0:.0f})").format(flag["star_ref"])
+        if code == "soft":
+            return tr("soft stars (FWHM {0:.1f} vs {1:.1f})").format(
+                flag["fwhm"], flag["fwhm_med"])
+        if code == "eccentricity":
+            return tr("eccentricity {0:.2f} vs {1:.2f}").format(flag["ecc"], flag["ecc_med"])
+        if code == "trailing":
+            return tr(
+                "trailing (ecc {0:.2f} vs {1:.2f}, FWHM {2:.1f} vs {3:.1f})"
+            ).format(flag["ecc"], flag["ecc_med"], flag["fwhm"], flag["fwhm_med"])
+        if code == "no_star_field":
+            return tr("no stars in this set")
+        if code == "no_stars_bright":
+            return tr("no stars, sky much brighter than the rest of the target")
+        if code == "only_cover":
+            return tr("kept: the only frame on this part of the sky")
+        return ""
+
+    verdict = _one(result.get("verdict"))
+    if verdict:
+        return verdict, ""
+    note = result.get("note")
+    if note:
+        return "", _one(note)
+    notes = [
+        _one(s) for s in result.get("symptoms") or []
+        if s.get("code") == "sky_moderate"
+    ]
+    return "", "; ".join(n for n in notes if n)
+
+
+_OBJECT_HEADER_KEYS = ("OBJECT", "OBJNAME", "TARGNAME", "TARGET")
+_OBJECT_JUNK = {
+    "", "none", "unknown", "no target", "notarget", "n/a", "na", "null",
+    "test", "dark", "darks", "flat", "flats", "bias", "light", "lights",
+    "dark frame", "flat frame", "flat field", "bias frame", "calibration",
+}
+
+
+def _object_name_from_header(hdr) -> str:
+    """Target name from OBJECT and the usual aliases. Blink groups on this."""
+    if hdr is None:
+        return ""
+    for key in _OBJECT_HEADER_KEYS:
+        try:
+            raw = hdr.get(key)
+        except Exception:
+            continue
+        if raw in (None, ""):
+            continue
+        name = re.sub(r"\s+", " ", str(raw).strip())
+        if name.lower() not in _OBJECT_JUNK:
+            return name
+    return ""
+
+
+
 def _satmask_sidecar_for(fits_path: str) -> str:
     """Canonical satellite-mask sidecar path for a given FITS frame."""
     return os.path.splitext(fits_path)[0] + "_satmask.npy"

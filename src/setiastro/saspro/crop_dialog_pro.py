@@ -1830,7 +1830,37 @@ class CropDialogPro(QDialog):
         except Exception:
             pass
         self._cleanup_connections()
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop full/preview buffers and scene pixmap on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self._full01 = None
+        self._preview01 = None
+        self.doc = None
+        try:
+            if self._pix_item is not None:
+                self._pix_item.setPixmap(QPixmap())
+        except Exception:
+            pass
+        try:
+            self.scene.clear()
+        except Exception:
+            pass
+        self._pix_item = None
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
 def open_crop_with_preset(main_window, preset: dict | None = None):
     """Open the live Crop dialog seeded from a preset. Used by the preset-open

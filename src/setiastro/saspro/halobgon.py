@@ -551,6 +551,37 @@ class HaloBGonDialogPro(QDialog):
         self._set_pix(self._disp_base)
         self._update_preview()
 
+    def closeEvent(self, ev):
+        try:
+            self._release_memory()
+        except Exception:
+            pass
+        super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop full-frame orig/display buffers and pixmap on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self.orig = None
+        self._disp_base = None
+        self.doc = None
+        try:
+            self.pix.setPixmap(QPixmap())
+        except Exception:
+            pass
+        try:
+            self.scene.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
+
 def open_halo_b_gon_with_preset(main_window, preset: dict | None = None):
     doc = None
     try:
@@ -591,6 +622,8 @@ def open_halo_b_gon_with_preset(main_window, preset: dict | None = None):
         pass
     try:
         main_window._halo_b_gon_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+        dlg.destroyed.connect(
+            lambda *_: setattr(main_window, "_halo_b_gon_dialog", None))
     except Exception:
         pass
     dlg.show(); dlg.raise_(); dlg.activateWindow()

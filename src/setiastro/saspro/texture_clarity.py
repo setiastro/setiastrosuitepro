@@ -244,6 +244,7 @@ class TextureClarityDialog(QDialog):
             self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         # preview state
         self._pix_processed: QPixmap | None = None   # latest processed result
@@ -817,7 +818,33 @@ class TextureClarityDialog(QDialog):
             except Exception:
                 pass
         self._save_geometry()
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop preview pixmaps and doc refs so RAM can be reclaimed on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self._pix_processed = None
+        self._pix_original = None
+        self._worker = None
+        self.doc = None
+        self.main = None
+        try:
+            self.preview_lbl.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
 
 # ─── public entry points ───────────────────────────────────────────────────────

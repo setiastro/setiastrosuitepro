@@ -250,6 +250,28 @@ class SettingsDialog(QDialog):
         btn_star  = QPushButton(self.tr("Browse…")); btn_star.clicked.connect(lambda: self._browse_into(self.le_starnet))
         btn_astap = QPushButton(self.tr("Browse…")); btn_astap.clicked.connect(lambda: self._browse_into(self.le_astap))
 
+        # Undo/history swap workdir — must be on a real disk, not tmpfs /tmp
+        from setiastro.saspro.swap_manager import (
+            SWAP_WORKDIR_SETTINGS_KEY,
+            default_swap_workdir,
+        )
+        self._swap_workdir_key = SWAP_WORKDIR_SETTINGS_KEY
+        self._swap_workdir_default = default_swap_workdir()
+        self.le_swap_workdir = QLineEdit()
+        self.le_swap_workdir.setPlaceholderText(self._swap_workdir_default)
+        self.le_swap_workdir.setToolTip(self.tr(
+            "Folder used for undo/history swap files (.npy).\n"
+            "Leave empty to keep the default ({default}).\n\n"
+            "On Linux, /tmp is often a tmpfs (RAM). For large projects, "
+            "override this to a real disk path (e.g. ~/Astro/saspro-swap).\n"
+            "Changing this requires a restart to take effect."
+        ).format(default=self._swap_workdir_default))
+        btn_swap_browse = QPushButton(self.tr("Browse…"))
+        btn_swap_browse.clicked.connect(lambda: self._browse_dir(self.le_swap_workdir))
+        btn_swap_reset = QPushButton(self.tr("Default"))
+        btn_swap_reset.setToolTip(self.tr("Clear the override and use the default location."))
+        btn_swap_reset.clicked.connect(lambda: self.le_swap_workdir.clear())
+
         # Path rows
         row_grax = QHBoxLayout()
         row_grax.setContentsMargins(0, 0, 0, 0)
@@ -265,6 +287,12 @@ class SettingsDialog(QDialog):
         row_astap.setContentsMargins(0, 0, 0, 0)
         row_astap.addWidget(self.le_astap, 1)
         row_astap.addWidget(btn_astap)
+
+        row_swap = QHBoxLayout()
+        row_swap.setContentsMargins(0, 0, 0, 0)
+        row_swap.addWidget(self.le_swap_workdir, 1)
+        row_swap.addWidget(btn_swap_browse)
+        row_swap.addWidget(btn_swap_reset)
 
         self.le_astrometry = QLineEdit()
         self.le_astrometry.setEchoMode(QLineEdit.EchoMode.Password)
@@ -382,6 +410,9 @@ class SettingsDialog(QDialog):
 
         w = QWidget(); w.setLayout(row_astap)
         left_col.addRow(self.tr("ASTAP executable:"), w)
+
+        w = QWidget(); w.setLayout(row_swap)
+        left_col.addRow(self.tr("Undo / history swap folder:"), w)
 
         left_col.addRow(self.tr("Astrometry.net API key:"), self.le_astrometry)
         left_col.addRow(self.chk_save_shortcuts)
@@ -1929,6 +1960,11 @@ class SettingsDialog(QDialog):
         self.le_starnet.setText(self.settings.value("paths/starnet", "", type=str))
         self.le_astap.setText(self.settings.value("paths/astap", "", type=str))
         self.le_astrometry.setText(self.settings.value("api/astrometry_key", "", type=str))
+        self.le_swap_workdir.setText(
+            self.settings.value(self._swap_workdir_key, "", type=str) or ""
+        )
+        self.le_swap_workdir.setPlaceholderText(self._swap_workdir_default)
+        self._initial_swap_workdir = self.le_swap_workdir.text().strip()
 
         # Display
         self.chk_autostretch_24bit.setChecked(
@@ -2129,10 +2165,44 @@ class SettingsDialog(QDialog):
 
         self.settings.setValue("paths/starnet", self.le_starnet.text().strip())
         self.settings.setValue("paths/astap", self.le_astap.text().strip())
+        new_swap = self.le_swap_workdir.text().strip()
+        if new_swap:
+            self.settings.setValue(self._swap_workdir_key, new_swap)
+        else:
+            try:
+                self.settings.remove(self._swap_workdir_key)
+            except Exception:
+                self.settings.setValue(self._swap_workdir_key, "")
         self.settings.setValue("shortcuts/save_on_exit", self.chk_save_shortcuts.isChecked())
         self.settings.setValue("files/open_auxiliary_images", self.chk_open_all_hdus.isChecked())
         self.settings.setValue("files/smart_view_naming", self.chk_smart_view_naming.isChecked())
         self.settings.setValue("api/astrometry_key", self.le_astrometry.text().strip())
+
+        if new_swap != getattr(self, "_initial_swap_workdir", ""):
+            from PyQt6.QtWidgets import QMessageBox
+            import tempfile as _tf
+            _tmp = os.path.abspath(_tf.gettempdir())
+            _chosen = os.path.abspath(os.path.expanduser(new_swap)) if new_swap else ""
+            if _chosen == _tmp or _chosen.startswith(_tmp + os.sep):
+                QMessageBox.warning(
+                    self,
+                    self.tr("Swap folder on /tmp"),
+                    self.tr(
+                        "The chosen undo/history folder is under the system temp "
+                        "directory ({tmp}).\n\n"
+                        "On many Linux systems /tmp is a tmpfs (RAM). Large projects "
+                        "will then consume RAM for undo history instead of disk.\n\n"
+                        "Prefer a path on a real disk if you hit memory pressure."
+                    ).format(tmp=_tmp),
+                )
+            QMessageBox.information(
+                self,
+                self.tr("Restart required"),
+                self.tr(
+                    "Undo/history swap folder changed.\n"
+                    "Please restart SASpro so new sessions use the new location."
+                ),
+            )
 
         # RA/Dec Overlay
         self.settings.setValue("wcs_grid/enabled", self.chk_wcs_enabled.isChecked())

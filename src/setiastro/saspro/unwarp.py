@@ -523,6 +523,7 @@ class _UnwarpWorker(QThread):
                 self._image, self._wcs,
                 expand=self._expand, order=self._order, fill=self._fill,
                 progress=_prog)
+            self._image = None  # drop full-frame working copy ASAP
             hdr = rewrite_header(self._src_header, w_out, out.shape)
             self.finished.emit(out, w_out, hdr, geom)
         except Exception as e:
@@ -1166,7 +1167,26 @@ class UnwarpDialog(QDialog):
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(3000)
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop unwarp result buffers on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self._result = None
+        self._worker = None
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════

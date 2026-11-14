@@ -3330,7 +3330,35 @@ class ABEDialog(QDialog):
                 self._thread.wait(500)
         except Exception:
             pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop preview source / QImage backing buffers on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self._preview_source_f01 = None
+        self._last_preview = None
+        self._preview_qimg = None
+        self._overlay = None
+        self._base_pixmap = None
+        self.doc = None
+        self._main = None
+        try:
+            self.preview_label.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     def _refresh_document_from_active(self):
         """
