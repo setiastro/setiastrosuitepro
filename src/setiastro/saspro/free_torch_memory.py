@@ -1,5 +1,30 @@
 #saspro.free_torch_memory.py
 
+def trim_process_memory():
+    """Clear Qt pixmap cache, run GC, and ask glibc to return pages (Linux).
+
+    Call after dropping large numpy/QPixmap references so RSS can shrink
+    and freed arenas become reusable by the process.
+    """
+    try:
+        from PyQt6.QtGui import QPixmapCache
+        QPixmapCache.clear()
+    except Exception:
+        pass
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import sys
+        if sys.platform.startswith("linux"):
+            import ctypes
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+
 def _free_torch_memory():
     """
     Try to return GPU memory to the driver. Works for CUDA, MPS (Apple) and XPU.
@@ -44,5 +69,10 @@ def _free_torch_memory():
 
         # (DirectML has no public empty_cache; rely on GC)
         gc.collect()
+    except Exception:
+        pass
+
+    try:
+        trim_process_memory()
     except Exception:
         pass

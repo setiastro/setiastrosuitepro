@@ -758,6 +758,8 @@ def open_wavescalede_with_preset(main_window, preset: dict | None = None):
 
     try:
         main_window._wavescalede_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+        dlg.destroyed.connect(
+            lambda *_: setattr(main_window, "_wavescalede_dialog", None))
     except Exception:
         pass
 

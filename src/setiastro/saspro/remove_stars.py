@@ -1776,7 +1776,13 @@ def open_syqon_starless_with_preset(main, doc, preset: dict | None = None):
         except Exception:
             pass
     try:
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+    except Exception:
+        pass
+    try:
         main._syqon_starless_dialog = dlg   # retain against GC (non-modal .show())
+        dlg.destroyed.connect(
+            lambda *_: setattr(main, "_syqon_starless_dialog", None))
     except Exception:
         pass
     dlg.show(); dlg.raise_(); dlg.activateWindow()
