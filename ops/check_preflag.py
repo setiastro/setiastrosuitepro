@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""Measure lights the way Blink pre-flag does, and check the verdicts.
+"""Measure lights the way Blink pre-flag does, and check grades / suspects.
 
-Star count, FWHM and eccentricity come from SEP on the stretched frame at
-half resolution, with the same threshold ladder Blink uses. The sky is the
-pre-stretch background. Verdicts come from ``quality_flag_reasons``.
-
-A frame is "few stars" only when fewer than 12 stars were detected and the
-rest of its group still has a real field. A count below the best frames of
-the night is not a verdict: the same FWHM and eccentricity come back with
-half the detections, and the integration weight already ranks that.
+Star count, FWHM, eccentricity, noise, patchiness and high-end trail come
+from SEP on the stretched frame at half resolution. The sky is the
+pre-stretch background. Grades and suspects come from ``quality_grades``.
 
 Usage:
     PYTHONPATH=src:venv/lib/python3.14/site-packages \\
@@ -32,13 +27,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 
 from setiastro.saspro.stacking_suite import (
+    _STAR_COLLAPSE_FRAC,
     _STAR_REF_MIN,
     _STAR_USABLE,
     _group_reference,
     _object_name_from_header,
     _quality_group_key,
     format_quality_reason,
-    quality_flag_reasons,
+    quality_grades,
 )
 from setiastro.saspro.blink_comparator_pro import (
     _blink_bin_and_size,
@@ -124,6 +120,7 @@ def _measure(path: str, scale: int = 1) -> dict:
     if not np.isfinite(mono).all():
         mono = np.nan_to_num(mono, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32, copy=False)
 
+    # Pre-stretch sky (full load-scale view); SEP metrics use measure_ds below.
     sky = float(sep.Background(mono).globalback)
     if color:
         stretched = stretch_color_image(plane, 0.25, linked=False, no_black_clip=True)
@@ -140,36 +137,20 @@ def _measure(path: str, scale: int = 1) -> dict:
         (max(16, int(w0 // 2)), max(16, int(h0 // 2))),
         interpolation=cv2.INTER_AREA,
     ).astype(np.float32, copy=False)
-    bkg = sep.Background(ds)
-    back = bkg.back()
-    try:
-        gr = float(bkg.globalrms)
-    except Exception:
-        gr = float("nan")
-    if not np.isfinite(gr) or gr <= 0:
-        gr = None
 
-    cat = None
-    for thr, minarea in ((7.0, 4), (5.0, 4), (4.0, 3), (3.5, 2)):
-        try:
-            cat = sep.extract(
-                ds - back, thresh=float(thr), err=gr, minarea=int(minarea),
-                clean=True, deblend_nthresh=32,
-            )
-        except Exception:
-            cat = None
-        if cat is not None and len(cat) > 0:
-            break
-
-    if cat is None or len(cat) == 0:
+    from setiastro.saspro.blink_measure_worker import measure_ds
+    res = measure_ds(ds)
+    if res is None:
         fwhm, ecc, stars = 30.0, 1.0, 0
+        noise = patch = trail = float("nan")
     else:
-        a = np.maximum(cat["a"].astype(np.float32, copy=False), 1e-12)
-        b = np.maximum(cat["b"].astype(np.float32, copy=False), 0.0)
-        fwhm = float(np.nanmedian(2.3548 * np.sqrt(a * b))) * 2.0 * scale
-        q = np.clip(b / a, 0.0, 1.0)
-        ecc = float(np.nanmedian(np.sqrt(np.maximum(0.0, 1.0 - q * q))))
-        stars = int(len(cat))
+        fwhm_ds, ecc, stars, noise, patch, trail = res
+        if not math.isfinite(float(fwhm_ds)):
+            fwhm, ecc, stars = 30.0, 1.0, int(stars or 0)
+        else:
+            fwhm = float(fwhm_ds) * 2.0 * scale
+            ecc = float(ecc)
+            stars = int(stars)
 
     ra, dec = _blink_pointing_deg(header)
     bin_v, size = _blink_bin_and_size(header)
@@ -178,8 +159,11 @@ def _measure(path: str, scale: int = 1) -> dict:
         "ok": bool(math.isfinite(sky)),
         "sky": float(sky),
         "stars": int(stars),
-        "ecc": float(ecc),
+        "ecc": float(ecc) if math.isfinite(float(ecc)) else float("nan"),
         "fwhm": float(fwhm),
+        "noise": float(noise) if math.isfinite(float(noise)) else float("nan"),
+        "patch": float(patch) if math.isfinite(float(patch)) else float("nan"),
+        "trail": float(trail) if math.isfinite(float(trail)) else float("nan"),
         "obj": _object_name_from_header(header),
         "filt": str(_blink_hdr_get(header, "FILTER") or ""),
         "exposure": _blink_exposure_label(header),
@@ -220,6 +204,10 @@ def _fresh(path: str, cached: dict) -> bool:
     row = cached.get(path)
     if not row:
         return False
+    # Invalidate rows measured before noise/patch/trail were stored.
+    for key in ("noise", "patch", "trail"):
+        if key not in row:
+            return False
     try:
         return row.get("mtime") == os.path.getmtime(path)
     except OSError:
@@ -227,7 +215,7 @@ def _fresh(path: str, cached: dict) -> bool:
 
 
 def _check(samples: list[dict], results: list[dict]) -> list[str]:
-    """The star verdict has to be the collapse rule, not a fraction of the best frames."""
+    """Sanity: collapse flags use the high-end reference; mild dips are grade-only."""
     problems = []
     groups: dict = {}
     for i, sample in enumerate(samples):
@@ -243,31 +231,34 @@ def _check(samples: list[dict], results: list[dict]) -> list[str]:
             continue
         ref = _group_reference([samples[i] for i in measured])
         star_ref = ref["star_ref"]
+        collapse_at = (
+            max(float(_STAR_USABLE), _STAR_COLLAPSE_FRAC * float(star_ref))
+            if np.isfinite(star_ref) else float(_STAR_USABLE)
+        )
         for i in measured:
             stars = int(samples[i]["stars"])
             code = (results[i].get("verdict") or {}).get("code")
             name = Path(samples[i]["path"]).name
-            if stars >= _STAR_USABLE and code in ("few_stars", "no_stars"):
-                problems.append(
-                    f"{name}: {stars} stars still judged {code} against {star_ref:.0f}"
-                )
-            if code == "few_stars" and not (0 < stars < _STAR_USABLE):
-                problems.append(f"{name}: few_stars with {stars} detections")
+            grade = results[i].get("grade")
             if code == "no_stars" and stars > 0:
                 problems.append(f"{name}: no_stars with {stars} detections")
-            if code in ("few_stars", "no_stars"):
-                got = results[i]["verdict"].get("star_ref")
-                if got is None or abs(float(got) - float(star_ref)) > 0.6:
-                    problems.append(f"{name}: reference {got} is not the high end {star_ref:.1f}")
+            if code == "few_stars" and not (0 < stars < collapse_at):
+                problems.append(
+                    f"{name}: few_stars with {stars} detections (collapse at {collapse_at:.0f})"
+                )
             if (
-                ref["stable"]
+                code is None
+                and ref["stable"]
                 and np.isfinite(star_ref)
                 and star_ref >= _STAR_REF_MIN
-                and stars < _STAR_USABLE
-                and code not in ("few_stars", "no_stars", "sky_extreme", "no_star_field")
-                and len(measured) < 20
+                and stars >= collapse_at
+                and np.isfinite(grade)
+                and grade > 95
+                and stars < 0.5 * star_ref
             ):
-                problems.append(f"{name}: {stars} stars left unflagged in a small rich group")
+                problems.append(
+                    f"{name}: {stars} stars (~{100 * stars / star_ref:.0f}% of high end) still grade {grade:.0f}"
+                )
     return problems
 
 
@@ -278,66 +269,57 @@ def _report(samples: list[dict], results: list[dict]) -> int:
         groups.setdefault(_quality_group_key(sample), []).append(i)
 
     print()
-    print(f"{'group':<28} {'n':>4} {'p50':>6} {'p90':>6} {'min':>5} {'<60%':>5} {'<12':>4} {'flag':>5}")
-    total_old = 0
+    print(f"{'group':<28} {'n':>4} {'g50':>5} {'g10':>5} {'flag':>5}")
     total_flag = 0
     for key in sorted(groups, key=lambda k: (str(k[0]), str(k[1]), str(k[2]))):
         idxs = groups[key]
         measured = [i for i in idxs if samples[i].get("ok")]
-        stars = np.asarray([samples[i]["stars"] for i in measured], dtype=np.float64)
-        usable = stars >= _STAR_USABLE
-        p90 = float(np.percentile(stars[usable], 90)) if int(usable.sum()) >= 4 else float("nan")
-        p50 = float(np.median(stars)) if stars.size else float("nan")
-        old = int(np.sum(stars < 0.60 * p90)) if np.isfinite(p90) else 0
-        gone = int(np.sum((stars > 0) & (stars < _STAR_USABLE)))
+        grades = np.asarray(
+            [results[i].get("grade", float("nan")) for i in measured], dtype=np.float64)
+        grades = grades[np.isfinite(grades)]
         flagged = sum(1 for i in idxs if results[i].get("verdict"))
-        total_old += old
         total_flag += flagged
         label = f"{key[1] or '-'} {key[2] or '-'}"
-        p50s = f"{p50:.0f}" if np.isfinite(p50) else "-"
-        p90s = f"{p90:.0f}" if np.isfinite(p90) else "-"
-        mins = f"{stars.min():.0f}" if stars.size else "-"
-        print(f"{label:<28} {len(measured):4d} {p50s:>6} {p90s:>6} {mins:>5} {old:5d} {gone:4d} {flagged:5d}")
+        g50 = f"{np.median(grades):.0f}" if grades.size else "-"
+        g10 = f"{np.percentile(grades, 10):.0f}" if grades.size else "-"
+        print(f"{label:<28} {len(measured):4d} {g50:>5} {g10:>5} {flagged:5d}")
 
     print()
-    print(f"Old 60%-of-the-top rule would mark {total_old} frames. Current rule marks {total_flag}.")
+    print(f"Suspects flagged: {total_flag} / {len(samples)}")
     print()
     shown = 0
-    for i, (sample, result) in enumerate(zip(samples, results)):
+    ordered = sorted(
+        range(len(samples)),
+        key=lambda i: (
+            0 if results[i].get("verdict") else 1,
+            results[i].get("grade") if np.isfinite(results[i].get("grade", float("nan"))) else 999,
+        ),
+    )
+    for i in ordered:
+        sample, result = samples[i], results[i]
         verdict, note = format_quality_reason(result)
-        if not verdict and not note:
+        grade = result.get("grade", float("nan"))
+        if not verdict and not note and not (np.isfinite(grade) and grade < 50):
             continue
-        mark = "FLAG" if verdict else "note"
-        text = verdict or note
-        print(f"  {mark:<4} {sample['stars']:5d}  FWHM {sample['fwhm']:5.2f}  ecc {sample['ecc']:.2f}  sky {sample['sky']:.4f}  {text}")
+        mark = "FLAG" if verdict else ("note" if note else "low")
+        text = verdict or note or ""
+        gtxt = f"{grade:5.0f}" if np.isfinite(grade) else "  nan"
+        patch = sample.get("patch", float("nan"))
+        trail = sample.get("trail", float("nan"))
+        ptxt = f"{patch:.3f}" if np.isfinite(patch) else "  nan"
+        ttxt = f"{trail:.2f}" if np.isfinite(trail) else " nan"
+        print(
+            f"  {mark:<4} g={gtxt}  stars {sample['stars']:5d}  "
+            f"FWHM {sample['fwhm']:5.2f}  ecc {sample['ecc']:.2f}  "
+            f"trail {ttxt}  patch {ptxt}  sky {sample['sky']:.4f}  {text}"
+        )
         print(f"       {Path(sample['path']).name}")
         shown += 1
-        if shown >= 40:
+        if shown >= 50:
             print("  ...")
             break
     if not shown:
-        print("  No verdict and no note.")
-
-    print()
-    print("Thinnest frame of each group, and where it sits against the top end:")
-    for key in sorted(groups, key=lambda k: (str(k[0]), str(k[1]), str(k[2]))):
-        idxs = [i for i in groups[key] if samples[i].get("ok")]
-        if not idxs:
-            continue
-        stars = np.asarray([samples[i]["stars"] for i in idxs], dtype=np.float64)
-        usable = stars >= _STAR_USABLE
-        p90 = float(np.percentile(stars[usable], 90)) if int(usable.sum()) >= 4 else float("nan")
-        order = sorted(idxs, key=lambda i: samples[i]["stars"])[:3]
-        label = f"{key[1] or '-'} {key[2] or '-'}"
-        for i in order:
-            sample = samples[i]
-            ratio = sample["stars"] / p90 if np.isfinite(p90) and p90 > 0 else float("nan")
-            old = "old-60%" if np.isfinite(ratio) and ratio < 0.60 else "kept"
-            print(
-                f"  {label:<16} {sample['stars']:5d} stars  {ratio:5.0%} of {p90:.0f}  "
-                f"FWHM {sample['fwhm']:5.2f}  ecc {sample['ecc']:.2f}  sky {sample['sky']:.4f}  {old}"
-            )
-            print(f"                   {Path(sample['path']).name}")
+        print("  No verdict, note, or low grade.")
 
     print()
     if problems:
@@ -345,7 +327,7 @@ def _report(samples: list[dict], results: list[dict]) -> int:
         for line in problems:
             print(f"  {line}")
         return 1
-    print("Checks passed: no frame with 12 stars or more is condemned for star count.")
+    print("Checks passed.")
     return 0
 
 
@@ -426,6 +408,9 @@ def main() -> int:
             "path", "ok", "sky", "stars", "ecc", "fwhm", "obj", "filt",
             "exposure", "bin", "size", "ra", "dec", "field",
         )}
+        sample["noise"] = row.get("noise", float("nan"))
+        sample["patch"] = row.get("patch", float("nan"))
+        sample["trail"] = row.get("trail", float("nan"))
         if isinstance(sample["size"], list):
             sample["size"] = tuple(sample["size"])
         samples.append(sample)
@@ -433,7 +418,7 @@ def main() -> int:
         print(f"{len(missing)} frames had no measurement", file=sys.stderr)
         return 1
 
-    results = quality_flag_reasons(samples)
+    results = quality_grades(samples)
     return _report(samples, results)
 
 

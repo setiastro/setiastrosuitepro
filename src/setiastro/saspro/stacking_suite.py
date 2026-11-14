@@ -493,6 +493,16 @@ _NB_FILTER = re.compile(
 )
 _STAR_USABLE = 12
 _STAR_REF_MIN = 25
+_STAR_COLLAPSE_FRAC = 0.25   # suspect when stars fall below this fraction of the high end
+_GRADE_SUSPECT_FLOOR = 35.0  # very low cumulative grade is itself a suspect signal
+_SKY_NOTE_PCT = 35.0
+_SKY_EXTREME_PCT = 200.0
+_NOISY_SKY_PCT = 50.0
+_NOISY_NOISE_REL = 1.35
+_PATCH_REL = 1.50          # patchiness vs group median
+_PATCH_ABS = 0.12          # absolute floor (quiet frames sit ~0.05–0.08)
+_TRAIL_ABS = 0.05          # high-end ecc above group median
+_TRAIL_SIGMA_K = 2.0       # milder than the generic 3σ shape cut
 
 
 def _finite(value) -> float:
@@ -562,26 +572,34 @@ def _field_is_stable(samples: list[dict]) -> bool:
     return True
 
 
-def _above_ref(value, med, sigma, *, abs_floor: float, rel: float | None = None) -> bool:
-    """Above the reference by an absolute gap, a relative gap, and 3 robust σ."""
+def _above_ref(value, med, sigma, *, abs_floor: float, rel: float | None = None,
+               sigma_k: float = 3.0) -> bool:
+    """Above the reference by an absolute gap, optional relative gap, and k·σ."""
     if not (np.isfinite(value) and np.isfinite(med)):
         return False
     if value < med + abs_floor:
         return False
     if rel is not None and value < med * rel:
         return False
-    if np.isfinite(sigma) and sigma > 0 and value < med + 3.0 * sigma:
+    if np.isfinite(sigma) and sigma > 0 and value < med + float(sigma_k) * sigma:
         return False
     return True
 
 
 def _empty_quality():
-    return {"symptoms": [], "verdict": None, "note": None}
+    return {
+        "grade": float("nan"),
+        "symptoms": [],
+        "verdict": None,
+        "note": None,
+    }
 
 
 def _group_reference(samples: list[dict]) -> dict:
     skies = np.asarray([_finite(s.get("sky")) for s in samples], dtype=np.float64)
     stars = np.asarray([_finite(s.get("stars")) for s in samples], dtype=np.float64)
+    noises = np.asarray([_finite(s.get("noise")) for s in samples], dtype=np.float64)
+    patches = np.asarray([_finite(s.get("patch")) for s in samples], dtype=np.float64)
     sky_med, sky_sig = _robust_median_sigma(skies)
     sky_low = float(np.percentile(skies, 10)) if skies.size else float("nan")
     usable = stars >= _STAR_USABLE
@@ -593,6 +611,19 @@ def _group_reference(samples: list[dict]) -> dict:
     fwhm_med, fwhm_sig = _robust_median_sigma(
         _finite(s.get("fwhm")) for s in shaped if _finite(s.get("fwhm")) > 0
     )
+    # High-end elongation (p80 per frame); fall back to median ecc when absent.
+    trail_vals = []
+    for s in shaped:
+        t = _finite(s.get("trail"))
+        if not np.isfinite(t):
+            t = _finite(s.get("ecc"))
+        if np.isfinite(t):
+            trail_vals.append(t)
+    trail_med, trail_sig = _robust_median_sigma(trail_vals)
+    noise_vals = noises[np.isfinite(noises) & (noises > 0)]
+    noise_med, noise_sig = _robust_median_sigma(noise_vals)
+    patch_vals = patches[np.isfinite(patches) & (patches >= 0)]
+    patch_med, patch_sig = _robust_median_sigma(patch_vals)
     return {
         "sky_low": sky_low,
         "sky_med": sky_med,
@@ -602,6 +633,12 @@ def _group_reference(samples: list[dict]) -> dict:
         "ecc_sig": ecc_sig,
         "fwhm_med": fwhm_med,
         "fwhm_sig": fwhm_sig,
+        "trail_med": trail_med,
+        "trail_sig": trail_sig,
+        "noise_med": noise_med,
+        "noise_sig": noise_sig,
+        "patch_med": patch_med,
+        "patch_sig": patch_sig,
         "stable": _field_is_stable(samples),
         "usable_n": int(usable.sum()),
     }
@@ -613,60 +650,159 @@ def _sky_percent(sky, sky_low) -> float:
     return 100.0 * (sky - sky_low) / sky_low
 
 
-def _judge_frame(sample: dict, ref: dict) -> dict:
-    """Symptoms are independent. The verdict is the first condemning one."""
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return float(min(hi, max(lo, v)))
+
+
+def _grade_and_judge(sample: dict, ref: dict) -> dict:
+    """Relative grade 0–100 plus optional condemning verdict for one frame."""
     out = _empty_quality()
     stars = _finite(sample.get("stars"))
     sky = _finite(sample.get("sky"))
     ecc = _finite(sample.get("ecc"))
     fwhm = _finite(sample.get("fwhm"))
+    noise = _finite(sample.get("noise"))
+    patch = _finite(sample.get("patch"))
+    trail = _finite(sample.get("trail"))
+    if not np.isfinite(trail):
+        trail = ecc
     pct = _sky_percent(sky, ref["sky_low"])
-    symptoms: list[dict] = []
-
-    if np.isfinite(pct) and pct >= 200.0 and _above_ref(
-        sky, ref["sky_med"], ref["sky_sig"], abs_floor=0.0,
-    ):
-        symptoms.append({"code": "sky_extreme", "pct": pct})
-    elif np.isfinite(pct) and 35.0 <= pct < 200.0:
-        symptoms.append({"code": "sky_moderate", "pct": pct})
-
     star_ref = ref["star_ref"]
-    # A thinner count than the best frames is normal: the same FWHM and
-    # eccentricity come back with half the detections. The integration weight
-    # already ranks that. Pre-flag only condemns a frame whose field is gone
-    # (under 12 detections) while the rest of the group still has a real one.
-    if ref["stable"] and np.isfinite(star_ref) and star_ref >= _STAR_REF_MIN:
-        if stars <= 0:
-            symptoms.append({"code": "no_stars", "stars": 0, "star_ref": star_ref})
-        elif stars < _STAR_USABLE:
+    symptoms: list[dict] = []
+    penalty = 0.0
+
+    # --- grade penalties (continuous) ---------------------------------
+    if np.isfinite(star_ref) and star_ref > 0 and np.isfinite(stars) and stars >= 0:
+        ratio = float(stars) / float(star_ref)
+        if ratio < 1.0:
+            penalty += 40.0 * ((1.0 - _clamp(ratio, 0.0, 1.0)) ** 1.15)
+
+    if np.isfinite(pct) and pct >= _SKY_NOTE_PCT:
+        span = max(1.0, _SKY_EXTREME_PCT - _SKY_NOTE_PCT)
+        penalty += 30.0 * _clamp((pct - _SKY_NOTE_PCT) / span, 0.0, 1.0)
+        if pct >= _SKY_EXTREME_PCT and _above_ref(
+            sky, ref["sky_med"], ref["sky_sig"], abs_floor=0.0,
+        ):
+            symptoms.append({"code": "sky_extreme", "pct": pct})
+        else:
+            symptoms.append({"code": "sky_moderate", "pct": pct})
+
+    noise_med = ref["noise_med"]
+    if np.isfinite(noise) and noise > 0 and np.isfinite(noise_med) and noise_med > 0:
+        nrel = float(noise) / float(noise_med)
+        if nrel > 1.0:
+            penalty += 15.0 * _clamp((nrel - 1.0) / 1.0, 0.0, 1.0)
+
+    patch_med = ref["patch_med"]
+    patchy = False
+    if np.isfinite(patch) and patch >= 0:
+        if np.isfinite(patch_med) and patch_med > 0:
+            prel = float(patch) / float(patch_med)
+            if prel > 1.0:
+                penalty += 25.0 * _clamp((prel - 1.0) / 1.5, 0.0, 1.0)
+            patchy = (
+                patch >= _PATCH_ABS
+                and prel >= _PATCH_REL
+                and _above_ref(
+                    patch, patch_med, ref["patch_sig"],
+                    abs_floor=0.03, sigma_k=_TRAIL_SIGMA_K,
+                )
+            )
+        elif patch >= _PATCH_ABS * 1.5:
+            penalty += 20.0
+            patchy = True
+        if patchy:
             symptoms.append({
-                "code": "few_stars", "stars": int(round(stars)), "star_ref": star_ref,
+                "code": "patchy_sky",
+                "patch": patch,
+                "patch_med": patch_med if np.isfinite(patch_med) else float("nan"),
             })
+
+    # Noisy+brighter sky without a clear patch map still condemns.
+    if (
+        not patchy
+        and np.isfinite(noise) and np.isfinite(noise_med) and noise_med > 0
+        and np.isfinite(pct) and pct >= _NOISY_SKY_PCT
+        and (noise / noise_med) >= _NOISY_NOISE_REL
+    ):
+        symptoms.append({
+            "code": "noisy_sky", "pct": pct, "noise": noise, "noise_med": noise_med,
+        })
 
     if stars >= _STAR_USABLE:
         soft = fwhm > 0 and _above_ref(
-            fwhm, ref["fwhm_med"], ref["fwhm_sig"], abs_floor=0.5, rel=1.35,
+            fwhm, ref["fwhm_med"], ref["fwhm_sig"],
+            abs_floor=0.35, rel=1.25, sigma_k=_TRAIL_SIGMA_K,
         )
-        trailed = _above_ref(ecc, ref["ecc_med"], ref["ecc_sig"], abs_floor=0.10)
+        trail_med = ref["trail_med"] if np.isfinite(ref["trail_med"]) else ref["ecc_med"]
+        trail_sig = ref["trail_sig"] if np.isfinite(ref["trail_sig"]) else ref["ecc_sig"]
+        trailed_hi = _above_ref(
+            trail, trail_med, trail_sig,
+            abs_floor=_TRAIL_ABS, sigma_k=_TRAIL_SIGMA_K,
+        )
+        # Median ecc remains a backup when the high-end trail is missing/flat.
+        trailed_med = False
+        if not trailed_hi:
+            trailed_med = _above_ref(
+                ecc, ref["ecc_med"], ref["ecc_sig"],
+                abs_floor=_TRAIL_ABS, sigma_k=_TRAIL_SIGMA_K,
+            )
+        trailed = trailed_hi or trailed_med
+        if np.isfinite(fwhm) and np.isfinite(ref["fwhm_med"]) and ref["fwhm_med"] > 0:
+            frel = float(fwhm) / float(ref["fwhm_med"])
+            if frel > 1.0:
+                penalty += 15.0 * _clamp((frel - 1.0) / 0.5, 0.0, 1.0)
+        if np.isfinite(trail) and np.isfinite(trail_med):
+            tdiff = float(trail) - float(trail_med)
+            if tdiff > 0:
+                penalty += 25.0 * _clamp(tdiff / 0.20, 0.0, 1.0)
+        elif np.isfinite(ecc) and np.isfinite(ref["ecc_med"]):
+            ediff = float(ecc) - float(ref["ecc_med"])
+            if ediff > 0:
+                penalty += 20.0 * _clamp(ediff / 0.25, 0.0, 1.0)
         if soft:
             symptoms.append({
                 "code": "soft", "fwhm": fwhm, "fwhm_med": ref["fwhm_med"],
             })
         if trailed:
+            if trailed_hi and np.isfinite(trail) and np.isfinite(trail_med):
+                ecc_v, ecc_m = float(trail), float(trail_med)
+            else:
+                ecc_v, ecc_m = float(ecc), float(ref["ecc_med"])
             symptoms.append({
-                "code": "eccentricity", "ecc": ecc, "ecc_med": ref["ecc_med"],
+                "code": "eccentricity",
+                "ecc": ecc_v,
+                "ecc_med": ecc_m,
             })
 
+    # Collapsed star field: under 25% of the high end (or under 12), not a mild dip.
+    if ref["stable"] and np.isfinite(star_ref) and star_ref >= _STAR_REF_MIN:
+        collapse_at = max(float(_STAR_USABLE), _STAR_COLLAPSE_FRAC * float(star_ref))
+        if stars <= 0:
+            symptoms.append({"code": "no_stars", "stars": 0, "star_ref": star_ref})
+        elif stars < collapse_at:
+            symptoms.append({
+                "code": "few_stars", "stars": int(round(stars)), "star_ref": star_ref,
+            })
+
+    grade = float(round(_clamp(100.0 - penalty, 0.0, 100.0)))
+    out["grade"] = grade
     out["symptoms"] = symptoms
+
     by_code = {s["code"]: s for s in symptoms}
+    verdict = None
     if "sky_extreme" in by_code:
-        out["verdict"] = by_code["sky_extreme"]
+        verdict = by_code["sky_extreme"]
     elif "no_stars" in by_code:
-        out["verdict"] = by_code["no_stars"]
+        verdict = by_code["no_stars"]
     elif "few_stars" in by_code:
-        out["verdict"] = by_code["few_stars"]
+        verdict = by_code["few_stars"]
+    elif "patchy_sky" in by_code:
+        verdict = by_code["patchy_sky"]
+    elif "noisy_sky" in by_code:
+        verdict = by_code["noisy_sky"]
     elif "soft" in by_code and "eccentricity" in by_code:
-        out["verdict"] = {
+        verdict = {
             "code": "trailing",
             "ecc": by_code["eccentricity"]["ecc"],
             "ecc_med": by_code["eccentricity"]["ecc_med"],
@@ -674,9 +810,17 @@ def _judge_frame(sample: dict, ref: dict) -> dict:
             "fwhm_med": by_code["soft"]["fwhm_med"],
         }
     elif "eccentricity" in by_code:
-        out["verdict"] = by_code["eccentricity"]
+        verdict = by_code["eccentricity"]
     elif "soft" in by_code:
-        out["verdict"] = by_code["soft"]
+        verdict = by_code["soft"]
+    elif grade < _GRADE_SUSPECT_FLOOR and symptoms:
+        top = symptoms[0]
+        verdict = dict(top)
+        verdict.setdefault("code", top.get("code") or "low_grade")
+    elif grade < _GRADE_SUSPECT_FLOOR:
+        verdict = {"code": "low_grade", "grade": grade}
+
+    out["verdict"] = verdict
     return out
 
 
@@ -690,11 +834,14 @@ def _apply_safety_net(results: list[dict], measured: list[int], ref: dict) -> No
         return
     for i in flagged:
         code = results[i]["verdict"]["code"]
-        if code in ("sky_extreme", "no_stars"):
+        if code in ("sky_extreme", "no_stars", "no_star_field", "no_stars_bright"):
             continue
         results[i]["verdict"] = None
+        results[i]["note"] = None
+        # Keep informative symptoms; sky_moderate may become the Quality note.
         results[i]["symptoms"] = [
-            s for s in results[i]["symptoms"] if s["code"] == "sky_moderate"
+            s for s in results[i]["symptoms"]
+            if s["code"] in ("sky_moderate", "sky_extreme", "no_stars")
         ]
 
 
@@ -722,24 +869,19 @@ def _apply_only_cover(results: list[dict], samples: list[dict], measured: list[i
         if not alone:
             continue
         results[i]["verdict"] = None
-        results[i]["symptoms"] = [
-            s for s in results[i]["symptoms"] if s["code"] == "sky_moderate"
-        ]
         results[i]["note"] = {"code": "only_cover"}
 
 
-def quality_flag_reasons(samples: list[dict]) -> list[dict]:
-    """Diagnose each light, then verdict only the frames an operator would drop.
+def quality_grades(samples: list[dict]) -> list[dict]:
+    """Grade each light 0–100 and mark suspects an operator would drop.
 
-    Samples of one Blink session. Grouping uses ``obj``, ``filt``, ``exposure``,
-    ``bin`` and ``size`` when a sample carries them. A group of fewer than four
-    measured frames is left alone. Unreadable frames stay out of the references
-    and receive no verdict.
+    Grouping uses ``obj``, ``filt``, ``exposure``, ``bin`` and ``size``.
+    Groups smaller than four measured frames are left alone (NaN grade, no
+    verdict). Optional sample field ``noise`` (SEP rms) feeds the grade.
 
-    Each result is ``{"symptoms", "verdict", "note"}``. ``verdict`` is the one
-    condemning reason, or None. A brighter-but-not-extreme sky is a symptom
-    and, when it does not condemn the frame, a note. Weights and score-outlier
-    rejection are untouched: this only marks frames.
+    Each result is ``{"grade", "symptoms", "verdict", "note"}``. ``verdict``
+    is the condemning reason or None. A brighter-but-not-extreme sky lowers
+    the grade and may appear as a note without flagging the frame.
     """
     results = [_empty_quality() for _ in samples]
     groups: dict = {}
@@ -784,6 +926,7 @@ def quality_flag_reasons(samples: list[dict]) -> list[dict]:
                 continue
             for i in measured:
                 results[i] = {
+                    "grade": 0.0,
                     "symptoms": [reason],
                     "verdict": dict(reason),
                     "note": None,
@@ -791,10 +934,23 @@ def quality_flag_reasons(samples: list[dict]) -> list[dict]:
             continue
 
         for i in measured:
-            results[i] = _judge_frame(samples[i], ref)
+            results[i] = _grade_and_judge(samples[i], ref)
         _apply_safety_net(results, measured, ref)
         _apply_only_cover(results, samples, measured)
+
+        # Non-condemning sky notes for the Quality column.
+        for i in measured:
+            if results[i]["verdict"]:
+                continue
+            mods = [s for s in results[i]["symptoms"] if s.get("code") == "sky_moderate"]
+            if mods and not results[i]["note"]:
+                results[i]["note"] = mods[0]
     return results
+
+
+def quality_flag_reasons(samples: list[dict]) -> list[dict]:
+    """Alias for :func:`quality_grades` (Blink pre-flag entry point)."""
+    return quality_grades(samples)
 
 
 def format_quality_reason(result, tr=None) -> tuple[str, str]:
@@ -815,6 +971,17 @@ def format_quality_reason(result, tr=None) -> tuple[str, str]:
             return tr("brighter sky (+{0:.0f}%)").format(flag["pct"])
         if code == "sky_extreme":
             return tr("very bright sky (+{0:.0f}%)").format(flag["pct"])
+        if code == "noisy_sky":
+            return tr("noisy brighter sky (+{0:.0f}%)").format(flag["pct"])
+        if code == "patchy_sky":
+            p = flag.get("patch")
+            pm = flag.get("patch_med")
+            if np.isfinite(_finite(p)) and np.isfinite(_finite(pm)) and float(pm) > 0:
+                return tr("uneven background ({0:.2f} vs {1:.2f})").format(
+                    float(p), float(pm))
+            if np.isfinite(_finite(p)):
+                return tr("uneven background ({0:.2f})").format(float(p))
+            return tr("uneven background")
         if code == "few_stars":
             return tr("few stars ({0} vs {1:.0f})").format(flag["stars"], flag["star_ref"])
         if code == "no_stars":
@@ -834,6 +1001,11 @@ def format_quality_reason(result, tr=None) -> tuple[str, str]:
             return tr("no stars, sky much brighter than the rest of the target")
         if code == "only_cover":
             return tr("kept: the only frame on this part of the sky")
+        if code == "low_grade":
+            g = flag.get("grade")
+            if g is not None and np.isfinite(_finite(g)):
+                return tr("low grade ({0:.0f})").format(float(g))
+            return tr("low grade")
         return ""
 
     verdict = _one(result.get("verdict"))
