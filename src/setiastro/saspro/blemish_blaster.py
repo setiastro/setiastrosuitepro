@@ -52,6 +52,7 @@ class _BlemishWorker(QRunnable):
         out = self._remove_blemish(
             self.image, self.x, self.y, self.radius, self.feather, self.opacity, self.channels_to_process
         )
+        self.image = None  # drop the full-frame working copy ASAP
         self.signals.finished.emit(out)
 
     # ── the exact SASv2 logic (minor tidy) ────────────────────────────────────
@@ -192,6 +193,7 @@ class _LineDefectWorker(QRunnable):
             self.image, self.p0, self.p1, self.mid, self.thickness,
             self.feather, self.opacity, self.channels_to_process, self.full_line
         )
+        self.image = None  # drop the full-frame working copy ASAP
         self.signals.finished.emit(out)
 
     def _remove_linear_defect(self, image, p0, p1, mid, thickness, feather, opacity,
@@ -453,6 +455,7 @@ class _BandingWorker(QRunnable):
                                    self.protect, self.sigma,
                                    self.direction,
                                    self.channels_to_process)
+        self.image = None  # drop the full-frame working copy ASAP
         self.signals.finished.emit(out)
 
     @staticmethod
@@ -565,6 +568,9 @@ class BlemishBlasterDialogPro(QDialog):
             self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
+        # Without this, close() only hides the dialog and every reopen leaves
+        # another full-size preview pixmap + scene as a zombie child of MainWindow.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setMinimumSize(900, 650)
         self._did_initial_fit = False
 
@@ -1749,8 +1755,54 @@ class BlemishBlasterDialogPro(QDialog):
             self._save_window_geometry()
         except Exception:
             pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
+        super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop working buffers / preview pixmap so RAM can be reclaimed on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
         self._image = None
         self._display = None
-        self._undo.clear()
-        self._redo.clear()
-        super().closeEvent(ev)       
+        self._doc = None
+        try:
+            self._undo.clear()
+        except Exception:
+            self._undo = []
+        try:
+            self._redo.clear()
+        except Exception:
+            self._redo = []
+
+        # QPixmap on the scene item is often larger than the numpy buffers.
+        try:
+            self.pix.setPixmap(QPixmap())
+        except Exception:
+            pass
+        try:
+            self.scene.clear()
+        except Exception:
+            pass
+
+        try:
+            from PyQt6.QtGui import QPixmapCache
+            QPixmapCache.clear()
+        except Exception:
+            pass
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+        try:
+            import sys
+            if sys.platform.startswith("linux"):
+                import ctypes
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
