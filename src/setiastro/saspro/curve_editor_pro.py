@@ -1665,6 +1665,11 @@ class CurvesDialogPro(QDialog):
         # Only swap-state IDs and object identities: no extra full-size image copies.
         self._curves_undo = []
         self._undo_doc = None
+        # The doc.image buffer our working copy was last synced from, and a
+        # guard so our own Apply / Undo Apply don't trigger a reload of
+        # themselves through doc.changed.
+        self._synced_src = None
+        self._own_doc_edit = False
         self._follow_conn = False
         if hasattr(self._main, "currentDocumentChanged"):
             try:
@@ -2247,18 +2252,31 @@ class CurvesDialogPro(QDialog):
             out = np.interp(inp, xs, ys)
         return np.clip(out / 360.0, 0.0, 1.0).astype(np.float32)
 
+    @staticmethod
+    def _is_identity_pts(pts):
+        return (isinstance(pts, (list, tuple)) and len(pts) == 2
+                and tuple(pts[0]) == (0.0, 0.0) and tuple(pts[1]) == (1.0, 1.0))
+
     def _build_all_active_luts(self):
         luts: dict[str, np.ndarray] = {}
         active_key = self._current_mode_key
+        # An untouched (straight-line) curve is the identity, but a 65536-entry
+        # LUT is not: it floors every value onto a 16-bit grid (and L*/a*/b*
+        # identities add a Lab round trip). Skip identities so channels the
+        # user never curved keep full 32-bit float precision.
+        try:
+            active_identity = self._is_identity_pts(self._editor_points_norm())
+        except Exception:
+            active_identity = False
         fn = getattr(self.editor, "getCurveFunction", None)
-        if callable(fn):
+        if callable(fn) and not active_identity:
             f = fn()
             if f is not None:
                 luts[active_key] = build_curve_lut(f, size=65536)
         for key, pts in self._curves_store.items():
             if key == active_key:
                 continue
-            if isinstance(pts, (list, tuple)) and len(pts) == 2 and pts[0] == (0.0,0.0) and pts[1] == (1.0,1.0):
+            if self._is_identity_pts(pts):
                 continue
             luts[key] = self._lut01_from_points_norm(pts, size=65536)
         return luts
@@ -2719,15 +2737,45 @@ class CurvesDialogPro(QDialog):
         old = self._undo_doc
         if old is not None:
             try:
-                old.changed.disconnect(self._refresh_curves_undo_button)
+                old.changed.disconnect(self._on_bound_doc_changed)
             except (TypeError, RuntimeError):
                 pass
         self._undo_doc = doc
         if doc is not None:
             try:
-                doc.changed.connect(self._refresh_curves_undo_button)
+                doc.changed.connect(self._on_bound_doc_changed)
             except (AttributeError, TypeError, RuntimeError):
                 pass
+        self._refresh_curves_undo_button()
+
+    @staticmethod
+    def _same_buffer(a, b):
+        """True when a and b are the same pixels in memory. ROI preview docs
+        return a fresh slice view on every .image access, so identity alone
+        would call every access a new image."""
+        if a is b:
+            return a is not None
+        if not (isinstance(a, np.ndarray) and isinstance(b, np.ndarray)):
+            return False
+        return (a.shape == b.shape and a.dtype == b.dtype and a.strides == b.strides
+                and a.__array_interface__["data"][0] == b.__array_interface__["data"][0])
+
+    def _on_bound_doc_changed(self):
+        """The document changed. If its pixels were replaced by anything other
+        than this dialog (main-window Undo/Redo, another tool), reload, so the
+        next Apply works on what the user actually sees rather than silently
+        re-committing the pixels they just undid."""
+        self._refresh_curves_undo_button()
+        if self._own_doc_edit or getattr(self, "_memory_released", False):
+            return
+        doc = self.doc
+        if doc is None or doc is not self._undo_doc:
+            return
+        img = getattr(doc, "image", None)
+        if img is None or self._same_buffer(img, self._synced_src):
+            return
+        self._curve_debounce.stop()
+        self._load_from_doc()
         self._refresh_curves_undo_button()
 
     def _refresh_curves_undo_button(self):
@@ -2752,8 +2800,14 @@ class CurvesDialogPro(QDialog):
         # Stop a queued preview and disregard any in-flight full-res computation.
         self._curve_debounce.stop()
         self._invalidate_full_cache()
-        name = self.doc.undo()
+        self._own_doc_edit = True
+        try:
+            name = self.doc.undo()
+        finally:
+            self._own_doc_edit = False
         if name != 'Curves':
+            # Something other than our step was undone: resync to it.
+            self._on_bound_doc_changed()
             self._refresh_curves_undo_button()
             return
         self._curves_undo.pop()
@@ -2791,6 +2845,7 @@ class CurvesDialogPro(QDialog):
         if img is None:
             QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
+        self._synced_src = img
         arr = np.asarray(img)
         if arr.dtype.kind in "ui":
             arr = arr.astype(np.float32) / np.iinfo(arr.dtype).max
@@ -3168,7 +3223,12 @@ class CurvesDialogPro(QDialog):
             if self._curves_undo and not self._refresh_curves_undo_button():
                 self._curves_undo.clear()
             prior_undo_len = len(getattr(self.doc, '_undo', ()))
-            self.doc.apply_edit(committed, metadata=meta, step_name='Curves')
+            self._own_doc_edit = True
+            try:
+                self.doc.apply_edit(committed, metadata=meta, step_name='Curves')
+            finally:
+                self._own_doc_edit = False
+            self._synced_src = self.doc.image
             # Reuse the disk-backed document Undo snapshot; retain no image copy.
             stack = getattr(self.doc, '_undo', ())
             if len(stack) == prior_undo_len + 1 and stack[-1][2] == 'Curves':
@@ -3327,6 +3387,7 @@ class CurvesDialogPro(QDialog):
         self._memory_released = True
 
         self._invalidate_full_cache()
+        self._synced_src = None
         self._full_img = None
         self._preview_img = None
         self._preview_orig = None

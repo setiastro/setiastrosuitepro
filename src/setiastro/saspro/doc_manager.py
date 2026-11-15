@@ -2294,7 +2294,10 @@ class _RoiViewDocument(ImageDocument):
     # === KEEP YOUR WORKING BODY; only 3 added lines are marked "NEW" ===
     def apply_edit(self, new_image, metadata=None, step_name="Edit"):
         x, y, w, h = self._roi
-        img = np.asarray(new_image, dtype=np.float32, copy=False)
+        # No copy= kwarg: numpy 1.x has none (TypeError), and on numpy 2
+        # copy=False raises for any input that needs converting (float64).
+        # asarray already avoids a copy when the input is float32.
+        img = np.asarray(new_image, dtype=np.float32)
         base = self._parent_doc.image
 
         _debug_log_undo(
