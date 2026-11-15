@@ -188,6 +188,9 @@ _r(r"🚨 Rejected \d+ frame",                        "Registration",      _ST_W
 _r(r"🔆 Phase: Aperture flux normalization for '(.+?)'", "Aperture Flux Norm", _ST_RUNNING, 1)
 _r(r"⚠️ Aperture flux normalization skipped for '([^']+)'", "Aperture Flux Norm", _ST_WARN, 1)
 _r(r"✅ Aperture flux normalization ready for '([^']+)'",   "Aperture Flux Norm", _ST_OK,   1)
+# Drizzle re-applies the maps while it deposits; that is drizzle time, so it
+# must not reopen the AFN row (first match wins -- keep this above).
+_r(r"(?:🔆|⚠️) AFN drizzle",                             "Integration",       _ST_RUNNING)
 _r(r"🔆 AFN|⚠️ AFN",                                     "Aperture Flux Norm", _ST_RUNNING)
 
 # ── Integration ───────────────────────────────────────────────────────────

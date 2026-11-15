@@ -10487,7 +10487,8 @@ class StackingSuiteDialog(QDialog):
             "frame earns only as much detail in its map as its own stars\n"
             "support: a clear frame gets a single overall scale.\n\n"
             "Ignores registration borders (0.0) entirely. Works alongside\n"
-            "ABE Poly² or instead of it. Not yet applied to drizzle output."
+            "ABE Poly² or instead of it. Drizzle uses the same maps, applied\n"
+            "to each original frame as it is deposited."
         ))
         self.afn_enable_cb.setChecked(
             self.settings.value("stacking/afn/enabled", False, type=bool))
@@ -37767,6 +37768,24 @@ class StackingSuiteDialog(QDialog):
                 return _cfa_pixel_source(orig)
             return None
 
+        # ---- Aperture Flux Normalization: the integration's own maps ----
+        # They live on the 1x reference grid; each deposit below samples them
+        # through the same 3x3 that places the pixel, so a raw pixel gets the
+        # correction of the sky position it lands on.
+        from setiastro.saspro.aperture_flux_normalization import (
+            apply_frame_inplace as _afn_apply_frame)
+        afn_by_path = (getattr(self, "_afn_maps_by_group", None) or {}).get(group_key)
+        if afn_by_path:
+            _m0 = next(iter(afn_by_path.values()))
+            _hw0 = tuple(_m0.info.get("hw") or ())
+            if _hw0 != (int(ref_H), int(ref_W)):
+                log(f"⚠️ AFN drizzle: maps for '{group_key}' are {_hw0}, the reference "
+                    f"is {ref_H}x{ref_W} — depositing without them.")
+                afn_by_path = None
+        afn_done = 0
+        afn_missing = 0
+        afn_chan_skip = 0
+
         _prefetch_paths = [_pixel_path_for_entry(e) for e in entries]
         _prefetch = _FramePrefetcher(
             _prefetch_paths,
@@ -37877,6 +37896,22 @@ class StackingSuiteDialog(QDialog):
                         f"canvas {int(ref_W * scale_factor)}×{int(ref_H * scale_factor)} @ {scale_factor}×"
                     )
 
+                # ---- AFN: same correction the integration applied ----
+                if afn_by_path:
+                    _afn_m = afn_by_path.get(aligned_file)
+                    _img_c = img_data.shape[2] if img_data.ndim == 3 else 1
+                    if _afn_m is None:
+                        afn_missing += 1
+                    elif int(_afn_m.gain.shape[0]) != _img_c:
+                        afn_chan_skip += 1
+                    else:
+                        if not img_data.flags.writeable:
+                            img_data = np.array(img_data, copy=True)
+                        _afn_apply_frame(
+                            img_data, _afn_m,
+                            None if pixels_are_registered else H_canvas)
+                        afn_done += 1
+
                 # ---- apply per-file rejections (FAST: tile masks -> full mask -> optional warp) ----
                 rej_mask_ref = _build_rej_mask_ref(aligned_file)
                 if rej_mask_ref is not None:
@@ -37911,6 +37946,15 @@ class StackingSuiteDialog(QDialog):
                         img_data, H_canvas, drizzle_buffer, coverage_buffer,
                         scale_factor, drop_shrink, weight, _kcode, float(gauss_sigma)
                     )
+
+            if afn_by_path:
+                _extra = ""
+                if afn_missing:
+                    _extra += f"; {afn_missing} had no map"
+                if afn_chan_skip:
+                    _extra += f"; {afn_chan_skip} channel mismatch"
+                log(f"🔆 AFN drizzle: deposits corrected for '{group_key}': "
+                    f"{afn_done} of {len(entries)} frame(s){_extra}")
 
             # ---- finalize ----
             if gpu_drizzle is not None:
@@ -38444,6 +38488,20 @@ class StackingSuiteDialog(QDialog):
                 log(f"⚠️ AFN: maps ({_hw}, {_c} ch) do not match the integration "
                     f"({height}x{width}, {channels} ch) — integrating without them.")
                 afn_models = None
+
+        # Drizzle re-deposits these same frames from their originals after
+        # this integration. It must use the exact maps this integration used:
+        # the rejection masks it inherits were computed on AFN-corrected
+        # pixels. Keyed by aligned path; None (AFN off/skipped) clears any
+        # maps a previous run left for this group.
+        try:
+            if not isinstance(getattr(self, "_afn_maps_by_group", None), dict):
+                self._afn_maps_by_group = {}
+            self._afn_maps_by_group[group_key] = (
+                None if afn_models is None else
+                {os.path.normpath(f): m for f, m in zip(file_list, afn_models)})
+        except Exception:
+            pass
 
         algo = (algo_override or self.rejection_algorithm)
 

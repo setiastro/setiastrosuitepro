@@ -54,7 +54,7 @@
 <body>
 
 <h1>Stacking Suite</h1>
-<p class="sub">SASpro's complete calibration-and-integration pipeline: from raw camera RAW/TIFF through master darks and flats, debayer, cosmetic correction, satellite trail masking, registration against any alignment model up to 4th-order polynomial, drizzle, up to multi-panel mosaic sets, multi-frame deconvolution, and a final rejected-and-weighted integrated master &mdash; all driven from one window, with CPU, CUDA, MPS and DirectML backends shared across every heavy stage.</p>
+<p class="sub">SASpro's complete calibration-and-integration pipeline: from raw camera RAW/TIFF through master darks and flats, debayer, cosmetic correction, satellite trail masking, registration against any alignment model up to 4th-order polynomial, star-measured local normalization (Aperture Flux Normalization), drizzle, up to multi-panel mosaic sets, multi-frame deconvolution, and a final rejected-and-weighted integrated master &mdash; all driven from one window, with CPU, CUDA, MPS and DirectML backends shared across every heavy stage.</p>
 
 <p>The Stacking Suite is laid out as six tabs along the top (<i>Quick Stack</i>, <i>Convert Camera RAW/TIFF</i>, <i>Darks</i>, <i>Flats</i>, <i>Lights</i>, <i>Image Integration</i>) with a header strip above them (wrench, folder path, Change&hellip;, Open Log, document) and almost every parameter you'll want to touch living in the orange-wrench <b>Stacking Settings</b> dialog. The sections below walk through each tab in the order you'll meet them, then cover the Settings dialog, then the maths and plumbing behind the scenes.</p>
 
@@ -69,21 +69,23 @@
   <li><a href="#lights">5. Lights</a></li>
   <li><a href="#integration">6. Image Integration</a></li>
   <li><a href="#settings">7. Stacking Settings dialog</a></li>
-  <li><a href="#optimize">&nbsp;&nbsp;7.12 Optimize&hellip; &mdash; tuning for your hardware</a></li>
+  <li><a href="#afn-settings">&nbsp;&nbsp;7.6 Local Normalization (Aperture Flux)</a></li>
+  <li><a href="#optimize">&nbsp;&nbsp;7.13 Optimize&hellip; &mdash; tuning for your hardware</a></li>
   <li><a href="#profiles">8. Profiles</a></li>
   <li><a href="#tech">9. Technical details</a></li>
   <li><a href="#tech-calibration">&nbsp;&nbsp;9.1 Calibration pipeline</a></li>
   <li><a href="#tech-masters">&nbsp;&nbsp;9.2 Master-frame integration</a></li>
   <li><a href="#tech-normalize">&nbsp;&nbsp;9.3 Normalization &amp; gradient</a></li>
-  <li><a href="#tech-registration">&nbsp;&nbsp;9.4 Registration</a></li>
-  <li><a href="#tech-weights">&nbsp;&nbsp;9.5 Frame weighting</a></li>
-  <li><a href="#tech-rejection">&nbsp;&nbsp;9.6 Rejection algorithms</a></li>
-  <li><a href="#tech-drizzle">&nbsp;&nbsp;9.7 Drizzle</a></li>
-  <li><a href="#tech-mfdeconv">&nbsp;&nbsp;9.8 Multi-frame deconvolution</a></li>
-  <li><a href="#tech-sets">&nbsp;&nbsp;9.9 Registration Sets</a></li>
-  <li><a href="#tech-gpu">&nbsp;&nbsp;9.10 GPU backends</a></li>
-  <li><a href="#tech-tuning">&nbsp;&nbsp;9.11 Hardware tuning &mdash; how the optimizer decides</a></li>
-  <li><a href="#tech-cleanup">&nbsp;&nbsp;9.12 File layout &amp; cleanup</a></li>
+  <li><a href="#tech-afn">&nbsp;&nbsp;9.4 Aperture Flux Normalization</a></li>
+  <li><a href="#tech-registration">&nbsp;&nbsp;9.5 Registration</a></li>
+  <li><a href="#tech-weights">&nbsp;&nbsp;9.6 Frame weighting</a></li>
+  <li><a href="#tech-rejection">&nbsp;&nbsp;9.7 Rejection algorithms</a></li>
+  <li><a href="#tech-drizzle">&nbsp;&nbsp;9.8 Drizzle</a></li>
+  <li><a href="#tech-mfdeconv">&nbsp;&nbsp;9.9 Multi-frame deconvolution</a></li>
+  <li><a href="#tech-sets">&nbsp;&nbsp;9.10 Registration Sets</a></li>
+  <li><a href="#tech-gpu">&nbsp;&nbsp;9.11 GPU backends</a></li>
+  <li><a href="#tech-tuning">&nbsp;&nbsp;9.12 Hardware tuning &mdash; how the optimizer decides</a></li>
+  <li><a href="#tech-cleanup">&nbsp;&nbsp;9.13 File layout &amp; cleanup</a></li>
   <li><a href="#credits">Credits</a></li>
 </ul>
 </div>
@@ -219,7 +221,7 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 
 <h3>5.3 Corrections row</h3>
 <ul>
-  <li><b>Enable Cosmetic Correction</b> &mdash; MAD-based hot/cold pixel detector with structure protection. On by default. Tuning lives in the Settings dialog (&sect;7.9); the Lights tab has a <b>🔬 Tune Cosmetic Correction &sigma;&hellip;</b> button that opens a dedicated preview dialog on your selected frame.</li>
+  <li><b>Enable Cosmetic Correction</b> &mdash; MAD-based hot/cold pixel detector with structure protection. On by default. Tuning lives in the Settings dialog (&sect;7.10); the Lights tab has a <b>🔬 Tune Cosmetic Correction &sigma;&hellip;</b> button that opens a dedicated preview dialog on your selected frame.</li>
   <li><b>Apply Pedestal</b> &mdash; adds a small positive constant <i>before</i> dark subtraction so a near-black sky never clips at zero. <b>Pedestal (0&ndash;1000)</b> below is the DN value; divided by 65535 internally (so 50 &asymp; +0.000763 in 0&ndash;1 units).</li>
   <li><b>Apply Bias Subtraction (For CCD Users)</b> &mdash; subtracts a scaled master bias. Modern CMOS cameras use correlated double sampling and don't need this; tooltip reminds you.</li>
 </ul>
@@ -272,11 +274,11 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 <h3>6.4 Reference frame</h3>
 <ul>
   <li><b>Select Reference Frame</b> &mdash; manual pick, locks the reference until you unlock.</li>
-  <li><b>Auto-accept measured reference</b> &mdash; the best-scoring frame (by the weighting criteria in &sect;9.5) is used automatically. Checking this disables the manual Select button and unlocks any previously locked reference.</li>
+  <li><b>Auto-accept measured reference</b> &mdash; the best-scoring frame (by the weighting criteria in &sect;9.6) is used automatically. Checking this disables the manual Select button and unlocks any previously locked reference.</li>
 </ul>
 
 <h3>6.5 Registration Sets</h3>
-<p>A full subsystem for independent references &mdash; use it for mosaic panels or completely different targets loaded in one run. See &sect;9.9 for the full logic. Controls:</p>
+<p>A full subsystem for independent references &mdash; use it for mosaic panels or completely different targets loaded in one run. See &sect;9.10 for the full logic. Controls:</p>
 <ul>
   <li><b>Active set</b> dropdown + <b>New Set&hellip;</b> &mdash; create a named set.</li>
   <li><b>Assign Selected &rarr; Set</b> &mdash; moves the highlighted frames (or whole groups) into the active set.</li>
@@ -291,7 +293,7 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 <p>SASpro's multi-frame deconvolution engine, implementing the ImageMM method of Sukurdeep et al. (2025) with original engineering extensions for real astrophotography data &mdash; most notably a <b>rejection-aware MM update</b> that reuses the stacking rejection maps to exclude satellite trails, aircraft, transient defects and hot-pixel outliers from the per-iteration updates (this is exactly what the <i>Rejection Strength</i> control blends).</p>
 <div class="pub"><b>Implementation whitepaper &mdash; Franklin&nbsp;Marek (2026):</b>
 <i>&ldquo;ImageMM: Multi-Frame PSF-Aware Deconvolution &mdash; Practical Notes &amp; Implementation Diagram&rdquo;</i>, Zenodo working paper, DOI <code>10.5281/zenodo.17252270</code> (GPL&nbsp;v3). Documents SASpro's forward model, MM update, super-resolution path, and the rejection-aware extension that is original to this implementation.</div>
-<p>Controls (see &sect;9.8 for the maths):</p>
+<p>Controls (see &sect;9.9 for the maths):</p>
 <ul>
   <li><b>Enable MFDeconv during integration</b> &mdash; master toggle.</li>
   <li><b>Super Resolution</b> + <b>&times;</b> factor &mdash; reconstruct on an r&times; super-res grid using SR PSFs. Compute grows roughly as r^4, so 2&times; is practical, 3&times; is heavy, 4&times; is heroic. Drizzle usually gives better results per minute.</li>
@@ -362,7 +364,7 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
   <li><b>Min star FWHM (px)</b> &mdash; 0.5&ndash;5.0 (default 1.2). Hot pixels are typically &lt;1&nbsp;px FWHM.</li>
   <li><b>Max ellipticity</b> &mdash; 0.1&ndash;1.0 (default 0.6). Rejects cosmic rays and satellite streaks (0 = round, 1 = line).</li>
   <li><b>Max stars</b> &mdash; 50&ndash;5000 (default 100). Astroalign <code>max_control_points</code> cap.</li>
-  <li><b>Alignment workers</b> &mdash; how many processes the registration solve pass may use. <b>Auto</b> (0, the default) lets SASpro decide and the hint beside the box shows what that currently resolves to, e.g. <code>Auto &rarr; 4 (measured (gpu))</code>. Type a number to pin it. This is the same setting as <b>Alignment workers</b> in the Star Registration window's Advanced panel &mdash; one value, <code>stacking/align/workers</code>, shared between the two the way <b>Warp interpolation</b> already is. The <b>Optimize&hellip;</b> button sets it by measurement; see &sect;7.12.</li>
+  <li><b>Alignment workers</b> &mdash; how many processes the registration solve pass may use. <b>Auto</b> (0, the default) lets SASpro decide and the hint beside the box shows what that currently resolves to, e.g. <code>Auto &rarr; 4 (measured (gpu))</code>. Type a number to pin it. This is the same setting as <b>Alignment workers</b> in the Star Registration window's Advanced panel &mdash; one value, <code>stacking/align/workers</code>, shared between the two the way <b>Warp interpolation</b> already is. The <b>Optimize&hellip;</b> button sets it by measurement; see &sect;7.13.</li>
 </ul>
 <div class="tip">
 <b>Why this matters more with the GPU detector than with SEP.</b> SEP is pure CPU and scales cleanly to every core. The GPU star detector does not: each worker process builds its own CUDA context, so past a certain count the card thrashes instead of going faster. Measured on an 8&nbsp;GB card at 12&nbsp;MP, 8 workers was the optimum and 16 wedged the card outright. Leave this on Auto unless you have a reason not to.
@@ -387,14 +389,24 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
   <li><b>Divide gain limits</b> &mdash; <i>lo</i>/<i>hi</i> clip for the division gain map (default 0.20 / 5.0). Division mode only.</li>
 </ul>
 
-<h3>7.6 Drizzle (advanced)</h3>
+<a id="afn-settings"></a>
+<h3>7.6 Local Normalization (Aperture Flux)</h3>
+<p>Matches every registered frame to the rest of the set, region by region, just before integration. Stars measure where each frame was dimmed, and the frame is brought back to match. See &sect;9.4 for how it works.</p>
+<ul>
+  <li><b>Aperture Flux Normalization</b> &mdash; master toggle (default off). When on, it runs once per integration group, after registration and before rejection. It writes no new frames.</li>
+  <li><b>Also match the sky background</b> &mdash; default on, and only available with the toggle above. After the brightness is matched, it also removes differences in sky glow between frames (light pollution, moon, airglow). The target cancels in that comparison, so nebulae and galaxies are not mistaken for gradient. The gradient every frame shares is left for ABE Poly&sup2; or for gradient tools on the finished stack.</li>
+</ul>
+<div class="tip"><b>When to turn it on:</b> data from several nights, thin cloud or haze in some subs, a wide field where extinction changes across the frame, frames from both sides of a meridian flip, or a flat that doesn't quite match every session. If your frames already agree, it does no harm: a clear frame gets one overall scale, which is ordinary global normalization.</div>
+<p>It works alongside ABE Poly&sup2; (&sect;7.5) or instead of it. Drizzle and frame weights need no settings of their own: drizzle applies the same maps to each original frame as it is deposited, and frame weights are unchanged.</p>
+
+<h3>7.7 Drizzle (advanced)</h3>
 <ul>
   <li><b>Kernel</b> &mdash; Square (pixfrac), Circular (disk), Gaussian.</li>
   <li><b>Kernel width</b> &mdash; pixfrac/radius, 0&ndash;1 (default 1.0).</li>
   <li><b>Gaussian &sigma; (px)</b> &mdash; 0.05&ndash;3.0, enabled only when Gaussian kernel is selected.</li>
 </ul>
 
-<h3>7.7 Multi-frame Deconvolution (tuning)</h3>
+<h3>7.8 Multi-frame Deconvolution (tuning)</h3>
 <ul>
   <li><b>Seed image</b> &mdash; <i>Integrated prepass image</i> uses the already rejection-cleaned master; <i>Robust &mu;&ndash;&sigma; (live stack)</i> is a running mean with sigma clipping; <i>Median (Sukhdeep et al.)</i> is a tiled median stack.</li>
   <li><b>Star mask</b> block &mdash; Star detect &sigma;, Dilate (+px), Feather &sigma; (px), Max star radius (px), Max stars kept, Keep-floor (0=hard mask, 0.2=gentle), Ellipse scale.</li>
@@ -402,7 +414,7 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
   <li><b>Reset MFDeconv to Recommended</b> &mdash; restores a known-good seed+mask+varmap set in one click.</li>
 </ul>
 
-<h3>7.8 Rejection</h3>
+<h3>7.9 Rejection</h3>
 <ul>
   <li><b>Algorithm</b> &mdash; 9 options:
     <ul>
@@ -418,14 +430,14 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
     </ul>
     Only the parameters relevant to your choice are shown.
   </li>
-  <li><b>Frame weighting</b> &mdash; <i>Balanced</i>, <i>PSF-weighted</i>, <i>SNR-weighted</i>, <i>Star-count-weighted</i>. See &sect;9.5 for how each shifts the term exponents.</li>
+  <li><b>Frame weighting</b> &mdash; <i>Balanced</i>, <i>PSF-weighted</i>, <i>SNR-weighted</i>, <i>Star-count-weighted</i>. See &sect;9.6 for how each shifts the term exponents.</li>
   <li><b>Sigma thresholds</b> &mdash; High / Low (0.1&ndash;10 each, default 3.0 / 2.0). Used by all sigma-based algorithms.</li>
   <li><b>Kappa</b> &mdash; 0.1&ndash;10 (default 2.5). Used by Kappa-Sigma.</li>
   <li><b>Iterations</b> &mdash; 1&ndash;10 (default 3).</li>
   <li><b>ESD threshold</b>, <b>Biweight constant</b>, <b>Trim fraction</b>, <b>Modified Z threshold</b> &mdash; one row each, enabled according to the chosen algorithm.</li>
 </ul>
 
-<h3>7.9 Cosmetic Correction (Advanced)</h3>
+<h3>7.10 Cosmetic Correction (Advanced)</h3>
 <ul>
   <li><b>Enable advanced cosmetic tuning</b> &mdash; unlocks the hot/cold sigma spinboxes below. Off = defaults apply.</li>
   <li><b>Hot &sigma;</b>, <b>Cold &sigma;</b> &mdash; 0.1&ndash;20 (default 5.0 each).</li>
@@ -433,10 +445,10 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
   <li><b>Restore Recommended</b> &mdash; one-click defaults.</li>
 </ul>
 
-<h3>7.10 Comet (High-Clip Percentile tuning)</h3>
-<p><b>High-clip k</b> / <b>Percentile p</b> &mdash; parameters of the High-Clip Percentile reducer used for comet nucleus stacks (defaults 1.30 / 25.0). See <code>_high_clip_percentile</code> in &sect;9.6.</p>
+<h3>7.11 Comet (High-Clip Percentile tuning)</h3>
+<p><b>High-clip k</b> / <b>Percentile p</b> &mdash; parameters of the High-Clip Percentile reducer used for comet nucleus stacks (defaults 1.30 / 25.0). See <code>_high_clip_percentile</code> in &sect;9.7.</p>
 
-<h3>7.11 Comet Star Removal (Optional)</h3>
+<h3>7.12 Comet Star Removal (Optional)</h3>
 <ul>
   <li><b>Remove stars on comet-aligned frames</b> &mdash; master toggle.</li>
   <li><b>Tool</b> &mdash; StarNet, Cosmic Clarity DarkStar, SyQon (NAFNet), StarXTerminator.</li>
@@ -445,7 +457,7 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 </ul>
 
 <a id="optimize"></a>
-<h3>7.12 Optimize&hellip; &mdash; tuning for your hardware</h3>
+<h3>7.13 Optimize&hellip; &mdash; tuning for your hardware</h3>
 
 <p>Beside <b>Rows per pass</b> in the General column is an <b>Optimize&hellip;</b> button. It measures this computer rather than guessing, and writes three settings: which star detector registration uses, how many worker processes it uses, and how many rows go into one integration pass.</p>
 
@@ -461,7 +473,7 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 
 <p>All four inputs are remembered, saved both when you press Run and when you close the window, so a large sensor is typed once. If the lights you have loaded disagree with the remembered size, the dialog says so beside the field rather than overriding your choice.</p>
 
-<p>A run takes a few minutes and the GPU will be busy. Cancel stops at the next batch boundary. A configuration that overloads the card is abandoned automatically &mdash; see &sect;9.11 for why that matters.</p>
+<p>A run takes a few minutes and the GPU will be busy. Cancel stops at the next batch boundary. A configuration that overloads the card is abandoned automatically &mdash; see &sect;9.12 for why that matters.</p>
 
 <h4>Reading the result</h4>
 
@@ -548,10 +560,56 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
 <p>Optional ABE-style poly&sup2; gradient removal fits the model</p>
 <div class="matheq">G(x,y) = a + bx + cy + dx^2 + exy + fy^2</div>
 <p>to robustly selected background sample points on a downsampled frame, then either subtracts or divides it back on the full resolution. The &ldquo;Skip if strength&nbsp;&lt;&rdquo; guard compares peak-to-peak of <code>G</code> against the frame's robust noise so clean skies pass through untouched.</p>
+<p>ABE fits each frame on its own, before registration. Matching the frames to <i>each other</i> after registration is a separate step, Aperture Flux Normalization (&sect;9.4).</p>
+
+<a id="tech-afn"></a>
+<h3>9.4 Aperture Flux Normalization</h3>
+<p>SASpro's local normalization. After registration every frame sits on the reference grid, and at each pixel</p>
+<div class="matheq-hero">F_i(x,y) = T_i(x,y)\,S(x,y) + B_i(x,y)</div>
+<p>\( S \) is the sky and the target, the same in every frame. \( T_i \) is how much of it reached the sensor: thin cloud, haze, the extinction gradient across a wide field, dew, a flat that no longer quite matches. It <b>multiplies</b>. \( B_i \) is light pollution, moon, airglow and scattered light, and it <b>adds</b>. Both vary across the field and from frame to frame. One brightness scale per frame cannot represent a cloud edge across one corner, and that is where most normalization schemes stop: one global scale per frame, with at most a local additive correction.</p>
+
+<h4>Two maps from two kinds of evidence</h4>
+<p><b>Brightness (multiplicative), from stars.</b> Each star is measured with aperture photometry. The local sky is taken from an annulus around it and subtracted:</p>
+<div class="matheq">\Phi_{i,k} = \sum_{\mathrm{aperture}} F_i - n_{\mathrm{ap}}\,\mathrm{median}_{\mathrm{annulus}}(F_i)</div>
+<p>Subtracting the annulus is what isolates the multiplicative part. Haze or moonglow adds light both inside the aperture and in the annulus around it, so the additive sky cancels at every star. What remains is the dimming, which scales the star itself. Each star is compared with its own median across the whole set:</p>
+<div class="matheq">\ln r_{i,k} = \ln\frac{\Phi_{i,k}}{\mathrm{median}_j\,\Phi_{j,k}} \approx \rho_i(x_k, y_k)</div>
+<p>and a smooth surface \( \rho_i \) is fitted through those log ratios. The frame's gain map is \( g_i = e^{-\rho_i} \).</p>
+<p><b>Sky (additive), from the background.</b> This one is measured <i>after</i> dividing out the brightness map, on a grid of star-masked sky cells. Once the dimming is taken out, a frame and the set differ only by sky, so the target cancels in the difference. There is no need to find &ldquo;pure background&rdquo; around a nebula or galaxy, which is the hard part of ABE. The frame's offset map \( o_i \) is fitted to</p>
+<div class="matheq">F_i\,g_i - \mathrm{median}_j(F_j\,g_j)</div>
+<p>over those cells. The correction applied to the frame is then</p>
+<div class="matheq">F_i^{\prime} = F_i\,g_i - o_i</div>
+<p>The two maps come from different evidence and are never solved jointly. Fitting a gain and an offset from the same pixels is degenerate on real data: the solver trades one against the other, flattens frames to grey and lifts the sky. The two-map split keeps the problem well posed.</p>
+
+<h4>The reference is the whole set</h4>
+<p>Each star's reference brightness is its median over every frame in the group, and each sky cell's is the median sky. No single frame's noise or cloud is copied into the others, and nothing depends on choosing a reference frame.</p>
+<p><b>Meridian flips.</b> After a flip, the optics' own field pattern (vignetting residue, a flat that doesn't match one side) turns 180&deg; with the frame. A plain median then sides with whichever orientation has more frames. On one real H&alpha; set, 21 of 55 frames came out about 15% brighter on one side than the rest. When the frames are on both sides of a flip, the reference is <b>balanced</b>: a median is taken within each orientation, and the reference is their geometric mean. The two orientations then pull equally, and the frames on each side are tilted half-way, in opposite directions, so they meet in the middle. Orientation comes from the alignment's own 180&deg; flag, or from the pier side or position angle in the header.</p>
+
+<h4>Each frame earns only the detail its stars support</h4>
+<p>How flexible each frame's map may be is decided per frame by cross-validation. Some stars are held out, the map is fitted to the rest, and it is scored on how well it predicts the held-out stars. The candidates form a ladder from rigid to flexible:</p>
+<div class="eq">constant &rarr; plane &rarr; quadratic &rarr; smooth (wide) &rarr; cubic &rarr; smooth &rarr; smooth (fine) &rarr; smooth (finest)</div>
+<p>Flexible steps are offered only when there are stars to support them: fewer than 12 stars gets only the constant, the smooth maps need 40 or more, and the two finest need 120 and 300. Candidates are compared paired, star by star, on a winsorized loss, so a few variable stars or cosmic-ray hits can't swing the choice. A frame gets the simplest map that predicts its held-out stars as well as the best one does. A clear frame lands on the constant, which is plain global normalization. A frame with a cloud edge across it earns a flexible map, because that map predicts stars it never saw. Detail the held-out stars don't support is not added, which is what keeps the correction from mottling the stack. The sky maps are chosen the same way, on held-out sky cells.</p>
+<p>Safety rails: a brightness map is never extrapolated past the range its own stars support, and never scales any pixel by more than 2&times; either way. A sky map is held to the range of its fitted cells. When a rail engages, the log reports it as information, not as a problem.</p>
+
+<h4>0.0 is no-data</h4>
+<p>A star is used only if no 0.0 (or non-finite) pixel falls inside its outer annulus. A sky cell uses non-zero samples only. When the correction is applied, 0.0 stays exactly 0.0, and a real pixel the correction would push to zero or below is floored just above it, so it can never turn into a registration border.</p>
+
+<h4>Where it runs, and what it costs</h4>
+<p>It runs per integration group, between registration and integration. The maps are small grids (about 128 cells on the long axis), and each frame's correction is applied as its tiles are read by the integration, in both the normal and Low RAM Safe Mode readers. No corrected frames are written, which on a slow drive is most of what a separate normalization pass would cost. Measuring and fitting use every core. As a guide, 403 full-frame 8288&times;5644 frames took just over a minute from a cold drive.</p>
+<p>Measurements and maps are cached in <code>Measurements/afn/</code> in the stacking folder. Re-integrating the same frames with different rejection settings reuses them and takes a fraction of a second. Changing any frame invalidates the cache for that group.</p>
+
+<h4>Drizzle</h4>
+<p>Drizzle deposits from the original, unregistered frames (&sect;9.8), while the maps live on the reference grid. Each original frame is corrected before it is deposited, with the maps sampled through the same transform that places its pixels. Every raw pixel therefore gets the correction of the sky position it lands on, exactly as its registered counterpart did in the integration. This matters for rejection too: drizzle reuses the integration's rejection masks, and those were computed on corrected pixels. Sparse CFA planes keep their empty pixels.</p>
+
+<h4>Why it helps rejection</h4>
+<p>Rejection judges each pixel against the spread of the stack at that pixel. A frame dimmed by a passing cloud sits low everywhere under the cloud, so rejection either throws its good photons away or, when the spread is wide enough, lets the dimming into the master. Matching the frames first makes the per-pixel spread tight again. Rejection then removes satellites and cosmic rays rather than weather, and keeps more real signal.</p>
+
+<h4>Reading the results</h4>
+<p>The log reports, per group, the photometry stars used, the aperture and annulus, the sky grid, how the maps were chosen, and how much better they predict held-out stars than a single global scale. The <b>Log Analysis (Beta)</b> tab gathers all of this on its <b>Local Normalization</b> page: one row per group, and a plain-language readout of what was measured and corrected when you select a row.</p>
+<p>The best single number to read is <b>held-out stars better</b>. A median near 0&ndash;2% means the frames already agreed and AFN mostly applied one overall scale each. Tens of percent means real spatial differences, such as clouds, haze or a flip, were found and taken out. AFN only corrects what it can verify on stars it was not fitted to.</p>
 
 <a id="tech-registration"></a>
-<h3>9.4 Registration</h3>
-<p>Reference selection: either you lock a frame (Pick&hellip; / Select Reference Frame), or the suite measures every candidate by its combined quality score (see &sect;9.5) and picks the best. Reference lock survives tab changes; auto-accept unlocks it.</p>
+<h3>9.5 Registration</h3>
+<p>Reference selection: either you lock a frame (Pick&hellip; / Select Reference Frame), or the suite measures every candidate by its combined quality score (see &sect;9.6) and picks the best. Reference lock survives tab changes; auto-accept unlocks it.</p>
 <p>Each non-reference frame is solved against the reference with astroalign-style triangle matching on detected stars (SEP, with filters: min area, min FWHM, max ellipticity), then refined by the chosen transform model:</p>
 <ul>
   <li><b>Affine</b> &mdash; six degrees of freedom, closed-form least-squares.</li>
@@ -564,7 +622,7 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
 <p>Accurate mode re-runs the solve 3 times with the previous solution as warm start; shift tolerance and max shift gate acceptance. Rejected frames are logged and skipped.</p>
 
 <a id="tech-weights"></a>
-<h3>9.5 Frame weighting</h3>
+<h3>9.6 Frame weighting</h3>
 <p>Every frame gets a weight from five measured terms &mdash; detected star count (c), mean eccentricity (&epsilon;), background level (bg), FWHM proxy, and MAD-based noise estimate &mdash; combined multiplicatively with per-mode exponents:</p>
 <div class="matheq">w = c^{a_c}\,(1 - \varepsilon)^{a_e}\,b^{a_b}\,s^{a_s}\,n^{a_n}</div>
 <p>with</p>
@@ -582,7 +640,7 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
 <p>The sharpness and SNR ratios are measured against the population median and clamped to [1/3, 3] so a single mismeasured frame can't dominate. A frame measured far tighter than the population (ratio &lt; 0.4&times; or &lt; 0.25&times;) is treated as a mismeasurement and set neutral.</p>
 
 <a id="tech-rejection"></a>
-<h3>9.6 Rejection algorithms</h3>
+<h3>9.7 Rejection algorithms</h3>
 <p>Rejection runs per output pixel across the registered stack, honouring per-frame weights where applicable. All reducers are implemented in NumPy (CPU) and PyTorch (GPU; cuDNN-free fallback and DirectML workarounds included). Each writes a 3-layer rejection map alongside its scalar output: <i>any-mask</i>, <i>fraction</i> (fraction of frames rejected), <i>count</i> (total frames rejected). These layers can be saved into master lights as additional FITS HDUs.</p>
 
 <h4>Weighted Winsorized Sigma Clipping (default)</h4>
@@ -617,12 +675,12 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
 <p>No rejection. <i>Max Value</i> is the engine behind Star-Trail mode: per-pixel maximum across all frames.</p>
 
 <h4>Comet reducers</h4>
-<p>Specialised for comet-aligned stacks where stars become trails that must be rejected: Comet Median, Comet High-Clip Percentile (parameters k and p in &sect;7.10), Comet Lower-Trim (30%), Comet Percentile (40th). The high-clip percentile combines a percentile-centre with a sigma-style cap:</p>
+<p>Specialised for comet-aligned stacks where stars become trails that must be rejected: Comet Median, Comet High-Clip Percentile (parameters k and p in &sect;7.11), Comet Lower-Trim (30%), Comet Percentile (40th). The high-clip percentile combines a percentile-centre with a sigma-style cap:</p>
 <div class="matheq">P_{40}(x_{xy}) = \mathrm{quantile}_{0.40}(x_{xy})</div>
 <div class="matheq">\mathrm{keep}: x_i \leq \mu + k\,|x_i - P_p|</div>
 
 <a id="tech-drizzle"></a>
-<h3>9.7 Drizzle</h3>
+<h3>9.8 Drizzle</h3>
 <p>Variable-pixel linear reconstruction, after Fruchter &amp; Hook (2002):</p>
 <div class="matheq-hero">I'(X,Y) = \frac{\sum_i w_i\,A_i(X,Y)\,I_i(x_i,y_i)}{\sum_i w_i\,A_i(X,Y)}</div>
 <p>where each input pixel is &ldquo;drizzled&rdquo; onto the output grid as a kernel of area <code>A_i(X,Y)</code> centred on the warped position. The kernel is:</p>
@@ -632,9 +690,10 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
   <li><b>Gaussian</b> &mdash; a Gaussian with user-set &sigma;; smoothest, but weakest resolution gain.</li>
 </ul>
 <p>Scale 2&times; / 3&times; means the output grid has 4&times; / 9&times; the pixels of the input. With CFA Drizzle on, R/G/B samples from the Bayer pattern are drizzled directly into the three output channels &mdash; no interpolation step, which is the only way to <i>gain</i> resolution from one-shot colour.</p>
+<p>With Aperture Flux Normalization on, each original frame is corrected with the integration's own maps before it is deposited, sampled through the same transform as its pixels (&sect;9.4).</p>
 
 <a id="tech-mfdeconv"></a>
-<h3>9.8 Multi-frame deconvolution</h3>
+<h3>9.9 Multi-frame deconvolution</h3>
 <p>ImageMM &mdash; a majorization-minimization (MM) framework for joint multi-frame restoration and super-resolution (Sukurdeep et&nbsp;al. 2025). The latent sky image <code>I</code> is recovered by iteratively minimising a surrogate of the robust data fit across all frames, with per-frame PSFs <code>H_j</code> and per-pixel noise variances <code>v_j</code>. The multiplicative update, with your &kappa; cap and &rho; loss:</p>
 <div class="matheq-hero">I^{(k+1)} = I^{(k)} \cdot \mathrm{clip}\!\left(\frac{\sum_j H_j^{T}\!\left(\rho'(d_j)/v_j\right)}{\sum_j H_j^{T}(1/v_j)},\;\frac{1}{\kappa},\;\kappa\right)</div>
 <p>where <code>H_j</code> is the forward operator (blur + warp + down-sample) for frame <code>j</code>, <code>d_j = D_j - H_j I^{(k)}</code> is the data residual, and <code>v_j</code> is the per-pixel variance:</p>
@@ -649,23 +708,23 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
 <p>Star masks protect stellar cores from ringing by clamping update ratios near 1:</p>
 <div class="matheq">M = 1 - \mathrm{keep\_floor} \cdot (1 - M_{\mathrm{raw}})</div>
 <p>Super-resolution reconstructs <code>I</code> on an r&times; grid; each <code>H_j</code> then includes an r&times; down-sampling step. Cost scales roughly as r^4.</p>
-<p><b>Rejection-aware MM &mdash; SASpro extension (Marek 2026, DOI&nbsp;<code>10.5281/zenodo.17252270</code>).</b> Before MFDeconv runs, the suite performs its usual robust integration prepass and keeps the per-frame rejection maps that would normally live in the master light's extra FITS HDUs (any-mask, fraction, count &mdash; see &sect;9.6 and &sect;6.9). Those rejected pixels &mdash; satellite trails, aircraft, cosmic rays, transient defects, hot-pixel outliers &mdash; are then <i>excluded</i> from the forward operator for the frames that saw them, so the sums <code>&Sigma;_j H_j^T(&middot;)</code> only run over good samples per output pixel. The <b>Rejection Strength</b> control (&sect;6.6) blends between the rejection-ignoring solve (0.0) and the fully rejection-aware solve (1.0); intermediate values run both endpoints and interpolate the final image. This is why the suite recommends leaving <i>Save rejection layers with master lights</i> on when you plan to run MFDeconv &mdash; those layers are the extension's input.</p>
+<p><b>Rejection-aware MM &mdash; SASpro extension (Marek 2026, DOI&nbsp;<code>10.5281/zenodo.17252270</code>).</b> Before MFDeconv runs, the suite performs its usual robust integration prepass and keeps the per-frame rejection maps that would normally live in the master light's extra FITS HDUs (any-mask, fraction, count &mdash; see &sect;9.7 and &sect;6.9). Those rejected pixels &mdash; satellite trails, aircraft, cosmic rays, transient defects, hot-pixel outliers &mdash; are then <i>excluded</i> from the forward operator for the frames that saw them, so the sums <code>&Sigma;_j H_j^T(&middot;)</code> only run over good samples per output pixel. The <b>Rejection Strength</b> control (&sect;6.6) blends between the rejection-ignoring solve (0.0) and the fully rejection-aware solve (1.0); intermediate values run both endpoints and interpolate the final image. This is why the suite recommends leaving <i>Save rejection layers with master lights</i> on when you plan to run MFDeconv &mdash; those layers are the extension's input.</p>
 
 <a id="tech-sets"></a>
-<h3>9.9 Registration Sets</h3>
+<h3>9.10 Registration Sets</h3>
 <p>A set is an orthogonal partition that sits above the filter / exposure grouping. Each set has its own reference and integrates to its own master. The queue runs sets serially, buffering the per-set summaries and flushing them as a single run report; the &ldquo;already registered&rdquo; precheck choice is remembered across all sets in one run so you aren't prompted repeatedly.</p>
 <p>Filename-based assignment uses a regex equivalent to</p>
 <div class="eq">keyword[\s_\-.]([^\s_\-.]+)</div>
 <p>so <code>M31_Panel 1_2024-01-02.fit</code>, <code>M31_Panel_02.fit</code> and <code>M31.Panel.3.fit</code> all match. Unmatched frames stay in the Default set, which keeps the global reference.</p>
 
 <a id="tech-gpu"></a>
-<h3>9.10 GPU backends</h3>
+<h3>9.11 GPU backends</h3>
 <div class="gpu">The Stacking Suite shares one PyTorch runtime (installed via <i>Install/Update GPU Acceleration&hellip;</i>) across every heavy stage: calibration, cosmetic correction, satellite CNN, rejection reducers, MFDeconv. Backend auto-detection picks the first available of CUDA, MPS (Apple Silicon), DirectML (Windows GPUs via <code>torch-directml</code>), falling back to CPU. The <code>stacking/use_hardware_accel</code> master toggle disables the GPU path app-wide.</div>
 <p>DirectML needs a workaround for a known <code>torch-directml</code> bug: <code>nanmedian</code>/<code>nanquantile</code>/<code>nanstd</code> can return empty tensors, so those reductions are forced to CPU and the results moved back to device (one-time warning per session). CUDA uses <code>PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True</code> to reduce fragmentation between the cosmetic pass and the satellite CNN; a device-wide RLock serialises the two so they don't both resident at once (which OOMs small cards on Linux/CUDA where VRAM cannot page).</p>
 <p>Supported Python runtimes for GPU install: 3.12, 3.13, 3.14. The installer refuses older/newer versions with platform-specific tips.</p>
 
 <a id="tech-tuning"></a>
-<h3>9.11 Hardware tuning &mdash; how the optimizer decides</h3>
+<h3>9.12 Hardware tuning &mdash; how the optimizer decides</h3>
 
 <p>Two independent questions, measured separately because one does not imply the other. Worker count is about how many <i>processes</i> may hold a CUDA context at once; band height is about how much work goes into <i>one</i> rejection call in the parent process.</p>
 
@@ -711,7 +770,7 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
 <p>Band timings move around 18% between runs, which is why the band tie-break is 10% where the worker one is 3%. Tightening it does not help: on one measured curve a 3% threshold picks 128 rows &mdash; eight times the band RAM &mdash; to chase a difference smaller than the run-to-run noise.</p>
 
 <a id="tech-cleanup"></a>
-<h3>9.12 File layout &amp; cleanup</h3>
+<h3>9.13 File layout &amp; cleanup</h3>
 <p>Inside your chosen stacking folder the suite creates:</p>
 <table>
   <tr><th>Folder</th><th>Contents</th></tr>
@@ -719,6 +778,7 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
   <tr><td><code>Calibrated/</code></td><td>Calibrated lights (<code>*_c.fit</code>). Delete after integration if disk is tight.</td></tr>
   <tr><td><code>Normalized_Images/</code></td><td>Normalized, pre-registration frames. Intermediate; always deletable.</td></tr>
   <tr><td><code>Aligned_Images/</code></td><td>Registered <code>*_r.fit</code> frames. Keep if you plan to re-integrate with different rejection.</td></tr>
+  <tr><td><code>Measurements/</code></td><td>Cached frame measurements, and the Aperture Flux Normalization measurements and maps (<code>afn/</code>). Always deletable; it costs one re-measure.</td></tr>
   <tr><td>loose <code>.dat</code> / <code>.npy</code> / <code>.tmp</code></td><td>Memmap scratch, transform caches, star catalogues. Always deletable.</td></tr>
   <tr><td><code>stacking_log.txt</code></td><td>Timestamped log of every run.</td></tr>
 </table>
@@ -742,7 +802,7 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
   <li><b>Satellite trail CNN</b> &mdash; third-party CNN packaged with SASpro's runtime; invoked here as a post-calibration pass.</li>
   <li><b>Spectrophotometric Standard Star Calibration</b> work that informs the plate-solve-first master handling &mdash; Franklin Marek, DOI <code>10.5281/zenodo.23107662</code> (CC-BY 4.0).</li>
 </ul>
-Pipeline design, the quick-stack card UI, the shared GPU runtime, the three-thread calibration pipeline, Registration Sets, dual-band advanced split, the frame-weighting modes, and the per-group dark/flat overrides are original to this suite.
+Aperture Flux Normalization (star-measured multiplicative and sky-measured additive maps, per-frame cross-validated model selection, the flip-balanced set reference), pipeline design, the quick-stack card UI, the shared GPU runtime, the three-thread calibration pipeline, Registration Sets, dual-band advanced split, the frame-weighting modes, and the per-group dark/flat overrides are original to this suite.
 </div>
 
 </body>

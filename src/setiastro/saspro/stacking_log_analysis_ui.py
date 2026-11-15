@@ -119,6 +119,9 @@ def _afn_readout(a) -> str:
         bits.append(f"across {a.processes} processes")
     if bits:
         out.append("<b>Cost:</b> " + ", ".join(bits) + ".")
+    if a.drizzle:
+        out.append("<b>Drizzle:</b> the same maps were applied as each original "
+                   f"frame was deposited — {esc(a.drizzle)}.")
     for n in a.notes:
         out.append(f"<span style='color:#c9913a'>{esc(n)}</span>")
     return "<br>".join(out)

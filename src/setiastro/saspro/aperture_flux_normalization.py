@@ -85,6 +85,7 @@ __all__ = [
     "AFNFrameModel",
     "build_models_for_group",
     "apply_tile_inplace",
+    "apply_frame_inplace",
     "AFN_VERSION",
 ]
 
@@ -177,26 +178,141 @@ def apply_tile_inplace(view: np.ndarray, model: Optional[AFNFrameModel],
     """
     if model is None or model.info.get("identity"):
         return
-    import cv2
     th, tw = y1 - y0, x1 - x0
     if th <= 0 or tw <= 0:
         return
     mx, my = _tile_maps(y0, y1, x0, x1, int(model.cell))
+    _correct_view(view, model, mx, my)
+
+
+def apply_frame_inplace(img: np.ndarray, model: Optional[AFNFrameModel],
+                        transform=None, rows: int = 256, step: int = 4) -> bool:
+    """Correct a whole frame in place, in the frame's OWN pixel grid.
+
+    For drizzle, which deposits from the original (unregistered) frame. The
+    maps were measured on the reference grid; `transform` is the 3x3 that
+    carries this frame's pixel (x, y) onto that grid -- the same matrix the
+    deposit uses -- so each raw pixel gets the gain and offset of the sky
+    position it lands on. None means the frame already sits on the reference
+    grid (pre-registered, or a polynomial/TPS warp), and then this is exactly
+    the integration's tile path.
+
+    Through a transform, the projection is done exactly on a lattice every
+    `step` raw pixels and the maps are upsampled from it. They are bilinear
+    over cells of 32+ px, and cv2's own bilinear already rounds to 1/32 of a
+    cell, so a 4 px lattice adds nothing measurable -- and it is what keeps a
+    47 MP frame from spending seconds in float64 projective arithmetic.
+
+    `img` is (H, W) or (H, W, C). 0.0 stays 0.0, so a sparse CFA plane keeps
+    its holes. Returns True when the frame was changed.
+    """
+    if model is None or model.info.get("identity"):
+        return False
+    H, W = img.shape[:2]
+    if H <= 0 or W <= 0:
+        return False
+    rows = max(1, int(rows))
+    if transform is None:
+        for y0 in range(0, H, rows):
+            y1 = min(H, y0 + rows)
+            apply_tile_inplace(img[y0:y1], model, y0, y1, 0, W)
+        return True
+
+    import cv2
+    M = np.asarray(transform, np.float64).reshape(3, 3)
+    cell = float(model.cell)
+    step = max(1, int(step))
+
+    # 1. exact projection on the lattice (it covers the last pixel)
+    lx = np.arange((W - 1) // step + 2, dtype=np.float64) * step
+    ly = np.arange((H - 1) // step + 2, dtype=np.float64) * step
+    # each term is separable in x and y, so it is built from broadcasts --
+    # the divide is only needed for a real homography
+    xr, yc = lx[None, :], ly[:, None]
+    u = M[0, 0] * xr + (M[0, 1] * yc + M[0, 2])
+    v = M[1, 0] * xr + (M[1, 1] * yc + M[1, 2])
+    if M[2, 0] != 0.0 or M[2, 1] != 0.0 or M[2, 2] != 1.0:
+        w = M[2, 0] * xr + (M[2, 1] * yc + M[2, 2])
+        w = np.where(w == 0.0, 1e-12, w)
+        u = u / w
+        v = v / w
+    # same pixel-centre -> grid-coordinate rule as _tile_maps
+    gx = np.ascontiguousarray((u + 0.5) / cell - 0.5, dtype=np.float32)
+    gy = np.ascontiguousarray((v + 0.5) / cell - 0.5, dtype=np.float32)
+    del u, v
+
+    C = img.shape[2] if img.ndim == 3 else 1
+    has_off = model.info.get("has_offset", True)
+    lattice = []
+    for c in range(C):
+        gc = model.gain[min(c, model.gain.shape[0] - 1)]
+        oc = model.offset[min(c, model.offset.shape[0] - 1)]
+        lg = cv2.remap(gc, gx, gy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        lo = (cv2.remap(oc, gx, gy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+              if has_off else None)
+        lattice.append((lg, lo))
+
+    # 2. every pixel, strip by strip: raw pixel x sits at lattice coordinate
+    #    x/step. Strips are independent and cv2/numpy release the GIL, so
+    #    they run across the cores; cv2 is held to one thread meanwhile so
+    #    the pool, not cv2, owns them.
+    inv = np.float32(1.0 / step)
+    mrow = np.arange(W, dtype=np.float32) * inv
+    mx_full = np.ascontiguousarray(np.broadcast_to(mrow[None, :], (rows, W)))
+
+    def _strip(y0):
+        y1 = min(H, y0 + rows)
+        mx = mx_full if y1 - y0 == rows else np.ascontiguousarray(mx_full[:y1 - y0])
+        mcol = np.arange(y0, y1, dtype=np.float32) * inv
+        my = np.ascontiguousarray(np.broadcast_to(mcol[:, None], (y1 - y0, W)))
+        view = img[y0:y1]
+        for c, (lg, lo) in enumerate(lattice):
+            g = cv2.remap(lg, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+            o = (None if lo is None else
+                 cv2.remap(lo, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE))
+            _apply_fields(view[..., c] if view.ndim == 3 else view, g, o)
+
+    starts = list(range(0, H, rows))
+    nthreads = max(1, min(len(starts), _cpu_workers()))
+    if nthreads == 1:
+        for y0 in starts:
+            _strip(y0)
+        return True
+    from concurrent.futures import ThreadPoolExecutor
+    prev = cv2.getNumThreads()
+    cv2.setNumThreads(1)
+    try:
+        with ThreadPoolExecutor(max_workers=nthreads) as ex:
+            for _ in ex.map(_strip, starts):
+                pass
+    finally:
+        cv2.setNumThreads(prev)
+    return True
+
+
+def _apply_fields(t: np.ndarray, g: np.ndarray, o) -> None:
+    """t = t * g - o in place; 0.0 stays 0.0, real pixels floor at FLOOR."""
+    nodata = (t == 0.0)
+    np.multiply(t, g, out=t)
+    if o is not None:
+        np.subtract(t, o, out=t)
+    np.maximum(t, np.float32(FLOOR), out=t)     # NaN propagates unchanged
+    t[nodata] = 0.0
+
+
+def _correct_view(view: np.ndarray, model: AFNFrameModel, mx, my) -> None:
+    """out = in * gain - offset on `view`, with the maps sampled at (mx, my)."""
+    import cv2
     C = view.shape[-1] if view.ndim == 3 else 1
+    has_off = model.info.get("has_offset", True)
     for c in range(C):
         gc = model.gain[min(c, model.gain.shape[0] - 1)]
         oc = model.offset[min(c, model.offset.shape[0] - 1)]
         g = cv2.remap(gc, mx, my, cv2.INTER_LINEAR,
                       borderMode=cv2.BORDER_REPLICATE)
-        t = view[..., c] if view.ndim == 3 else view
-        nodata = (t == 0.0)
-        np.multiply(t, g, out=t)
-        if model.info.get("has_offset", True):
-            o = cv2.remap(oc, mx, my, cv2.INTER_LINEAR,
-                          borderMode=cv2.BORDER_REPLICATE)
-            np.subtract(t, o, out=t)
-        np.maximum(t, np.float32(FLOOR), out=t)     # NaN propagates unchanged
-        t[nodata] = 0.0
+        o = (cv2.remap(oc, mx, my, cv2.INTER_LINEAR,
+                       borderMode=cv2.BORDER_REPLICATE) if has_off else None)
+        _apply_fields(view[..., c] if view.ndim == 3 else view, g, o)
 
 
 # ════════════════════════════════════════════════════════════════════════

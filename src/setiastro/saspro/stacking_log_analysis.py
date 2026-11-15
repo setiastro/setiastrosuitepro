@@ -247,6 +247,7 @@ class AFNGroup:
     clamped: int | None = None
     t_measure: float | None = None
     t_fit: float | None = None
+    drizzle: str = ""                   # "63 of 63 frames corrected"
     notes: list = field(default_factory=list)
 
     @property
@@ -438,6 +439,12 @@ RULES: list = [
         r"AFN timing:\s*measure\s*(?P<m>[\d.]+)s,\s*fit\s*(?P<f>[\d.]+)s")),
     ("afn_too_few",     re.compile(
         r"AFN:\s*(?P<n>\d+)\s+frame\(s\)\s*.\s*a set median needs at least")),
+    # drizzle comes after the group's "ready" line, so these name the group
+    ("afn_drizzle",     re.compile(
+        r"AFN drizzle:\s*deposits corrected for\s+'(?P<g>[^']+)':\s*"
+        r"(?P<n>\d+)\s+of\s+(?P<tot>\d+)\s+frame\(s\)(?P<extra>.*)$")),
+    ("afn_drizzle_off", re.compile(
+        r"AFN drizzle:\s*maps for\s+'(?P<g>[^']+)'\s+are\s+(?P<why>.+?)\s*$")),
     ("afn_note",        re.compile(r"AFN[: ]\s*(?P<note>.+?)\s*$")),
 
     # --- round 6: plate solving the finished masters -------------------
@@ -935,6 +942,17 @@ def _apply_afn(rep: StackingRunReport, rid: str, m, g: dict, ll: LogLine) -> Non
             if rid == "afn_skipped":
                 a.skip_reason = (g.get("why") or "").strip()
             rep._cur_afn_group = ""
+        return
+
+    if rid in ("afn_drizzle", "afn_drizzle_off"):
+        a = rep.afn.get((g.get("g") or "").strip())
+        if a is not None:
+            if rid == "afn_drizzle":
+                extra = (g.get("extra") or "").strip(" ;")
+                a.drizzle = (f"{g.get('n')} of {g.get('tot')} frames corrected"
+                             + (f" ({extra})" if extra else ""))
+            else:
+                a.drizzle = "not applied: maps are " + (g.get("why") or "").strip()
         return
 
     a = rep.afn.get(rep._cur_afn_group)
