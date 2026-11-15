@@ -4859,6 +4859,51 @@ def _fits_read_any_hdu_noscale(path: str, memmap: bool) -> tuple[np.ndarray | No
             return d, h.header, i
     return None, None, None
 
+def _normalize_pool_plan(H, W, n_frames, override=0):
+    """Worker threads for the normalization stage, and numba threads for each.
+
+    Each worker loads, debayers, matches and writes one frame end to end. The
+    pool used to be a flat 8 on every machine, which left most of a 40-core
+    box idle. It is now sized by physical cores (two left for the GUI and
+    I/O, at most 32 -- past that the GIL-held parts, chiefly the FITS write,
+    are the ceiling) and by available RAM: ~16 full-frame float32 planes per
+    worker in flight (raw, the RGB result, RCD's bilinear base and working
+    copy, the CFA-drizzle sparse copy, temporaries).
+
+    numba's threads are split across the workers so N concurrent debayers
+    don't each start a team the size of the machine. Not split when the
+    threading layer is serialized (workqueue): one debayer runs at a time
+    there and should have every thread.
+
+    Returns (workers, numba_threads_per_worker or None, physical, ram_cap).
+    """
+    try:
+        import psutil as _ps
+        phys = int(_ps.cpu_count(logical=False) or (os.cpu_count() or 4))
+        avail = int(_ps.virtual_memory().available)
+    except Exception:
+        phys = int(os.cpu_count() or 4)
+        avail = 0
+    per_frame = max(1, int(H) * int(W) * 4 * 16)
+    cpu_cap = max(2, min(32, phys - 2))
+    ram_cap = max(2, int((avail * 0.5) // per_frame)) if avail else cpu_cap
+    try:
+        override = int(override or 0)
+    except Exception:
+        override = 0
+    workers = override if override > 0 else min(cpu_cap, ram_cap)
+    workers = max(1, min(workers, max(1, int(n_frames))))
+    nb = None
+    try:
+        import numba as _nb_mod
+        from setiastro.saspro.legacy.numba_utils import numba_parallel_serialized
+        if not numba_parallel_serialized():
+            nb = max(1, int(_nb_mod.config.NUMBA_NUM_THREADS) // workers)
+    except Exception:
+        nb = None
+    return workers, nb, phys, ram_cap
+
+
 class _StatusProgressDialog(QProgressDialog):
     """QProgressDialog for streamed status lines.
 
@@ -9805,13 +9850,18 @@ class StackingSuiteDialog(QDialog):
             return base + "_cfa" + ext
         return base + "_n_cfa" + ext
 
-    def debayer_image(self, image, file_path, header):
+    def debayer_image(self, image, file_path, header, cfa=None):
         """
         Returns RGB if debayered, otherwise returns input unchanged.
         Also stamps header with BAYERPAT or XTRANS where possible.
+
+        `cfa` (True/False) overrides the run-level CFA-drizzle choice for this
+        call only; worker threads use it instead of flipping shared state.
         """
-        # per-run override if set, else honor the checkbox
-        if self._cfa_for_this_run is None:
+        # explicit argument, else per-run override, else honor the checkbox
+        if cfa is not None:
+            cfa = bool(cfa)
+        elif self._cfa_for_this_run is None:
             cfa = bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
         else:
             cfa = bool(self._cfa_for_this_run)
@@ -28418,8 +28468,6 @@ class StackingSuiteDialog(QDialog):
             chunks = list(chunk_list(measured_frames, chunk_size))
             total_chunks = len(chunks)
 
-            ncpu = os.cpu_count() or 8
-            io_workers = min(8, max(2, ncpu // 2))
 
             ref_H, ref_W = ref_img.shape[:2] if ref_img.ndim == 2 else ref_img.shape[:2]
             # ── Canonical normalized shape ────────────────────────────────
@@ -28470,6 +28518,25 @@ class StackingSuiteDialog(QDialog):
                         f"⚠️ Could not derive post-normalize target shape from ref "
                         f"({_e_thw}); using raw ref shape {ref_W}×{ref_H}."))
             self._norm_target_hw = (int(ref_H), int(ref_W))
+
+            try:
+                _norm_override = int(self.settings.value(
+                    "stacking/norm_workers", 0, type=int) or 0)
+            except Exception:
+                _norm_override = 0
+            io_workers, _norm_nb_threads, _norm_phys, _norm_ram_cap = \
+                _normalize_pool_plan(ref_H, ref_W, len(measured_frames),
+                                     override=_norm_override)
+            # The loop below waits for each chunk to finish. Keep chunks
+            # several workers deep so a chunk's tail doesn't idle the pool.
+            chunk_size = max(chunk_size, 4 * io_workers)
+            chunks = list(chunk_list(measured_frames, chunk_size))
+            total_chunks = len(chunks)
+            self.update_status(self.tr(
+                f"\U0001F9F5 Normalizing with {io_workers} worker threads "
+                f"({_norm_phys} physical cores, RAM allows {_norm_ram_cap})"
+                + (f", {_norm_nb_threads} numba threads each"
+                   if _norm_nb_threads else "")))
 
             for idx, chunk in enumerate(chunks, 1):
                 if self._cancelled():
@@ -28529,11 +28596,9 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(self.tr(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {io_workers} threads)…"))
                 # Parallel normalize-as-they-arrive: each worker LOADS and NORMALIZES a
                 # frame end-to-end so all cores stay busy. update_status is thread-safe
-                # (queued signal); the debayer path mutates a shared flag so it is
-                # serialized by _debayer_lock (mono skips it -> full parallelism); cv2 is
-                # pinned to 1 thread; processEvents() runs only on the main thread below.
-                import threading as _norm_threading
-                _debayer_lock = _norm_threading.Lock()
+                # (queued signal); debayering takes no lock (cfa is passed explicitly,
+                # nothing shared is mutated); cv2 is pinned to 1 thread; processEvents()
+                # runs only on the main thread below.
                 try:
                     _cfa_pre = bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
                 except Exception:
@@ -28546,9 +28611,9 @@ class StackingSuiteDialog(QDialog):
                 # and those ran inside every worker thread: a QSettings read
                 # and -- worse -- a Qt widget read off the GUI thread, which is
                 # undefined behaviour no lock can make safe. Pinning them here
-                # is also what lets the non-CFA debayer call below run without
-                # _debayer_lock: with these resolved, debayer_image touches no
-                # shared mutable state on that path.
+                # is also what lets the debayer calls below run without a
+                # lock: with these resolved, debayer_image touches no shared
+                # mutable state.
                 _norm_saved_cfa    = self._cfa_for_this_run
                 _norm_saved_method = getattr(self, "_debayer_method_for_this_run", None)
                 self._cfa_for_this_run = bool(_cfa_pre)
@@ -28560,6 +28625,14 @@ class StackingSuiteDialog(QDialog):
 
                 def _normalize_one(fp):
                     try:
+                        if _norm_nb_threads:
+                            try:
+                                import numba as _nb_mod
+                                # Thread-local: caps this worker's parallel
+                                # kernels only.
+                                _nb_mod.set_num_threads(_norm_nb_threads)
+                            except Exception:
+                                pass
                         img, hdr = self._load_image_any(fp)
                         if img is None:
                             self.update_status(self.tr(f"⚠️ No data for {fp}"))
@@ -28587,39 +28660,23 @@ class StackingSuiteDialog(QDialog):
                                 # CFA drizzle: main _n.fit is DENSE (for rejection /
                                 # per-channel normalization); stash a SPARSE copy for
                                 # drizzle, written later as _n_cfa.fit.
-                                _saved_flag = self._cfa_for_this_run
-                                with _debayer_lock:
-                                    try:
-                                        self._cfa_for_this_run = True
-                                        _img_sparse = self.debayer_image(img.copy(), fp, dict(hdr) if hasattr(hdr, "keys") else hdr)
-                                        self._cfa_for_this_run = False
-                                        img = self.debayer_image(img, fp, hdr)
-                                    finally:
-                                        self._cfa_for_this_run = _saved_flag
+                                # cfa= is passed explicitly rather than by
+                                # flipping self._cfa_for_this_run, which every
+                                # worker shares. That flip needed a lock, and
+                                # the lock ran every CFA-drizzle debayer one
+                                # frame at a time.
+                                _img_sparse = self.debayer_image(
+                                    img.copy(), fp,
+                                    dict(hdr) if hasattr(hdr, "keys") else hdr,
+                                    cfa=True)
+                                img = self.debayer_image(img, fp, hdr, cfa=False)
                                 if not hasattr(self, "_pending_cfa_sparse"):
                                     self._pending_cfa_sparse = {}
                                 self._pending_cfa_sparse[os.path.normcase(os.path.normpath(fp))] = _img_sparse
                             else:
-                                # No lock here. _debayer_lock exists only to
-                                # guard the CFA branch's mutation of the shared
-                                # self._cfa_for_this_run flag; this branch
-                                # mutates nothing shared (debayer_image touches
-                                # locals and this frame's own header, and the
-                                # cfa/method flags were pinned on the main
-                                # thread above). Holding the lock here
-                                # serialized the single most expensive step in
-                                # the stage across every worker thread, on
-                                # every platform -- numba's own
-                                # NUMBA_PARALLEL_LOCK is a no-op off macOS, so
-                                # this lock was the real serializer.
-                                #
-                                # Safe because _cfa_active is a run-level
-                                # constant and the outer `if` already requires a
-                                # mosaic: either every debayering frame takes
-                                # the CFA branch or none does, so a frame can
-                                # never read the flag while another frame has it
-                                # flipped. If CFA drizzle ever becomes a
-                                # per-frame decision, restore the lock here.
+                                # No lock: debayer_image touches locals and
+                                # this frame's own header, and the cfa/method
+                                # flags were pinned on the main thread above.
                                 img = self.debayer_image(img, fp, hdr)
                         else:
                             if img.ndim == 3 and img.shape[-1] == 1:
@@ -28886,7 +28943,10 @@ class StackingSuiteDialog(QDialog):
                         # asarray, not astype: astype always copies, so
                         # this allocated and memcpy'd a full frame on every
                         # write even though img is already float32.
-                        fits.PrimaryHDU(data=np.asarray(img, np.float32),
+                        # Big-endian ('>f4') is FITS's on-disk order: astropy
+                        # then writes it as-is instead of byteswapping in
+                        # place twice with the GIL held. Same bytes on disk.
+                        fits.PrimaryHDU(data=np.asarray(img, dtype=">f4"),
                                         header=orig_header).writeto(out_path, overwrite=True)
                         normalized_files.append(out_path)
                         # CFA drizzle: also write the sparse sibling for the
@@ -28899,7 +28959,7 @@ class StackingSuiteDialog(QDialog):
                                 _ch = fits.Header(orig_header)
                                 _ch["DEBAYERED"] = (True, "Sparse CFA drizzle debayer")
                                 _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
-                                fits.PrimaryHDU(data=np.asarray(_cfa_sparse, np.float32), header=_ch).writeto(_cfa_out, overwrite=True)
+                                fits.PrimaryHDU(data=np.asarray(_cfa_sparse, dtype=">f4"), header=_ch).writeto(_cfa_out, overwrite=True)
                             except Exception as _e:
                                 self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling: {_e}"))
                         # Carry the satellite-trail mask sidecar onto the
@@ -38298,7 +38358,15 @@ class StackingSuiteDialog(QDialog):
         elif kernel_name.startswith("circ"):
             _kcode = 1
         else:
-            _kcode = 0  # square
+            # 3 = exact drop: the rotated image of the input pixel, which
+            # tiles the output at any field rotation. 0 is the older
+            # axis-aligned square, kept reachable for an A/B comparison.
+            try:
+                _rot_ok = self.settings.value(
+                    "stacking/drizzle_square_rotated", True, type=bool)
+            except Exception:
+                _rot_ok = True
+            _kcode = 3 if _rot_ok else 0
 
         # Rejection logging: now "tiles", not "pixels"
         total_tiles = 0
@@ -38343,7 +38411,8 @@ class StackingSuiteDialog(QDialog):
         #sasprojective deposit: full 3x3 transform, no pixel pre-warp (correct
         # drizzle for affine AND homography; required for CFA sparse planes).
         deposit_func = drizzle_deposit_kernel_mono_proj if is_mono else drizzle_deposit_color_kernel_proj
-        kinf = ["square", "circular", "gaussian"][_kcode]
+        kinf = ["square (axis-aligned drop)", "circular", "gaussian",
+                "square (exact rotated drop)"][_kcode]
 
         log(f"Using {kinf} drizzle ({'mono' if is_mono else 'color'}).")
 
