@@ -18,7 +18,9 @@ import json
 import math
 import multiprocessing as mp
 import os
+import re
 import sys
+import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -46,22 +48,17 @@ from setiastro.saspro.blink_comparator_pro import (
 
 
 def _saved_load_scale() -> int:
-    """Blink's saved 1:N view. The star count depends on it."""
-    conf = Path.home() / ".config" / "SetiAstro" / "Seti Astro Suite Pro.conf"
-    if not conf.is_file():
+    """Blink's saved 1:N view. The star count depends on it.
+
+    QSettings reads the same store SASpro writes on every platform
+    (~/.config on Linux, the registry on Windows, a plist on macOS).
+    """
+    try:
+        from PyQt6.QtCore import QSettings
+        v = QSettings("SetiAstro", "Seti Astro Suite Pro").value("blink/load_scale", 1, type=int)
+        return max(1, int(v))
+    except Exception:
         return 1
-    in_blink = False
-    for line in conf.read_text(errors="replace").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            in_blink = stripped == "[blink]"
-            continue
-        if in_blink and stripped.startswith("load_scale="):
-            try:
-                return max(1, int(stripped.split("=", 1)[1]))
-            except ValueError:
-                return 1
-    return 1
 
 
 def _measure(path: str, scale: int = 1) -> dict:
@@ -187,8 +184,10 @@ def _fits_under(root: Path) -> list[str]:
 
 
 def _cache_path(root: Path, scale: int) -> Path:
-    safe = str(root.resolve()).replace("/", "_")
-    return Path("/tmp") / f"saspro-preflag-s{scale}-{safe}.json"
+    # Same name as before on Linux ("/a/b" -> "_a_b"), and safe for Windows
+    # drive paths, whose colon and backslashes are not legal in a filename.
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(root.resolve()))
+    return Path(tempfile.gettempdir()) / f"saspro-preflag-s{scale}-{safe}.json"
 
 
 def _load_cache(path: Path) -> dict:

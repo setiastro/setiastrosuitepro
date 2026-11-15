@@ -4085,7 +4085,9 @@ class BlinkTab(QWidget):
         trail = metrics[9] if len(metrics) > 9 else None
 
         for entry in self.loaded_images:
-            if entry.get("quality_reason") or entry.get("quality_is_verdict"):
+            # Undo only Pre-flag's own marks. A frame with just a note may
+            # carry a flag the user set by hand; that one stays.
+            if entry.get("quality_is_verdict"):
                 entry["flagged"] = False
             entry["quality_reason"] = ""
             entry["quality_is_verdict"] = False
@@ -5961,6 +5963,14 @@ class BlinkTab(QWidget):
 
         entry = self.loaded_images[idx]
         entry['flagged'] = not bool(entry.get('flagged', False))
+
+        # A manual toggle overrides Pre-flag. Without this, unflagging a
+        # suspect is undone by the next threshold drag, which re-applies
+        # every Pre-flag verdict (on_threshold_change).
+        if entry.get('quality_is_verdict'):
+            entry['quality_is_verdict'] = False
+            item.setForeground(9, QBrush(
+                self.fileTree.palette().color(QPalette.ColorRole.WindowText)))
 
         RED = Qt.GlobalColor.red
         normal_color = self.fileTree.palette().color(QPalette.ColorRole.WindowText)

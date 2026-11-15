@@ -75,7 +75,7 @@ SASPRO_TIPS = [
     "💡 The Stacking Suite supports comet stacking — it can track the comet and the stars separately and blend them.",
     "💡 ABE supports exclusion polygons — draw around galaxies or nebulae so they don't affect the background model.",
     "💡 You can right-click the toolbar to reset it if icons go missing or get rearranged.",
-    "💡 The Blink Comparator has a Weighted Score metric to help you rank your best frames automatically.",
+    "💡 The Blink Comparator grades every frame against the rest of its target, filter and exposure. Sort by Grade, or press Pre-flag quality to mark the obvious rejects for review.",
     "💡 Star Alignment in the Stacking Suite has a Trial Detect button — use it to tune your star detection threshold before committing to a full run.",
     "💡 SASpro supports session-based flat and light grouping in the Stacking Suite — right-click frames to assign them to sessions.",
     "💡 You can override the master dark or flat for individual light groups in the Stacking Suite via right-click.",

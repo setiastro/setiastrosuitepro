@@ -7058,7 +7058,7 @@ class SubRejectionDialog(QDialog):
     threshold for each filter is remembered as they navigate. Pressing
     Apply commits every filter's current threshold.
 
-    Visual vocabulary mirrors Blink Comparator Pro's Weighted Score panel:
+    Visual vocabulary mirrors Blink Comparator Pro's metric panels:
       • dashed gray line at the median
       • dashed yellow / orange / red lines at ±1σ / ±2σ / ±3σ (robust)
       • solid red line = movable rejection threshold

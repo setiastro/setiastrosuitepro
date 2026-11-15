@@ -34,7 +34,6 @@ The following individuals have made substantial contributions to the development
 - Stacking Execution Monitor enhancements: live phase progress for Measurements, Normalization, Calibration, Registration, and Integration, satellite-trail progress isolation, and drizzle completion handling
 - Workflow choice groups allowing a step to offer alternative tools for trials, with persistence of the selected choice and cleanup of actions when a choice is removed
 - Bundleable Export FITS workflow step with header preservation, correctly sized dialog behavior, and post-batch close
-- Export Image command (menu and toolbar) that writes a format copy without retargeting the working document, keeping the 32-bit master attached to the project
 - Plate Solver support for View Bundles
 - Preferences option to open all FITS/XISF HDUs or Primary only
 - Blink and quality-flag refinements so usable lights with a normal star field are no longer pre-flagged, with clearer collapsed-field, sky, and shape diagnostics
