@@ -4859,12 +4859,85 @@ def _fits_read_any_hdu_noscale(path: str, memmap: bool) -> tuple[np.ndarray | No
             return d, h.header, i
     return None, None, None
 
+class _StatusProgressDialog(QProgressDialog):
+    """QProgressDialog for streamed status lines.
+
+    Stock QProgressDialog resizes to fit the label on ONE line every time
+    setLabelText runs, and never shrinks back. One long drizzle line (a full
+    frame name) left the window screen-wide for the rest of the run.
+
+    Here the width stays put: it starts at the last width the user dragged
+    to (remembered across runs) and only the user changes it. The label word
+    wraps, long file names break at _ / \\, and the height follows the text,
+    shrinking back after a long line.
+    """
+
+    _WIDTH_KEY = "stacking/status_progress_width"
+    _DEFAULT_WIDTH = 560
+
+    def __init__(self, label_text, cancel_text, minimum, maximum, parent=None):
+        super().__init__(label_text, cancel_text, minimum, maximum, parent)
+        self._wrap_label = QLabel(self)
+        self._wrap_label.setWordWrap(True)
+        self._wrap_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setLabel(self._wrap_label)          # replaces (and deletes) the stock label
+        self.setSizeGripEnabled(True)
+        self.setLabelText(label_text)
+        self.resize(self._start_width(), self.sizeHint().height())
+
+    def _start_width(self) -> int:
+        try:
+            w = int(QSettings().value(self._WIDTH_KEY, self._DEFAULT_WIDTH, type=int))
+        except Exception:
+            w = self._DEFAULT_WIDTH
+        return max(320, min(w, 2000))
+
+    @staticmethod
+    def _breakable(text: str) -> str:
+        # Zero-width spaces give the wrapper break points inside long names.
+        return str(text).replace("_", "_\u200b").replace("\\", "\\\u200b").replace("/", "/\u200b")
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        lbl = getattr(self, "_wrap_label", None)
+        w = self.width() if self.isVisible() else self._start_width()
+        if lbl is None:
+            return QSize(w, sh.height())
+        try:
+            from PyQt6.QtWidgets import QStyle
+            st = self.style()
+            margins = (st.pixelMetric(QStyle.PixelMetric.PM_LayoutLeftMargin, None, self)
+                       + st.pixelMetric(QStyle.PixelMetric.PM_LayoutRightMargin, None, self))
+            hint_h = lbl.sizeHint().height()
+            fit_h = lbl.heightForWidth(max(50, w - margins))
+            h = sh.height() - hint_h + (fit_h if fit_h > 0 else hint_h)
+        except Exception:
+            h = sh.height()
+        return QSize(w, h)
+
+    def setLabelText(self, text):
+        super().setLabelText(self._breakable(text))
+        # Qt only ever grows the dialog; fit the height to this text, keep the width.
+        try:
+            if self.isVisible():
+                self.resize(self.width(), self.sizeHint().height())
+        except Exception:
+            pass
+
+    def hideEvent(self, ev):
+        try:
+            QSettings().setValue(self._WIDTH_KEY, int(self.width()))
+        except Exception:
+            pass
+        super().hideEvent(ev)
+
+
 class _Progress:
     def __init__(self, owner, title: str, maximum: int):
         self._owner = owner
         self._closed = False
         cancel_text = QCoreApplication.translate("_Progress", "Cancel")
-        self._pd = QProgressDialog(
+        self._pd = _StatusProgressDialog(
             title,
             cancel_text,
             0,
@@ -4877,7 +4950,6 @@ class _Progress:
         self._pd.setAutoReset(False)
         self._pd.setValue(0)
         self._pd.setWindowTitle(title)
-        self._pd.setMinimumWidth(520)
         self._cancelled = False
         self._value = 0
 
@@ -30856,7 +30928,7 @@ class StackingSuiteDialog(QDialog):
             self.post_thread.started.connect(self.post_worker.run)
             self.post_thread.start()
 
-            self.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
+            self.post_progress = _StatusProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
             self.post_progress.setWindowModality(Qt.WindowModality.NonModal)
             self.post_progress.setCancelButton(None)
             self.post_progress.setMinimumDuration(0)
@@ -31677,7 +31749,7 @@ class StackingSuiteDialog(QDialog):
         self._mf_grouped_files = grouped_files
         self._mf_transforms_dict = transforms_dict
 
-        self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
+        self._mf_pd = _StatusProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
         self._mf_pd.setMinimumDuration(0)
         self._mf_pd.setWindowTitle("MF Deconvolution")
         self._mf_pd.setValue(0)
@@ -31685,7 +31757,6 @@ class StackingSuiteDialog(QDialog):
 
         if getattr(self, "_mf_pd", None):
             self._mf_pd.setLabelText("Preparing MF deconvolution…")
-            self._mf_pd.setMinimumWidth(520)
 
         self._mf_total_groups = len(mf_groups)
         self._mf_groups_done = 0
@@ -35136,7 +35207,7 @@ class StackingSuiteDialog(QDialog):
         self.post_thread.started.connect(self.post_worker.run)
         self.post_thread.start()
 
-        self.post_progress = QProgressDialog("Stacking & drizzle/mfdeconv (if enabled)…", None, 0, 0, self)
+        self.post_progress = _StatusProgressDialog("Stacking & drizzle/mfdeconv (if enabled)…", None, 0, 0, self)
         self.post_progress.setWindowModality(Qt.WindowModality.NonModal)
         self.post_progress.setCancelButton(None)
         self.post_progress.setMinimumDuration(0)
