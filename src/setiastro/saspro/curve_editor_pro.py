@@ -2708,8 +2708,7 @@ class CurvesDialogPro(QDialog):
     def _on_active_doc_changed(self, doc):
         if doc is None or getattr(doc, 'image', None) is None:
             return
-        if doc is self.doc:
-            return
+        # The same document may have received a new image via an external edit.
         self._invalidate_full_cache()
         self.doc = doc
         self._load_from_doc()
