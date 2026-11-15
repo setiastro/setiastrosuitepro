@@ -56,59 +56,110 @@ def _norm_ext(target_ext: str) -> str:
     return raw_ext
 
 
-class ExportDialog(QDialog):
-    """
-    "Export"-style options dialog.
+# Extra bit-depth entry offered by tools that save copies of an open document
+# (Checkpoint Save / Export): write at whatever depth the document carries.
+KEEP_DOC_DEPTH = "Same as document"
 
-    Returns:
-      - selected_bit_depth(): str
-      - selected_jpeg_quality(): Optional[int]
-      - export_options(): dict   (dpi, tiff_compression, resize_mode, etc.)
+
+def _tiff_comp_value(text) -> Optional[str]:
+    comp = (str(text or "")).strip().lower()
+    if comp.startswith("lzw"):
+        return "lzw"
+    if comp.startswith("zip") or "deflate" in comp:
+        return "deflate"
+    return None
+
+
+def export_opts_from_state(target_ext: str, st: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    The export_opts dict for docman.save_document / legacy save_image, built
+    from a panel state (see ExportOptionsPanel.state()). Pure function so
+    headless savers (shortcuts, Function Bundles) produce exactly what the
+    dialog would.
+    """
+    ext = _norm_ext(target_ext)
+    st = dict(st or {})
+    opts: Dict[str, Any] = {}
+
+    # common
+    opts["embed_icc"] = bool(st.get("embed_icc", True))
+    opts["icc_color_space"] = st.get("icc_color_space") or "P3"
+    opts["rendering_intent"] = st.get("rendering_intent") or DEFAULT_RENDERING_INTENT
+    opts["black_point_compensation"] = bool(st.get("black_point_compensation", True))
+
+    # TIFF
+    if ext == "tif":
+        opts["dpi"] = int(st.get("dpi", 300))
+        opts["tiff_compression"] = _tiff_comp_value(st.get("tiff_comp", "LZW"))
+
+    # Resize
+    mode = str(st.get("resize_mode") or "none")
+    if mode == "percent":
+        opts["resize_mode"] = "percent"
+        opts["resize_percent"] = int(st.get("resize_percent", 100))
+    elif mode == "long_edge":
+        opts["resize_mode"] = "long_edge"
+        opts["resize_long_edge"] = int(st.get("resize_long_edge", 4096))
+    else:
+        opts["resize_mode"] = "none"
+
+    return opts
+
+
+def jpeg_quality_from_state(target_ext: str, st: Dict[str, Any]) -> Optional[int]:
+    if _norm_ext(target_ext) != "jpg":
+        return None
+    try:
+        return max(1, min(100, int((st or {}).get("jpeg_quality", 95))))
+    except Exception:
+        return 95
+
+
+def bit_depth_from_state(st: Dict[str, Any]) -> Optional[str]:
+    """The chosen bit depth, or None for 'Same as document'."""
+    bd = (st or {}).get("bit_depth")
+    if not bd or bd == KEEP_DOC_DEPTH:
+        return None
+    return str(bd)
+
+
+class ExportOptionsPanel(QWidget):
+    """
+    The per-format save options (bit depth, colour management, JPEG / TIFF
+    settings, resize) as an embeddable widget. Save As shows it inside
+    ExportDialog; Checkpoint Save / Export embeds the same panel, so both
+    always offer the same options for a format.
+
+    `keep_depth_option=True` adds a leading "Same as document" bit depth
+    (selected_bit_depth() then returns None for it).
     """
     def __init__(
         self,
-        parent,
         target_ext: str,
-        current_bit_depth: str | None,
+        current_bit_depth: str | None = None,
         current_jpeg_quality: int | None = None,
         *,
-        settings=None,   # optional QSettings for persistence
+        settings=None,
+        keep_depth_option: bool = False,
+        parent=None,
     ):
         super().__init__(parent)
-        self.setWindowTitle(self.tr("Export"))
-        self.setWindowFlag(Qt.WindowType.Window, True)
-        import platform
-        if platform.system() == "Darwin":
-            self.setWindowFlag(Qt.WindowType.Tool, True)  
-        self.setWindowModality(Qt.WindowModality.NonModal)
-        self.setModal(False)
-
         self._settings = settings
+        self._keep_depth = bool(keep_depth_option)
         self._ext = _norm_ext(target_ext)
 
-        allowed_depths = _BIT_DEPTHS.get(self._ext, ["32-bit floating point"])
-
-        # ---- layout root ----
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
 
         # -----------------------------
-        # 1) Format summary (nice UX)
-        # -----------------------------
-        fmt_lbl = QLabel(self.tr(f"Export format: {self._ext.upper()}"))
-        fmt_lbl.setWordWrap(True)
-        lay.addWidget(fmt_lbl)
-
-        # -----------------------------
-        # 2) Core options box
+        # Core options box
         # -----------------------------
         core_box = QGroupBox(self.tr("Export settings"))
         core_form = QFormLayout(core_box)
 
         # Bit depth
         self.combo_depth = QComboBox(self)
-        self.combo_depth.addItems(allowed_depths)
-        if current_bit_depth in allowed_depths:
-            self.combo_depth.setCurrentText(current_bit_depth)
+        self._fill_depths(current_bit_depth)
         core_form.addRow(self.tr("Bit depth"), self.combo_depth)
 
         # Embed profile
@@ -152,7 +203,7 @@ class ExportDialog(QDialog):
         lay.addWidget(core_box)
 
         # -----------------------------
-        # 3) Format-specific panels
+        # Format-specific panels
         # -----------------------------
         self.panel_jpg = self._build_jpg_panel(current_jpeg_quality)
         self.panel_tif = self._build_tif_panel()
@@ -160,34 +211,31 @@ class ExportDialog(QDialog):
         lay.addWidget(self.panel_tif)
 
         # -----------------------------
-        # 4) Resize panel (applies to all; ok if you don't implement yet)
+        # Resize panel (applies to all formats)
         # -----------------------------
         self.panel_resize = self._build_resize_panel()
         lay.addWidget(self.panel_resize)
 
-        # -----------------------------
-        # Buttons
-        # -----------------------------
-        btn_ok = QPushButton(self.tr("Export"))
-        btn_cancel = QPushButton(self.tr("Cancel"))
-        btn_ok.clicked.connect(self._on_accept)
-        btn_cancel.clicked.connect(self.reject)
-
-        row = QHBoxLayout()
-        row.addStretch(1)
-        row.addWidget(btn_ok)
-        row.addWidget(btn_cancel)
-        lay.addLayout(row)
-
-        # ---- show/hide panels based on format ----
         self._apply_format_visibility()
-
-        # ---- load persisted defaults (optional) ----
-        self._load_settings()
 
     # ------------------------------------------------------------------
     # UI builders
     # ------------------------------------------------------------------
+    def _fill_depths(self, prefer: str | None):
+        allowed = list(_BIT_DEPTHS.get(self._ext, ["32-bit floating point"]))
+        # "Same as document" only means something when the format has a
+        # choice: PNG / JPEG / WebP are 8-bit only, so show just that.
+        if self._keep_depth and len(allowed) > 1:
+            allowed = [KEEP_DOC_DEPTH] + allowed
+        self.combo_depth.blockSignals(True)
+        try:
+            self.combo_depth.clear()
+            self.combo_depth.addItems(allowed)
+            if prefer in allowed:
+                self.combo_depth.setCurrentText(prefer)
+        finally:
+            self.combo_depth.blockSignals(False)
+
     def _build_jpg_panel(self, current_jpeg_quality: int | None) -> QWidget:
         box = QGroupBox(self.tr("JPEG options"))
         form = QFormLayout(box)
@@ -269,6 +317,16 @@ class ExportDialog(QDialog):
     # ------------------------------------------------------------------
     # Behavior
     # ------------------------------------------------------------------
+    def target_ext(self) -> str:
+        return self._ext
+
+    def set_format(self, target_ext: str):
+        """Re-point the panel at another output format: bit depths and the
+        format-specific boxes follow; other values are kept."""
+        self._ext = _norm_ext(target_ext)
+        self._fill_depths(self.combo_depth.currentText())
+        self._apply_format_visibility()
+
     def _apply_format_visibility(self):
         self.panel_jpg.setVisible(self._ext == "jpg")
         self.panel_tif.setVisible(self._ext == "tif")
@@ -300,7 +358,7 @@ class ExportDialog(QDialog):
             return self.tr("Standard RGB color space for web sharing and broad compatibility.")
         return str(key)
 
-    def _missing_profile_message(self, key: str) -> str:
+    def missing_profile_message(self, key: str) -> str:
         color_key = get_key_from_icc_key(key)
         info = COLOR_SPACES.get(color_key)
         names = ", ".join(info.profile_names[:4]) if info is not None else str(key)
@@ -312,25 +370,86 @@ class ExportDialog(QDialog):
             "Display and export tagging will fall back to sRGB until the profile is installed."
         ).format(profile=self._color_space_label(color_key), names=names, dirs=dirs)
 
-    def _on_accept(self):
+    def warn_if_profile_missing(self, parent=None):
         if self.chk_embed_icc.isChecked() and not is_profile_available(self.combo_color_space.currentData()):
             QMessageBox.warning(
-                self,
+                parent or self,
                 self.tr("Color profile not found"),
-                self._missing_profile_message(self.combo_color_space.currentData()),
+                self.missing_profile_message(self.combo_color_space.currentData()),
             )
-        # persist settings if present
-        self._save_settings()
-        self.accept()
 
     # ------------------------------------------------------------------
-    # Settings persistence (optional)
+    # Full widget state (for presets that are saved without the dialog)
+    # ------------------------------------------------------------------
+    def state(self) -> Dict[str, Any]:
+        mode = self.resize_group.checkedId()
+        return {
+            "bit_depth": self.combo_depth.currentText(),
+            "embed_icc": bool(self.chk_embed_icc.isChecked()),
+            "icc_color_space": self.combo_color_space.currentData(),
+            "rendering_intent": self.combo_rendering_intent.currentData(),
+            "black_point_compensation": bool(self.chk_black_point_compensation.isChecked()),
+            "jpeg_quality": int(self.jpeg_quality_spin.value()),
+            "dpi": int(self.tiff_dpi_spin.value()),
+            "tiff_comp": self.tiff_comp_combo.currentText(),
+            "resize_mode": {1: "percent", 2: "long_edge"}.get(mode, "none"),
+            "resize_percent": int(self.resize_percent_spin.value()),
+            "resize_long_edge": int(self.resize_long_edge_spin.value()),
+        }
+
+    def set_state(self, st: Dict[str, Any] | None):
+        st = dict(st or {})
+        try:
+            bd = st.get("bit_depth")
+            if bd:
+                idx = self.combo_depth.findText(str(bd))
+                if idx >= 0:
+                    self.combo_depth.setCurrentIndex(idx)
+            if "embed_icc" in st:
+                self.chk_embed_icc.setChecked(bool(st["embed_icc"]))
+            if st.get("icc_color_space"):
+                cs = get_icc_key_from_color_space_key(get_key_from_icc_key(str(st["icc_color_space"])))
+                idx = self.combo_color_space.findData(cs)
+                if idx >= 0:
+                    self.combo_color_space.setCurrentIndex(idx)
+            self.combo_color_space.setEnabled(self.chk_embed_icc.isChecked())
+            if st.get("rendering_intent"):
+                idx = self.combo_rendering_intent.findData(st["rendering_intent"])
+                if idx >= 0:
+                    self.combo_rendering_intent.setCurrentIndex(idx)
+            if "black_point_compensation" in st:
+                self.chk_black_point_compensation.setChecked(bool(st["black_point_compensation"]))
+            if "jpeg_quality" in st:
+                self.jpeg_quality_spin.setValue(max(1, min(100, int(st["jpeg_quality"]))))
+            if "dpi" in st:
+                self.tiff_dpi_spin.setValue(max(1, int(st["dpi"])))
+            if st.get("tiff_comp"):
+                idx = self.tiff_comp_combo.findText(str(st["tiff_comp"]))
+                if idx >= 0:
+                    self.tiff_comp_combo.setCurrentIndex(idx)
+            mode = st.get("resize_mode")
+            if mode == "percent":
+                self.rb_resize_percent.setChecked(True)
+            elif mode == "long_edge":
+                self.rb_resize_long_edge.setChecked(True)
+            elif mode is not None:
+                self.rb_resize_none.setChecked(True)
+            if "resize_percent" in st:
+                self.resize_percent_spin.setValue(max(1, int(st["resize_percent"])))
+            if "resize_long_edge" in st:
+                self.resize_long_edge_spin.setValue(max(16, int(st["resize_long_edge"])))
+            self._update_resize_enable()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Settings persistence (Save As remembers per-format defaults)
     # ------------------------------------------------------------------
     def _k(self, suffix: str) -> str:
         # per-format persistence
         return f"export/{self._ext}/{suffix}"
 
-    def _load_settings(self):
+    def load_settings(self):
         s = self._settings
         if s is None:
             return
@@ -392,7 +511,7 @@ class ExportDialog(QDialog):
         except Exception:
             pass
 
-    def _save_settings(self):
+    def save_settings(self):
         s = self._settings
         if s is None:
             return
@@ -426,8 +545,9 @@ class ExportDialog(QDialog):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def selected_bit_depth(self) -> str:
-        return self.combo_depth.currentText()
+    def selected_bit_depth(self) -> Optional[str]:
+        """The chosen depth; None when 'Same as document' is selected."""
+        return bit_depth_from_state({"bit_depth": self.combo_depth.currentText()})
 
     def selected_jpeg_quality(self) -> Optional[int]:
         if self._ext != "jpg":
@@ -439,34 +559,87 @@ class ExportDialog(QDialog):
         Options consumed by docman.save_document(..., export_opts=...)
         and then legacy_save_image(..., export_opts=...)
         """
-        opts: Dict[str, Any] = {}
+        return export_opts_from_state(self._ext, self.state())
 
-        # common
-        opts["embed_icc"] = bool(self.chk_embed_icc.isChecked())
-        opts["icc_color_space"] = self.combo_color_space.currentData() or "P3"
-        opts["rendering_intent"] = self.combo_rendering_intent.currentData() or DEFAULT_RENDERING_INTENT
-        opts["black_point_compensation"] = bool(self.chk_black_point_compensation.isChecked())
 
-        # TIFF
-        if self._ext == "tif":
-            opts["dpi"] = int(self.tiff_dpi_spin.value())
-            comp = (self.tiff_comp_combo.currentText() or "").strip().lower()
-            if comp.startswith("lzw"):
-                opts["tiff_compression"] = "lzw"
-            elif comp.startswith("zip") or "deflate" in comp:
-                opts["tiff_compression"] = "deflate"
-            else:
-                opts["tiff_compression"] = None
+class ExportDialog(QDialog):
+    """
+    "Export"-style options dialog (Save As and friends). The options live in
+    ExportOptionsPanel, shared with Checkpoint Save / Export.
 
-        # Resize
-        mode = self.resize_group.checkedId()
-        if mode == 1:
-            opts["resize_mode"] = "percent"
-            opts["resize_percent"] = int(self.resize_percent_spin.value())
-        elif mode == 2:
-            opts["resize_mode"] = "long_edge"
-            opts["resize_long_edge"] = int(self.resize_long_edge_spin.value())
-        else:
-            opts["resize_mode"] = "none"
+    Returns:
+      - selected_bit_depth(): str
+      - selected_jpeg_quality(): Optional[int]
+      - export_options(): dict   (dpi, tiff_compression, resize_mode, etc.)
+    """
+    def __init__(
+        self,
+        parent,
+        target_ext: str,
+        current_bit_depth: str | None,
+        current_jpeg_quality: int | None = None,
+        *,
+        settings=None,   # optional QSettings for persistence
+    ):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("Export"))
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
 
-        return opts
+        self._settings = settings
+        self._ext = _norm_ext(target_ext)
+
+        # ---- layout root ----
+        lay = QVBoxLayout(self)
+
+        # Format summary
+        fmt_lbl = QLabel(self.tr(f"Export format: {self._ext.upper()}"))
+        fmt_lbl.setWordWrap(True)
+        lay.addWidget(fmt_lbl)
+
+        # All options (bit depth, colour, JPEG/TIFF, resize)
+        self.panel = ExportOptionsPanel(
+            self._ext, current_bit_depth, current_jpeg_quality,
+            settings=settings, parent=self,
+        )
+        lay.addWidget(self.panel)
+        # Older code reached into the dialog for these widgets.
+        self.combo_depth = self.panel.combo_depth
+        self.jpeg_quality_spin = self.panel.jpeg_quality_spin
+
+        # Buttons
+        btn_ok = QPushButton(self.tr("Export"))
+        btn_cancel = QPushButton(self.tr("Cancel"))
+        btn_ok.clicked.connect(self._on_accept)
+        btn_cancel.clicked.connect(self.reject)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(btn_ok)
+        row.addWidget(btn_cancel)
+        lay.addLayout(row)
+
+        # ---- load persisted defaults (optional) ----
+        self.panel.load_settings()
+
+    def _on_accept(self):
+        self.panel.warn_if_profile_missing(self)
+        # persist settings if present
+        self.panel.save_settings()
+        self.accept()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def selected_bit_depth(self) -> str:
+        return self.panel.combo_depth.currentText()
+
+    def selected_jpeg_quality(self) -> Optional[int]:
+        return self.panel.selected_jpeg_quality()
+
+    def export_options(self) -> Dict[str, Any]:
+        return self.panel.export_options()

@@ -25962,6 +25962,33 @@ class StackingSuiteDialog(QDialog):
 
         return _resolve
 
+    def _drizzle_entry_weights(self, entries, weights: dict = None) -> list:
+        """One weight per drizzle entry ({orig, aligned, chan}).
+
+        A direct hit on the aligned or the original (normalized) path wins,
+        as before. Anything else goes through ``_make_weight_resolver``: in
+        Register-and-Integrate the weights are keyed by the CALIBRATED paths
+        the measurement pass saw, which neither of those paths is, so the old
+        direct lookup fell to 1.0 for every frame. That made drizzle unweighted
+        and deposited the soft-rejected (weight 0) subs at full weight."""
+        import os as _os
+        weights = weights or {}
+        resolve = self._make_weight_resolver(weights)
+        out = []
+        for ent in entries:
+            a = _os.path.normpath(ent.get("aligned", "") or "")
+            o = _os.path.normpath(ent.get("orig", "") or "")
+            w = weights.get(a)
+            if w is None:
+                w = weights.get(o)
+            if w is None:
+                w = resolve(a)
+            try:
+                out.append(float(w))
+            except Exception:
+                out.append(1.0)
+        return out
+
     def _count_contributing_frames(self, file_list, weights: dict = None) -> int:
         """How many frames in ``file_list`` will actually contribute photons
         to the integrated master. Soft-rejected subs — those whose score was
@@ -38495,11 +38522,13 @@ class StackingSuiteDialog(QDialog):
                 mref = cv2.dilate(mref.astype(np.uint8), _dilate_kernel, iterations=1).astype(bool)
             return mref
 
-        def _apply_rejections_to_img(img_data: np.ndarray, rej_mask_ref: np.ndarray, pixels_are_registered: bool, A23: np.ndarray):
+        def _apply_rejections_to_img(img_data: np.ndarray, rej_mask_ref: np.ndarray, pixels_are_registered: bool, A23: np.ndarray, H33: np.ndarray = None):
             """
             Apply ref-space rejection mask to img_data:
             - if pixels_are_registered: img_data is already in ref space -> direct apply
             - else: img_data is raw/original and A23 maps raw->ref -> warp mask ref->raw once, then apply
+            - a projective H33 (raw->ref) is warped with its full 3x3: the affine
+              part alone misplaces the mask by ~1 px at the far frame corners
             """
             if rej_mask_ref is None:
                 return img_data
@@ -38520,6 +38549,25 @@ class StackingSuiteDialog(QDialog):
                 else:
                     img_data[:hh, :ww, :][m, :] = 0.0
                 return img_data
+
+            if H33 is not None:
+                H33 = np.asarray(H33, dtype=np.float64).reshape(3, 3)
+                if not (H33[2, 0] == 0.0 and H33[2, 1] == 0.0 and H33[2, 2] == 1.0):
+                    # WARP_INVERSE_MAP samples the ref mask at H33(raw) directly:
+                    # raw pixel x is rejected when its nearest ref pixel is.
+                    raw_mask = cv2.warpPerspective(
+                        rej_mask_ref.astype(np.uint8),
+                        H33,
+                        (Wraw, Hraw),
+                        flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP,
+                        borderMode=cv2.BORDER_CONSTANT,
+                        borderValue=0
+                    ).astype(bool)
+                    if img_data.ndim == 2:
+                        img_data[raw_mask] = 0.0
+                    else:
+                        img_data[raw_mask, :] = 0.0
+                    return img_data
 
             # affine case: A23 maps raw->ref. Need ref-mask in raw space -> warp with inverse affine.
             try:
@@ -38603,6 +38651,22 @@ class StackingSuiteDialog(QDialog):
         afn_missing = 0
         afn_chan_skip = 0
 
+        # ---- frame weights: same lookup as the integration ----
+        # Soft-rejected subs (weight 0) are dropped here, before the prefetcher,
+        # so they are never loaded; the regular master excluded them too.
+        _entry_w = self._drizzle_entry_weights(entries, frame_weights)
+        _n_soft = sum(1 for _w in _entry_w if _w <= 0.0)
+        if _n_soft:
+            entries = [e for e, _w in zip(entries, _entry_w) if _w > 0.0]
+            _entry_w = [_w for _w in _entry_w if _w > 0.0]
+            log(f"⚖️ Drizzle: skipping {_n_soft} soft-rejected frame(s) (weight 0); "
+                f"depositing {len(entries)}.")
+        if not entries:
+            log(f"⚠️ Group '{group_key}': every drizzle frame has weight 0 – skipping.")
+            return False
+        rej_frames = 0
+        rej_px = 0
+
         _prefetch_paths = [_pixel_path_for_entry(e) for e in entries]
         _prefetch = _FramePrefetcher(
             _prefetch_paths,
@@ -38621,8 +38685,8 @@ class StackingSuiteDialog(QDialog):
                     log(f"⚠️ Bad drizzle entry (missing orig/aligned) – skipping: {ent}")
                     continue
 
-                # Weight: prefer aligned key (that matches your rejection/weights mapping)
-                weight = frame_weights.get(aligned_file, frame_weights.get(orig_file, 1.0))
+                # Weight: resolved above through the integration's own lookup
+                weight = _entry_w[i]
 
                 kind, X = xforms.get(orig_file, (None, None))
 
@@ -38732,12 +38796,17 @@ class StackingSuiteDialog(QDialog):
                 # ---- apply per-file rejections (FAST: tile masks -> full mask -> optional warp) ----
                 rej_mask_ref = _build_rej_mask_ref(aligned_file)
                 if rej_mask_ref is not None:
+                    rej_frames += 1
+                    rej_px += int(np.count_nonzero(rej_mask_ref))
                     A23_for_mask = H_canvas[:2, :]  # raw->ref affine (or identity)
+                    if not img_data.flags.writeable:
+                        img_data = np.array(img_data, copy=True)
                     img_data = _apply_rejections_to_img(
                         img_data=img_data,
                         rej_mask_ref=rej_mask_ref,
                         pixels_are_registered=pixels_are_registered,
-                        A23=A23_for_mask
+                        A23=A23_for_mask,
+                        H33=H_canvas,
                     )
 
                 # ---- deposit ----
@@ -38772,6 +38841,15 @@ class StackingSuiteDialog(QDialog):
                     _extra += f"; {afn_chan_skip} channel mismatch"
                 log(f"🔆 AFN drizzle: deposits corrected for '{group_key}': "
                     f"{afn_done} of {len(entries)} frame(s){_extra}")
+            if total_tiles:
+                if rej_frames:
+                    log(f"🚫 Drizzle rejections for '{group_key}': applied to {rej_frames} of "
+                        f"{len(entries)} frame(s), {rej_px} reference pixel(s) masked.")
+                else:
+                    # the map has tiles but none matched an entry's aligned key:
+                    # the same path-key mismatch that once hid the frame weights
+                    log(f"⚠️ Drizzle rejections for '{group_key}': the map holds {total_tiles} "
+                        f"tile(s) but none matched a drizzle frame — rejected pixels were NOT excluded.")
 
             # ---- finalize ----
             if gpu_drizzle is not None:

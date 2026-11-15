@@ -4968,10 +4968,10 @@ def _project_3x3(M, x, y):
 
 
 @njit(parallel=True, fastmath=True, cache=True)
-def drizzle_deposit_kernel_mono_proj(
+def _drizzle_deposit_kernel_mono_proj_nb(
     img_data, transform, drizzle_buffer, coverage_buffer,
     drizzle_factor, drop_shrink, frame_weight,
-    kernel_code, gaussian_sigma_or_radius
+    kernel_code, gaussian_sigma_or_radius, n_bands
 ):
     """Mono projective drizzle deposit, parallelized by output-row bands.
     Each band is written by exactly one thread → race-free, no extra memory.
@@ -5007,7 +5007,8 @@ def drizzle_deposit_kernel_mono_proj(
         rmax = 0
     tile_side = 2 * rmax + 2
 
-    n_bands = get_num_threads()
+    if n_bands < 1:
+        n_bands = 1
     rows_per_band = (outH + n_bands - 1) // n_bands
 
     for t in prange(n_bands):
@@ -5102,11 +5103,26 @@ def drizzle_deposit_kernel_mono_proj(
 
     return drizzle_buffer, coverage_buffer
 
-@njit(parallel=True, fastmath=True, cache=True)
-def drizzle_deposit_color_kernel_proj(
+
+# The band count is read here, outside the jitted body: get_num_threads()
+# inside an njit function makes numba refuse cache=True ("uses dynamic
+# globals"), so both deposit kernels were recompiled on every launch.
+def drizzle_deposit_kernel_mono_proj(
     img_data, transform, drizzle_buffer, coverage_buffer,
     drizzle_factor, drop_shrink, frame_weight,
     kernel_code, gaussian_sigma_or_radius
+):
+    return _drizzle_deposit_kernel_mono_proj_nb(
+        img_data, transform, drizzle_buffer, coverage_buffer,
+        drizzle_factor, drop_shrink, frame_weight,
+        kernel_code, gaussian_sigma_or_radius, get_num_threads())
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _drizzle_deposit_color_kernel_proj_nb(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor, drop_shrink, frame_weight,
+    kernel_code, gaussian_sigma_or_radius, n_bands
 ):
     """Color projective drizzle deposit, parallelized by output-row bands.
     Per-channel coverage preserved for sparse CFA-drizzle planes."""
@@ -5141,7 +5157,8 @@ def drizzle_deposit_color_kernel_proj(
         rmax = 0
     tile_side = 2 * rmax + 2
 
-    n_bands = get_num_threads()
+    if n_bands < 1:
+        n_bands = 1
     rows_per_band = (outH + n_bands - 1) // n_bands
 
     for t in prange(n_bands):
@@ -5246,6 +5263,17 @@ def drizzle_deposit_color_kernel_proj(
                                 coverage_buffer[oy, ox, c] += w * cov_scale
 
     return drizzle_buffer, coverage_buffer
+
+
+def drizzle_deposit_color_kernel_proj(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor, drop_shrink, frame_weight,
+    kernel_code, gaussian_sigma_or_radius
+):
+    return _drizzle_deposit_color_kernel_proj_nb(
+        img_data, transform, drizzle_buffer, coverage_buffer,
+        drizzle_factor, drop_shrink, frame_weight,
+        kernel_code, gaussian_sigma_or_radius, get_num_threads())
 
 @njit(parallel=True)
 def finalize_drizzle_2d(drizzle_buffer, coverage_buffer, final_out):
