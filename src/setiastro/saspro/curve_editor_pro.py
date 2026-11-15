@@ -1705,6 +1705,7 @@ class CurvesDialogPro(QDialog):
         self._bg_worker_sig   = None
         self._pending_sig     = None
         self._pending_luts    = None
+        self._full_bg_enabled = QSettings().value('curves/full_resolution_background', False, type=bool)
         self._status_base     = ""   # main status text
         self._status_bg       = ""   # live background/full-res indicator
         self._clip_scale       = 1.0
@@ -1835,6 +1836,10 @@ class CurvesDialogPro(QDialog):
         rowb.addWidget(self.btn_apply)
         rowb.addWidget(self.btn_reset)
         left.addLayout(rowb)
+        self.chk_full_bg = QCheckBox(self.tr('Precompute full resolution (uses more RAM)'), self)
+        self.chk_full_bg.setChecked(self._full_bg_enabled)
+        self.chk_full_bg.toggled.connect(self._toggle_full_background)
+        left.addWidget(self.chk_full_bg)
 
         # Trailing slack: when docked this absorbs leftover vertical space so
         # the grid stays square and the controls hug it. When popped out we
@@ -2018,13 +2023,15 @@ class CurvesDialogPro(QDialog):
             pass
         self._refresh_overlays()
         self._curve_gen += 1
+        self._invalidate_full_cache()
         self._curve_debounce.start(self._curve_debounce_ms)
 
     def _rebuild_preview_from_curve_debounced(self):
         if self._preview_orig is None and self._preview_img is None:
             return
-        # warm the full-res cache regardless of the on-canvas preview toggle
-        self._schedule_full_bg()
+        # The full-resolution result is optional; keep preview inexpensive.
+        if self._full_bg_enabled:
+            self._schedule_full_bg()
         if not getattr(self, "btn_preview", None) or not self.btn_preview.isChecked():
             return
         self._quick_preview()
@@ -2699,13 +2706,17 @@ class CurvesDialogPro(QDialog):
                 self._rebuild_presets_menu()
 
     def _on_active_doc_changed(self, doc):
-        if doc is None or getattr(doc, "image", None) is None:
+        if doc is None or getattr(doc, 'image', None) is None:
             return
+        if doc is self.doc:
+            return
+        self._invalidate_full_cache()
         self.doc = doc
         self._load_from_doc()
         QTimer.singleShot(0, self._fit_after_load)
 
     def _load_from_doc(self):
+        self._invalidate_full_cache()
         img = self.doc.image
         if img is None:
             QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
@@ -2715,9 +2726,9 @@ class CurvesDialogPro(QDialog):
             arr = arr.astype(np.float32) / np.iinfo(arr.dtype).max
         elif arr.dtype.kind == "f":
             mx = float(arr.max()) if arr.size else 1.0
-            arr = (arr / (mx if mx > 1.0 else 1.0)).astype(np.float32)
+            arr = (arr / mx).astype(np.float32) if mx > 1.0 else arr.astype(np.float32, copy=False)
         else:
-            arr = arr.astype(np.float32)
+            arr = arr.astype(np.float32, copy=False)
         self._full_img     = arr
         self._preview_img  = _downsample_for_preview(arr, 1200)
         self._preview_orig = self._preview_img.copy()
@@ -2795,8 +2806,9 @@ class CurvesDialogPro(QDialog):
         proc = self._apply_all_curves_once(self._preview_img, luts)
         proc = self._blend_with_mask(proc)
         self._preview_proc = proc
-        # warm the full-res result in the background so Apply is instant
-        self._schedule_full_bg(luts)
+        # Full-frame precomputation is opt-in, not part of the preview.
+        if self._full_bg_enabled:
+            self._schedule_full_bg(luts)
         if self._show_proc:
             self._update_preview_pix(self._preview_proc)
         try:
@@ -2845,13 +2857,32 @@ class CurvesDialogPro(QDialog):
             ))
         except Exception:
             store_sig = None
-        return (store_sig, getattr(self.doc, "active_mask_id", None))
+        return (id(self.doc), id(getattr(self.doc, 'image', None)),
+                store_sig, getattr(self.doc, 'active_mask_id', None))
+
+    def _invalidate_full_cache(self):
+        self._full_cache = None
+        self._full_cache_sig = None
+        self.__dict__.pop('_last_preview', None)
+        self._pending_sig = None
+        self._pending_luts = None
+
+    def _toggle_full_background(self, enabled):
+        self._full_bg_enabled = bool(enabled)
+        QSettings().setValue('curves/full_resolution_background', self._full_bg_enabled)
+        if self._full_bg_enabled:
+            self._schedule_full_bg()
+        else:
+            # Ignore results from an in-flight worker, without destroying its QThread.
+            self._invalidate_full_cache()
+        self._refresh_bg_status()
 
     def _schedule_full_bg(self, luts=None):
         """Warm the full-res cache in the background for the current state.
         No-op if already cached/in-flight for this signature. Coalesces churn:
         only one worker runs at a time; the latest request wins."""
-        if self._full_img is None:
+        if (self._full_img is None or not self._full_bg_enabled
+                or getattr(self, '_memory_released', False)):
             return
         self._flush_active_into_store()
         sig = self._full_result_signature()
@@ -2893,9 +2924,15 @@ class CurvesDialogPro(QDialog):
         self._refresh_bg_status()
 
     def _on_bg_finished(self):
-        # the current worker is done; kick off the newest pending request, if any
-        self._maybe_start_pending()
-        self._refresh_bg_status()
+        # Drop completed worker references and Qt resources.
+        worker = self._bg_worker
+        self._bg_worker = None
+        self._bg_worker_sig = None
+        if worker is not None:
+            worker.deleteLater()
+        if not getattr(self, '_memory_released', False):
+            self._maybe_start_pending()
+            self._refresh_bg_status()
 
     def _on_full_bg_ready(self, out01, sig):
         # Only cache if the result still matches the current state; otherwise it
@@ -2904,7 +2941,8 @@ class CurvesDialogPro(QDialog):
             current = self._full_result_signature()
         except Exception:
             current = None
-        if current is None or sig != current:
+        if (not self._full_bg_enabled or getattr(self, '_memory_released', False)
+                or current is None or sig != current):
             return
         try:
             blended = self._blend_with_mask(out01)
@@ -2912,14 +2950,14 @@ class CurvesDialogPro(QDialog):
             return
         self._full_cache = blended
         self._full_cache_sig = sig
-        self._last_preview = blended  # legacy mirror
 
     def _run_preview(self):
         # The manual Preview control now just warms the same background cache
         # through the safe (signature-checked) pipeline.
         if self._full_img is None:
             return
-        self._schedule_full_bg()
+        if self._full_bg_enabled:
+            self._schedule_full_bg()
 
     def _on_preview_ready(self, out01):
         self._last_preview = self._blend_with_mask(out01)
@@ -3052,18 +3090,21 @@ class CurvesDialogPro(QDialog):
                 if last.get("command_id") == "curves":
                     meta["command_id"] = "curves"
                     meta["preset"] = dict(last.get("preset") or {})
-            self.doc.apply_edit(out01.copy(), metadata=meta, step_name="Curves")
+            # apply_edit snapshots the old state; adopt the new buffer directly.
+            # A view of the current image must still be copied before adoption.
+            committed = (out01.copy() if np.shares_memory(out01, self.doc.image)
+                         else out01)
+            self.doc.apply_edit(committed, metadata=meta, step_name='Curves')
             try:
                 self._remember_as_last_action()
             except Exception:
                 pass
             self.__dict__.pop("_last_preview", None)
-            # release the ~full-res cache; the reloaded image warms a fresh one
-            self._full_cache = None
-            self._full_cache_sig = None
+            # Drop precomputed results before refreshing the preview.
+            self._invalidate_full_cache()
             self._status_bg = ""
             # adopt the result we already computed; no doc round-trip / reload
-            self._adopt_committed_image(out01)
+            self._adopt_committed_image(self.doc.image)
             if hasattr(self.editor, "clearSymmetryLine"):
                 self.editor.clearSymmetryLine()
             self.editor.initCurve()
@@ -3202,6 +3243,7 @@ class CurvesDialogPro(QDialog):
             return
         self._memory_released = True
 
+        self._invalidate_full_cache()
         self._full_img = None
         self._preview_img = None
         self._preview_orig = None
