@@ -1925,7 +1925,27 @@ class CosmicClarityDialogPro(QDialog):
             QSettings().sync()
         except Exception:
             pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(e)
+
+    def _release_memory(self):
+        """Drop full-frame orig buffer on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self.orig = None
+        self.doc = None
+        self._engine_thread = None
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     def reject(self):
         thr = getattr(self, "_engine_thread", None)
@@ -1934,6 +1954,10 @@ class CosmicClarityDialogPro(QDialog):
             self._cancel_all_engine()
             return
         QSettings().setValue("cc/dialog_geometry", self.saveGeometry())
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().reject()
 
     def _engine_cleanup_and_maybe_close(self):
@@ -1954,6 +1978,10 @@ class CosmicClarityDialogPro(QDialog):
 
         if self._closing_after_cancel:
             self._closing_after_cancel = False
+            try:
+                self._release_memory()
+            except Exception:
+                pass
             super().reject()
 
 def open_cosmic_clarity_with_preset(main_window, preset: dict | None = None):
@@ -2004,6 +2032,8 @@ def open_cosmic_clarity_with_preset(main_window, preset: dict | None = None):
         pass
     try:
         main_window._cosmic_clarity_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+        dlg.destroyed.connect(
+            lambda *_: setattr(main_window, "_cosmic_clarity_dialog", None))
     except Exception:
         pass
     dlg.show(); dlg.raise_(); dlg.activateWindow()

@@ -56,6 +56,64 @@ import os, shutil, tempfile, uuid, atexit, threading, queue, time
 from collections import OrderedDict
 import numpy as np
 
+
+# QSettings key for the user-chosen undo/history swap root.
+SWAP_WORKDIR_SETTINGS_KEY = "paths/swap_workdir"
+
+
+def default_swap_workdir() -> str:
+    """Historical default: <tempdir>/SetiAstroSuitePro_Swap (often /tmp)."""
+    return os.path.join(tempfile.gettempdir(), "SetiAstroSuitePro_Swap")
+
+
+def resolve_swap_workdir() -> str:
+    """Return the swap root: Preferences override if set, else the default."""
+    custom = ""
+    try:
+        from PyQt6.QtCore import QSettings
+        custom = str(
+            QSettings().value(SWAP_WORKDIR_SETTINGS_KEY, "", type=str) or ""
+        ).strip()
+    except Exception:
+        custom = ""
+    root = os.path.expanduser(custom) if custom else default_swap_workdir()
+    try:
+        os.makedirs(root, exist_ok=True)
+    except Exception:
+        root = default_swap_workdir()
+        os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _cleanup_orphaned_swap_sessions(root: str, keep_dir: str | None = None) -> None:
+    """
+    Best-effort removal of leftover session UUID dirs under *root*.
+
+    OOM / hard kills skip atexit cleanup; those dirs otherwise sit forever
+    (and on tmpfs, forever in RAM).
+    """
+    try:
+        if not root or not os.path.isdir(root):
+            return
+        keep = os.path.abspath(keep_dir) if keep_dir else None
+        for name in os.listdir(root):
+            path = os.path.join(root, name)
+            if not os.path.isdir(path):
+                continue
+            if keep and os.path.abspath(path) == keep:
+                continue
+            # Session dirs are uuid4 hex (32) or uuid4 str (36 with dashes)
+            compact = name.replace("-", "")
+            if len(compact) != 32 or any(c not in "0123456789abcdef" for c in compact.lower()):
+                continue
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 class SwapManager:
     _instance = None
     _lock = threading.Lock()
@@ -78,9 +136,9 @@ class SwapManager:
             return
         self._initialized = True
 
-        self.temp_dir = os.path.join(
-            tempfile.gettempdir(), "SetiAstroSuitePro_Swap", str(uuid.uuid4())
-        )
+        self.swap_root = resolve_swap_workdir()
+        _cleanup_orphaned_swap_sessions(self.swap_root)
+        self.temp_dir = os.path.join(self.swap_root, str(uuid.uuid4()))
         os.makedirs(self.temp_dir, exist_ok=True)
         atexit.register(self.cleanup_all)
 

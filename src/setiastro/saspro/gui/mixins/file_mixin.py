@@ -782,7 +782,11 @@ class FileMixin:
         finally:
             QApplication.restoreOverrideCursor()
 
-    def save_active(self):
+    def export_active(self):
+        """Write a copy of the active image without retargeting the document."""
+        self.save_active(export_only=True)
+
+    def save_active(self, *, export_only: bool = False):
         from setiastro.saspro.main_helpers import (
             best_doc_name as _best_doc_name,
             normalize_save_path_chosen_filter as _normalize_save_path_chosen_filter,
@@ -822,9 +826,12 @@ class FileMixin:
         except Exception:
             candidate_dir = ""
 
-        # 2) Else, fall back to last save dir setting
+        # 2) Else, fall back to last save/export dir setting
         if not candidate_dir:
-            candidate_dir = self.settings.value("paths/last_save_dir", "", type=str) or ""
+            _dir_key = "paths/last_export_dir" if export_only else "paths/last_save_dir"
+            candidate_dir = self.settings.value(_dir_key, "", type=str) or ""
+            if not candidate_dir:
+                candidate_dir = self.settings.value("paths/last_save_dir", "", type=str) or ""
 
         # 3) Else, home directory
         if not candidate_dir or not os.path.isdir(candidate_dir):
@@ -847,8 +854,9 @@ class FileMixin:
         suggested_path = os.path.join(candidate_dir, suggested_safe)
 
         # --- Open dialog ----------------------------------------
+        _dlg_title = self.tr("Export Image") if export_only else self.tr("Save As")
         path, selected_filter = QFileDialog.getSaveFileName(
-            self, self.tr("Save As"), suggested_path, filters, _sel_filter or ""
+            self, _dlg_title, suggested_path, filters, _sel_filter or ""
         )
         if not path:
             return
@@ -908,13 +916,24 @@ class FileMixin:
                 bit_depth_override=chosen_bd,
                 jpeg_quality=chosen_jq,
                 export_opts=export_opts,
+                retarget_document=not export_only,
             )
-            self._log(f"Saved: {path} ({chosen_bd})")
-            self._add_recent_image(path)
-            self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
+            if export_only:
+                self._log(
+                    f"Exported: {path} ({chosen_bd}) — "
+                    "working document unchanged"
+                )
+                self.settings.setValue("paths/last_export_dir", os.path.dirname(path))
+            else:
+                self._log(f"Saved: {path} ({chosen_bd})")
+                self._add_recent_image(path)
+                self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
-            QMessageBox.critical(self, self.tr("Save failed"), str(e))
-
+            QMessageBox.critical(
+                self,
+                self.tr("Export failed") if export_only else self.tr("Save failed"),
+                str(e),
+            )
     def _load_recent_lists(self):
         """Load MRU lists from QSettings."""
         def _as_list(val):
@@ -1162,11 +1181,17 @@ class FileMixin:
         from setiastro.saspro.export_fits import run_checkpoint_now
         run_checkpoint_now(self)
 
-    def save_active_as_format(self, fmt: str):
+    def export_active_as_format(self, fmt: str):
+        """Export active document in a specific format without retargeting."""
+        self.save_active_as_format(fmt, export_only=True)
+
+    def save_active_as_format(self, fmt: str, *, export_only: bool = False):
         """
         Save active document directly in a specific format,
         pre-populating the file dialog with the right extension.
         fmt: 'fits', 'xisf', 'syq', 'tiff', 'png', 'jpeg', 'webp', 'psb'
+
+        export_only=True writes a copy and leaves the working document alone.
         """
         from setiastro.saspro.main_helpers import (
             best_doc_name as _best_doc_name,
@@ -1189,7 +1214,7 @@ class FileMixin:
             "psb":   ("Photoshop Large Doc (*.psb)",      ".psb"),
         }
         if fmt not in fmt_map:
-            self.save_active()
+            self.save_active(export_only=export_only)
             return
 
         selected_filter, ext = fmt_map[fmt]
@@ -1232,7 +1257,10 @@ class FileMixin:
             pass
 
         if not candidate_dir:
-            candidate_dir = self.settings.value("paths/last_save_dir", "", type=str) or ""
+            _dir_key = "paths/last_export_dir" if export_only else "paths/last_save_dir"
+            candidate_dir = self.settings.value(_dir_key, "", type=str) or ""
+            if not candidate_dir:
+                candidate_dir = self.settings.value("paths/last_save_dir", "", type=str) or ""
         if not candidate_dir or not os.path.isdir(candidate_dir):
             from pathlib import Path
             candidate_dir = str(Path.home())
@@ -1243,8 +1271,9 @@ class FileMixin:
         suggested = _sanitize_filename(suggested) + ext
         suggested_path = os.path.join(candidate_dir, suggested)
 
+        _dlg_title = self.tr("Export Image") if export_only else self.tr("Save As")
         path, chosen_filter = QFileDialog.getSaveFileName(
-            self, self.tr("Save As"), suggested_path, filters
+            self, _dlg_title, suggested_path, filters
         )
         if not path:
             return
@@ -1287,18 +1316,30 @@ class FileMixin:
             return
 
         try:
+            chosen_bd = dlg.selected_bit_depth()
             self.docman.save_document(
                 doc, path,
-                bit_depth_override=dlg.selected_bit_depth(),
+                bit_depth_override=chosen_bd,
                 jpeg_quality=dlg.selected_jpeg_quality(),
                 export_opts=dlg.export_options(),
+                retarget_document=not export_only,
             )
-            self._log(f"Saved: {path} ({dlg.selected_bit_depth()})")
-            self._add_recent_image(path)
-            self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
+            if export_only:
+                self._log(
+                    f"Exported: {path} ({chosen_bd}) — "
+                    "working document unchanged"
+                )
+                self.settings.setValue("paths/last_export_dir", os.path.dirname(path))
+            else:
+                self._log(f"Saved: {path} ({chosen_bd})")
+                self._add_recent_image(path)
+                self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
-            QMessageBox.critical(self, self.tr("Save failed"), str(e))
-
+            QMessageBox.critical(
+                self,
+                self.tr("Export failed") if export_only else self.tr("Save failed"),
+                str(e),
+            )
     def _open_export_fits(self, preset=None):
         from setiastro.saspro.export_fits import open_export_fits_with_preset
         open_export_fits_with_preset(self, preset)

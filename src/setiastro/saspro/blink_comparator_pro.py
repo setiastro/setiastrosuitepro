@@ -529,6 +529,110 @@ def _blink_exposure_label(hdr):
     return f"{f:.3f}".rstrip("0").rstrip(".") + "s"
 
 
+def _blink_sexagesimal_deg(val, *, hours=False):
+    """Decimal degrees from a float or a sexagesimal string. Hours scale by 15."""
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        f = float(val)
+        if not np.isfinite(f):
+            return None
+        return f * 15.0 if hours else f
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        f = float(s)
+        return f * 15.0 if hours else f
+    except ValueError:
+        pass
+    neg = s.startswith("-")
+    parts = [p for p in s.replace(":", " ").split() if p]
+    try:
+        nums = [abs(float(p)) for p in parts]
+    except ValueError:
+        return None
+    if not nums:
+        return None
+    deg = nums[0]
+    if len(nums) > 1:
+        deg += nums[1] / 60.0
+    if len(nums) > 2:
+        deg += nums[2] / 3600.0
+    if hours:
+        deg *= 15.0
+    return -deg if neg else deg
+
+
+def _blink_pointing_deg(hdr):
+    """(ra, dec) in degrees from WCS, else from RA/DEC. Missing → (None, None)."""
+    ra = _blink_key_float(hdr, "CRVAL1")
+    dec = _blink_key_float(hdr, "CRVAL2")
+    if ra is not None and dec is not None and -90.0 <= dec <= 90.0:
+        return ra % 360.0, dec
+    ra = None
+    for key in ("RA", "OBJCTRA"):
+        raw = _blink_hdr_get(hdr, key)
+        if raw is None:
+            continue
+        if isinstance(raw, str) and any(c in raw for c in ": "):
+            ra = _blink_sexagesimal_deg(raw, hours=True)
+        else:
+            f = _blink_key_float(hdr, key)
+            if f is None:
+                continue
+            ra = f * 15.0 if abs(f) <= 24.0 else f
+        if ra is not None:
+            break
+    dec = None
+    for key in ("DEC", "OBJCTDEC"):
+        raw = _blink_hdr_get(hdr, key)
+        if raw is None:
+            continue
+        if isinstance(raw, str) and any(c in raw for c in ": "):
+            dec = _blink_sexagesimal_deg(raw, hours=False)
+        else:
+            dec = _blink_key_float(hdr, key)
+        if dec is not None:
+            break
+    if ra is None or dec is None or not (-90.0 <= dec <= 90.0):
+        return None, None
+    return ra % 360.0, dec
+
+
+def _blink_field_deg(hdr):
+    """Field width in degrees from pixel scale and NAXIS1, or None."""
+    width = _blink_key_float(hdr, "NAXIS1")
+    if width is None or width <= 0:
+        return None
+    for key in ("SECPIX", "PIXSCALE", "SCALE"):
+        scale = _blink_key_float(hdr, key)
+        if scale is not None and scale > 0:
+            return scale * width / 3600.0
+    cdelt = _blink_key_float(hdr, "CDELT1")
+    if cdelt is not None and cdelt != 0:
+        return abs(cdelt) * width
+    pix = _blink_key_float(hdr, "XPIXSZ")
+    if pix is None:
+        pix = _blink_key_float(hdr, "PIXSIZE")
+    focal = _blink_key_float(hdr, "FOCALLEN")
+    if pix is not None and focal is not None and pix > 0 and focal > 0:
+        return (pix / focal * 206.265) * width / 3600.0
+    return None
+
+
+def _blink_bin_and_size(hdr):
+    """(binning or None, (NAXIS1, NAXIS2) or None) for pre-flag grouping."""
+    binning = _blink_key_float(hdr, "XBINNING")
+    if binning is None:
+        binning = _blink_key_float(hdr, "XBIN")
+    bin_v = int(binning) if binning is not None and binning > 0 else None
+    w = _blink_key_float(hdr, "NAXIS1")
+    h = _blink_key_float(hdr, "NAXIS2")
+    size = (int(w), int(h)) if w and h and w > 0 and h > 0 else None
+    return bin_v, size
+
+
 # ⬇️ your SASv2 classes — paste them unchanged (Qt6 compatible already)
 class MetricsPanel(QWidget):
     """2×2 grid with clickable dots and draggable thresholds."""
@@ -549,7 +653,7 @@ class MetricsPanel(QWidget):
 
         # caching slots
         self._orig_images = None       # last list passed
-        self.metrics_data = None       # list of 7 numpy arrays
+        self.metrics_data = None       # list of 10 numpy arrays (… noise/patch/trail)
         self.flags = None              # list of bools
         self._threshold_initialized = [False]*7
         self._last_group_id = None
@@ -566,7 +670,7 @@ class MetricsPanel(QWidget):
             self.tr("Eccentricity"),
             self.tr("Background"),
             self.tr("Star Count"),
-            self.tr("Weighted Score"),
+            self.tr("Grade"),
             self.tr("Sensor Temp (°C)"),
             self.tr("Bg Rate (ADU/s)"),
         ]
@@ -574,13 +678,13 @@ class MetricsPanel(QWidget):
         # Layout: 3 cols × 3 rows
         # Col 0: FWHM (row 0), Background (row 1), Sensor Temp (row 2)
         # Col 1: Eccentricity (row 0), Star Count (row 1), Bg Rate (row 2)
-        # Col 2: Weighted Score (rows 0-2, rowspan 3)
+        # Col 2: Grade (rows 0-2, rowspan 3)
         grid_positions = [
             (0, 0),   # FWHM
             (0, 1),   # Eccentricity
             (1, 0),   # Background
             (1, 1),   # Star Count
-            (0, 2),   # Weighted Score — will use rowspan=3
+            (0, 2),   # Grade — will use rowspan=3
             (2, 0),   # Sensor Temp (°C)
             (2, 1),   # Bg Rate (ADU/s)
         ]
@@ -647,7 +751,7 @@ class MetricsPanel(QWidget):
             self.median_lines.append(median_ln)
 
 
-            # Weighted Score spans all rows in col 2
+            # Grade spans all rows in col 2
             if idx == 4:
                 grid.addWidget(pw, grow, gcol, 3, 1)
             else:
@@ -739,7 +843,6 @@ class MetricsPanel(QWidget):
         a pool, else blink_measure_worker.measure_ds in this thread."""
         import cv2
         import numpy as np
-        import math
         from setiastro.saspro.blink_measure_worker import measure_ds as _measure_ds
 
         # (idx, entry) in PreLoad; (idx, entry, loader) in Stream, where
@@ -843,7 +946,8 @@ class MetricsPanel(QWidget):
         try:
             if img is None:
                 orig_back = entry.get("orig_background", np.nan)
-                return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0, _temp_c, _bg_rate
+                return (idx, BAD_FWHM, BAD_ECC, orig_back, 0,
+                        np.nan, np.nan, np.nan, _temp_c, _bg_rate)
 
             data = np.asarray(img)
             h0, w0 = data.shape[:2]
@@ -873,24 +977,26 @@ class MetricsPanel(QWidget):
             res = (measure or _measure_ds)(ds)
             if res is None:
                 orig_back = entry.get("orig_background", np.nan)
-                return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0, _temp_c, _bg_rate
+                return (idx, BAD_FWHM, BAD_ECC, orig_back, 0,
+                        np.nan, np.nan, np.nan, _temp_c, _bg_rate)
 
-            fwhm_ds, ecc, star_cnt = res
-            fwhm = fwhm_ds * 2.0 * load_scale
+            # Compat: older 3/4-tuples → pad noise/patch/trail.
+            vals = list(res) + [float("nan")] * 6
+            fwhm_ds, ecc, star_cnt, noise, patch, trail = vals[:6]
+            if not np.isfinite(fwhm_ds):
+                orig_back = entry.get("orig_background", np.nan)
+                return (idx, BAD_FWHM, BAD_ECC, orig_back, int(star_cnt or 0),
+                        float(noise), float(patch), float(trail), _temp_c, _bg_rate)
+
+            fwhm = float(fwhm_ds) * 2.0 * load_scale
             orig_back = entry.get("orig_background", np.nan)
-
-            bg = float(orig_back) if np.isfinite(orig_back) and orig_back > 0 else 1e-6
-            bg_clamped  = float(min(max(bg, 0.0), 1.0))
-            ecc_clamped = float(min(max(ecc, 0.0), 1.0))
-            ecc_term    = 1.0 - ecc_clamped
-            bg_term     = (2.0 / (math.sqrt(bg_clamped) + 1.0)) - 1.0
-            weighted_score = float(star_cnt) * ecc_term * bg_term if star_cnt > 0 else 0.0
-
-            return idx, fwhm, ecc, orig_back, star_cnt, weighted_score, _temp_c, _bg_rate
+            return (idx, fwhm, float(ecc), orig_back, int(star_cnt),
+                    float(noise), float(patch), float(trail), _temp_c, _bg_rate)
 
         except Exception:
             orig_back = entry.get("orig_background", np.nan)
-            return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0, _temp_c, _bg_rate
+            return (idx, BAD_FWHM, BAD_ECC, orig_back, 0,
+                    np.nan, np.nan, np.nan, _temp_c, _bg_rate)
 
 
 
@@ -922,7 +1028,7 @@ class MetricsPanel(QWidget):
         n = len(loaded_images)
         if n == 0:
             self._orig_images = []
-            self.metrics_data = [np.array([])] * 7
+            self.metrics_data = [np.array([])] * 10
             self.flags = []
             self._threshold_initialized = [False] * 7
             return True
@@ -934,9 +1040,12 @@ class MetricsPanel(QWidget):
         m1 = np.full(n, np.nan, dtype=np.float32)  # Eccentricity
         m2 = np.full(n, np.nan, dtype=np.float32)  # Background (cached)
         m3 = np.full(n, np.nan, dtype=np.float32)  # Star count
-        m4 = np.full(n, np.nan, dtype=np.float32)  # Weighted score        
+        m4 = np.full(n, np.nan, dtype=np.float32)  # Grade 0–100 (filled after SEP)
         m5 = np.full(n, np.nan, dtype=np.float32)  # Sensor temp (°C, header)
         m6 = np.full(n, np.nan, dtype=np.float32)  # Bg rate (ADU/s, OFFSET-corrected)
+        m7 = np.full(n, np.nan, dtype=np.float32)  # SEP noise (rms)
+        m8 = np.full(n, np.nan, dtype=np.float32)  # background patchiness
+        m9 = np.full(n, np.nan, dtype=np.float32)  # high-end trail (ecc p80)
         flags = [e.get("flagged", False) for e in loaded_images]
 
         # ----------------------------
@@ -1086,10 +1195,12 @@ class MetricsPanel(QWidget):
                         break
 
                     try:
-                        idx, fwhm, ecc, orig_back, star_cnt, weighted_score, temp_c, bg_rate = fut.result()
+                        (idx, fwhm, ecc, orig_back, star_cnt,
+                         noise, patch, trail, temp_c, bg_rate) = fut.result()
                     except Exception:
                         idx = futures.get(fut, 0)
-                        fwhm, ecc, orig_back, star_cnt, weighted_score = np.nan, np.nan, np.nan, 0, 0.0
+                        fwhm, ecc, orig_back, star_cnt = np.nan, np.nan, np.nan, 0
+                        noise, patch, trail = np.nan, np.nan, np.nan
                         temp_c, bg_rate = np.nan, np.nan
 
                     if 0 <= idx < n:
@@ -1097,9 +1208,11 @@ class MetricsPanel(QWidget):
                         m1[idx] = ecc
                         m2[idx] = orig_back
                         m3[idx] = float(star_cnt)
-                        m4[idx] = float(weighted_score)
                         m5[idx] = float(temp_c)
                         m6[idx] = float(bg_rate)
+                        m7[idx] = float(noise)
+                        m8[idx] = float(patch)
+                        m9[idx] = float(trail)
 
                     done += 1
                     prog.setValue(done)
@@ -1122,13 +1235,78 @@ class MetricsPanel(QWidget):
             return False
 
         # ----------------------------
-        # 4) Stash results
+        # 4) Relative grade from the just-measured set
+        # ----------------------------
+        m4[:] = self._fill_grades(loaded_images, m0, m1, m2, m3, m7, m8, m9)
+
+        # ----------------------------
+        # 5) Stash results
         # ----------------------------
         self._orig_images = loaded_images
-        self.metrics_data = [m0, m1, m2, m3, m4, m5, m6]
+        self.metrics_data = [m0, m1, m2, m3, m4, m5, m6, m7, m8, m9]
         self.flags = flags
         self._threshold_initialized = [False] * 7
         return True
+
+    @staticmethod
+    def _quality_samples(loaded_images, m0, m1, m2, m3, m7=None, m8=None, m9=None):
+        """Build quality_grades samples from metric arrays + headers."""
+        from setiastro.saspro.stacking_suite import _object_name_from_header
+
+        def _num(arr, i):
+            if arr is None:
+                return float("nan")
+            try:
+                v = float(arr[i])
+            except Exception:
+                return float("nan")
+            return v if np.isfinite(v) else float("nan")
+
+        samples = []
+        for i, entry in enumerate(loaded_images):
+            hdr = entry.get("header") or {}
+            star_n = _num(m3, i)
+            ra, dec = _blink_pointing_deg(hdr)
+            bin_v, size = _blink_bin_and_size(hdr)
+            samples.append({
+                "ok": np.isfinite(star_n) and np.isfinite(_num(m2, i)),
+                "sky": _num(m2, i),
+                "stars": 0 if not np.isfinite(star_n) else int(round(star_n)),
+                "ecc": _num(m1, i),
+                "fwhm": _num(m0, i),
+                "noise": _num(m7, i),
+                "patch": _num(m8, i),
+                "trail": _num(m9, i),
+                "obj": _object_name_from_header(hdr),
+                "filt": str(_blink_hdr_get(hdr, "FILTER") or ""),
+                "exposure": _blink_exposure_label(hdr),
+                "bin": bin_v,
+                "size": size,
+                "ra": ra,
+                "dec": dec,
+                "field": _blink_field_deg(hdr),
+            })
+        return samples
+
+    @classmethod
+    def _fill_grades(cls, loaded_images, m0, m1, m2, m3, m7=None, m8=None, m9=None):
+        """Return a grade array aligned with loaded_images."""
+        from setiastro.saspro.stacking_suite import quality_grades
+        n = len(loaded_images)
+        grades = np.full(n, np.nan, dtype=np.float32)
+        if n == 0:
+            return grades
+        samples = cls._quality_samples(loaded_images, m0, m1, m2, m3, m7, m8, m9)
+        for i, result in enumerate(quality_grades(samples)):
+            g = result.get("grade")
+            try:
+                gf = float(g)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(gf):
+                grades[i] = gf
+                loaded_images[i]["quality_grade"] = gf
+        return grades
 
     def plot(self, loaded_images, indices=None):
         """
@@ -1247,7 +1425,7 @@ class MetricsPanel(QWidget):
                     # current / thermal noise, so treat it like the other
                     # higher-is-worse metrics. Park the line just above the
                     # data so nothing flags on open; drag DOWN to flag.
-                    # Lower = worse for Star Count / Weighted Score (m in 3,4).
+                    # Lower = worse for Star Count / Grade (m in 3,4).
                     line.setPos((mx + 0.05 * span) if m in (0, 1, 2, 5, 6) else 0)
                 self._threshold_initialized[m] = True
 
@@ -1603,8 +1781,15 @@ class MetricsWindow(QWidget):
         - If this is a genuinely new image set, recompute from scratch.
         - If the same logical set is still in use and only ordering changed,
         just replot using cached metrics.
+
+        Length is taken from the cached metric arrays, not from
+        ``_all_images``: append mutates ``loaded_images`` in place, and
+        ``_all_images`` is that same list, so a len(_all_images) check
+        would never see growth and would leave new frames unmeasured.
         """
-        if self.metrics_panel.metrics_data is None or len(getattr(self, "_all_images", [])) != len(loaded_images):
+        md = self.metrics_panel.metrics_data
+        cached_n = len(md[0]) if md is not None and len(md) > 0 else -1
+        if md is None or cached_n != len(loaded_images):
             self.set_images(loaded_images, order=order)
             return
 
@@ -1845,7 +2030,7 @@ class _BlinkZoomPanel(QWidget):
 
 # ---------------------------------------------------------------------------
 # Numeric-aware tree item so clicking a metric header (Star Count, FWHM,
-# Ecc, BG, Score, Temp, BG/s) sorts the tree numerically instead of
+# Ecc, BG, Grade, Temp, BG/s) sorts the tree numerically instead of
 # lexicographically. This is a purely VISUAL reorder — self.image_paths
 # and self.loaded_images stay in their canonical order; metrics are
 # resolved via UserRole on column 0, not tree row index.
@@ -1882,8 +2067,8 @@ class _BlinkSortItem(QTreeWidgetItem):
         if b == "":
             return True
 
-        # Filename (0) and the Sat flag (1) sort naturally as text.
-        if col in (0, 1):
+        # Filename (0), the Sat flag (1) and the Quality reason (9) sort as text.
+        if col in (0, 1, 9):
             return self._natkey(a) < self._natkey(b)
 
         # Metric columns (2..8) parse as float; fall back to text
@@ -2422,7 +2607,52 @@ class BlinkTab(QWidget):
         except Exception:
             pass
 
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(e)
+
+    def _release_memory(self):
+        """Drop decoded frames so Blink's RAM footprint can shrink on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        try:
+            for entry in list(getattr(self, "loaded_images", []) or []):
+                if isinstance(entry, dict):
+                    entry["image_data"] = None
+                    entry.pop("sat_overlay_mask", None)
+        except Exception:
+            pass
+        try:
+            self.loaded_images.clear()
+        except Exception:
+            self.loaded_images = []
+
+        self.current_pixmap = None
+        try:
+            self.preview_label.clear()
+        except Exception:
+            pass
+        # Zoom panel keeps a shared ref to the full preview pixmap.
+        try:
+            zp = getattr(self, "zoom_panel", None) or getattr(self, "_zoom_panel", None)
+            if zp is not None:
+                zp._source_pixmap = None
+                try:
+                    zp.clear()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     def initUI(self):
         main_layout = QHBoxLayout(self)
@@ -2734,8 +2964,7 @@ class BlinkTab(QWidget):
         left_layout.addLayout(filter_row)
         # Tree view for file names
         self.fileTree = QTreeWidget(self)
-        self.fileTree.setColumnCount(9)
-        self.fileTree.setColumnCount(9)
+        self.fileTree.setColumnCount(10)
         self.fileTree.setHeaderLabels([
             self.tr("Image Files"),
             self.tr("Sat"),
@@ -2743,9 +2972,10 @@ class BlinkTab(QWidget):
             self.tr("FWHM"),
             self.tr("Ecc"),
             self.tr("BG"),
-            self.tr("Score"),
+            self.tr("Grade"),
             self.tr("Temp"),
             self.tr("BG/s"),
+            self.tr("Quality"),
         ])
 
         for c in (1, 2, 3, 4, 5, 6, 7, 8):
@@ -2757,9 +2987,10 @@ class BlinkTab(QWidget):
         self.fileTree.setColumnWidth(3, 55)
         self.fileTree.setColumnWidth(4, 55)
         self.fileTree.setColumnWidth(5, 55)
-        self.fileTree.setColumnWidth(6, 60)   # Score (Weighted Score)
+        self.fileTree.setColumnWidth(6, 55)   # Grade 0–100
         self.fileTree.setColumnWidth(7, 50)   # Temp (°C from header)
         self.fileTree.setColumnWidth(8, 65)   # BG/s (ADU/s, OFFSET-corrected)
+        self.fileTree.setColumnWidth(9, 280)  # Quality reason
         self.fileTree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)  # Allow multiple selections
         #self.fileTree.itemClicked.connect(self.on_item_clicked)
         self.fileTree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -2797,6 +3028,15 @@ class BlinkTab(QWidget):
         hdr.sortIndicatorChanged.connect(self._on_tree_sort_changed)
 
         left_layout.addWidget(self.fileTree)
+
+        self.preflagButton = QPushButton(self.tr("Pre-flag quality"), self)
+        self.preflagButton.setToolTip(self.tr(
+            "Grade each frame against others of the same target, filter and exposure,\n"
+            "and flag the suspects. The Grade and Quality columns show the result.\n"
+            "Clear Flags removes the marks."
+        ))
+        self.preflagButton.clicked.connect(self._preflag_quality)
+        left_layout.addWidget(self.preflagButton)
 
         # "Clear Flags" Button
         self.clearFlagsButton = QPushButton(self.tr('Clear Flags'), self)
@@ -3241,6 +3481,8 @@ class BlinkTab(QWidget):
             state = s.value("blink/tree_header_state_v2", None)
             if state is not None:
                 hdr.restoreState(state)
+            if self.fileTree.columnWidth(9) < 40:
+                self.fileTree.setColumnWidth(9, 280)
         except Exception:
             pass
 
@@ -3788,11 +4030,130 @@ class BlinkTab(QWidget):
         item.setData(0, Qt.ItemDataRole.UserRole, full_path)
 
 
+    def _metrics_need_recompute(self, panel) -> bool:
+        """True when metrics are missing or shorter than the current image list.
+
+        Append grows ``loaded_images`` in place while leaving the cached
+        metric arrays at the old length; pre-flag must not reuse that cache.
+        """
+        if panel is None:
+            return True
+        md = getattr(panel, "metrics_data", None)
+        if md is None or len(md) == 0:
+            return True
+        return len(md[0]) != len(self.loaded_images)
+
+    def _sync_metrics_after_list_change(self):
+        """Recompute metrics if the window is open; else drop the stale cache.
+
+        Compute runs a progress dialog, so a hidden metrics window only
+        invalidates. The next Pre-flag / Show Metrics rebuilds from scratch.
+        """
+        if self.metrics_window is None:
+            return
+        if self.metrics_window.isVisible():
+            self.metrics_window.update_metrics(
+                self.loaded_images, order=self._tree_order_indices())
+        else:
+            self.metrics_window.metrics_panel.metrics_data = None
+        self._update_tree_metrics_columns()
+
+    def _preflag_quality(self):
+        """Flag frames that disagree with their target, filter and exposure."""
+        if not self.loaded_images:
+            self.loading_label.setText(self.tr("No images to pre-flag."))
+            return
+        panel = None
+        if self.metrics_window is not None:
+            panel = getattr(self.metrics_window, "metrics_panel", None)
+        if self._metrics_need_recompute(panel):
+            self.show_metrics()
+            panel = self.metrics_window.metrics_panel if self.metrics_window else None
+        metrics = getattr(panel, "metrics_data", None) if panel is not None else None
+        if not metrics or len(metrics[0]) != len(self.loaded_images):
+            self.loading_label.setText(self.tr("Quality metrics are not available."))
+            return
+
+        from setiastro.saspro.stacking_suite import (
+            format_quality_reason,
+            quality_grades,
+        )
+
+        fwhm, ecc, bg, stars = metrics[0], metrics[1], metrics[2], metrics[3]
+        noise = metrics[7] if len(metrics) > 7 else None
+        patch = metrics[8] if len(metrics) > 8 else None
+        trail = metrics[9] if len(metrics) > 9 else None
+
+        for entry in self.loaded_images:
+            if entry.get("quality_reason") or entry.get("quality_is_verdict"):
+                entry["flagged"] = False
+            entry["quality_reason"] = ""
+            entry["quality_is_verdict"] = False
+
+        samples = MetricsPanel._quality_samples(
+            self.loaded_images, fwhm, ecc, bg, stars, noise, patch, trail)
+        results = quality_grades(samples)
+
+        n_flag = 0
+        for i, result in enumerate(results):
+            verdict, note = format_quality_reason(result, self.tr)
+            self.loaded_images[i]["quality_reason"] = verdict or note
+            self.loaded_images[i]["quality_is_verdict"] = bool(verdict)
+            g = result.get("grade")
+            try:
+                gf = float(g)
+            except (TypeError, ValueError):
+                gf = float("nan")
+            if np.isfinite(gf):
+                self.loaded_images[i]["quality_grade"] = gf
+                metrics[4][i] = gf
+            if verdict:
+                self.loaded_images[i]["flagged"] = True
+                n_flag += 1
+
+        self._paint_quality_column()
+        self._update_tree_metrics_columns()
+        if self.metrics_window is not None:
+            panel.flags = [e.get("flagged", False) for e in self.loaded_images]
+            # Replot so the Grade panel picks up refreshed values / flags.
+            try:
+                order = self._tree_order_indices()
+                self.metrics_window.metrics_panel.plot(
+                    self.loaded_images, indices=order)
+            except Exception:
+                panel._refresh_scatter_colors()
+            self.metrics_window._update_status()
+        self.loading_label.setText(self.tr(
+            "Pre-flagged {0} of {1}. The Quality column says why."
+        ).format(n_flag, len(self.loaded_images)))
+
+    def _paint_quality_column(self):
+        red_name = QBrush(Qt.GlobalColor.red)
+        red_reason = QBrush(QColor("#ff6b6b"))
+        normal = QBrush(self.fileTree.palette().color(QPalette.ColorRole.WindowText))
+        for i, entry in enumerate(self.loaded_images):
+            item = self.get_tree_item_for_index(i)
+            if item is None:
+                continue
+            text = entry.get("quality_reason") or ""
+            item.setText(9, text)
+            item.setToolTip(9, text)
+            item.setForeground(9, red_reason if entry.get("quality_is_verdict") else normal)
+            base = os.path.basename(self.image_paths[i]) if i < len(self.image_paths) else item.text(0).lstrip("⚠️ ")
+            if entry.get("flagged"):
+                item.setText(0, f"⚠️ {base}")
+                item.setForeground(0, red_name)
+            else:
+                item.setText(0, base)
+                item.setForeground(0, normal)
+
     def clearFlags(self):
         """Clear all flagged states, update tree icons & metrics."""
         # 1) Reset internal flag state
         for entry in self.loaded_images:
             entry['flagged'] = False
+            entry['quality_reason'] = ""
+            entry['quality_is_verdict'] = False
 
         # 2) Update tree widget: strip any "⚠️ " prefix and reset color
         normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
@@ -3800,6 +4161,9 @@ class BlinkTab(QWidget):
             name = item.text(0).lstrip("⚠️ ")
             item.setText(0, name)
             item.setForeground(0, QBrush(normal))
+            item.setText(9, "")
+            item.setToolTip(9, "")
+            item.setForeground(9, QBrush(normal))
 
         # 3) If metrics window is open, refresh its dots & status
         if self.metrics_window:
@@ -3819,7 +4183,7 @@ class BlinkTab(QWidget):
 
         metrics = panel.metrics_data
         m0, m1, m2, m3 = metrics[0], metrics[1], metrics[2], metrics[3]
-        m4 = metrics[4]  # Weighted Score
+        m4 = metrics[4]  # Grade 0–100
         m5 = metrics[5]  # Sensor Temp (°C from header)
         m6 = metrics[6]  # Bg Rate (ADU/s, OFFSET-corrected)
         n = min(len(self.loaded_images), len(m0), len(m1), len(m2), len(m3),
@@ -3827,6 +4191,9 @@ class BlinkTab(QWidget):
 
         def fmt_f(x):
             return "" if (x is None or not np.isfinite(x)) else f"{float(x):.2f}"
+
+        def fmt_grade(x):
+            return "" if (x is None or not np.isfinite(x)) else f"{float(x):.0f}"
 
         def fmt_i(x):
             try:
@@ -3853,12 +4220,12 @@ class BlinkTab(QWidget):
                         item.setForeground(1, QBrush(QColor(100, 200, 100)))
                         item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
 
-                # Stars (2), FWHM (3), Ecc (4), BG (5), Score (6), Temp (7), BG/s (8)
+                # Stars (2), FWHM (3), Ecc (4), BG (5), Grade (6), Temp (7), BG/s (8)
                 item.setText(2, fmt_i(m3[idx]))
                 item.setText(3, fmt_f(m0[idx]))
                 item.setText(4, fmt_f(m1[idx]))
                 item.setText(5, fmt_f(m2[idx]))
-                item.setText(6, fmt_f(m4[idx]))
+                item.setText(6, fmt_grade(m4[idx]))
                 item.setText(7, fmt_f(m5[idx]))
                 item.setText(8, fmt_f(m6[idx]))
 
@@ -4788,9 +5155,7 @@ class BlinkTab(QWidget):
 
         # update status
         self.loading_label.setText(self.tr("Loaded {0} images.").format(len(self.loaded_images)))
-        if self.metrics_window and self.metrics_window.isVisible():
-            self.metrics_window.update_metrics(self.loaded_images, order=self._tree_order_indices())
-        self._update_tree_metrics_columns()
+        self._sync_metrics_after_list_change()
         self.imagesChanged.emit(len(self.loaded_images))
 
         # Honor persisted Fit preference: auto-select the first leaf
@@ -4910,6 +5275,10 @@ class BlinkTab(QWidget):
                         self.loaded_images[i]['flagged'] = True
                         break
 
+        for entry in self.loaded_images:
+            if entry.get("quality_is_verdict"):
+                entry["flagged"] = True
+
         # Update tree visuals for all frames
         RED = Qt.GlobalColor.red
         normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
@@ -4990,6 +5359,7 @@ class BlinkTab(QWidget):
                 else:
                     item.setText(0, base)
                     item.setForeground(0, QBrush(normal))
+            self._paint_quality_column()
 
         # After re-enabling sort, metric columns may need the current
         # sort indicator applied against freshly-rebuilt rows.
@@ -5496,8 +5866,7 @@ class BlinkTab(QWidget):
         self.loading_label.setText(self.tr("Loaded {0} images.").format(len(self.loaded_images)))
         self.progress_bar.setValue(100)
         self.imagesChanged.emit(len(self.loaded_images))
-        if self.metrics_window and self.metrics_window.isVisible():
-            self.metrics_window.update_metrics(self.loaded_images, order=self._tree_order_indices())
+        self._sync_metrics_after_list_change()
 
         # Honor persisted Fit preference: auto-select the first leaf
         # (which triggers a deferred fit) so the user sees their saved
@@ -5563,9 +5932,7 @@ class BlinkTab(QWidget):
             "Streaming {0} frame{1} — frames load when you select them.").format(
                 len(self.loaded_images), 's' if len(self.loaded_images) != 1 else ''))
 
-        if self.metrics_window and self.metrics_window.isVisible():
-            self.metrics_window.update_metrics(
-                self.loaded_images, order=self._tree_order_indices())
+        self._sync_metrics_after_list_change()
 
         if getattr(self, "_auto_fit", False) or added:
             QTimer.singleShot(0, self._auto_select_first_leaf_after_load)

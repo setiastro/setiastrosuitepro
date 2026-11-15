@@ -5655,7 +5655,7 @@ class PlateSolverDialog(QDialog):
             self.setWindowFlag(Qt.WindowType.Tool, True)  
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
-        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         # ---------------- Main containers ----------------
         main = QVBoxLayout(self)
@@ -6614,6 +6614,12 @@ def open_plate_solver_with_preset(main_window, preset: dict | None = None):
     try:
         if preset:
             dlg.seed_from_preset(preset)
+    except Exception:
+        pass
+    try:
+        main_window._plate_solver_dialog = dlg
+        dlg.destroyed.connect(
+            lambda *_: setattr(main_window, "_plate_solver_dialog", None))
     except Exception:
         pass
     dlg.show()

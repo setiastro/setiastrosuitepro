@@ -2520,7 +2520,53 @@ class ContinuumSubtractTab(QWidget):
                 t.finished.disconnect()
             except Exception:
                 pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(event)
+
+    def _release_memory(self):
+        """Drop loaded channel arrays so RAM can be reclaimed on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        for attr in (
+            "ha_image", "sii_image", "oiii_image", "red_image", "green_image", "osc_image",
+            "ha_starless_image", "sii_starless_image", "oiii_starless_image",
+            "red_starless_image", "green_starless_image", "osc_starless_image",
+            "hao3_image", "s2o3_image",
+            "hao3_starless_image", "s2o3_starless_image",
+            "_o3_from_hao3", "_o3_from_s2o3",
+            "_o3_from_hao3_starless", "_o3_from_s2o3_starless",
+            "combined_image",
+        ):
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+        self._wb_diag_entries = []
+        self._calib_threads = {}
+        self._final_threads = []
+
+        # Full-res balanced RGB lives in _calib_entries; drop it explicitly.
+        try:
+            for entry in list((getattr(self, "_calib_entries", None) or {}).values()):
+                if isinstance(entry, dict):
+                    entry["balanced"] = None
+                    entry["preview"] = None
+                    entry.pop("raw_star_pixels", None)
+                    entry.pop("after_star_pixels", None)
+            self._calib_entries = {}
+        except Exception:
+            self._calib_entries = {}
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
 class ContinuumProcessingThread(QThread):
     # emitted once per filter when calibration is done (pre-subtraction)

@@ -1758,6 +1758,44 @@ class SelectiveLuminanceCorrection(QDialog):
         QTimer.singleShot(0, _after)
 
     def closeEvent(self, ev):
-        try: self._save_window_state()
-        except Exception: pass
+        try:
+            self._save_window_state()
+        except Exception:
+            pass
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop image/preview/mask buffers so RAM can be reclaimed on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        try:
+            if hasattr(self, "_mask_timer"):
+                self._mask_timer.stop()
+            if hasattr(self, "_adj_timer"):
+                self._adj_timer.stop()
+        except Exception:
+            pass
+
+        self.img = None
+        self._last_base = None
+        self._imported_mask_full = None
+        self._region_mask_full = None
+        self._lasso_overlay = None
+        self.document = None
+        self.docman = None
+        try:
+            self.lbl_preview.clear()
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass

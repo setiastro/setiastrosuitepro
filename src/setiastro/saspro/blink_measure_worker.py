@@ -19,6 +19,10 @@ is a speed/memory change, not a result change. The thread path calls this
 same function in-process, so both paths run identical code. (SEP 1.4.1 itself
 is not perfectly repeatable: re-extracting the same frame can shift a few
 deblended objects' shapes, ~0.005% on median FWHM, depending on call history.)
+
+Returns ``(fwhm_ds, ecc, star_cnt, noise, patch, trail)`` for Grade / Pre-flag:
+noise (SEP globalrms), patchiness (std/median of the RMS map), and high-end
+trail (80th-percentile eccentricity).
 """
 from __future__ import annotations
 
@@ -36,65 +40,92 @@ import numpy as np
 # make that tool overflow. (A fresh worker process starts at SEP's 300k.)
 
 
-def measure_ds(ds: np.ndarray):
-    """
-    SEP background + star extraction on the 2x-downsampled float32 frame.
-
-    Returns (fwhm_ds, ecc, star_count), with FWHM in DOWNSAMPLED pixels, or
-    None when no stars were found at any threshold. SEP failures raise; the
-    caller turns them into its "bad frame" values, as before.
-    """
-    import sep
-
-    ds = np.ascontiguousarray(ds, dtype=np.float32)
-
-    bkg = sep.Background(ds)
-    back = bkg.back()
+def _background_noise_and_patch(bkg) -> tuple[float, float]:
+    """SEP globalrms and a patchiness score from the rms map."""
     try:
         gr = float(bkg.globalrms)
     except Exception:
         try:
             gr = float(np.nanmedian(np.asarray(bkg.rms(), dtype=np.float32)))
         except Exception:
-            gr = np.nan
-    if not np.isfinite(gr) or gr <= 0:
-        gr = None
+            gr = float("nan")
+    noise = float(gr) if np.isfinite(gr) and gr > 0 else float("nan")
 
-    candidates = [
-        (7.0, 4),
-        (5.0, 4),
-        (4.0, 3),
-        (3.5, 2),
-    ]
+    patch = float("nan")
+    try:
+        rms = np.asarray(bkg.rms(), dtype=np.float32)
+        finite = np.isfinite(rms) & (rms > 0)
+        if finite.any():
+            med = float(np.median(rms[finite]))
+            if med > 0:
+                patch = float(np.std(rms[finite]) / med)
+    except Exception:
+        patch = float("nan")
+    return noise, patch
+
+
+def measure_ds(ds: np.ndarray):
+    """
+    SEP background + star extraction on the 2x-downsampled float32 frame.
+
+    Returns ``(fwhm_ds, ecc, star_cnt, noise, patch, trail)`` with FWHM in
+    downsampled pixels. When no catalogue is found, shape fields are NaN / 0
+    and noise/patch may still be set. Returns ``None`` only on total failure;
+    SEP failures raise and the caller turns them into its "bad frame" values.
+    """
+    import sep
     from setiastro.saspro.sep_tiled import extract_small_first
-    sub = ds - back
-    cat = None
-    for thr, minarea in candidates:
-        try:
-            cat = extract_small_first(
-                sep, sub,
-                thresh=float(thr),
-                err=gr,
-                minarea=int(minarea),
-                clean=True,
-                deblend_nthresh=32,
-            )
-        except Exception:
-            cat = None
-        if cat is not None and len(cat) > 0:
-            break
 
-    if cat is None or len(cat) == 0:
+    try:
+        ds = np.ascontiguousarray(ds, dtype=np.float32)
+        if ds.ndim != 2 or ds.size == 0:
+            return None
+        if not np.isfinite(ds).all():
+            ds = np.nan_to_num(ds, nan=0.0, posinf=1.0, neginf=0.0).astype(
+                np.float32, copy=False)
+
+        bkg = sep.Background(ds)
+        back = bkg.back()
+        noise, patch = _background_noise_and_patch(bkg)
+        err = noise if np.isfinite(noise) else None
+
+        candidates = [
+            (7.0, 4),
+            (5.0, 4),
+            (4.0, 3),
+            (3.5, 2),
+        ]
+        sub = ds - back
+        cat = None
+        for thr, minarea in candidates:
+            try:
+                cat = extract_small_first(
+                    sep, sub,
+                    thresh=float(thr),
+                    err=err,
+                    minarea=int(minarea),
+                    clean=True,
+                    deblend_nthresh=32,
+                )
+            except Exception:
+                cat = None
+            if cat is not None and len(cat) > 0:
+                break
+
+        if cat is None or len(cat) == 0:
+            return float("nan"), float("nan"), 0, noise, patch, float("nan")
+
+        a = np.maximum(cat["a"].astype(np.float32, copy=False), 1e-12)
+        b = np.maximum(cat["b"].astype(np.float32, copy=False), 0.0)
+
+        sig = np.sqrt(a * b).astype(np.float32, copy=False)
+        fwhm_ds = float(np.nanmedian(2.3548 * sig))
+
+        q = np.clip(b / a, 0.0, 1.0)
+        e_true = np.sqrt(np.maximum(0.0, 1.0 - q * q))
+        ecc = float(np.nanmedian(e_true))
+        trail = float(np.nanpercentile(e_true, 80))
+
+        return fwhm_ds, ecc, int(len(cat)), noise, patch, trail
+    except Exception:
         return None
-
-    a = np.maximum(cat["a"].astype(np.float32, copy=False), 1e-12)
-    b = np.maximum(cat["b"].astype(np.float32, copy=False), 0.0)
-
-    sig = np.sqrt(a * b).astype(np.float32, copy=False)
-    fwhm_ds = float(np.nanmedian(2.3548 * sig))
-
-    q = np.clip(b / a, 0.0, 1.0)
-    e_true = np.sqrt(np.maximum(0.0, 1.0 - q * q))
-    ecc = float(np.nanmedian(e_true))
-
-    return fwhm_ds, ecc, int(len(cat))

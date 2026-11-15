@@ -2557,9 +2557,15 @@ def open_cosmetic_correction_dialog(main, doc=None, preset: dict | None = None):
         pass
     if preset:
         dlg.seed_from_preset(preset)
+    try:
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+    except Exception:
+        pass
     dlg.show(); dlg.raise_(); dlg.activateWindow()
     try:
         main._cosmetic_correction_dialog = dlg
+        dlg.destroyed.connect(
+            lambda *_: setattr(main, "_cosmetic_correction_dialog", None))
     except Exception:
         pass
     return dlg
@@ -2632,7 +2638,13 @@ def open_cosmetic_correction_with_preset(main_window, preset: dict | None = None
     except Exception:
         pass
     try:
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+    except Exception:
+        pass
+    try:
         main_window._cosmetic_correction_dialog = dlg
+        dlg.destroyed.connect(
+            lambda *_: setattr(main_window, "_cosmetic_correction_dialog", None))
     except Exception:
         pass
     dlg.show(); dlg.raise_(); dlg.activateWindow()

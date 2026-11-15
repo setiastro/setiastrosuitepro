@@ -2272,6 +2272,53 @@ class FrequencySeperationTab(QWidget):
         return blended, mid, mname, True
     # ---- /MASK HELPERS ------------------------------------------------
 
+    def closeEvent(self, e):
+        try:
+            self._release_memory()
+        except Exception:
+            pass
+        super().closeEvent(e)
+
+    def _release_memory(self):
+        """Drop LF/HF/history buffers and pixmap caches on close."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self.image = None
+        self.low_freq_image = None
+        self.high_freq_image = None
+        self.doc = None
+        self.doc_manager = None
+        try:
+            self._hf_history.clear()
+        except Exception:
+            self._hf_history = []
+        try:
+            self._split_history.clear()
+        except Exception:
+            self._split_history = []
+
+        self._combined_cache = None
+        self._lf_pixmap_cache = None
+        self._hf_pixmap_cache = None
+        self._combined_pixmap_cache = None
+        self._lf_scaled_cache = None
+        self._hf_scaled_cache = None
+        self._combined_scaled_cache = None
+
+        for attr in ("labelHF", "labelLF"):
+            try:
+                getattr(self, attr).clear()
+            except Exception:
+                pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
+
 
 from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QComboBox
 
