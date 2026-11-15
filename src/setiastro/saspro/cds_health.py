@@ -67,6 +67,15 @@ __all__ = [
     "status_detail",
     "prepare_simbad",
     "call_simbad",
+    "query_tap_direct",
+    "vizier_probe",
+    "vizier_available",
+    "vizier_details",
+    "vizier_status_text",
+    "vizier_status_detail",
+    "apply_vizier_server",
+    "prepare_vizier",
+    "note_vizier_failure",
     "Budget",
 ]
 
@@ -115,11 +124,38 @@ _SERVER_ALIASES: dict[str, str] = {
 # VizieR is separate infrastructure from the SIMBAD TAP endpoint, but the
 # primary is still a Strasbourg host, so a CDS-wide outage takes it down
 # too. These are values astroquery's vizier.conf.server accepts.
+#
+# Ordered by how they measured on 2026-11-14, each probed end-to-end with a
+# real one-row query to /viz-bin/votable (the endpoint astroquery actually
+# POSTs to) rather than by reachability:
+#
+#   vizier.cds.unistra.fr   primary; was 404ing that day (CDS outage)
+#   vizier.cfa.harvard.edu  VOTable in 1.1 s
+#   vizier.idia.ac.za       VOTable in 3.1 s; returned an error VOTable on
+#                           one attempt and data on the next, so it is listed
+#                           after the solid mirrors
+#   vizier.hia.nrc.ca       TCP connect timed out on :443 and :80
+#   vizier.nao.ac.jp        TCP connect timed out on :443 and :80
+#   vizier.iucaa.in         TCP connect timed out on :443 and :80
+#   vizier.china-vo.org     :80 open, :443 refused, query timed out
+#
+# The last four are kept rather than deleted because a mirror that is down
+# today may be back tomorrow, and keeping them costs nothing: _race_mirrors
+# probes the candidates concurrently, so a dead host loses the race instead
+# of adding its timeout to the user's wait. Hosts that fail a live call are
+# moved to the back of the order for BREAKER_RESET seconds.
+#
+# vizier.inasan.ru and vizier.ast.cam.ac.uk are deliberately absent: both
+# refuse :443 outright and Cambridge's :80 serves a 404, so neither is a
+# VizieR endpoint any more.
 VIZIER_MIRRORS: tuple[str, ...] = (
     "vizier.cds.unistra.fr",
     "vizier.cfa.harvard.edu",
+    "vizier.idia.ac.za",
     "vizier.hia.nrc.ca",
     "vizier.nao.ac.jp",
+    "vizier.iucaa.in",
+    "vizier.china-vo.org",
 )
 
 # VOSI standard availability endpoint — tiny XML payload, no query cost.
@@ -132,6 +168,39 @@ _PROBE_PATH = "/simbad/sim-tap/availability"
 # mode that got Harvard struck off the list before.
 _TAP_PATH = "/simbad/sim-tap/sync"
 _TAP_SMOKE_QUERY = "SELECT TOP 1 main_id FROM basic"
+
+# VizieR is queried over its own endpoint, not TAP: astroquery POSTs to
+# https://<server>/viz-bin/votable (Vizier._server_to_url). So VizieR health
+# has to be measured there -- a healthy SIMBAD TAP says nothing about it, and
+# gating VizieR on SIMBAD meant a Strasbourg TAP outage disabled every VizieR
+# mirror even while Harvard was serving VizieR normally.
+_VIZIER_PATH = "/viz-bin/votable"
+
+# The smallest real VizieR query that proves a mirror can serve DATA.
+#
+# Three things this had to get right, each learned from a mirror that passed
+# a weaker check and then failed in use:
+#
+#   * a VOTable has to come back (a front page or error document does not),
+#   * it must not be a VOTable whose only content is an error INFO, and
+#   * it must contain an actual row. Mirrors are PARTIAL -- measured on
+#     2026-11-14, vizier.cfa.harvard.edu and vizier.idia.ac.za both answer
+#     for I/350/gaiaedr3, II/246, I/322A and V/147/sdss12 with either an
+#     empty resource or an error, while serving VII/237 and VII/291 fine.
+#     A mirror that returns an empty table for everything is not a mirror
+#     you want the deep search failing over to.
+#
+# VII/237 (HyperLEDA) is the probe catalogue because it is small, every
+# mirror carries it, and it is one of the catalogues the deep search uses.
+# The cone is M31's centre, which is guaranteed to contain a galaxy, so an
+# empty result means the mirror, not the sky.
+_VIZIER_SMOKE = {
+    "-source":  "VII/237",
+    "-c":       "10.684708 +41.268750",
+    "-c.rm":    "2",
+    "-out.max": "2",
+    "-out":     "*",
+}
 
 PROBE_TIMEOUT = 4.0        # per-mirror, per-stage, seconds
 VERIFY_TIMEOUT = 8.0       # TAP smoke query gets a little more room
@@ -169,6 +238,18 @@ _state: dict = {
     "pref":        None,         # user preference: None = unread, "" = auto
     "pin":         False,
     "vizier_pref": None,
+    # VizieR health, tracked separately from SIMBAD's: different hosts,
+    # different endpoint, and one can be down while the other is fine.
+    "vz_server":      None,       # last VizieR mirror known good
+    "vz_ok":          None,       # None = never probed
+    "vz_checked_at":  0.0,
+    "vz_detail":      "",
+    "vz_details":     [],
+    "vz_verified_at": {},         # server -> monotonic time of last verify
+    "vz_bad":         {},         # server -> monotonic time it failed a call
+    "vz_tripped":     False,
+    "vz_tripped_at":  0.0,
+    "vz_trip_reason": "",
 }
 
 
@@ -410,6 +491,360 @@ def _verify_tap(server: str, timeout: float = VERIFY_TIMEOUT
     return False, f"{server}: TAP query returned HTTP {code}, no VOTable"
 
 
+def _race_mirrors(servers, check, timeout: float,
+                  status_cb: Optional[Callable[[str], None]] = None):
+    """
+    Try `check(server)` on every candidate at once; return the best winner.
+
+    "Best" means the one earliest in `servers`, not the one that answered
+    first, so preference order still decides when several mirrors are
+    healthy -- the race is only there to stop a dead mirror costing a full
+    timeout before a live one further down the list is even tried.
+
+    The first candidate is tried on its own first, because in the normal
+    case it answers in well under a second and firing N queries at CDS for
+    every probe would be rude for no benefit. Returns
+    (ok, server, detail, all_details).
+    """
+    servers = [s for s in servers if s]
+    if not servers:
+        return False, "", "no mirrors configured", []
+
+    head = servers[0]
+    if status_cb:
+        status_cb(f"Checking {head}…")
+    ok, detail = check(head)
+    if ok:
+        return True, head, detail, [detail]
+
+    rest = servers[1:]
+    if not rest:
+        return False, head, detail, [detail]
+
+    if status_cb:
+        status_cb(f"{head} did not answer — trying "
+                  f"{len(rest)} mirror{'s' if len(rest) != 1 else ''}…")
+
+    # Daemon threads, not a ThreadPoolExecutor: the pool's shutdown joins its
+    # workers, so a mirror that is going to time out holds the race open for
+    # its full deadline even after a good mirror has answered -- and the
+    # pool's atexit hook would hold interpreter shutdown open the same way.
+    # Daemon threads let the dead ones finish into a result dict nobody is
+    # waiting on.
+    results: dict = {}
+    r_lock = threading.Lock()
+
+    def _runner(server: str) -> None:
+        try:
+            got = check(server)
+        except Exception as e:                       # noqa: BLE001
+            got = (False, f"{server}: {type(e).__name__}: {e}")
+        with r_lock:
+            results[server] = got
+
+    for server in rest:
+        threading.Thread(target=_runner, args=(server,), daemon=True,
+                         name=f"cds-probe-{server}").start()
+
+    # Settled = some mirror succeeded and every mirror preferred over it has
+    # already reported, so a later answer cannot change the choice.
+    deadline = _now() + timeout * 2.0
+    while True:
+        with r_lock:
+            snapshot = dict(results)
+        for server in rest:
+            got = snapshot.get(server)
+            if got is None:
+                break
+            if got[0]:
+                break
+        else:
+            server = None                            # all reported, none ok
+        if (server is None or (snapshot.get(server) or (False,))[0]
+                or len(snapshot) == len(rest) or _now() >= deadline):
+            break
+        time.sleep(0.02)
+
+    with r_lock:
+        for server in rest:
+            results.setdefault(server, (False, f"{server}: no answer before "
+                                               f"another mirror settled it"))
+        results = dict(results)
+
+    details = [detail] + [results[s][1] for s in rest if s in results]
+    for server in rest:                              # preference order wins
+        got = results.get(server)
+        if got and got[0]:
+            return True, server, got[1], details
+    return False, head, " | ".join(details), details
+
+
+def _verify_vizier(server: str, timeout: float = VERIFY_TIMEOUT
+                   ) -> Tuple[bool, str]:
+    """
+    Run the smallest possible real VizieR query and insist on a VOTable.
+
+    Same standard as _verify_tap, for the same reason: several VizieR
+    mirrors answer on :443 with a front page or an error document, and a
+    reachability check cannot tell those from a mirror that will serve
+    query_region. One extra trap here that SIMBAD does not have - a mirror
+    can return a syntactically valid VOTable whose only payload is an error
+    INFO ("Request has been interrupted"), which is a failure wearing a
+    success's clothes.
+    """
+    with _lock:
+        last = float(_state["vz_verified_at"].get(server, 0.0))
+    if last and (_now() - last) < TTL_VERIFIED:
+        return True, f"{server}: VizieR verified recently"
+
+    url = f"https://{server}{_VIZIER_PATH}?{urllib.parse.urlencode(_VIZIER_SMOKE)}"
+    code, body, err = _fetch_with_hard_deadline(url, timeout)
+
+    if err is not None:
+        return False, f"{server}: VizieR query {type(err).__name__}: {err}"
+    if code is None:
+        return False, f"{server}: VizieR query got no response"
+
+    low = (body or "").lower()
+    if code >= 500:
+        return False, f"{server}: VizieR query returned HTTP {code}"
+    if "<votable" in low:
+        flat = _strip_ns(low).replace(" ", "")
+        if 'value="error"' in flat or "query_status=error" in flat:
+            return False, (f"{server}: VizieR returned a VOTable reporting an "
+                           f"error, not data")
+        if "<tr>" not in flat and "<tr " not in low:
+            return False, (f"{server}: VizieR returned an empty table for a "
+                           f"cone that has data -- this mirror does not carry "
+                           f"the catalogue")
+        with _lock:
+            _state["vz_verified_at"][server] = _now()
+        return True, f"{server}: VizieR query returned data"
+    if "<html" in low or "<!doctypehtml" in _strip_ns(low):
+        return False, (f"{server}: VizieR query returned HTML, not VOTable "
+                       f"(HTTP {code}) - this host is not serving VizieR")
+    return False, f"{server}: VizieR query returned HTTP {code}, no VOTable"
+
+
+def _vizier_order() -> list:
+    """VizieR mirrors to try: preference, then last-good, then the rest.
+
+    Hosts that failed a live call recently go to the back rather than being
+    dropped - a mirror that timed out once is still a better last resort
+    than no VizieR at all.
+    """
+    _load_preference()
+    with _lock:
+        pref = _state["vizier_pref"] or ""
+        current = _state["vz_server"] or ""
+        bad = {h for h, t in _state["vz_bad"].items()
+               if (_now() - float(t)) < BREAKER_RESET}
+
+    order: list = []
+    for host in (pref, current, *VIZIER_MIRRORS):
+        if host and host not in order:
+            order.append(host)
+    return ([h for h in order if h not in bad] +
+            [h for h in order if h in bad])
+
+
+def vizier_probe(*, force: bool = False,
+                 timeout: float = VERIFY_TIMEOUT,
+                 status_cb: Optional[Callable[[str], None]] = None
+                 ) -> Tuple[bool, str, str]:
+    """
+    Find a VizieR mirror that actually answers queries.
+
+    Returns (ok, server, detail). Cached like probe(): TTL_UP when healthy,
+    TTL_DOWN when not.
+    """
+    if status_cb is None:
+        status_cb = lambda _m: None                  # noqa: E731
+
+    with _lock:
+        if (_state["vz_tripped"] and not force and
+                (_now() - _state["vz_tripped_at"]) < BREAKER_RESET):
+            return (False, _state["vz_server"] or VIZIER_MIRRORS[0],
+                    _state["vz_trip_reason"] or _state["vz_detail"])
+        age = _now() - float(_state["vz_checked_at"])
+        if not force and _state["vz_ok"] is not None:
+            ttl = TTL_UP if _state["vz_ok"] else TTL_DOWN
+            if age < ttl:
+                return (bool(_state["vz_ok"]),
+                        _state["vz_server"] or VIZIER_MIRRORS[0],
+                        _state["vz_detail"])
+
+    ok, server, detail, details = _race_mirrors(
+        _vizier_order(), lambda s: _verify_vizier(s, timeout), timeout,
+        lambda m: status_cb(f"VizieR: {m}"))
+    if ok:
+        with _lock:
+            _state.update(vz_server=server, vz_ok=True,
+                          vz_checked_at=_now(), vz_detail=detail,
+                          vz_details=list(details), vz_tripped=False,
+                          vz_tripped_at=0.0, vz_trip_reason="")
+            _state["vz_bad"].pop(server, None)
+        if server != VIZIER_MIRRORS[0]:
+            status_cb(f"Primary VizieR unreachable — using mirror {server}")
+        return True, server, detail
+
+    joined = " | ".join(details)
+    with _lock:
+        _state.update(vz_ok=False, vz_checked_at=_now(), vz_detail=joined,
+                      vz_details=list(details), vz_tripped=True,
+                      vz_tripped_at=_now(),
+                      vz_trip_reason="no VizieR mirror answered a query")
+    return False, VIZIER_MIRRORS[0], joined
+
+
+def vizier_available(status_cb: Optional[Callable[[str], None]] = None) -> bool:
+    """True if some VizieR mirror can serve a query right now."""
+    ok, _server, _detail = vizier_probe(status_cb=status_cb)
+    return ok
+
+
+def vizier_details() -> list:
+    """Per-mirror results of the last VizieR probe."""
+    with _lock:
+        return list(_state["vz_details"])
+
+
+def vizier_status_text() -> str:
+    """One-line human summary of VizieR health."""
+    with _lock:
+        if _state["vz_ok"] is None:
+            return "VizieR: not yet checked"
+        if _state["vz_ok"] and not _state["vz_tripped"]:
+            return f"VizieR: available via {_state['vz_server']}"
+        detail = ((_state["vz_trip_reason"] if _state["vz_tripped"] else "")
+                  or _state["vz_detail"] or "unknown")
+        return f"VizieR: unavailable ({detail})"
+
+
+def vizier_status_detail() -> str:
+    """Multi-line VizieR detail - one line per mirror tried."""
+    with _lock:
+        lines = list(_state["vz_details"]) or (
+            [_state["vz_detail"]] if _state["vz_detail"] else [])
+        pref = _state["vizier_pref"] or ""
+    out = "\n".join(f"  • {ln}" for ln in lines if ln)
+    if pref:
+        out += f"\n  • mirror preference: {pref}"
+    return out or "  • no VizieR probe has run yet"
+
+
+def apply_vizier_server(server: str,
+                        status_cb: Optional[Callable[[str], None]] = None
+                        ) -> bool:
+    """
+    Point astroquery's VizieR at `server`. Returns True only if it took.
+
+    There are two places to set this and they do not accept the same thing:
+
+      * `vizier.conf.server` is an astropy option() restricted to seven
+        names - unistra, cfa.harvard, nao.ac.jp, hia.nrc.ca, ast.cam.ac.uk,
+        iucaa.ernet.in (the retired domain) and china-vo.org. Anything else
+        raises TypeError "the value is unacceptable".
+      * `VizierClass.VIZIER_SERVER` is a plain attribute, takes any host,
+        and is what `_server_to_url()` actually builds the request URL from.
+
+    So a mirror outside astroquery's hard-coded seven (vizier.idia.ac.za,
+    say) is still usable - it just cannot go in conf. Both are set, conf
+    failures are tolerated, and the result is decided by asking astroquery
+    what URL it would use, not by whether an assignment threw. Guessing from
+    the assignment is how a failover reports success while queries keep
+    going to the dead host.
+    """
+    if status_cb is None:
+        status_cb = lambda _m: None                  # noqa: E731
+    host = (server or "").strip()
+    if not host:
+        return False
+    try:
+        import astroquery.vizier as _aqv
+        from astroquery.vizier import Vizier as _Vizier
+    except Exception as e:                           # noqa: BLE001
+        status_cb(f"astroquery.vizier unavailable: {e}")
+        return False
+    for setter in (
+        lambda: setattr(_Vizier, "VIZIER_SERVER", host),
+        lambda: setattr(_aqv.conf, "server", host),   # may legitimately raise
+    ):
+        try:
+            setter()
+        except Exception:                            # noqa: BLE001
+            pass
+
+    # The only answer that matters: where will the next request go?
+    try:
+        url = str(_Vizier._server_to_url())
+    except Exception:                                # noqa: BLE001
+        return False
+    if host not in url:
+        status_cb(f"astroquery still points at {url} after being asked "
+                  f"for {host}")
+        return False
+    return True
+
+
+def prepare_vizier(status_cb: Optional[Callable[[str], None]] = None,
+                   *, timeout: float = 45.0) -> str:
+    """
+    Probe, pick a working VizieR mirror, and point astroquery at it.
+
+    Returns the hostname in use, or "" when no mirror answered - in which
+    case the caller should say so rather than issue queries that are certain
+    to fail.
+    """
+    ok, server, _detail = vizier_probe(status_cb=status_cb)
+    if not ok or not apply_vizier_server(server, status_cb):
+        return ""
+    try:
+        import astroquery.vizier as _aqv
+        from astroquery.vizier import Vizier as _Vizier
+        for setter in (
+            lambda: setattr(_aqv.conf, "timeout", float(timeout)),
+            lambda: setattr(_Vizier, "TIMEOUT", float(timeout)),
+        ):
+            try:
+                setter()
+            except Exception:                        # noqa: BLE001
+                pass
+    except Exception:                                # noqa: BLE001
+        pass
+    return server
+
+
+def note_vizier_failure(exc: BaseException, *, context: str = "",
+                        status_cb: Optional[Callable[[str], None]] = None
+                        ) -> bool:
+    """
+    Record a failed VizieR call and move to another mirror if one works.
+
+    Returns True only when VizieR should be given up on entirely (nothing
+    left to try), so a caller loop reads it as "stop". False means another
+    mirror is now configured - try the same query again.
+    """
+    if not is_connection_error(exc):
+        return False
+    with _lock:
+        failed = _state["vz_server"] or VIZIER_MIRRORS[0]
+        _state["vz_bad"][failed] = _now()
+        _state["vz_verified_at"].pop(failed, None)
+        _state["vz_ok"] = None            # force a fresh probe
+        _state["vz_checked_at"] = 0.0
+    if status_cb:
+        status_cb(f"VizieR mirror {failed} failed — trying another…")
+    ok, server, _detail = vizier_probe(force=True, status_cb=status_cb)
+    if ok and apply_vizier_server(server, status_cb):
+        return False
+    with _lock:
+        _state.update(vz_tripped=True, vz_tripped_at=_now(),
+                      vz_trip_reason=(f"{context or 'VizieR call'}: "
+                                      f"{type(exc).__name__}: {exc}"))
+    return True
+
+
 # ── Public health API ────────────────────────────────────────────────────
 
 def _probe_order() -> list:
@@ -467,34 +902,37 @@ def probe(*, force: bool = False,
         with _lock:
             _state["homed_at"] = _now()
 
-    details: list = []
-    for server in order:
-        status_cb(f"Checking SIMBAD availability ({server})…")
+    def _check(server: str):
         ok, detail = _probe_one(server, timeout)
-
         if ok and verify:
             ok2, detail2 = _verify_tap(server)
-            detail = f"{detail}; {detail2}"
-            ok = ok2
+            return ok2, f"{detail}; {detail2}"
+        return ok, detail
 
-        details.append(detail)
-        if ok:
-            with _lock:
-                _state.update(
-                    server=server, ok=True, checked_at=_now(), detail=detail,
-                    details=list(details), tripped=False, tripped_at=0.0,
-                    trip_reason="",
-                )
-            if server != MIRRORS[0]:
-                status_cb(f"Primary SIMBAD unreachable — using mirror {server}")
-            return True, server, detail
+    ok, server, detail, details = _race_mirrors(
+        order, _check, max(timeout, VERIFY_TIMEOUT),
+        lambda m: status_cb(f"SIMBAD: {m}"))
+    if ok:
+        with _lock:
+            _state.update(
+                server=server, ok=True, checked_at=_now(), detail=detail,
+                details=list(details), tripped=False, tripped_at=0.0,
+                trip_reason="",
+            )
+        if server != MIRRORS[0]:
+            status_cb(f"Primary SIMBAD unreachable — using mirror {server}")
+        return True, server, detail
 
     joined = " | ".join(details)
     with _lock:
+        # trip_reason stays empty on a probe failure: the per-mirror detail
+        # IS the reason here and reads far better than a generic label.
+        # status_text() prefers trip_reason only when a live call tripped
+        # the breaker, which is the case where detail would be stale.
         _state.update(ok=False, checked_at=_now(), detail=joined,
                       details=list(details),
                       tripped=True, tripped_at=_now(),
-                      trip_reason="preflight probe failed")
+                      trip_reason="")
     return False, order[0] if order else MIRRORS[0], joined
 
 
@@ -529,10 +967,18 @@ def status_text() -> str:
             return "SIMBAD: not yet checked"
         if _state["ok"] and not _state["tripped"]:
             return f"SIMBAD: available via {_state['server']}"
-        # Unavailable. Prefer the concrete per-mirror detail over the
-        # generic trip reason: "preflight probe failed" told the user
-        # nothing they could act on, which is how a mirror-selection bug
-        # looked like a dead network.
+        # Unavailable -- but say WHY, and say it from the right source.
+        #
+        # A probe failure leaves a concrete per-mirror detail ("served HTML,
+        # not VOSI XML") and a useless trip reason ("preflight probe
+        # failed"), so detail wins there. A breaker tripped by a real query
+        # is the other way round: trip_reason holds the actual error and
+        # `detail` still holds the LAST SUCCESSFUL PROBE, which produced
+        # "SIMBAD: unavailable (simbad.harvard.edu: TAP query returned a
+        # VOTable)" -- a message that contradicted itself and sent people
+        # looking for a network fault that was not there.
+        if _state["tripped"] and _state["trip_reason"]:
+            return f"SIMBAD: unavailable ({_state['trip_reason']})"
         detail = _state["detail"] or _state["trip_reason"] or "unknown"
         return f"SIMBAD: unavailable ({detail})"
 
@@ -589,15 +1035,93 @@ def trip(reason: str) -> None:
                       ok=False, checked_at=_now())
 
 
-def note_failure(exc: BaseException, *, context: str = "") -> bool:
+def note_failure(exc: BaseException, *, context: str = "",
+                 status_cb: Optional[Callable[[str], None]] = None) -> bool:
     """
-    Record a SIMBAD failure. Trips the breaker for connection-class errors.
-    Returns True if the breaker was tripped (caller should stop retrying).
+    Record a SIMBAD failure, moving to another mirror if one still works.
+
+    Returns True if SIMBAD should be given up on (caller stops retrying);
+    False means either the error was not connection-class, or a different
+    mirror is now configured and the call is worth repeating.
+
+    Failing over here matters because the breaker is session-wide: before,
+    one timeout against whichever mirror we happened to be on disabled
+    SIMBAD for two minutes even when the other mirror was answering
+    normally the whole time.
     """
-    if is_connection_error(exc):
-        trip(f"{context or 'SIMBAD call'}: {type(exc).__name__}: {exc}")
-        return True
-    return False
+    if not is_connection_error(exc):
+        return False
+
+    with _lock:
+        failed = _state["server"] or MIRRORS[0]
+        _state["verified_at"].pop(failed, None)
+        pinned = bool(_state["pin"]) and bool(_state["pref"])
+    alternatives = [m for m in MIRRORS if m != failed]
+
+    if not pinned and alternatives:
+        if status_cb:
+            status_cb(f"SIMBAD mirror {failed} failed — trying another…")
+        for server in alternatives:
+            ok, detail = _probe_one(server, PROBE_TIMEOUT)
+            if ok:
+                ok, detail2 = _verify_tap(server)
+                detail = f"{detail}; {detail2}"
+            if ok and apply_server(server):
+                with _lock:
+                    _state.update(server=server, ok=True, checked_at=_now(),
+                                  detail=detail, tripped=False,
+                                  tripped_at=0.0, trip_reason="")
+                if status_cb:
+                    status_cb(f"SIMBAD: now using mirror {server}")
+                return False
+
+    trip(f"{context or 'SIMBAD call'}: {type(exc).__name__}: {exc}")
+    return True
+
+
+def query_tap_direct(adql: str, *, server: str = "",
+                    maxrec: int = 0,
+                    timeout: float = 60.0):
+    """
+    Run an ADQL query straight against SIMBAD's TAP sync endpoint.
+
+    A last resort for when astroquery's own path fails but the service is
+    demonstrably alive -- astroquery wraps pyvo, which has its own session,
+    redirect and job-submission behaviour, so "astroquery raised" and
+    "SIMBAD is down" are not the same statement. The probe in this module
+    talks to /simbad/sim-tap/sync directly and keeps working in exactly
+    those cases, so the query may as well go the same way.
+
+    Returns an astropy Table, or None if this path could not produce one.
+    """
+    host = canonical_server(server) or current_server()
+    params = {
+        "request": "doQuery",
+        "lang":    "ADQL",
+        "format":  "votable",
+        "query":   str(adql),
+    }
+    if maxrec and int(maxrec) > 0:
+        params["maxrec"] = str(int(maxrec))
+    code, body, err = _fetch_with_hard_deadline(
+        f"https://{host}{_TAP_PATH}?{urllib.parse.urlencode(params)}", timeout)
+    if err is not None or code is None or not body:
+        return None
+    low = body.lower()
+    if "<votable" not in low:
+        return None
+    flat = _strip_ns(low).replace(" ", "")
+    if 'value="error"' in flat or "query_status=error" in flat:
+        return None
+    try:
+        import io as _io
+        from astropy.io.votable import parse_single_table
+        table = parse_single_table(
+            _io.BytesIO(body.encode("utf-8", "replace"))).to_table()
+    except Exception:                                # noqa: BLE001
+        return None
+    note_success()
+    return table
 
 
 def note_success() -> None:

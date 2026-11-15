@@ -6,73 +6,151 @@ import math
 import numpy as np
 
 
-def _lb_clip(torch, p, q, t0, t1, ok):
-    """One Liang-Barsky half-plane step: keep the part of the segment with
-    p * t <= q."""
-    zero = p == 0
-    ok = ok & (~zero | (q >= 0))
-    safe = torch.where(zero, torch.ones_like(p), p)
-    r = q / safe
-    t0 = torch.where((~zero) & (p < 0), torch.maximum(t0, r), t0)
-    t1 = torch.where((~zero) & (p > 0), torch.minimum(t1, r), t1)
-    return t0, t1, ok
+def _exact_drop_window(tm, h, w, half, scale):
+    """Rows and columns of output cells one exact drop can touch.
 
+    The window is anchored per pixel at floor(min corner) -- the CPU kernel's
+    own per-pixel bbox -- so it only has to be as wide as the drop: a quad of
+    width W spans at most ceil(W) + 1 cells. That is tighter than a window
+    centred on the drop (2 * ceil(W / 2) + 1), e.g. 4x4 instead of 5x5 for a
+    rotated drop at 2x / drop shrink 1.0.
 
-def _seg_term(torch, ax, ay, dx, dy, t0, t1, ok):
-    """Shoelace contribution of the surviving piece of one segment."""
-    px = ax + t0 * dx
-    py = ay + t0 * dy
-    rx = ax + t1 * dx
-    ry = ay + t1 * dy
-    term = px * ry - rx * py
-    return torch.where(ok & (t1 > t0), term, torch.zeros_like(term))
-
-
-def _quad_cell_area(torch, qx, qy, x0, y0):
-    """Exact area shared by a CCW convex quad and the unit cell at (x0, y0).
-
-    qx/qy are lists of four tensors broadcastable against the cell grid.
-    Green's theorem, same as _quad_cell_overlap in numba_utils: the boundary
-    of the intersection is the quad's edges inside the cell plus the cell's
-    edges inside the quad, and each piece is one straight segment.
+    Widths come from the real transform at a grid of sample pixels, because a
+    homography stretches drops across the field. The slack covers the float32
+    corner arithmetic the CPU uses and _exact_drop_weights reproduces.
     """
-    x1 = x0 + 1.0
-    y1 = y0 + 1.0
-    acc = torch.zeros_like(x0)
+    M = np.asarray(tm, np.float64)
+    gx, gy = np.meshgrid(np.linspace(0.0, max(w - 1, 0), 9),
+                         np.linspace(0.0, max(h - 1, 0), 9))
+    gx = gx.reshape(-1, 1) + np.array([-half, half, half, -half])
+    gy = gy.reshape(-1, 1) + np.array([-half, -half, half, half])
+    nx = M[0, 0] * gx + M[0, 1] * gy + M[0, 2]
+    ny = M[1, 0] * gx + M[1, 1] * gy + M[1, 2]
+    nw = M[2, 0] * gx + M[2, 1] * gy + M[2, 2]
+    nw = np.where(nw == 0, 1e-12, nw)
+    qx = nx / nw * scale
+    qy = ny / nw * scale
+    width_x = float((qx.max(1) - qx.min(1)).max())
+    width_y = float((qy.max(1) - qy.min(1)).max())
+    mag = max(float(np.abs(nx).max()), float(np.abs(ny).max()), float(max(h, w)))
+    slack = 32.0 * 2.0**-24 * scale * mag / max(float(np.abs(nw).min()), 1e-12)
+    rows = int(math.ceil(width_y * (1 + 1e-6) + slack)) + 1
+    cols = int(math.ceil(width_x * (1 + 1e-6) + slack)) + 1
+    return rows, cols
 
-    for i in range(4):
-        j = (i + 1) & 3
-        ax = qx[i]
-        ay = qy[i]
-        dx = qx[j] - ax
-        dy = qy[j] - ay
-        t0 = torch.zeros_like(x0)
-        t1 = torch.ones_like(x0)
-        ok = torch.ones_like(x0, dtype=torch.bool)
-        t0, t1, ok = _lb_clip(torch, -dx, ax - x0, t0, t1, ok)
-        t0, t1, ok = _lb_clip(torch, dx, x1 - ax, t0, t1, ok)
-        t0, t1, ok = _lb_clip(torch, -dy, ay - y0, t0, t1, ok)
-        t0, t1, ok = _lb_clip(torch, dy, y1 - ay, t0, t1, ok)
-        acc = acc + _seg_term(torch, ax, ay, dx, dy, t0, t1, ok)
 
-    for ax, ay, bx, by in ((x0, y0, x1, y0), (x1, y0, x1, y1),
-                           (x1, y1, x0, y1), (x0, y1, x0, y0)):
-        dx = bx - ax
-        dy = by - ay
-        t0 = torch.zeros_like(x0)
-        t1 = torch.ones_like(x0)
-        ok = torch.ones_like(x0, dtype=torch.bool)
-        for i in range(4):
-            j = (i + 1) & 3
-            ex = qx[j] - qx[i]
-            ey = qy[j] - qy[i]
-            fa = ex * (ay - qy[i]) - ey * (ax - qx[i])
-            fd = ex * dy - ey * dx
-            t0, t1, ok = _lb_clip(torch, -fd, fa, t0, t1, ok)
-        acc = acc + _seg_term(torch, ax, ay, dx, dy, t0, t1, ok)
+def _exact_drop_corners(torch, x, y, k):
+    """Corners of each pixel's shrunk footprint in output coords, (B, 4).
 
-    return torch.clamp(0.5 * acc, min=0.0)
+    Built exactly as _drop_quad_proj does: np.float32(x + dx), float32
+    projective numerators, then the divide in coordinate precision. Adjacent
+    drops therefore share bit-identical corners and tile without gaps.
+    """
+    cd = k["dtype"]
+    if cd == torch.float64:
+        ux = (x.to(cd)[:, None] + k["cdx"]).float()
+        uy = (y.to(cd)[:, None] + k["cdy"]).float()
+    else:
+        ux = x[:, None] + k["cdx"]
+        uy = y[:, None] + k["cdy"]
+    m = k["m"]
+    cpx = ux * m[0][0] + uy * m[0][1] + m[0][2]
+    cpy = ux * m[1][0] + uy * m[1][1] + m[1][2]
+    cww = ux * m[2][0] + uy * m[2][1] + m[2][2]
+    cww = torch.where(cww == 0, 1e-12, cww).to(cd)
+    return cpx.to(cd) / cww * k["scale"], cpy.to(cd) / cww * k["scale"]
 
+
+def _exact_drop_weights(torch, qx, qy, k):
+    """Area each quad (B, 4) shares with every cell of its window.
+
+    The integral is the one _quad_cell_overlap evaluates on the CPU: the
+    contour integral of clamp(x, x0, x1) dy over the parts of the quad's
+    edges inside the cell's row. Clamping is continuous, so an edge lying
+    along a cell line contributes zero instead of being counted twice.
+
+    It is arranged for a GPU that is limited by kernel launches rather than
+    arithmetic (~35 us per launch on Windows, whatever the tensor size):
+
+    * the four edges ride one tensor axis, so each step is one launch, not
+      four;
+    * the row clip depends only on the row and the column crossings only on
+      the column, so both are computed on (B, 4, n) and combined once on
+      (B, 4, rows, cols);
+    * coordinates are local to the window, so the cell lines are the
+      integers 0..n. The x0 * (t1 - t0) part of each term sums to zero
+      around a closed contour, so it is left out rather than added at the
+      magnitude of the canvas coordinate and cancelled.
+
+    Returns weights (B, rows*cols), tx/ty (B, rows*cols) int64, and a (B,)
+    mask of drops the CPU would deposit somewhere: non-degenerate, with a
+    bbox that reaches the canvas.
+    """
+    bx = qx.amin(1, keepdim=True).floor()
+    by = qy.amin(1, keepdim=True).floor()
+    lx = qx - bx
+    ly = qy - by
+    nx = lx.roll(-1, 1)
+    ny = ly.roll(-1, 1)
+    ex = nx - lx
+    ey = ny - ly
+    # twice the signed area; a clockwise quad integrates to minus its area
+    turn = (lx * ny - nx * ly).sum(1)
+
+    # Walk every edge with x increasing. The integral of clamp(x) along an
+    # edge does not depend on direction; ey keeps the edge's own sign.
+    back = ex < 0
+    sx = torch.where(back, nx, lx)
+    sy = torch.where(back, ny, ly)
+    adx = ex.abs()
+    sdy = torch.where(back, -ey, ey)
+    big = k["big"]
+    # a vertical edge takes the dx -> 0+ limit; a horizontal one is
+    # multiplied by ey == 0 below, so its finite stand-in never matters
+    inv_x = torch.where(adx > 1.0 / big, adx.reciprocal(), big)
+    inv_y = torch.where(sdy.abs() > 1.0 / big, sdy.reciprocal(), big)
+
+    g = (k["ry"] - sy[..., None]) * inv_y[..., None]       # (B, 4, rows + 1)
+    t0 = torch.minimum(g[..., :-1], g[..., 1:]).clamp_(min=0.0)
+    t1 = torch.maximum(g[..., :-1], g[..., 1:]).clamp_(max=1.0)
+    t1 = torch.maximum(t1, t0)[..., None]                   # empty if it misses the row
+    t0 = t0[..., None]
+    s = (k["cx"] - sx[..., None]) * inv_x[..., None]        # (B, 4, cols + 1)
+    xi = (sx[..., None] - k["cx"][..., :-1])[..., None, :]  # start, from each column's left line
+
+    lo = torch.clamp(s[..., None, :-1], t0, t1)             # (B, 4, rows, cols)
+    hi = torch.clamp(s[..., None, 1:], t0, t1)
+    # clamp(x, x0, x1) - x0 along the edge: 0 until lo, linear to hi, 1 after
+    part = torch.addcmul(xi, lo + hi, (0.5 * adx)[..., None, None])
+    part = torch.addcmul(t1 - hi, hi - lo, part)
+    area = (part * ey[..., None, None]).sum(1)
+    weights = (area.reshape(area.shape[0], -1) * turn.sign()[:, None]).clamp_(min=0.0)
+
+    tx = bx.long() + k["col"]
+    ty = by.long() + k["row"]
+    reach = ((qx.amax(1) >= 0) & (bx[:, 0] < k["out_w"])
+             & (qy.amax(1) >= 0) & (by[:, 0] < k["out_h"]) & (turn != 0))
+    return weights, tx, ty, reach
+
+
+def _scratch_cells(torch, dev):
+    """Footprint cells per block that fit the device comfortably.
+
+    Bigger blocks mean fewer launches, which is what costs time here. On
+    CUDA the budget follows free memory (after the canvas is allocated);
+    elsewhere it stays at a fixed, modest size.
+    """
+    if dev.type == "cuda":
+        try:
+            free, _ = torch.cuda.mem_get_info(dev)
+            # blocks this process's allocator has cached but not handed out
+            free += torch.cuda.memory_reserved(dev) - torch.cuda.memory_allocated(dev)
+        except Exception:
+            free = 0
+        scratch = min(1024**3, max(64 * 1024**2, int(free * 0.25)))
+        # measured peak 80-125 bytes per footprint cell across kernels 0-3
+        return scratch // 128
+    return 2_097_152
 
 
 class DrizzleAccumulator:
@@ -146,9 +224,9 @@ class DrizzleAccumulator:
         if kernel == 2:
             self.rmax = max(0, int(math.ceil(3 * self.sigma)))
         elif kernel == 3:
-            # worst case for a pure rotation; add() recomputes it per frame
-            # from the transform's own linear part
-            self.rmax = int(math.ceil(radius * 1.4143)) + 1
+            # unused by add(), which sizes the window from each frame's
+            # transform; kept as the worst case of a pure 45 deg rotation
+            self.rmax = int(math.ceil(radius * 1.4143))
         else:
             self.rmax = max(0, int(math.ceil(radius)))
         if (2 * self.rmax + 1) ** 2 > 4096:
@@ -156,6 +234,7 @@ class DrizzleAccumulator:
         dt = torch.float64 if np.dtype(dtype) == np.float64 else torch.float32
         self.numerator = torch.zeros(shape, dtype=dt, device=dev)
         self.coverage = torch.zeros_like(self.numerator)
+        self.cell_budget = _scratch_cells(torch, dev)
 
     def add(self, image, transform, weight):
         torch = self.torch
@@ -170,30 +249,52 @@ class DrizzleAccumulator:
         coord_dtype = torch.float64 if self.dev.type in ("cuda", "cpu") else torch.float32
         tm = np.asarray(transform, np.float32)
         m = torch.as_tensor(tm, device=self.dev)
-        flat = image.reshape(-1, c)
+        out_h, out_w = self.shape[:2]
         rmax = self.rmax
         if self.kernel == 3:
-            # the exact drop turns with the frame, so size the footprint from
-            # the transform, exactly as the numba kernel does
-            _ex = abs(float(tm[0, 0])) + abs(float(tm[0, 1]))
-            _ey = abs(float(tm[1, 0])) + abs(float(tm[1, 1]))
-            rmax = int(math.ceil(self.radius * (_ex if _ex > _ey else _ey))) + 1
-            if (2 * rmax + 1) ** 2 > 4096:
+            # the exact drop turns and stretches with the frame, so its
+            # window comes from this frame's transform
+            half = max(0.5 * self.pixfrac, 1e-4)  # as the CPU: never a point
+            rows, cols = _exact_drop_window(tm, h, w, half, self.scale)
+            if rows * cols > 4096:
                 raise ValueError("Drizzle footprint exceeds GPU scratch budget")
-        side = 2 * rmax + 1
-        # Limit footprint scratch independently of image dimensions/pixfrac.
-        budget = 262_144 if self.kernel == 3 else 1_048_576
-        block = max(64, min(32768, budget // (side * side)))
-        offset = torch.arange(-rmax, rmax + 1, device=self.dev)
-        oy, ox = torch.meshgrid(offset, offset, indexing="ij")
-        ox, oy = ox.reshape(1, -1), oy.reshape(1, -1)
-        out_h, out_w = self.shape[:2]
+            cdt = torch.float64 if coord_dtype == torch.float64 else torch.float32
+            k3 = {
+                "dtype": coord_dtype,
+                "m": [[float(v) for v in row] for row in tm],
+                "scale": self.scale,
+                "cdx": torch.tensor([[-half, half, half, -half]], dtype=cdt, device=self.dev),
+                "cdy": torch.tensor([[-half, -half, half, half]], dtype=cdt, device=self.dev),
+                "ry": torch.arange(rows + 1, dtype=coord_dtype, device=self.dev).view(1, 1, -1),
+                "cx": torch.arange(cols + 1, dtype=coord_dtype, device=self.dev).view(1, 1, -1),
+                "row": torch.arange(rows, device=self.dev).repeat_interleave(cols).view(1, -1),
+                "col": torch.arange(cols, device=self.dev).repeat(rows).view(1, -1),
+                "big": 1e300 if coord_dtype == torch.float64 else 1e30,
+                "out_w": out_w,
+                "out_h": out_h,
+            }
+            # the per-edge grid (B, 4, rows, cols) is the widest scratch
+            cells = 4 * rows * cols
+        else:
+            side = 2 * rmax + 1
+            cells = side * side
+            offset = torch.arange(-rmax, rmax + 1, device=self.dev)
+            oy, ox = torch.meshgrid(offset, offset, indexing="ij")
+            ox, oy = ox.reshape(1, -1), oy.reshape(1, -1)
+        # Launch count, not bandwidth, is what limits this stage, so blocks
+        # are as large as the scratch budget allows.
+        block = max(64, min(1 << 20, self.cell_budget // cells))
         numerator = self.numerator.reshape(-1, c)
         coverage = self.coverage.reshape(-1, c)
         with torch.no_grad():
+            # One upload per frame. A per-block upload from pageable memory
+            # blocks the host until the GPU drains, so launching the next
+            # block could never overlap executing this one.
+            flat = torch.as_tensor(np.ascontiguousarray(image.reshape(-1, c)),
+                                   device=self.dev)
             for start in range(0, h * w, block):
                 stop = min(start + block, h * w)
-                values = torch.as_tensor(np.ascontiguousarray(flat[start:stop]), device=self.dev)
+                values = flat[start:stop]
                 index = torch.arange(start, stop, device=self.dev)
                 x = (index % w).float()
                 y = (index // w).float()
@@ -203,7 +304,11 @@ class DrizzleAccumulator:
                 ww = torch.where(ww == 0, 1e-12, ww).to(coord_dtype)
                 xx = px.to(coord_dtype) / ww * self.scale
                 yy = py.to(coord_dtype) / ww * self.scale
-                if rmax == 0:
+                if self.kernel == 3:
+                    # exact drop: the quad image of the shrunk input pixel
+                    qx, qy = _exact_drop_corners(torch, x, y, k3)
+                    weights, tx, ty, intersects = _exact_drop_weights(torch, qx, qy, k3)
+                elif rmax == 0:
                     tx, ty = xx.long()[:, None], yy.long()[:, None]
                     weights = torch.ones_like(tx, dtype=coord_dtype)
                 else:
@@ -217,39 +322,6 @@ class DrizzleAccumulator:
                         overlap_y = (torch.minimum(ty + 1, yy[:, None] + self.sigma)
                                      - torch.maximum(ty, yy[:, None] - self.sigma)).clamp_min(0)
                         weights = overlap_x * overlap_y
-                    elif self.kernel == 3:
-                        # exact drop: the quad image of the shrunk input pixel
-                        hh = 0.5 * self.pixfrac
-                        qxs = []
-                        qys = []
-                        for ddx, ddy in ((-hh, -hh), (hh, -hh),
-                                         (hh, hh), (-hh, hh)):
-                            ux = x + ddx
-                            uy = y + ddy
-                            cpx = m[0, 0] * ux + m[0, 1] * uy + m[0, 2]
-                            cpy = m[1, 0] * ux + m[1, 1] * uy + m[1, 2]
-                            cww = m[2, 0] * ux + m[2, 1] * uy + m[2, 2]
-                            cww = torch.where(cww == 0, 1e-12, cww).to(coord_dtype)
-                            qxs.append(
-                                (cpx.to(coord_dtype) / cww * self.scale)[:, None])
-                            qys.append(
-                                (cpy.to(coord_dtype) / cww * self.scale)[:, None])
-                        sgn = torch.zeros_like(qxs[0])
-                        for i4 in range(4):
-                            j4 = (i4 + 1) & 3
-                            sgn = sgn + qxs[i4] * qys[j4] - qxs[j4] * qys[i4]
-                        flip = sgn < 0
-                        n1x = torch.where(flip, qxs[3], qxs[1])
-                        n1y = torch.where(flip, qys[3], qys[1])
-                        n3x = torch.where(flip, qxs[1], qxs[3])
-                        n3y = torch.where(flip, qys[1], qys[3])
-                        qxs[1] = n1x
-                        qys[1] = n1y
-                        qxs[3] = n3x
-                        qys[3] = n3y
-                        weights = _quad_cell_area(torch, qxs, qys,
-                                                  tx.to(coord_dtype),
-                                                  ty.to(coord_dtype))
                     elif self.kernel == 1:
                         weights = ((dx * dx + dy * dy) <= self.sigma**2).to(coord_dtype)
                     else:
@@ -266,8 +338,10 @@ class DrizzleAccumulator:
                 # int(Xo),int(Yo), provided the footprint intersects the canvas.
                 fallback = total[:, 0] <= 1e-12
                 fx, fy = xx.long(), yy.long()
-                intersects = ((xx + rmax).floor() >= 0) & ((xx - rmax).floor() < out_w)
-                intersects &= ((yy + rmax).floor() >= 0) & ((yy - rmax).floor() < out_h)
+                if self.kernel != 3:
+                    # (the exact drop reports its own bbox test, like the CPU's)
+                    intersects = ((xx + rmax).floor() >= 0) & ((xx - rmax).floor() < out_w)
+                    intersects &= ((yy + rmax).floor() >= 0) & ((yy - rmax).floor() < out_h)
                 fallback &= intersects & (fx >= 0) & (fx < out_w) & (fy >= 0) & (fy < out_h)
                 normalized[:, 0] = torch.where(fallback, 1.0, normalized[:, 0])
                 target[:, 0] = torch.where(fallback, fy * out_w + fx, target[:, 0])

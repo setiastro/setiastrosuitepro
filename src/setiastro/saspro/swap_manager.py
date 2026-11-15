@@ -56,6 +56,132 @@ import os, shutil, tempfile, uuid, atexit, threading, queue, time
 from collections import OrderedDict
 import numpy as np
 
+
+# QSettings key for the user-chosen undo/history swap root.
+SWAP_WORKDIR_SETTINGS_KEY = "paths/swap_workdir"
+
+
+def default_swap_workdir() -> str:
+    """Historical default: <tempdir>/SetiAstroSuitePro_Swap (often /tmp)."""
+    return os.path.join(tempfile.gettempdir(), "SetiAstroSuitePro_Swap")
+
+
+def resolve_swap_workdir() -> str:
+    """Return the swap root: Preferences override if set, else the default."""
+    custom = ""
+    try:
+        from PyQt6.QtCore import QSettings
+        custom = str(
+            QSettings().value(SWAP_WORKDIR_SETTINGS_KEY, "", type=str) or ""
+        ).strip()
+    except Exception:
+        custom = ""
+    root = os.path.expanduser(custom) if custom else default_swap_workdir()
+    try:
+        os.makedirs(root, exist_ok=True)
+    except Exception:
+        root = default_swap_workdir()
+        os.makedirs(root, exist_ok=True)
+    return root
+
+
+# Each session dir names its owning process, so a second SASpro starting up
+# never deletes the undo history of one that is still running.
+_OWNER_FILE = "owner.pid"
+# A dir without an owner file came from a build that did not write one; that
+# build may still be running, so it must sit idle this long before removal.
+_UNOWNED_MIN_IDLE_S = 3 * 24 * 3600
+
+
+def _process_start_time(pid: int):
+    try:
+        import psutil
+        return float(psutil.Process(pid).create_time())
+    except Exception:
+        return None
+
+
+def _write_session_owner(session_dir: str) -> None:
+    try:
+        pid = os.getpid()
+        st = _process_start_time(pid)
+        with open(os.path.join(session_dir, _OWNER_FILE), "w") as f:
+            f.write(f"{pid} {'' if st is None else repr(st)}")
+    except Exception:
+        pass
+
+
+def _newest_mtime(path: str) -> float:
+    newest = os.path.getmtime(path)
+    with os.scandir(path) as it:
+        for e in it:
+            try:
+                newest = max(newest, e.stat().st_mtime)
+            except OSError:
+                pass
+    return newest
+
+
+def _session_in_use(path: str) -> bool:
+    """True when a running process owns *path*, or when that cannot be ruled out."""
+    owner = os.path.join(path, _OWNER_FILE)
+    if not os.path.isfile(owner):
+        try:
+            return (time.time() - _newest_mtime(path)) < _UNOWNED_MIN_IDLE_S
+        except Exception:
+            return True
+    try:
+        with open(owner) as f:
+            parts = f.read().split()
+        pid = int(parts[0])
+        started = float(parts[1]) if len(parts) > 1 else None
+    except Exception:
+        return True
+    try:
+        import psutil
+    except Exception:
+        return True
+    if not psutil.pid_exists(pid):
+        return False
+    now_started = _process_start_time(pid)
+    if started is None or now_started is None:
+        return True
+    # Same PID but a different start time: the PID was reused, owner is gone.
+    return abs(now_started - started) < 2.0
+
+
+def _cleanup_orphaned_swap_sessions(root: str, keep_dir: str | None = None) -> None:
+    """
+    Best-effort removal of leftover session UUID dirs under *root*.
+
+    OOM / hard kills skip atexit cleanup; those dirs otherwise sit forever
+    (and on tmpfs, forever in RAM). Dirs owned by a running SASpro (another
+    window, another install) are left alone.
+    """
+    try:
+        if not root or not os.path.isdir(root):
+            return
+        keep = os.path.abspath(keep_dir) if keep_dir else None
+        for name in os.listdir(root):
+            path = os.path.join(root, name)
+            if not os.path.isdir(path):
+                continue
+            if keep and os.path.abspath(path) == keep:
+                continue
+            # Session dirs are uuid4 hex (32) or uuid4 str (36 with dashes)
+            compact = name.replace("-", "")
+            if len(compact) != 32 or any(c not in "0123456789abcdef" for c in compact.lower()):
+                continue
+            if _session_in_use(path):
+                continue
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 class SwapManager:
     _instance = None
     _lock = threading.Lock()
@@ -78,10 +204,11 @@ class SwapManager:
             return
         self._initialized = True
 
-        self.temp_dir = os.path.join(
-            tempfile.gettempdir(), "SetiAstroSuitePro_Swap", str(uuid.uuid4())
-        )
+        self.swap_root = resolve_swap_workdir()
+        _cleanup_orphaned_swap_sessions(self.swap_root)
+        self.temp_dir = os.path.join(self.swap_root, str(uuid.uuid4()))
         os.makedirs(self.temp_dir, exist_ok=True)
+        _write_session_owner(self.temp_dir)
         atexit.register(self.cleanup_all)
 
         # LRU of in-RAM states: swap_id -> ndarray

@@ -723,6 +723,40 @@ def _make_replay_marker(metadata: dict | None, step_name: str) -> dict | None:
         "cid_explicit": bool(explicit_cid),
     }
 
+def _depth_rank(label) -> int | None:
+    """Order bit-depth labels: 8-bit < 16-bit < 32-bit unsigned < 32-bit float."""
+    s = str(label or "").lower()
+    if not s or s == "unknown":
+        return None
+    if "float" in s:
+        return 4
+    if "32" in s:
+        return 3
+    if "16" in s:
+        return 2
+    if "8" in s:
+        return 1
+    return None
+
+
+# Formats that can only hold a lossy 8-bit rendition of the image.
+_SHARE_ONLY_EXTS = {"jpg", "webp"}
+
+
+def _save_lowers_fidelity(ext: str, written_depth, doc_depth) -> bool:
+    """True when this write holds less than the open document does.
+
+    The document is 32-bit float in memory; an unknown label counts as that.
+    """
+    if ext in _SHARE_ONLY_EXTS:
+        return True
+    w = _depth_rank(written_depth)
+    d = _depth_rank(doc_depth)
+    if d is None:
+        d = 4
+    return w is not None and w < d
+
+
 _ALLOWED_DEPTHS = {
     "png":  {"8-bit"},
     "jpg":  {"8-bit"},
@@ -2260,7 +2294,10 @@ class _RoiViewDocument(ImageDocument):
     # === KEEP YOUR WORKING BODY; only 3 added lines are marked "NEW" ===
     def apply_edit(self, new_image, metadata=None, step_name="Edit"):
         x, y, w, h = self._roi
-        img = np.asarray(new_image, dtype=np.float32, copy=False)
+        # No copy= kwarg: numpy 1.x has none (TypeError), and on numpy 2
+        # copy=False raises for any input that needs converting (float64).
+        # asarray already avoids a copy when the input is float32.
+        img = np.asarray(new_image, dtype=np.float32)
         base = self._parent_doc.image
 
         _debug_log_undo(
@@ -4106,7 +4143,9 @@ class DocManager(QObject):
         wcs_hdr = _to_fits_header(meta.get("wcs_header"))
 
         # --- If export requested resize, pre-scale WCS in the headers we pass ---
-        # This keeps in-memory metadata aligned with the file written.
+        # These scaled headers go to the encoder only. They describe the smaller
+        # file, not doc.image, so they are never written back to the document.
+        resized = False
         try:
             mode = (export_opts.get("resize_mode") or "none").lower()
             h0, w0 = img.shape[:2]
@@ -4124,6 +4163,7 @@ class DocManager(QObject):
                         scale = float(long_edge) / float(long0)
 
             if scale != 1.0:
+                resized = True
                 # Import the helper from legacy where we added it
                 from setiastro.saspro.legacy.image_manager import _scale_wcs_in_header
 
@@ -4150,13 +4190,26 @@ class DocManager(QObject):
             export_opts=export_opts,
         )
 
+        # ── Never downgrade the open document ─────────────────────────────
+        # SASpro holds the image as 32-bit float whatever it is saved as. A
+        # write to JPEG / WebP, or to a lower bit depth than the document
+        # carries, is a copy for sharing: the document keeps its path, format,
+        # bit depth and headers. Retargeting to that copy used to relabel the
+        # document (e.g. 8-bit), and Checkpoint Save, bundle and plate-solve
+        # saves and the next Save As then all wrote at that lower depth.
+        if _save_lowers_fidelity(ext, final_bit_depth, meta.get("bit_depth")):
+            print(f"[save_document] Wrote a {final_bit_depth} copy; "
+                  f"the document stays on its full-depth source: {path}")
+            return False
+
         # ── Update metadata in memory to match what we just wrote ─────────
         meta["file_path"] = path
         meta["original_format"] = ext
-        meta["bit_depth"] = final_bit_depth
+        meta["bit_depth"] = final_bit_depth   # same depth or higher, never lower
 
-        # Store the header we actually used (already scaled if resized)
-        if isinstance(effective_header, fits.Header):
+        # Store the header we actually used, unless the write was resized:
+        # that header's WCS is scaled to the smaller file, not to doc.image.
+        if isinstance(effective_header, fits.Header) and not resized:
             meta["original_header"] = effective_header
 
         doc.metadata = meta
@@ -4176,6 +4229,7 @@ class DocManager(QObject):
 
         if hasattr(doc, "changed"):
             doc.changed.emit()
+        return True
 
     def _current_view_title_for_doc(self, source_doc: ImageDocument) -> str | None:
         """

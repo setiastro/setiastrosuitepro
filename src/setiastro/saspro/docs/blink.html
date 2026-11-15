@@ -42,17 +42,20 @@
 <p class="sub">A quality-assessment and culling station for a night's
 worth of sub-exposures. Load a folder, blink through the frames to
 spot clouds, trails, bad guiding, and focus drift, measure every
-frame's FWHM / eccentricity / background / star count / sensor
-temperature / background rate, drag threshold lines to auto-flag the
-losers, then hand the survivors to the Stacking Suite.</p>
+frame's FWHM / eccentricity / background / star count / Grade /
+sensor temperature / background rate, optionally <b>Pre-flag</b> the
+obvious suspects, drag threshold lines to catch the rest, then hand
+the survivors to the Stacking Suite.</p>
 
 <p>Blink is designed around the astrophotographer's actual Monday-morning
 workflow: you shot a hundred lights last night, roughly half are usable,
 and you need to decide which half quickly. Visual blinking catches
 things the metrics miss (satellites that dodged the detector,
-a single frame with reflection ghosts); the interactive metrics catch
-things the eye misses (gradual focus drift, a quietly-rising sensor
-temperature). Both views share the same list and the same flag state.</p>
+a single frame with reflection ghosts); the interactive metrics and
+the relative <b>Grade</b> catch things the eye misses (gradual focus
+drift, a quietly-rising sensor temperature, a night that slowly goes
+soft). All of those views share the same list and the same flag
+state.</p>
 
 <h2>1. Loading images</h2>
 <p>At the top of the left column:</p>
@@ -179,7 +182,7 @@ not write &mdash; land under &ldquo;Object: Unknown&rdquo; until you open
 them, at which point the real header replaces the blank one.</p>
 
 <h3>2.1 Columns</h3>
-<p>The tree has nine columns:</p>
+<p>The tree has ten columns:</p>
 <ul>
   <li><b>Image Files</b> &mdash; the filename. Flagged frames show a
       red &#9888;&#65039; prefix.</li>
@@ -192,11 +195,16 @@ them, at which point the real header replaces the blank one.</p>
       in full-resolution pixels.</li>
   <li><b>Ecc</b> &mdash; median eccentricity.</li>
   <li><b>BG</b> &mdash; pre-stretch background level [0, 1].</li>
-  <li><b>Score</b> &mdash; weighted quality score (higher is better).</li>
+  <li><b>Grade</b> &mdash; relative quality 0&ndash;100 within the same
+      target / filter / exposure group (higher is better). Filled by
+      Metrics or by <b>Pre-flag quality</b> (&sect;&nbsp;5.6).</li>
   <li><b>Temp</b> &mdash; sensor temperature in &deg;C from the FITS
       header.</li>
   <li><b>BG/s</b> &mdash; background rate in ADU per second
       (OFFSET-corrected).</li>
+  <li><b>Quality</b> &mdash; short reason from Pre-flag: a condemning
+      verdict (and the frame is flagged), or a non-flagging note such
+      as a moderately brighter sky.</li>
 </ul>
 <p>Column widths and order are preserved across sessions. Drag column
 dividers to resize; drag column headers to reorder. Click a column
@@ -306,15 +314,16 @@ adjust their relative widths.</p>
 
 <h2>5. Interactive Metrics &amp; Culling</h2>
 <p>Click <b>Interactive Metrics &amp; Culling</b> to open a second
-window with seven live scatter plots &mdash; one per metric &mdash;
-across every loaded frame.</p>
+window with seven live scatter plots &mdash; one per plotted metric
+&mdash; across every loaded frame. The large right-hand plot is
+<b>Grade</b>.</p>
 <p>In <b>Stream</b> mode the measurement pass loads, measures and
 releases each frame in turn, with a progress dialog you can cancel. The
 numbers are what persist, along with each frame's header, bit depth and
 background &mdash; so once a sweep has finished, the tree's metric
 columns are fully populated even though almost no pixels are resident.</p>
 
-<h3>5.1 The seven metrics</h3>
+<h3>5.1 The plotted metrics</h3>
 <ul>
   <li><b>FWHM (px)</b> &mdash; star full-width at half-maximum, in
       full-resolution pixels. Higher = soft stars, bad seeing, defocus.</li>
@@ -325,10 +334,10 @@ columns are fully populated even though almost no pixels are resident.</p>
       Higher = light pollution flare, moonrise, dawn.</li>
   <li><b>Star Count</b> &mdash; number of detected stars. Lower = clouds,
       haze, dew.</li>
-  <li><b>Weighted Score</b> &mdash; composite that blends star count,
-      roundness, and darkness into one number (&sect;&nbsp;13.3). Higher
-      = better. This panel is larger than the others because it's often
-      the only one you need.</li>
+  <li><b>Grade</b> &mdash; relative quality 0&ndash;100 within the same
+      target / filter / exposure group (&sect;&nbsp;13.3). Higher =
+      better. This panel is larger than the others because a single
+      sort on Grade is often enough to triage a night.</li>
   <li><b>Sensor Temp (&deg;C)</b> &mdash; from the FITS header
       (<code>CCD-TEMP</code>, <code>DET-TEMP</code>, and friends). Higher
       = cooling slipped, dark current rising.</li>
@@ -336,6 +345,10 @@ columns are fully populated even though almost no pixels are resident.</p>
       OFFSET-corrected. Compares frames across different exposure times
       on a common scale.</li>
 </ul>
+<p>Behind the scenes the same SEP pass also measures <b>noise</b>
+(global RMS), <b>patchiness</b> (how uneven the background RMS map is),
+and a <b>high-end trail</b> score (80th-percentile star eccentricity).
+Those feed Grade and Pre-flag; they are not separate tree columns.</p>
 
 <h3>5.2 Interacting with points</h3>
 <ul>
@@ -356,7 +369,7 @@ on the wrong side of the line flags it automatically:</p>
       (higher&nbsp;=&nbsp;worse) &mdash; frames <i>above</i> the line
       are flagged. The line parks just above the data on open; drag
       down to begin flagging.</li>
-  <li>For <b>Star Count, Weighted Score</b> (lower&nbsp;=&nbsp;worse)
+  <li>For <b>Star Count, Grade</b> (lower&nbsp;=&nbsp;worse)
       &mdash; frames <i>below</i> the line are flagged. The line parks
       at zero on open; drag up.</li>
 </ul>
@@ -384,6 +397,40 @@ value, so you can threshold Ha and OIII independently. &ldquo;All&rdquo;
 shows every frame. The status bar at the bottom reports
 &ldquo;Flagged Items X/Y (Z%)&rdquo; for whatever subset is on
 screen.</p>
+
+<h3>5.6 Pre-flag quality</h3>
+<p>The <b>Pre-flag quality</b> button (under the tree) grades every
+frame against the others in its group and flags only the
+<b>suspects</b> &mdash; frames an operator would typically drop, not
+every mildly weaker sub. It needs metrics first: if they are missing
+or stale (for example after <b>Add Additional</b>), Blink runs the
+measurement pass automatically.</p>
+<p>Grouping is by object, filter, exposure, binning and frame size.
+Groups with fewer than four measured frames are left alone (no Grade,
+no flag). Within a group:</p>
+<ul>
+  <li><b>Grade</b> (0&ndash;100) is a continuous score. Penalties come
+      from thinner star fields, brighter sky, higher noise, uneven
+      background, softer FWHM, and higher elongation. Sort the tree by
+      Grade to review the night from worst to best.</li>
+  <li><b>Suspects</b> get a red flag and a short <b>Quality</b> verdict,
+      for example collapsed star field, extreme sky, uneven background,
+      soft stars, eccentricity / trailing, or a very low cumulative
+      grade.</li>
+  <li><b>Notes</b> (no flag) cover milder issues &mdash; typically a
+      moderately brighter sky. Use them as attention, not as auto-reject.</li>
+</ul>
+<p>Pre-flag is deliberately conservative: it is meant to catch the
+obvious rejects so you can Move / Rename / Delete them, then blink and
+threshold the borderline cases yourself. <b>Clear Flags</b> removes
+Pre-flag marks (and any other flags) without clearing Grades or
+metrics.</p>
+<p class="tip"><b>Workflow suggestion.</b> Measure (or open Metrics)
+&rarr; <b>Pre-flag quality</b> &rarr; move or rename the flagged
+suspects &rarr; Detect sats if you care about trails &rarr; blink /
+threshold what remains. Grade stays useful even when you do not flag:
+a frame can be <code>good</code> enough to keep and still sit at Grade
+40&ndash;70.</p>
 
 <h2>6. Satellite Trail Detection</h2>
 <p>The <b>Detect Satellite Trails</b> button runs the Cosmic Clarity
@@ -433,10 +480,11 @@ it to narrow down what to look at, not to automatically delete.</p>
 <p>Once detection has run, right-click &rarr; <b>Flag All Satellite
 Detections</b> promotes every &#9888; to a flag in one shot.</p>
 
-<p class="tip"><b>Workflow suggestion.</b> Detect sats first, then run
-Metrics, then blink through what's left. Each stage removes an obvious
-class of problem, leaving the subtle visual-only issues for the
-blinking pass.</p>
+<p class="tip"><b>Sats vs Pre-flag.</b> Satellite detection marks the
+<b>Sat</b> column; it does not by itself set Grade or Quality.
+Promote Sat hits to flags with right-click &rarr; <b>Flag All Satellite
+Detections</b> when you want them in the same cull pile as Pre-flag
+suspects.</p>
 
 <h2>7. Stacking Suite integration</h2>
 <p>Three buttons under the metrics / sat row push the current session
@@ -520,8 +568,11 @@ the files back) or Rename Flagged (which just renames).</p>
 
 <h2>10. Other buttons</h2>
 <ul>
+  <li><b>Pre-flag quality</b> &mdash; grade the session and flag
+      suspects (&sect;&nbsp;5.6). Fills <b>Grade</b> and
+      <b>Quality</b>.</li>
   <li><b>Clear Flags</b> &mdash; unflag every frame in the session. Does
-      not touch files or metrics.</li>
+      not touch files, metrics, or Grade values.</li>
   <li><b>Remove Selected</b> &mdash; drop the selected leaves from the
       session without touching disk. Also in the right-click menu.</li>
   <li><b>Clear Images</b> &mdash; wipe the whole session. Prompts for
@@ -603,9 +654,12 @@ is enough to keep sub-pixel precision in the result. The pipeline:</p>
       to a mean plane). NaN/Inf are replaced with 0 / 1 / 0 before SEP
       sees anything.</li>
   <li>Resize to half size with <code>cv2.INTER_AREA</code>.</li>
-  <li>Build a SEP <code>Background</code> model and extract the global
-      RMS. If RMS is non-finite (uniform background, pure sky), fall
-      back to <code>None</code> and let SEP decide its own.</li>
+  <li>Build a SEP <code>Background</code> model. From it Blink keeps
+      the global RMS as <b>noise</b>, and a <b>patchiness</b> score
+      <code>std(rms&nbsp;map)&nbsp;/&nbsp;median(rms)</code> for uneven
+      backgrounds. If RMS is non-finite (uniform background, pure sky),
+      detection falls back to <code>None</code> and lets SEP decide its
+      own error.</li>
   <li>Try the detection threshold cascade:
       <div class="matheq">\{\,7\sigma \text{ (minarea 4)},\; 5\sigma \text{ (4)},\; 4\sigma \text{ (3)},\; 3.5\sigma \text{ (2)}\,\}</div>
       taking the first threshold that returns any stars. On very clean
@@ -613,6 +667,10 @@ is enough to keep sub-pixel precision in the result. The pipeline:</p>
       frames the cascade drops down until something comes back. This is
       what lets Blink continue to produce a star-count metric even on
       bad frames.</li>
+  <li>From the catalogue: median FWHM and eccentricity as before, plus
+      the <b>80th-percentile eccentricity</b> as a high-end trail
+      score (catches a minority of trailed stars that the median would
+      hide).</li>
 </ol>
 <p>In Stream mode step 1 is preceded by a just-in-time decode of the
 frame, performed on the measuring worker's own thread. The decode
@@ -636,16 +694,47 @@ all detected sources, scaled back to full-resolution pixel units:</p>
 <p>reported again as the median across sources. Perfect round stars
 give 0, highly elongated streaks give values approaching 1.</p>
 
-<h3>13.3 Weighted Score</h3>
-<p>A composite built from star count, eccentricity, and background:</p>
-<div class="matheq-hero">W \;=\; N_{\star} \,\cdot\, (1 - e) \,\cdot\, \left(\frac{2}{\sqrt{\mathrm{bg}} + 1} \;-\; 1\right)</div>
-<p>interpreting as: more stars is better, round stars are better,
-dark background is better. The three terms multiply, so a bad score on
-<i>any</i> axis drags the composite down &mdash; a 500-star frame with
-e&nbsp;=&nbsp;0.6 scores worse than a 300-star frame at e&nbsp;=&nbsp;0.1.
-Background enters as a saturating curve so a very dark frame doesn't
-dominate the metric. For most sessions, thresholding on Weighted Score
-alone catches ~80% of what the other three catch individually.</p>
+<h3>13.3 Grade and Pre-flag</h3>
+<p>Grade replaces the old absolute Weighted Score. Every measured frame
+is compared to a <b>robust reference</b> built from the other frames in
+the same object / filter / exposure / bin / size group (medians and
+MAD-based &sigma;, plus a high-end star-count reference so a mostly
+cloudy night does not redefine &ldquo;normal&rdquo;).</p>
+<p><b>Grade</b> starts at 100 and subtracts continuous penalties for
+thinner star fields, brighter sky, higher noise, higher patchiness,
+softer FWHM, and higher elongation (high-end trail when available,
+otherwise median eccentricity). The result is clamped to
+0&ndash;100.</p>
+<p><b>Suspects</b> (Pre-flag) are a separate, stricter layer on top of
+that score. Typical condemning codes:</p>
+<ul>
+  <li><b>few_stars / no_stars</b> &mdash; star count collapses below
+      about 25&nbsp;% of the group's high end (or below a hard floor of
+      12 usable detections).</li>
+  <li><b>sky_extreme</b> &mdash; background far above the group's low
+      sky.</li>
+  <li><b>patchy_sky</b> &mdash; background RMS map much more uneven than
+      the group (and above a quiet absolute floor).</li>
+  <li><b>noisy_sky</b> &mdash; brighter sky <i>and</i> elevated SEP noise,
+      when patchiness alone does not already condemn the frame.</li>
+  <li><b>soft</b>, <b>eccentricity</b>, <b>trailing</b> &mdash; shape
+      outliers (soft + elongated becomes trailing). Shape is only judged
+      when the frame has enough stars.</li>
+  <li><b>low_grade</b> &mdash; cumulative grade falls below a floor while
+      symptoms remain.</li>
+</ul>
+<p>A moderately brighter sky is usually a <b>note</b> only: it lowers
+Grade and fills the Quality column, but does not auto-flag. Narrowband
+groups with almost no stars are left alone unless the sky is clearly
+much brighter than sibling filters on the same target. A frame that is
+the only coverage on its patch of sky can keep a soft/shape flag from
+firing (coverage safety). Homogeneous nights where more than ~40&nbsp;%
+of a large group would be flagged are trimmed back to the extremes so
+Pre-flag does not wipe half the session.</p>
+<p class="tip"><b>How to use it.</b> Treat suspects as a short auto-reject
+list. Treat Grade as the attention / weighting ladder &mdash; many
+frames you would still keep for stacking sit in the middle of the
+scale.</p>
 
 <h3>13.4 Bg Rate (ADU per second)</h3>
 <p>Converts the cached pre-stretch background from its stored

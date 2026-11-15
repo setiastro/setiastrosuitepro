@@ -709,6 +709,18 @@ class ImageSubWindow(QWidget):
         self._active_source_kind = "full"  # "full" | "preview"
         self._active_preview_id: int | None = None
         self._next_preview_id = 1
+        # Per-tab zoom and pan.
+        #
+        # One scroll/label viewer is shared by the Full tab and every preview
+        # tab, reparented on each switch, so `self.scale` and the scrollbar
+        # values are a single piece of state for all of them. That made the
+        # tabs zoom as a group: zooming a 200px ROI dragged the full frame to
+        # the same scale, and every other ROI with it. Each tab now keeps its
+        # own {scale, hval, vval}, saved when it is left and restored when it
+        # is returned to. Keyed "full" for the base image, preview id for the
+        # ROI tabs.
+        self._tab_view_state: dict = {}
+        self._last_tab_key = "full"
 
         # Rubber-band / selection for previews
         self._preview_select_mode = False
@@ -1558,6 +1570,14 @@ class ImageSubWindow(QWidget):
 
         # Remove model entry
         self._previews = [p for p in self._previews if p["id"] != prev_id]
+        # Forget this tab's zoom, and stop pointing at it: removeTab() below
+        # emits currentChanged, and _on_tab_changed banks the state of the
+        # tab named by _last_tab_key before switching. Left as prev_id, that
+        # save would write the closed tab's entry straight back into the
+        # dict we just cleaned. A None key means "nothing to bank".
+        self._tab_view_state.pop(prev_id, None)
+        if getattr(self, "_last_tab_key", None) == prev_id:
+            self._last_tab_key = None
         # If you closed the active one, fall back to full
         if self._active_preview_id == prev_id:
             self._active_source_kind = "full"
@@ -1576,6 +1596,10 @@ class ImageSubWindow(QWidget):
     def _on_tab_changed(self, idx: int):
         if not hasattr(self, "_full_tab_idx"):
             return
+        # Bank the zoom/pan of the tab being left before the shared viewer is
+        # handed to the next one.
+        self._save_tab_view_state(getattr(self, "_last_tab_key", "full"))
+
         if idx == self._full_tab_idx:
             self._active_source_kind = "full"
             self._active_preview_id = None
@@ -1589,12 +1613,27 @@ class ImageSubWindow(QWidget):
         if host is not None:
             self._move_view_into(host)
         self._install_history_watchers()
+
+        # Scale first, then the single render, then the scroll position.
+        new_key = self._tab_key_for_index(idx)
+        restored = self._apply_tab_scale(new_key)
         self._render(True)
+        if restored:
+            self._apply_tab_scroll(new_key)
+        else:
+            # First visit to this tab: it adopts whatever is on screen now,
+            # and diverges from here.
+            self._save_tab_view_state(new_key)
+        self._last_tab_key = new_key
+
         self._refresh_local_undo_buttons()
-        self._update_replay_button() 
-        self._emit_view_transform() 
+        self._update_replay_button()
+        self._emit_view_transform()
         mw = self._find_main_window()
-        if mw is not None and getattr(mw, "_auto_fit_on_resize", False):
+        # Auto-fit would immediately throw away the zoom this tab was left
+        # at, which is the whole point of keeping it. Only fit a tab that has
+        # no remembered zoom of its own.
+        if (not restored) and mw is not None and getattr(mw, "_auto_fit_on_resize", False):
             try:
                 mw._zoom_active_fit()
             except Exception:
@@ -1624,6 +1663,104 @@ class ImageSubWindow(QWidget):
     def _current_tab_host(self):
         # returns the QWidget inside the current tab
         return self._tabs.widget(self._tabs.currentIndex())
+
+    # ---- per-tab zoom / pan -------------------------------------------
+    def _tab_key_for_index(self, idx: int):
+        """Stable key for a tab: "full" for the base image, else preview id."""
+        if idx == getattr(self, "_full_tab_idx", 0):
+            return "full"
+        wid = self._tabs.widget(idx) if self._tabs is not None else None
+        pid = getattr(wid, "_preview_id", None)
+        return "full" if pid is None else pid
+
+    def _capture_tab_view_state(self) -> dict:
+        try:
+            return {
+                "scale": float(self.scale),
+                "hval": int(self.scroll.horizontalScrollBar().value()),
+                "vval": int(self.scroll.verticalScrollBar().value()),
+            }
+        except Exception:
+            return {"scale": float(getattr(self, "scale", 1.0)),
+                    "hval": 0, "vval": 0}
+
+    def _save_tab_view_state(self, key=None) -> None:
+        """Remember how the given tab (default: the current one) is zoomed."""
+        if key is None:
+            key = getattr(self, "_last_tab_key", "full")
+        if key is not None:
+            self._tab_view_state[key] = self._capture_tab_view_state()
+
+    def _apply_tab_scale(self, key) -> bool:
+        """Set the scale a tab was left at. Call BEFORE rendering it.
+
+        Split from the scroll restore so a tab switch costs one render: the
+        scale has to be in place before _render so the label and scrollbar
+        ranges come out at the right size, and the scroll position has to be
+        set after, once those ranges exist.
+        """
+        st = self._tab_view_state.get(key)
+        if not st:
+            return False
+        try:
+            self.scale = max(self._min_scale,
+                             min(float(st.get("scale", self.scale)),
+                                 self._max_scale))
+        except Exception:
+            pass
+        return True
+
+    def _apply_tab_scroll(self, key) -> None:
+        """Put back a tab's pan position. Call AFTER rendering it."""
+        st = self._tab_view_state.get(key)
+        if not st:
+            return
+        try:
+            self.scroll.horizontalScrollBar().setValue(int(st.get("hval", 0)))
+            self.scroll.verticalScrollBar().setValue(int(st.get("vval", 0)))
+        except Exception:
+            pass
+        try:
+            self._update_zoom_label()
+            self._request_zoom_redraw()
+        except Exception:
+            pass
+
+    def _restore_tab_view_state(self, key) -> bool:
+        """Put back a tab's own zoom/pan, rendering in between."""
+        if not self._apply_tab_scale(key):
+            return False
+        self._render(rebuild=False)
+        self._apply_tab_scroll(key)
+        return True
+
+    def _fit_preview_tab_to_viewport(self, key) -> bool:
+        """Fit the active tab's content to the viewport and remember it.
+
+        Uses the main window's own fit so a preview is fitted exactly the way
+        Zoom > Fit does it, including the centring. _zoom_active_fit works on
+        the MDI's ACTIVE subwindow, so it is only safe to call when that is
+        us -- otherwise creating a preview would resize whichever other view
+        happened to be active.
+        """
+        mw = self._find_main_window()
+        if mw is None or not hasattr(mw, "_zoom_active_fit"):
+            return False
+        try:
+            sw = mw.mdi.activeSubWindow()
+            if sw is None or sw.widget() is not self:
+                return False
+        except Exception:
+            return False
+        try:
+            mw._zoom_active_fit()
+        except Exception:
+            return False
+        # Bank the fitted zoom as this tab's own, so leaving and coming back
+        # returns to the fit rather than to the scale it briefly inherited
+        # from the full image while the tab was being built.
+        self._save_tab_view_state(key)
+        return True
 
     def _move_view_into(self, host_widget: QWidget):
         """Reparent the single viewer (scroll+label) into host_widget's layout."""
@@ -2660,8 +2797,16 @@ class ImageSubWindow(QWidget):
             "scale": float(self.scale),
             "hval": int(hbar.value()),
             "vval": int(vbar.value()),
+            # The whole display stretch, not just the on/off flag: a
+            # duplicate that comes up with the right pixels and the wrong
+            # stretch looks like the wrong image, and when the drag starts
+            # from an ROI tab this is the only record of how that tab was
+            # being displayed.
             "autostretch": bool(self.autostretch_enabled),
             "autostretch_target": float(self.autostretch_target),
+            "autostretch_sigma": float(getattr(self, "autostretch_sigma", 3.0)),
+            "autostretch_profile": str(getattr(self, "autostretch_profile", "normal")),
+            "autostretch_linked": bool(getattr(self, "_autostretch_linked", False)),
             "source_view_id": id(self),   # ← ADD THIS
         }
         state.update(self._drag_identity_fields())
@@ -4771,13 +4916,14 @@ class ImageSubWindow(QWidget):
         self._active_source_kind = "preview"
         self._active_preview_id = pid
         self._render(True)
-        self._update_replay_button()  
-        mw = self._find_main_window()
-        if mw is not None and getattr(mw, "_auto_fit_on_resize", False):
-            try:
-                mw._zoom_active_fit()
-            except Exception:
-                pass        
+        self._update_replay_button()
+        # Fit the new tab to its own ROI, always -- not only when auto-fit is
+        # on. A fresh preview used to inherit the full image's zoom, so an ROI
+        # pulled from a frame being viewed at 20% opened as a postage stamp in
+        # the middle of the viewport. Now that each tab keeps its own zoom,
+        # fitting here is a one-off starting point the user can zoom away from
+        # without it affecting any other tab.
+        self._fit_preview_tab_to_viewport(pid)
 
     def mousePressEvent(self, e):
         # If we're defining a preview ROI, don't start panning here

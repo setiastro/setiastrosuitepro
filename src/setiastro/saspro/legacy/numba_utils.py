@@ -2796,18 +2796,16 @@ def _vng_demosaic(image_data, bp):
 # ─────────────────────────────────────────────────────────────────────────
 
 def _rcd_build_masks(bp, H, W):
-    """Build R, G, B boolean masks for a given Bayer phase. Vectorized —
-    runs once per frame and is ~1 ms on a 60 MP image."""
-    r0, c0, r1, c1 = _CFA_CHAN[bp]
-    # Layout: colors[phase] where phase = (y&1)*2 + (x&1); matches _CFA_CHAN
-    colors = np.array([r0, c0, r1, c1], dtype=np.int8)
-    yy, xx = np.indices((H, W), dtype=np.int32)
-    phase = (((yy & 1).astype(np.int8) << 1) | (xx & 1).astype(np.int8))
-    color_at_px = colors[phase]
-    r_mask = (color_at_px == 0)
-    g_mask = (color_at_px == 1)
-    b_mask = (color_at_px == 2)
-    return r_mask, g_mask, b_mask
+    """Build R, G, B boolean masks for a given Bayer phase."""
+    # The CFA is a 2x2 period: _CFA_CHAN[bp][phase] is the channel at
+    # phase = (y & 1) * 2 + (x & 1). Set the four parity slices directly
+    # rather than building full-frame index/colour maps -- the np.indices
+    # version cost ~110 ms per 8 Mpx frame, every frame. (Direct-slice
+    # form from Spec-Chum.)
+    masks = tuple(np.zeros((H, W), dtype=np.bool_) for _ in range(3))
+    for phase, channel in enumerate(_CFA_CHAN[bp]):
+        masks[channel][phase // 2::2, phase % 2::2] = True
+    return masks
 
 
 @njit(parallel=True, fastmath=True, cache=True)
@@ -3045,19 +3043,29 @@ def _estimate_mosaic_noise_sigma(image_data, g_mask) -> float:
         stride_x = s
     # Laplacian on green pixels (3-tap horizontal + 3-tap vertical) at g sites
     # that have green neighbors 2 away in both axes (always true for Bayer).
-    samples = []
-    for y in range(2, H - 2, stride_y):
-        row_mask = g_mask[y]
-        for x in range(2, W - 2, stride_x):
-            if not row_mask[x]:
-                continue
-            lap = (4.0 * image_data[y, x]
-                   - image_data[y - 2, x] - image_data[y + 2, x]
-                   - image_data[y, x - 2] - image_data[y, x + 2])
-            samples.append(lap)
-    if not samples:
+    #
+    # Vectorized over the same strided grid, in the same row-major order.
+    # This used to be a pure-Python double loop: ~250 ms per frame with the
+    # GIL held throughout, so concurrent normalization workers queued behind
+    # it one frame at a time however many cores the machine had.
+    ys = slice(2, H - 2, stride_y)
+    xs = slice(2, W - 2, stride_x)
+    m = g_mask[ys, xs]
+    if not m.any():
         return 0.0
-    arr = np.asarray(samples, dtype=np.float32)
+    # Match the scalar loop's arithmetic on every numpy: `4.0 * f32 scalar`
+    # promoted to float64 on numpy 1.x and stays float32 on numpy 2, and
+    # result_type reproduces whichever this numpy does. (Spec-Chum caught
+    # the numpy 1.x difference.) RCD-N's direction picks stay bit-identical.
+    _dt = np.result_type(4.0, image_data.dtype.type(0))
+    def _tap(rows, cols):           # strided slice first, then convert
+        return image_data[rows, cols].astype(_dt, copy=False)
+    lap = (4.0 * _tap(ys, xs)
+           - _tap(slice(0, H - 4, stride_y), xs)
+           - _tap(slice(4, H, stride_y), xs)
+           - _tap(ys, slice(0, W - 4, stride_x))
+           - _tap(ys, slice(4, W, stride_x)))
+    arr = lap[m].astype(np.float32)
     mad = float(np.median(np.abs(arr - np.median(arr))))
     # σ_raw = MAD * 1.4826 / √(Σw²); 4-tap Laplacian with weights (4,-1,-1,-1,-1)
     # has √(16+4) = √20. Convert: σ_raw = (MAD * 1.4826) / √20.
@@ -3065,6 +3073,27 @@ def _estimate_mosaic_noise_sigma(image_data, g_mask) -> float:
     if not np.isfinite(sigma) or sigma < 0.0:
         return 0.0
     return sigma
+
+
+@njit(parallel=True, cache=True)
+def _clip_blend_lerp(out, bilinear, blend):
+    """out = out * (1 - blend) + bilinear * blend, per channel, in place.
+
+    The same float32 operations in the same order as the numpy expression
+    it replaces (no fastmath, so no FMA contraction): bit-identical output.
+    The numpy form broadcast an (H,W,1) mask over (H,W,3), which runs its
+    inner loop three elements at a time and allocates two full-frame
+    temporaries -- ~290 ms per 4K frame, single-threaded.
+    """
+    H, W, C = out.shape
+    one = np.float32(1.0)
+    for y in prange(H):
+        for x in range(W):
+            b = blend[y, x]
+            w = one - b
+            for c in range(C):
+                out[y, x, c] = out[y, x, c] * w + bilinear[y, x, c] * b
+    return out
 
 
 def _rcd_build_clip_blend(image_data: np.ndarray,
@@ -3087,9 +3116,10 @@ def _rcd_build_clip_blend(image_data: np.ndarray,
     """
     # Fast short-circuit: on frames with no near-clip pixels (any flat-field
     # calibrated subs, most faint-target data), skip the OpenCV calls.
-    if not np.any(image_data >= clip_threshold):
+    hard = image_data >= clip_threshold
+    if not hard.any():
         return None
-    hard = (image_data >= clip_threshold).astype(np.uint8)
+    hard = hard.view(np.uint8)          # bool -> 0/1 bytes, no copy
     # Dilate ±3 px so every RCD interior pixel whose read neighborhood
     # touches a clipped sample is counted. Rectangular kernel is fine —
     # the Gaussian feather below rounds the edges.
@@ -3139,10 +3169,15 @@ def _rcd_demosaic(image_data, bp, denoise: bool = True, denoise_k: float = 4.0,
     H, W = image_data.shape
     r_mask, g_mask, b_mask = _rcd_build_masks(bp, H, W)
     r0, c0, r1, c1 = _CFA_CHAN[bp]
+    # The blend mask depends only on the raw mosaic, so resolve it first:
+    # frames with no near-clip pixels then skip the full-frame RGB copy
+    # below (~100 MB at 4K). (Spec-Chum.)
+    blend = (_rcd_build_clip_blend(image_data, clip_threshold, clip_feather)
+             if clip_blend else None)
     bilinear = _vng_bilinear_prefill(image_data, r0, c0, r1, c1)
     # Hold onto the bilinear estimate separately — the RCD passes mutate
     # `out` in place, but if we're blending we need the untouched baseline.
-    out = bilinear.copy() if clip_blend else bilinear
+    out = bilinear.copy() if blend is not None else bilinear
     if denoise and denoise_k > 0.0:
         sigma = _estimate_mosaic_noise_sigma(image_data, g_mask)
     else:
@@ -3153,14 +3188,9 @@ def _rcd_demosaic(image_data, bp, denoise: bool = True, denoise_k: float = 4.0,
     # Crossfade back to bilinear in saturated neighborhoods. Done after the
     # RCD passes so the un-clipped majority of the frame gets RCD's full
     # treatment; only star cores and their immediate halos see bilinear.
-    if clip_blend:
-        blend = _rcd_build_clip_blend(image_data, clip_threshold, clip_feather)
-        if blend is not None:
-            # out = (1-blend)*out + blend*bilinear, broadcast across channels.
-            # Explicit per-channel to avoid building a 3-channel mask copy.
-            b3 = blend[:, :, None]
-            np.multiply(out, 1.0 - b3, out=out)
-            np.add(out, bilinear * b3, out=out)
+    if blend is not None:
+        # out = (1-blend)*out + blend*bilinear, per channel.
+        _clip_blend_lerp(out, bilinear, blend)
     return out
 
 
@@ -3430,8 +3460,13 @@ def _ahd_demosaic(image_data, bp, lab_ball: float = 1.0,
     # `bilinear` for the clip crossfade; both candidates derive from a
     # copy so the AHD passes don't mutate the baseline.
     bilinear = _vng_bilinear_prefill(image_data, r0, c0, r1, c1)
-    cand_h = bilinear.copy()
+    # The blend mask depends only on the raw mosaic. With nothing to blend
+    # the baseline is never read again, so cand_h can take it over instead
+    # of copying it (same idea as RCD's conditional copy).
+    blend = (_rcd_build_clip_blend(image_data, clip_threshold, clip_feather)
+             if clip_blend else None)
     cand_v = bilinear.copy()
+    cand_h = bilinear.copy() if blend is not None else bilinear
     # Phase 1: directional G at R/B sites.
     _ahd_fill_green_candidates(image_data, cand_h, cand_v, r_mask, b_mask)
     # Phase 2: R and B everywhere, in each candidate independently.
@@ -3458,13 +3493,9 @@ def _ahd_demosaic(image_data, bp, lab_ball: float = 1.0,
     # neighborhoods. Reuses _rcd_build_clip_blend since the mask it
     # computes is a function of the raw mosaic only — identical across
     # demosaic methods. On frames with no near-clip pixels, the helper
-    # returns None and we skip the blend entirely.
-    if clip_blend:
-        blend = _rcd_build_clip_blend(image_data, clip_threshold, clip_feather)
-        if blend is not None:
-            b3 = blend[:, :, None]
-            np.multiply(out, 1.0 - b3, out=out)
-            np.add(out, bilinear * b3, out=out)
+    # returned None above and we skip the blend entirely.
+    if blend is not None:
+        _clip_blend_lerp(out, bilinear, blend)
     return out
 
 
@@ -3489,17 +3520,25 @@ def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False,
     # defeating rejection in the stack.
     zero_mask = (image_data == 0) if preserve_zeros else None
 
-    # 1) lay down samples
-    if bp == "RGGB":
-        out = debayer_RGGB_fullres_fast(image_data, interpolate=False)
-    elif bp == "BGGR":
-        out = debayer_BGGR_fullres_fast(image_data, interpolate=False)
-    elif bp == "GRBG":
-        out = debayer_GRBG_fullres_fast(image_data, interpolate=False)
-    elif bp == "GBRG":
-        out = debayer_GBRG_fullres_fast(image_data, interpolate=False)
-    else:
+    if bp not in ("RGGB", "BGGR", "GRBG", "GBRG"):
         raise ValueError(f"Unsupported Bayer pattern: {bayer_pattern}")
+
+    # 1) lay down samples -- only for the paths that read them (CFA drizzle,
+    # bilinear, edge). RCD, VNG and AHD build their RGB from the raw mosaic
+    # and strict_cfa needs only the shape; building the split anyway cost a
+    # 3-plane allocation and a full-frame kernel per frame, then went
+    # straight in the bin. (Spotted by Spec-Chum.)
+    _m = (method or "edge").lower()
+    out = None
+    if not (interpolate and _m in ("strict_cfa", "vng", "rcd", "ahd")):
+        if bp == "RGGB":
+            out = debayer_RGGB_fullres_fast(image_data, interpolate=False)
+        elif bp == "BGGR":
+            out = debayer_BGGR_fullres_fast(image_data, interpolate=False)
+        elif bp == "GRBG":
+            out = debayer_GRBG_fullres_fast(image_data, interpolate=False)
+        else:
+            out = debayer_GBRG_fullres_fast(image_data, interpolate=False)
 
     # 2) method dispatch
     if interpolate:
@@ -3507,7 +3546,7 @@ def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False,
         if m == "bilinear":
             _bilinear_interpolate_numba(out)
         elif m == "strict_cfa":
-            out = np.zeros_like(out)
+            out = np.zeros(image_data.shape[:2] + (3,), dtype=image_data.dtype)
             r0, c0r, r1, c1r = _CFA_CHAN[bp]
             _strict_cfa_fill(image_data, out, r0, c0r, r1, c1r)
         elif m == "vng":
@@ -4929,10 +4968,10 @@ def _project_3x3(M, x, y):
 
 
 @njit(parallel=True, fastmath=True, cache=True)
-def drizzle_deposit_kernel_mono_proj(
+def _drizzle_deposit_kernel_mono_proj_nb(
     img_data, transform, drizzle_buffer, coverage_buffer,
     drizzle_factor, drop_shrink, frame_weight,
-    kernel_code, gaussian_sigma_or_radius
+    kernel_code, gaussian_sigma_or_radius, n_bands
 ):
     """Mono projective drizzle deposit, parallelized by output-row bands.
     Each band is written by exactly one thread → race-free, no extra memory.
@@ -4968,7 +5007,8 @@ def drizzle_deposit_kernel_mono_proj(
         rmax = 0
     tile_side = 2 * rmax + 2
 
-    n_bands = get_num_threads()
+    if n_bands < 1:
+        n_bands = 1
     rows_per_band = (outH + n_bands - 1) // n_bands
 
     for t in prange(n_bands):
@@ -5063,11 +5103,26 @@ def drizzle_deposit_kernel_mono_proj(
 
     return drizzle_buffer, coverage_buffer
 
-@njit(parallel=True, fastmath=True, cache=True)
-def drizzle_deposit_color_kernel_proj(
+
+# The band count is read here, outside the jitted body: get_num_threads()
+# inside an njit function makes numba refuse cache=True ("uses dynamic
+# globals"), so both deposit kernels were recompiled on every launch.
+def drizzle_deposit_kernel_mono_proj(
     img_data, transform, drizzle_buffer, coverage_buffer,
     drizzle_factor, drop_shrink, frame_weight,
     kernel_code, gaussian_sigma_or_radius
+):
+    return _drizzle_deposit_kernel_mono_proj_nb(
+        img_data, transform, drizzle_buffer, coverage_buffer,
+        drizzle_factor, drop_shrink, frame_weight,
+        kernel_code, gaussian_sigma_or_radius, get_num_threads())
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _drizzle_deposit_color_kernel_proj_nb(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor, drop_shrink, frame_weight,
+    kernel_code, gaussian_sigma_or_radius, n_bands
 ):
     """Color projective drizzle deposit, parallelized by output-row bands.
     Per-channel coverage preserved for sparse CFA-drizzle planes."""
@@ -5102,7 +5157,8 @@ def drizzle_deposit_color_kernel_proj(
         rmax = 0
     tile_side = 2 * rmax + 2
 
-    n_bands = get_num_threads()
+    if n_bands < 1:
+        n_bands = 1
     rows_per_band = (outH + n_bands - 1) // n_bands
 
     for t in prange(n_bands):
@@ -5207,6 +5263,17 @@ def drizzle_deposit_color_kernel_proj(
                                 coverage_buffer[oy, ox, c] += w * cov_scale
 
     return drizzle_buffer, coverage_buffer
+
+
+def drizzle_deposit_color_kernel_proj(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor, drop_shrink, frame_weight,
+    kernel_code, gaussian_sigma_or_radius
+):
+    return _drizzle_deposit_color_kernel_proj_nb(
+        img_data, transform, drizzle_buffer, coverage_buffer,
+        drizzle_factor, drop_shrink, frame_weight,
+        kernel_code, gaussian_sigma_or_radius, get_num_threads())
 
 @njit(parallel=True)
 def finalize_drizzle_2d(drizzle_buffer, coverage_buffer, final_out):
@@ -5438,148 +5505,119 @@ def _drop_quad_proj(M, x, y, half, scale, qx, qy):
 
 @njit(fastmath=True)
 def _quad_cell_overlap(qx, qy, x0, y0):
-    """Area shared by a CCW convex quad and the unit cell rooted at (x0, y0)."""
+    """Area shared by a CCW convex quad and the unit cell rooted at (x0, y0).
+
+    area = contour integral of x dy, with x clamped into [x0, x1] and y
+    restricted to [y0, y1]. For a convex polygon that integral IS the shared
+    area, because at each y the polygon spans [xl(y), xr(y)] and clamping
+    turns the integrand into the length of that span intersected with the
+    cell. Nothing is ever counted twice -- there is one integral, not a sum
+    over "edges of this" and "edges of that" -- and clamping is continuous,
+    so an edge lying exactly along a cell boundary, a zero-length edge or a
+    collinear pair contribute zero instead of needing a special case. That
+    matters: at drop shrink 1.0 with an integer drizzle scale, drop edges
+    land exactly on output pixel lines for every unrotated frame.
+
+    Along one edge x(t) is linear, so clamp(x(t)) is piecewise linear with at
+    most three pieces -- clamped low, linear, clamped high -- and each piece
+    is a trapezoid.
+    """
     x1 = x0 + 1.0
     y1 = y0 + 1.0
 
-    # --- cheap accept/reject first ---
-    # Along each quad edge the half-plane value over the cell is linear, so
-    # its extremes over the four cell corners come from one evaluation plus
-    # two adds. If the cell is wholly outside any edge the overlap is 0; if
-    # it is wholly inside all four it is exactly 1. Both are the same values
-    # the full clip below would return, so this changes nothing numerically.
+    # cheap accept/reject first. Along each quad edge the half-plane value is
+    # linear over the cell, so its extremes over the four corners cost one
+    # evaluation plus two adds. Both shortcuts return values the full
+    # integral below would produce anyway.
     n_in = 0
     for i in range(4):
         j = (i + 1) & 3
         A = qx[j] - qx[i]
         B = -(qy[j] - qy[i])
         c00 = A * (y0 - qy[i]) + B * (x0 - qx[i])
-        lo = c00
-        hi = c00
+        clo = c00
+        chi = c00
         if A < 0.0:
-            lo += A
+            clo += A
         else:
-            hi += A
+            chi += A
         if B < 0.0:
-            lo += B
+            clo += B
         else:
-            hi += B
-        if hi < 0.0:
+            chi += B
+        if chi < 0.0:
             return 0.0
-        if lo >= 0.0:
+        if clo >= 0.0:
             n_in += 1
     if n_in == 4:
         return 1.0
 
     acc = 0.0
-
-    # --- the quad's own edges, clipped to the cell (Liang-Barsky) ---
     for i in range(4):
         j = (i + 1) & 3
         ax = qx[i]
         ay = qy[i]
         dx = qx[j] - ax
         dy = qy[j] - ay
-        t0 = 0.0
-        t1 = 1.0
-        ok = True
-        for e in range(4):
-            if e == 0:
-                p = -dx
-                q = ax - x0
-            elif e == 1:
-                p = dx
-                q = x1 - ax
-            elif e == 2:
-                p = -dy
-                q = ay - y0
-            else:
-                p = dy
-                q = y1 - ay
-            if p == 0.0:
-                if q < 0.0:
-                    ok = False
-                    break
-            else:
-                r = q / p
-                if p < 0.0:
-                    if r > t1:
-                        ok = False
-                        break
-                    if r > t0:
-                        t0 = r
-                else:
-                    if r < t0:
-                        ok = False
-                        break
-                    if r < t1:
-                        t1 = r
-        if ok and t1 > t0:
-            px = ax + t0 * dx
-            py = ay + t0 * dy
-            rx = ax + t1 * dx
-            ry = ay + t1 * dy
-            acc += px * ry - rx * py
-
-    # --- the cell's edges, clipped to the quad's four half-planes ---
-    for s in range(4):
-        if s == 0:
-            ax = x0
-            ay = y0
-            bx = x1
-            by = y0
-        elif s == 1:
-            ax = x1
-            ay = y0
-            bx = x1
-            by = y1
-        elif s == 2:
-            ax = x1
-            ay = y1
-            bx = x0
-            by = y1
+        if dy == 0.0:
+            continue
+        ta = (y0 - ay) / dy
+        tb = (y1 - ay) / dy
+        if ta < tb:
+            t0 = ta
+            t1 = tb
         else:
-            ax = x0
-            ay = y1
-            bx = x0
-            by = y0
-        dx = bx - ax
-        dy = by - ay
-        t0 = 0.0
-        t1 = 1.0
-        ok = True
-        for i in range(4):
-            j = (i + 1) & 3
-            ex = qx[j] - qx[i]
-            ey = qy[j] - qy[i]
-            fa = ex * (ay - qy[i]) - ey * (ax - qx[i])
-            fd = ex * dy - ey * dx
-            if fd == 0.0:
-                if fa < 0.0:
-                    ok = False
-                    break
-            else:
-                r = -fa / fd
-                if fd > 0.0:
-                    if r > t1:
-                        ok = False
-                        break
-                    if r > t0:
-                        t0 = r
-                else:
-                    if r < t0:
-                        ok = False
-                        break
-                    if r < t1:
-                        t1 = r
-        if ok and t1 > t0:
-            px = ax + t0 * dx
-            py = ay + t0 * dy
-            rx = ax + t1 * dx
-            ry = ay + t1 * dy
-            acc += px * ry - rx * py
-
-    acc *= 0.5
+            t0 = tb
+            t1 = ta
+        if t0 < 0.0:
+            t0 = 0.0
+        if t1 > 1.0:
+            t1 = 1.0
+        if t1 <= t0:
+            continue
+        if dx == 0.0:
+            xc = ax
+            if xc < x0:
+                xc = x0
+            elif xc > x1:
+                xc = x1
+            acc += dy * (t1 - t0) * xc
+            continue
+        s0 = (x0 - ax) / dx
+        s1 = (x1 - ax) / dx
+        if s0 < s1:
+            lo = s0
+            hi = s1
+        else:
+            lo = s1
+            hi = s0
+        if lo < t0:
+            lo = t0
+        elif lo > t1:
+            lo = t1
+        if hi < t0:
+            hi = t0
+        elif hi > t1:
+            hi = t1
+        if dx > 0.0:
+            cL = x0
+            cH = x1
+        else:
+            cL = x1
+            cH = x0
+        xlo = ax + lo * dx
+        if xlo < x0:
+            xlo = x0
+        elif xlo > x1:
+            xlo = x1
+        xhi = ax + hi * dx
+        if xhi < x0:
+            xhi = x0
+        elif xhi > x1:
+            xhi = x1
+        acc += dy * ((lo - t0) * cL
+                     + (hi - lo) * 0.5 * (xlo + xhi)
+                     + (t1 - hi) * cH)
     if acc <= 0.0:
         return 0.0
     return acc

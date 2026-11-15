@@ -473,6 +473,580 @@ def _star_count_ecc_size(preview, **kwargs):
     return c, ecc, size
 
 
+def _robust_median_sigma(values) -> tuple[float, float]:
+    """Median and robust σ (1.4826·MAD). σ is 0 when the middle of the set agrees."""
+    a = np.asarray(list(values), dtype=np.float64)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return float("nan"), float("nan")
+    med = float(np.median(a))
+    if a.size < 2:
+        return med, float("nan")
+    mad = float(np.median(np.abs(a - med)))
+    return med, 1.4826 * mad
+
+
+_NB_FILTER = re.compile(
+    r"h[\s\-_]*a(?:lpha)?|h[\s\-_]*b(?:eta)?|o[\s\-_]*iii|o[\s\-_]*3"
+    r"|s[\s\-_]*ii|s[\s\-_]*2|n[\s\-_]*ii",
+    re.IGNORECASE,
+)
+_STAR_USABLE = 12
+_STAR_REF_MIN = 25
+_STAR_COLLAPSE_FRAC = 0.25   # suspect when stars fall below this fraction of the high end
+_GRADE_SUSPECT_FLOOR = 35.0  # very low cumulative grade is itself a suspect signal
+_SKY_NOTE_PCT = 35.0
+_SKY_EXTREME_PCT = 200.0
+_NOISY_SKY_PCT = 50.0
+_NOISY_NOISE_REL = 1.35
+_PATCH_REL = 1.50          # patchiness vs group median
+_PATCH_ABS = 0.12          # absolute floor (quiet frames sit ~0.05–0.08)
+_TRAIL_ABS = 0.05          # high-end ecc above group median
+_TRAIL_SIGMA_K = 2.0       # milder than the generic 3σ shape cut
+
+
+def _finite(value) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+    return v if np.isfinite(v) else float("nan")
+
+
+def _quality_measured(sample: dict) -> bool:
+    """A frame with a finite sky and star count can enter the references."""
+    if not sample.get("ok", True):
+        return False
+    return np.isfinite(_finite(sample.get("sky"))) and np.isfinite(_finite(sample.get("stars")))
+
+
+def _is_narrowband_filter(name: str) -> bool:
+    return bool(_NB_FILTER.search(str(name or "")))
+
+
+def _quality_group_key(sample: dict):
+    return (
+        str(sample.get("obj") or ""),
+        str(sample.get("filt") or ""),
+        str(sample.get("exposure") or ""),
+        sample.get("bin"),
+        sample.get("size"),
+    )
+
+
+def _ang_sep_deg(ra1, dec1, ra2, dec2) -> float:
+    dra = (ra1 - ra2 + 180.0) % 360.0 - 180.0
+    dra *= math.cos(math.radians((dec1 + dec2) / 2.0))
+    return math.hypot(dra, dec1 - dec2)
+
+
+def _pointing_of(sample: dict):
+    ra = _finite(sample.get("ra"))
+    dec = _finite(sample.get("dec"))
+    if np.isfinite(ra) and np.isfinite(dec):
+        return ra, dec
+    return None
+
+
+def _field_deg_of(samples: list[dict]) -> float:
+    vals = [_finite(s.get("field")) for s in samples]
+    vals = [v for v in vals if np.isfinite(v) and v > 0]
+    if not vals:
+        return float("nan")
+    return float(np.median(vals))
+
+
+def _field_is_stable(samples: list[dict]) -> bool:
+    """True when pointings fit in a quarter of the field, or pointing is missing."""
+    pts = [_pointing_of(s) for s in samples]
+    if any(p is None for p in pts):
+        return True
+    field = _field_deg_of(samples)
+    if not np.isfinite(field):
+        return True
+    limit = 0.25 * field
+    for i, a in enumerate(pts):
+        for b in pts[i + 1:]:
+            if _ang_sep_deg(a[0], a[1], b[0], b[1]) > limit:
+                return False
+    return True
+
+
+def _above_ref(value, med, sigma, *, abs_floor: float, rel: float | None = None,
+               sigma_k: float = 3.0) -> bool:
+    """Above the reference by an absolute gap, optional relative gap, and k·σ."""
+    if not (np.isfinite(value) and np.isfinite(med)):
+        return False
+    if value < med + abs_floor:
+        return False
+    if rel is not None and value < med * rel:
+        return False
+    if np.isfinite(sigma) and sigma > 0 and value < med + float(sigma_k) * sigma:
+        return False
+    return True
+
+
+def _empty_quality():
+    return {
+        "grade": float("nan"),
+        "symptoms": [],
+        "verdict": None,
+        "note": None,
+    }
+
+
+def _group_reference(samples: list[dict]) -> dict:
+    skies = np.asarray([_finite(s.get("sky")) for s in samples], dtype=np.float64)
+    stars = np.asarray([_finite(s.get("stars")) for s in samples], dtype=np.float64)
+    noises = np.asarray([_finite(s.get("noise")) for s in samples], dtype=np.float64)
+    patches = np.asarray([_finite(s.get("patch")) for s in samples], dtype=np.float64)
+    sky_med, sky_sig = _robust_median_sigma(skies)
+    sky_low = float(np.percentile(skies, 10)) if skies.size else float("nan")
+    usable = stars >= _STAR_USABLE
+    star_ref = float(np.percentile(stars[usable], 90)) if int(usable.sum()) >= 4 else float("nan")
+    shaped = [s for s in samples if _finite(s.get("stars")) >= _STAR_USABLE]
+    ecc_med, ecc_sig = _robust_median_sigma(
+        _finite(s.get("ecc")) for s in shaped if np.isfinite(_finite(s.get("ecc")))
+    )
+    fwhm_med, fwhm_sig = _robust_median_sigma(
+        _finite(s.get("fwhm")) for s in shaped if _finite(s.get("fwhm")) > 0
+    )
+    # High-end elongation (p80 per frame); fall back to median ecc when absent.
+    trail_vals = []
+    for s in shaped:
+        t = _finite(s.get("trail"))
+        if not np.isfinite(t):
+            t = _finite(s.get("ecc"))
+        if np.isfinite(t):
+            trail_vals.append(t)
+    trail_med, trail_sig = _robust_median_sigma(trail_vals)
+    noise_vals = noises[np.isfinite(noises) & (noises > 0)]
+    noise_med, noise_sig = _robust_median_sigma(noise_vals)
+    patch_vals = patches[np.isfinite(patches) & (patches >= 0)]
+    patch_med, patch_sig = _robust_median_sigma(patch_vals)
+    return {
+        "sky_low": sky_low,
+        "sky_med": sky_med,
+        "sky_sig": sky_sig,
+        "star_ref": star_ref,
+        "ecc_med": ecc_med,
+        "ecc_sig": ecc_sig,
+        "fwhm_med": fwhm_med,
+        "fwhm_sig": fwhm_sig,
+        "trail_med": trail_med,
+        "trail_sig": trail_sig,
+        "noise_med": noise_med,
+        "noise_sig": noise_sig,
+        "patch_med": patch_med,
+        "patch_sig": patch_sig,
+        "stable": _field_is_stable(samples),
+        "usable_n": int(usable.sum()),
+    }
+
+
+def _sky_percent(sky, sky_low) -> float:
+    if not (np.isfinite(sky) and np.isfinite(sky_low) and sky_low > 1e-9):
+        return float("nan")
+    return 100.0 * (sky - sky_low) / sky_low
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return float(min(hi, max(lo, v)))
+
+
+def _grade_and_judge(sample: dict, ref: dict) -> dict:
+    """Relative grade 0–100 plus optional condemning verdict for one frame."""
+    out = _empty_quality()
+    stars = _finite(sample.get("stars"))
+    sky = _finite(sample.get("sky"))
+    ecc = _finite(sample.get("ecc"))
+    fwhm = _finite(sample.get("fwhm"))
+    noise = _finite(sample.get("noise"))
+    patch = _finite(sample.get("patch"))
+    trail = _finite(sample.get("trail"))
+    if not np.isfinite(trail):
+        trail = ecc
+    pct = _sky_percent(sky, ref["sky_low"])
+    star_ref = ref["star_ref"]
+    symptoms: list[dict] = []
+    penalty = 0.0
+
+    # --- grade penalties (continuous) ---------------------------------
+    if np.isfinite(star_ref) and star_ref > 0 and np.isfinite(stars) and stars >= 0:
+        ratio = float(stars) / float(star_ref)
+        if ratio < 1.0:
+            penalty += 40.0 * ((1.0 - _clamp(ratio, 0.0, 1.0)) ** 1.15)
+
+    if np.isfinite(pct) and pct >= _SKY_NOTE_PCT:
+        span = max(1.0, _SKY_EXTREME_PCT - _SKY_NOTE_PCT)
+        penalty += 30.0 * _clamp((pct - _SKY_NOTE_PCT) / span, 0.0, 1.0)
+        if pct >= _SKY_EXTREME_PCT and _above_ref(
+            sky, ref["sky_med"], ref["sky_sig"], abs_floor=0.0,
+        ):
+            symptoms.append({"code": "sky_extreme", "pct": pct})
+        else:
+            symptoms.append({"code": "sky_moderate", "pct": pct})
+
+    noise_med = ref["noise_med"]
+    if np.isfinite(noise) and noise > 0 and np.isfinite(noise_med) and noise_med > 0:
+        nrel = float(noise) / float(noise_med)
+        if nrel > 1.0:
+            penalty += 15.0 * _clamp((nrel - 1.0) / 1.0, 0.0, 1.0)
+
+    patch_med = ref["patch_med"]
+    patchy = False
+    if np.isfinite(patch) and patch >= 0:
+        if np.isfinite(patch_med) and patch_med > 0:
+            prel = float(patch) / float(patch_med)
+            if prel > 1.0:
+                penalty += 25.0 * _clamp((prel - 1.0) / 1.5, 0.0, 1.0)
+            patchy = (
+                patch >= _PATCH_ABS
+                and prel >= _PATCH_REL
+                and _above_ref(
+                    patch, patch_med, ref["patch_sig"],
+                    abs_floor=0.03, sigma_k=_TRAIL_SIGMA_K,
+                )
+            )
+        elif patch >= _PATCH_ABS * 1.5:
+            penalty += 20.0
+            patchy = True
+        if patchy:
+            symptoms.append({
+                "code": "patchy_sky",
+                "patch": patch,
+                "patch_med": patch_med if np.isfinite(patch_med) else float("nan"),
+            })
+
+    # Noisy+brighter sky without a clear patch map still condemns.
+    if (
+        not patchy
+        and np.isfinite(noise) and np.isfinite(noise_med) and noise_med > 0
+        and np.isfinite(pct) and pct >= _NOISY_SKY_PCT
+        and (noise / noise_med) >= _NOISY_NOISE_REL
+    ):
+        symptoms.append({
+            "code": "noisy_sky", "pct": pct, "noise": noise, "noise_med": noise_med,
+        })
+
+    if stars >= _STAR_USABLE:
+        soft = fwhm > 0 and _above_ref(
+            fwhm, ref["fwhm_med"], ref["fwhm_sig"],
+            abs_floor=0.35, rel=1.25, sigma_k=_TRAIL_SIGMA_K,
+        )
+        trail_med = ref["trail_med"] if np.isfinite(ref["trail_med"]) else ref["ecc_med"]
+        trail_sig = ref["trail_sig"] if np.isfinite(ref["trail_sig"]) else ref["ecc_sig"]
+        trailed_hi = _above_ref(
+            trail, trail_med, trail_sig,
+            abs_floor=_TRAIL_ABS, sigma_k=_TRAIL_SIGMA_K,
+        )
+        # Median ecc remains a backup when the high-end trail is missing/flat.
+        trailed_med = False
+        if not trailed_hi:
+            trailed_med = _above_ref(
+                ecc, ref["ecc_med"], ref["ecc_sig"],
+                abs_floor=_TRAIL_ABS, sigma_k=_TRAIL_SIGMA_K,
+            )
+        trailed = trailed_hi or trailed_med
+        if np.isfinite(fwhm) and np.isfinite(ref["fwhm_med"]) and ref["fwhm_med"] > 0:
+            frel = float(fwhm) / float(ref["fwhm_med"])
+            if frel > 1.0:
+                penalty += 15.0 * _clamp((frel - 1.0) / 0.5, 0.0, 1.0)
+        if np.isfinite(trail) and np.isfinite(trail_med):
+            tdiff = float(trail) - float(trail_med)
+            if tdiff > 0:
+                penalty += 25.0 * _clamp(tdiff / 0.20, 0.0, 1.0)
+        elif np.isfinite(ecc) and np.isfinite(ref["ecc_med"]):
+            ediff = float(ecc) - float(ref["ecc_med"])
+            if ediff > 0:
+                penalty += 20.0 * _clamp(ediff / 0.25, 0.0, 1.0)
+        if soft:
+            symptoms.append({
+                "code": "soft", "fwhm": fwhm, "fwhm_med": ref["fwhm_med"],
+            })
+        if trailed:
+            if trailed_hi and np.isfinite(trail) and np.isfinite(trail_med):
+                ecc_v, ecc_m = float(trail), float(trail_med)
+            else:
+                ecc_v, ecc_m = float(ecc), float(ref["ecc_med"])
+            symptoms.append({
+                "code": "eccentricity",
+                "ecc": ecc_v,
+                "ecc_med": ecc_m,
+            })
+
+    # Collapsed star field: under 25% of the high end (or under 12), not a mild dip.
+    if ref["stable"] and np.isfinite(star_ref) and star_ref >= _STAR_REF_MIN:
+        collapse_at = max(float(_STAR_USABLE), _STAR_COLLAPSE_FRAC * float(star_ref))
+        if stars <= 0:
+            symptoms.append({"code": "no_stars", "stars": 0, "star_ref": star_ref})
+        elif stars < collapse_at:
+            symptoms.append({
+                "code": "few_stars", "stars": int(round(stars)), "star_ref": star_ref,
+            })
+
+    grade = float(round(_clamp(100.0 - penalty, 0.0, 100.0)))
+    out["grade"] = grade
+    out["symptoms"] = symptoms
+
+    by_code = {s["code"]: s for s in symptoms}
+    verdict = None
+    if "sky_extreme" in by_code:
+        verdict = by_code["sky_extreme"]
+    elif "no_stars" in by_code:
+        verdict = by_code["no_stars"]
+    elif "few_stars" in by_code:
+        verdict = by_code["few_stars"]
+    elif "patchy_sky" in by_code:
+        verdict = by_code["patchy_sky"]
+    elif "noisy_sky" in by_code:
+        verdict = by_code["noisy_sky"]
+    elif "soft" in by_code and "eccentricity" in by_code:
+        verdict = {
+            "code": "trailing",
+            "ecc": by_code["eccentricity"]["ecc"],
+            "ecc_med": by_code["eccentricity"]["ecc_med"],
+            "fwhm": by_code["soft"]["fwhm"],
+            "fwhm_med": by_code["soft"]["fwhm_med"],
+        }
+    elif "eccentricity" in by_code:
+        verdict = by_code["eccentricity"]
+    elif "soft" in by_code:
+        verdict = by_code["soft"]
+    elif grade < _GRADE_SUSPECT_FLOOR and symptoms:
+        top = symptoms[0]
+        verdict = dict(top)
+        verdict.setdefault("code", top.get("code") or "low_grade")
+    elif grade < _GRADE_SUSPECT_FLOOR:
+        verdict = {"code": "low_grade", "grade": grade}
+
+    out["verdict"] = verdict
+    return out
+
+
+def _apply_safety_net(results: list[dict], measured: list[int], ref: dict) -> None:
+    """A homogeneous night cut through the middle keeps only the extreme frames."""
+    star_ref = ref["star_ref"]
+    if not (np.isfinite(star_ref) and star_ref >= _STAR_REF_MIN and len(measured) >= 20):
+        return
+    flagged = [i for i in measured if results[i]["verdict"]]
+    if len(flagged) / len(measured) <= 0.40:
+        return
+    for i in flagged:
+        code = results[i]["verdict"]["code"]
+        if code in ("sky_extreme", "no_stars", "no_star_field", "no_stars_bright"):
+            continue
+        results[i]["verdict"] = None
+        results[i]["note"] = None
+        # Keep informative symptoms; sky_moderate may become the Quality note.
+        results[i]["symptoms"] = [
+            s for s in results[i]["symptoms"]
+            if s["code"] in ("sky_moderate", "sky_extreme", "no_stars")
+        ]
+
+
+def _apply_only_cover(results: list[dict], samples: list[dict], measured: list[int]) -> None:
+    """A condemned frame alone on its corner of sky stays in, with a note."""
+    field = _field_deg_of([samples[i] for i in measured])
+    if not np.isfinite(field) or field <= 0:
+        return
+    limit = 0.25 * field
+    points = {i: _pointing_of(samples[i]) for i in measured}
+    if any(p is None for p in points.values()):
+        return
+    for i in measured:
+        verdict = results[i]["verdict"]
+        if not verdict or verdict.get("code") == "no_star_field":
+            continue
+        ra, dec = points[i]
+        alone = True
+        for j, other in points.items():
+            if j == i:
+                continue
+            if _ang_sep_deg(ra, dec, other[0], other[1]) <= limit:
+                alone = False
+                break
+        if not alone:
+            continue
+        results[i]["verdict"] = None
+        results[i]["note"] = {"code": "only_cover"}
+
+
+def quality_grades(samples: list[dict]) -> list[dict]:
+    """Grade each light 0–100 and mark suspects an operator would drop.
+
+    Grouping uses ``obj``, ``filt``, ``exposure``, ``bin`` and ``size``.
+    Groups smaller than four measured frames are left alone (NaN grade, no
+    verdict). Optional sample field ``noise`` (SEP rms) feeds the grade.
+
+    Each result is ``{"grade", "symptoms", "verdict", "note"}``. ``verdict``
+    is the condemning reason or None. A brighter-but-not-extreme sky lowers
+    the grade and may appear as a note without flagging the frame.
+    """
+    results = [_empty_quality() for _ in samples]
+    groups: dict = {}
+    for i, sample in enumerate(samples):
+        groups.setdefault(_quality_group_key(sample), []).append(i)
+
+    prepared = []
+    for key, idxs in groups.items():
+        measured = [i for i in idxs if _quality_measured(samples[i])]
+        if len(measured) < 4:
+            continue
+        ref = _group_reference([samples[i] for i in measured])
+        prepared.append((key, idxs, measured, ref))
+
+    by_obj: dict = {}
+    for key, idxs, measured, ref in prepared:
+        obj = key[0]
+        if obj:
+            by_obj.setdefault(obj, []).append((key, ref))
+
+    for key, idxs, measured, ref in prepared:
+        obj = key[0]
+        filt = key[1]
+        if ref["usable_n"] < 4:
+            if not _is_narrowband_filter(filt):
+                reason = {"code": "no_star_field"}
+            else:
+                reason = None
+                for sib_key, sib in by_obj.get(obj, []):
+                    if sib_key == key:
+                        continue
+                    sib_ref = sib["star_ref"]
+                    if not (np.isfinite(sib_ref) and sib_ref >= _STAR_REF_MIN):
+                        continue
+                    skies = [_finite(samples[i].get("sky")) for i in measured]
+                    sky_med = float(np.median(skies))
+                    low = sib["sky_low"]
+                    if np.isfinite(low) and low > 1e-9 and sky_med >= 2.0 * low:
+                        reason = {"code": "no_stars_bright"}
+                        break
+            if reason is None:
+                continue
+            for i in measured:
+                results[i] = {
+                    "grade": 0.0,
+                    "symptoms": [reason],
+                    "verdict": dict(reason),
+                    "note": None,
+                }
+            continue
+
+        for i in measured:
+            results[i] = _grade_and_judge(samples[i], ref)
+        _apply_safety_net(results, measured, ref)
+        _apply_only_cover(results, samples, measured)
+
+        # Non-condemning sky notes for the Quality column.
+        for i in measured:
+            if results[i]["verdict"]:
+                continue
+            mods = [s for s in results[i]["symptoms"] if s.get("code") == "sky_moderate"]
+            if mods and not results[i]["note"]:
+                results[i]["note"] = mods[0]
+    return results
+
+
+def quality_flag_reasons(samples: list[dict]) -> list[dict]:
+    """Alias for :func:`quality_grades` (Blink pre-flag entry point)."""
+    return quality_grades(samples)
+
+
+def format_quality_reason(result, tr=None) -> tuple[str, str]:
+    """Verdict text and neutral note for the Quality column.
+
+    The verdict is the condemning reason. A note is a symptom that does not
+    flag the frame. ``tr`` translates each phrase.
+    """
+    tr = tr or (lambda s: s)
+    if not isinstance(result, dict):
+        return "", ""
+
+    def _one(flag) -> str:
+        if not flag:
+            return ""
+        code = flag.get("code")
+        if code == "sky_moderate":
+            return tr("brighter sky (+{0:.0f}%)").format(flag["pct"])
+        if code == "sky_extreme":
+            return tr("very bright sky (+{0:.0f}%)").format(flag["pct"])
+        if code == "noisy_sky":
+            return tr("noisy brighter sky (+{0:.0f}%)").format(flag["pct"])
+        if code == "patchy_sky":
+            p = flag.get("patch")
+            pm = flag.get("patch_med")
+            if np.isfinite(_finite(p)) and np.isfinite(_finite(pm)) and float(pm) > 0:
+                return tr("uneven background ({0:.2f} vs {1:.2f})").format(
+                    float(p), float(pm))
+            if np.isfinite(_finite(p)):
+                return tr("uneven background ({0:.2f})").format(float(p))
+            return tr("uneven background")
+        if code == "few_stars":
+            return tr("few stars ({0} vs {1:.0f})").format(flag["stars"], flag["star_ref"])
+        if code == "no_stars":
+            return tr("no stars (high end {0:.0f})").format(flag["star_ref"])
+        if code == "soft":
+            return tr("soft stars (FWHM {0:.1f} vs {1:.1f})").format(
+                flag["fwhm"], flag["fwhm_med"])
+        if code == "eccentricity":
+            return tr("eccentricity {0:.2f} vs {1:.2f}").format(flag["ecc"], flag["ecc_med"])
+        if code == "trailing":
+            return tr(
+                "trailing (ecc {0:.2f} vs {1:.2f}, FWHM {2:.1f} vs {3:.1f})"
+            ).format(flag["ecc"], flag["ecc_med"], flag["fwhm"], flag["fwhm_med"])
+        if code == "no_star_field":
+            return tr("no stars in this set")
+        if code == "no_stars_bright":
+            return tr("no stars, sky much brighter than the rest of the target")
+        if code == "only_cover":
+            return tr("kept: the only frame on this part of the sky")
+        if code == "low_grade":
+            g = flag.get("grade")
+            if g is not None and np.isfinite(_finite(g)):
+                return tr("low grade ({0:.0f})").format(float(g))
+            return tr("low grade")
+        return ""
+
+    verdict = _one(result.get("verdict"))
+    if verdict:
+        return verdict, ""
+    note = result.get("note")
+    if note:
+        return "", _one(note)
+    notes = [
+        _one(s) for s in result.get("symptoms") or []
+        if s.get("code") == "sky_moderate"
+    ]
+    return "", "; ".join(n for n in notes if n)
+
+
+_OBJECT_HEADER_KEYS = ("OBJECT", "OBJNAME", "TARGNAME", "TARGET")
+_OBJECT_JUNK = {
+    "", "none", "unknown", "no target", "notarget", "n/a", "na", "null",
+    "test", "dark", "darks", "flat", "flats", "bias", "light", "lights",
+    "dark frame", "flat frame", "flat field", "bias frame", "calibration",
+}
+
+
+def _object_name_from_header(hdr) -> str:
+    """Target name from OBJECT and the usual aliases. Blink groups on this."""
+    if hdr is None:
+        return ""
+    for key in _OBJECT_HEADER_KEYS:
+        try:
+            raw = hdr.get(key)
+        except Exception:
+            continue
+        if raw in (None, ""):
+            continue
+        name = re.sub(r"\s+", " ", str(raw).strip())
+        if name.lower() not in _OBJECT_JUNK:
+            return name
+    return ""
+
+
+
 def _satmask_sidecar_for(fits_path: str) -> str:
     """Canonical satellite-mask sidecar path for a given FITS frame."""
     return os.path.splitext(fits_path)[0] + "_satmask.npy"
@@ -4285,12 +4859,130 @@ def _fits_read_any_hdu_noscale(path: str, memmap: bool) -> tuple[np.ndarray | No
             return d, h.header, i
     return None, None, None
 
+def _normalize_pool_plan(H, W, n_frames, override=0):
+    """Worker threads for the normalization stage, and numba threads for each.
+
+    Each worker loads, debayers, matches and writes one frame end to end. The
+    pool used to be a flat 8 on every machine, which left most of a 40-core
+    box idle. It is now sized by physical cores (two left for the GUI and
+    I/O, at most 32 -- past that the GIL-held parts, chiefly the FITS write,
+    are the ceiling) and by available RAM: ~16 full-frame float32 planes per
+    worker in flight (raw, the RGB result, RCD's bilinear base and working
+    copy, the CFA-drizzle sparse copy, temporaries).
+
+    numba's threads are split across the workers so N concurrent debayers
+    don't each start a team the size of the machine. Not split when the
+    threading layer is serialized (workqueue): one debayer runs at a time
+    there and should have every thread.
+
+    Returns (workers, numba_threads_per_worker or None, physical, ram_cap).
+    """
+    try:
+        import psutil as _ps
+        phys = int(_ps.cpu_count(logical=False) or (os.cpu_count() or 4))
+        avail = int(_ps.virtual_memory().available)
+    except Exception:
+        phys = int(os.cpu_count() or 4)
+        avail = 0
+    per_frame = max(1, int(H) * int(W) * 4 * 16)
+    cpu_cap = max(2, min(32, phys - 2))
+    ram_cap = max(2, int((avail * 0.5) // per_frame)) if avail else cpu_cap
+    try:
+        override = int(override or 0)
+    except Exception:
+        override = 0
+    workers = override if override > 0 else min(cpu_cap, ram_cap)
+    workers = max(1, min(workers, max(1, int(n_frames))))
+    nb = None
+    try:
+        import numba as _nb_mod
+        from setiastro.saspro.legacy.numba_utils import numba_parallel_serialized
+        if not numba_parallel_serialized():
+            nb = max(1, int(_nb_mod.config.NUMBA_NUM_THREADS) // workers)
+    except Exception:
+        nb = None
+    return workers, nb, phys, ram_cap
+
+
+class _StatusProgressDialog(QProgressDialog):
+    """QProgressDialog for streamed status lines.
+
+    Stock QProgressDialog resizes to fit the label on ONE line every time
+    setLabelText runs, and never shrinks back. One long drizzle line (a full
+    frame name) left the window screen-wide for the rest of the run.
+
+    Here the width stays put: it starts at the last width the user dragged
+    to (remembered across runs) and only the user changes it. The label word
+    wraps, long file names break at _ / \\, and the height follows the text,
+    shrinking back after a long line.
+    """
+
+    _WIDTH_KEY = "stacking/status_progress_width"
+    _DEFAULT_WIDTH = 560
+
+    def __init__(self, label_text, cancel_text, minimum, maximum, parent=None):
+        super().__init__(label_text, cancel_text, minimum, maximum, parent)
+        self._wrap_label = QLabel(self)
+        self._wrap_label.setWordWrap(True)
+        self._wrap_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setLabel(self._wrap_label)          # replaces (and deletes) the stock label
+        self.setSizeGripEnabled(True)
+        self.setLabelText(label_text)
+        self.resize(self._start_width(), self.sizeHint().height())
+
+    def _start_width(self) -> int:
+        try:
+            w = int(QSettings().value(self._WIDTH_KEY, self._DEFAULT_WIDTH, type=int))
+        except Exception:
+            w = self._DEFAULT_WIDTH
+        return max(320, min(w, 2000))
+
+    @staticmethod
+    def _breakable(text: str) -> str:
+        # Zero-width spaces give the wrapper break points inside long names.
+        return str(text).replace("_", "_\u200b").replace("\\", "\\\u200b").replace("/", "/\u200b")
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        lbl = getattr(self, "_wrap_label", None)
+        w = self.width() if self.isVisible() else self._start_width()
+        if lbl is None:
+            return QSize(w, sh.height())
+        try:
+            from PyQt6.QtWidgets import QStyle
+            st = self.style()
+            margins = (st.pixelMetric(QStyle.PixelMetric.PM_LayoutLeftMargin, None, self)
+                       + st.pixelMetric(QStyle.PixelMetric.PM_LayoutRightMargin, None, self))
+            hint_h = lbl.sizeHint().height()
+            fit_h = lbl.heightForWidth(max(50, w - margins))
+            h = sh.height() - hint_h + (fit_h if fit_h > 0 else hint_h)
+        except Exception:
+            h = sh.height()
+        return QSize(w, h)
+
+    def setLabelText(self, text):
+        super().setLabelText(self._breakable(text))
+        # Qt only ever grows the dialog; fit the height to this text, keep the width.
+        try:
+            if self.isVisible():
+                self.resize(self.width(), self.sizeHint().height())
+        except Exception:
+            pass
+
+    def hideEvent(self, ev):
+        try:
+            QSettings().setValue(self._WIDTH_KEY, int(self.width()))
+        except Exception:
+            pass
+        super().hideEvent(ev)
+
+
 class _Progress:
     def __init__(self, owner, title: str, maximum: int):
         self._owner = owner
         self._closed = False
         cancel_text = QCoreApplication.translate("_Progress", "Cancel")
-        self._pd = QProgressDialog(
+        self._pd = _StatusProgressDialog(
             title,
             cancel_text,
             0,
@@ -4303,7 +4995,6 @@ class _Progress:
         self._pd.setAutoReset(False)
         self._pd.setValue(0)
         self._pd.setWindowTitle(title)
-        self._pd.setMinimumWidth(520)
         self._cancelled = False
         self._value = 0
 
@@ -6484,7 +7175,7 @@ class SubRejectionDialog(QDialog):
     threshold for each filter is remembered as they navigate. Pressing
     Apply commits every filter's current threshold.
 
-    Visual vocabulary mirrors Blink Comparator Pro's Weighted Score panel:
+    Visual vocabulary mirrors Blink Comparator Pro's metric panels:
       • dashed gray line at the median
       • dashed yellow / orange / red lines at ±1σ / ±2σ / ±3σ (robust)
       • solid red line = movable rejection threshold
@@ -7805,12 +8496,15 @@ class StackingSuiteDialog(QDialog):
             lambda v: (
                 self.drizzle_scale_combo.setEnabled(v),
                 self.drizzle_drop_shrink_spin.setEnabled(v),
+                self.drizzle_gauss_sigma_spin.setEnabled(v),
                 self.settings.setValue("stacking/drizzle_enabled", bool(v))
             )
         )
         drizzle_on = self.settings.value("stacking/drizzle_enabled", False, type=bool)
         self.drizzle_scale_combo.setEnabled(drizzle_on)
         self.drizzle_drop_shrink_spin.setEnabled(drizzle_on)
+        if hasattr(self, "drizzle_gauss_sigma_spin"):
+            self.drizzle_gauss_sigma_spin.setEnabled(drizzle_on)
 
         # Comet wiring
         self.comet_cb.toggled.connect(self._on_comet_toggled_public)
@@ -8129,6 +8823,17 @@ class StackingSuiteDialog(QDialog):
 
 
     def _ensure_log_visible_once(self):
+        """Open the Stacking Log dock on startup, only if the user asked for it.
+
+        This used to fire unconditionally, from back when the log was the only
+        window into what a run was doing. The execution monitor covers that
+        now, so forcing the dock open every time just took space from someone
+        who had deliberately closed it. Settings → 'Auto-show the Stacking
+        Log' brings the old behaviour back; otherwise the toolbar button is
+        still there whenever the detail is wanted.
+        """
+        if not self.settings.value("stacking/auto_show_log", False, type=bool):
+            return
         dock = _get_log_dock()
         if dock:
             dock.setVisible(True)
@@ -9145,13 +9850,18 @@ class StackingSuiteDialog(QDialog):
             return base + "_cfa" + ext
         return base + "_n_cfa" + ext
 
-    def debayer_image(self, image, file_path, header):
+    def debayer_image(self, image, file_path, header, cfa=None):
         """
         Returns RGB if debayered, otherwise returns input unchanged.
         Also stamps header with BAYERPAT or XTRANS where possible.
+
+        `cfa` (True/False) overrides the run-level CFA-drizzle choice for this
+        call only; worker threads use it instead of flipping shared state.
         """
-        # per-run override if set, else honor the checkbox
-        if self._cfa_for_this_run is None:
+        # explicit argument, else per-run override, else honor the checkbox
+        if cfa is not None:
+            cfa = bool(cfa)
+        elif self._cfa_for_this_run is None:
             cfa = bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
         else:
             cfa = bool(self._cfa_for_this_run)
@@ -9972,6 +10682,19 @@ class StackingSuiteDialog(QDialog):
         )
         fl_general.addRow(self.low_ram_safe_mode_cb)
 
+        self.auto_show_log_cb = QCheckBox(self.tr("Auto-show the Stacking Log"))
+        self.auto_show_log_cb.setToolTip(self.tr(
+            "Open and raise the Stacking Log dock whenever the Stacking Suite\n"
+            "is opened.\n\n"
+            "Off by default: the execution monitor already shows what a run is\n"
+            "doing, and the log is one click away on the main toolbar whenever\n"
+            "you want the detail."
+        ))
+        self.auto_show_log_cb.setChecked(
+            self.settings.value("stacking/auto_show_log", False, type=bool)
+        )
+        fl_general.addRow(self.auto_show_log_cb)
+
         self.completion_sound_cb = QCheckBox(self.tr("Play a sound when stacking finishes"))
         self.completion_sound_cb.setToolTip(self.tr(
             "Chime when the completion summary appears, so a long stack you\n"
@@ -10448,6 +11171,42 @@ class StackingSuiteDialog(QDialog):
         _toggle_gain_row()
 
         left_col.addWidget(gb_normgrad)
+
+        # --- Local Normalization (Aperture Flux) ---
+        gb_afn = QGroupBox(self.tr("Local Normalization (Aperture Flux)"))
+        fl_afn = QFormLayout(gb_afn)
+        self.afn_enable_cb = QCheckBox(self.tr("Aperture Flux Normalization"))
+        self.afn_enable_cb.setToolTip(self.tr(
+            "Matches every registered frame to the whole set, region by region,\n"
+            "before integration.\n\n"
+            "Stars are measured in every frame. How their brightness changes\n"
+            "across the field maps where a frame was dimmed - thin cloud, haze,\n"
+            "the extinction gradient across a wide field, dew, a flat from\n"
+            "another night - and the frame is brightened back to match. Each\n"
+            "frame earns only as much detail in its map as its own stars\n"
+            "support: a clear frame gets a single overall scale.\n\n"
+            "Ignores registration borders (0.0) entirely. Works alongside\n"
+            "ABE Poly² or instead of it. Drizzle uses the same maps, applied\n"
+            "to each original frame as it is deposited."
+        ))
+        self.afn_enable_cb.setChecked(
+            self.settings.value("stacking/afn/enabled", False, type=bool))
+        fl_afn.addRow(self.afn_enable_cb)
+        self.afn_additive_cb = QCheckBox(self.tr("Also match the sky background"))
+        self.afn_additive_cb.setToolTip(self.tr(
+            "After the brightness is matched, also take out differences in sky\n"
+            "glow between frames - light pollution, moon, airglow - relative to\n"
+            "the set. The target cancels in that comparison, so nebulae and\n"
+            "galaxies are not mistaken for gradient.\n\n"
+            "The set's own common gradient is left for ABE Poly² or for\n"
+            "gradient tools on the finished stack."
+        ))
+        self.afn_additive_cb.setChecked(
+            self.settings.value("stacking/afn/additive", True, type=bool))
+        fl_afn.addRow(self.afn_additive_cb)
+        self.afn_additive_cb.setEnabled(self.afn_enable_cb.isChecked())
+        self.afn_enable_cb.toggled.connect(self.afn_additive_cb.setEnabled)
+        left_col.addWidget(gb_afn)
 
         gb_drizzle = QGroupBox(self.tr("Drizzle"))
         fl_dz = QFormLayout(gb_drizzle)
@@ -11312,6 +12071,8 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/chunk_width",          self.chunk_width)
         self.settings.setValue("stacking/low_ram_safe_mode",
                                bool(self.low_ram_safe_mode_cb.isChecked()))
+        self.settings.setValue("stacking/auto_show_log",
+                               bool(self.auto_show_log_cb.isChecked()))
         self.settings.setValue("stacking/completion_sound",
                                bool(self.completion_sound_cb.isChecked()))
         self.settings.setValue("stacking/completion_sound_file",
@@ -11368,6 +12129,8 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/grad_poly2/min_strength", float(self.grad_min_strength.value()))
         self.settings.setValue("stacking/grad_poly2/gain_lo",      float(self.grad_gain_lo.value()))
         self.settings.setValue("stacking/grad_poly2/gain_hi",      float(self.grad_gain_hi.value()))
+        self.settings.setValue("stacking/afn/enabled",  bool(self.afn_enable_cb.isChecked()))
+        self.settings.setValue("stacking/afn/additive", bool(self.afn_additive_cb.isChecked()))
 
         self.settings.setValue("stacking/cosmetic/custom_enable",  self.cosm_enable_cb.isChecked())
         self.settings.setValue("stacking/cosmetic/hot_sigma",      float(self.cosm_hot_sigma.value()))
@@ -11470,7 +12233,76 @@ class StackingSuiteDialog(QDialog):
             self._refresh_comet_starless_enable()
         except Exception:
             pass
+
+        # the kernel or the sigma mode may have just changed, so the
+        # Image Integration drizzle row may be showing the wrong control
+        try:
+            self._sync_drizzle_kernel_row()
+        except Exception:
+            pass
         
+    def _sync_drizzle_kernel_row(self):
+        """Keep the Image Integration drizzle row honest.
+
+        Drop shrink drives the square and circular kernels. The Gaussian takes
+        its width from gaussian_sigma, which normally tracks drop shrink
+        (sigma = 0.5 * drop) but can be pinned as an explicit override. When it
+        is pinned, drop shrink reaches nothing at all, so leaving a live "Drop
+        Shrink" spin on screen is a trap -- swap in the sigma spin instead.
+        """
+        if not hasattr(self, "drizzle_drop_shrink_spin"):
+            return
+        if not hasattr(self, "drizzle_gauss_sigma_spin"):
+            return
+        try:
+            kname = str(self.settings.value("stacking/drizzle_kernel", "square"))
+        except Exception:
+            kname = "square"
+        is_gauss = kname.lower().startswith("gauss")
+        try:
+            pinned = bool(is_gauss and self._drizzle_gauss_manual())
+        except Exception:
+            pinned = False
+
+        if hasattr(self, "drizzle_kernel_lbl"):
+            self.drizzle_kernel_lbl.setText(
+                self.tr("[%s]") % (kname[:1].upper() + kname[1:]))
+            self.drizzle_kernel_lbl.setToolTip(self.tr(
+                "Drizzle kernel, set in Stacking Settings."))
+
+        self.drizzle_drop_shrink_spin.setVisible(not pinned)
+        self.drizzle_gauss_sigma_spin.setVisible(pinned)
+        self.drizzle_gauss_sigma_spin.setEnabled(
+            self.drizzle_drop_shrink_spin.isEnabled())
+
+        if not hasattr(self, "drizzle_drop_label"):
+            return
+        if pinned:
+            v = 0.325
+            try:
+                v = float(self.settings.value(
+                    "stacking/drizzle_gauss_sigma", 0.325, type=float))
+            except Exception:
+                pass
+            if abs(float(self.drizzle_gauss_sigma_spin.value()) - v) > 1e-9:
+                _b = self.drizzle_gauss_sigma_spin.blockSignals(True)
+                self.drizzle_gauss_sigma_spin.setValue(v)
+                self.drizzle_gauss_sigma_spin.blockSignals(_b)
+            self.drizzle_drop_label.setText(self.tr("Gaussian \u03c3:"))
+            self.drizzle_drop_label.setToolTip(self.tr(
+                "The Gaussian sigma is pinned, so drop shrink reaches nothing.\n"
+                "Tick 'Gaussian \u03c3 follows drop shrink' in Stacking Settings\n"
+                "to drive the Gaussian from drop shrink instead."))
+        elif is_gauss:
+            self.drizzle_drop_label.setText(
+                self.tr("Drop Shrink (\u03c3 = 0.5 \u00d7):"))
+            self.drizzle_drop_label.setToolTip(self.tr(
+                "Gaussian kernel: sigma follows this, at 0.5 x drop shrink."))
+        else:
+            self.drizzle_drop_label.setText(self.tr("Drop Shrink:"))
+            self.drizzle_drop_label.setToolTip(self.tr(
+                "Drop shrink (pixfrac) for the %s kernel.") % kname)
+
     # --- Drizzle config: single source of truth ---
     def _drizzle_gauss_manual(self) -> bool:
         """True when the user has pinned an explicit Gaussian sigma.
@@ -14353,13 +15185,38 @@ class StackingSuiteDialog(QDialog):
         self.drizzle_scale_combo.currentIndexChanged.connect(self._on_drizzle_param_changed)
         drizzle_layout.addWidget(self.drizzle_scale_combo)
 
-        drizzle_layout.addWidget(QLabel(self.tr("Drop Shrink:")))
+        # Which spin belongs here depends on the kernel: drop shrink drives
+        # the square and circular drops, but the Gaussian takes its width
+        # from gaussian_sigma, which may be pinned. _sync_drizzle_kernel_row
+        # swaps the label and the widget so the row always shows the control
+        # that actually reaches the integration.
+        self.drizzle_kernel_lbl = QLabel("")
+        drizzle_layout.addWidget(self.drizzle_kernel_lbl)
+
+        self.drizzle_drop_label = QLabel(self.tr("Drop Shrink:"))
+        drizzle_layout.addWidget(self.drizzle_drop_label)
         self.drizzle_drop_shrink_spin = QDoubleSpinBox()
         self.drizzle_drop_shrink_spin.setRange(0.0, 1.0)  # pixfrac is [0..1]
         self.drizzle_drop_shrink_spin.setDecimals(3)
         self.drizzle_drop_shrink_spin.setValue(self._get_drizzle_pixfrac())
         self.drizzle_drop_shrink_spin.valueChanged.connect(lambda v: self._set_drizzle_pixfrac(v))
         drizzle_layout.addWidget(self.drizzle_drop_shrink_spin)
+
+        # shown in place of the above when the Gaussian sigma is pinned
+        self.drizzle_gauss_sigma_spin = QDoubleSpinBox()
+        self.drizzle_gauss_sigma_spin.setRange(0.05, 3.0)
+        self.drizzle_gauss_sigma_spin.setDecimals(3)
+        self.drizzle_gauss_sigma_spin.setSingleStep(0.05)
+        self.drizzle_gauss_sigma_spin.setValue(
+            self.settings.value("stacking/drizzle_gauss_sigma", 0.325, type=float))
+        self.drizzle_gauss_sigma_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/drizzle_gauss_sigma", float(v)))
+        self.drizzle_gauss_sigma_spin.setVisible(False)
+        drizzle_layout.addWidget(self.drizzle_gauss_sigma_spin)
+        try:
+            self._sync_drizzle_kernel_row()
+        except Exception:
+            pass
 
         self.cfa_drizzle_cb = QCheckBox(self.tr("CFA Drizzle"))
         self.cfa_drizzle_cb.setChecked(self.settings.value("stacking/cfa_drizzle", False, type=bool))
@@ -14936,6 +15793,10 @@ class StackingSuiteDialog(QDialog):
         self.drizzle_scale_combo.setCurrentText(_scale_txt)
         self.drizzle_scale_combo.blockSignals(False)
         self.drizzle_drop_shrink_spin.setValue(self._get_drizzle_pixfrac())
+        try:
+            self._sync_drizzle_kernel_row()
+        except Exception:
+            pass
 
         drizzle_on = self.settings.value("stacking/drizzle_enabled", False, type=bool)
         self.cfa_drizzle_cb.setEnabled(drizzle_on)
@@ -15037,6 +15898,8 @@ class StackingSuiteDialog(QDialog):
         """Drizzle master switch."""
         self.drizzle_scale_combo.setEnabled(checked)
         self.drizzle_drop_shrink_spin.setEnabled(checked)
+        if hasattr(self, "drizzle_gauss_sigma_spin"):
+            self.drizzle_gauss_sigma_spin.setEnabled(checked)
 
         # NEW: make CFA Drizzle depend on Enable Drizzle
         self.cfa_drizzle_cb.setEnabled(checked)
@@ -15056,7 +15919,7 @@ class StackingSuiteDialog(QDialog):
         Disable other registration-dependent features (drizzle/comet/MFDeconv) to avoid confusion.
         """
         # Controls to gate
-        drizzle_widgets = (self.drizzle_checkbox, self.drizzle_scale_combo, self.drizzle_drop_shrink_spin, self.cfa_drizzle_cb)
+        drizzle_widgets = (self.drizzle_checkbox, self.drizzle_scale_combo, self.drizzle_drop_shrink_spin, self.drizzle_gauss_sigma_spin, self.cfa_drizzle_cb)
         comet_widgets = (self.comet_cb, self.comet_pick_btn, self.comet_blend_cb, self.comet_mix)
         mf_widgets = (self.mf_enabled_cb, self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_Huber_spin)
 
@@ -25099,6 +25962,33 @@ class StackingSuiteDialog(QDialog):
 
         return _resolve
 
+    def _drizzle_entry_weights(self, entries, weights: dict = None) -> list:
+        """One weight per drizzle entry ({orig, aligned, chan}).
+
+        A direct hit on the aligned or the original (normalized) path wins,
+        as before. Anything else goes through ``_make_weight_resolver``: in
+        Register-and-Integrate the weights are keyed by the CALIBRATED paths
+        the measurement pass saw, which neither of those paths is, so the old
+        direct lookup fell to 1.0 for every frame. That made drizzle unweighted
+        and deposited the soft-rejected (weight 0) subs at full weight."""
+        import os as _os
+        weights = weights or {}
+        resolve = self._make_weight_resolver(weights)
+        out = []
+        for ent in entries:
+            a = _os.path.normpath(ent.get("aligned", "") or "")
+            o = _os.path.normpath(ent.get("orig", "") or "")
+            w = weights.get(a)
+            if w is None:
+                w = weights.get(o)
+            if w is None:
+                w = resolve(a)
+            try:
+                out.append(float(w))
+            except Exception:
+                out.append(1.0)
+        return out
+
     def _count_contributing_frames(self, file_list, weights: dict = None) -> int:
         """How many frames in ``file_list`` will actually contribute photons
         to the integrated master. Soft-rejected subs — those whose score was
@@ -27605,8 +28495,6 @@ class StackingSuiteDialog(QDialog):
             chunks = list(chunk_list(measured_frames, chunk_size))
             total_chunks = len(chunks)
 
-            ncpu = os.cpu_count() or 8
-            io_workers = min(8, max(2, ncpu // 2))
 
             ref_H, ref_W = ref_img.shape[:2] if ref_img.ndim == 2 else ref_img.shape[:2]
             # ── Canonical normalized shape ────────────────────────────────
@@ -27657,6 +28545,25 @@ class StackingSuiteDialog(QDialog):
                         f"⚠️ Could not derive post-normalize target shape from ref "
                         f"({_e_thw}); using raw ref shape {ref_W}×{ref_H}."))
             self._norm_target_hw = (int(ref_H), int(ref_W))
+
+            try:
+                _norm_override = int(self.settings.value(
+                    "stacking/norm_workers", 0, type=int) or 0)
+            except Exception:
+                _norm_override = 0
+            io_workers, _norm_nb_threads, _norm_phys, _norm_ram_cap = \
+                _normalize_pool_plan(ref_H, ref_W, len(measured_frames),
+                                     override=_norm_override)
+            # The loop below waits for each chunk to finish. Keep chunks
+            # several workers deep so a chunk's tail doesn't idle the pool.
+            chunk_size = max(chunk_size, 4 * io_workers)
+            chunks = list(chunk_list(measured_frames, chunk_size))
+            total_chunks = len(chunks)
+            self.update_status(self.tr(
+                f"\U0001F9F5 Normalizing with {io_workers} worker threads "
+                f"({_norm_phys} physical cores, RAM allows {_norm_ram_cap})"
+                + (f", {_norm_nb_threads} numba threads each"
+                   if _norm_nb_threads else "")))
 
             for idx, chunk in enumerate(chunks, 1):
                 if self._cancelled():
@@ -27716,11 +28623,9 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(self.tr(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {io_workers} threads)…"))
                 # Parallel normalize-as-they-arrive: each worker LOADS and NORMALIZES a
                 # frame end-to-end so all cores stay busy. update_status is thread-safe
-                # (queued signal); the debayer path mutates a shared flag so it is
-                # serialized by _debayer_lock (mono skips it -> full parallelism); cv2 is
-                # pinned to 1 thread; processEvents() runs only on the main thread below.
-                import threading as _norm_threading
-                _debayer_lock = _norm_threading.Lock()
+                # (queued signal); debayering takes no lock (cfa is passed explicitly,
+                # nothing shared is mutated); cv2 is pinned to 1 thread; processEvents()
+                # runs only on the main thread below.
                 try:
                     _cfa_pre = bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
                 except Exception:
@@ -27733,9 +28638,9 @@ class StackingSuiteDialog(QDialog):
                 # and those ran inside every worker thread: a QSettings read
                 # and -- worse -- a Qt widget read off the GUI thread, which is
                 # undefined behaviour no lock can make safe. Pinning them here
-                # is also what lets the non-CFA debayer call below run without
-                # _debayer_lock: with these resolved, debayer_image touches no
-                # shared mutable state on that path.
+                # is also what lets the debayer calls below run without a
+                # lock: with these resolved, debayer_image touches no shared
+                # mutable state.
                 _norm_saved_cfa    = self._cfa_for_this_run
                 _norm_saved_method = getattr(self, "_debayer_method_for_this_run", None)
                 self._cfa_for_this_run = bool(_cfa_pre)
@@ -27747,6 +28652,14 @@ class StackingSuiteDialog(QDialog):
 
                 def _normalize_one(fp):
                     try:
+                        if _norm_nb_threads:
+                            try:
+                                import numba as _nb_mod
+                                # Thread-local: caps this worker's parallel
+                                # kernels only.
+                                _nb_mod.set_num_threads(_norm_nb_threads)
+                            except Exception:
+                                pass
                         img, hdr = self._load_image_any(fp)
                         if img is None:
                             self.update_status(self.tr(f"⚠️ No data for {fp}"))
@@ -27774,39 +28687,23 @@ class StackingSuiteDialog(QDialog):
                                 # CFA drizzle: main _n.fit is DENSE (for rejection /
                                 # per-channel normalization); stash a SPARSE copy for
                                 # drizzle, written later as _n_cfa.fit.
-                                _saved_flag = self._cfa_for_this_run
-                                with _debayer_lock:
-                                    try:
-                                        self._cfa_for_this_run = True
-                                        _img_sparse = self.debayer_image(img.copy(), fp, dict(hdr) if hasattr(hdr, "keys") else hdr)
-                                        self._cfa_for_this_run = False
-                                        img = self.debayer_image(img, fp, hdr)
-                                    finally:
-                                        self._cfa_for_this_run = _saved_flag
+                                # cfa= is passed explicitly rather than by
+                                # flipping self._cfa_for_this_run, which every
+                                # worker shares. That flip needed a lock, and
+                                # the lock ran every CFA-drizzle debayer one
+                                # frame at a time.
+                                _img_sparse = self.debayer_image(
+                                    img.copy(), fp,
+                                    dict(hdr) if hasattr(hdr, "keys") else hdr,
+                                    cfa=True)
+                                img = self.debayer_image(img, fp, hdr, cfa=False)
                                 if not hasattr(self, "_pending_cfa_sparse"):
                                     self._pending_cfa_sparse = {}
                                 self._pending_cfa_sparse[os.path.normcase(os.path.normpath(fp))] = _img_sparse
                             else:
-                                # No lock here. _debayer_lock exists only to
-                                # guard the CFA branch's mutation of the shared
-                                # self._cfa_for_this_run flag; this branch
-                                # mutates nothing shared (debayer_image touches
-                                # locals and this frame's own header, and the
-                                # cfa/method flags were pinned on the main
-                                # thread above). Holding the lock here
-                                # serialized the single most expensive step in
-                                # the stage across every worker thread, on
-                                # every platform -- numba's own
-                                # NUMBA_PARALLEL_LOCK is a no-op off macOS, so
-                                # this lock was the real serializer.
-                                #
-                                # Safe because _cfa_active is a run-level
-                                # constant and the outer `if` already requires a
-                                # mosaic: either every debayering frame takes
-                                # the CFA branch or none does, so a frame can
-                                # never read the flag while another frame has it
-                                # flipped. If CFA drizzle ever becomes a
-                                # per-frame decision, restore the lock here.
+                                # No lock: debayer_image touches locals and
+                                # this frame's own header, and the cfa/method
+                                # flags were pinned on the main thread above.
                                 img = self.debayer_image(img, fp, hdr)
                         else:
                             if img.ndim == 3 and img.shape[-1] == 1:
@@ -28073,7 +28970,10 @@ class StackingSuiteDialog(QDialog):
                         # asarray, not astype: astype always copies, so
                         # this allocated and memcpy'd a full frame on every
                         # write even though img is already float32.
-                        fits.PrimaryHDU(data=np.asarray(img, np.float32),
+                        # Big-endian ('>f4') is FITS's on-disk order: astropy
+                        # then writes it as-is instead of byteswapping in
+                        # place twice with the GIL held. Same bytes on disk.
+                        fits.PrimaryHDU(data=np.asarray(img, dtype=">f4"),
                                         header=orig_header).writeto(out_path, overwrite=True)
                         normalized_files.append(out_path)
                         # CFA drizzle: also write the sparse sibling for the
@@ -28086,7 +28986,7 @@ class StackingSuiteDialog(QDialog):
                                 _ch = fits.Header(orig_header)
                                 _ch["DEBAYERED"] = (True, "Sparse CFA drizzle debayer")
                                 _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
-                                fits.PrimaryHDU(data=np.asarray(_cfa_sparse, np.float32), header=_ch).writeto(_cfa_out, overwrite=True)
+                                fits.PrimaryHDU(data=np.asarray(_cfa_sparse, dtype=">f4"), header=_ch).writeto(_cfa_out, overwrite=True)
                             except Exception as _e:
                                 self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling: {_e}"))
                         # Carry the satellite-trail mask sidecar onto the
@@ -30218,7 +31118,7 @@ class StackingSuiteDialog(QDialog):
             self.post_thread.started.connect(self.post_worker.run)
             self.post_thread.start()
 
-            self.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
+            self.post_progress = _StatusProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
             self.post_progress.setWindowModality(Qt.WindowModality.NonModal)
             self.post_progress.setCancelButton(None)
             self.post_progress.setMinimumDuration(0)
@@ -31039,7 +31939,7 @@ class StackingSuiteDialog(QDialog):
         self._mf_grouped_files = grouped_files
         self._mf_transforms_dict = transforms_dict
 
-        self._mf_pd = QProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
+        self._mf_pd = _StatusProgressDialog("Multi-frame deconvolving…", "Cancel", 0, len(mf_groups), self)
         self._mf_pd.setMinimumDuration(0)
         self._mf_pd.setWindowTitle("MF Deconvolution")
         self._mf_pd.setValue(0)
@@ -31047,7 +31947,6 @@ class StackingSuiteDialog(QDialog):
 
         if getattr(self, "_mf_pd", None):
             self._mf_pd.setLabelText("Preparing MF deconvolution…")
-            self._mf_pd.setMinimumWidth(520)
 
         self._mf_total_groups = len(mf_groups)
         self._mf_groups_done = 0
@@ -34498,7 +35397,7 @@ class StackingSuiteDialog(QDialog):
         self.post_thread.started.connect(self.post_worker.run)
         self.post_thread.start()
 
-        self.post_progress = QProgressDialog("Stacking & drizzle/mfdeconv (if enabled)…", None, 0, 0, self)
+        self.post_progress = _StatusProgressDialog("Stacking & drizzle/mfdeconv (if enabled)…", None, 0, 0, self)
         self.post_progress.setWindowModality(Qt.WindowModality.NonModal)
         self.post_progress.setCancelButton(None)
         self.post_progress.setMinimumDuration(0)
@@ -37486,7 +38385,15 @@ class StackingSuiteDialog(QDialog):
         elif kernel_name.startswith("circ"):
             _kcode = 1
         else:
-            _kcode = 0  # square
+            # 3 = exact drop: the rotated image of the input pixel, which
+            # tiles the output at any field rotation. 0 is the older
+            # axis-aligned square, kept reachable for an A/B comparison.
+            try:
+                _rot_ok = self.settings.value(
+                    "stacking/drizzle_square_rotated", True, type=bool)
+            except Exception:
+                _rot_ok = True
+            _kcode = 3 if _rot_ok else 0
 
         # Rejection logging: now "tiles", not "pixels"
         total_tiles = 0
@@ -37531,7 +38438,8 @@ class StackingSuiteDialog(QDialog):
         #sasprojective deposit: full 3x3 transform, no pixel pre-warp (correct
         # drizzle for affine AND homography; required for CFA sparse planes).
         deposit_func = drizzle_deposit_kernel_mono_proj if is_mono else drizzle_deposit_color_kernel_proj
-        kinf = ["square", "circular", "gaussian"][_kcode]
+        kinf = ["square (axis-aligned drop)", "circular", "gaussian",
+                "square (exact rotated drop)"][_kcode]
 
         log(f"Using {kinf} drizzle ({'mono' if is_mono else 'color'}).")
 
@@ -37614,11 +38522,13 @@ class StackingSuiteDialog(QDialog):
                 mref = cv2.dilate(mref.astype(np.uint8), _dilate_kernel, iterations=1).astype(bool)
             return mref
 
-        def _apply_rejections_to_img(img_data: np.ndarray, rej_mask_ref: np.ndarray, pixels_are_registered: bool, A23: np.ndarray):
+        def _apply_rejections_to_img(img_data: np.ndarray, rej_mask_ref: np.ndarray, pixels_are_registered: bool, A23: np.ndarray, H33: np.ndarray = None):
             """
             Apply ref-space rejection mask to img_data:
             - if pixels_are_registered: img_data is already in ref space -> direct apply
             - else: img_data is raw/original and A23 maps raw->ref -> warp mask ref->raw once, then apply
+            - a projective H33 (raw->ref) is warped with its full 3x3: the affine
+              part alone misplaces the mask by ~1 px at the far frame corners
             """
             if rej_mask_ref is None:
                 return img_data
@@ -37639,6 +38549,25 @@ class StackingSuiteDialog(QDialog):
                 else:
                     img_data[:hh, :ww, :][m, :] = 0.0
                 return img_data
+
+            if H33 is not None:
+                H33 = np.asarray(H33, dtype=np.float64).reshape(3, 3)
+                if not (H33[2, 0] == 0.0 and H33[2, 1] == 0.0 and H33[2, 2] == 1.0):
+                    # WARP_INVERSE_MAP samples the ref mask at H33(raw) directly:
+                    # raw pixel x is rejected when its nearest ref pixel is.
+                    raw_mask = cv2.warpPerspective(
+                        rej_mask_ref.astype(np.uint8),
+                        H33,
+                        (Wraw, Hraw),
+                        flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP,
+                        borderMode=cv2.BORDER_CONSTANT,
+                        borderValue=0
+                    ).astype(bool)
+                    if img_data.ndim == 2:
+                        img_data[raw_mask] = 0.0
+                    else:
+                        img_data[raw_mask, :] = 0.0
+                    return img_data
 
             # affine case: A23 maps raw->ref. Need ref-mask in raw space -> warp with inverse affine.
             try:
@@ -37704,6 +38633,40 @@ class StackingSuiteDialog(QDialog):
                 return _cfa_pixel_source(orig)
             return None
 
+        # ---- Aperture Flux Normalization: the integration's own maps ----
+        # They live on the 1x reference grid; each deposit below samples them
+        # through the same 3x3 that places the pixel, so a raw pixel gets the
+        # correction of the sky position it lands on.
+        from setiastro.saspro.aperture_flux_normalization import (
+            apply_frame_inplace as _afn_apply_frame)
+        afn_by_path = (getattr(self, "_afn_maps_by_group", None) or {}).get(group_key)
+        if afn_by_path:
+            _m0 = next(iter(afn_by_path.values()))
+            _hw0 = tuple(_m0.info.get("hw") or ())
+            if _hw0 != (int(ref_H), int(ref_W)):
+                log(f"⚠️ AFN drizzle: maps for '{group_key}' are {_hw0}, the reference "
+                    f"is {ref_H}x{ref_W} — depositing without them.")
+                afn_by_path = None
+        afn_done = 0
+        afn_missing = 0
+        afn_chan_skip = 0
+
+        # ---- frame weights: same lookup as the integration ----
+        # Soft-rejected subs (weight 0) are dropped here, before the prefetcher,
+        # so they are never loaded; the regular master excluded them too.
+        _entry_w = self._drizzle_entry_weights(entries, frame_weights)
+        _n_soft = sum(1 for _w in _entry_w if _w <= 0.0)
+        if _n_soft:
+            entries = [e for e, _w in zip(entries, _entry_w) if _w > 0.0]
+            _entry_w = [_w for _w in _entry_w if _w > 0.0]
+            log(f"⚖️ Drizzle: skipping {_n_soft} soft-rejected frame(s) (weight 0); "
+                f"depositing {len(entries)}.")
+        if not entries:
+            log(f"⚠️ Group '{group_key}': every drizzle frame has weight 0 – skipping.")
+            return False
+        rej_frames = 0
+        rej_px = 0
+
         _prefetch_paths = [_pixel_path_for_entry(e) for e in entries]
         _prefetch = _FramePrefetcher(
             _prefetch_paths,
@@ -37722,8 +38685,8 @@ class StackingSuiteDialog(QDialog):
                     log(f"⚠️ Bad drizzle entry (missing orig/aligned) – skipping: {ent}")
                     continue
 
-                # Weight: prefer aligned key (that matches your rejection/weights mapping)
-                weight = frame_weights.get(aligned_file, frame_weights.get(orig_file, 1.0))
+                # Weight: resolved above through the integration's own lookup
+                weight = _entry_w[i]
 
                 kind, X = xforms.get(orig_file, (None, None))
 
@@ -37814,15 +38777,36 @@ class StackingSuiteDialog(QDialog):
                         f"canvas {int(ref_W * scale_factor)}×{int(ref_H * scale_factor)} @ {scale_factor}×"
                     )
 
+                # ---- AFN: same correction the integration applied ----
+                if afn_by_path:
+                    _afn_m = afn_by_path.get(aligned_file)
+                    _img_c = img_data.shape[2] if img_data.ndim == 3 else 1
+                    if _afn_m is None:
+                        afn_missing += 1
+                    elif int(_afn_m.gain.shape[0]) != _img_c:
+                        afn_chan_skip += 1
+                    else:
+                        if not img_data.flags.writeable:
+                            img_data = np.array(img_data, copy=True)
+                        _afn_apply_frame(
+                            img_data, _afn_m,
+                            None if pixels_are_registered else H_canvas)
+                        afn_done += 1
+
                 # ---- apply per-file rejections (FAST: tile masks -> full mask -> optional warp) ----
                 rej_mask_ref = _build_rej_mask_ref(aligned_file)
                 if rej_mask_ref is not None:
+                    rej_frames += 1
+                    rej_px += int(np.count_nonzero(rej_mask_ref))
                     A23_for_mask = H_canvas[:2, :]  # raw->ref affine (or identity)
+                    if not img_data.flags.writeable:
+                        img_data = np.array(img_data, copy=True)
                     img_data = _apply_rejections_to_img(
                         img_data=img_data,
                         rej_mask_ref=rej_mask_ref,
                         pixels_are_registered=pixels_are_registered,
-                        A23=A23_for_mask
+                        A23=A23_for_mask,
+                        H33=H_canvas,
                     )
 
                 # ---- deposit ----
@@ -37848,6 +38832,24 @@ class StackingSuiteDialog(QDialog):
                         img_data, H_canvas, drizzle_buffer, coverage_buffer,
                         scale_factor, drop_shrink, weight, _kcode, float(gauss_sigma)
                     )
+
+            if afn_by_path:
+                _extra = ""
+                if afn_missing:
+                    _extra += f"; {afn_missing} had no map"
+                if afn_chan_skip:
+                    _extra += f"; {afn_chan_skip} channel mismatch"
+                log(f"🔆 AFN drizzle: deposits corrected for '{group_key}': "
+                    f"{afn_done} of {len(entries)} frame(s){_extra}")
+            if total_tiles:
+                if rej_frames:
+                    log(f"🚫 Drizzle rejections for '{group_key}': applied to {rej_frames} of "
+                        f"{len(entries)} frame(s), {rej_px} reference pixel(s) masked.")
+                else:
+                    # the map has tiles but none matched an entry's aligned key:
+                    # the same path-key mismatch that once hid the frame weights
+                    log(f"⚠️ Drizzle rejections for '{group_key}': the map holds {total_tiles} "
+                        f"tile(s) but none matched a drizzle frame — rejected pixels were NOT excluded.")
 
             # ---- finalize ----
             if gpu_drizzle is not None:
@@ -38188,6 +39190,132 @@ class StackingSuiteDialog(QDialog):
             log(f"⚠️ geometry audit failed (non-fatal): {ae}")
         return bad
 
+    @staticmethod
+    def _afn_frame_hwc(path):
+        """(H, W, C) of a registered frame exactly as the tile reader sees it.
+
+        _MMImage.shape is the ON-DISK shape for FITS, so a colour frame can
+        report (3, H, W); the spatial and colour axes are recorded separately.
+        C follows the integration's own rule: 3 if colour, else 1.
+        """
+        src = _MMImage(path)
+        try:
+            shp = tuple(int(s) for s in src.shape)
+            if len(shp) == 2:
+                return shp[0], shp[1], 1
+            if getattr(src, "_kind", "") == "fits":
+                sa = src._spat_axes
+                return shp[sa[0]], shp[sa[1]], (3 if src._color_axis is not None else 1)
+            return shp[0], shp[1], (3 if shp[2] == 3 else 1)
+        finally:
+            try:
+                src.close()
+            except Exception:
+                pass
+
+    def _afn_orientation_labels(self, file_list):
+        """Which side of the meridian flip each frame was taken on.
+
+        Returns one label per frame ("0"/"1", or None where it cannot be
+        told), or None when the set does not span a flip. A brightness
+        pattern fixed to the optics shows up mirrored on the other side of a
+        flip, so AFN balances its reference across the two sides.
+
+        1. SASpro's own verdict first: normalization stamps SASROT180 on the
+           frames it rotated because it judged them flipped against its
+           reference. This is also the only reliable source after that
+           rotation, because the rot180 header sync TOGGLES FLIPPED and the
+           pier-side cards -- on real SGP frames, FLIPPED reads True on the
+           rotated frames only because SASpro toggled it.
+        2. No frame rotated (registration absorbed the flip): detect it the
+           way normalization does, by pier side or position angle against
+           the first frame that has one.
+        """
+        hdrs = []
+        for p in file_list:
+            try:
+                hdrs.append(fits.getheader(p))
+            except Exception:
+                hdrs.append(None)
+        rot = [bool(h.get("SASROT180", False)) if h is not None else False
+               for h in hdrs]
+        if any(rot) and not all(rot):
+            return ["1" if r else "0" for r in rot]
+
+        pss = [self._extract_pierside(h) if h is not None else None for h in hdrs]
+        pas = [self._extract_pa_deg(h) if h is not None else None for h in hdrs]
+        ref_ps = next((s for s in pss if s is not None), None)
+        ref_pa = next((a for a in pas if a is not None), None)
+        labels = []
+        for ps, pa in zip(pss, pas):
+            if ps is not None and ref_ps is not None:
+                labels.append("1" if self._pierside_flip(ps, ref_ps) else "0")
+            elif pa is not None and ref_pa is not None:
+                labels.append("1" if self._angdiff(pa, ref_pa) > 90.0 else "0")
+            else:
+                labels.append(None)
+        if len({l for l in labels if l is not None}) < 2:
+            return None
+        return labels
+
+    def _afn_models_for_group(self, group_key, file_list, log):
+        """Aperture Flux Normalization for one integration group.
+
+        Returns one model per frame (aligned with file_list), or None to
+        integrate exactly as before -- because AFN is off, the group is too
+        small, too few stars were found, or anything at all went wrong. A
+        failure here never costs the user their stack.
+        """
+        if not self.settings.value("stacking/afn/enabled", False, type=bool):
+            return None
+        from setiastro.saspro.aperture_flux_normalization import (
+            build_models_for_group)
+        additive = self.settings.value("stacking/afn/additive", True, type=bool)
+        cache_dir = None
+        sd = (getattr(self, "stacking_directory", "") or "").strip()
+        if sd:
+            cache_dir = os.path.join(sd, "Measurements", "afn")
+
+        log(f"🔆 Phase: Aperture flux normalization for '{group_key}' "
+            f"({len(file_list)} frames)")
+        try:
+            hwc = self._afn_frame_hwc(file_list[0])
+            try:
+                orientation = self._afn_orientation_labels(file_list)
+            except Exception:
+                orientation = None          # no balancing beats no AFN
+            # Fit across every core in a spawn pool when process pools work
+            # here -- the same preflight the measurement phase relies on.
+            # Fitting is many small numpy calls, so threads stall on the GIL.
+            processes = 0
+            try:
+                from setiastro.saspro.worker_env import (
+                    check_process_pools, process_pools_ok)
+                check_process_pools(log_fn=log)
+                if process_pools_ok():
+                    processes = max(1, min(32, os.cpu_count() or 1))
+            except Exception:
+                processes = 0
+            models = build_models_for_group(
+                file_list, _MMImage, shape_hwc=hwc, cache_dir=cache_dir,
+                additive=bool(additive), log=log,
+                cancelled=lambda: bool(self._cancelled()),
+                orientation=orientation, processes=processes)
+        except InterruptedError:
+            raise StackCancelled()
+        except StackCancelled:
+            raise
+        except Exception as e:                       # noqa: BLE001
+            log(f"⚠️ Aperture flux normalization skipped for '{group_key}': "
+                f"{type(e).__name__}: {e}")
+            return None
+        if models is None:
+            log(f"⚠️ Aperture flux normalization skipped for '{group_key}': "
+                f"not enough frames or stars to build the maps.")
+            return None
+        log(f"✅ Aperture flux normalization ready for '{group_key}'")
+        return models
+
     def normal_integration_with_rejection(
         self,
         group_key,
@@ -38210,6 +39338,19 @@ class StackingSuiteDialog(QDialog):
         collect_per_file = bool(collect_per_file_rejections)
         per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
         log = status_cb or (lambda *_: None)
+
+        # Aperture Flux Normalization: the phase between registration and
+        # integration. Runs (and finishes) BEFORE the integration announces
+        # itself, so the execution monitor's Integration clock does not tick
+        # through the measuring. None = integrate exactly as before.
+        afn_models = (self._afn_models_for_group(group_key, file_list, log)
+                      if file_list else None)
+        # Bound here, unconditionally and at the top: an import anywhere in
+        # this function makes the name local to ALL of it, and the tile
+        # readers below are closures that run much later.
+        from setiastro.saspro.aperture_flux_normalization import (
+            apply_tile_inplace as _afn_apply_tile)
+
         log(f"Starting integration for group '{group_key}' with {len(file_list)} files.")
         if not file_list:
             return None, {}, None
@@ -38231,6 +39372,32 @@ class StackingSuiteDialog(QDialog):
         self._audit_group_geometry(group_key, file_list, ref_file,
                                    height, width, log)
 
+        # The maps were measured through the tile reader; make sure they
+        # describe the frames the integration is about to read. A mismatch
+        # would scale the wrong pixels, so it drops AFN rather than guessing.
+        if afn_models is not None:
+            _hw = afn_models[0].info.get("hw")
+            _c = int(afn_models[0].gain.shape[0])
+            if (len(afn_models) != N or _hw is None
+                    or tuple(_hw) != (int(height), int(width)) or _c != channels):
+                log(f"⚠️ AFN: maps ({_hw}, {_c} ch) do not match the integration "
+                    f"({height}x{width}, {channels} ch) — integrating without them.")
+                afn_models = None
+
+        # Drizzle re-deposits these same frames from their originals after
+        # this integration. It must use the exact maps this integration used:
+        # the rejection masks it inherits were computed on AFN-corrected
+        # pixels. Keyed by aligned path; None (AFN off/skipped) clears any
+        # maps a previous run left for this group.
+        try:
+            if not isinstance(getattr(self, "_afn_maps_by_group", None), dict):
+                self._afn_maps_by_group = {}
+            self._afn_maps_by_group[group_key] = (
+                None if afn_models is None else
+                {os.path.normpath(f): m for f, m in zip(file_list, afn_models)})
+        except Exception:
+            pass
+
         algo = (algo_override or self.rejection_algorithm)
 
         use_gpu = (
@@ -38250,6 +39417,7 @@ class StackingSuiteDialog(QDialog):
                 status_cb=status_cb,
                 algo_override=algo_override,
                 collect_per_file_rejections=collect_per_file_rejections,
+                afn_models=afn_models,
             )
 
         # ── NORMAL (fast mmap) PATH ────────────────────────────────────────────
@@ -38307,6 +39475,7 @@ class StackingSuiteDialog(QDialog):
                     status_cb=status_cb,
                     algo_override=algo_override,
                     collect_per_file_rejections=collect_per_file_rejections,
+                    afn_models=afn_models,
                 )
             log(f"⚠️ Failed to open images (memmap): {e}")
             log(f"💡 If you are stacking a large number of frames, enable "
@@ -38398,6 +39567,10 @@ class StackingSuiteDialog(QDialog):
 
         def _read_one_frame(i, src, ts, ms, y0, y1, x0, x1):
             src.read_tile_into(ts[i], y0, y1, x0, x1, channels)
+            if afn_models is not None:
+                # Corrected in the reader thread, before the tile reaches
+                # either reducer, so CPU and GPU integration see the same data.
+                _afn_apply_tile(ts[i], afn_models[i], y0, y1, x0, x1)
             mfull = satmask_full_list[i]
             if mfull is not None:
                 ms[i, :, :] = mfull[y0:y1, x0:x1]
@@ -38747,6 +39920,7 @@ class StackingSuiteDialog(QDialog):
                 status_cb=status_cb,
                 algo_override=algo_override,
                 collect_per_file_rejections=collect_per_file_rejections,
+                afn_models=afn_models,
             )
 
         finally:
@@ -38847,6 +40021,7 @@ class StackingSuiteDialog(QDialog):
         *,
         algo_override: str | None = None,
         collect_per_file_rejections: bool = False,
+        afn_models=None,
     ):
         """
         Low RAM Safe Mode integration — seek-based tile reader.
@@ -38863,6 +40038,8 @@ class StackingSuiteDialog(QDialog):
         import numpy as np
         from astropy.io import fits
         from concurrent.futures import ThreadPoolExecutor as _TPE
+        from setiastro.saspro.aperture_flux_normalization import (
+            apply_tile_inplace as _afn_apply_tile)
 
         collect_per_file = bool(collect_per_file_rejections)
         per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
@@ -38960,6 +40137,11 @@ class StackingSuiteDialog(QDialog):
                     y0, y1, x0, x1, channels,
                     fh=fh
                 )
+                if afn_models is not None:
+                    # Same correction as the fast path, so Low RAM Safe Mode
+                    # and the too-many-open-files fallback stack identically.
+                    _afn_apply_tile(buf_stack[i, :th, :tw, :channels],
+                                    afn_models[i], y0, y1, x0, x1)
                 mfull = satmask_full_list[i]
                 if mfull is not None:
                     mask_buf[i, :th, :tw] = mfull[y0:y1, x0:x1]

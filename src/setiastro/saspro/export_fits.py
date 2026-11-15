@@ -10,12 +10,16 @@ from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QProgressDialog, QPushButton, QRadioButton,
-    QVBoxLayout, QWidget,
+    QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QProgressDialog, QPushButton,
+    QRadioButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from setiastro.saspro.file_utils import sanitize_filename
+from setiastro.saspro.save_options import (
+    KEEP_DOC_DEPTH, ExportOptionsPanel, _norm_ext as _norm_save_ext,
+    bit_depth_from_state, export_opts_from_state, jpeg_quality_from_state,
+)
 
 _HEADER_KEYS = ("fits_header", "original_header", "header")
 _WCS_STRUCTURAL = {
@@ -24,6 +28,7 @@ _WCS_STRUCTURAL = {
 }
 _SAVE_MUTATED_KEYS = (
     "file_path", "original_format", "bit_depth", "original_header", "fits_header",
+    "jpeg_quality",
 )
 
 COMMAND_ID = "export_fits"
@@ -180,6 +185,16 @@ def normalize_export_fits_preset(preset: dict | None) -> dict:
     if tag and not tag.startswith("_"):
         tag = "_" + tag
 
+    # Per-format save options ({"tif": {bit_depth, tiff_comp, ...}, ...}), as
+    # produced by ExportOptionsPanel.state(). Absent for a format = the old
+    # behaviour (document bit depth, saver defaults).
+    format_options = {}
+    raw_fo = p.get("format_options")
+    if isinstance(raw_fo, dict):
+        for k, st in raw_fo.items():
+            if isinstance(st, dict) and k:
+                format_options[_norm_save_ext(str(k))] = dict(st)
+
     return {
         "dest_mode": dest_mode,
         "out_dir": out_dir,
@@ -189,6 +204,7 @@ def normalize_export_fits_preset(preset: dict | None) -> dict:
         "tag": tag,
         "include_paired_stars": bool(p.get("include_paired_stars", False)),
         "mode_all_open": bool(p.get("mode_all_open", False)),
+        "format_options": format_options,
         # internal: force a specific _procN (used to pair a _stars companion)
         "_force_number": p.get("_force_number"),
     }
@@ -434,12 +450,24 @@ def export_document_as_fits(docman, doc, preset: dict | None = None) -> ExportFi
 
     jpeg_quality = meta.get("jpeg_quality") if ext_low in (".jpg", ".jpeg") else None
 
+    # Options chosen for this output format (same set as Save As).
+    export_opts = None
+    fopts = (spec.get("format_options") or {}).get(_norm_save_ext(ext_low))
+    if isinstance(fopts, dict) and fopts:
+        chosen = bit_depth_from_state(fopts)
+        if chosen:
+            bit_depth = chosen
+        export_opts = export_opts_from_state(ext_low, fopts)
+        jq = jpeg_quality_from_state(ext_low, fopts)
+        if jq is not None:
+            jpeg_quality = jq
+
     try:
         docman.save_document(
             doc, path,
             bit_depth_override=bit_depth,
             jpeg_quality=jpeg_quality,
-            export_opts=None,
+            export_opts=export_opts,
         )
     except Exception as e:
         return ExportFitsResult(ok=False, skipped=False, path=path, reason=str(e))
@@ -503,6 +531,7 @@ def _remember_spec(mw, spec: dict) -> None:
     keep = {k: spec.get(k) for k in (
         "dest_mode", "out_dir", "overwrite", "format",
         "auto_number", "tag", "include_paired_stars", "mode_all_open",
+        "format_options",
     )}
     try:
         settings.setValue(_SPEC_SETTINGS_KEY, json.dumps(keep))
@@ -655,6 +684,132 @@ def run_checkpoint_now(mw):
 
 
 # --------------------------------------------------------------------------- #
+# Per-format save options (the same controls Save As offers)
+# --------------------------------------------------------------------------- #
+# Formats a "Same as source" run can meet. Keys are save_options._norm_ext
+# names, which is also how format_options is keyed in a preset.
+_OPTION_FORMATS = (
+    ("FITS", "fits"), ("XISF", "xisf"), ("SYQ", "syq"), ("TIFF", "tif"),
+    ("PNG", "png"), ("JPEG", "jpg"), ("WebP", "webp"), ("PSB", "psb"),
+)
+
+
+def _opt_key(ext_or_fmt) -> str:
+    return _norm_save_ext(str(ext_or_fmt or ""))
+
+
+class _FormatOptionsSection(QGroupBox):
+    """
+    Bit depth, colour management, JPEG / TIFF settings and resize for the
+    checkpoint / export tool: the shared ExportOptionsPanel that Save As uses,
+    plus "Same as document" bit depth (the historical checkpoint behaviour).
+
+    One state is kept per format, so a "Same as source" run over views (or a
+    View Bundle) of mixed formats saves each with that format's own choices.
+    Formats never shown here keep the old behaviour: document bit depth and
+    the saver's defaults.
+    """
+
+    def __init__(self, format_options=None, source_ext_hint="", parent=None):
+        super().__init__("Format options", parent)
+        self._states = {}
+        self._cur = None
+        self._hint = _opt_key(source_ext_hint) or "fits"
+        self._for_last = None   # last format picked under "Options for"
+
+        v = QVBoxLayout(self)
+        row = QHBoxLayout()
+        self.lbl_for = QLabel(self.tr("Options for:"))
+        self.cmb_for = QComboBox()
+        for label, key in _OPTION_FORMATS:
+            self.cmb_for.addItem(label, key)
+        self.cmb_for.setToolTip(self.tr(
+            "With 'Same as source', each view is saved in its own format. "
+            "Pick a format here to set the options used for views of that format."))
+        row.addWidget(self.lbl_for)
+        row.addWidget(self.cmb_for, 1)
+        self.for_w = QWidget()
+        self.for_w.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        v.addWidget(self.for_w)
+
+        self.panel = ExportOptionsPanel(self._hint, keep_depth_option=True, parent=self)
+        v.addWidget(self.panel)
+        self._defaults = self.panel.state()
+        self._defaults["bit_depth"] = KEEP_DOC_DEPTH
+
+        self.load(format_options)
+        self.cmb_for.currentIndexChanged.connect(self._on_for_changed)
+
+    def _on_for_changed(self, _i):
+        self._for_last = self.cmb_for.currentData()
+        self.show_ext(self._for_last)
+
+    def load(self, format_options):
+        self._states = {}
+        for k, st in dict(format_options or {}).items():
+            if isinstance(st, dict):
+                self._states[_opt_key(k)] = dict(st)
+        cur, self._cur = self._cur, None
+        if cur:
+            self.show_ext(cur)
+
+    def set_format_choice(self, fmt):
+        """Follow the Format combo ('source' or a concrete format)."""
+        fmt = (fmt or "source").strip().lower()
+        if fmt == "source":
+            self.for_w.setVisible(True)
+            want = self._for_last or self._hint
+            idx = self.cmb_for.findData(want)
+            if idx < 0:
+                idx = self.cmb_for.findData(self._hint)
+            self.cmb_for.blockSignals(True)
+            self.cmb_for.setCurrentIndex(max(0, idx))
+            self.cmb_for.blockSignals(False)
+            self._for_last = self.cmb_for.currentData()
+            self.show_ext(self._for_last)
+        else:
+            self.for_w.setVisible(False)
+            self.show_ext(_opt_key(fmt))
+
+    def show_ext(self, ext):
+        ext = _opt_key(ext)
+        if not ext:
+            return
+        if self._cur is not None:
+            self._states[self._cur] = self.panel.state()
+        self._cur = ext
+        self.panel.set_format(ext)
+        st = dict(self._defaults)
+        st.update(self._states.get(ext) or {})
+        self.panel.set_state(st)
+
+    def format_options(self) -> dict:
+        if self._cur is not None:
+            self._states[self._cur] = self.panel.state()
+        return {k: dict(v) for k, v in self._states.items()}
+
+    def warn_if_profile_missing(self, parent=None):
+        self.panel.warn_if_profile_missing(parent)
+
+
+def _scrolled(widget):
+    """Vertical-only scroll area that is always wide enough for its content
+    (the dialog grows instead of clipping the options on the right)."""
+    sa = QScrollArea()
+    sa.setWidgetResizable(True)
+    sa.setFrameShape(QFrame.Shape.NoFrame)
+    sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    sa.setWidget(widget)
+    try:
+        bar = sa.verticalScrollBar().sizeHint().width()
+        sa.setMinimumWidth(widget.minimumSizeHint().width() + bar + 4)
+    except Exception:
+        pass
+    return sa
+
+
+# --------------------------------------------------------------------------- #
 # Preset editor (used by the shortcut / drag-handle system)
 # --------------------------------------------------------------------------- #
 class ExportFitsPresetDialog(QDialog):
@@ -698,8 +853,10 @@ class ExportFitsPresetDialog(QDialog):
         self.chk_paired.setChecked(init["include_paired_stars"])
         self.chk_overwrite = QCheckBox("Overwrite existing files")
         self.chk_overwrite.setChecked(init["overwrite"])
+        self.fmt_section = _FormatOptionsSection(init["format_options"], "fits", parent=self)
 
-        form = QFormLayout(self)
+        outer = QVBoxLayout(self)
+        form = QFormLayout()
         form.addRow("Destination:", dest_w)
         form.addRow("Output folder:", self.folder_w)
         form.addRow("Format:", self.cmb_format)
@@ -707,6 +864,8 @@ class ExportFitsPresetDialog(QDialog):
         form.addRow("Tag:", self.edit_tag)
         form.addRow("", self.chk_paired)
         form.addRow("", self.chk_overwrite)
+        outer.addLayout(form)
+        outer.addWidget(_scrolled(self.fmt_section), 1)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -714,11 +873,15 @@ class ExportFitsPresetDialog(QDialog):
         )
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
-        form.addRow(btns)
+        outer.addWidget(btns)
 
         self.rb_folder.toggled.connect(self._sync_enabled)
         self.chk_autonumber.toggled.connect(self._sync_enabled)
+        self.cmb_format.currentIndexChanged.connect(
+            lambda _i: self.fmt_section.set_format_choice(self.cmb_format.currentData()))
+        self.fmt_section.set_format_choice(self.cmb_format.currentData())
         self._sync_enabled()
+        self.resize(560, 720)
 
     def _select_format(self, val):
         idx = self.cmb_format.findData(val)
@@ -745,6 +908,7 @@ class ExportFitsPresetDialog(QDialog):
             "tag": self.edit_tag.text().strip(),
             "include_paired_stars": self.chk_paired.isChecked(),
             "overwrite": self.chk_overwrite.isChecked(),
+            "format_options": self.fmt_section.format_options(),
         })
 
 
@@ -812,6 +976,12 @@ class ExportFitsDialog(QDialog):
         self.chk_all_open = QCheckBox(self.tr("Apply to all open views"))
         self.chk_all_open.setChecked(init["mode_all_open"])
 
+        # Per-format options (shared with Save As). 'Same as source' starts on
+        # the active view's own format.
+        _active = _active_doc_from_main(main_window)
+        _hint = _ext_for_format("source", _source_fs_path(_active)) if _active is not None else ".fits"
+        self.fmt_section = _FormatOptionsSection(init["format_options"], _hint, parent=self)
+
         hint = QLabel(self.tr(
             "Saves the current view to disk. 'Beside source file' writes a "
             "numbered checkpoint (…_proc1, …_proc2) next to the original; "
@@ -832,6 +1002,7 @@ class ExportFitsDialog(QDialog):
         form.addRow("", self.chk_overwrite)
         form.addRow("", self.chk_all_open)
         v.addLayout(form)
+        v.addWidget(_scrolled(self.fmt_section), 1)
 
         btns = QHBoxLayout()
         btn_apply = QPushButton(self.tr("Apply"))
@@ -862,10 +1033,20 @@ class ExportFitsDialog(QDialog):
         grip.addWidget(self.preset_drag_handle)
         grip.addStretch(1)
         v.addLayout(grip)
-        self.resize(600, 400)
+        self.setMinimumSize(560, 480)
+        self.resize(620, 820)
+        try:
+            scr = self.screen().availableGeometry() if self.screen() else None
+            if scr is not None and self.height() > scr.height() - 60:
+                self.resize(self.width(), max(480, scr.height() - 60))
+        except Exception:
+            pass
 
         self.rb_folder.toggled.connect(self._sync_enabled)
         self.chk_autonumber.toggled.connect(self._sync_enabled)
+        self.cmb_format.currentIndexChanged.connect(
+            lambda _i: self.fmt_section.set_format_choice(self.cmb_format.currentData()))
+        self.fmt_section.set_format_choice(self.cmb_format.currentData())
         self._sync_enabled()
 
     # -- widget helpers -----------------------------------------------------
@@ -888,6 +1069,7 @@ class ExportFitsDialog(QDialog):
             "include_paired_stars": self.chk_paired.isChecked(),
             "overwrite": self.chk_overwrite.isChecked(),
             "mode_all_open": self.chk_all_open.isChecked(),
+            "format_options": self.fmt_section.format_options(),
         })
 
     def seed_from_preset(self, preset: dict | None):
@@ -901,6 +1083,9 @@ class ExportFitsDialog(QDialog):
         self.chk_paired.setChecked(spec["include_paired_stars"])
         self.chk_overwrite.setChecked(spec["overwrite"])
         self.chk_all_open.setChecked(spec["mode_all_open"])
+        if spec["format_options"]:
+            self.fmt_section.load(spec["format_options"])
+        self.fmt_section.set_format_choice(self.cmb_format.currentData())
         self._sync_enabled()
 
     def _browse(self):
@@ -932,6 +1117,7 @@ class ExportFitsDialog(QDialog):
         spec = self._require_destination()
         if spec is None:
             return
+        self.fmt_section.warn_if_profile_missing(self)
         if _docman(self._mw) is None:
             QMessageBox.warning(self, "Save Checkpoint / Export", "Document manager not available.")
             return

@@ -41,7 +41,7 @@ The inputs stay in their own files. Apply writes a new view, <b>HDR Composition<
 
 <h2>2. Which views</h2>
 <p>The list starts empty. Pick a view in the dropdown and press <b>Add</b>. Only the views in the list are combined; other open views are left alone. <b>Remove</b> takes the selected row back out. <b>Refresh</b> updates the dropdown after you open another image.</p>
-<p>The top of the list is the base, and it must be the <b>longest</b> exposure. <b>Sort by exposure</b> uses <code>EXPTIME</code> / <code>EXPOSURE</code> from the header. A view with no exposure keyword stays at the bottom of that sort. Move it with <b>Up</b> / <b>Down</b> so the longest is first. Apply asks before continuing when the top of the list may not be the longest.</p>
+<p><b>Order does not matter.</b> Apply works out which frame is the longest exposure from the frames themselves, by fitting each pair against the other on the pixels that are unsaturated in both, and composes longest-first whatever order the list is in. The list is re-ordered after Apply to show what it actually used. Header exposure times are read too (<code>EXPTIME</code>, <code>EXPOSURE</code>, <code>XPOSURE</code> and others, including XISF properties) and break a tie between frames the measurement cannot separate. <b>Sort by exposure</b>, <b>Up</b> and <b>Down</b> are still there if you want to see or set the order yourself.</p>
 
 <h2>3. What Apply does</h2>
 <ol>

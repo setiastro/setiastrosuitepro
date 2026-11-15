@@ -1584,30 +1584,35 @@ class _CurvesWorker(QThread):
         self._invoker = invoker
 
     def run(self):
-        if self._legacy_single:
-            out = self.image01
-            if out.ndim == 2 or (out.ndim == 3 and out.shape[2] == 1):
-                lut = (self.luts.get("K") or self.luts.get("R")
-                       or self.luts.get("G") or self.luts.get("B"))
-                if lut is not None:
-                    idx = np.clip((out*(len(lut)-1)).astype(np.int32), 0, len(lut)-1)
-                    out = lut[idx]
+        try:
+            if self._legacy_single:
+                out = self.image01
+                if out.ndim == 2 or (out.ndim == 3 and out.shape[2] == 1):
+                    lut = (self.luts.get("K") or self.luts.get("R")
+                           or self.luts.get("G") or self.luts.get("B"))
+                    if lut is not None:
+                        idx = np.clip((out*(len(lut)-1)).astype(np.int32), 0, len(lut)-1)
+                        out = lut[idx]
+                    self.done.emit(out.astype(np.float32, copy=False))
+                    return
+                out = out.copy()
+                lutK = self.luts.get("K")
+                for ci, k in enumerate(("R","G","B")):
+                    lut = self.luts.get(k, lutK)
+                    if lut is not None:
+                        idx = np.clip((out[...,ci]*(len(lut)-1)).astype(np.int32), 0, len(lut)-1)
+                        out[...,ci] = lut[idx]
                 self.done.emit(out.astype(np.float32, copy=False))
                 return
-            out = out.copy()
-            lutK = self.luts.get("K")
-            for ci, k in enumerate(("R","G","B")):
-                lut = self.luts.get(k, lutK)
-                if lut is not None:
-                    idx = np.clip((out[...,ci]*(len(lut)-1)).astype(np.int32), 0, len(lut)-1)
-                    out[...,ci] = lut[idx]
-            self.done.emit(out.astype(np.float32, copy=False))
-            return
 
-        if self._invoker is None:
-            self.done.emit(self.image01)
-            return
-        self.done.emit(self._invoker._apply_all_curves_once(self.image01, self.luts))
+            if self._invoker is None:
+                out = self.image01
+                self.done.emit(out)
+                return
+            out = self._invoker._apply_all_curves_once(self.image01, self.luts)
+            self.done.emit(out)
+        finally:
+            self.image01 = None  # drop full-frame working copy ASAP
 
 
 # ── CurvesDialogPro (unchanged except CommaToDotLineEdit removed — unused) ────
@@ -1657,7 +1662,14 @@ class CurvesDialogPro(QDialog):
         self.setModal(False)
         self._main = parent
         self.doc = document
-
+        # Only swap-state IDs and object identities: no extra full-size image copies.
+        self._curves_undo = []
+        self._undo_doc = None
+        # The doc.image buffer our working copy was last synced from, and a
+        # guard so our own Apply / Undo Apply don't trigger a reload of
+        # themselves through doc.changed.
+        self._synced_src = None
+        self._own_doc_edit = False
         self._follow_conn = False
         if hasattr(self._main, "currentDocumentChanged"):
             try:
@@ -1700,6 +1712,7 @@ class CurvesDialogPro(QDialog):
         self._bg_worker_sig   = None
         self._pending_sig     = None
         self._pending_luts    = None
+        self._full_bg_enabled = QSettings().value('curves/full_resolution_background', False, type=bool)
         self._status_base     = ""   # main status text
         self._status_bg       = ""   # live background/full-res indicator
         self._clip_scale       = 1.0
@@ -1824,12 +1837,21 @@ class CurvesDialogPro(QDialog):
         self.btn_preview.setText(self.tr("Toggle Preview"))
         self.btn_preview.setCheckable(True)
         self.btn_apply   = QPushButton(self.tr("Apply to Document"))
+        self.btn_undo = QToolButton(self)
+        self.btn_undo.setText(self.tr("Undo Apply"))
+        self.btn_undo.setToolTip(self.tr("Undo the last Apply made in this Curves window only"))
+        self.btn_undo.setEnabled(False)
         self.btn_reset   = QToolButton()
         self.btn_reset.setText(self.tr("Reset"))
         rowb.addWidget(self.btn_preview)
         rowb.addWidget(self.btn_apply)
+        rowb.addWidget(self.btn_undo)
         rowb.addWidget(self.btn_reset)
         left.addLayout(rowb)
+        self.chk_full_bg = QCheckBox(self.tr('Precompute full resolution (uses more RAM)'), self)
+        self.chk_full_bg.setChecked(self._full_bg_enabled)
+        self.chk_full_bg.toggled.connect(self._toggle_full_background)
+        left.addWidget(self.chk_full_bg)
 
         # Trailing slack: when docked this absorbs leftover vertical space so
         # the grid stays square and the controls hug it. When popped out we
@@ -1931,11 +1953,13 @@ class CurvesDialogPro(QDialog):
         self.btn_preview.clicked.connect(self._run_preview)
         self.btn_preview.toggled.connect(self._toggle_preview)
         self.btn_apply.clicked.connect(self._apply)
+        self.btn_undo.clicked.connect(self._undo_curves_apply)
         self.btn_reset.clicked.connect(self._reset_curve)
         self.btn_zoom_out.clicked.connect(lambda: self._set_zoom(self._zoom / 1.25))
         self.btn_zoom_in.clicked.connect(lambda: self._set_zoom(self._zoom * 1.25))
         self.btn_zoom_fit.clicked.connect(self._fit)
 
+        self._bind_undo_document(self.doc)
         self.editor.setPreviewCallback(self._on_editor_curve_changed)
         self.editor.pointSelected.connect(self._on_editor_point_selected)
         self.editor.selectionCleared.connect(self._on_editor_selection_cleared)
@@ -2013,13 +2037,15 @@ class CurvesDialogPro(QDialog):
             pass
         self._refresh_overlays()
         self._curve_gen += 1
+        self._invalidate_full_cache()
         self._curve_debounce.start(self._curve_debounce_ms)
 
     def _rebuild_preview_from_curve_debounced(self):
         if self._preview_orig is None and self._preview_img is None:
             return
-        # warm the full-res cache regardless of the on-canvas preview toggle
-        self._schedule_full_bg()
+        # The full-resolution result is optional; keep preview inexpensive.
+        if self._full_bg_enabled:
+            self._schedule_full_bg()
         if not getattr(self, "btn_preview", None) or not self.btn_preview.isChecked():
             return
         self._quick_preview()
@@ -2226,18 +2252,31 @@ class CurvesDialogPro(QDialog):
             out = np.interp(inp, xs, ys)
         return np.clip(out / 360.0, 0.0, 1.0).astype(np.float32)
 
+    @staticmethod
+    def _is_identity_pts(pts):
+        return (isinstance(pts, (list, tuple)) and len(pts) == 2
+                and tuple(pts[0]) == (0.0, 0.0) and tuple(pts[1]) == (1.0, 1.0))
+
     def _build_all_active_luts(self):
         luts: dict[str, np.ndarray] = {}
         active_key = self._current_mode_key
+        # An untouched (straight-line) curve is the identity, but a 65536-entry
+        # LUT is not: it floors every value onto a 16-bit grid (and L*/a*/b*
+        # identities add a Lab round trip). Skip identities so channels the
+        # user never curved keep full 32-bit float precision.
+        try:
+            active_identity = self._is_identity_pts(self._editor_points_norm())
+        except Exception:
+            active_identity = False
         fn = getattr(self.editor, "getCurveFunction", None)
-        if callable(fn):
+        if callable(fn) and not active_identity:
             f = fn()
             if f is not None:
                 luts[active_key] = build_curve_lut(f, size=65536)
         for key, pts in self._curves_store.items():
             if key == active_key:
                 continue
-            if isinstance(pts, (list, tuple)) and len(pts) == 2 and pts[0] == (0.0,0.0) and pts[1] == (1.0,1.0):
+            if self._is_identity_pts(pts):
                 continue
             luts[key] = self._lut01_from_points_norm(pts, size=65536)
         return luts
@@ -2693,26 +2732,128 @@ class CurvesDialogPro(QDialog):
             if delete_custom_preset(name):
                 self._rebuild_presets_menu()
 
-    def _on_active_doc_changed(self, doc):
-        if doc is None or getattr(doc, "image", None) is None:
+    def _bind_undo_document(self, doc):
+        """Observe document edits without taking ownership of its pixel buffers."""
+        old = self._undo_doc
+        if old is not None:
+            try:
+                old.changed.disconnect(self._on_bound_doc_changed)
+            except (TypeError, RuntimeError):
+                pass
+        self._undo_doc = doc
+        if doc is not None:
+            try:
+                doc.changed.connect(self._on_bound_doc_changed)
+            except (AttributeError, TypeError, RuntimeError):
+                pass
+        self._refresh_curves_undo_button()
+
+    @staticmethod
+    def _same_buffer(a, b):
+        """True when a and b are the same pixels in memory. ROI preview docs
+        return a fresh slice view on every .image access, so identity alone
+        would call every access a new image."""
+        if a is b:
+            return a is not None
+        if not (isinstance(a, np.ndarray) and isinstance(b, np.ndarray)):
+            return False
+        return (a.shape == b.shape and a.dtype == b.dtype and a.strides == b.strides
+                and a.__array_interface__["data"][0] == b.__array_interface__["data"][0])
+
+    def _on_bound_doc_changed(self):
+        """The document changed. If its pixels were replaced by anything other
+        than this dialog (main-window Undo/Redo, another tool), reload, so the
+        next Apply works on what the user actually sees rather than silently
+        re-committing the pixels they just undid."""
+        self._refresh_curves_undo_button()
+        if self._own_doc_edit or getattr(self, "_memory_released", False):
             return
+        doc = self.doc
+        if doc is None or doc is not self._undo_doc:
+            return
+        img = getattr(doc, "image", None)
+        if img is None or self._same_buffer(img, self._synced_src):
+            return
+        self._curve_debounce.stop()
+        self._load_from_doc()
+        self._refresh_curves_undo_button()
+
+    def _refresh_curves_undo_button(self):
+        """Never enable undo for edits outside this particular Curves dialog."""
+        enabled = False
+        if self._curves_undo and self.doc is self._undo_doc:
+            record = self._curves_undo[-1]
+            stack = getattr(self.doc, '_undo', ())
+            enabled = bool(
+                stack and stack[-1][0] == record[0]
+                and stack[-1][2] == 'Curves'
+                and id(getattr(self.doc, 'image', None)) == record[1]
+            )
+        btn = getattr(self, 'btn_undo', None)
+        if btn is not None:
+            btn.setEnabled(enabled)
+        return enabled
+
+    def _undo_curves_apply(self):
+        if not self._refresh_curves_undo_button():
+            return
+        # Stop a queued preview and disregard any in-flight full-res computation.
+        self._curve_debounce.stop()
+        self._invalidate_full_cache()
+        self._own_doc_edit = True
+        try:
+            name = self.doc.undo()
+        finally:
+            self._own_doc_edit = False
+        if name != 'Curves':
+            # Something other than our step was undone: resync to it.
+            self._on_bound_doc_changed()
+            self._refresh_curves_undo_button()
+            return
+        self._curves_undo.pop()
+        # Undo loads the previous state from swap, so the array identity changes.
+        if self._curves_undo:
+            previous_sid, _ = self._curves_undo[-1]
+            self._curves_undo[-1] = (previous_sid, id(self.doc.image))
+        # Restore the editor to the committed pixels and identity curves.
+        if hasattr(self.editor, 'clearSymmetryLine'):
+            self.editor.clearSymmetryLine()
+        self.editor.initCurve()
+        for key in self._curves_store:
+            self._curves_store[key] = [(0.0, 0.0), (1.0, 1.0)]
+        self._load_from_doc()
+        self._refresh_overlays()
+        self._refresh_curves_undo_button()
+        self._set_status(self.tr('Last Curves Apply undone.'))
+
+    def _on_active_doc_changed(self, doc):
+        if doc is None or getattr(doc, 'image', None) is None:
+            return
+        # A different document starts a new dialog-local undo session.
+        if doc is not self.doc:
+            self._curves_undo.clear()
+            self._bind_undo_document(doc)
+        self._invalidate_full_cache()
         self.doc = doc
         self._load_from_doc()
+        self._refresh_curves_undo_button()
         QTimer.singleShot(0, self._fit_after_load)
 
     def _load_from_doc(self):
+        self._invalidate_full_cache()
         img = self.doc.image
         if img is None:
             QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
+        self._synced_src = img
         arr = np.asarray(img)
         if arr.dtype.kind in "ui":
             arr = arr.astype(np.float32) / np.iinfo(arr.dtype).max
         elif arr.dtype.kind == "f":
             mx = float(arr.max()) if arr.size else 1.0
-            arr = (arr / (mx if mx > 1.0 else 1.0)).astype(np.float32)
+            arr = (arr / mx).astype(np.float32) if mx > 1.0 else arr.astype(np.float32, copy=False)
         else:
-            arr = arr.astype(np.float32)
+            arr = arr.astype(np.float32, copy=False)
         self._full_img     = arr
         self._preview_img  = _downsample_for_preview(arr, 1200)
         self._preview_orig = self._preview_img.copy()
@@ -2790,8 +2931,9 @@ class CurvesDialogPro(QDialog):
         proc = self._apply_all_curves_once(self._preview_img, luts)
         proc = self._blend_with_mask(proc)
         self._preview_proc = proc
-        # warm the full-res result in the background so Apply is instant
-        self._schedule_full_bg(luts)
+        # Full-frame precomputation is opt-in, not part of the preview.
+        if self._full_bg_enabled:
+            self._schedule_full_bg(luts)
         if self._show_proc:
             self._update_preview_pix(self._preview_proc)
         try:
@@ -2840,13 +2982,32 @@ class CurvesDialogPro(QDialog):
             ))
         except Exception:
             store_sig = None
-        return (store_sig, getattr(self.doc, "active_mask_id", None))
+        return (id(self.doc), id(getattr(self.doc, 'image', None)),
+                store_sig, getattr(self.doc, 'active_mask_id', None))
+
+    def _invalidate_full_cache(self):
+        self._full_cache = None
+        self._full_cache_sig = None
+        self.__dict__.pop('_last_preview', None)
+        self._pending_sig = None
+        self._pending_luts = None
+
+    def _toggle_full_background(self, enabled):
+        self._full_bg_enabled = bool(enabled)
+        QSettings().setValue('curves/full_resolution_background', self._full_bg_enabled)
+        if self._full_bg_enabled:
+            self._schedule_full_bg()
+        else:
+            # Ignore results from an in-flight worker, without destroying its QThread.
+            self._invalidate_full_cache()
+        self._refresh_bg_status()
 
     def _schedule_full_bg(self, luts=None):
         """Warm the full-res cache in the background for the current state.
         No-op if already cached/in-flight for this signature. Coalesces churn:
         only one worker runs at a time; the latest request wins."""
-        if self._full_img is None:
+        if (self._full_img is None or not self._full_bg_enabled
+                or getattr(self, '_memory_released', False)):
             return
         self._flush_active_into_store()
         sig = self._full_result_signature()
@@ -2888,9 +3049,15 @@ class CurvesDialogPro(QDialog):
         self._refresh_bg_status()
 
     def _on_bg_finished(self):
-        # the current worker is done; kick off the newest pending request, if any
-        self._maybe_start_pending()
-        self._refresh_bg_status()
+        # Drop completed worker references and Qt resources.
+        worker = self._bg_worker
+        self._bg_worker = None
+        self._bg_worker_sig = None
+        if worker is not None:
+            worker.deleteLater()
+        if not getattr(self, '_memory_released', False):
+            self._maybe_start_pending()
+            self._refresh_bg_status()
 
     def _on_full_bg_ready(self, out01, sig):
         # Only cache if the result still matches the current state; otherwise it
@@ -2899,7 +3066,8 @@ class CurvesDialogPro(QDialog):
             current = self._full_result_signature()
         except Exception:
             current = None
-        if current is None or sig != current:
+        if (not self._full_bg_enabled or getattr(self, '_memory_released', False)
+                or current is None or sig != current):
             return
         try:
             blended = self._blend_with_mask(out01)
@@ -2907,14 +3075,14 @@ class CurvesDialogPro(QDialog):
             return
         self._full_cache = blended
         self._full_cache_sig = sig
-        self._last_preview = blended  # legacy mirror
 
     def _run_preview(self):
         # The manual Preview control now just warms the same background cache
         # through the safe (signature-checked) pipeline.
         if self._full_img is None:
             return
-        self._schedule_full_bg()
+        if self._full_bg_enabled:
+            self._schedule_full_bg()
 
     def _on_preview_ready(self, out01):
         self._last_preview = self._blend_with_mask(out01)
@@ -3047,18 +3215,36 @@ class CurvesDialogPro(QDialog):
                 if last.get("command_id") == "curves":
                     meta["command_id"] = "curves"
                     meta["preset"] = dict(last.get("preset") or {})
-            self.doc.apply_edit(out01.copy(), metadata=meta, step_name="Curves")
+            # apply_edit snapshots the old state; adopt the new buffer directly.
+            # A view of the current image must still be copied before adoption.
+            committed = (out01.copy() if np.shares_memory(out01, self.doc.image)
+                         else out01)
+            # A non-Curves edit (or an external Undo) breaks the local chain.
+            if self._curves_undo and not self._refresh_curves_undo_button():
+                self._curves_undo.clear()
+            prior_undo_len = len(getattr(self.doc, '_undo', ()))
+            self._own_doc_edit = True
+            try:
+                self.doc.apply_edit(committed, metadata=meta, step_name='Curves')
+            finally:
+                self._own_doc_edit = False
+            self._synced_src = self.doc.image
+            # Reuse the disk-backed document Undo snapshot; retain no image copy.
+            stack = getattr(self.doc, '_undo', ())
+            if len(stack) == prior_undo_len + 1 and stack[-1][2] == 'Curves':
+                self._curves_undo.append((stack[-1][0], id(self.doc.image)))
+            else:
+                self._curves_undo.clear()
             try:
                 self._remember_as_last_action()
             except Exception:
                 pass
             self.__dict__.pop("_last_preview", None)
-            # release the ~full-res cache; the reloaded image warms a fresh one
-            self._full_cache = None
-            self._full_cache_sig = None
+            # Drop precomputed results before refreshing the preview.
+            self._invalidate_full_cache()
             self._status_bg = ""
             # adopt the result we already computed; no doc round-trip / reload
-            self._adopt_committed_image(out01)
+            self._adopt_committed_image(self.doc.image)
             if hasattr(self.editor, "clearSymmetryLine"):
                 self.editor.clearSymmetryLine()
             self.editor.initCurve()
@@ -3066,6 +3252,7 @@ class CurvesDialogPro(QDialog):
                 self._curves_store[k] = [(0.0,0.0),(1.0,1.0)]
             self._refresh_overlays()
             self._quick_preview()
+            self._refresh_curves_undo_button()
             self._set_status(self.tr("Applied. Image reloaded. All curves reset — keep tweaking."))
         except Exception as e:
             QMessageBox.critical(self, self.tr("Apply failed"), str(e))
@@ -3173,9 +3360,60 @@ class CurvesDialogPro(QDialog):
                 try: win.closed.disconnect(self._pop_in_panel)
                 except Exception: pass
                 self._save_popout_geometry(win)
+                # Re-dock / tear down the detached panel before we drop buffers.
+                try:
+                    self._pop_in_panel()
+                except Exception:
+                    try:
+                        win.hide()
+                        win.deleteLater()
+                    except Exception:
+                        pass
+                    self._popout_win = None
         except Exception: pass
         self._cleanup_connections()
+        self._bind_undo_document(None)
+        self._curves_undo.clear()
+        try:
+            self._release_memory()
+        except Exception:
+            pass
         super().closeEvent(ev)
+
+    def _release_memory(self):
+        """Drop full/preview image buffers and pixmap so RAM can be reclaimed."""
+        if getattr(self, "_memory_released", False):
+            return
+        self._memory_released = True
+
+        self._invalidate_full_cache()
+        self._synced_src = None
+        self._full_img = None
+        self._preview_img = None
+        self._preview_orig = None
+        self._preview_proc = None
+        self._last_preview = None
+        self._hist_base = None
+        self._pix = None
+        self._cdf = None
+        self._cdf_rgb = None
+        self.doc = None
+        self._main = None
+        try:
+            self.label.clear()
+        except Exception:
+            pass
+        try:
+            self.hist.set_reference_image(None)
+            self.hist.set_result(clear_result=True)
+        except Exception:
+            pass
+
+        try:
+            from setiastro.saspro.free_torch_memory import trim_process_memory
+            trim_process_memory()
+        except Exception:
+            pass
 
     def _cleanup_connections(self):
         try:

@@ -903,13 +903,17 @@ class FileMixin:
 
         # --- Save & remember folder ----------------------------------------
         try:
-            self.docman.save_document(
+            retargeted = self.docman.save_document(
                 doc, path,
                 bit_depth_override=chosen_bd,
                 jpeg_quality=chosen_jq,
                 export_opts=export_opts,
             )
-            self._log(f"Saved: {path} ({chosen_bd})")
+            if retargeted is False:
+                self._log(f"Saved a copy: {path} ({chosen_bd}). "
+                          "The open image keeps its full bit depth and its source file.")
+            else:
+                self._log(f"Saved: {path} ({chosen_bd})")
             self._add_recent_image(path)
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
@@ -1287,13 +1291,17 @@ class FileMixin:
             return
 
         try:
-            self.docman.save_document(
+            retargeted = self.docman.save_document(
                 doc, path,
                 bit_depth_override=dlg.selected_bit_depth(),
                 jpeg_quality=dlg.selected_jpeg_quality(),
                 export_opts=dlg.export_options(),
             )
-            self._log(f"Saved: {path} ({dlg.selected_bit_depth()})")
+            if retargeted is False:
+                self._log(f"Saved a copy: {path} ({dlg.selected_bit_depth()}). "
+                          "The open image keeps its full bit depth and its source file.")
+            else:
+                self._log(f"Saved: {path} ({dlg.selected_bit_depth()})")
             self._add_recent_image(path)
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
