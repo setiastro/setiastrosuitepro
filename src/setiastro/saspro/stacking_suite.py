@@ -8451,12 +8451,15 @@ class StackingSuiteDialog(QDialog):
             lambda v: (
                 self.drizzle_scale_combo.setEnabled(v),
                 self.drizzle_drop_shrink_spin.setEnabled(v),
+                self.drizzle_gauss_sigma_spin.setEnabled(v),
                 self.settings.setValue("stacking/drizzle_enabled", bool(v))
             )
         )
         drizzle_on = self.settings.value("stacking/drizzle_enabled", False, type=bool)
         self.drizzle_scale_combo.setEnabled(drizzle_on)
         self.drizzle_drop_shrink_spin.setEnabled(drizzle_on)
+        if hasattr(self, "drizzle_gauss_sigma_spin"):
+            self.drizzle_gauss_sigma_spin.setEnabled(drizzle_on)
 
         # Comet wiring
         self.comet_cb.toggled.connect(self._on_comet_toggled_public)
@@ -12180,7 +12183,76 @@ class StackingSuiteDialog(QDialog):
             self._refresh_comet_starless_enable()
         except Exception:
             pass
+
+        # the kernel or the sigma mode may have just changed, so the
+        # Image Integration drizzle row may be showing the wrong control
+        try:
+            self._sync_drizzle_kernel_row()
+        except Exception:
+            pass
         
+    def _sync_drizzle_kernel_row(self):
+        """Keep the Image Integration drizzle row honest.
+
+        Drop shrink drives the square and circular kernels. The Gaussian takes
+        its width from gaussian_sigma, which normally tracks drop shrink
+        (sigma = 0.5 * drop) but can be pinned as an explicit override. When it
+        is pinned, drop shrink reaches nothing at all, so leaving a live "Drop
+        Shrink" spin on screen is a trap -- swap in the sigma spin instead.
+        """
+        if not hasattr(self, "drizzle_drop_shrink_spin"):
+            return
+        if not hasattr(self, "drizzle_gauss_sigma_spin"):
+            return
+        try:
+            kname = str(self.settings.value("stacking/drizzle_kernel", "square"))
+        except Exception:
+            kname = "square"
+        is_gauss = kname.lower().startswith("gauss")
+        try:
+            pinned = bool(is_gauss and self._drizzle_gauss_manual())
+        except Exception:
+            pinned = False
+
+        if hasattr(self, "drizzle_kernel_lbl"):
+            self.drizzle_kernel_lbl.setText(
+                self.tr("[%s]") % (kname[:1].upper() + kname[1:]))
+            self.drizzle_kernel_lbl.setToolTip(self.tr(
+                "Drizzle kernel, set in Stacking Settings."))
+
+        self.drizzle_drop_shrink_spin.setVisible(not pinned)
+        self.drizzle_gauss_sigma_spin.setVisible(pinned)
+        self.drizzle_gauss_sigma_spin.setEnabled(
+            self.drizzle_drop_shrink_spin.isEnabled())
+
+        if not hasattr(self, "drizzle_drop_label"):
+            return
+        if pinned:
+            v = 0.325
+            try:
+                v = float(self.settings.value(
+                    "stacking/drizzle_gauss_sigma", 0.325, type=float))
+            except Exception:
+                pass
+            if abs(float(self.drizzle_gauss_sigma_spin.value()) - v) > 1e-9:
+                _b = self.drizzle_gauss_sigma_spin.blockSignals(True)
+                self.drizzle_gauss_sigma_spin.setValue(v)
+                self.drizzle_gauss_sigma_spin.blockSignals(_b)
+            self.drizzle_drop_label.setText(self.tr("Gaussian \u03c3:"))
+            self.drizzle_drop_label.setToolTip(self.tr(
+                "The Gaussian sigma is pinned, so drop shrink reaches nothing.\n"
+                "Tick 'Gaussian \u03c3 follows drop shrink' in Stacking Settings\n"
+                "to drive the Gaussian from drop shrink instead."))
+        elif is_gauss:
+            self.drizzle_drop_label.setText(
+                self.tr("Drop Shrink (\u03c3 = 0.5 \u00d7):"))
+            self.drizzle_drop_label.setToolTip(self.tr(
+                "Gaussian kernel: sigma follows this, at 0.5 x drop shrink."))
+        else:
+            self.drizzle_drop_label.setText(self.tr("Drop Shrink:"))
+            self.drizzle_drop_label.setToolTip(self.tr(
+                "Drop shrink (pixfrac) for the %s kernel.") % kname)
+
     # --- Drizzle config: single source of truth ---
     def _drizzle_gauss_manual(self) -> bool:
         """True when the user has pinned an explicit Gaussian sigma.
@@ -15063,13 +15135,38 @@ class StackingSuiteDialog(QDialog):
         self.drizzle_scale_combo.currentIndexChanged.connect(self._on_drizzle_param_changed)
         drizzle_layout.addWidget(self.drizzle_scale_combo)
 
-        drizzle_layout.addWidget(QLabel(self.tr("Drop Shrink:")))
+        # Which spin belongs here depends on the kernel: drop shrink drives
+        # the square and circular drops, but the Gaussian takes its width
+        # from gaussian_sigma, which may be pinned. _sync_drizzle_kernel_row
+        # swaps the label and the widget so the row always shows the control
+        # that actually reaches the integration.
+        self.drizzle_kernel_lbl = QLabel("")
+        drizzle_layout.addWidget(self.drizzle_kernel_lbl)
+
+        self.drizzle_drop_label = QLabel(self.tr("Drop Shrink:"))
+        drizzle_layout.addWidget(self.drizzle_drop_label)
         self.drizzle_drop_shrink_spin = QDoubleSpinBox()
         self.drizzle_drop_shrink_spin.setRange(0.0, 1.0)  # pixfrac is [0..1]
         self.drizzle_drop_shrink_spin.setDecimals(3)
         self.drizzle_drop_shrink_spin.setValue(self._get_drizzle_pixfrac())
         self.drizzle_drop_shrink_spin.valueChanged.connect(lambda v: self._set_drizzle_pixfrac(v))
         drizzle_layout.addWidget(self.drizzle_drop_shrink_spin)
+
+        # shown in place of the above when the Gaussian sigma is pinned
+        self.drizzle_gauss_sigma_spin = QDoubleSpinBox()
+        self.drizzle_gauss_sigma_spin.setRange(0.05, 3.0)
+        self.drizzle_gauss_sigma_spin.setDecimals(3)
+        self.drizzle_gauss_sigma_spin.setSingleStep(0.05)
+        self.drizzle_gauss_sigma_spin.setValue(
+            self.settings.value("stacking/drizzle_gauss_sigma", 0.325, type=float))
+        self.drizzle_gauss_sigma_spin.valueChanged.connect(
+            lambda v: self.settings.setValue("stacking/drizzle_gauss_sigma", float(v)))
+        self.drizzle_gauss_sigma_spin.setVisible(False)
+        drizzle_layout.addWidget(self.drizzle_gauss_sigma_spin)
+        try:
+            self._sync_drizzle_kernel_row()
+        except Exception:
+            pass
 
         self.cfa_drizzle_cb = QCheckBox(self.tr("CFA Drizzle"))
         self.cfa_drizzle_cb.setChecked(self.settings.value("stacking/cfa_drizzle", False, type=bool))
@@ -15646,6 +15743,10 @@ class StackingSuiteDialog(QDialog):
         self.drizzle_scale_combo.setCurrentText(_scale_txt)
         self.drizzle_scale_combo.blockSignals(False)
         self.drizzle_drop_shrink_spin.setValue(self._get_drizzle_pixfrac())
+        try:
+            self._sync_drizzle_kernel_row()
+        except Exception:
+            pass
 
         drizzle_on = self.settings.value("stacking/drizzle_enabled", False, type=bool)
         self.cfa_drizzle_cb.setEnabled(drizzle_on)
@@ -15747,6 +15848,8 @@ class StackingSuiteDialog(QDialog):
         """Drizzle master switch."""
         self.drizzle_scale_combo.setEnabled(checked)
         self.drizzle_drop_shrink_spin.setEnabled(checked)
+        if hasattr(self, "drizzle_gauss_sigma_spin"):
+            self.drizzle_gauss_sigma_spin.setEnabled(checked)
 
         # NEW: make CFA Drizzle depend on Enable Drizzle
         self.cfa_drizzle_cb.setEnabled(checked)
@@ -15766,7 +15869,7 @@ class StackingSuiteDialog(QDialog):
         Disable other registration-dependent features (drizzle/comet/MFDeconv) to avoid confusion.
         """
         # Controls to gate
-        drizzle_widgets = (self.drizzle_checkbox, self.drizzle_scale_combo, self.drizzle_drop_shrink_spin, self.cfa_drizzle_cb)
+        drizzle_widgets = (self.drizzle_checkbox, self.drizzle_scale_combo, self.drizzle_drop_shrink_spin, self.drizzle_gauss_sigma_spin, self.cfa_drizzle_cb)
         comet_widgets = (self.comet_cb, self.comet_pick_btn, self.comet_blend_cb, self.comet_mix)
         mf_widgets = (self.mf_enabled_cb, self.mf_iters_spin, self.mf_kappa_spin, self.mf_color_combo, self.mf_Huber_spin)
 
