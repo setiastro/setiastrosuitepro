@@ -1662,7 +1662,9 @@ class CurvesDialogPro(QDialog):
         self.setModal(False)
         self._main = parent
         self.doc = document
-
+        # Only swap-state IDs and object identities: no extra full-size image copies.
+        self._curves_undo = []
+        self._undo_doc = None
         self._follow_conn = False
         if hasattr(self._main, "currentDocumentChanged"):
             try:
@@ -1830,10 +1832,15 @@ class CurvesDialogPro(QDialog):
         self.btn_preview.setText(self.tr("Toggle Preview"))
         self.btn_preview.setCheckable(True)
         self.btn_apply   = QPushButton(self.tr("Apply to Document"))
+        self.btn_undo = QToolButton(self)
+        self.btn_undo.setText(self.tr("Undo Apply"))
+        self.btn_undo.setToolTip(self.tr("Undo the last Apply made in this Curves window only"))
+        self.btn_undo.setEnabled(False)
         self.btn_reset   = QToolButton()
         self.btn_reset.setText(self.tr("Reset"))
         rowb.addWidget(self.btn_preview)
         rowb.addWidget(self.btn_apply)
+        rowb.addWidget(self.btn_undo)
         rowb.addWidget(self.btn_reset)
         left.addLayout(rowb)
         self.chk_full_bg = QCheckBox(self.tr('Precompute full resolution (uses more RAM)'), self)
@@ -1941,11 +1948,13 @@ class CurvesDialogPro(QDialog):
         self.btn_preview.clicked.connect(self._run_preview)
         self.btn_preview.toggled.connect(self._toggle_preview)
         self.btn_apply.clicked.connect(self._apply)
+        self.btn_undo.clicked.connect(self._undo_curves_apply)
         self.btn_reset.clicked.connect(self._reset_curve)
         self.btn_zoom_out.clicked.connect(lambda: self._set_zoom(self._zoom / 1.25))
         self.btn_zoom_in.clicked.connect(lambda: self._set_zoom(self._zoom * 1.25))
         self.btn_zoom_fit.clicked.connect(self._fit)
 
+        self._bind_undo_document(self.doc)
         self.editor.setPreviewCallback(self._on_editor_curve_changed)
         self.editor.pointSelected.connect(self._on_editor_point_selected)
         self.editor.selectionCleared.connect(self._on_editor_selection_cleared)
@@ -2705,13 +2714,75 @@ class CurvesDialogPro(QDialog):
             if delete_custom_preset(name):
                 self._rebuild_presets_menu()
 
+    def _bind_undo_document(self, doc):
+        """Observe document edits without taking ownership of its pixel buffers."""
+        old = self._undo_doc
+        if old is not None:
+            try:
+                old.changed.disconnect(self._refresh_curves_undo_button)
+            except (TypeError, RuntimeError):
+                pass
+        self._undo_doc = doc
+        if doc is not None:
+            try:
+                doc.changed.connect(self._refresh_curves_undo_button)
+            except (AttributeError, TypeError, RuntimeError):
+                pass
+        self._refresh_curves_undo_button()
+
+    def _refresh_curves_undo_button(self):
+        """Never enable undo for edits outside this particular Curves dialog."""
+        enabled = False
+        if self._curves_undo and self.doc is self._undo_doc:
+            record = self._curves_undo[-1]
+            stack = getattr(self.doc, '_undo', ())
+            enabled = bool(
+                stack and stack[-1][0] == record[0]
+                and stack[-1][2] == 'Curves'
+                and id(getattr(self.doc, 'image', None)) == record[1]
+            )
+        btn = getattr(self, 'btn_undo', None)
+        if btn is not None:
+            btn.setEnabled(enabled)
+        return enabled
+
+    def _undo_curves_apply(self):
+        if not self._refresh_curves_undo_button():
+            return
+        # Stop a queued preview and disregard any in-flight full-res computation.
+        self._curve_debounce.stop()
+        self._invalidate_full_cache()
+        name = self.doc.undo()
+        if name != 'Curves':
+            self._refresh_curves_undo_button()
+            return
+        self._curves_undo.pop()
+        # Undo loads the previous state from swap, so the array identity changes.
+        if self._curves_undo:
+            previous_sid, _ = self._curves_undo[-1]
+            self._curves_undo[-1] = (previous_sid, id(self.doc.image))
+        # Restore the editor to the committed pixels and identity curves.
+        if hasattr(self.editor, 'clearSymmetryLine'):
+            self.editor.clearSymmetryLine()
+        self.editor.initCurve()
+        for key in self._curves_store:
+            self._curves_store[key] = [(0.0, 0.0), (1.0, 1.0)]
+        self._load_from_doc()
+        self._refresh_overlays()
+        self._refresh_curves_undo_button()
+        self._set_status(self.tr('Last Curves Apply undone.'))
+
     def _on_active_doc_changed(self, doc):
         if doc is None or getattr(doc, 'image', None) is None:
             return
-        # The same document may have received a new image via an external edit.
+        # A different document starts a new dialog-local undo session.
+        if doc is not self.doc:
+            self._curves_undo.clear()
+            self._bind_undo_document(doc)
         self._invalidate_full_cache()
         self.doc = doc
         self._load_from_doc()
+        self._refresh_curves_undo_button()
         QTimer.singleShot(0, self._fit_after_load)
 
     def _load_from_doc(self):
@@ -3093,7 +3164,17 @@ class CurvesDialogPro(QDialog):
             # A view of the current image must still be copied before adoption.
             committed = (out01.copy() if np.shares_memory(out01, self.doc.image)
                          else out01)
+            # A non-Curves edit (or an external Undo) breaks the local chain.
+            if self._curves_undo and not self._refresh_curves_undo_button():
+                self._curves_undo.clear()
+            prior_undo_len = len(getattr(self.doc, '_undo', ()))
             self.doc.apply_edit(committed, metadata=meta, step_name='Curves')
+            # Reuse the disk-backed document Undo snapshot; retain no image copy.
+            stack = getattr(self.doc, '_undo', ())
+            if len(stack) == prior_undo_len + 1 and stack[-1][2] == 'Curves':
+                self._curves_undo.append((stack[-1][0], id(self.doc.image)))
+            else:
+                self._curves_undo.clear()
             try:
                 self._remember_as_last_action()
             except Exception:
@@ -3111,6 +3192,7 @@ class CurvesDialogPro(QDialog):
                 self._curves_store[k] = [(0.0,0.0),(1.0,1.0)]
             self._refresh_overlays()
             self._quick_preview()
+            self._refresh_curves_undo_button()
             self._set_status(self.tr("Applied. Image reloaded. All curves reset — keep tweaking."))
         except Exception as e:
             QMessageBox.critical(self, self.tr("Apply failed"), str(e))
@@ -3230,6 +3312,8 @@ class CurvesDialogPro(QDialog):
                     self._popout_win = None
         except Exception: pass
         self._cleanup_connections()
+        self._bind_undo_document(None)
+        self._curves_undo.clear()
         try:
             self._release_memory()
         except Exception:
