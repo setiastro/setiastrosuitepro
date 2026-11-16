@@ -1865,7 +1865,7 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
                 import sys as _sys2
                 if getattr(_sys2, "frozen", False):
                     return
-                from setiastro.saspro.worker_env import diagnose_local_env
+                from setiastro.saspro.worker_env import diagnose_local_env, fix_command
                 _ok, _msg = diagnose_local_env()
                 if _ok:
                     return
@@ -1875,8 +1875,8 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
                 _box.setWindowTitle("Python environment problem")
                 _box.setText(
                     "SASpro detected an inconsistent scientific-library setup.\n\n"
-                    "It will still run, but multi-core stacking is disabled until "
-                    "this is fixed (stacking will be slower).")
+                    "It will still run. If the multi-core workers can't start, "
+                    "SASpro falls back to single-process (slower) until this is fixed.")
                 _box.setInformativeText(_msg)
                 _copy = _box.addButton("Copy fix command", _QMB.ButtonRole.ActionRole)
                 _box.addButton(_QMB.StandardButton.Ok)
@@ -1884,8 +1884,7 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
                 _box.exec()
                 if _box.clickedButton() is _copy:
                     try:
-                        _QApp.clipboard().setText(
-                            f'"{_sys2.executable}" -m pip install -r requirements.txt')
+                        _QApp.clipboard().setText(fix_command())
                     except Exception:
                         pass
             except Exception:
