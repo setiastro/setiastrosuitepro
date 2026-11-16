@@ -255,9 +255,16 @@ class _CCHeadlessWorker(QThread):
 
 
 # ---------------- Public entry ----------------
-def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None):
-    """Run CC headlessly by driving the same pipeline as the Execute button."""
+def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None, ctx=None):
+    """Run CC headlessly by driving the same pipeline as the Execute button.
+
+    Returns True when the result was applied, False otherwise (the reason has
+    already been shown to the user). When called from a script (`ctx` given,
+    which ctx.run_command does), a failure raises RuntimeError instead so the
+    script can catch it.
+    """
     p = dict(preset or {})
+    failure = None
 
     # ---- Record for Replay Last Action ----
     try:
@@ -292,12 +299,16 @@ def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None):
                 doc = doc()
 
         if doc is None or getattr(doc, "image", None) is None:
+            if ctx is not None:
+                failure = "Cosmic Clarity: no image to process."
+                return False
             QMessageBox.warning(main, "Cosmic Clarity", "Load an image first.")
-            return
+            return False
 
         dlg = CosmicClarityDialogPro(main, doc, headless=True, bypass_guard=True)
         if getattr(dlg, "_headless", False) is not True:
-            return
+            failure = "Cosmic Clarity: another Cosmic Clarity run is in progress."
+            return False
 
         try:
             dlg.apply_preset(p)
@@ -308,10 +319,31 @@ def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None):
             dlg.cmb_target.setCurrentIndex(1 if p.get("create_new_view", False) else 0)
 
         dlg._run_main()
+        if getattr(dlg, "_engine_thread", None) is None:
+            # _run_main returned before starting the worker (no image, a
+            # missing model, ...) and has already said why. Waiting for
+            # finished() here would block forever.
+            failure = "Cosmic Clarity did not start (see the message shown)."
+            try:
+                dlg.close()
+                dlg.deleteLater()
+            except Exception:
+                pass
+            return False
 
         loop = QEventLoop()
         dlg.finished.connect(loop.quit)
         loop.exec_() if hasattr(loop, "exec_") else loop.exec()
+
+        ok = dlg.result() == QDialog.DialogCode.Accepted
+        if not ok:
+            failure = getattr(dlg, "_headless_error", None) or "Cosmic Clarity did not complete."
+        try:
+            dlg.close()          # releases the full-size buffer it holds
+            dlg.deleteLater()
+        except Exception:
+            pass
+        return ok
 
     finally:
         try:
@@ -323,6 +355,8 @@ def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None):
                 delattr(main, name)
             except Exception:
                 setattr(main, name, False)
+        if failure and ctx is not None:
+            raise RuntimeError(failure)
 
 
 

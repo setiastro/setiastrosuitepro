@@ -164,6 +164,9 @@ ALIASES: Dict[str, str] = {
     "wsde": "wavescale_dark_enhance",
     "dark_enhancer": "wavescale_dark_enhance",
 
+    "halobgon": "halo_b_gon",
+    "halo_reduction": "halo_b_gon",
+
     "star_alignment": "star_align",
     "align_stars": "star_align",
     "align": "star_align",
@@ -263,8 +266,19 @@ register(CommandSpec(
         PresetSpec("seed_mode", "enum", default="auto",
                    enum=["auto", "manual", "none"],
                    desc="Header seed, manual RA/Dec/scale, or blind."),
-        PresetSpec("ra", "str", default="", desc="Manual RA (hours or degrees)."),
-        PresetSpec("dec", "str", default="", desc="Manual Dec."),
+        PresetSpec("ra", "str", default="",
+                   desc="Manual RA as text: '22:32:14' / '22h32m14s' (hours), "
+                        "'10.68°' / '10.68d' (degrees). A bare number <= 24 is "
+                        "read as HOURS; use ra_deg for decimal degrees."),
+        PresetSpec("ra_deg", "float", default=None,
+                   desc="Manual RA in decimal degrees (FITS RA/CRVAL1 units). "
+                        "Overrides 'ra'."),
+        PresetSpec("ra_hours", "float", default=None,
+                   desc="Manual RA in decimal hours. Overrides 'ra'."),
+        PresetSpec("dec", "str", default="",
+                   desc="Manual Dec: '+40:42:43', '+40d42m43s' or decimal degrees."),
+        PresetSpec("dec_deg", "float", default=None,
+                   desc="Manual Dec in decimal degrees. Overrides 'dec'."),
         PresetSpec("scale", "float", default=None, desc="Pixel scale in arcsec/pixel."),
         PresetSpec("radius_mode", "enum", default="auto",
                    enum=["auto", "value"], desc="ASTAP search radius mode."),
@@ -428,6 +442,31 @@ register(CommandSpec(
         "'normalize': False, 'apply_curves': True, 'curves_boost': 0.15})",
     ],
     aliases=["statistical_stretch", "statstretch"],
+))
+
+register(CommandSpec(
+    id="halo_b_gon",
+    name="Halo-B-Gon",
+    group="Stars",
+    notes=(
+        "Reduce star halos: builds a lightness mask, darkens the halo "
+        "region around stars and applies a matching curve. Same result as "
+        "the Halo-B-Gon dialog and its shortcuts."
+    ),
+    headless_method="_apply_halobgon_preset_to_doc",
+    ui_method="_open_halo_b_gon",
+    presets=[
+        PresetSpec("reduction", "int", default=0, min=0, max=3,
+                   desc="Reduction amount: 0=Extra Low, 1=Low, 2=Medium, 3=High."),
+        PresetSpec("linear", "bool", default=False,
+                   desc="True for linear (unstretched) data: works in a "
+                        "gamma domain so the mask sees the halos."),
+    ],
+    examples=[
+        "ctx.run_command('halo_b_gon', {'reduction': 1})",
+        "ctx.run_command('halo_b_gon', {'reduction': 2, 'linear': True})",
+    ],
+    aliases=["halobgon", "halo_reduction"],
 ))
 
 register(CommandSpec(

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Any
 import numpy as np
-from PyQt6.QtCore import QStandardPaths, QObject, QSettings, Qt
+from PyQt6.QtCore import QStandardPaths, QObject, QSettings, Qt, QCoreApplication
 from PyQt6.QtGui import QAction, QDesktopServices, QCursor
 from PyQt6.QtWidgets import QMessageBox
 from PyQt6.QtCore import QUrl
@@ -209,13 +209,31 @@ class ScriptContext:
         return sw.widget() if sw else None
 
     def base_document(self):
+        """Full-image document behind the active view (never an ROI preview),
+        or None when nothing is open."""
         sw = self.active_subwindow()
         if sw and hasattr(self.app, "_target_doc_from_subwindow"):
             try:
                 return self.app._target_doc_from_subwindow(sw)
             except Exception:
                 pass
-        return self.active_document(fallback_to_base=False)
+        # No active subwindow (e.g. a script launched with no view focused).
+        # Ask DocManager directly; active_document() calls back into here when
+        # running on base, so it must not be used as the fallback.
+        dm = self._docman()
+        if dm is None:
+            return None
+        try:
+            base = dm.get_focused_base_document()
+            if base is not None:
+                return base
+        except Exception:
+            pass
+        try:
+            doc = dm.get_active_document()
+        except Exception:
+            doc = None
+        return getattr(doc, "_parent_doc", None) or doc
 
     def _docman(self):
         return getattr(self.app, "doc_manager", None)
@@ -715,6 +733,88 @@ class ScriptContext:
     def get_image_by_view_name(self, name: str):
         doc = self.get_document_by_view_name(name)
         return getattr(doc, "image", None) if doc else None
+
+    def save_document(self, path: str, doc=None, *, bit_depth: str | None = None,
+                      jpeg_quality: int | None = None, export_opts: dict | None = None) -> bool:
+        """
+        Save a document exactly like File > Save As, minus the dialog: the
+        document's current header and plate solution are written, and the
+        same per-format options are accepted.
+
+        Args:
+            path: output file; the extension picks the format.
+            doc: the document to save (default: the active view's base document).
+            bit_depth: e.g. "32-bit floating point", "16-bit", "8-bit".
+                Default: the document's own depth when the format allows it.
+            jpeg_quality: 1-100, JPEG only.
+            export_opts: the Save As options dict (ICC, DPI, TIFF compression,
+                resize ...), see save_options.export_opts_from_state.
+
+        Returns:
+            True if the document now points at the new file. False if the file
+            is a lower-fidelity copy (JPEG/WebP or a lower bit depth): like
+            Save As, the open document then keeps its full-depth source.
+        """
+        dm = self._docman()
+        if dm is None:
+            raise RuntimeError("DocManager not available.")
+        if doc is None:
+            doc = self.base_document()
+        if doc is None:
+            raise RuntimeError("No document to save.")
+        doc = getattr(doc, "_parent_doc", None) or doc   # ROI preview -> its image
+        retargeted = dm.save_document(
+            doc, str(path),
+            bit_depth_override=bit_depth,
+            jpeg_quality=jpeg_quality,
+            export_opts=export_opts,
+        )
+        if retargeted is not False:
+            sw, w = self._find_subwindow_for_doc(doc)
+            if w is not None and hasattr(w, "_sync_host_title"):
+                try:
+                    w._sync_host_title()
+                except Exception:
+                    pass
+        return retargeted is not False
+
+    def close_document(self, doc=None, *, force: bool = False) -> bool:
+        """
+        Close every view of a document, which closes the document and frees
+        its memory.
+
+        Args:
+            doc: the document (default: the active view's base document).
+            force: close without asking even if it has unsaved edits. When
+                False, an edited image asks the user first, as in the GUI.
+
+        Returns:
+            True if the document is closed, False if the user kept it open.
+        """
+        dm = self._docman()
+        if doc is None:
+            doc = self.base_document()
+        if doc is None:
+            return True
+        doc = getattr(doc, "_parent_doc", None) or doc
+        prev_force = getattr(self.app, "_force_close_all", False)
+        if force:
+            self.app._force_close_all = True
+        try:
+            while True:
+                sw, _w = self._find_subwindow_for_doc(doc)
+                if sw is None:
+                    break
+                if not sw.close():
+                    return False        # the user answered "No"
+                QCoreApplication.processEvents()
+        finally:
+            if force:
+                self.app._force_close_all = prev_force
+        # A document with no view (e.g. one a script never displayed).
+        if dm is not None and doc in getattr(dm, "_docs", []):
+            dm.close_document(doc)
+        return True
 
     def open_new_document(self, img, metadata=None, name: str | None = None):
         """

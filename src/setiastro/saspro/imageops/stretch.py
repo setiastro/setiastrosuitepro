@@ -31,7 +31,8 @@ _FALLBACK_LOCK = None
 # ---- pure-numpy equivalents, used when numba is unavailable --------------
 # (bodies unchanged from the original except/fallback branch)
 def _np_mono_from_img(img, bp, denom, median_rescaled, target_median):
-    r = (img - bp) / denom
+    # r < 0 clipped to black: see the pole note in numba_utils' kernels.
+    r = np.maximum((img - bp) / denom, 0.0)
     med = float(median_rescaled)
     num = (med - 1.0) * target_median * r
     den = med * (target_median + r - 1.0) - target_median * r
@@ -40,7 +41,7 @@ def _np_mono_from_img(img, bp, denom, median_rescaled, target_median):
 
 
 def _np_color_linked_from_img(img, bp, denom, median_rescaled, target_median):
-    r = (img - bp) / denom
+    r = np.maximum((img - bp) / denom, 0.0)
     med = float(median_rescaled)
     num = (med - 1.0) * target_median * r
     den = med * (target_median + r - 1.0) - target_median * r
@@ -52,7 +53,7 @@ def _np_color_unlinked_from_img(img, bp3, denom3, meds_rescaled3, target_median)
     bp3 = np.asarray(bp3, dtype=np.float32).reshape((1, 1, 3))
     denom3 = np.asarray(denom3, dtype=np.float32).reshape((1, 1, 3))
     meds = np.asarray(meds_rescaled3, dtype=np.float32).reshape((1, 1, 3))
-    r = (img - bp3) / denom3
+    r = np.maximum((img - bp3) / denom3, 0.0)
     num = (meds - 1.0) * target_median * r
     den = meds * (target_median + r - 1.0) - target_median * r
     den = np.where(np.abs(den) < 1e-12, 1e-12, den)

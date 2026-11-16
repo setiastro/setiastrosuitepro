@@ -700,7 +700,8 @@ class MetricsPanel(QWidget):
             scat = pg.ScatterPlotItem(pen=pg.mkPen(None),
                                       brush=pg.mkBrush(100, 100, 255, 200),
                                       size=8)
-            scat.sigClicked.connect(lambda plot, pts, m=idx: self._on_point_click(m, pts))
+            scat.sigClicked.connect(
+                lambda plot, pts, ev=None, m=idx: self._on_point_click(m, pts, plot, ev))
             pw.addItem(scat)
 
             line = pg.InfiniteLine(pos=0, angle=0, movable=True,
@@ -1468,8 +1469,34 @@ class MetricsPanel(QWidget):
         """Recolor dots based on self.flags; caller should also update the window status."""
         self._refresh_scatter_colors()
 
-    def _on_point_click(self, metric_idx, points):
-        for pt in points:
+    @staticmethod
+    def _nearest_point(points, item=None, ev=None):
+        """The one dot the user clicked.
+
+        pyqtgraph's sigClicked delivers EVERY spot under the cursor, topmost
+        first. In a dense group the 8 px dots overlap, so acting on all of
+        them opened 2-3 previews per Shift-click and toggled 2-3 flags per
+        click. Pick the spot whose centre is nearest the click in screen
+        space; fall back to the topmost one.
+        """
+        pts = list(points) if points is not None else []
+        if not pts:
+            return None
+        if len(pts) == 1 or item is None or ev is None:
+            return pts[0]
+        try:
+            click = ev.scenePos()
+            def _d2(pt):
+                q = item.mapToScene(pt.pos())
+                dx, dy = q.x() - click.x(), q.y() - click.y()
+                return dx * dx + dy * dy
+            return min(pts, key=_d2)
+        except Exception:
+            return pts[0]
+
+    def _on_point_click(self, metric_idx, points, item=None, ev=None):
+        pt = self._nearest_point(points, item, ev)
+        for pt in ([pt] if pt is not None else []):
             # local index on the currently plotted subset
             li = int(round(pt.pos().x()))
 

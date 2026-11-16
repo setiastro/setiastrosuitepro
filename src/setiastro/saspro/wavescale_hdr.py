@@ -625,6 +625,8 @@ class WaveScaleHDRDialogPro(QDialog):
         self.btn_preview.setEnabled(True)
         if transformed_rgb is None:
             QMessageBox.critical(self, self.tr("WaveScale HDR"), self.tr("Processing failed."))
+            if self._headless:
+                self.reject()   # end the headless exec() loop
             return
 
         # ← NEW: combine HDR's luminance mask with the doc's active mask (if present)
@@ -665,9 +667,8 @@ class WaveScaleHDRDialogPro(QDialog):
             self._doc.set_image(out, metadata=_meta, step_name="WaveScale HDR")
         except Exception as e:
             QMessageBox.critical(self, self.tr("WaveScale HDR"), self.tr("Failed to write to document:\n{0}").format(e))
-            return
-        except Exception as e:
-            QMessageBox.critical(self, self.tr("WaveScale HDR"), self.tr("Failed to write to document:\n{0}").format(e))
+            if self._headless:
+                self.reject()   # end the headless exec() loop
             return
 
         # ── Build preset from current sliders ─────────────────────────
@@ -711,6 +712,12 @@ class WaveScaleHDRDialogPro(QDialog):
             self.applied_preset.emit(self._doc, preset)
         except Exception:
             pass
+
+        if self._headless:
+            # The headless dialog is invisible and its runner is blocked in
+            # exec(); nothing else can ever close it, so finish here.
+            self.accept()
+            return
 
         # Dialog stays open so user can apply to other images
         # Refresh document reference for next operation
