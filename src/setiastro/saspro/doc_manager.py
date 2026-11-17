@@ -4133,12 +4133,23 @@ class DocManager(QObject):
                     return None
             return None
 
+        # original_header first: it is the canonical CURRENT header. The plate
+        # solver (_post_solve_metadata_cleanup), the header editors and WCS
+        # Update all write it, while fits_header stays the header as loaded
+        # from disk. Preferring fits_header wrote that stale header: header
+        # edits and the solver's FOCALLEN were lost on every Save As, and on
+        # XISF/TIFF/PNG the solved WCS was lost too (only the FITS writer
+        # merges wcs_header back in). Only a real Header qualifies first; an
+        # XISF-dict original_header keeps the old fallback order.
         effective_header = None
-        for key in ("fits_header", "original_header", "header"):
-            val = _to_fits_header(meta.get(key))
-            if val is not None:
-                effective_header = val
-                break
+        if isinstance(meta.get("original_header"), fits.Header):
+            effective_header = meta["original_header"]
+        else:
+            for key in ("fits_header", "original_header", "header"):
+                val = _to_fits_header(meta.get(key))
+                if val is not None:
+                    effective_header = val
+                    break
 
         wcs_hdr = _to_fits_header(meta.get("wcs_header"))
 

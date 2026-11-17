@@ -406,38 +406,70 @@ def _get_manual_scale(settings) -> float | None:
     except Exception:
         return None
 
+_NUM_RE = r"(?:\d+(?:\.\d*)?|\.\d+)"
+_DEG_UNIT_RE = re.compile(r"^(" + _NUM_RE + r")\s*(?:°|d|deg|degs|degree|degrees)$", re.IGNORECASE)
+_HOUR_UNIT_RE = re.compile(r"^(" + _NUM_RE + r")\s*(?:h|hr|hrs|hour|hours)$", re.IGNORECASE)
+# Separators accepted in sexagesimal input: 22:32:14, 22 32 14, 22h32m14s,
+# 40d42m43s, 40°42'43", and the typographic prime marks.
+_SEXA_SPLIT_RE = re.compile(r"[\s:hHdDmMsS°'\"′″]+")
+
+
+def _sexagesimal_parts(s: str):
+    parts = [p for p in _SEXA_SPLIT_RE.split(s) if p]
+    if not 1 <= len(parts) <= 3:
+        return None
+    try:
+        vals = [float(p) for p in parts]
+    except ValueError:
+        return None
+    vals += [0.0] * (3 - len(vals))
+    return abs(vals[0]) + vals[1] / 60.0 + vals[2] / 3600.0
+
+
 @lru_cache(maxsize=256)
 def _parse_ra_input_to_deg(s: str) -> float | None:
-    """Parse RA input string to degrees. Cached for repeated lookups."""
+    """Parse RA input string to degrees. Cached for repeated lookups.
+
+    Accepted forms:
+      - sexagesimal hours: "22:32:14", "22 32 14", "00h42m44s"
+      - sexagesimal degrees, marked by d/° after the first field: "10d41m05s"
+      - a number with a unit: "10.68°", "10.68d", "10.68 deg", "0.712h"
+      - a bare number: degrees when > 24, otherwise hours. RA is commonly
+        typed in hours, so a bare value <= 24 can't be read as degrees;
+        add a unit ("10.68°") to say degrees.
+    """
     s = (s or "").strip()
     if not s: return None
-    # allow plain degrees if > 24 or contains "deg"
+    m = _DEG_UNIT_RE.match(s)
+    if m:
+        return float(m.group(1))
+    m = _HOUR_UNIT_RE.match(s)
+    if m:
+        return float(m.group(1)) * 15.0
     try:
-        if re.search(r"[a-zA-Z]", s) is None and ":" not in s and " " not in s:
-            x = float(s)
-            return x if x > 24.0 else x * 15.0
-    except Exception:
+        x = float(s)
+        return x if x > 24.0 else x * 15.0
+    except ValueError:
         pass
-    parts = re.split(r"[:\s]+", s)
-    try:
-        if len(parts) >= 3:
-            hh, mm, ss = float(parts[0]), float(parts[1]), float(parts[2])
-        elif len(parts) == 2:
-            hh, mm, ss = float(parts[0]), float(parts[1]), 0.0
-        else:
-            hh, mm, ss = float(parts[0]), 0.0, 0.0
-        return (abs(hh) + mm/60.0 + ss/3600.0) * 15.0
-    except Exception:
+    v = _sexagesimal_parts(s)
+    if v is None:
         return None
+    in_degrees = re.match(r"^[+-]?" + _NUM_RE + r"\s*[dD°]", s) is not None
+    return v if in_degrees else v * 15.0
 
 @lru_cache(maxsize=256)
 def _parse_dec_input_to_deg(s: str) -> float | None:
-    """Parse DEC input string to degrees. Cached for repeated lookups."""
+    """Parse DEC input string to degrees. Cached for repeated lookups.
+    Accepts "+40:42:43", "+40 42 43", "+40d42m43s", "+40°42'43\"", "40.7123",
+    "40.7123°"."""
     s = (s or "").strip()
     if not s: return None
     sign = -1.0 if s.startswith("-") else 1.0
-    s = s.lstrip("+-")
-    parts = re.split(r"[:\s]+", s)
+    s = s.lstrip("+-").strip()
+    m = _DEG_UNIT_RE.match(s)
+    if m:
+        return sign * float(m.group(1))
+    parts = [p for p in _SEXA_SPLIT_RE.split(s) if p]
     try:
         if len(parts) >= 3:
             dd, mm, ss = float(parts[0]), float(parts[1]), float(parts[2])
@@ -1269,10 +1301,21 @@ def normalize_plate_solve_preset(preset: dict | None) -> dict:
     fov_value = _opt_float(p.get("fov_value"))
     if fov_value is None:
         fov_value = 0.0
+    ra = str(p.get("ra") or "").strip()
+    ra_deg = _opt_float(p.get("ra_deg"))
+    ra_hours = _opt_float(p.get("ra_hours"))
+    if ra_deg is not None:
+        ra = f"{ra_deg:.8f}°"
+    elif ra_hours is not None:
+        ra = f"{ra_hours:.8f}h"
+    dec = str(p.get("dec") or "").strip()
+    dec_deg = _opt_float(p.get("dec_deg"))
+    if dec_deg is not None:
+        dec = f"{dec_deg:.8f}"
     return {
         "seed_mode": _choice(p.get("seed_mode"), _SEED_MODES, "auto"),
-        "ra": str(p.get("ra") or "").strip(),
-        "dec": str(p.get("dec") or "").strip(),
+        "ra": ra,
+        "dec": dec,
         "scale": _opt_float(scale),
         "radius_mode": _choice(p.get("radius_mode"), _RADIUS_MODES, "auto"),
         "radius_value": float(radius_value),
@@ -5691,6 +5734,9 @@ class PlateSolverDialog(QDialog):
         # Manual RA/Dec/Scale row
         manual_row = QHBoxLayout()
         self.le_ra = QLineEdit(seed_box);   self.le_ra.setPlaceholderText(self.tr("RA (e.g. 22:32:14 or 338.1385)"))
+        self.le_ra.setToolTip(self.tr(
+            "RA as hours (22:32:14, 22h32m14s, 22.537h) or degrees (338.1385, 10.68°).\n"
+            "A plain number of 24 or less is read as hours; add ° to mean degrees."))
         self.le_dec = QLineEdit(seed_box);  self.le_dec.setPlaceholderText(self.tr("Dec (e.g. +40:42:43 or 40.7123)"))
         self.le_scale = QLineEdit(seed_box); self.le_scale.setPlaceholderText(self.tr('Scale [" / px] (e.g. 1.46)'))
         self.btn_lookup = QPushButton(self.tr("Lookup…"), seed_box)
@@ -6178,7 +6224,8 @@ class PlateSolverDialog(QDialog):
                 chosen = results[items.index(item_str)]
 
         # ── Populate fields ───────────────────────────────────────────────────
-        self.le_ra.setText(f"{chosen['ra']:.6f}")
+        # "°" keeps RA unambiguous: a bare number <= 24 is read as hours.
+        self.le_ra.setText(f"{chosen['ra']:.6f}°")
         self.le_dec.setText(f"{chosen['dec']:.6f}")
 
         # Switch seed mode to Manual so the values are actually used

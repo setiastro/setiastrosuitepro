@@ -20,6 +20,8 @@ import math
 import re
 import json
 import tempfile
+import shutil
+import gc
 import traceback
 import warnings
 import threading as _threading
@@ -41,12 +43,13 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 
 from PyQt6.QtCore import Qt, QPoint, QEvent, QProcess, QSettings
-from PyQt6.QtGui import QImage, QPixmap, QIcon, QMovie
+from PyQt6.QtGui import QImage, QPixmap, QIcon, QMovie, QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QComboBox, QMessageBox, QCheckBox,
     QFormLayout, QScrollArea, QFileDialog, QProgressDialog, QDialogButtonBox,
-    QInputDialog, QApplication,QGroupBox,QSlider, QSpinBox, QDoubleSpinBox
+    QInputDialog, QApplication,QGroupBox,QSlider, QSpinBox, QDoubleSpinBox,
+    QWidget, QSplitter, QGridLayout, QTableWidgetItem
 )
 
 from setiastro.saspro import astroalign
@@ -57,6 +60,7 @@ from setiastro.saspro.abe import (
     _generate_sample_points as abe_generate_sample_points,
 )
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.mosaic_master_ui import coverage_polygon
 try:
     from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 except Exception:
@@ -66,6 +70,9 @@ except Exception:
 # --- interdependencies that remain in star_alignment.py ---
 from setiastro.saspro.star_alignment import qs_int, qs_float, qs_bool, ASTROMETRY_API_URL
 
+# Star refinement aims for this many stars per overlap ("Stars to detect")
+MOSAIC_STAR_TARGET = 200
+
 _AA_LOCK = _threading.Lock()
 
 def _aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
@@ -73,6 +80,7 @@ def _aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
     Retry astroalign.find_transform() with progressively stricter detection,
     serializing SEP usage via _AA_LOCK; returns (transform_obj, (src_pts, tgt_pts)).
     """
+    import sep   # was never imported here: the pixel-stack raises below silently did nothing
     tgt32 = np.ascontiguousarray(tgt_gray.astype(np.float32))
     src32 = np.ascontiguousarray(src_gray.astype(np.float32))
     try:
@@ -787,13 +795,13 @@ class MosaicSettingsDialog(QDialog):
             "placed by WCS and ignore these.")
         star_form = QFormLayout(star_box)
 
-        self.fwhmSpin = self._dspin(
-            0.0, 20.0, qs_float(self.settings, "mosaic/star_fwhm", 3.0), 0.1)
-        star_form.addRow("Star detection FWHM:", self.fwhmSpin)
-
-        self.sigmaSpin = self._dspin(
-            0.0, 10.0, qs_float(self.settings, "mosaic/star_sigma", 3.0), 0.1)
-        star_form.addRow("Star detection sigma:", self.sigmaSpin)
+        self.starTargetSpin = self._ispin(
+            20, 2000, qs_int(self.settings, "mosaic/star_target", MOSAIC_STAR_TARGET), 10)
+        self.starTargetSpin.setToolTip(
+            "Star refinement detects stars in each overlap at the highest threshold that\n"
+            "finds at least this many (100σ, 50σ, 25σ … 3σ), the same threshold on both\n"
+            "sides of the overlap. More stars: more matches, slower on rich fields.")
+        star_form.addRow("Stars to detect:", self.starTargetSpin)
 
         self.polyDegreeSpin = self._ispin(
             1, 6, qs_int(self.settings, "mosaic/poly_degree", 3))
@@ -818,15 +826,13 @@ class MosaicSettingsDialog(QDialog):
 
     def _restore_defaults(self):
         self.blendSharpSlider.setValue(20)
-        self.fwhmSpin.setValue(3.0)
-        self.sigmaSpin.setValue(3.0)
+        self.starTargetSpin.setValue(MOSAIC_STAR_TARGET)
         self.polyDegreeSpin.setValue(3)
 
     def accept(self):
         s = self.settings
         s.setValue("mosaic/blend_sharp", self.blendSharpSlider.value() / 10.0)
-        s.setValue("mosaic/star_fwhm", float(self.fwhmSpin.value()))
-        s.setValue("mosaic/star_sigma", float(self.sigmaSpin.value()))
+        s.setValue("mosaic/star_target", int(self.starTargetSpin.value()))
         s.setValue("mosaic/poly_degree", int(self.polyDegreeSpin.value()))
         s.sync()
         super().accept()
@@ -1237,6 +1243,26 @@ def _valid_data_mask(img, *, erode_px: int = 6) -> np.ndarray:
     return m
 
 
+def _footprint_trim(valid, px: int) -> np.ndarray:
+    """`valid` minus a px-wide band along its OUTSIDE edge. Holes inside
+    (bad pixels, a panel's own empty patches) are filled before the trim, so
+    they are excluded at their own pixels and never grown -- growing them is
+    what made single bad pixels into black dots (GitHub issue #138)."""
+    v = np.asarray(valid, bool)
+    if px <= 0 or not v.any():
+        return v
+    from scipy.ndimage import binary_fill_holes
+    ys, xs = np.nonzero(v)
+    y0, y1 = max(0, ys.min() - 1), min(v.shape[0], ys.max() + 2)
+    x0, x1 = max(0, xs.min() - 1), min(v.shape[1], xs.max() + 2)
+    foot = binary_fill_holes(v[y0:y1, x0:x1])
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * px + 1, 2 * px + 1))
+    out = np.zeros_like(v)
+    out[y0:y1, x0:x1] = v[y0:y1, x0:x1] & cv2.erode(
+        foot.astype(np.uint8), k, borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(bool)
+    return out
+
+
 def _valid_frac(mask) -> float:
     """Fraction of the frame that carries data, for logging."""
     try:
@@ -1546,6 +1572,348 @@ def solve_linear_match(src, ref, mask, *, fit_scale=True, pivot=None,
 
     return a_out, b_out, n_blocks
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Advanced panel matching: one joint solve over every overlap
+#
+# The default match fits each panel against the mosaic built so far, in panel
+# order, so its errors chain and depend on that order. This solves every panel
+# together from every pairwise overlap, the way surface_mosaic equalizes tiles,
+# with the deep-sky model: per panel and channel
+#
+#     out = (x - sky) * g + sky + b0 + b1*u + b2*v
+#
+# a gain about the common sky level (as solve_linear_match) plus an ADDITIVE
+# background plane in panel-centred coordinates u, v in [-1, 1]. Additive,
+# because deep-sky sky glow is additive and differs between nights and
+# altitudes (unlike solar/lunar work, where the sky is black and only a gain is
+# allowed). The reference panel is held fixed, which pins the solution.
+#
+# Guards, in the spirit of "less is more":
+#   * block means (noise averages down, structure doesn't); blocks touching a
+#     saturated star in either panel are dropped
+#   * a pair whose overlap is sky only can't tell a gain from noise: it
+#     constrains offsets and planes only (gain held at 1 for that pair)
+#   * each block's noise is sky noise plus 2% of its own signal, for weights
+#     and clipping alike: bright star/nebula blocks carry the gain, but no
+#     single one dominates and none is thrown out for a 1% difference
+#   * a slope is fitted only along an axis where the panel's overlaps bracket
+#     its centre; with an overlap on one side only it would be read off the
+#     curvature of one thin strip and extrapolated across the panel
+#   * weak priors (gain toward 1, slopes toward 0) for what the overlaps
+#     leave undetermined
+#   * iterative per-pair MAD clipping of the residuals
+#   * a gain outside 0.5-2 is REJECTED (held at 1 and re-solved), not clamped
+# ─────────────────────────────────────────────────────────────────────────────
+_ADV_BLOCK = 16
+_ADV_MAX_BLOCKS = 20000
+_ADV_SAT = 0.95          # block rejected if any channel tops this x that channel's max
+_ADV_GAIN_PRIOR = 20.0   # gain toward 1, worth this many blocks
+_ADV_SLOPE_PRIOR = 3.0   # plane slopes toward 0, worth this many blocks
+_ADV_REL_SCATTER = 0.02  # blocks also scatter by this fraction of their signal
+                         # (PSF, registration, shot noise), not just sky noise
+_ADV_GAIN_SE = 0.02      # a pair informs a gain only if it pins it this well
+
+
+def _adv_load(path, mmap=True):
+    return np.load(path, mmap_mode="r" if mmap else None)
+
+
+def _adv_pair_blocks(ri, rj):
+    """Block means of the overlap of two stored panels, where both cover the
+    block. Returns (Si, Sj, X, Y) -- Si/Sj (N, C), X/Y (N,) canvas block
+    centres -- or None when the overlap is too small."""
+    y0 = max(ri["bbox"][0], rj["bbox"][0]); y1 = min(ri["bbox"][1], rj["bbox"][1])
+    x0 = max(ri["bbox"][2], rj["bbox"][2]); x1 = min(ri["bbox"][3], rj["bbox"][3])
+    if y1 - y0 < 2 * _ADV_BLOCK or x1 - x0 < 2 * _ADV_BLOCK:
+        return None
+
+    def crop(r):
+        oy, ox = r["bbox"][0], r["bbox"][2]
+        im = _adv_load(r["img_path"]); cv = _adv_load(r["cov_path"])
+        a = np.array(im[y0 - oy:y1 - oy, x0 - ox:x1 - ox], dtype=np.float32)
+        m = np.array(cv[y0 - oy:y1 - oy, x0 - ox:x1 - ox], dtype=bool)
+        del im, cv
+        return a, m
+
+    a, ma_ = crop(ri)
+    b, mb = crop(rj)
+    m = ma_ & mb
+    n_px = int(m.sum())
+    if n_px < 8 * _ADV_BLOCK * _ADV_BLOCK:
+        return None
+    block = max(_ADV_BLOCK, int(math.ceil(math.sqrt(n_px / float(_ADV_MAX_BLOCKS)))))
+    H, W = m.shape
+    bh, bw = H // block, W // block
+    if bh < 1 or bw < 1:
+        return None
+    hh, ww = bh * block, bw * block
+    mf = m[:hh, :ww].astype(np.float32)
+    cnt = mf.reshape(bh, block, bw, block).sum(axis=(1, 3))
+    ok = cnt >= 0.9 * block * block
+    # a star clipped in ANY channel of either panel reads low there and would
+    # bias that channel's gain: drop the block (per channel, not luminance)
+    C = a.shape[2]
+    sat_i = np.resize(np.asarray(ri["sat"], np.float64).ravel(), C)
+    sat_j = np.resize(np.asarray(rj["sat"], np.float64).ravel(), C)
+    for c in range(C):
+        ca = np.where(m, a[..., c], 0.0)[:hh, :ww]
+        cb = np.where(m, b[..., c], 0.0)[:hh, :ww]
+        ok &= ca.reshape(bh, block, bw, block).max(axis=(1, 3)) < sat_i[c]
+        ok &= cb.reshape(bh, block, bw, block).max(axis=(1, 3)) < sat_j[c]
+    n = int(ok.sum())
+    if n < 32:
+        return None
+    Si = np.empty((n, C), np.float64)
+    Sj = np.empty((n, C), np.float64)
+    for c in range(C):
+        sa = (a[:hh, :ww, c] * mf).reshape(bh, block, bw, block).sum(axis=(1, 3))
+        sb = (b[:hh, :ww, c] * mf).reshape(bh, block, bw, block).sum(axis=(1, 3))
+        Si[:, c] = sa[ok] / cnt[ok]
+        Sj[:, c] = sb[ok] / cnt[ok]
+    by, bx = np.nonzero(ok)
+    X = x0 + bx * block + 0.5 * block
+    Y = y0 + by * block + 0.5 * block
+    return Si, Sj, X, Y
+
+
+def _adv_uv(rec, X, Y):
+    return (X - rec["cx"]) / rec["hx"], (Y - rec["cy"]) / rec["hy"]
+
+
+def _adv_mad(v):
+    if v.size == 0:
+        return 0.0
+    return 1.4826 * float(np.median(np.abs(v - np.median(v))))
+
+
+def _adv_solve_channel(pairs, c, pc, n, ref, iters=4, clip=3.0, gain_limits=(0.5, 2.0)):
+    """Joint least squares for one channel. Returns (n, 4): g, b0, b1, b2."""
+    free = [k for k in range(n) if k != ref]
+    col = {k: 4 * t for t, k in enumerate(free)}
+    NP = 4 * len(free)
+    out = np.zeros((n, 4)); out[:, 0] = 1.0
+    if NP == 0:
+        return out, []
+
+    k2 = _ADV_REL_SCATTER ** 2
+
+    def floor_sigma(d, x2, keep):
+        # sky-noise floor of a pair: residual scale over its fainter half
+        # (a robust scale over every block would be set by the sky alone,
+        # and bright blocks would all look like outliers)
+        kk = keep & (x2 <= np.median(x2[keep]))
+        v = d[kk] if int(kk.sum()) >= 16 else d[keep]
+        return max(_adv_mad(v), 1e-12)
+
+    rows = []
+    for pr in pairs:
+        xi = pr["Si"][:, c] - pc
+        xj = pr["Sj"][:, c] - pc
+        x2 = 0.5 * (xi * xi + xj * xj)
+        keep = np.ones(xi.size, bool)
+        sig = floor_sigma(xi - xj, x2, keep)
+        # Is the gain identifiable from this overlap? Its standard error from
+        # the blocks' signal against their noise; a sky-only overlap gives a
+        # large one. (Not a robust spread of the signal: in a mostly-sky
+        # overlap that sees only the sky and misses the stars and nebula
+        # that carry the information.)
+        info_g = float(np.sum(xi * xi / (sig * sig + k2 * x2)))
+        informative = info_g > 0 and 1.0 / math.sqrt(info_g) < _ADV_GAIN_SE
+        rows.append({"pr": pr, "xi": xi, "xj": xj, "x2": x2, "inf": bool(informative),
+                     "keep": keep, "sig": sig})
+
+    # A plane slope is fitted only along an axis where this panel's overlaps
+    # BRACKET its centre (data on both sides). With an overlap on one side
+    # only, the slope would be read off the curvature inside one thin strip
+    # and extrapolated across the whole panel; it stays flat instead.
+    side_u = {k: [0, 0] for k in free}
+    side_v = {k: [0, 0] for k in free}
+    for pr in pairs:
+        for side, uu, vv in ((pr["i"], pr["ui"], pr["vi"]), (pr["j"], pr["uj"], pr["vj"])):
+            if side == ref:
+                continue
+            side_u[side][0] += int(np.count_nonzero(uu < -0.33))
+            side_u[side][1] += int(np.count_nonzero(uu > 0.33))
+            side_v[side][0] += int(np.count_nonzero(vv < -0.33))
+            side_v[side][1] += int(np.count_nonzero(vv > 0.33))
+    free_u = {k: min(side_u[k]) >= 32 for k in free}
+    free_v = {k: min(side_v[k]) >= 32 for k in free}
+
+    fixed_gain = set()
+    theta = np.zeros(NP)
+    for _attempt in range(4):
+        for _it in range(iters):
+            A = np.zeros((NP, NP)); rhs = np.zeros(NP)
+            info = {k: [0.0, 0.0, 0] for k in free}      # sum w, sum w x^2, rows
+            for rw in rows:
+                pr = rw["pr"]
+                k = rw["keep"]
+                nk = int(k.sum())
+                if nk < 16:
+                    continue
+                # per block: sky noise plus a share of its own signal
+                w = min(1.0, 2000.0 / nk) / (rw["sig"] ** 2 + k2 * rw["x2"][k])
+                y = np.zeros(nk)
+                cols, L = [], []
+                for side, sgn, x, uu, vv in ((pr["i"], 1.0, rw["xi"][k], pr["ui"][k], pr["vi"][k]),
+                                           (pr["j"], -1.0, rw["xj"][k], pr["uj"][k], pr["vj"][k])):
+                    if side == ref:
+                        y -= sgn * x                       # g = 1, no plane
+                        continue
+                    if rw["inf"] and side not in fixed_gain:
+                        cols.append(col[side]); L.append(sgn * x)
+                    else:
+                        y -= sgn * x                       # gain held at 1 here
+                    cols += [col[side] + 1, col[side] + 2, col[side] + 3]
+                    L += [sgn * np.ones(nk), sgn * uu, sgn * vv]
+                    info[side][0] += float(np.sum(w))
+                    info[side][1] += float(np.sum(w * x * x))
+                    info[side][2] += nk
+                if not cols:
+                    continue
+                Lm = np.column_stack(L)
+                ci = np.asarray(cols)
+                A[np.ix_(ci, ci)] += Lm.T @ (w[:, None] * Lm)
+                rhs[ci] += Lm.T @ (w * y)
+            for k in free:
+                sw, swx2, nr = info[k]
+                g0 = col[k]
+                if nr == 0:                                # not connected: identity
+                    for t in range(4):
+                        A[g0 + t, g0 + t] += 1.0
+                    rhs[g0] += 1.0
+                    continue
+                mw = sw / nr
+                lam_g = max(_ADV_GAIN_PRIOR * swx2 / nr, 1e-6 * mw)
+                if k in fixed_gain:
+                    lam_g = 1e9 * (lam_g + mw)
+                A[g0, g0] += lam_g; rhs[g0] += lam_g * 1.0
+                A[g0 + 1, g0 + 1] += 1e-3 * mw
+                A[g0 + 2, g0 + 2] += (_ADV_SLOPE_PRIOR if free_u[k] else 1e9) * mw
+                A[g0 + 3, g0 + 3] += (_ADV_SLOPE_PRIOR if free_v[k] else 1e9) * mw
+            try:
+                theta = np.linalg.solve(A, rhs)
+            except np.linalg.LinAlgError:
+                theta = np.linalg.lstsq(A, rhs, rcond=None)[0]
+
+            # residuals -> per-pair scale and clipping
+            def val(side, x, uu, vv, inf):
+                if side == ref:
+                    return x
+                o = theta[col[side]:col[side] + 4]
+                g = o[0] if (inf and side not in fixed_gain) else 1.0
+                return g * x + o[1] + o[2] * uu + o[3] * vv
+            for rw in rows:
+                pr = rw["pr"]
+                d = (val(pr["i"], rw["xi"], pr["ui"], pr["vi"], rw["inf"])
+                     - val(pr["j"], rw["xj"], pr["uj"], pr["vj"], rw["inf"]))
+                kk = rw["keep"]
+                if int(kk.sum()) < 16:
+                    continue
+                med = float(np.median(d[kk]))
+                s = floor_sigma(d - med, rw["x2"], kk)
+                if not (np.isfinite(s) and s > 0):
+                    continue
+                rw["sig"] = s
+                nxt = np.abs(d - med) < clip * np.sqrt(s * s + k2 * rw["x2"])
+                if int(nxt.sum()) >= 16:
+                    rw["keep"] = nxt
+
+        lo, hi = gain_limits
+        bad = [k for k in free if k not in fixed_gain
+               and not (lo <= float(theta[col[k]]) <= hi)]
+        if not bad:
+            break
+        fixed_gain |= set(bad)
+
+    for k in free:
+        out[k] = theta[col[k]:col[k] + 4]
+        if k in fixed_gain or not np.all(np.isfinite(out[k])):
+            out[k, 0] = 1.0
+        if not np.all(np.isfinite(out[k])):
+            out[k] = (1.0, 0.0, 0.0, 0.0)
+    return out, sorted(fixed_gain)
+
+
+def solve_global_panel_match(records, pivot, *, ref=0, log=print):
+    """Gain + background plane for every stored panel from all pairwise
+    overlaps, solved jointly per channel. Returns (params (n, C, 4), n_pairs);
+    params[k, c] = (g, b0, b1, b2) for out = (x - sky)*g + sky + b0 + b1*u + b2*v."""
+    n = len(records)
+    C = int(records[0]["C"])
+    p = np.resize(np.asarray(pivot, np.float64).ravel(), C)
+    params = np.zeros((n, C, 4)); params[..., 0] = 1.0
+
+    pairs = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            r = _adv_pair_blocks(records[i], records[j])
+            if r is None:
+                continue
+            Si, Sj, X, Y = r
+            ui, vi = _adv_uv(records[i], X, Y)
+            uj, vj = _adv_uv(records[j], X, Y)
+            pairs.append({"i": i, "j": j, "Si": Si, "Sj": Sj, "X": X, "Y": Y,
+                          "ui": ui, "vi": vi, "uj": uj, "vj": vj})
+    if not pairs:
+        log("[Mosaic+] no usable overlaps between panels; nothing to solve")
+        return params, 0, []
+
+    for c in range(C):
+        res, fixed = _adv_solve_channel(pairs, c, p[c], n, ref)
+        params[:, c, :] = res
+        if fixed:
+            log(f"[Mosaic+] ch{c}: gain of panel(s) {fixed} outside 0.5-2 -- "
+                f"rejected, held at 1")
+
+    # report: overlap mismatch before / after, in the data's units
+    seams = []
+    for pr in pairs:
+        i, j = pr["i"], pr["j"]
+        before, after = [], []
+        for c in range(C):
+            xi = pr["Si"][:, c] - p[c]; xj = pr["Sj"][:, c] - p[c]
+            gi, a0, a1, a2 = params[i, c]; gj, c0, c1, c2 = params[j, c]
+            ci_ = gi * xi + a0 + a1 * pr["ui"] + a2 * pr["vi"]
+            cj_ = gj * xj + c0 + c1 * pr["uj"] + c2 * pr["vj"]
+            before.append(float(np.median(np.abs(xi - xj))))
+            after.append(float(np.median(np.abs(ci_ - cj_))))
+        log(f"[Mosaic+] overlap {records[i]['name']} / {records[j]['name']}: "
+            f"median |difference| {np.mean(before):.3g} -> {np.mean(after):.3g} "
+            f"({pr['Si'].shape[0]} blocks)")
+        try:
+            hull = cv2.convexHull(np.column_stack([pr["X"], pr["Y"]]).astype(np.float32))
+            hull = hull.reshape(-1, 2).astype(np.float64)
+        except Exception:
+            hull = None
+        seams.append({"i": i, "j": j, "poly": hull, "before": float(np.mean(before)),
+                      "after": float(np.mean(after)), "n": int(pr["Si"].shape[0])})
+    for k in range(n):
+        g = ", ".join(f"{params[k, c, 0]:.4f}" for c in range(C))
+        b = ", ".join(f"{params[k, c, 1]:+.3g}" for c in range(C))
+        t = max(float(np.max(np.abs(params[k, :, 2]))), float(np.max(np.abs(params[k, :, 3]))))
+        log(f"[Mosaic+] {records[k]['name']}: gain [{g}], offset [{b}], "
+            f"plane edge-to-centre <= {t:.3g}" + ("  (reference)" if k == ref else ""))
+    return params, len(pairs), seams
+
+
+def apply_panel_match(img, cov, rec, prm, pivot):
+    """(x - sky)*g + sky + b0 + b1*u + b2*v on a stored panel crop; 0 outside cov."""
+    out = np.array(img, dtype=np.float32, copy=True)
+    H, W, C = out.shape
+    p = np.resize(np.asarray(pivot, np.float64).ravel(), C)
+    y0, _y1, x0, _x1 = rec["bbox"]
+    U = ((np.arange(W, dtype=np.float32) + x0 + 0.5 - rec["cx"]) / rec["hx"])[None, :]
+    V = ((np.arange(H, dtype=np.float32) + y0 + 0.5 - rec["cy"]) / rec["hy"])[:, None]
+    for c in range(C):
+        g, b0, b1, b2 = (float(v) for v in prm[c])
+        pc = np.float32(p[c])
+        out[..., c] = ((out[..., c] - pc) * np.float32(g) + pc + np.float32(b0)
+                       + np.float32(b1) * U + np.float32(b2) * V)
+    out[~np.asarray(cov, bool)] = 0.0
+    return out
+
+
 class _ViewPickerDialog(QDialog):
     """Multi-select 'Add from View'. Checkable rows instead of a single-pick
     dropdown, so a whole mosaic's worth of panels goes in with one OK."""
@@ -1668,344 +2036,383 @@ class MosaicMasterDialog(QDialog):
         self.initUI()
 
     def initUI(self):
-        layout = QVBoxLayout(self)
+        """Panels on the left, the sky / result map on the right, one Build
+        button. The options read by the build are behind the _opt_* methods."""
+        from setiastro.saspro.mosaic_master_ui import PanelTable, MosaicMapWidget
+        from setiastro.saspro.ser_stacker_dialog import CollapsibleGroup
 
-        instructions = QLabel(
-            "Mosaic Master:\n"
-            "1) Add images — linear FITS with a plate solve (WCS) work best\n"
-            "2) Choose Reprojection Mode:\n"
-            "....Exact — SIP-aware remap (recommended): reprojects each panel by its\n"
-            "....   full WCS/SIP solution. Handles scale, rotation, flip, and field of\n"
-            "....   view automatically — no manual tuning.\n"
-            "....Fast — Homography: one global transform per panel. Quicker, but only\n"
-            "....   exact for SIP-free TAN panels.\n"
-            "3) Optionally crop every panel, then run SRGC after plate solving\n"
-            "4) Align & Create Mosaic\n"
-            "5) Save to New View\n"
-            "\n"
-            "Advanced: the Transformation Type below only affects the optional star\n"
-            "refinement after reprojection — leave it on Affine unless you have a reason."
-        )
-        instructions.setWordWrap(True)
-        layout.addWidget(instructions)
+        self.resize(1200, 780)
+        s = self.settings
+        root = QVBoxLayout(self)
+        split = QSplitter(Qt.Orientation.Horizontal, self)
+        split.setChildrenCollapsible(False)
+        root.addWidget(split, 1)
 
-        btn_layout = QHBoxLayout()
+        # ══ left: panels and options ═══════════════════════════════════════
+        left = QWidget(self)
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 6, 0)
 
-        add_btn = QPushButton("Add Image")
-        add_btn.clicked.connect(self.add_image)
-        btn_layout.addWidget(add_btn)
+        # What kind of mosaic: two picture cards, chosen first
+        from PyQt6.QtWidgets import QButtonGroup
+        from setiastro.saspro.mosaic_master_ui import ModeCardButton
+        from setiastro.saspro.resources import mosaic_panels_path, mosaic_robotic_path
+        self.panelsModeBtn = ModeCardButton(
+            mosaic_panels_path, "Traditional Panels", "A few plate-solved panels", self)
+        self.panelsModeBtn.setToolTip(
+            "A few finished panels, each placed on the sky by its plate solution\n"
+            "(solved when you build if needed), brightness-matched and blended.")
+        self.roboticModeBtn = ModeCardButton(
+            mosaic_robotic_path, "Robotic Mosaic", "Seestar and smart-telescope frames", self)
+        self.roboticModeBtn.setToolTip(
+            "Many short frames from a Seestar or other smart telescope (add the sub folder).\n"
+            "Every frame is plate-solved against your Gaia catalogue, seeded by the\n"
+            "pointing in its header, placed on one canvas by its own solution (so field\n"
+            "rotation doesn't matter), and the frames are averaged. Solutions are\n"
+            "cached, so a rebuild doesn't solve again.")
+        self._sourceGroup = QButtonGroup(self)
+        self._sourceGroup.setExclusive(True)
+        self._sourceGroup.addButton(self.panelsModeBtn)
+        self._sourceGroup.addButton(self.roboticModeBtn)
+        (self.roboticModeBtn if str(s.value("mosaic/panel_source", "generic")) == "seestar"
+         else self.panelsModeBtn).setChecked(True)
+        self._sourceGroup.buttonToggled.connect(
+            lambda _b, on: (self._on_source_changed(), self._mark_result_stale()) if on else None)
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        mode_row.addWidget(self.panelsModeBtn, 1)
+        mode_row.addWidget(self.roboticModeBtn, 1)
+        lv.addLayout(mode_row)
+        lv.addSpacing(4)
 
-        add_from_view_btn = QPushButton("Add from View")
-        add_from_view_btn.setToolTip("Add an image from any open View")
-        add_from_view_btn.clicked.connect(self.add_image_from_view)
-        btn_layout.addWidget(add_from_view_btn)
+        head = QHBoxLayout()
+        head.addWidget(QLabel("<b>Panels</b>"))
+        head.addStretch(1)
+        self.addFilesBtn = QPushButton("+ Files…")
+        self.addFilesBtn.setToolTip("Add panel files (FITS, XISF, TIFF, …).\n"
+                                    "You can also drop files onto the list.")
+        self.addFilesBtn.clicked.connect(self.add_image)
+        self.addFolderBtn = QPushButton("+ Folder…")
+        self.addFolderBtn.setToolTip("Add every image file in a folder (e.g. a Seestar sub-frame folder).")
+        self.addFolderBtn.clicked.connect(self.add_folder)
+        self.addViewsBtn = QPushButton("+ Views…")
+        self.addViewsBtn.setToolTip("Add images that are open in SASpro.")
+        self.addViewsBtn.clicked.connect(self.add_image_from_view)
+        self.removeBtn = QPushButton("Remove")
+        self.removeBtn.setToolTip("Remove the selected panels (Delete).")
+        self.removeBtn.clicked.connect(self.remove_selected)
+        for b in (self.addFilesBtn, self.addFolderBtn, self.addViewsBtn, self.removeBtn):
+            head.addWidget(b)
+        lv.addLayout(head)
 
-        remove_btn = QPushButton("Remove Selected")
-        remove_btn.clicked.connect(self.remove_selected)
-        btn_layout.addWidget(remove_btn)
+        self.panel_table = PanelTable(self)
+        self.panel_table.filesDropped.connect(self._add_paths)
+        self.panel_table.cellClicked.connect(self._on_panel_cell_clicked)
+        self.panel_table.cellDoubleClicked.connect(lambda _r, _c: self.preview_selected())
+        self.panel_table.itemSelectionChanged.connect(self._on_table_selection)
+        self.panel_table.setToolTip("Double-click a panel to preview it. Click the ★ column "
+                                    "to choose the reference panel.")
+        QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self.panel_table,
+                  activated=self.remove_selected)
+        lv.addWidget(self.panel_table, 1)
 
-        preview_btn = QPushButton("Preview Selected")
-        preview_btn.clicked.connect(self.preview_selected)
-        btn_layout.addWidget(preview_btn)
-
-        align_btn = QPushButton("Align and Create Mosaic")
-        align_btn.clicked.connect(self.align_images)
-        btn_layout.addWidget(align_btn)
-
-        save_btn = QPushButton("Save to New View")
-        save_btn.clicked.connect(self.save_mosaic_to_new_view)
-        btn_layout.addWidget(save_btn)
-
-        wrench_btn = QPushButton()
-        if self.wrench_path:
-            wrench_btn.setIcon(QIcon(self.wrench_path))
-        wrench_btn.setToolTip("Mosaic Settings")
-        wrench_btn.clicked.connect(self.openSettings)
-        btn_layout.addWidget(wrench_btn)
-
-        btn_layout.addWidget(make_help_button("mosaic_master", self))
-
-        layout.addLayout(btn_layout)
-
-        # ------------------------------------------------------------------
-        # Mode checkboxes (mutually exclusive: Seestar vs WCS-only)
-        # ------------------------------------------------------------------
-        checkbox_layout = QHBoxLayout()
-
-        self.forceBlindCheckBox = QCheckBox("Force Blind Solve (ignore existing WCS)")
-        self.forceBlindCheckBox.setToolTip(
-            "Solve every panel again, ignoring a WCS that is already there.\n"
-            "The in-house Gaia blind solver runs first. Astrometry.net is used\n"
-            "only when that fails."
-        )
-        checkbox_layout.addWidget(self.forceBlindCheckBox)
-
-        self.seestarCheckBox = QCheckBox("Seestar Mode")
-        self.seestarCheckBox.setToolTip(
-            "When enabled, images are aligned iteratively using astroalign without plate solving."
-        )
-        checkbox_layout.addWidget(self.seestarCheckBox)
-
-        self.wcsOnlyCheckBox = QCheckBox("Disable Star Alignment (WCS placement only)")
-        self.wcsOnlyCheckBox.setToolTip(
-            "Skips astroalign + refined alignment.\n"
-            "Panels are only reprojected into the mosaic celestial-sphere frame using WCS, then blended.\n"
-            "Useful when panels have little/no overlap but have valid WCS."
-        )
-        checkbox_layout.addWidget(self.wcsOnlyCheckBox)
-
-        layout.addLayout(checkbox_layout)
-
-        # Persisted WCS-only
-        self.wcsOnlyCheckBox.setChecked(qs_bool(self.settings, "mosaic/wcs_only", False))
+        # ── main options ───────────────────────────────────────────────────
+        og = QGridLayout()
+        og.setHorizontalSpacing(8)
+        og.setVerticalSpacing(6)
 
 
+        self.brightnessCombo = QComboBox()
+        self.brightnessCombo.addItem("Off", "off")
+        self.brightnessCombo.addItem("Standard", "standard")
+        self.brightnessCombo.addItem("Advanced — all overlaps at once", "advanced")
+        self.brightnessCombo.setToolTip(
+            "How panel brightness is matched.\n\n"
+            "Standard: each panel's sky level is matched to the reference, then each\n"
+            "panel is fitted to the mosaic built so far, one after another.\n\n"
+            "Advanced: every panel is matched from all of its overlaps at once, with a\n"
+            "gain and a smooth background tilt per panel. Errors don't chain from panel\n"
+            "to panel and different nights' gradients line up. Builds twice: slower,\n"
+            "and needs temporary disk space about the size of the panels.\n\n"
+            "Off: panels are blended as they are.")
+        _bright_default = ("advanced" if qs_bool(s, "mosaic/advanced_match", False)
+                           else "standard")
+        self._set_combo_data(self.brightnessCombo,
+                             str(s.value("mosaic/brightness", _bright_default)))
+        self.brightnessCombo.currentIndexChanged.connect(
+            lambda _i: self._persist("mosaic/brightness", self.brightnessCombo.currentData()))
 
-        # Helpers ----------------------------------------------------------
-        def _set_checked(cb: QCheckBox, checked: bool):
-            cb.blockSignals(True)
-            cb.setChecked(checked)
-            cb.blockSignals(False)
+        self.reprojectModeCombo = QComboBox()
+        self.reprojectModeCombo.addItems([
+            "Exact — SIP-aware remap (recommended)",
+            "Fast — Homography (Global H)",
+        ])
+        self.reprojectModeCombo.setToolTip(
+            "How each panel is warped onto the mosaic's sky grid.\n\n"
+            "Exact: per-pixel inverse WCS, honours SIP distortion, Lanczos resampling.\n"
+            "Fast: one projective transform per panel; exact only without SIP, and\n"
+            "with SIP it can double stars near the edges.")
+        _mode = s.value("mosaic/reproject_mode", "Exact — SIP-aware remap (recommended)", type=str)
+        if self.reprojectModeCombo.findText(_mode) < 0:
+            _mode = "Exact — SIP-aware remap (recommended)"
+        self.reprojectModeCombo.setCurrentText(_mode)
+        self.reprojectModeCombo.currentTextChanged.connect(self._on_reproject_mode_changed)
 
-        def _sync_wcs_only_ui():
-            # WCS-only disables transform selection (because refinement is unused)
-            wcs_only = self.wcsOnlyCheckBox.isChecked()
-            if hasattr(self, "transform_combo"):
-                self.transform_combo.setEnabled(not wcs_only)
-                self.transform_combo.setToolTip(
-                    "" if not wcs_only else "Disabled because WCS-only placement is enabled."
-                )
+        self.starRefineCombo = QComboBox()
+        self.starRefineCombo.addItem("Affine (recommended)", "Affine Transform")
+        self.starRefineCombo.addItem("Off — WCS placement only", "off")
+        self.starRefineCombo.addItem("Partial affine", "Partial Affine Transform")
+        self.starRefineCombo.addItem("Homography", "Homography Transform")
+        self.starRefineCombo.addItem("Polynomial warp", "Polynomial Warp Based Transform")
+        self.starRefineCombo.setToolTip(
+            "After a panel is placed by its plate solution, its stars can be matched\n"
+            "to the mosaic in the overlap for a final correction.\n\n"
+            "Panels with SIP distortion are always placed by WCS alone: their\n"
+            "plate solution is more accurate than one global star fit.\n"
+            "Off: every panel by WCS alone (use when overlaps are small).")
+        _refine_default = "off" if qs_bool(s, "mosaic/wcs_only", False) else "Affine Transform"
+        self._set_combo_data(self.starRefineCombo,
+                             str(s.value("mosaic/star_refine", _refine_default)))
+        self.starRefineCombo.activated.connect(
+            lambda _i: setattr(self, "_starrefine_user_touched", True))
+        self.starRefineCombo.currentIndexChanged.connect(
+            lambda _i: self._persist("mosaic/star_refine", self.starRefineCombo.currentData()))
 
-        def _on_seestar_changed(state: int):
-            # If Seestar is turned ON, force WCS-only OFF
-            if self.seestarCheckBox.isChecked():
-                _set_checked(self.wcsOnlyCheckBox, False)
-            _sync_wcs_only_ui()
+        self.blendSharpSlider = QSlider(Qt.Orientation.Horizontal)
+        self.blendSharpSlider.setRange(10, 60)          # value / 10 -> 1.0 .. 6.0
+        self.blendSharpSlider.setValue(int(round(qs_float(s, "mosaic/blend_sharp", 2.0) * 10)))
+        self.blendSharpSlider.setToolTip(
+            "How sharply panels hand off across a seam.\n"
+            "Soft: wide, gradual blend; hides small brightness differences, but needs\n"
+            "good registration or stars can ghost.\n"
+            "Sharp: tight crossover near the middle of the overlap; safest when panels\n"
+            "disagree slightly, at the cost of a visible step.")
+        self.blendSharpValue = QLabel(f"{self.blendSharpSlider.value() / 10:.1f}")
+        self.blendSharpValue.setMinimumWidth(26)
+        self.blendSharpSlider.valueChanged.connect(self._on_blend_changed)
+        seam_row = QHBoxLayout()
+        seam_row.addWidget(QLabel("soft"))
+        seam_row.addWidget(self.blendSharpSlider, 1)
+        seam_row.addWidget(QLabel("sharp"))
+        seam_row.addSpacing(6)
+        seam_row.addWidget(self.blendSharpValue)
 
-        def _on_wcs_only_changed(state: int):
-            # Persist setting first (this one is user-visible preference)
-            self.settings.setValue("mosaic/wcs_only", self.wcsOnlyCheckBox.isChecked())
-            self.settings.sync()
+        def _lab(text, tip):
+            lb = QLabel(text)
+            lb.setToolTip(tip)
+            return lb
+        og.addWidget(_lab("Brightness", self.brightnessCombo.toolTip()), 0, 0)
+        og.addWidget(self.brightnessCombo, 0, 1)
+        og.addWidget(_lab("Seams", self.blendSharpSlider.toolTip()), 0, 2)
+        og.addLayout(seam_row, 0, 3)
+        self.reprojectModeLabel = _lab("Placement", self.reprojectModeCombo.toolTip())
+        og.addWidget(self.reprojectModeLabel, 1, 0)
+        og.addWidget(self.reprojectModeCombo, 1, 1)
+        self.starRefineLabel = _lab("Star refine", self.starRefineCombo.toolTip())
+        og.addWidget(self.starRefineLabel, 1, 2)
+        og.addWidget(self.starRefineCombo, 1, 3)
+        self.seestarRejectCheck = QCheckBox("Reject satellites and other outliers")
+        self.seestarRejectCheck.setToolTip(
+            "Keeps each spot's three brightest and one faintest samples aside while the\n"
+            "frames are stacked, then tests them against the other frames at that spot\n"
+            "and takes out the ones that don't belong (satellite and aircraft trails,\n"
+            "hot pixels, cosmic rays). Ordinary samples are never trimmed. Needs at least\n"
+            "4 frames over a spot; costs almost no extra time.")
+        self.seestarRejectCheck.setChecked(qs_bool(s, "mosaic/seestar_reject", True))
+        self.seestarRejectCheck.toggled.connect(
+            lambda on: self._persist("mosaic/seestar_reject", bool(on)))
+        og.addWidget(self.seestarRejectCheck, 2, 0, 1, 4)
+        og.setColumnStretch(1, 1)
+        og.setColumnStretch(3, 1)
+        lv.addLayout(og)
 
-            # If WCS-only is turned ON, force Seestar OFF
-            if self.wcsOnlyCheckBox.isChecked():
-                _set_checked(self.seestarCheckBox, False)
-            _sync_wcs_only_ui()
+        self.optHint = QLabel("")
+        self.optHint.setWordWrap(True)
+        self.optHint.setStyleSheet("color: #9aa0aa;")
+        lv.addWidget(self.optHint)
 
-        # Wire handlers (NO lambdas, no duplicates)
-        self.seestarCheckBox.stateChanged.connect(_on_seestar_changed)
-        self.wcsOnlyCheckBox.stateChanged.connect(_on_wcs_only_changed)
+        # ── Preparation (collapsed) ────────────────────────────────────────
+        self._prepGroup = CollapsibleGroup("Preparation — crop, colour, plate solving",
+                                           self, collapsed=True)
+        pf = self._prepGroup.content_layout()
 
-        # ------------------------------------------------------------------
-        # Pre-process: same crop on every panel, then (after plate solving)
-        # optional SRGC. Both are off unless the user checks them.
-        # ------------------------------------------------------------------
-        self.cropEachCheckBox = QCheckBox("Crop each image")
+        self.cropEachCheckBox = QCheckBox("Crop every panel")
         self.cropEachCheckBox.setToolTip(
             "Cut the same pixel margins off every panel before anything else.\n"
-            "An existing plate solution is shifted with the crop, so it stays valid.\n"
-            "Runs first, then plate solving, then SRGC if that box is checked."
-        )
-        self.cropEachCheckBox.setChecked(qs_bool(self.settings, "mosaic/crop_each", False))
-        layout.addWidget(self.cropEachCheckBox)
+            "An existing plate solution is shifted with the crop, so it stays valid.")
+        self.cropEachCheckBox.setChecked(qs_bool(s, "mosaic/crop_each", False))
 
-        crop_row = QHBoxLayout()
-        crop_row.setContentsMargins(22, 0, 0, 0)
-
-        def _margin_spin(key):
+        def _margin_spin(key, tip):
             sb = QSpinBox()
             sb.setRange(0, 100000)
             sb.setSuffix(" px")
-            sb.setValue(qs_int(self.settings, key, 0))
+            sb.setValue(qs_int(s, key, 0))
             sb.setKeyboardTracking(False)
             sb.setMaximumWidth(90)
+            sb.setToolTip(tip)
             return sb
+        self.cropLeftSpin = _margin_spin("mosaic/crop_left", "Pixels removed from the left edge of every panel.")
+        self.cropRightSpin = _margin_spin("mosaic/crop_right", "Pixels removed from the right edge of every panel.")
+        self.cropTopSpin = _margin_spin("mosaic/crop_top", "Pixels removed from the top edge of every panel.")
+        self.cropBottomSpin = _margin_spin("mosaic/crop_bottom", "Pixels removed from the bottom edge of every panel.")
+        crop_w = QWidget()
+        cr = QHBoxLayout(crop_w)
+        cr.setContentsMargins(0, 0, 0, 0)
+        cr.addWidget(self.cropEachCheckBox)
+        for lab, sp in (("L", self.cropLeftSpin), ("R", self.cropRightSpin),
+                        ("T", self.cropTopSpin), ("B", self.cropBottomSpin)):
+            cr.addWidget(QLabel(lab))
+            cr.addWidget(sp)
+        cr.addStretch(1)
+        pf.addRow(crop_w)
 
-        self.cropLeftSpin = _margin_spin("mosaic/crop_left")
-        self.cropRightSpin = _margin_spin("mosaic/crop_right")
-        self.cropTopSpin = _margin_spin("mosaic/crop_top")
-        self.cropBottomSpin = _margin_spin("mosaic/crop_bottom")
-        for spin, tip in (
-            (self.cropLeftSpin, "Pixels removed from the left edge of every panel."),
-            (self.cropRightSpin, "Pixels removed from the right edge of every panel."),
-            (self.cropTopSpin, "Pixels removed from the top edge of every panel."),
-            (self.cropBottomSpin, "Pixels removed from the bottom edge of every panel."),
-        ):
-            spin.setToolTip(tip)
+        def _persist_crop():
+            self._persist("mosaic/crop_each", self.cropEachCheckBox.isChecked())
+            for key, sp in (("mosaic/crop_left", self.cropLeftSpin), ("mosaic/crop_right", self.cropRightSpin),
+                            ("mosaic/crop_top", self.cropTopSpin), ("mosaic/crop_bottom", self.cropBottomSpin)):
+                self._persist(key, int(sp.value()))
 
-        for label, spin in (
-            ("Left", self.cropLeftSpin),
-            ("Right", self.cropRightSpin),
-            ("Top", self.cropTopSpin),
-            ("Bottom", self.cropBottomSpin),
-        ):
-            crop_row.addWidget(QLabel(label))
-            crop_row.addWidget(spin)
-        crop_row.addStretch(1)
-        layout.addLayout(crop_row)
+        def _sync_crop(on):
+            for sp in (self.cropLeftSpin, self.cropRightSpin, self.cropTopSpin, self.cropBottomSpin):
+                sp.setEnabled(bool(on))
+            _persist_crop()
+        self.cropEachCheckBox.toggled.connect(_sync_crop)
+        for sp in (self.cropLeftSpin, self.cropRightSpin, self.cropTopSpin, self.cropBottomSpin):
+            sp.valueChanged.connect(lambda _v: _persist_crop())
+        _sync_crop(self.cropEachCheckBox.isChecked())
 
-        def _persist_crop_settings():
-            s = self.settings
-            s.setValue("mosaic/crop_each", self.cropEachCheckBox.isChecked())
-            s.setValue("mosaic/crop_left", int(self.cropLeftSpin.value()))
-            s.setValue("mosaic/crop_right", int(self.cropRightSpin.value()))
-            s.setValue("mosaic/crop_top", int(self.cropTopSpin.value()))
-            s.setValue("mosaic/crop_bottom", int(self.cropBottomSpin.value()))
-            s.sync()
-
-        def _sync_crop_enabled(on):
-            for sb in (self.cropLeftSpin, self.cropRightSpin,
-                       self.cropTopSpin, self.cropBottomSpin):
-                sb.setEnabled(bool(on))
-            _persist_crop_settings()
-
-        self.cropEachCheckBox.toggled.connect(_sync_crop_enabled)
-        for sb in (self.cropLeftSpin, self.cropRightSpin,
-                   self.cropTopSpin, self.cropBottomSpin):
-            sb.valueChanged.connect(lambda _v: _persist_crop_settings())
-        _sync_crop_enabled(self.cropEachCheckBox.isChecked())
-
-        # Prefer the new key; an older mosaic/adbe_each preference still turns
-        # background correction on, so people who already used that path keep it.
-        _srgc_default = qs_bool(
-            self.settings, "mosaic/srgc_each",
-            qs_bool(self.settings, "mosaic/adbe_each", False),
-        )
-        self.srgcEachCheckBox = QCheckBox("Run SRGC on each image")
+        self.srgcEachCheckBox = QCheckBox("Survey colour/gradient correction (SRGC)")
         self.srgcEachCheckBox.setToolTip(
             "Survey Reference Gradient Correction on every panel after it is\n"
             "plate-solved. Fetches a public survey cutout for that field and\n"
             "subtracts only the additive gradient the survey does not explain.\n"
-            "Needs a network connection and a usable WCS on each panel."
-        )
-        self.srgcEachCheckBox.setChecked(_srgc_default)
-        layout.addWidget(self.srgcEachCheckBox)
-
-        srgc_row = QHBoxLayout()
-        srgc_row.setContentsMargins(22, 0, 0, 0)
-        srgc_row.addWidget(QLabel("Survey:"))
+            "Needs a network connection and a plate solution on each panel.")
+        self.srgcEachCheckBox.setChecked(
+            qs_bool(s, "mosaic/srgc_each", qs_bool(s, "mosaic/adbe_each", False)))
         self.srgcSurveyCombo = QComboBox()
-        self.srgcSurveyCombo.setMinimumWidth(280)
         try:
             from setiastro.saspro.survey_gradient import SURVEYS, DEFAULT_SURVEY
             for name in SURVEYS:
                 self.srgcSurveyCombo.addItem(name)
-            preferred = str(self.settings.value(
-                "mosaic/srgc_survey",
-                self.settings.value("srgc/survey", DEFAULT_SURVEY),
-            ) or DEFAULT_SURVEY)
+            preferred = str(s.value("mosaic/srgc_survey",
+                                    s.value("srgc/survey", DEFAULT_SURVEY)) or DEFAULT_SURVEY)
             idx = self.srgcSurveyCombo.findText(preferred)
             self.srgcSurveyCombo.setCurrentIndex(idx if idx >= 0 else 0)
         except Exception as e:
             self.srgcSurveyCombo.addItem("DSS2 colour (red / synth / blue) — all sky")
             print(f"[Mosaic] SRGC survey list unavailable: {e}")
-        self.srgcSurveyCombo.setToolTip(
-            "Which public survey feeds the reference for every panel.\n"
-            "DSS2 colour is all-sky. NSNS options are northern only."
-        )
+        self.srgcSurveyCombo.setToolTip("Which public survey feeds the reference.\n"
+                                        "DSS2 colour is all-sky. NSNS options are northern only.")
         self.srgcSurveyCombo.currentTextChanged.connect(
-            lambda name: (self.settings.setValue("mosaic/srgc_survey", str(name)),
-                          self.settings.sync()))
-        srgc_row.addWidget(self.srgcSurveyCombo, 1)
-        layout.addLayout(srgc_row)
+            lambda name: self._persist("mosaic/srgc_survey", str(name)))
 
-        def _sync_srgc_enabled(on):
+        def _sync_srgc(on):
             self.srgcSurveyCombo.setEnabled(bool(on))
-            self.settings.setValue("mosaic/srgc_each", bool(on))
-            self.settings.sync()
+            self._persist("mosaic/srgc_each", bool(on))
+        self.srgcEachCheckBox.toggled.connect(_sync_srgc)
+        _sync_srgc(self.srgcEachCheckBox.isChecked())
+        srgc_w = QWidget()
+        sr = QHBoxLayout(srgc_w)
+        sr.setContentsMargins(0, 0, 0, 0)
+        sr.addWidget(self.srgcEachCheckBox)
+        sr.addWidget(self.srgcSurveyCombo, 1)
+        pf.addRow(srgc_w)
 
-        self.srgcEachCheckBox.toggled.connect(_sync_srgc_enabled)
-        _sync_srgc_enabled(self.srgcEachCheckBox.isChecked())
+        self.forceBlindCheckBox = QCheckBox("Re-solve every panel (ignore existing plate solutions)")
+        self.forceBlindCheckBox.setToolTip(
+            "Solve every panel again, ignoring a plate solution that is already there.\n"
+            "The in-house Gaia blind solver runs first; Astrometry.net only if it fails.")
+        self.forceBlindCheckBox.toggled.connect(lambda _on: self._refresh_panels())
+        pf.addRow(self.forceBlindCheckBox)
+        lv.addWidget(self._prepGroup)
 
-        # ------------------------------------------------------------------
-        # Other controls
-        # ------------------------------------------------------------------
-        self.normalizeCheckBox = QCheckBox("Normalize images (median match)")
-        self.normalizeCheckBox.setChecked(True)
-        layout.addWidget(self.normalizeCheckBox)
+        # ── Star alignment details (collapsed) ─────────────────────────────
+        self._starGroup = CollapsibleGroup("Star alignment details", self, collapsed=True)
+        sf = self._starGroup.content_layout()
+        self.starTargetSpin = QSpinBox(); self.starTargetSpin.setRange(20, 2000)
+        self.starTargetSpin.setSingleStep(10)
+        self.starTargetSpin.setValue(qs_int(s, "mosaic/star_target", MOSAIC_STAR_TARGET))
+        self.starTargetSpin.setToolTip(
+            "Star refinement detects stars in each overlap at the highest threshold that\n"
+            "finds at least this many (100σ, 50σ, 25σ … 3σ), the same threshold on both\n"
+            "sides of the overlap. More stars: more matches, slower on rich fields.")
+        self.polyDegreeSpin = QSpinBox(); self.polyDegreeSpin.setRange(1, 6)
+        self.polyDegreeSpin.setValue(qs_int(s, "mosaic/poly_degree", 3))
+        self.polyDegreeSpin.setToolTip("Degree of the polynomial-warp refinement (Star refine: Polynomial warp).")
+        for sp, key in ((self.starTargetSpin, "mosaic/star_target"),
+                        (self.polyDegreeSpin, "mosaic/poly_degree")):
+            sp.setKeyboardTracking(False)
+            sp.valueChanged.connect(lambda v, k=key: self._persist(k, v))
+        sf.addRow("Stars to detect:", self.starTargetSpin)
+        sf.addRow("Polynomial degree:", self.polyDegreeSpin)
+        self._starGroup.setToolTip("Used only for Traditional Panels refined on stars (Star refine),\n"
+                                   "for panels without SIP distortion.")
+        lv.addWidget(self._starGroup)
 
-        self.autostretchPreviewCheck = QCheckBox("Autostretch previews only")
-        self.autostretchPreviewCheck.setToolTip("Only stretch display previews; keep data linear for processing.")
-        self.autostretchPreviewCheck.setChecked(True)
-        layout.addWidget(self.autostretchPreviewCheck)
-
+        # ── Output (collapsed) ─────────────────────────────────────────────
+        self._outGroup = CollapsibleGroup("Output", self, collapsed=True)
+        of = self._outGroup.content_layout()
         self.gaiaSolveCheckBox = QCheckBox("Plate solve the finished mosaic (in-house Gaia DR3)")
         self.gaiaSolveCheckBox.setToolTip(
-            "After blending, re-solve the output canvas against the local Gaia DR3\n"
-            "catalogue and attach that solution instead of the geometric one.\n\n"
-            "The geometric WCS is exact for the projection, but it inherits the\n"
-            "reference panel's pointing — including that panel's own fit error —\n"
-            "and every other panel was placed relative to it. A fit against the\n"
-            "whole canvas uses stars from every panel at once, so the result is\n"
-            "tied to the catalogue rather than to one tile, and it carries real\n"
-            "RMS/residual statistics.\n\n"
-            "Falls back to the geometric solution if the solve fails.")
-        self.gaiaSolveCheckBox.setChecked(
-            qs_bool(self.settings, "mosaic/gaia_solve_final", True))
+            "Re-solve the finished mosaic against the local Gaia DR3 catalogue and\n"
+            "attach that solution, tied to stars from every panel, instead of the\n"
+            "reference panel's. Falls back to the geometric solution if it fails.")
+        self.gaiaSolveCheckBox.setChecked(qs_bool(s, "mosaic/gaia_solve_final", True))
         self.gaiaSolveCheckBox.toggled.connect(
-            lambda on: (self.settings.setValue("mosaic/gaia_solve_final", bool(on)),
-                        self.settings.sync()))
-        layout.addWidget(self.gaiaSolveCheckBox)
+            lambda on: self._persist("mosaic/gaia_solve_final", bool(on)))
+        of.addRow(self.gaiaSolveCheckBox)
+        self.autostretchPreviewCheck = QCheckBox("Auto-stretch the full preview (data stays linear)")
+        self.autostretchPreviewCheck.setChecked(qs_bool(s, "mosaic/autostretch_preview", True))
+        self.autostretchPreviewCheck.toggled.connect(
+            lambda on: self._persist("mosaic/autostretch_preview", bool(on)))
+        of.addRow(self.autostretchPreviewCheck)
+        lv.addWidget(self._outGroup)
+        split.addWidget(left)
 
-        # Reprojection mode (persisted)
-        self.reprojectModeLabel = QLabel("Reprojection mode:")
-        self.reprojectModeCombo = QComboBox()
-        self.reprojectModeCombo.addItems([
-            "Exact — SIP-aware remap (recommended)",    # default
-            "Fast — Homography (Global H)",
-        ])
-        self.reprojectModeCombo.setToolTip(
-            "Exact — SIP-aware remap: per-pixel inverse WCS (tiled), honors SIP,\n"
-            "footprint-limited with round-trip validation. Lanczos4 resampling.\n\n"
-            "Fast — Homography: one global 3x3 per panel. Exact only for SIP-free\n"
-            "TAN panels; with SIP present it can double stars near the edges."
-        )
+        # ══ right: sky map / result ═══════════════════════════════════════
+        right = QWidget(self)
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(6, 0, 0, 0)
+        top = QHBoxLayout()
+        self.mapTitle = QLabel("<b>Sky map</b>")
+        top.addWidget(self.mapTitle)
+        top.addStretch(1)
+        self.overlayCheck = QCheckBox("Panel map")
+        self.overlayCheck.setChecked(True)
+        self.overlayCheck.setToolTip("Show each panel's outline, gain and seam quality on the mosaic.")
+        self.overlayCheck.hide()
+        top.addWidget(self.overlayCheck)
+        self.mapToggleBtn = QPushButton("Sky map")
+        self.mapToggleBtn.setToolTip("Switch between the finished mosaic and the panels' sky map.")
+        self.mapToggleBtn.hide()
+        self.mapToggleBtn.clicked.connect(self._toggle_map_mode)
+        top.addWidget(self.mapToggleBtn)
+        self.fullPreviewBtn = QPushButton("Full Preview…")
+        self.fullPreviewBtn.setToolTip("Open the finished mosaic in a zoomable window.")
+        self.fullPreviewBtn.clicked.connect(self._open_full_preview)
+        self.fullPreviewBtn.hide()
+        top.addWidget(self.fullPreviewBtn)
+        rv.addLayout(top)
 
-        _default_mode = self.settings.value(
-            "mosaic/reproject_mode", "Exact — SIP-aware remap (recommended)", type=str)
+        self.map = MosaicMapWidget(self)
+        self.map.panelClicked.connect(self._select_panel_row)
+        self.map.resultActivated.connect(self._open_full_preview)
+        self.overlayCheck.toggled.connect(self.map.set_overlay_visible)
+        rv.addWidget(self.map, 1)
+        split.addWidget(right)
+        split.setStretchFactor(0, 5)
+        split.setStretchFactor(1, 6)
+        split.setSizes([540, 640])
 
-        valid_modes = [self.reprojectModeCombo.itemText(i) for i in range(self.reprojectModeCombo.count())]
-        if _default_mode not in valid_modes:
-            # Covers the old labels, including the removed "Precise — Full WCS".
-            _default_mode = "Exact — SIP-aware remap (recommended)"
-        self.reprojectModeCombo.setCurrentText(_default_mode)
-        self.reprojectModeCombo.currentTextChanged.connect(self._on_reproject_mode_changed)
-
-        self.settings.sync()
-
-        row = QHBoxLayout()
-        row.addWidget(self.reprojectModeLabel)
-        row.addWidget(self.reprojectModeCombo, 1)
-        layout.addLayout(row)
-
-        # Transform selection
-        self.transform_combo = QComboBox()
-        self.transform_combo.addItems([
-            "Partial Affine Transform",
-            "Affine Transform",
-            "Homography Transform",
-            "Polynomial Warp Based Transform"
-        ])
-        self.transform_combo.setCurrentIndex(1)
-        layout.addWidget(QLabel("Select Transformation Method:"))
-        layout.addWidget(self.transform_combo)
-
-        # Now that transform_combo exists, apply WCS-only UI state
-        _sync_wcs_only_ui()
-
-        # List + status + spinner
-        self.images_list = QListWidget()
-        self.images_list.setSelectionMode(self.images_list.SelectionMode.SingleSelection)
-        layout.addWidget(self.images_list)
-
-        self.status_label = QLabel("Status: no images")
+        # ══ bottom bar ════════════════════════════════════════════════════
+        bar = QHBoxLayout()
+        bar.addWidget(make_help_button("mosaic_master", self))
+        self.status_label = QLabel("Add panels to begin.")
         # plate_solver's _set_status_ui looks for a child QLabel with exactly
-        # this objectName; without it, it cannot find anywhere to put the
-        # solver's progress text and opens a free-floating "Plate Solving"
-        # popup instead. Naming it routes the Gaia solve's status into this
-        # dialog's own status line, where it belongs.
+        # this objectName to route the solver's progress into this window.
         self.status_label.setObjectName("status_label")
-        layout.addWidget(self.status_label)
+        self.status_label.setWordWrap(True)
+        bar.addWidget(self.status_label, 1)
 
         self.spinnerLabel = QLabel(self)
         self.spinnerLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2013,10 +2420,1114 @@ class MosaicMasterDialog(QDialog):
         if self.spinnerMovie:
             self.spinnerLabel.setMovie(self.spinnerMovie)
         self.spinnerLabel.hide()
-        layout.addWidget(self.spinnerLabel)
-        self.wcsOnlyCheckBox.clicked.connect(
-            lambda *_: setattr(self, "_wcsonly_user_touched", True))
-        self.setLayout(layout)
+        bar.addWidget(self.spinnerLabel)
+
+        # The next step is the coloured button: Build until there is a mosaic,
+        # then Push to New View (green); Build turns plain and says Rebuild, and
+        # turns blue again once the panels or the mode change.
+        self.openViewBtn = QPushButton("Push to New View  ⇪")
+        self.openViewBtn.setMinimumHeight(34)
+        self.openViewBtn.setMinimumWidth(170)
+        self.openViewBtn.setToolTip("Open the finished mosaic in SASpro as a new image\n"
+                                    "(linear, with its plate solution). This window stays open.")
+        self.openViewBtn.clicked.connect(self._open_result_as_view)
+        bar.addWidget(self.openViewBtn)
+        self.buildBtn = QPushButton("Build Mosaic  ▶")
+        self.buildBtn.setMinimumHeight(34)
+        self.buildBtn.setMinimumWidth(170)
+        self.buildBtn.setToolTip("Solve any panel without a plate solution, then place,\n"
+                                 "match and blend all panels into the mosaic.")
+        self.buildBtn.clicked.connect(self._on_build)
+        bar.addWidget(self.buildBtn)
+        root.addLayout(bar)
+
+        self._result_display = None
+        self._result_stale = False
+        self._on_source_changed()
+        self._refresh_panels()
+        self._update_action_buttons()
+
+    # ── options read by the build ─────────────────────────────────────────
+    def _opt_seestar(self) -> bool:
+        return getattr(self, "roboticModeBtn", None) is not None and \
+            self.roboticModeBtn.isChecked()
+
+    def _source_mode(self) -> str:
+        """'seestar' (Robotic Mosaic card) or 'generic' (Traditional Panels)."""
+        return "seestar" if self._opt_seestar() else "generic"
+
+    def _set_source_mode(self, mode: str):
+        (self.roboticModeBtn if mode == "seestar" else self.panelsModeBtn).setChecked(True)
+
+    def _opt_normalize(self) -> bool:
+        return self.brightnessCombo.currentData() != "off"
+
+    def _opt_advanced(self) -> bool:
+        return self.brightnessCombo.currentData() == "advanced"
+
+    def _opt_wcs_only(self) -> bool:
+        return self.starRefineCombo.currentData() == "off"
+
+    def _opt_transform(self) -> str:
+        d = self.starRefineCombo.currentData()
+        return "Affine Transform" if d in (None, "off") else str(d)
+
+    # ── small UI helpers ──────────────────────────────────────────────────
+    def _persist(self, key, value):
+        self.settings.setValue(key, value)
+        self.settings.sync()
+
+    @staticmethod
+    def _set_combo_data(combo, data):
+        i = combo.findData(data)
+        combo.setCurrentIndex(i if i >= 0 else 0)
+
+    def _on_blend_changed(self, v):
+        self.blendSharpValue.setText(f"{v / 10:.1f}")
+        self._persist("mosaic/blend_sharp", v / 10.0)
+
+    def _on_source_changed(self, *_):
+        seestar = self._opt_seestar()
+        self._persist("mosaic/panel_source", self._source_mode())
+        tip = ("Not used for Seestar frames: each is placed by its own plate solution "
+               "and the frames are averaged.")
+        for w in (self.reprojectModeCombo, self.reprojectModeLabel,
+                  self.starRefineCombo, self.starRefineLabel, self.brightnessCombo,
+                  self.blendSharpSlider):
+            w.setEnabled(not seestar)
+        if getattr(self, "seestarRejectCheck", None) is not None:
+            self.seestarRejectCheck.setVisible(seestar)
+        if getattr(self, "_starGroup", None) is not None:
+            self._starGroup.setEnabled(not seestar)
+        self.reprojectModeCombo.setToolTip(tip if seestar else self.reprojectModeLabel.toolTip())
+        if getattr(self, "panel_table", None) is not None:
+            self.panel_table.placeholder = (
+                "Drop Seestar / smart-telescope frames here\nor use + Folder for the sub folder\n\n"
+                "Every frame is plate-solved and placed on the sky." if seestar else
+                "Drop panel files here\nor use + Files / + Views\n\n"
+                "Linear, plate-solved panels work best.")
+            self.panel_table.viewport().update()
+        if getattr(self, "map", None) is not None:
+            self.map.empty_text = ("Frames appear here as footprints on the sky,\n"
+                                   "from the pointing in their headers." if seestar else None)
+            self.map.update()
+        if getattr(self, "panel_table", None) is not None:
+            self._refresh_panels()
+
+    _BTN_BUILD = ("QPushButton { background: #2f6fd6; color: white; font-weight: bold;"
+                  " padding: 6px 20px; border-radius: 4px; }"
+                  "QPushButton:hover { background: #3b7ce6; }"
+                  "QPushButton:disabled { background: #44484f; color: #9a9a9a; }")
+    _BTN_PUSH = ("QPushButton { background: #23934f; color: white; font-weight: bold;"
+                 " padding: 6px 20px; border-radius: 4px; }"
+                 "QPushButton:hover { background: #2aa95c; }"
+                 "QPushButton:disabled { background: #44484f; color: #9a9a9a; }")
+    _BTN_PLAIN = "QPushButton { padding: 6px 20px; }"
+
+    def _has_result(self) -> bool:
+        return (getattr(self, "final_mosaic", None) is not None
+                and getattr(self, "_result_display", None) is not None)
+
+    def _mark_result_stale(self):
+        """The panels or the mode changed since the mosaic was built: Build
+        is the next step again (the old mosaic can still be pushed)."""
+        self._result_stale = True
+        self._update_action_buttons()
+
+    def _update_action_buttons(self):
+        """Colour the button for the next step: Build Mosaic (blue) until
+        there is a mosaic, then Push to New View (green), with Build plain
+        and reading Rebuild."""
+        if getattr(self, "openViewBtn", None) is None:
+            return
+        building = bool(getattr(self, "_building", False))
+        has = self._has_result()
+        self.openViewBtn.setEnabled(has and not building)
+        if building:
+            return
+        push_next = has and not getattr(self, "_result_stale", False)
+        self.openViewBtn.setStyleSheet(self._BTN_PUSH if has else self._BTN_PLAIN)
+        self.buildBtn.setStyleSheet(self._BTN_PLAIN if push_next else self._BTN_BUILD)
+        self.buildBtn.setText("Rebuild Mosaic  ↻" if has else "Build Mosaic  ▶")
+        self.openViewBtn.setDefault(push_next)
+        self.buildBtn.setDefault(not push_next)
+
+    def _set_building(self, on: bool):
+        for w in (self.addFilesBtn, self.addViewsBtn, self.removeBtn, self.panel_table,
+                  self.panelsModeBtn, self.roboticModeBtn,
+                  self.brightnessCombo, self.reprojectModeCombo,
+                  self.starRefineCombo, self.blendSharpSlider, self._prepGroup,
+                  self.addFolderBtn, self.seestarRejectCheck,
+                  self._starGroup, self._outGroup, self.fullPreviewBtn,
+                  self.mapToggleBtn):
+            w.setEnabled(not on)
+        self.buildBtn.setEnabled(not on)
+        if on:
+            self.buildBtn.setText("Building…")
+            self.openViewBtn.setEnabled(False)
+        else:
+            # only a build that produced a mosaic (_show_result) clears "stale"
+            self._on_source_changed()
+            self._update_action_buttons()
+
+    def _on_build(self):
+        if getattr(self, "_building", False):
+            return
+        if not self.loaded_images:
+            self.status_label.setText("Add panels first.")
+            return
+        self._building = True
+        self._build_report = None
+        self._set_building(True)
+        try:
+            self.align_images()
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.critical(self, "Mosaic Master", f"The build failed:\n{e}")
+        finally:
+            self._building = False
+            self._set_building(False)
+            self._refresh_panels()
+
+    # ── panel table + sky map ─────────────────────────────────────────────
+    def _panel_info(self, item):
+        """Thumbnail, size, scale, SIP, sky footprint and data stats for one
+        panel, cached until its image or plate solution changes."""
+        img = item.get("image")
+        w = item.get("wcs")
+        key = (id(img), id(w))
+        c = item.get("_ui_cache")
+        if c is not None and c.get("key") == key:
+            return c
+        if img is None:
+            return self._panel_info_lazy(item, key)
+        c = {"key": key, "scale": None, "sip": False, "fp": None}
+        a = np.asarray(img)
+        H, W = a.shape[:2]
+        c["size"] = (W, H)
+        step = max(1, int(max(H, W) // 200))
+        sm = np.asarray(a[::step, ::step], dtype=np.float32)
+        lum = sm if sm.ndim == 2 else sm.mean(axis=2)
+        v = lum[np.isfinite(lum) & (lum != 0)]
+        c["mad"] = float(np.median(np.abs(v - np.median(v)))) if v.size else 0.0
+        try:
+            c["valid_px"] = int(np.count_nonzero(_valid_data_mask(a, erode_px=0)))
+        except Exception:
+            c["valid_px"] = int(W * H * (v.size / max(lum.size, 1)))
+        c["valid_frac"] = c["valid_px"] / max(W * H, 1)
+        try:                                     # small display thumbnail
+            rgb = sm if sm.ndim == 3 else sm[..., None]
+            rgb = np.repeat(rgb[..., :1], 3, axis=2) if rgb.shape[2] < 3 else rgb[..., :3]
+            if v.size:
+                lo, hi = np.percentile(v, (5, 99.7))
+                t = np.clip((rgb - lo) / max(hi - lo, 1e-12), 0, 1) ** 0.45
+            else:
+                t = np.zeros_like(rgb)
+            u8 = np.ascontiguousarray((t * 255).astype(np.uint8))
+            qi = QImage(u8.data, u8.shape[1], u8.shape[0], 3 * u8.shape[1],
+                        QImage.Format.Format_RGB888).copy()
+            c["icon"] = QIcon(QPixmap.fromImage(qi).scaled(
+                40, 30, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation))
+        except Exception:
+            c["icon"] = None
+        if w is not None:
+            try:
+                from astropy.wcs.utils import proj_plane_pixel_scales
+                c["scale"] = float(np.mean(proj_plane_pixel_scales(w.celestial))) * 3600.0
+            except Exception:
+                c["scale"] = None
+            c["sip"] = self._wcs_has_sip(w)
+            try:
+                NS = 16
+                xs = np.linspace(0, W - 1, NS); ys = np.linspace(0, H - 1, NS)
+                px = np.concatenate([xs, np.full(NS, W - 1), xs[::-1], np.zeros(NS)])
+                py = np.concatenate([np.zeros(NS), ys, np.full(NS, H - 1), ys[::-1]])
+                ra, dec = w.all_pix2world(px, py, 0)
+                g = np.isfinite(ra) & np.isfinite(dec)
+                c["fp"] = (ra[g], dec[g]) if g.sum() >= 3 else None
+            except Exception:
+                c["fp"] = None
+        item["_ui_cache"] = c
+        return c
+
+    def _panel_info_lazy(self, item, key):
+        H, W = item.get("shape") or (0, 0)
+        c = {"key": key, "size": (W, H), "mad": 0.0, "valid_px": W * H, "valid_frac": 1.0,
+             "icon": None, "scale": None, "sip": False, "fp": None, "approx": False}
+        w = item.get("wcs")
+        try:
+            if w is None:
+                # position from the header pointing only: a north-up box, drawn dashed
+                from setiastro.saspro.plate_solver import (
+                    _parse_ra_deg, _parse_dec_deg, _estimate_scale_arcsec_from_header)
+                h = item.get("header")
+                hh = h if isinstance(h, Header) else coerce_to_header(h)
+                ra, dec = _parse_ra_deg(hh), _parse_dec_deg(hh)
+                sc = _estimate_scale_arcsec_from_header(hh)
+                if ra is not None and dec is not None and sc:
+                    w = WCS(naxis=2)
+                    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+                    w.wcs.crval = [float(ra), float(dec)]
+                    w.wcs.crpix = [W / 2.0 + 0.5, H / 2.0 + 0.5]
+                    w.wcs.cd = np.array([[-sc / 3600.0, 0.0], [0.0, sc / 3600.0]])
+                    c["approx"] = True
+                    c["scale"] = float(sc)
+            if w is not None:
+                from astropy.wcs.utils import proj_plane_pixel_scales
+                if c["scale"] is None:
+                    c["scale"] = float(np.mean(proj_plane_pixel_scales(w.celestial))) * 3600.0
+                c["sip"] = self._wcs_has_sip(w)
+                NS = 8
+                xs = np.linspace(0, W - 1, NS); ys = np.linspace(0, H - 1, NS)
+                px = np.concatenate([xs, np.full(NS, W - 1), xs[::-1], np.zeros(NS)])
+                py = np.concatenate([np.zeros(NS), ys, np.full(NS, H - 1), ys[::-1]])
+                ra_, dec_ = w.all_pix2world(px, py, 0)
+                g = np.isfinite(ra_) & np.isfinite(dec_)
+                c["fp"] = (ra_[g], dec_[g]) if g.sum() >= 3 else None
+        except Exception as e:
+            print(f"[Mosaic] footprint unavailable for {item.get('path')}: {e}")
+        item["_ui_cache"] = c
+        return c
+
+    def _reference_index(self, infos):
+        """The panel the build will anchor on: a pinned one, else (as
+        _order_panels) the plate-solved panel with the most real data."""
+        items = self.loaded_images
+        if self._opt_seestar():
+            return None, False       # frames are averaged on a north-up canvas: no reference
+        for i, it in enumerate(items):
+            if it.get("pinned_ref"):
+                return i, True
+        if not items:
+            return None, False
+        cand = [i for i, it in enumerate(items) if it.get("wcs") is not None] or list(range(len(items)))
+        d2 = self._centre_d2(infos)
+        return max(cand, key=lambda i: (infos[i]["valid_px"], -d2.get(i, float("inf")))), False
+
+    def _centre_d2(self, infos):
+        """Squared distance of each solved panel's footprint centre from the
+        field centre, on the tangent plane: _order_panels' tie-break."""
+        fps = [(i, inf["fp"]) for i, inf in enumerate(infos) if inf.get("fp") is not None]
+        if not fps:
+            return {}
+        vec = np.concatenate([self._radec_to_vec(ra, dec) for _i, (ra, dec) in fps], axis=0)
+        c = vec.mean(axis=0)
+        c /= max(float(np.linalg.norm(c)), 1e-12)
+        ra0 = float(np.degrees(np.arctan2(c[1], c[0])))
+        dec0 = float(np.degrees(np.arcsin(np.clip(c[2], -1.0, 1.0))))
+        out = {}
+        for i, (ra, dec) in fps:
+            x, y = self._gnomonic(ra, dec, ra0, dec0)
+            g = np.isfinite(x) & np.isfinite(y)
+            if g.any():
+                cx = 0.5 * (x[g].min() + x[g].max()); cy = 0.5 * (y[g].min() + y[g].max())
+                out[i] = float(cx * cx + cy * cy)
+        return out
+
+    def _refresh_panels(self, only=None):
+        """Rebuild the panel list, the sky map and the hint line. `only`: the
+        rows whose cells changed (the rest are left as they are) -- for the
+        Seestar solve loop, where a handful of 600 rows change at a time."""
+        from setiastro.saspro.mosaic_master_ui import PanelTable as _PT, PANEL_COLORS
+        t = getattr(self, "panel_table", None)
+        if t is None:
+            return
+        items = self.loaded_images
+        infos = [self._panel_info(it) for it in items]
+        seestar = self._opt_seestar()
+        force = self.forceBlindCheckBox.isChecked()
+        ref, pinned = self._reference_index(infos)
+        scales = [inf["scale"] for inf in infos if inf.get("scale")]
+        med_scale = float(np.median(scales)) if scales else None
+        mads = [inf["mad"] for inf in infos if inf["mad"] > 0]
+        med_mad = float(np.median(mads)) if mads else None
+        green, blue, amber, grey = (QColor(110, 200, 120), QColor(120, 170, 240),
+                                    QColor(240, 180, 40), QColor(150, 150, 155))
+
+        t.blockSignals(True)
+        try:
+            with t.bulk_update():
+                if only is not None and t.rowCount() != len(items):
+                    only = None
+                if only is None:
+                    t.setRowCount(len(items))
+                n_warn = 0
+                for r, (it, inf) in enumerate(zip(items, infos)):
+                    if only is not None and r not in only:
+                        continue
+                    W, H = inf["size"]
+                    warns = []
+                    if med_mad and inf["mad"] > 0 and len(mads) > 1 and (
+                            inf["mad"] > 8 * med_mad or inf["mad"] < med_mad / 8):
+                        warns.append("Its tone scale is very different from the other panels: "
+                                     "one may be stretched and the others linear. Seams won't match.")
+                    if med_scale and inf.get("scale") and len(scales) > 1 and \
+                            abs(inf["scale"] / med_scale - 1.0) > 0.10:
+                        warns.append(f"Pixel scale {inf['scale']:.2f}″ differs from the others "
+                                     f"({med_scale:.2f}″).")
+                    n_warn += bool(warns)
+                    notes = [str(it.get("path", "")), f"{W} × {H} px"]
+                    if inf["valid_frac"] < 0.995:
+                        notes.append(f"{100 * (1 - inf['valid_frac']):.0f}% of this frame is empty "
+                                     f"(is it a mosaic itself?)")
+                    cells = [None] * len(_PT.COLS)
+                    cells[_PT.COL_IDX] = QTableWidgetItem(str(r + 1))
+                    nm = QTableWidgetItem(("⚠ " if warns else "") + self._item_label(it))
+                    if inf.get("icon") is not None:
+                        nm.setIcon(inf["icon"])
+                    nm.setToolTip("\n".join(notes + warns))
+                    if warns:
+                        nm.setForeground(amber)
+                    cells[_PT.COL_NAME] = nm
+                    state = it.get("solve_state")
+                    if seestar and state == "failed":
+                        sv = QTableWidgetItem("✗ Not solved")
+                        sv.setForeground(QColor(235, 90, 80))
+                        if it.get("failed_cached"):
+                            sv.setToolTip(f"Plate solving failed in an earlier build: "
+                                          f"{it.get('solve_error', '')}\n"
+                                          "It isn't tried again, and the frame is left out of the "
+                                          "mosaic.\nTurn on Re-solve every panel (Preparation) "
+                                          "to try it again.")
+                        else:
+                            sv.setToolTip(f"Plate solving failed: {it.get('solve_error', '')}\n"
+                                          "This frame is left out of the mosaic.")
+                    elif seestar and state == "solving":
+                        sv = QTableWidgetItem("Solving…")
+                        sv.setForeground(blue)
+                    elif seestar and it.get("wcs") is not None and not force:
+                        sv = QTableWidgetItem("✓ Solved (cached)" if state == "cached" else "✓ Solved")
+                        sv.setForeground(green)
+                        sv.setToolTip("Plate solution " + ("from the cache of an earlier build."
+                                                           if state == "cached" else "found."))
+                    elif seestar:
+                        sv = QTableWidgetItem("Solved at build")
+                        sv.setForeground(blue)
+                        sv.setToolTip("Plate-solved when you build, seeded by the pointing in the header.")
+                    elif force:
+                        sv = QTableWidgetItem("Re-solve at build")
+                        sv.setForeground(blue)
+                        sv.setToolTip("Re-solve every panel is on (Preparation).")
+                    elif it.get("wcs") is not None:
+                        sv = QTableWidgetItem("✓ Solved (SIP)" if inf["sip"] else "✓ Solved")
+                        sv.setForeground(green)
+                        sv.setToolTip("Has a plate solution" + (" with SIP distortion: placed by WCS, "
+                                      "not star-refined." if inf["sip"] else "."))
+                    else:
+                        sv = QTableWidgetItem("Solved at build")
+                        sv.setForeground(blue)
+                        sv.setToolTip("No plate solution yet. The in-house Gaia blind solver runs\n"
+                                      "when you build; Astrometry.net only if that fails.")
+                    cells[_PT.COL_SOLVE] = sv
+                    cells[_PT.COL_SCALE] = QTableWidgetItem(
+                        f"{inf['scale']:.2f}″" if inf.get("scale") else "—")
+                    rf = QTableWidgetItem("—" if seestar else ("★" if r == ref else "☆"))
+                    rf.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    rf.setForeground(QColor(255, 215, 0) if (r == ref and not seestar) else grey)
+                    if seestar:
+                        rf.setToolTip("Seestar mosaics need no reference frame: the canvas is "
+                                      "laid out north up from the plate solutions.")
+                    if not seestar:
+                        rf.setToolTip(("Reference panel (pinned): " if (r == ref and pinned) else
+                                   "Reference panel (automatic): " if r == ref else "Click to make this the reference: ")
+                                      + "it defines the mosaic's sky frame and sky level.\n"
+                                        "Automatic choice: the plate-solved panel with the most real data.")
+                    cells[_PT.COL_REF] = rf
+                    for col, cell in enumerate(cells):
+                        t.setItem(r, col, cell)
+        finally:
+            t.blockSignals(False)
+
+        # sky map
+        self._update_plan_map(infos, ref, PANEL_COLORS)
+
+        # hint line
+        hint = []
+        if seestar:
+            n_ok = sum(1 for it in items if it.get("wcs") is not None)
+            n_bad = sum(1 for it in items if it.get("solve_state") == "failed")
+            hint.append(f"Seestar: {len(items)} frames, {n_ok} plate-solved"
+                        + (f", {n_bad} failed" if n_bad else "")
+                        + ". Each frame is placed by its own plate solution and the frames are averaged.")
+        else:
+            sip_note = getattr(self, "_sip_note", "")
+            if sip_note:
+                hint.append(sip_note)
+            n_uns = sum(1 for it in items if it.get("wcs") is None)
+            if n_uns and not force:
+                hint.append(f"{n_uns} panel{'s' if n_uns != 1 else ''} will be plate-solved when you build.")
+        if n_warn and not seestar:
+            hint.append(f"⚠ {n_warn} panel{'s' if n_warn != 1 else ''} with a warning (hover the name).")
+        self.optHint.setText("  ".join(hint))
+        self.optHint.setVisible(bool(hint))
+        self.buildBtn.setEnabled(len(items) >= 1 and not getattr(self, "_building", False))
+
+    def _update_plan_map(self, infos, ref, colors):
+        """Footprints laid out in the reference panel's linear TAN frame: the
+        frame the mosaic canvas is built in, so the plan looks like the result."""
+        fps = [(i, inf["fp"]) for i, inf in enumerate(infos) if inf.get("fp") is not None]
+        panels = []
+        frame = None
+        seestar = self._opt_seestar()
+        fw_i = ref if (ref is not None and infos[ref].get("fp") is not None) else (
+            fps[0][0] if fps else None)
+        fw = self.loaded_images[fw_i].get("wcs") if fw_i is not None else None
+        if seestar and fps:
+            # the Seestar canvas is north up at the mean pointing: lay the plan out the same way
+            vec = np.concatenate([self._radec_to_vec(ra, dec) for _i, (ra, dec) in fps], axis=0)
+            cv_ = vec.mean(axis=0); cv_ /= max(float(np.linalg.norm(cv_)), 1e-12)
+            sc = [infos[i].get("scale") for i, _ in fps if infos[i].get("scale")]
+            s_deg = (float(np.median(sc)) if sc else 2.4) / 3600.0
+            fw = WCS(naxis=2)
+            fw.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+            fw.wcs.crval = [float(np.degrees(np.arctan2(cv_[1], cv_[0]))) % 360.0,
+                            float(np.degrees(np.arcsin(np.clip(cv_[2], -1, 1))))]
+            fw.wcs.crpix = [0.0, 0.0]
+            fw.wcs.cd = np.array([[-s_deg, 0.0], [0.0, -s_deg]])
+            frame = {"north": (0.0, -1.0), "east": (-1.0, 0.0), "deg_per_unit": s_deg}
+        elif fw is not None:
+            try:
+                fW, fH = infos[fw_i]["size"]
+                rc, dc = fw.wcs_pix2world([fW / 2.0], [fH / 2.0], 0)
+                rc, dc = float(rc[0]), float(dc[0])
+                c0 = np.array(fw.wcs_world2pix([rc], [dc], 0)).ravel()
+                dd = 0.01
+                nv = np.array(fw.wcs_world2pix([rc], [dc + dd], 0)).ravel() - c0
+                ev = np.array(fw.wcs_world2pix([rc + dd / max(math.cos(math.radians(dc)), 1e-6)],
+                                               [dc], 0)).ravel() - c0
+                frame = {"north": (float(nv[0]), float(nv[1])), "east": (float(ev[0]), float(ev[1])),
+                         "deg_per_unit": float(infos[fw_i].get("scale") or 3600.0) / 3600.0}
+            except Exception as e:
+                print(f"[Mosaic] sky map frame unavailable: {e}")
+                frame = None
+        if fps and frame is not None:
+            # every footprint through the plan frame in ONE call (hundreds of
+            # separate astropy calls cost a tenth of a second per refresh)
+            try:
+                lens = [len(np.atleast_1d(ra)) for _i, (ra, _d) in fps]
+                X, Y = fw.wcs_world2pix(np.concatenate([np.atleast_1d(ra) for _i, (ra, _d) in fps]),
+                                        np.concatenate([np.atleast_1d(d) for _i, (_r, d) in fps]), 0)
+                cuts = np.cumsum([0] + lens)
+                proj = [(np.asarray(X[a:b], float), np.asarray(Y[a:b], float))
+                        for a, b in zip(cuts[:-1], cuts[1:])]
+            except Exception:
+                proj = [tuple(np.asarray(v, float) for v in fw.wcs_world2pix(ra, dec, 0))
+                        for _i, (ra, dec) in fps]
+            for (i, (ra, dec)), (x, y) in zip(fps, proj):
+                g = np.isfinite(x) & np.isfinite(y)
+                if g.sum() < 3:
+                    continue
+                inf = infos[i]
+                it = self.loaded_images[i]
+                W, H = inf["size"]
+                tip = (f"{i + 1}. {self._item_label(it)}\n{W} × {H} px"
+                       + (f", {inf['scale']:.2f}″/px" if inf.get("scale") else "")
+                       + ("\nSIP distortion: placed by WCS" if inf.get("sip") else "")
+                       + ("\nReference panel" if i == ref else ""))
+                if seestar:
+                    st = it.get("solve_state")
+                    tip = (f"{i + 1}. {self._item_label(it)}\n"
+                           + ("position from the header only (not solved yet)" if inf.get("approx")
+                              else "plate-solved" + (" (cached)" if st == "cached" else ""))
+                           + (f"\nsolve failed: {it.get('solve_error', '')}" if st == "failed" else ""))
+                panels.append({"idx": i, "name": self._item_label(it),
+                               "poly": np.column_stack([x[g], y[g]]),
+                               "ref": (i == ref) and not seestar,
+                               "approx": bool(inf.get("approx")),
+                               "failed": it.get("solve_state") == "failed",
+                               "color": colors[i % len(colors)], "tip": tip})
+        n_uns = len(infos) - len(fps)
+        if seestar:
+            n_appr = sum(1 for d in panels if d["approx"])
+            note = (f"{n_appr} placed from the header pointing (dashed) until solved"
+                    if n_appr else "")
+        else:
+            note = (f"{n_uns} not plate-solved yet" if n_uns else "")
+        self.map.set_plan(panels, note, frame, dense=seestar)
+
+    def _on_panel_cell_clicked(self, row, col):
+        from setiastro.saspro.mosaic_master_ui import PanelTable as _PT
+        if col != _PT.COL_REF or not (0 <= row < len(self.loaded_images)):
+            return
+        it = self.loaded_images[row]
+        was = bool(it.get("pinned_ref"))
+        for x in self.loaded_images:
+            x.pop("pinned_ref", None)
+        if not was:
+            it["pinned_ref"] = True
+            self.status_label.setText(f"Reference panel: {self._item_label(it)} (pinned).")
+        else:
+            self.status_label.setText("Reference panel: automatic.")
+        self._refresh_panels()
+
+    def _on_table_selection(self):
+        rows = sorted({i.row() for i in self.panel_table.selectionModel().selectedRows()})
+        self.map.set_selected(rows)
+
+    def _select_panel_row(self, idx):
+        if 0 <= idx < self.panel_table.rowCount():
+            self.panel_table.selectRow(idx)
+
+    # ── Seestar: plate solve every frame, place by WCS, average ───────────
+    def _seestar_adopt(self, item, header_str, state):
+        from setiastro.saspro.plate_solver import _wcs_from_header_2d
+        try:
+            h = Header.fromstring(header_str)
+            w = _wcs_from_header_2d(h, relax=True)
+        except Exception as e:
+            item["solve_state"] = "failed"
+            item["solve_error"] = f"unusable solution ({e})"
+            return False
+        if w is None or not getattr(w, "is_celestial", False):
+            item["solve_state"] = "failed"
+            item["solve_error"] = "unusable solution"
+            return False
+        item["wcs"] = w
+        item["solved_header"] = header_str
+        item["solve_state"] = state
+        item.pop("solve_error", None)
+        return True
+
+    def _seestar_pool(self, n_tasks):
+        """Worker processes for the Seestar build (plate solving, then frame
+        preparation), or None when they can't start here."""
+        import setiastro.saspro.seestar_mosaic as sm
+        try:
+            from setiastro.saspro.worker_env import check_process_pools, process_pools_ok
+            check_process_pools(log_fn=lambda m: print(f"[Seestar] {m}"))
+            if not process_pools_ok() or n_tasks < 2:
+                return None
+            import multiprocessing as _mp
+            from concurrent.futures import ProcessPoolExecutor
+            from PyQt6.QtCore import QCoreApplication as _QCA
+            ncpu = os.cpu_count() or 2
+            nw = max(1, min(16, ncpu // 2, n_tasks))
+            try:                                           # testing overrides
+                nw = max(1, min(int(os.environ.get("SASPRO_SEESTAR_WORKERS") or nw), n_tasks))
+            except ValueError:
+                pass
+            # each worker gets its share of the cores (CLAUDE.md lesson 8)
+            nt = max(1, ncpu // nw)
+            try:
+                _e = int(os.environ.get("SASPRO_SEESTAR_THREADS") or nt)
+                nt = 0 if _e < 0 else max(1, _e)           # -1: uncapped (for comparison)
+            except ValueError:
+                pass
+            pool = ProcessPoolExecutor(max_workers=nw, mp_context=_mp.get_context("spawn"),
+                                       initializer=sm.init_worker,
+                                       initargs=(_QCA.organizationName(), _QCA.applicationName(), nt))
+            pool._saspro_workers = nw
+            print(f"[Seestar] {nw} worker processes, "
+                  + (f"{nt} thread{'s' if nt != 1 else ''} each" if nt else "threads uncapped"))
+            return pool
+        except Exception as e:
+            print(f"[Seestar] worker processes unavailable ({e}); working in this process")
+            return None
+
+    def _seestar_solve(self, todo, cache, progress, pool=None):
+        """Plate-solve frames in worker processes (in this process if those
+        can't start). Updates the table and the placement map as frames come
+        in. Returns False if cancelled."""
+        import concurrent.futures as cf
+        import time as _time
+        import setiastro.saspro.seestar_mosaic as sm
+        n = len(todo)
+        progress.setRange(0, n)
+        progress.setValue(0)
+        n_done = n_fail = 0
+        t0 = _time.time()
+
+        row_of = {id(x): r for r, x in enumerate(self.loaded_images)}
+        changed = set()
+
+        new_failures = []
+
+        def _handle(it, res):
+            nonlocal n_done, n_fail
+            n_done += 1
+            if id(it) in row_of:
+                changed.add(row_of[id(it)])
+            if res and res.get("ok") and res.get("header"):
+                if self._seestar_adopt(it, res["header"], "solved"):
+                    if res.get("shape"):
+                        it["shape"] = tuple(res["shape"])
+                    if not self._is_view_path(it.get("path", "")):
+                        sm.cache_put(cache, it["path"], res["header"])
+                    return
+            n_fail += 1
+            it["solve_state"] = "failed"
+            it["solve_error"] = (res or {}).get("error") or "no solution"
+            it.pop("failed_cached", None)
+            # remembered only if the solver ran and said no (not a crashed worker)
+            if res is not None and not res.get("_exception") \
+                    and not self._is_view_path(it.get("path", "")):
+                new_failures.append(it)
+
+        nw = getattr(pool, "_saspro_workers", None) if pool is not None else None
+
+        def _ui(force=False):
+            # The progress line is cheap: every tick. The table and the sky map
+            # are not (hundreds of rows and footprints): at most once a second,
+            # and never more than a fifth of the time.
+            now = _time.time()
+            if force or (n_done != _ui.shown and now - _ui.last >= max(2.0, 10.0 * _ui.cost)):
+                self._refresh_panels(only=None if force else set(changed))
+                changed.clear()
+                QApplication.processEvents()       # the repaint belongs to the cost
+                _ui.last = _time.time()
+                _ui.cost = _ui.last - now
+                _ui.shown = n_done
+            rate = n_done / max(now - t0, 1e-3)
+            eta = (n - n_done) / rate if rate > 0 else 0
+            progress.setValue(n_done)
+            if n_done == 0 and nw:
+                progress.setLabelText(f"Plate solving {n} frames on {nw} worker processes…\n"
+                                      f"Starting the workers: the first solutions take about "
+                                      f"20 s ({now - t0:.0f} s so far).")
+            else:
+                progress.setLabelText(f"Plate solving frames… {n_done}/{n}"
+                                      + (f" ({n_fail} failed)" if n_fail else "")
+                                      + (f" · about {eta / 60:.1f} min left" if n_done >= 3 else ""))
+            QApplication.processEvents()
+        _ui.last = 0.0
+        _ui.cost = 0.0
+        _ui.shown = -1
+
+        for it in todo:
+            it["solve_state"] = "solving"
+            it.pop("solve_error", None)
+        _ui(True)
+
+        if pool is not None:
+            print(f"[Seestar] plate solving {n} frames on {getattr(pool, '_saspro_workers', '?')} "
+                  f"worker processes")
+        try:
+            if pool is not None:
+                fut = {}
+                for it in todo:
+                    if it.get("image") is not None:
+                        h = it.get("header")
+                        hs = (h if isinstance(h, Header) else coerce_to_header(h) or Header()).tostring()
+                        f = pool.submit(sm.solve_frame, it["path"], np.asarray(it["image"]), hs)
+                    else:
+                        f = pool.submit(sm.solve_frame, it["path"])
+                    fut[f] = it
+                pending = set(fut)
+                while pending:
+                    done, pending = cf.wait(pending, timeout=0.15, return_when=cf.FIRST_COMPLETED)
+                    for f in done:
+                        try:
+                            res = f.result()
+                        except Exception as e:
+                            res = {"ok": False, "error": f"{type(e).__name__}: {e}",
+                                   "_exception": True}
+                        _handle(fut[f], res)
+                    _ui()
+                    if progress.wasCanceled():
+                        for f in pending:
+                            f.cancel()
+                        for f in pending:
+                            fut[f].pop("solve_state", None)
+                        return False
+            else:
+                for it in todo:
+                    if it.get("image") is not None:
+                        h = it.get("header")
+                        hs = (h if isinstance(h, Header) else coerce_to_header(h) or Header()).tostring()
+                        res = sm.solve_frame(it["path"], np.asarray(it["image"]), hs)
+                    else:
+                        res = sm.solve_frame(it["path"])
+                    _handle(it, res)
+                    _ui(True)
+                    if progress.wasCanceled():
+                        for x in todo:
+                            if x.get("solve_state") == "solving":
+                                x.pop("solve_state", None)
+                        return False
+        finally:
+            # Remember the frames that failed -- but only when others solved:
+            # if every frame fails, the cause is the setup (no Gaia library,
+            # wrong scale in the headers), not the frames, and it can be fixed.
+            if new_failures and any(x.get("wcs") is not None and x.get("solve_state") != "failed"
+                                    for x in self.loaded_images):
+                for x in new_failures:
+                    sm.cache_put_failure(cache, x["path"], x.get("solve_error"))
+            sm.save_cache(cache)
+            _ui(True)
+        print(f"[Seestar] plate solved {n - n_fail}/{n} frames in {_time.time() - t0:.0f} s")
+        return True
+
+    @staticmethod
+    def _run_live(fn, *a, **k):
+        """Run fn on a helper thread and keep the window painting until it
+        returns. For the few-second whole-canvas numpy steps between the
+        Seestar phases: numpy releases the GIL inside its array loops."""
+        import concurrent.futures as cf
+        with cf.ThreadPoolExecutor(max_workers=1) as ex:
+            f = ex.submit(fn, *a, **k)
+            while not f.done():
+                cf.wait([f], timeout=0.05)
+                QApplication.processEvents()
+            return f.result()
+
+    def _build_seestar(self):
+        import concurrent.futures as cf
+        import setiastro.saspro.seestar_mosaic as sm
+        items = list(self.loaded_images)
+        if not items:
+            return
+        progress = QProgressDialog("Plate solving frames…", "Cancel", 0, len(items), self)
+        progress.setWindowTitle("Mosaic Master — Seestar")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setMinimumDuration(0)
+        progress.show()
+        self.spinnerLabel.show()
+        if self.spinnerMovie:
+            self.spinnerMovie.start()
+        QApplication.processEvents()
+        pool = self._seestar_pool(len(items))
+        try:
+            # 1) plate solve whatever isn't solved (cache first)
+            cache = getattr(self, "_seestar_cache", None) or sm.load_cache()
+            self._seestar_cache = cache
+            force = self.forceBlindCheckBox.isChecked()
+            todo = []
+            for it in items:
+                if not force and it.get("wcs") is not None and it.get("solve_state") != "failed":
+                    it.setdefault("solve_state", "solved")
+                    continue
+                if not force and not self._is_view_path(it.get("path", "")):
+                    hs = sm.cache_get(cache, it["path"])
+                    if hs and self._seestar_adopt(it, hs, "cached"):
+                        continue
+                    why = sm.cache_failure(cache, it["path"])
+                    if why:
+                        it["solve_state"] = "failed"
+                        it["solve_error"] = why
+                        it["failed_cached"] = True
+                        continue
+                todo.append(it)
+            if todo and not self._seestar_solve(todo, cache, progress, pool):
+                self.status_label.setText("Cancelled.")
+                return
+            solved = [it for it in items if it.get("wcs") is not None
+                      and it.get("solve_state") != "failed"]
+            n_fail = sum(1 for it in items if it.get("solve_state") == "failed")
+            if not solved:
+                QMessageBox.warning(self, "Mosaic Master",
+                                    "No frame could be plate-solved, so nothing can be placed.\n"
+                                    "Check that your Gaia catalogue is installed (Settings → "
+                                    "Gaia DR3 Library) and that the frames show stars.")
+                return
+
+            # 2) the canvas around every solved frame
+            def _date(it):
+                h = it.get("header")
+                try:
+                    return str(h.get("DATE-OBS", "")) + str(it.get("path", ""))
+                except Exception:
+                    return str(it.get("path", ""))
+            solved.sort(key=_date)
+            shapes = [tuple(it.get("shape") or np.asarray(it["image"]).shape[:2]) for it in solved]
+            try:
+                cw, (Hc, Wc) = sm.make_canvas([it["wcs"] for it in solved], shapes)
+            except Exception as e:
+                QMessageBox.warning(self, "Mosaic Master", f"Could not lay out the mosaic:\n{e}")
+                return
+            Hms = [sm.frame_homography(it["wcs"], sh, cw) for it, sh in zip(solved, shapes)]
+            boxes = [sm.canvas_bbox(h, sh, (Hc, Wc)) for h, sh in zip(Hms, shapes)]
+            color = any(not it.get("is_mono", True) or sm.bayer_of(it.get("header") or {})
+                        or (it.get("image") is not None and np.asarray(it["image"]).ndim == 3)
+                        for it in solved)
+            C = 3 if color else 1
+            print(f"[Seestar] canvas {Wc} x {Hc} px for {len(solved)} frames")
+
+            # 3) average in one pass (outliers are tested at the end, sm.CanvasStack)
+            clip = 3.0 if self.seestarRejectCheck.isChecked() else None
+            stack = sm.CanvasStack((Hc, Wc), C, clip_k=clip)
+            if pool is not None:
+                # the pool keeps every core busy: a few threads add each frame
+                try:
+                    stack.add_threads = max(1, int(os.environ.get("SASPRO_SEESTAR_ADD_THREADS") or 4))
+                except ValueError:
+                    stack.add_threads = 4
+            dm = str(self.settings.value("stacking/debayer_method", "rcd") or "rcd").lower()
+            crop = ((int(self.cropLeftSpin.value()), int(self.cropRightSpin.value()),
+                     int(self.cropTopSpin.value()), int(self.cropBottomSpin.value()))
+                    if self.cropEachCheckBox.isChecked() else (0, 0, 0, 0))
+            passes = (1,)
+            skies = []
+            sky_of = {}
+            nthreads = (getattr(pool, "_saspro_workers", 4) if pool is not None
+                        else max(1, min(4, (os.cpu_count() or 2) // 2)))
+            total = len(solved) * len(passes)
+            progress.setRange(0, total)
+            k_done = 0
+            # frames in flight: enough to keep every worker busy
+            depth = nthreads + 4
+            slots, free_slots, slot_of = {}, [], {}
+            if pool is not None:
+                # prepared frames come back through shared memory (sm.attach_slot)
+                try:
+                    from multiprocessing import shared_memory
+                    cap = sm.slot_bytes(max((b[2] - b[0]) * (b[3] - b[1]) for b in boxes), 3)
+                    for _ in range(depth):
+                        sh = shared_memory.SharedMemory(create=True, size=cap)
+                        slots[sh.name] = sh
+                        free_slots.append(sh.name)
+                except Exception as e:
+                    print(f"[Seestar] shared memory unavailable ({e}); results come back pickled")
+                    for sh in slots.values():
+                        try:
+                            sh.close(); sh.unlink()
+                        except Exception:
+                            pass
+                    slots, free_slots = {}, []
+            for ps in passes:
+                # frames are prepared (read, debayer, sky, warp) in the worker
+                # processes when there are some, and added here in order
+                ex = pool if pool is not None else cf.ThreadPoolExecutor(max_workers=nthreads)
+                window = {}
+                try:
+                    def _submit(i):
+                        it = solved[i]
+                        img = it.get("image")
+                        slot = free_slots.pop() if free_slots else None
+                        slot_of[i] = slot
+                        return ex.submit(sm.prepare_frame, it["path"], Hms[i], boxes[i],
+                                         image=(np.asarray(img) if img is not None else None),
+                                         header=(it.get("header") if img is not None else None),
+                                         debayer_method=dm, crop=crop, sky=sky_of.get(i),
+                                         out_slot=slot)
+                    window = {}
+                    nxt = 0
+                    for i in range(len(solved)):
+                        while nxt < len(solved) and nxt < i + depth:
+                            window[nxt] = _submit(nxt)
+                            nxt += 1
+                        fut_i = window.pop(i)
+                        while not fut_i.done():
+                            cf.wait([fut_i], timeout=0.1)
+                            QApplication.processEvents()
+                            if progress.wasCanceled():
+                                fut_i.cancel()
+                                for f in window.values():
+                                    f.cancel()
+                                self.status_label.setText("Cancelled.")
+                                return
+                        pr = fut_i.result()
+                        if pr is not None and pr.get("slot"):
+                            pr["data"], pr["weight"] = sm.slot_views(slots[pr["slot"]].buf,
+                                                                     pr["shape"])
+                        if pr is not None:
+                            if pr["data"].shape[2] < C:
+                                pr["data"] = np.repeat(pr["data"][..., :1], C, axis=2)
+                            pr["data"] = pr["data"][..., :C]
+                            stack.add(pr)
+                            if ps == 1:
+                                sky_of[i] = pr["sky"]
+                                skies.append(pr["sky"][:C] if pr["sky"].size >= C
+                                             else np.repeat(pr["sky"][:1], C))
+                        pr = None                         # drop the slot views
+                        if slot_of.get(i):
+                            free_slots.append(slot_of.pop(i))
+                        k_done += 1
+                        progress.setValue(k_done)
+                        progress.setLabelText(f"Stacking… frame {i + 1}/{len(solved)}")
+                        QApplication.processEvents()
+                        if progress.wasCanceled():
+                            for f in window.values():
+                                f.cancel()
+                            self.status_label.setText("Cancelled.")
+                            return
+                finally:
+                    if ex is not pool:
+                        ex.shutdown(wait=False, cancel_futures=True)
+                    if slots:
+                        # a cancelled build can leave frames in flight: let the
+                        # pool finish them before their slots go away
+                        if pool is not None:
+                            for f in window.values():
+                                f.cancel()
+                            cf.wait(list(window.values()), timeout=30)
+                        for sh in slots.values():
+                            try:
+                                sh.close()
+                                sh.unlink()
+                            except Exception:
+                                pass
+
+            progress.setLabelText("Taking out satellites and other outliers…" if clip
+                                  else "Finishing…")
+            QApplication.processEvents()
+
+            def _finish():
+                o = stack.result()
+                sk = (np.median(np.array(skies), axis=0).astype(np.float32) if skies
+                      else np.zeros(C, np.float32))
+                cv = np.asarray(stack.Wt) > 0
+                o += sk[None, None, :C]
+                o[~cv] = 0.0
+                return o, np.array(stack.Wt, dtype=np.float32)
+            out, self.weight_mosaic = self._run_live(_finish)
+            self.final_mosaic = out[..., 0] if C == 1 else out
+            hdr = cw.to_header(relax=True)
+            hdr["NAXIS"] = 2
+            hdr["NAXIS1"] = Wc
+            hdr["NAXIS2"] = Hc
+            exps = []
+            for it in solved:
+                try:
+                    exps.append(float((it.get("header") or {}).get("EXPTIME", 0) or 0))
+                except Exception:
+                    pass
+            exps = [e for e in exps if e > 0]
+            if exps:
+                hdr["EXPTIME"] = (float(np.median(exps)), "per frame (s)")
+                hdr["TOTALEXP"] = (float(np.sum(exps)), "total integration (s)")
+            hdr["NCOMBINE"] = (len(solved), "frames stacked")
+            hdr["HISTORY"] = "SASpro Mosaic Master: Seestar frames plate-solved (Gaia DR3), placed by WCS, averaged"
+            self.wcs_metadata = hdr
+            self.was_single_channel = (C == 1)
+
+            # the result map: frame outlines and coverage depth
+            N = np.asarray(stack.N, np.float32)
+            sc = min(1.0, 900.0 / max(Hc, Wc))
+            heat = (cv2.resize(N, (max(1, int(Wc * sc)), max(1, int(Hc * sc))),
+                               interpolation=cv2.INTER_AREA) if sc < 1.0 else N.copy())
+            frames = [sm.canvas_corners(h, sh) for h, sh in zip(Hms, shapes)]
+            self._build_report = {
+                "mode": "seestar", "panels": [], "seams": [], "sigma": None,
+                "shape": (Hc, Wc),
+                "coverage": {"heat": heat, "max": int(N.max()) if N.size else 1,
+                             "exptime": float(np.median(exps)) if exps else None,
+                             "frames": frames}}
+            rej = ""
+            if clip:
+                rej = (f", {100.0 * stack.rejected / max(stack.considered, 1):.2f}% of samples "
+                       f"rejected as outliers")
+            self._show_result(self._run_live(self._autostretch_if_requested, self.final_mosaic,
+                                             self.autostretchPreviewCheck.isChecked()),
+                              "Seestar Mosaic")
+            self.status_label.setText(
+                f"Seestar mosaic ready — {len(solved)} frames"
+                + (f" ({n_fail} not solved, left out)" if n_fail else "")
+                + f", {Wc}×{Hc} px, up to {int(N.max())} frames deep{rej}. "
+                  "Plate-solved: the mosaic carries its WCS.")
+        finally:
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+            try:
+                progress.close()
+            except Exception:
+                pass
+            if self.spinnerMovie:
+                self.spinnerMovie.stop()
+            self.spinnerLabel.hide()
+            QApplication.processEvents()
+
+    # ── result ────────────────────────────────────────────────────────────
+    def _show_result(self, display_image, title="Mosaic"):
+        """Show the finished mosaic in the map pane with its panel map."""
+        try:
+            from setiastro.saspro.imageops.stretch import stretch_color_image
+            src_img = self.final_mosaic if self.final_mosaic is not None else display_image
+            a = np.asarray(src_img, dtype=np.float32)
+            if a.ndim == 2:
+                a = a[..., None]
+            if a.shape[2] == 1:
+                a = np.repeat(a, 3, axis=2)
+            H, W = a.shape[:2]
+            sc = min(1.0, 1600.0 / max(H, W))
+            small = (cv2.resize(a, (max(1, int(W * sc)), max(1, int(H * sc))),
+                                interpolation=cv2.INTER_AREA) if sc < 1.0 else a.copy())
+            small = np.nan_to_num(small, nan=0.0, posinf=0.0, neginf=0.0)
+            disp = stretch_color_image(small, target_median=0.25, linked=True)
+            u8 = np.ascontiguousarray((np.clip(disp, 0, 1) * 255).astype(np.uint8))
+            qimg = QImage(u8.data, u8.shape[1], u8.shape[0], 3 * u8.shape[1],
+                          QImage.Format.Format_RGB888).copy()
+        except Exception as e:
+            print(f"[Mosaic] result thumbnail failed: {e}")
+            return
+        rep = getattr(self, "_build_report", None) or {}
+        panels = list(rep.get("panels", []))
+        seams = list(rep.get("seams", []))
+        sigma = rep.get("sigma")
+        names = [d.get("name", "") for d in panels]
+        for k, d in enumerate(panels):
+            lines = [f"{k + 1}. {d.get('name', '')}" + ("  (reference)" if d.get("ref") else "")]
+            if d.get("align"):
+                lines.append(f"Placement: {d['align']}")
+            if d.get("gain") is not None:
+                lines.append(f"Brightness: gain ×{d['gain']:.4f}, offset {d.get('offset', 0.0):+.3g}")
+            d["tip"] = "\n".join(lines)
+        for sm in seams:
+            i, j = sm.get("i"), sm.get("j")
+            a_ = names[i] if i is not None and 0 <= i < len(names) else "?"
+            b_ = (names[j] if j is not None and 0 <= j < len(names) else "mosaic so far")
+            lines = [f"Seam {a_} / {b_}"]
+            if sm.get("before") is not None and sm.get("after") is not None:
+                lines.append(f"Brightness difference: {sm['before']:.3g} before, {sm['after']:.3g} after matching")
+                if sigma:
+                    lines.append(f"= {sm['after'] / sigma:.2f}× the sky noise per pixel")
+            sm["tip"] = "\n".join(lines)
+        self.map.set_result(qimg, (W, H), panels, seams, sigma, coverage=rep.get("coverage"))
+        self._result_display = display_image
+        self._result_title = title
+        self.mapTitle.setText("<b>Result</b>")
+        self.overlayCheck.setVisible(bool(panels) or rep.get("coverage") is not None)
+        self.mapToggleBtn.setText("Sky map")
+        self.mapToggleBtn.show()
+        self.fullPreviewBtn.show()
+        self._result_stale = False
+        self._update_action_buttons()
+
+    def _toggle_map_mode(self):
+        if self.map.mode() == "result":
+            self.map.show_plan()
+            self.mapTitle.setText("<b>Sky map</b>")
+            self.mapToggleBtn.setText("Result")
+            self.overlayCheck.hide()
+        elif self.map.has_result():
+            self.map.show_result()
+            self.mapTitle.setText("<b>Result</b>")
+            self.mapToggleBtn.setText("Sky map")
+            _rep = getattr(self, "_build_report", None) or {}
+            self.overlayCheck.setVisible(bool(_rep.get("panels")) or _rep.get("coverage") is not None)
+
+    def _open_full_preview(self):
+        if self._result_display is None:
+            return
+        MosaicPreviewWindow(self._result_display, title=getattr(self, "_result_title", "Mosaic"),
+                            parent=self, push_cb=self._open_result_as_view).show()
+
+    def _open_result_as_view(self):
+        fin = self.finalize_mosaic()
+        if fin is None:
+            self.status_label.setText("No mosaic yet: build one first.")
+            return
+        img, meta = fin
+        dm = self._docman
+        if dm is None:
+            QMessageBox.warning(self, "Mosaic Master", "No document manager is available.")
+            return
+        try:
+            title = self._proposed_mosaic_title()
+            if hasattr(dm, "open_array") and callable(dm.open_array):
+                newdoc = dm.open_array(img, metadata=meta, title=title)
+            elif hasattr(dm, "open_numpy") and callable(dm.open_numpy):
+                newdoc = dm.open_numpy(img, metadata=meta, title=title)
+            else:
+                newdoc = dm.create_document(image=img, metadata=meta, name=title)
+            parent = self.parent()
+            if parent and hasattr(parent, "_spawn_subwindow_for"):
+                parent._spawn_subwindow_for(newdoc)
+            self.status_label.setText("Opened the mosaic as a new view.")
+        except Exception as e:
+            QMessageBox.critical(self, "Mosaic Master", f"Could not open the mosaic:\n{e}")
 
     @staticmethod
     def _wcs_has_sip(w):
@@ -2037,33 +3548,29 @@ class MosaicMasterDialog(QDialog):
             return False
 
     def _refresh_sip_autodisable(self):
-        """After the loaded-panel set changes, default the star-alignment
-        toggle based on whether the panels carry SIP. Never override a manual
-        choice the user has already made this session."""
-        box = getattr(self, "wcsOnlyCheckBox", None)
-        if box is None or getattr(self, "_wcsonly_user_touched", False):
-            return
-
+        """After the panel set changes: describe the SIP situation, and default
+        Star refine to Off when most panels carry SIP (WCS placement is then
+        more accurate), unless the user picked a setting this session."""
+        combo = getattr(self, "starRefineCombo", None)
         solved = [it for it in self.loaded_images if it.get("wcs") is not None]
-        if not solved:
+        if combo is None or not solved:
+            self._sip_note = ""
             return
         n_sip = sum(1 for it in solved if self._wcs_has_sip(it["wcs"]))
         frac = n_sip / len(solved)
-
-        box.blockSignals(True)   #sasprogrammatic change must not trip _touched
         if frac >= 0.8:
-            box.setChecked(True)
-            box.setText("Disable star alignment  —  SIP distortion detected "
-                        "(WCS placement is more accurate)")
-        elif frac == 0.0:
-            box.setChecked(False)
-            box.setText("Disable star alignment  —  no SIP; star alignment "
-                        "recommended")
+            self._sip_note = (f"{n_sip} of {len(solved)} panels carry SIP distortion: "
+                              f"WCS placement is more accurate than star refinement.")
+        elif n_sip:
+            self._sip_note = (f"{n_sip} of {len(solved)} panels carry SIP distortion; "
+                              f"those are always placed by WCS.")
         else:
-            box.setChecked(False)
-            box.setText(f"Disable star alignment  —  mixed panels "
-                        f"({n_sip}/{len(solved)} have SIP)")
-        box.blockSignals(False)
+            self._sip_note = ""
+        if not getattr(self, "_starrefine_user_touched", False):
+            want = "off" if frac >= 0.8 else "Affine Transform"
+            combo.blockSignals(True)
+            self._set_combo_data(combo, want)
+            combo.blockSignals(False)
 
     def _collect_view_candidates(self):
         """Every open view that has image data, tagged with WCS/already-added."""
@@ -2131,8 +3638,7 @@ class MosaicMasterDialog(QDialog):
     def _migrate_mosaic_settings(self):
         s = self.settings
         _ = qs_int(s, "mosaic/poly_degree", 3)
-        _ = qs_float(s, "mosaic/star_sigma", 3.0)
-        _ = qs_float(s, "mosaic/star_fwhm", 3.0)
+        _ = qs_int(s, "mosaic/star_target", MOSAIC_STAR_TARGET)
         # etc...
         s.sync()
 
@@ -2164,6 +3670,73 @@ class MosaicMasterDialog(QDialog):
         if v.size < C:
             v = np.concatenate([v, np.repeat(v[-1:], C - v.size)])
         return v[:C].astype(np.float32).reshape(1, 1, C)
+
+    @staticmethod
+    def _adv_store_panel(adv, idx, name, aligned, coverage):
+        """Write one aligned panel (pedestal stripped, before any overlap fit)
+        to disk, cropped to its footprint. The feather weight is added once it
+        has been computed."""
+        ys, xs = np.nonzero(coverage)
+        if ys.size == 0:
+            return None
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        a3 = aligned if aligned.ndim == 3 else aligned[..., None]
+        crop = np.ascontiguousarray(a3[y0:y1, x0:x1], dtype=np.float32)
+        cov = np.ascontiguousarray(coverage[y0:y1, x0:x1])
+        if cov.any():
+            sat = _ADV_SAT * crop[cov].max(axis=0).astype(np.float64)   # per channel
+        else:
+            sat = np.full(crop.shape[2], np.inf)
+        base = os.path.join(adv["dir"], f"p{idx:03d}")
+        np.save(base + "_img.npy", crop)
+        np.save(base + "_cov.npy", cov)
+        return {"name": name, "bbox": (y0, y1, x0, x1), "C": int(crop.shape[2]),
+                "img_path": base + "_img.npy", "cov_path": base + "_cov.npy",
+                "smooth_path": base + "_w.npy", "sat": sat,
+                "cx": 0.5 * (x0 + x1), "cy": 0.5 * (y0 + y1),
+                "hx": max(0.5 * (x1 - x0), 1.0), "hy": max(0.5 * (y1 - y0), 1.0)}
+
+    def _adv_rematch(self, adv, is_color, _tick):
+        """Joint solve over every overlap, then rebuild the mosaic with it.
+        Returns False if cancelled."""
+        recs = adv["recs"]
+        if len(recs) < 2:
+            return True
+        if not _tick(text=f"Advanced matching: solving {len(recs)} panels together…"):
+            return False
+        params, n_pairs, seams = solve_global_panel_match(recs, self._ref_bg, ref=0)
+        if n_pairs == 0:
+            return True
+        rep = getattr(self, "_build_report", None)
+        if rep is not None and len(rep.get("panels", [])) == len(recs):
+            for k in range(len(recs)):
+                rep["panels"][k]["gain"] = float(np.mean(params[k, :, 0]))
+                rep["panels"][k]["offset"] = float(np.mean(params[k, :, 1]))
+            if rep.get("sigma") is not None:
+                rep["seams"] = seams
+        self.final_mosaic.fill(0.0)
+        self.weight_mosaic.fill(0.0)
+        for k, rec in enumerate(recs):
+            if not _tick(text=f"Advanced matching: rebuilding with panel "
+                              f"{k + 1}/{len(recs)} ({rec['name']})"):
+                return False
+            img = _adv_load(rec["img_path"], mmap=False)
+            cov = _adv_load(rec["cov_path"], mmap=False)
+            w = _adv_load(rec["smooth_path"], mmap=False)
+            corr = apply_panel_match(img, cov, rec, params[k], self._ref_bg)
+            del img, cov
+            y0, y1, x0, x1 = rec["bbox"]
+            if is_color:
+                if corr.shape[2] == 1:
+                    corr = np.repeat(corr, 3, axis=2)
+                self.final_mosaic[y0:y1, x0:x1] += corr * w[..., None]
+            else:
+                self.final_mosaic[y0:y1, x0:x1] += corr[..., 0] * w
+            self.weight_mosaic[y0:y1, x0:x1] += w
+            del corr, w
+        print(f"[Mosaic+] mosaic rebuilt from a joint solve over {n_pairs} overlaps")
+        return True
 
     @staticmethod
     def _strip_pedestal(img, ped, coverage):
@@ -2208,9 +3781,12 @@ class MosaicMasterDialog(QDialog):
         gain = target_med / med
         return img * gain
 
-    def _autostretch_if_requested(self, arr):
-        """Used only for preview windows based on the checkbox."""
-        if not self.autostretchPreviewCheck.isChecked():
+    def _autostretch_if_requested(self, arr, on=None):
+        """Used only for preview windows based on the checkbox. Pass `on` (the
+        checkbox, read on the GUI thread) to run this on a helper thread."""
+        if on is None:
+            on = self.autostretchPreviewCheck.isChecked()
+        if not on:
             # Convert linear [0..1-ish] to 8-bit safely for preview
             a = arr.astype(np.float32)
             v = _valid_data_mask(a, erode_px=0)
@@ -2338,7 +3914,9 @@ class MosaicMasterDialog(QDialog):
             except Exception:
                 valid_px.append(int(np.prod(itm["image"].shape[:2])))
 
-        order = [max(range(n), key=lambda i: (valid_px[i], -d2(boxes[i])))]
+        pinned = [i for i, it in enumerate(items) if it.get("pinned_ref")]
+        order = ([pinned[0]] if pinned else
+                 [max(range(n), key=lambda i: (valid_px[i], -d2(boxes[i])))])
         print(f"[Mosaic] anchor panel: {self._item_label(items[order[0]])} "
               f"({valid_px[order[0]]:,} valid px) — defines the reference "
               f"frame and sky level")
@@ -2382,7 +3960,7 @@ class MosaicMasterDialog(QDialog):
         return H
 
     def _warp_via_wcs_homography(self, img, src_wcs, dst_wcs, out_shape,
-                                 H_cache=None, src_mask=None):
+                                 H_cache=None, src_mask=None, border_value=0.0):
         """
         Fast path: single homography warp per image (per mosaic WCS).
         If H_cache is provided as a dict, we reuse computed H.
@@ -2401,13 +3979,18 @@ class MosaicMasterDialog(QDialog):
             if H_cache is not None:
                 H_cache[key] = H33
 
+        bv = np.resize(np.asarray(border_value, np.float64).ravel(),
+                       img.shape[2] if img.ndim == 3 else 1)
         if img.ndim == 2:
-            out = cv2.warpPerspective(img, H33, (W, H), flags=cv2.INTER_LANCZOS4)
+            out = cv2.warpPerspective(img, H33, (W, H), flags=cv2.INTER_LANCZOS4,
+                                      borderMode=cv2.BORDER_CONSTANT, borderValue=float(bv[0]))
         else:
             # Warp each channel
             out = np.empty((H, W, img.shape[2]), dtype=np.float32)
             for c in range(img.shape[2]):
-                out[..., c] = cv2.warpPerspective(img[..., c], H33, (W, H), flags=cv2.INTER_LANCZOS4)
+                out[..., c] = cv2.warpPerspective(img[..., c], H33, (W, H), flags=cv2.INTER_LANCZOS4,
+                                                  borderMode=cv2.BORDER_CONSTANT,
+                                                  borderValue=float(bv[c]))
 
         if src_mask is None:
             return out
@@ -2453,7 +4036,8 @@ class MosaicMasterDialog(QDialog):
         return (x0, y0, x1, y1)
 
     def _warp_via_wcs_remap_exact(self, src_img, src_wcs, dst_wcs, out_shape,
-                                  tile=512, progress_cb=None, src_mask=None):
+                                  tile=512, progress_cb=None, src_mask=None,
+                                  border_value=0.0):
         """
         Inverse mapping dst -> world -> src, tiled, restricted to the panel's
         actual footprint in the destination frame. Outside that box the SIP
@@ -2478,6 +4062,7 @@ class MosaicMasterDialog(QDialog):
 
         dst = (np.zeros((H, W, nch), np.float32) if is_color
                else np.zeros((H, W), np.float32))
+        bv = np.resize(np.asarray(border_value, np.float64).ravel(), nch)
         want_mask = src_mask is not None
         dstm = np.zeros((H, W), np.float32) if want_mask else None
         mask_f = (np.ascontiguousarray(src_mask.astype(np.float32))
@@ -2559,12 +4144,12 @@ class MosaicMasterDialog(QDialog):
                             dst[y0:y1, x0:x1, c] = cv2.remap(
                                 src_img[..., c], mapx, mapy,
                                 interpolation=cv2.INTER_LANCZOS4,
-                                borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=float(bv[c]))
                     else:
                         dst[y0:y1, x0:x1] = cv2.remap(
                             src_img, mapx, mapy,
                             interpolation=cv2.INTER_LANCZOS4,
-                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=float(bv[0]))
 
                     if want_mask:
                         # INTER_LINEAR, not LANCZOS4: Lanczos rings on a 0/1
@@ -2700,42 +4285,135 @@ class MosaicMasterDialog(QDialog):
 
     # ---------- Add / Remove ----------
     def add_image(self):
+        start = str(self.settings.value("mosaic/last_dir", "") or "")
         paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Add Image(s)",
-            "",
-            "Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.fz *.xisf *.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef)"
-        )
-        if not paths:
-            return
+            self, "Add Panels", start,
+            "Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.fts *.fz *.xisf "
+            "*.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef)")
+        if paths:
+            self._persist("mosaic/last_dir", os.path.dirname(paths[0]))
+            self._add_paths(paths)
 
-        for path in paths:
-            arr, header, bitdepth, ismono = load_image(path)
-            header = sanitize_wcs_header(header) if header else None
-            wcs_obj = get_wcs_from_header(header) if header else None
-
-            base_name = os.path.basename(path)  # <- what you want in status strings
-
-            d = {
-                "path": path,            # internal identity
-                "display": base_name,    # user-facing label
-                "image": arr,
-                "header": header,
-                "wcs": wcs_obj,
-                "bit_depth": bitdepth,
-                "is_mono": ismono,
-                "transform": None
-            }
-            self.loaded_images.append(d)
-
-            # list text can include decorations like [WCS]
-            list_text = base_name + (" [WCS]" if wcs_obj is not None else "")
-            item = QListWidgetItem(list_text)
-            item.setToolTip(path)  # still used for removal
-            self.images_list.addItem(item)
-
-        self.update_status()
+    def _add_paths(self, paths):
+        """Load panel files (from the file dialog or dropped on the list)."""
+        have = {str(it.get("path")) for it in self.loaded_images}
+        added, failed = 0, []
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for path in paths:
+                if not path or str(path) in have or os.path.isdir(path):
+                    continue
+                if self._opt_seestar() and str(path).lower().endswith(
+                        (".fit", ".fits", ".fts", ".fz")):
+                    lazy = self._lazy_item(path)
+                    if lazy is not None:
+                        self.loaded_images.append(lazy)
+                        have.add(str(path))
+                        added += 1
+                        if added % 25 == 0:
+                            self.status_label.setText(f"Adding frames… {added}")
+                            QApplication.processEvents()
+                        continue
+                self.status_label.setText(f"Loading {os.path.basename(path)}…")
+                QApplication.processEvents()
+                try:
+                    arr, header, bitdepth, ismono = load_image(path)
+                except Exception as e:
+                    print(f"[Mosaic] could not load {path}: {e}")
+                    arr = None
+                if arr is None:
+                    failed.append(os.path.basename(path))
+                    continue
+                header = sanitize_wcs_header(header) if header else None
+                wcs_obj = get_wcs_from_header(header) if header else None
+                self.loaded_images.append({
+                    "path": path,
+                    "display": os.path.basename(path),
+                    "image": arr,
+                    "header": header,
+                    "wcs": wcs_obj,
+                    "bit_depth": bitdepth,
+                    "is_mono": ismono,
+                    "transform": None,
+                })
+                have.add(str(path))
+                added += 1
+        finally:
+            QApplication.restoreOverrideCursor()
         self._refresh_sip_autodisable()
+        self._refresh_panels()
+        if added:
+            self._mark_result_stale()
+        msg = f"{len(self.loaded_images)} panels loaded"
+        if added:
+            msg += f" ({added} added)"
+        if failed:
+            msg += f". Could not read: {', '.join(failed[:4])}" + ("…" if len(failed) > 4 else "")
+        self.status_label.setText(msg + ".")
+
+    def add_folder(self):
+        start = str(self.settings.value("mosaic/last_dir", "") or "")
+        d = QFileDialog.getExistingDirectory(self, "Add a Folder of Frames", start)
+        if not d:
+            return
+        self._persist("mosaic/last_dir", d)
+        exts = (".fit", ".fits", ".fts", ".fz", ".xisf", ".tif", ".tiff")
+        paths = sorted(os.path.join(d, f) for f in os.listdir(d)
+                       if f.lower().endswith(exts) and os.path.isfile(os.path.join(d, f)))
+        if not paths:
+            self.status_label.setText("No image files in that folder.")
+            return
+        self._add_paths(paths)
+
+    def _lazy_item(self, path):
+        """A frame registered from its header only: pixels are read when the
+        frame is solved and stacked, so hundreds of frames cost no memory."""
+        try:
+            hdr = fits.getheader(path)
+        except Exception as e:
+            print(f"[Mosaic] could not read the header of {path}: {e}")
+            return None
+        H = int(hdr.get("NAXIS2", 0) or 0); W = int(hdr.get("NAXIS1", 0) or 0)
+        if H <= 0 or W <= 0:
+            return None
+        h2 = sanitize_wcs_header(hdr) if hdr else None
+        item = {"path": path, "display": os.path.basename(path), "image": None,
+                "lazy": True, "header": hdr, "wcs": get_wcs_from_header(h2) if h2 else None,
+                "bit_depth": None, "is_mono": int(hdr.get("NAXIS", 2)) == 2 and not hdr.get("BAYERPAT"),
+                "transform": None, "shape": (H, W)}
+        if item["wcs"] is None:
+            try:
+                import setiastro.saspro.seestar_mosaic as _sm
+                if not hasattr(self, "_seestar_cache"):
+                    self._seestar_cache = _sm.load_cache()
+                hs = _sm.cache_get(self._seestar_cache, path)
+                if hs:
+                    self._seestar_adopt(item, hs, "cached")
+                else:
+                    why = _sm.cache_failure(self._seestar_cache, path)
+                    if why:
+                        item["solve_state"] = "failed"
+                        item["solve_error"] = why
+                        item["failed_cached"] = True
+            except Exception:
+                pass
+        return item
+
+    def _ensure_loaded(self, item):
+        if item.get("image") is not None:
+            return True
+        try:
+            arr, header, bitdepth, ismono = load_image(item["path"])
+        except Exception as e:
+            print(f"[Mosaic] could not load {item.get('path')}: {e}")
+            return False
+        if arr is None:
+            return False
+        item["image"] = arr
+        item["bit_depth"] = bitdepth
+        item["is_mono"] = ismono
+        item.pop("lazy", None)
+        return True
 
     def add_image_from_view(self):
         entries = self._collect_view_candidates()
@@ -2766,18 +4444,14 @@ class MosaicMasterDialog(QDialog):
                 "transform": None,
             })
 
-            item = QListWidgetItem(
-                e["base_label"] + (" [WCS]" if e["wcs"] is not None else ""))
-            item.setToolTip(e["key"])
-            self.images_list.addItem(item)
-
-        self.update_status()
         self._refresh_sip_autodisable()
+        self._refresh_panels()
+        if chosen:
+            self._mark_result_stale()
         n_solved = sum(1 for e in chosen if e["wcs"] is not None)
         self.status_label.setText(
-            f"{len(self.loaded_images)} images loaded "
-            f"({len(chosen)} added, {n_solved} already solved).")
-
+            f"{len(self.loaded_images)} panels loaded "
+            f"({len(chosen)} added, {n_solved} already plate-solved).")
 
     def _item_label(self, item: dict) -> str:
         # 1) explicit display label wins
@@ -2792,35 +4466,36 @@ class MosaicMasterDialog(QDialog):
         return os.path.basename(str(p)) if p else "Item"
 
     def remove_selected(self):
-        s = self.images_list.selectedItems()
-        if not s:
-            QMessageBox.information(self, "Remove", "No item selected.")
+        rows = sorted({i.row() for i in self.panel_table.selectionModel().selectedRows()},
+                      reverse=True)
+        if not rows:
+            self.status_label.setText("Select the panels to remove.")
             return
-        for itm in s:
-            row = self.images_list.row(itm)
-            self.images_list.takeItem(row)
-            p = itm.toolTip()
-            self.loaded_images = [x for x in self.loaded_images if x["path"] != p]
+        for r in rows:
+            if 0 <= r < len(self.loaded_images):
+                del self.loaded_images[r]
+        self._refresh_sip_autodisable()
+        self._refresh_panels()
+        self._mark_result_stale()
         self.update_status()
 
     def update_status(self):
         c = len(self.loaded_images)
-        self.status_label.setText(f"{c} images loaded.")
+        self.status_label.setText(f"{c} panel{'s' if c != 1 else ''} loaded."
+                                  if c else "Add panels to begin.")
 
     # ---------- Preview ----------
     def preview_selected(self):
-        s = self.images_list.selectedItems()
-        if not s:
-            QMessageBox.information(self, "Preview", "No item selected.")
+        rows = sorted({i.row() for i in self.panel_table.selectionModel().selectedRows()})
+        if not rows or not (0 <= rows[0] < len(self.loaded_images)):
+            self.status_label.setText("Select a panel to preview.")
             return
-        path = s[0].toolTip()
-        for d in self.loaded_images:
-            if d["path"] == path:
-                preview_image = d["image"]
-                disp = self._autostretch_if_requested(preview_image)
-                MosaicPreviewWindow(disp, title="Preview Selected", parent=self,
-                                    push_cb=self._push_mosaic_to_new_doc).show()
-                break
+        d = self.loaded_images[rows[0]]
+        if not self._ensure_loaded(d):
+            self.status_label.setText(f"Could not read {self._item_label(d)}.")
+            return
+        disp = self._autostretch_if_requested(d["image"])
+        MosaicPreviewWindow(disp, title=self._item_label(d), parent=self).show()
 
     # --- WCS/SIP helpers ---------------------------------------------------------
     def _ensure_image_naxis(self, hdr: dict | fits.Header, shape):
@@ -2902,16 +4577,7 @@ class MosaicMasterDialog(QDialog):
             item["wcs"] = item.pop("_src_wcs", item.get("wcs"))
 
     def _sync_list_labels(self):
-        n = min(self.images_list.count(), len(self.loaded_images))
-        for i in range(n):
-            item = self.loaded_images[i]
-            img = item.get("image")
-            if not isinstance(img, np.ndarray) or img.ndim < 2:
-                continue
-            h, w = img.shape[:2]
-            tag = " [WCS]" if item.get("wcs") is not None else ""
-            self.images_list.item(i).setText(
-                f"{self._item_label(item)} — {w}×{h}{tag}")
+        self._refresh_panels()
 
     def _shift_wcs_for_crop(self, header, wcs, x0, y0, new_w, new_h):
         """Shift CRPIX by the crop origin and rewrite NAXIS to the new size.
@@ -3226,16 +4892,20 @@ class MosaicMasterDialog(QDialog):
             QMessageBox.warning(self, "Align", "No images to align.")
             return
 
-        # Crop first. SRGC needs a WCS, so it runs after plate solving below.
-        if not self._preprocess_panels():
+        # Seestar frames: plate solve every frame, place by WCS, average.
+        if self._opt_seestar():
+            self._build_seestar()
             return
 
-        # Seestar mode is its own pipeline. SRGC still helps when panels
-        # already carry a plate solution.
-        if self.seestarCheckBox.isChecked():
-            if not self._srgc_panels():
+        # Frames added header-only (Seestar mode) need their pixels here.
+        for it in self.loaded_images:
+            if it.get("image") is None and not self._ensure_loaded(it):
+                QMessageBox.warning(self, "Mosaic Master",
+                                    f"Could not read {self._item_label(it)}.")
                 return
-            self.align_images_seestar_mode()
+
+        # Crop first. SRGC needs a WCS, so it runs after plate solving below.
+        if not self._preprocess_panels():
             return
         try:
             blend_sharp = float(self.blendSharpSlider.value()) / 10.0
@@ -3420,7 +5090,7 @@ class MosaicMasterDialog(QDialog):
         # ------------------------------------------------------------
         # 5) Background reference — measured once from the first panel
         # ------------------------------------------------------------
-        did_normalize = bool(self.normalizeCheckBox.isChecked())
+        did_normalize = bool(self._opt_normalize())
 
         # --- NEW: detect a mixed linear/stretched panel set ------------------
         # Affine normalization can only reconcile panels on the same tone scale.
@@ -3499,6 +5169,17 @@ class MosaicMasterDialog(QDialog):
 
         use_bg_match = bool(did_normalize and self._ref_bg is not None)
 
+        # Advanced panel matching: keep every aligned panel (cropped to its
+        # footprint, on disk) for one joint solve after the first pass.
+        adv = None
+        want_adv = bool(self._opt_advanced())
+        if want_adv and not use_bg_match:
+            print("[Mosaic+] advanced matching needs the sky-level match "
+                  "(Normalize on, sky measurable); using the standard match.")
+        elif want_adv:
+            adv = {"dir": tempfile.mkdtemp(prefix="saspro_mosaic_"), "recs": []}
+            print(f"[Mosaic+] advanced panel matching on; panels kept in {adv['dir']}")
+
         # Legacy fallback target, only used if the estimator bailed out
         if did_normalize and not use_bg_match:
             self._mosaic_target_median = self._target_median_from_first(
@@ -3512,13 +5193,23 @@ class MosaicMasterDialog(QDialog):
             self._H_cache = {}
 
         # WCS-only toggle (no star alignment/refinement)
-        wcs_only = bool(getattr(self, "wcsOnlyCheckBox", None) and self.wcsOnlyCheckBox.isChecked())
+        wcs_only = bool(self._opt_wcs_only())
 
         # ------------------------------------------------------------
         # 6) Main loop: normalize -> reproject -> (optional) star align -> accumulate
         # ------------------------------------------------------------
         first_image = True
         PED = float(self._BG_PED)
+
+        # What the result map shows: each panel's footprint, how it was
+        # placed, its brightness correction, and how well each seam matched.
+        report = {"panels": [], "seams": [], "shape": (mosaic_height, mosaic_width),
+                  "mode": ("advanced" if adv is not None else
+                           "standard" if use_bg_match else "off"),
+                  "sigma": (float(np.mean(np.asarray(self._ref_sig, np.float64)))
+                            if use_bg_match and getattr(self, "_ref_sig", None) is not None
+                            else None)}
+        self._build_report = report
 
         n_panels = len(wcs_items)
         SUBSTEPS = 4              # reproject, align, match, accumulate
@@ -3542,7 +5233,10 @@ class MosaicMasterDialog(QDialog):
             # The pedestal trick downstream can only see pixels that fall
             # OUTSIDE the warp footprint, so interior holes have to be tracked
             # explicitly, from here all the way through to the coverage mask.
-            src_valid = _valid_data_mask(img_lin)
+            # No trim here: a no-data pixel is left out at its own pixel. The
+            # only edge that needs trimming is the frame's outside edge, after
+            # the warp (_footprint_trim).
+            src_valid = _valid_data_mask(img_lin, erode_px=0)
             src_vfrac = _valid_frac(src_valid)
             if src_vfrac < 0.999:
                 print(f"[Mosaic] {_name}: {100.0 * (1.0 - src_vfrac):.1f}% of the "
@@ -3570,31 +5264,27 @@ class MosaicMasterDialog(QDialog):
                 img_lin = self._normalize_linear(img_lin, float(self._mosaic_target_median),
                                                  valid=src_valid)
 
-            # --- flatten the no-data region to the panel's own sky ------------
-            # The sky shift above moved the holes along with everything else;
-            # left alone they are a hard step against real data, and Lanczos
-            # would ring across that step into pixels we are keeping. Filling
-            # them flat removes the step. They are still excluded from the
-            # mosaic -- the warped mask below is what does the excluding.
+            # --- the panel's sky: fills its no-data, and the world outside it --
+            # Left alone, no-data inside the frame (after the sky shift above)
+            # and the warp's fill outside it are hard steps against real data,
+            # and Lanczos rings across a step into the pixels we keep. Both are
+            # filled with the panel's sky, so there is no step to ring on. They
+            # are still excluded from the mosaic: the warped mask below does that.
+            if img_lin.ndim == 3:
+                C = img_lin.shape[2]
+                fv = (np.resize(np.asarray(self._ref_bg, np.float32).ravel(), C)
+                      if use_bg_match else _masked_median(img_lin, src_valid)).astype(np.float32)
+            else:
+                fv = np.float32(float(np.mean(np.asarray(self._ref_bg, np.float32)))
+                                if use_bg_match else float(np.median(img_lin[src_valid])))
             if src_vfrac < 1.0:
                 if np.may_share_memory(img_lin, arr):
                     img_lin = img_lin.copy()
-                if img_lin.ndim == 3:
-                    C = img_lin.shape[2]
-                    if use_bg_match:
-                        fv = np.resize(
-                            np.asarray(self._ref_bg, np.float32).ravel(), C)
-                    else:
-                        fv = _masked_median(img_lin, src_valid)
-                    img_lin[~src_valid] = fv.astype(np.float32)
-                else:
-                    fv = (float(np.mean(np.asarray(self._ref_bg, np.float32)))
-                          if use_bg_match
-                          else float(np.median(img_lin[src_valid])))
-                    img_lin[~src_valid] = np.float32(fv)
+                img_lin[~src_valid] = fv
 
-            # --- carry the footprint through the warp on a pedestal ---
+            # --- warp on a pedestal, with the sky (on the pedestal) outside ---
             img_ped = (img_lin + PED).astype(np.float32, copy=False)
+            border_ped = np.asarray(fv, np.float64) + PED
 
             # --- Reprojection mode ---
             mode = self.reprojectModeCombo.currentText()
@@ -3602,7 +5292,7 @@ class MosaicMasterDialog(QDialog):
             if mode.startswith("Fast — Homography"):
                 reprojected, cov_warp = self._warp_via_wcs_homography(
                     img_ped, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width),
-                    H_cache=self._H_cache, src_mask=src_valid
+                    H_cache=self._H_cache, src_mask=src_valid, border_value=border_ped
                 )
                 reprojected = self._polish_reprojected(
                     reprojected.astype(np.float32, copy=False))
@@ -3613,7 +5303,7 @@ class MosaicMasterDialog(QDialog):
                 # Also the default for any unrecognized/legacy mode string.
                 reprojected, cov_warp = self._warp_via_wcs_remap_exact(
                     img_ped, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width),
-                    tile=512, src_mask=src_valid,
+                    tile=512, src_mask=src_valid, border_value=border_ped,
                     progress_cb=lambda f, b=_base, i=idx, nm=_name: _tick(
                         b + f, f"Panel {i + 1}/{n_panels} — reprojecting {nm} "
                                f"({f * 100:.0f}%)")
@@ -3625,10 +5315,11 @@ class MosaicMasterDialog(QDialog):
             # value from no-data and is not trustworthy.
             MASK_KEEP = 0.999
             cov_warp = np.asarray(cov_warp, np.float32)
+            # _polish_reprojected zeroes the canvas's outermost pixel ring
+            cov_warp[:1, :] = 0; cov_warp[-1:, :] = 0; cov_warp[:, :1] = 0; cov_warp[:, -1:] = 0
 
             # Pedestal-free grayscale for star detection (astroalign never sees PED)
-            cov_r = (((reprojected if reprojected.ndim == 2 else reprojected[..., 0])
-                      > (0.995 * PED)) & (cov_warp >= MASK_KEEP))
+            cov_r = cov_warp >= MASK_KEEP
             reproj_red = self._strip_pedestal(
                 reprojected if reprojected.ndim == 2 else reprojected[..., 0], PED, cov_r
             )
@@ -3646,15 +5337,17 @@ class MosaicMasterDialog(QDialog):
             panel_has_sip = self._wcs_has_sip(itm["wcs"])
             skip_star_align = wcs_only or panel_has_sip
 
+            panel_gain = panel_offset = seam_rec = None
             if skip_star_align:
+                align_note = ("WCS placement (SIP distortion)" if panel_has_sip
+                              else "WCS placement (star refine off)")
                 aligned = reprojected
             else:
-                # Pre-alignment footprint (pedestal intact) for the overlap test.
-                gray_ped = reprojected[..., 0] if reprojected.ndim == 3 else reprojected
                 if first_image:
+                    align_note = "reference panel"
                     aligned = reprojected
                 else:
-                    transform_method = self.transform_combo.currentText()
+                    transform_method = self._opt_transform()
                     with np.errstate(divide="ignore", invalid="ignore"):
                         mos_now = self.final_mosaic / np.maximum(
                             self.weight_mosaic[..., None] if self.final_mosaic.ndim == 3
@@ -3668,13 +5361,13 @@ class MosaicMasterDialog(QDialog):
                     # Star-match only in the overlap. Feeding the whole canvas
                     # spreads control points across regions that can't correspond,
                     # starving the RANSAC of usable bright anchors.
-                    ov = ((gray_ped > 0.5 * PED) & (cov_warp >= MASK_KEEP)
-                          & (self.weight_mosaic > 0))
+                    ov = (cov_r & (self.weight_mosaic > 0))
                     n_ov_stars = int(ov.sum())
                     if n_ov_stars < 2000:
                         print(f"[Mosaic] {self._item_label(itm)}: overlap "
                               f"{n_ov_stars}px too small for star alignment, "
                               f"WCS placement only.")
+                        align_note = "WCS placement (overlap too small for star matching)"
                         transform_matrix = np.eye(2, 3, dtype=np.float32)
                     else:
                         ys, xs = np.nonzero(ov)
@@ -3688,10 +5381,12 @@ class MosaicMasterDialog(QDialog):
                         try:
                             transform_obj, (src_pts, dst_pts) = _aa_find_transform_with_backoff(tgt, ref)
                             transform_matrix = transform_obj.params[0:2, :].astype(np.float32)
+                            align_note = f"stars ({len(src_pts)} matched)"
                         except Exception as e:
                             print(f"[Mosaic] astroalign fallback on {self._item_label(itm)}: "
                                   f"{type(e).__name__}: {e}")
                             self.status_label.setText(f"Astroalign failed: {e}. Using identity transform.")
+                            align_note = "WCS placement (star matching failed)"
                             transform_matrix = np.eye(2, 3, dtype=np.float32)
 
                     affine_aligned = cv2.warpAffine(
@@ -3714,6 +5409,7 @@ class MosaicMasterDialog(QDialog):
                             extra_mask=cov_warp, valid=cov_r)
                         if refined_result is not None:
                             aligned, best_inliers2, cov_warp = refined_result
+                            align_note += f", {transform_method.split()[0].lower()} refinement ({best_inliers2} inliers)"
                             self.status_label.setText(
                                 f"Refined alignment succeeded with {best_inliers2} inliers.")
                         else:
@@ -3725,27 +5421,18 @@ class MosaicMasterDialog(QDialog):
                 aligned = np.repeat(aligned[..., None], 3, axis=2)
 
             # --- real footprint, then drop the pedestal ---
-            gray_ped = aligned[..., 0] if aligned.ndim == 3 else aligned
-
-            # Two independent tests, both required:
-            #
-            #  * > 0.995*PED catches interpolation that reached past the panel
-            #    EDGE into borderValue=0 (a fully covered pixel is PED + data,
-            #    and data >= 0).
-            #  * cov_warp catches no-data INSIDE the source frame. The pedestal
-            #    test is blind to those: the holes sit at exactly PED after the
-            #    +PED shift, so they pass it. This is what made a 3-panel mosaic
-            #    report 100% coverage of a 2x2 canvas.
-            #
-            # Lanczos4 spans 8x8, so edge contamination extends ~4px in; erode
-            # to clear the ringing band, where overshoot can push a contaminated
-            # pixel back above PED.
-            EDGE_TRIM = 12
-            coverage = (gray_ped > (0.995 * PED)) & (cov_warp >= MASK_KEEP)
-            if EDGE_TRIM > 0 and coverage.any():
-                k = cv2.getStructuringElement(
-                    cv2.MORPH_ELLIPSE, (2 * EDGE_TRIM + 1, 2 * EDGE_TRIM + 1))
-                coverage = cv2.erode(coverage.astype(np.uint8), k).astype(bool)
+            # Coverage is where the warped validity mask is 1: a pixel that drew
+            # any part of its value from no-data is out (a bad pixel: its own
+            # 2x2 after the warp; the world beyond the frame). The warp filled
+            # both with the panel's sky, so there is no step for Lanczos to ring
+            # on; what is left is the band within Lanczos reach (4 px) of the
+            # frame's outside edge, where the fill is mixed in -- trimmed from the
+            # outside only (_footprint_trim), so bad pixels are never grown.
+            # (This replaces a pedestal threshold and a 12 px erosion of the whole
+            # mask, which grew every isolated bad pixel into a black dot,
+            # GitHub issue #138.)
+            EDGE_TRIM = 4
+            coverage = _footprint_trim(np.asarray(cov_warp) >= MASK_KEEP, EDGE_TRIM)
 
             if not coverage.any():
                 print(f"[Mosaic] {_name}: empty footprint, skipping.")
@@ -3753,6 +5440,16 @@ class MosaicMasterDialog(QDialog):
             print(f"[Mosaic] {_name}: coverage {100.0 * _valid_frac(coverage):.1f}% "
                   f"of canvas ({int(coverage.sum())} px)")
             aligned = self._strip_pedestal(aligned, PED, coverage)
+
+            adv_rec = None
+            if adv is not None:
+                try:
+                    adv_rec = self._adv_store_panel(adv, idx, _name, aligned, coverage)
+                except Exception as e:
+                    print(f"[Mosaic+] could not store {_name} ({type(e).__name__}: {e}); "
+                          f"advanced matching off")
+                    shutil.rmtree(adv["dir"], ignore_errors=True)
+                    adv = None
 
             _tick(_base + 2, f"Panel {idx + 1}/{n_panels} — matching brightness ({_name})")
 
@@ -3766,6 +5463,7 @@ class MosaicMasterDialog(QDialog):
                             self.weight_mosaic[..., None] if self.final_mosaic.ndim == 3
                             else self.weight_mosaic, 1e-12)
                     mos_est = np.nan_to_num(mos_est, nan=0.0, posinf=0.0, neginf=0.0)
+                    S0, R0 = _overlap_blocks(aligned, mos_est, overlap)
                     a, b, n = solve_linear_match(aligned, mos_est, overlap,
                                                  fit_scale=self._bg_fit_gain,
                                                  pivot=self._ref_bg)
@@ -3774,6 +5472,17 @@ class MosaicMasterDialog(QDialog):
                                + pv + self._bg_offset(b, aligned)
                                ).astype(np.float32, copy=False)
                     aligned[~coverage] = 0.0
+                    panel_gain = float(np.mean(a))
+                    panel_offset = float(np.mean(b))
+                    try:
+                        S1, R1 = _overlap_blocks(aligned, mos_est, overlap)
+                        if S0 is not None and S1 is not None:
+                            seam_rec = {"i": len(report["panels"]), "j": None,
+                                        "poly": coverage_polygon(overlap),
+                                        "before": float(np.median(np.abs(S0 - R0))),
+                                        "after": float(np.median(np.abs(S1 - R1))), "n": int(n)}
+                    except Exception as e:
+                        print(f"[Mosaic] seam measurement skipped: {e}")
                     print(f"[Mosaic] {self._item_label(itm)}: a={a}, b={b} "
                           f"({n} blocks)")
                 else:
@@ -3801,6 +5510,11 @@ class MosaicMasterDialog(QDialog):
             # overlap-relative feather. p=1 recovers the old linear ratio.
             smooth_mask = np.power(d, blend_sharp, dtype=np.float32)
             smooth_mask *= binary_mask
+            if adv is not None and adv_rec is not None:
+                y0_, y1_, x0_, x1_ = adv_rec["bbox"]
+                np.save(adv_rec["smooth_path"],
+                        np.ascontiguousarray(smooth_mask[y0_:y1_, x0_:x1_]))
+                adv["recs"].append(adv_rec)
 
             _tick(_base + 3, f"Panel {idx + 1}/{n_panels} — blending {_name}")
 
@@ -3811,6 +5525,16 @@ class MosaicMasterDialog(QDialog):
                 self.final_mosaic += gray_aligned * smooth_mask
             self.weight_mosaic += smooth_mask
 
+            report["panels"].append({
+                "idx": next((k for k, x in enumerate(self.loaded_images) if x is itm), None),
+                "name": _name, "poly": coverage_polygon(cv2.morphologyEx(
+                    coverage.astype(np.uint8), cv2.MORPH_CLOSE,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))).astype(bool)),
+                "align": align_note, "gain": panel_gain, "offset": panel_offset,
+                "ref": not report["panels"]})
+            if seam_rec is not None and report["sigma"] is not None:
+                report["seams"].append(seam_rec)
+
             # Flip only once something is actually ON the canvas. Flipping it
             # inside the alignment branch (as before) let panel 0 fall into the
             # overlap-refinement block below and print a misleading
@@ -3818,6 +5542,21 @@ class MosaicMasterDialog(QDialog):
             first_image = False
 
             _tick(_base + SUBSTEPS, f"Panel {idx + 1}/{n_panels} done — {_name}")
+
+        if adv is not None:
+            try:
+                if not self._adv_rematch(adv, is_color, _tick):
+                    _finish()
+                    self.status_label.setText("Cancelled.")
+                    return
+            except Exception as e:
+                traceback.print_exc()
+                print(f"[Mosaic+] advanced matching failed ({type(e).__name__}: {e}); "
+                      f"keeping the standard match")
+            finally:
+                adv["recs"] = []
+                gc.collect()
+                shutil.rmtree(adv["dir"], ignore_errors=True)
 
         _tick(n_panels * SUBSTEPS, "Normalizing accumulated mosaic...")
 
@@ -3867,12 +5606,8 @@ class MosaicMasterDialog(QDialog):
         _tick(n_panels * SUBSTEPS + 1, "Final Mosaic Ready.")
         _finish()
 
-        MosaicPreviewWindow(
-            display_image,
-            title=("Final Mosaic (WCS-only)" if wcs_only else "Final Mosaic"),
-            parent=self,
-            push_cb=self._push_mosaic_to_new_doc
-        ).show()
+        self._show_result(display_image,
+                          "Final Mosaic (WCS-only)" if wcs_only else "Final Mosaic")
 
         self.status_label.setText(
             f"Final mosaic ready — {n_panels} panels, "
@@ -4161,7 +5896,8 @@ class MosaicMasterDialog(QDialog):
 
         self.status_label.setText("🔄 Image Registration Started...")
         self.spinnerLabel.show()
-        self.spinnerMovie.start()
+        if self.spinnerMovie:
+            self.spinnerMovie.start()
         QApplication.processEvents()
 
         total_files = len(self.loaded_images)  # how many images in total
@@ -4191,7 +5927,9 @@ class MosaicMasterDialog(QDialog):
                 print(f"[DEBUG] No header for {item.get('path','')}")
                 return None
             try:
-                wcs = WCS(header)
+                # the two image axes only: a colour FITS (NAXIS3 = 3) would
+                # otherwise give a 3-axis WCS and the 2-D lookup fails
+                wcs = WCS(header, naxis=2)
                 naxis1 = int(header.get("NAXIS1", 0))
                 naxis2 = int(header.get("NAXIS2", 0))
                 center_pix = np.array([naxis1 / 2.0, naxis2 / 2.0])
@@ -4246,6 +5984,13 @@ class MosaicMasterDialog(QDialog):
                 valid_items.append(item)
 
         if not centers:
+            try:
+                progress.close()
+            except Exception:
+                pass
+            if self.spinnerMovie:
+                self.spinnerMovie.stop()
+            self.spinnerLabel.hide()
             QMessageBox.warning(self, "Align", "No images with valid WCS found.")
             return
 
@@ -4880,7 +6625,8 @@ class MosaicMasterDialog(QDialog):
             final_mosaic /= max_val
 
         self.final_mosaic = final_mosaic
-        self.spinnerMovie.stop()
+        if self.spinnerMovie:
+            self.spinnerMovie.stop()
         self.spinnerLabel.hide()
         self.status_label.setText("Seestar Mode alignment (sum/divide) complete.")
         QApplication.processEvents()
@@ -4893,8 +6639,7 @@ class MosaicMasterDialog(QDialog):
             self._gaia_solve_final_mosaic()
 
         display_image = self.stretch_for_display(self.final_mosaic)
-        mosaic_win = MosaicPreviewWindow(display_image, title="Robot Telescope Mosaic", parent=self,
-                    push_cb=self._push_mosaic_to_new_doc).show()
+        self._show_result(display_image, "Robot Telescope Mosaic")
 
     # ---------- Star alignment using triangle matching ----------
 
@@ -4948,10 +6693,24 @@ class MosaicMasterDialog(QDialog):
         self.status_label.setText("Refinement: Detecting stars in mosaic and affine-aligned images...")
         QApplication.processEvents()
         # Increase max_stars to 50 for debugging purposes.
-        mosaic_stars_masked = self.detect_stars(
-            np.where(overlap_mask, mosaic_gray, 0), max_stars=300, valid=overlap_mask)
-        new_stars_aligned = self.detect_stars(
-            np.where(overlap_mask, affine_aligned_gray, 0), max_stars=300, valid=overlap_mask)
+        # Both sides at ONE threshold, the lower of the two each would pick on
+        # its own, so the two lists reach the same depth and their fluxes
+        # (normalized by the median for matching) describe the same stars.
+        mosaic_in = np.where(overlap_mask, mosaic_gray, 0)
+        new_in = np.where(overlap_mask, affine_aligned_gray, 0)
+        mosaic_stars_masked, sig_m = self.detect_stars(
+            mosaic_in, max_stars=300, valid=overlap_mask, with_sigma=True)
+        new_stars_aligned, sig_n = self.detect_stars(
+            new_in, max_stars=300, valid=overlap_mask, with_sigma=True)
+        if sig_m is not None and sig_n is not None and sig_m != sig_n:
+            if sig_m > sig_n:
+                mosaic_stars_masked, sig_m = self.detect_stars(
+                    mosaic_in, max_stars=300, valid=overlap_mask, sigma=sig_n, with_sigma=True)
+            else:
+                new_stars_aligned, sig_n = self.detect_stars(
+                    new_in, max_stars=300, valid=overlap_mask, sigma=sig_m, with_sigma=True)
+        print(f"Star detection threshold: {sig_m}σ / {sig_n}σ")
+        del mosaic_in, new_in
 
         # Debug: Print out the star lists.
         print("Mosaic stars (refined alignment):")
@@ -5175,45 +6934,49 @@ class MosaicMasterDialog(QDialog):
         return disp
 
 
-    def detect_stars(self, image2d, max_stars=50, valid=None):
-        """Detect the brightest stars in `image2d`.
+    def detect_stars(self, image2d, max_stars=50, valid=None, sigma=None, with_sigma=False):
+        """Detect the brightest stars in `image2d`: [(x, y, flux), ...],
+        brightest first, at most `max_stars`.
 
-        `valid` marks the real-data pixels. Without it, the zeroed remainder of
-        a mosaic canvas is folded into the sigma-clipped background: the median
-        collapses toward 0 and the standard deviation inflates, so the
-        threshold ends up describing the no-data region rather than the sky.
-        It defaults to the frame's non-zero pixels.
+        The threshold is chosen by star count, not set by hand: the highest
+        rung of sep_tiled.STAR_LADDER (100 sigma down to 3) that finds at least
+        the user's "Stars to detect" (sep_tiled.waterfall_extract). `sigma`
+        forces one threshold instead. With `with_sigma`, returns
+        (stars, threshold used); the threshold is None when nothing could be
+        measured.
+
+        `valid` marks the real-data pixels; everything else is masked out of
+        the background and the detection, so the zeroed remainder of a mosaic
+        canvas can't drag the background down. It defaults to the frame's
+        non-zero pixels.
         """
-        # Retrieve user-defined values for sigma and fwhm.
-        from photutils.detection import DAOStarFinder
-        sigma_val = self.settings.value("mosaic/star_sigma", 3.0, type=float)
-        fwhm_val = self.settings.value("mosaic/star_fwhm", 3.0, type=float)
+        import sep
+        from setiastro.saspro.sep_tiled import waterfall_extract
+        none = ([], None) if with_sigma else []
 
         image2d = np.asarray(image2d, dtype=np.float32)
         if valid is None:
             valid = _valid_data_mask(image2d, erode_px=0)
         valid = np.asarray(valid, bool)
         if not valid.any():
-            return []
+            return none
+        data = np.where(valid & np.isfinite(image2d), image2d, 0.0).astype(np.float32)
 
-        ignore = ~valid
-        mean_val, median_val, std_val = sigma_clipped_stats(
-            image2d, sigma=3.0, mask=ignore)
-        if not np.isfinite(std_val) or std_val <= 0:
-            return []
-        # Use the user-defined fwhm and scale the threshold by the standard deviation.
-        daofind = DAOStarFinder(threshold=sigma_val * std_val, fwhm=fwhm_val)
-        sources = daofind(image2d - median_val, mask=ignore)
-        if sources is None or len(sources) == 0:
-            return []
-        x_coords = sources['xcentroid'].data
-        y_coords = sources['ycentroid'].data
-        flux = sources['flux'].data
-        # Sort stars by brightness (flux) and select the top ones.
-        sorted_indices = np.argsort(-flux)
-        top_indices = sorted_indices[:max_stars]
-        stars = [(x_coords[i], y_coords[i], flux[i]) for i in top_indices]
-        return stars
+        def _real_stars(cat):
+            # hot pixels (a ~0.5 px) and streaks / cosmic rays, as in star alignment
+            a = cat["a"]; b = cat["b"]
+            return ((2.3548 * a >= 1.2) & (a > 0) & (b > 0)
+                    & (1.0 - b / np.maximum(a, 1e-6) <= 0.6))
+
+        target = qs_int(self.settings, "mosaic/star_target", MOSAIC_STAR_TARGET)
+        r = waterfall_extract(sep, data, max(1, int(target)), mask=~valid, fixed=sigma,
+                              keep=_real_stars)
+        if r is None or len(r["cat"]) == 0:
+            return ([], (None if r is None else r["sigma"])) if with_sigma else []
+        cat = r["cat"]
+        order = np.argsort(-np.asarray(cat["flux"]))[:max_stars]
+        stars = [(float(cat["x"][i]), float(cat["y"][i]), float(cat["flux"][i])) for i in order]
+        return (stars, r["sigma"]) if with_sigma else stars
 
 
     def match_stars(self, new_stars, mosaic_stars, distance_thresh=10.0, flux_thresh=0.2):

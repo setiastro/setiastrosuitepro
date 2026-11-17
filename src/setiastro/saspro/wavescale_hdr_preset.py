@@ -43,10 +43,13 @@ class WaveScaleHDRPresetDialog(QDialog):
 
 
 
-def run_wavescale_hdr_via_preset(main, preset: dict | None = None, target_doc=None):
+def run_wavescale_hdr_via_preset(main, preset: dict | None = None, target_doc=None, ctx=None):
     """
     Drive WaveScale HDR headlessly: set dialog controls from 'preset',
     run Preview, then auto-Apply on finish (same pipeline as UI).
+
+    Returns True when applied. From a script (`ctx` given, as
+    ctx.run_command does) a failure raises RuntimeError instead.
     """
     p = dict(preset or {})
 
@@ -73,9 +76,12 @@ def run_wavescale_hdr_via_preset(main, preset: dict | None = None, target_doc=No
 
     main, doc, _dm = normalize_headless_main(main, target_doc)
     if doc is None or getattr(doc, "image", None) is None:
+        _clear_wavescale_flags(main, s)
+        if ctx is not None:
+            raise RuntimeError("WaveScale HDR: no image to process.")
         from PyQt6.QtCore import QCoreApplication
         QMessageBox.warning(main or None, "...", QCoreApplication.translate("WaveScaleHDRPresetDialog", "Load an image first."))
-        return
+        return False
 
     # Build headless dialog and apply preset
     dlg = WaveScaleHDRDialogPro(main, doc, headless=True, bypass_guard=True)
@@ -84,11 +90,23 @@ def run_wavescale_hdr_via_preset(main, preset: dict | None = None, target_doc=No
     except Exception:
         pass
 
-    # Start compute (same as pressing Preview), then run event loop until applied
-    dlg._start_preview()
-    dlg.exec()
-
-    _clear_wavescale_flags(main, s)
+    # Start compute (same as pressing Preview), then run the event loop until
+    # the dialog finishes: accept() after the apply, reject() on any failure.
+    result = 0
+    try:
+        dlg._start_preview()
+        result = dlg.exec()
+    finally:
+        _clear_wavescale_flags(main, s)
+        try:
+            dlg.close()          # closeEvent releases the full-size buffers
+            dlg.deleteLater()
+        except Exception:
+            pass
+    ok = (result == QDialog.DialogCode.Accepted)
+    if not ok and ctx is not None:
+        raise RuntimeError("WaveScale HDR did not complete (see the message shown).")
+    return ok
 
 
 def _clear_wavescale_flags(main, settings):

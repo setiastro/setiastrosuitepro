@@ -106,7 +106,7 @@ def check_process_pools(timeout: float = 40.0, log_fn=None, force: bool | None =
                 f"({type(e).__name__}: {e}). Running single-process (slower). "
                 "This is almost always a NumPy/SciPy version mismatch or two mixed "
                 "Python environments. Reinstall the locked stack with:\n"
-                f'    "{sys.executable}" -m pip install -r requirements.txt'
+                f"    {fix_command()}"
             )
     return _PP_OK
 
@@ -123,6 +123,56 @@ def process_pools_reason() -> str:
 
 def worker_versions() -> dict | None:
     return _PP_VERSIONS
+
+
+def _requirements_file() -> str | None:
+    """requirements.txt of a source checkout (src/setiastro/saspro -> repo root),
+    or None for a pip / pipx / installer install, which has no such file."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        cand = os.path.normpath(os.path.join(here, "..", "..", "..", "requirements.txt"))
+        return cand if os.path.isfile(cand) else None
+    except Exception:
+        return None
+
+
+def fix_command() -> str:
+    """A copy-pasteable reinstall command that works for THIS install.
+
+    A bare `-r requirements.txt` only works from a source checkout's root; a
+    PyPI user has no such file and pip just errors. Give the absolute path when
+    the file exists, otherwise reinstall numpy + scipy into this interpreter.
+    """
+    req = _requirements_file()
+    if req:
+        return f'"{sys.executable}" -m pip install -r "{req}"'
+    return f'"{sys.executable}" -m pip install --force-reinstall --no-deps numpy scipy'
+
+
+def _norm(p: str) -> str:
+    return os.path.normcase(os.path.abspath(p)).rstrip("\\/")
+
+
+def _own_site_roots() -> set[str]:
+    """Package roots that belong to THIS interpreter: its site-packages and its
+    per-user site (AppData/Roaming/Python/PythonXY/site-packages on Windows,
+    ~/.local/lib/pythonX.Y/site-packages elsewhere). Spawned workers run the
+    same interpreter with the same rules, so they see the same roots."""
+    roots: set[str] = set()
+    try:
+        import site
+        for p in (site.getsitepackages() or []):
+            roots.add(_norm(p))
+        if site.ENABLE_USER_SITE:
+            roots.add(_norm(site.getusersitepackages()))
+    except Exception:
+        pass
+    for p in (sys.prefix, getattr(sys, "base_prefix", sys.prefix)):
+        try:
+            roots.add(_norm(os.path.join(p, "Lib", "site-packages")))
+        except Exception:
+            pass
+    return roots
 
 
 # --- lightweight in-process sanity check for the GUI launcher (no spawn) ------
@@ -147,7 +197,7 @@ def diagnose_local_env() -> tuple[bool, str]:
                     f"{_pkg} failed to import against NumPy {_np.__version__} — this is "
                     f"almost always a NumPy/{_pkg} version mismatch (e.g. NumPy 1.x with a "
                     f"NumPy-2 build, or vice-versa). Reinstall the locked set with:\n"
-                    f'    "{sys.executable}" -m pip install -r requirements.txt\n\n'
+                    f"    {fix_command()}\n\n"
                     f"Details: {type(e).__name__}: {e}")
 
     # mixed-environment detection: numpy and scipy should share a site-packages root
@@ -159,13 +209,23 @@ def diagnose_local_env() -> tuple[bool, str]:
     try:
         import scipy as _sp  # already imported cleanly above; just rebind the name
         nr, sr = _site_root(_np), _site_root(_sp)
-        if nr and sr and nr != sr:
+        # Different roots are only a bleed when one of them is FOREIGN to this
+        # interpreter (PYTHONPATH, a .pth into another venv, ...). The stock
+        # Windows Python keeps packages in two roots of its own: site-packages
+        # and the per-user site that `pip install --user` (or pip's automatic
+        # user fallback) writes to. Both import fine, the spawned workers see
+        # both, and the import checks above already passed, so flagging that
+        # layout warned on every launch with nothing wrong and no working fix.
+        own = _own_site_roots()
+        if nr and sr and nr != sr and not (_norm(nr) in own and _norm(sr) in own):
+            _pp = os.environ.get("PYTHONPATH", "").strip()
             return (False,
                     "NumPy and SciPy are loaded from two different environments — "
                     "this bleed causes worker crashes.\n"
-                    f"  numpy: {_np.__file__}\n  scipy: {_sp.__file__}\n\n"
-                    "Run SASpro from a single environment and reinstall:\n"
-                    f'    "{sys.executable}" -m pip install -r requirements.txt')
+                    f"  numpy: {_np.__file__}\n  scipy: {_sp.__file__}\n"
+                    + (f"  PYTHONPATH is set: {_pp}\n" if _pp else "")
+                    + "\nRun SASpro from a single environment and reinstall:\n"
+                    f"    {fix_command()}")
     except Exception:
         pass
     return True, f"env ok (numpy {_np.__version__}, scipy {_sp.__version__})"

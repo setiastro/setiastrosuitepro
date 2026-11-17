@@ -160,3 +160,80 @@ def extract_strips(sep, sub: np.ndarray, thresh, *, core: int = 256,
     if not parts:
         return cat[:0]
     return np.concatenate(parts)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Star-count waterfall
+# ─────────────────────────────────────────────────────────────────────────────
+# A detection threshold in sigmas means very different things on different
+# data: 3 sigma on a rich Milky Way field is tens of thousands of objects
+# (slow, mostly noise-level shapes), on a narrowband frame of a sparse field
+# 7 sigma can be a dozen. Asking for a star COUNT instead and descending the
+# threshold until it is met works on both. The background is measured once;
+# only the extraction is repeated.
+STAR_LADDER = ((100.0, 5), (50.0, 5), (25.0, 5), (12.0, 5), (7.0, 5),
+               (5.0, 5), (4.0, 4), (3.0, 3))
+
+
+def waterfall_extract(sep, data: np.ndarray, target: int, *, ladder=STAR_LADDER,
+                      mask=None, fixed=None, keep=None, **kw):
+    """
+    Detect stars in ``data`` (2-D float32, NOT background-subtracted) at the
+    highest threshold of ``ladder`` -- ((sigma, minarea), ...), descending --
+    that finds at least ``target`` objects; the last rung if none does.
+
+    ``fixed`` = a sigma: extract at that threshold only (its minarea from the
+    ladder; the nearest rung above it when it isn't on the ladder), so
+    catalogues from several frames are comparable. ``keep`` filters a
+    catalogue (returns a bool array) before it is counted. ``mask`` (True =
+    ignore) applies to the background and the extraction. Other keywords go
+    to sep.extract (through extract_auto).
+
+    Returns a dict: cat (the accepted catalogue, possibly empty), sigma (its
+    threshold), rungs [(sigma, cat), ...] for every threshold tried, highest
+    first, and rms (the global background RMS); None when SEP fails.
+    """
+    data = np.ascontiguousarray(data, dtype=np.float32)
+    if mask is not None:
+        mask = np.ascontiguousarray(mask, dtype=bool)
+    try:
+        bkg = sep.Background(data, mask=mask)
+    except Exception:
+        return None
+    sub = np.ascontiguousarray(data - bkg.back())
+    rms = float(getattr(bkg, "globalrms", np.nan))
+    if not np.isfinite(rms) or rms <= 0:
+        try:
+            rms = float(np.nanmedian(np.asarray(bkg.rms(), dtype=np.float32)))
+        except Exception:
+            rms = np.nan
+    if not np.isfinite(rms) or rms <= 0:
+        rms = 1e-6
+
+    rungs_in = [(float(s_), int(a_)) for s_, a_ in ladder]
+    if fixed is not None:
+        f = float(fixed)
+        above = [r for r in rungs_in if r[0] >= f]
+        area = (above[-1] if above else rungs_in[0])[1]
+        rungs_in = [(f, area)]
+    if mask is not None:
+        kw["mask"] = mask
+
+    tried = []
+    for sig, area in rungs_in:
+        try:
+            cat = extract_auto(sep, sub, sig, err=rms, minarea=area, **kw)
+        except Exception:
+            # a pixel-stack overflow at a low rung on a huge field: keep what
+            # the rungs above found and stop descending
+            if tried:
+                break
+            return None
+        if keep is not None and len(cat):
+            cat = cat[np.asarray(keep(cat), dtype=bool)]
+        tried.append((sig, cat))
+        if len(cat) >= int(target):
+            break
+    if not tried:
+        return None
+    return {"cat": tried[-1][1], "sigma": tried[-1][0], "rungs": tried, "rms": rms}

@@ -47,7 +47,7 @@
 <body>
 
 <h1>Workflow Assistant</h1>
-<p class="sub">A guided, visual process planner. Build (or load) a named sequence of SASpro commands arranged into one or more parallel <b>lanes</b> &mdash; main, starless, stars, merge, whatever structure the processing calls for &mdash; and step through them manually, one tool at a time. Each step opens its tool when you ask, with its captured preset pre-loaded if one was dragged in; marking a step complete adds a &check; prefix and advances to the next. Comes with four canned workflows for common beginner paths (OSC, mono RGB, mono narrowband, Cosmic Clarity cleanup) and a compact mini-runner for executing a workflow without the full editing UI.</p>
+<p class="sub">A guided, visual process planner. Build (or load) a named sequence of SASpro commands arranged into one or more parallel <b>lanes</b> &mdash; main, starless, stars, merge, whatever structure the processing calls for &mdash; see where they branch and join in the <b>graph view</b>, and step through them manually, one tool at a time. Each step opens its tool when you ask, with its captured preset pre-loaded if one was dragged in; marking a step complete adds a &check; prefix and advances to the next. Comes with four canned workflows for common beginner paths (OSC, mono RGB, mono narrowband, Cosmic Clarity cleanup) and a compact mini-runner for executing a workflow without the full editing UI.</p>
 
 <div class="workflow"><b>Workflow</b><br>
 <b>Open Workflow Assistant</b>. Either <b>pick a canned workflow</b> from the Add Canned Workflow menu or <b>build your own</b>: drag tools from the catalog on the left into any lane on the right, add lanes for parallel branches, drop in notes and split/merge markers to document the flow. <b>Open Step</b> (or double-click a step) launches that tool &mdash; with any captured preset pre-loaded. <b>Mark Complete</b> flags the step done and bolds the next one. <b>Save</b> stores the workflow as a named JSON file; the active workflow is autosaved on close and restored when you reopen the dialog. <b>Run Workflow</b> opens the compact mini-runner that shows the lanes without the editing controls.
@@ -62,20 +62,22 @@
 <a href="#s1">1. The workflow concept</a><br>
 <a href="#s2">2. The tool catalog</a><br>
 <a href="#s3">3. Lanes</a><br>
-<a href="#s4">4. Adding and editing steps</a><br>
-<a href="#s5">5. Step kinds</a><br>
-<a href="#s6">6. The step details panel</a><br>
-<a href="#s7">7. Running steps and progress</a><br>
-<a href="#s8">8. The mini runner</a><br>
-<a href="#s9">9. Load, save, and autosave</a><br>
-<a href="#s10">10. Canned workflows</a><br>
-<a href="#s11">11. Technical details</a><br>
+<a href="#s4">4. The graph view</a><br>
+<a href="#s5">5. Adding and editing steps</a><br>
+<a href="#s6">6. Step kinds</a><br>
+<a href="#s7">7. The step details panel</a><br>
+<a href="#s8">8. Running steps and progress</a><br>
+<a href="#s9">9. The mini runner</a><br>
+<a href="#s10">10. Load, save, and autosave</a><br>
+<a href="#s11">11. Canned workflows</a><br>
+<a href="#s12">12. Technical details</a><br>
 </div>
 
 <h2 id="s1">1. The workflow concept</h2>
 <p>A <b>workflow</b> is a named, ordered sequence of <b>steps</b> grouped into one or more <b>lanes</b>. A lane is a vertical column of steps that execute in order; multiple lanes side by side represent parallel branches of the processing. Every workflow has at least one lane (named <code>main</code> by default) and can grow to any number of lanes as the processing demands.</p>
 <p>A step is either an <b>action</b> (runs a specific SASpro command when you tell it to), a <b>note</b> (📝 &mdash; instruction-only, nothing to launch), a <b>split marker</b> (⇢ &mdash; shows where processing branches into multiple lanes), or a <b>merge marker</b> (⇠ &mdash; shows where branches rejoin). Action steps can carry a <b>preset</b> &mdash; a captured dictionary of tool settings &mdash; so &ldquo;run Statistical Stretch&rdquo; can become &ldquo;run Statistical Stretch with these specific settings loaded in the dialog.&rdquo;</p>
 <p>Steps can also declare named <b>inputs</b> and <b>outputs</b> for lineage. These are free-form string tags (<code>starless</code>, <code>stars_only</code>, <code>rgb_stars</code>, <code>palette_starless</code>, &hellip;) that show up in the step details panel to document how data flows across the lanes. The runner doesn't enforce them &mdash; they're documentation, not routing &mdash; but a lineage you can see is far easier to follow than one you have to reconstruct from memory.</p>
+<p>How the lanes connect is recorded as <b>links</b>: a step can branch into the start of another lane, or join a step part-way down another lane. Links are drawn and edited in the <a href="#s4">graph view</a>; inside a lane, the order of the steps is the connection.</p>
 <p>The whole thing is a <b>visible, editable, executable checklist</b>. You open each step when you're ready, you mark it complete when the result is good, and the dialog remembers your progress and position across lanes until you reset.</p>
 
 <h2 id="s2">2. The tool catalog</h2>
@@ -92,13 +94,35 @@
 <p>Lane controls sit above the lane cards:</p>
 <ul>
 <li><b>Add Lane</b> &mdash; prompts for a name and appends a new empty lane on the right. Names must be unique; blank names are rejected.</li>
-<li><b>Rename Lane</b> &mdash; renames the current lane; every step currently in that lane gets its <code>lane</code> field updated so there's no orphaning.</li>
-<li><b>Remove Lane</b> &mdash; drops the current lane and every step in it, after a confirmation. A workflow always has at least one lane; the button refuses to delete the last one.</li>
+<li><b>Rename Lane</b> &mdash; asks which lane (the current one is preselected) and its new name. Every step in that lane gets its <code>lane</code> field updated so there's no orphaning, and links into the lane follow the new name.</li>
+<li><b>Remove Lane</b> &mdash; asks which lane to remove; the list shows how many steps each lane holds, so an empty lane is easy to spot. A lane with steps is removed with its steps, after a confirmation; an empty one goes straight away. A workflow always has at least one lane; the button refuses to delete the last one. In the graph window, right-clicking a lane header removes or renames that lane directly.</li>
 </ul>
 <p>Each lane is a vertical card with a header label and a step list below. The lane area scrolls horizontally when there's more lane than fits, so a four-lane narrowband workflow sits comfortably in a 1400&nbsp;px dialog.</p>
 <div class="tip"><b>Cross-lane selection is single-select across the whole dialog.</b> Clicking a step in lane B clears the selection and current item in every other lane. This keeps &ldquo;the current step&rdquo; a single, unambiguous thing &mdash; Previous Step and Next Step walk a flat sequence across all lanes in order, and the step details panel always reflects exactly one step.</div>
 
-<h2 id="s4">4. Adding and editing steps</h2>
+<h2 id="s4">4. The graph view</h2>
+<p><b>Graph View</b> (top right of the lane buttons, or <b>Ctrl+G</b>) opens the same workflow as a flowchart in its own window. Each lane is a column and its steps flow downward. The arrows that cross between columns are <b>links</b>: the places where processing branches into another lane or comes back together. A step's row is its depth in the workflow, so a branch starts just below the step it branches from, and a join sits below every step that feeds it.</p>
+<p>The window can be resized, maximized or moved to another monitor, and it carries what it needs to work on its own: the tool palette on the left, the graph in the middle, and the selected step's details with <b>Previous</b>, <b>Next</b>, <b>Open Step</b> and <b>Mark Complete</b> on the right. The bars between the three parts can be dragged. The graph and the lane lists edit the same workflow and share one selection, so they can be used side by side. The window closes with the dialog, reopens with it if it was open, and remembers its size and position.</p>
+<ul>
+<li><b>Branch</b> &mdash; a link from a step to the start of another lane: that lane works on the step's result. In the narrowband workflow, Remove Stars branches into the <code>starless</code> and <code>stars</code> lanes.</li>
+<li><b>Join</b> &mdash; a link from a step to a particular step part-way down another lane: that step also takes the result. In SLaP Planetary, the RGB and L lanes join back into the Merge step of <code>main</code>.</li>
+</ul>
+<p>When a link's two ends share an input/output tag, the tag is written on the arrow (<code>starless</code>, <code>stars_only</code>, &hellip;).</p>
+<h3>Editing in the graph</h3>
+<ul>
+<li><b>Add tools</b> &mdash; drag from the window's palette, the dialog's catalog, a shortcut tile or a bundle onto a lane. A bar shows where the step will land. Double-clicking a palette tool adds it just below the selected step. Drop onto a choice card to add an option to it, or onto the dashed <b>+ New lane</b> column to start a lane.</li>
+<li><b>Move steps</b> &mdash; drag a step up or down its lane, or into another lane. A choice moves together with its options.</li>
+<li><b>Set a step's height</b> &mdash; drop a step in the empty space above or below it in its own lane, and it stays there. This is for joins: a step that takes results from other lanes normally sits below everything that feeds it, which can leave it at the foot of a mostly empty column. Drag it up and the steps after it in its lane, and any lane that branches from it, come up with it; links from steps that are now level with it or lower come in from the side. A step never goes above the step before it in its lane, and dragging it past another step still reorders. Right-click it and choose <b>Auto Position</b> to put it back, or right-click empty canvas for <b>Auto Position All Steps</b>. The heights are saved with the workflow.</li>
+<li><b>Branch and join</b> &mdash; drag the small &#9679; handle under a step and drop it on a step in another lane (join), on another lane's header or empty space (branch), or on <b>+ New lane</b> (branch into a new lane). The hint at the bottom of the graph says what the drop will do before you let go. Links inside one lane, repeats, and links that would loop back on themselves are refused, with the reason.</li>
+<li><b>Remove a link</b> &mdash; click it and press Delete, or right-click it. Right-clicking a step also lists its links under <b>Remove Link</b>.</li>
+<li><b>Step commands</b> &mdash; right-click a step for everything the lane list offers (rename, presets, alternatives, note, inputs/outputs, remove) plus <b>Branch Into New Lane&hellip;</b>. Double-click or Enter opens the step; Delete removes it.</li>
+<li><b>Lanes</b> &mdash; double-click a lane header to rename it. Right-click it to move the lane left or right, remove it, or add a note, choice, split or merge.</li>
+</ul>
+<h3>Following progress</h3>
+<p>Completed steps turn green with a &check; badge and the current step is outlined. Previous, Next and Mark Complete move it exactly as in the lane view, and the graph scrolls to keep it in sight. <b>Ctrl+wheel</b> zooms; <b>F</b> or <b>Fit</b> fits the workflow to the window for as long as the text stays readable, and scrolls past that; dragging the background pans. The mini runner has its own <b>Graph View</b> button. Its window is read-only and has no palette: click to select, double-click to open, right-click for Open Step and Mark Complete.</p>
+<div class="tip">Workflows saved before links existed describe their branches only through input/output tags. When one is loaded, SASpro derives its links from those tags once: a step that takes a tag produced in another lane gets a link from the last step there that outputs it. Saving writes the links out, and from then on they are edited directly; changing the tags later no longer moves them.</div>
+
+<h2 id="s5">5. Adding and editing steps</h2>
 <p>Four ways to add an action step:</p>
 <ul>
 <li><b>Drag a catalog entry</b> onto any lane list.</li>
@@ -125,7 +149,7 @@
 </ul>
 <p>Reordering: drag a step within its lane or across to another lane. Qt's internal-move drag handles the heavy lifting; the workflow model is re-synced from the UI after every drop so the saved order matches what you see.</p>
 
-<h2 id="s5">5. Step kinds</h2>
+<h2 id="s6">6. Step kinds</h2>
 <p>Five kinds, picked by the step's <code>kind</code> field:</p>
 <table>
 <tr><th>Kind</th><th>Prefix</th><th>Purpose</th><th>Opens a tool?</th></tr>
@@ -139,7 +163,7 @@
 <p>Note, split, and merge steps can still carry <code>inputs</code> and <code>outputs</code> annotations &mdash; the narrowband canned workflow uses <code>split</code> and <code>merge</code> markers to call out the branch and the rejoin, with named outputs on the split (<code>starless</code>, <code>stars_only</code>) and named inputs on the merge (<code>starless_final</code>, <code>stars_final</code>).</p>
 <p>Opening a non-action step shows a brief information dialog that describes what kind of marker it is. In the mini runner, opening a note step shows the step's actual note text, so the mini runner can act as a &ldquo;follow this instruction&rdquo; prompt even for non-action steps.</p>
 
-<h2 id="s6">6. The step details panel</h2>
+<h2 id="s7">7. The step details panel</h2>
 <p>Below the lanes sits a panel that shows the full details of whichever step is currently selected:</p>
 <ul>
 <li><b>Title</b> &mdash; the step's display label (catalog text, preset-derived label, or user override).</li>
@@ -149,11 +173,13 @@
 <li><b>Inputs / Outputs</b> &mdash; the named lineage tags, if any.</li>
 <li><b>Preset</b> &mdash; a compact summary of the first few captured settings (routing keys like <code>family</code>, <code>auto_run</code>, <code>args</code>, <code>op</code> are hidden; booleans become <code>on</code>/<code>off</code>; long strings truncate; a tail of <code>+N more&hellip;</code> appears when the preset has more keys than fit).</li>
 <li><b>Alternatives</b> &mdash; the other tools attached to this step, listed by name. The step title remains the primary tool.</li>
+<li><b>Takes input from / Sends result to</b> &mdash; the step's links: which steps in other lanes feed it, and which lanes or steps it hands its result to.</li>
 <li><b>Status</b> &mdash; <code>Completed</code> or <code>Not completed</code>.</li>
 </ul>
+<p>In the full dialog the panel scrolls, and the bar between it and the lanes can be dragged to give either more room; the split is remembered. The graph window shows the same details beside the graph.</p>
 <p>Everything is HTML-formatted inline, so the panel reads like a short field notebook entry rather than a static form.</p>
 
-<h2 id="s7">7. Running steps and progress</h2>
+<h2 id="s8">8. Running steps and progress</h2>
 <p>Four buttons drive execution:</p>
 <ul>
 <li><b>Previous Step</b> / <b>Next Step</b> &mdash; walk a flat sequence of steps across all lanes in order (lane 1 top-to-bottom, then lane 2, &hellip;). The current step is bolded; selecting it also makes its lane the &ldquo;current lane.&rdquo;</li>
@@ -170,7 +196,7 @@
 <div class="tip">The runner <b>does not wait</b> for the tool you opened to finish. It launches the tool and returns immediately. This is deliberate &mdash; Workflow Assistant is a guided walkthrough, not an auto-runner. You open the tool, you do the work, you Mark Complete when you're happy with the result. If you want sequential auto-execution with per-step completion waits, use <b>Function Bundles</b> instead.</div>
 <p>Completion state lives on each step as a <code>Qt.UserRole + 7</code> flag &mdash; it's a session state, not saved into the workflow JSON. Reopening a saved workflow starts everything uncompleted; completion resets on <b>New Workflow</b>, on <b>Load</b>, on <b>Clear Workflow</b>, and on <b>Reset Progress</b>.</p>
 
-<h2 id="s8">8. The mini runner</h2>
+<h2 id="s9">9. The mini runner</h2>
 <p>The <b>Run Workflow</b> button at the bottom of the dialog opens a <b>Mini Workflow Dialog</b> &mdash; a compact execution-only view of the current workflow. It shows the same lanes with the same steps, but strips the editing controls (no catalog panel, no lane management, no edit buttons). You get a title bar, the lanes themselves, the step details panel, and five buttons: Previous, Open Step, Mark Complete, Next, Reset Progress.</p>
 <p>The mini runner's <b>Mark Complete</b> automatically moves to the next step. This makes it feel more like a wizard than an editor &mdash; open the tool, do the work, hit Mark Complete, the next step is already highlighted and ready.</p>
 <p>The mini runner can also be launched directly without opening the full editor via <code>show_mini_workflow_dialog(main)</code>:</p>
@@ -180,7 +206,7 @@
 </ul>
 <p>Only one mini runner lives at a time &mdash; opening a new one closes any existing one, so you don't accumulate instances by accident.</p>
 
-<h2 id="s9">9. Load, save, and autosave</h2>
+<h2 id="s10">10. Load, save, and autosave</h2>
 <p>Workflows save to the SASpro user data directory:</p>
 <div class="eq">&lt;user_data&gt;/workflows/&lt;name&gt;.json</div>
 <p>The user data directory is discovered via the main window's <code>get_user_data_dir</code>, <code>_user_data_dir</code>, or <code>user_data_dir</code> (whichever exists); if none is available, the fallback is <code>~/.setiastro/saspro/workflows/</code>. The file is a UTF-8 JSON document with the full workflow definition &mdash; name, description, lanes, every step with its preset, I/O, note, kind, and label override.</p>
@@ -190,12 +216,12 @@
 <li><b>Save As&hellip;</b> &mdash; file dialog in the workflows directory.</li>
 <li><b>Load&hellip;</b> &mdash; file dialog starting in the workflows directory.</li>
 </ul>
-<p>Load silently migrates legacy <b>schema v1</b> workflows (flat step list, no lanes) into the current <b>v2</b> shape by moving every step into a single <code>main</code> lane. The migrated workflow saves back in v2 shape the next time you hit Save.</p>
+<p>Load silently migrates legacy <b>schema v1</b> workflows (flat step list, no lanes) by moving every step into a single <code>main</code> lane. <b>Schema v2</b> workflows (lanes, but no links) get their links derived from their input/output tags. Either way, the next Save writes the current <b>v3</b> shape.</p>
 <h3>Autosave</h3>
 <p>Every close of the dialog writes the current workflow to <code>_autosave_last_session.json</code> in the workflows directory. Opening the dialog restores it on the next launch &mdash; but only if there's actually something to restore (non-empty step list, or a non-default name). An empty untitled autosave is treated as a no-op so you don't end up with a stale blank workflow greeting you every launch.</p>
 <p>Autosave is deliberately silent (any exception is swallowed) so closing can never fail because of disk issues or permission problems.</p>
 
-<h2 id="s10">10. Canned workflows</h2>
+<h2 id="s11">11. Canned workflows</h2>
 <p>The <b>Add Canned Workflow</b> dropdown offers four ready-made templates. Picking one replaces the current workflow entirely.</p>
 <ul>
 <li><b>Beginner OSC Workflow</b> &mdash; 10 steps, one lane. Crop &rarr; Pedestal &rarr; ABE &rarr; Background Neutral &rarr; White Balance &rarr; Cosmic Clarity &rarr; Statistical Stretch &rarr; Curves &rarr; CLAHE &rarr; Save As. Simple linear path for one-shot colour cameras.</li>
@@ -205,18 +231,22 @@
 </ul>
 <p>All four canned workflows carry per-step notes describing what each step is for and why it's where it is. They're meant to be starting points &mdash; load one, rename it, add or remove steps as the data demands, and save under your own name.</p>
 
-<h2 id="s11">11. Technical details</h2>
+<h2 id="s12">12. Technical details</h2>
 <p class="tech-lead">Internal mechanisms numbered continuing from the usage sections.</p>
 
-<h3>12. Data model and schema versions</h3>
+<h3>13. Data model and schema versions</h3>
 <p>A workflow is a <code>WorkflowDefinition</code>:</p>
 <div class="eq">WorkflowDefinition = {
-    "schema_version": 2,
+    "schema_version": 3,
     "name":           "My Workflow",
     "description":    "&hellip;",
     "lanes":          [ "main", "starless", "stars", "merge" ],
     "steps":          [ WorkflowStep, &hellip; ],
+    "links":          [ WorkflowLink, &hellip; ],
 }
+
+WorkflowLink = { "from": "&lt;step id&gt;", "to_lane": "stars" }   # branch into a lane's start
+             | { "from": "&lt;step id&gt;", "to": "&lt;step id&gt;" }    # join a step in another lane
 
 WorkflowStep = {
     "id":             "a3f1b2c4d5e6",   # uuid4 hex, first 12 chars
@@ -233,9 +263,10 @@ WorkflowStep = {
         { "command_id": "curves", "preset": { }, "label_override": "" }
     ]
 }</div>
-<p>Schema v1 was a flat step list with no lanes or I/O. The loader detects v1 by the <b>absence of a top-level <code>lanes</code> key</b> and migrates by: dropping every step into a single <code>main</code> lane, synthesising fresh step ids, forcing <code>kind = "action"</code>, dropping any inputs/outputs/presets (which v1 didn't support), and tagging the result <code>schema_version = 1</code> so the next Save upgrades it in place. Schema stays at v2 for alternatives: the <code>alternatives</code> key is optional, so a workflow saved before this field still loads, and a step with no alternatives omits the key.</p>
+<p>Schema v1 was a flat step list with no lanes or I/O. The loader detects v1 by the <b>absence of a top-level <code>lanes</code> key</b> and migrates by: dropping every step into a single <code>main</code> lane, synthesising fresh step ids, forcing <code>kind = "action"</code>, dropping any inputs/outputs/presets (which v1 didn't support), and tagging the result <code>schema_version = 1</code> so the next Save upgrades it in place. Schema stayed at v2 for alternatives: the <code>alternatives</code> key is optional, so a workflow saved before this field still loads, and a step with no alternatives omits the key.</p>
+<p><b>Schema v3</b> adds <code>links</code>. Links are kept consistent with the steps every time the workflow changes (<code>normalize_workflow_links</code>): an end on an action inside a choice moves to the choice itself, and a link is dropped when an end no longer exists, when both ends end up in the same lane, when it repeats another link, or when it would close a loop. A file without a <code>links</code> key gets them derived from input/output tags (<code>derive_workflow_links</code>); a file with an empty list keeps none. Older SASpro versions ignore the key and load the lanes as before.</p>
 
-<h3>13. Toolbar and script catalog discovery</h3>
+<h3>14. Toolbar and script catalog discovery</h3>
 <p>The tool catalog is rebuilt every time the dialog opens via two scanners:</p>
 <ul>
 <li><b>Toolbar discovery</b> walks every <code>QWidget</code> child of the main window and looks for ones that have an <code>actions()</code> method. For each action with a <code>command_id</code> property, a catalog entry is created with the action's icon, text, status tip, and the toolbar's title as the category. Toolbars whose title is literally <code>&quot;Hidden&quot;</code> are skipped; separators are ignored.</li>
@@ -243,7 +274,7 @@ WorkflowStep = {
 </ul>
 <p>Categories are sorted by a three-tier key: a preferred order list first (Functions, Cosmic Clarity, Tools, Geometry, Star Stuff, Masks, What's In My&hellip;, Bundles, View, Scripts), then <code>Scripts/*</code> subcategories alphabetically, then everything else alphabetically. The search box filters by matching both the action text and its tooltip, case-insensitive.</p>
 
-<h3>14. MIME payload types and function-bundle expansion</h3>
+<h3>15. MIME payload types and function-bundle expansion</h3>
 <p>The lane list accepts two MIME formats:</p>
 <ul>
 <li><code>application/x-saspro-workflow-command</code> (<code>WORKFLOW_MIME</code>) &mdash; a bare UTF-8 command id, dragged from the catalog tree. Lands as an action step with an empty preset.</li>
@@ -251,12 +282,12 @@ WorkflowStep = {
 </ul>
 <p>When the <code>MIME_CMD</code> payload has <code>command_id == "function_bundle"</code>, the drop handler walks the inner <code>steps</code> array and adds one action step per element, each with its own command id and preset. This mirrors the shortcut canvas's own bundle-expansion behaviour (<code>add_shortcut_from_payload</code> / <code>_add_shortcuts_from_steps</code>) so the UX is consistent across drop targets.</p>
 
-<h3>15. Cross-lane single-selection coordination</h3>
+<h3>16. Cross-lane single-selection coordination</h3>
 <p>Qt's <code>QListWidget</code> maintains independent selection state per widget &mdash; by default, selecting an item in lane B wouldn't clear the selection in lane A. Workflow Assistant forces single-selection across all lanes with a cross-list coordinator.</p>
 <p>When any lane's selection changes, <code>_on_any_step_selected</code> walks every other lane list and clears its selection, current row, and current item &mdash; signals blocked during the clear so no recursive callbacks fire. It also clears the selection model's own cached selection and current index to be sure Qt doesn't restore the old state on a repaint.</p>
 <p>The &ldquo;current lane&rdquo; is then set to the lane whose selection just changed, and both the step details panel and the lane visual refresh (bolding the current step, applying ✓ prefixes) run against the new unique selection.</p>
 
-<h3>16. Preset-aware label derivation</h3>
+<h3>17. Preset-aware label derivation</h3>
 <p>Dragging a preset-bearing shortcut tile into a workflow captures both the command id and the preset. Several commands dispatch to different underlying tools based on preset content &mdash; <code>rcastro</code> runs BXT/SXT/NXT depending on <code>preset["product"]</code>; <code>cosmic_clarity</code> runs Sharpen/Denoise/Both/Super-Res based on <code>preset["mode"]</code>; <code>syqontools</code> picks between Prism Denoise / Parallax / Starless on <code>preset["family"]</code>. A plain &ldquo;RC-Astro&rdquo; step label would be useless in those cases.</p>
 <p><code>_derive_step_label</code> handles these cases explicitly:</p>
 <div class="eq">rcastro         + product=bxt         &rarr; "BlurXTerminator"
@@ -266,11 +297,11 @@ fx              + effect=soft_glow    &rarr; "FX — Soft Glow"
 remove_stars    + tool=starnet        &rarr; "Remove Stars — StarNet"</div>
 <p>The derivation runs when a preset-bearing step is added and the drop didn't come with its own explicit name. The result goes into the step's <code>label_override</code>, so it survives save/load and shows up in both the main dialog and the mini runner. A user Rename still wins &mdash; manual overrides are preserved over derived ones.</p>
 
-<h3>17. Preset-seeded step opener</h3>
+<h3>18. Preset-seeded step opener</h3>
 <p>When Open Step runs on a preset-bearing action step, the runner tries <code>_preset_opener_for_command(command_id)</code> from <code>setiastro.saspro.shortcuts</code> first. This returns a callable (or <code>None</code>) that knows how to open the specific tool with the preset pre-loaded &mdash; typically by constructing the dialog, iterating the preset keys, and setting the matching widget state directly.</p>
 <p>If a preset-bearing opener is registered, it's called with <code>(main_window, preset_dict)</code>. If no opener is registered (or the import fails), the runner falls back to the plain-action path: find the QAction by command id and <code>trigger()</code> it, which opens the tool with its own default state. The user then has to re-apply their saved settings manually &mdash; the preset is still visible in the step details panel so they can read it off.</p>
 
-<h3>18. Autosave and session restore</h3>
+<h3>19. Autosave and session restore</h3>
 <p>Autosave triggers on <code>closeEvent</code> of the dialog &mdash; the current workflow is synced from the UI, name and description are refreshed from the editable fields, and the whole thing serialises to <code>_autosave_last_session.json</code> in the workflows directory. The autosave is wrapped in a bare <code>try/except</code> that swallows every exception; closing the dialog must never fail because of a save issue.</p>
 <p>Session restore runs after dialog construction, in <code>_restore_autosaved_session</code>. The autosave file is read, parsed with <code>WorkflowDefinition.from_dict</code>, and the result is loaded only if it has substantive content &mdash; either a non-empty steps list or a non-default name. An untitled autosave with zero steps is treated as nothing to restore, which prevents a stale blank workflow from reappearing every launch.</p>
 <p>The autosave file lives alongside named user workflows in the workflows directory but prefixed with an underscore to sort it out of the way of the Load dialog's typical browse order.</p>

@@ -71,11 +71,22 @@
 <br><b>1:1</b> — reset to native pixel scale.
 </div>
 
+<p>The bar above the preview compares your result with the untouched source image:</p>
+
+<ul>
+  <li><b>After</b> — the reconstruction (the default). <b>Before</b> — the source image.</li>
+  <li><b>Split</b> — one frame with a divider: source on the left, result on the right. Drag the divider in the view or use the <b>Divider</b> slider. <b>Vertical / Horizontal</b> turns the wipe to top/bottom.</li>
+  <li><b>Side by side</b> — source on the left, result on the right. The view refits when you switch in or out.</li>
+  <li><b>Hold to compare</b> — press and hold (or hold <b>Space</b> with the preview focused) to see the source for as long as you hold it.</li>
+</ul>
+
+<p>With Fast ROI preview on, only the visible area is recomputed, so compare inside that area. The mode and divider position are remembered between sessions.</p>
+
 <p>Two toggles above the layer table change what the preview is doing:</p>
 
 <ul>
   <li><b>Fast ROI preview (compute visible area only)</b> — default on. Only the currently visible portion of the image is decomposed, tuned, and reconstructed, with a few extra pixels of padding on each side so the blur doesn't see an edge. As you pan or zoom the preview recomputes just the new visible rectangle. This makes every slider move feel instant on large frames (16-megapixel+ stacks). <b>Apply</b> and <b>Send to Document</b> always run on the full image.</li>
-  <li><b>Auto-stretch preview</b> — display-only autostretch so you can see linear data clearly while you work. It is never baked into the output — Apply and Send always write linear pixel values.</li>
+  <li><b>Auto-stretch preview</b> — display-only autostretch so you can see linear data clearly while you work. It is never baked into the output — Apply and Send always write linear pixel values. The stretch is measured once, on the source image, and the same curve is applied to the source, the full-frame result and every ROI crop. So the before/after comparison and the ROI edges never shift in brightness unless the data actually changed.</li>
 </ul>
 
 <p>A small spinner next to the zoom toolbar lights up whenever a recomputation is in flight, and a <i>Computing…</i> overlay appears over the preview if a pass takes longer than ~120 ms.</p>
@@ -139,12 +150,13 @@
 
 <h2>6. Applying your result</h2>
 
-<p>Four buttons at the bottom of the right pane finish the session:</p>
+<p>The buttons at the bottom of the right pane finish the session:</p>
 
 <ul>
   <li><b>Apply to Document</b> — writes the full-image reconstruction back to the current document as a new history step named "Multiscale Decomposition" and closes the dialog. Full image, full precision, mask-aware. The preset dict and the active mask id are stored in the step metadata so Replay and Shortcuts can reproduce it later.</li>
   <li><b>Send to New Document</b> — creates a brand-new document containing the reconstruction and leaves the source untouched. The new doc inherits the source's bit depth and headers but is unlinked from the file (no file_path, no ROI/preview flags).</li>
   <li><b>Split Layers to Documents</b> — creates one new document per detail layer plus one for the residual. Detail layers are visualized mid-gray (0.5 + 4w, clipped) so positive and negative detail are both visible; the residual document holds the raw residual image. Very useful for frequency-separation-style retouching workflows where you want to edit a layer by hand in another tool and then bring it back.</li>
+  <li><b>Reset</b> — returns Layers, Base sigma, Mode, Linked RGB, the residual toggle and every layer's Gain / Thr / Amt / NR to the defaults the dialog opens with. Preview options (Layer preview, Fast ROI, Auto-stretch) are left alone.</li>
   <li><b>Close</b> — discard preview, don't touch the document.</li>
 </ul>
 

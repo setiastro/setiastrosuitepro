@@ -4314,6 +4314,8 @@ def numba_mono_final_formula(rescaled, median_rescaled, target_median):
     for y in prange(H):
         for x in range(W):
             r = rescaled[y, x]
+            if r < 0.0:   # below the black point -> black (pole guard, see *_from_img)
+                r = 0.0
             numer = (median_rescaled - 1.0) * target_median * r
             denom = median_rescaled * (target_median + r - 1.0) - target_median * r
             if np.abs(denom) < 1e-12:
@@ -4329,6 +4331,11 @@ def numba_mono_from_img(img, bp, denom, median_rescaled, target_median):
     for y in prange(H):
         for x in range(W):
             r = (img[y, x] - bp) / denom
+            # Below the black point the rational curve has a pole at
+            # r* = -m(1-t)/(t-m); pixels past it (e.g. 0.0 borders on a
+            # low-noise image) came out white. Clip them to black.
+            if r < 0.0:
+                r = 0.0
             numer = (median_rescaled - 1.0) * target_median * r
             denom2 = median_rescaled * (target_median + r - 1.0) - target_median * r
             if abs(denom2) < 1e-12:
@@ -4344,6 +4351,11 @@ def numba_color_linked_from_img(img, bp, denom, median_rescaled, target_median):
         for x in range(W):
             for c in range(C):
                 r = (img[y, x, c] - bp) / denom
+                # Below the black point the rational curve has a pole at
+                # r* = -m(1-t)/(t-m); pixels past it (e.g. 0.0 borders on a
+                # low-noise image) came out white. Clip them to black.
+                if r < 0.0:
+                    r = 0.0
                 numer = (median_rescaled - 1.0) * target_median * r
                 denom2 = median_rescaled * (target_median + r - 1.0) - target_median * r
                 if abs(denom2) < 1e-12:
@@ -4359,6 +4371,11 @@ def numba_color_unlinked_from_img(img, bp3, denom3, meds_rescaled3, target_media
         for x in range(W):
             for c in range(C):
                 r = (img[y, x, c] - bp3[c]) / denom3[c]
+                # Below the black point the rational curve has a pole at
+                # r* = -m(1-t)/(t-m); pixels past it (e.g. 0.0 borders on a
+                # low-noise image) came out white. Clip them to black.
+                if r < 0.0:
+                    r = 0.0
                 med = meds_rescaled3[c]
                 numer = (med - 1.0) * target_median * r
                 denom2 = med * (target_median + r - 1.0) - target_median * r
@@ -4384,6 +4401,8 @@ def numba_mono_final_formula(rescaled, median_rescaled, target_median):
     for y in prange(H):
         for x in range(W):
             r = rescaled[y, x]
+            if r < 0.0:   # below the black point -> black (pole guard, see *_from_img)
+                r = 0.0
             numer = (median_rescaled - 1.0) * target_median * r
             denom = median_rescaled * (target_median + r - 1.0) - target_median * r
             if np.abs(denom) < 1e-12:
@@ -4406,6 +4425,8 @@ def numba_color_final_formula_linked(rescaled, median_rescaled, target_median):
         for x in range(W):
             for c in range(C):
                 r = rescaled[y, x, c]
+                if r < 0.0:   # below the black point -> black (pole guard, see *_from_img)
+                    r = 0.0
                 numer = (median_rescaled - 1.0) * target_median * r
                 denom = median_rescaled * (target_median + r - 1.0) - target_median * r
                 if np.abs(denom) < 1e-12:
@@ -4428,6 +4449,8 @@ def numba_color_final_formula_unlinked(rescaled, medians_rescaled, target_median
         for x in range(W):
             for c in range(C):
                 r = rescaled[y, x, c]
+                if r < 0.0:   # below the black point -> black (pole guard, see *_from_img)
+                    r = 0.0
                 med = medians_rescaled[c]
                 numer = (med - 1.0) * target_median * r
                 denom = med * (target_median + r - 1.0) - target_median * r

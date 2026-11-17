@@ -1565,6 +1565,12 @@ class CosmicClarityDialogPro(QDialog):
             self._wait = None
 
         text = str(msg)
+        self._headless_error = text
+        # A headless dialog is invisible (WA_DontShowOnScreen): parent the
+        # message to the main window so it is actually seen.
+        host = self
+        if self._headless:
+            host = getattr(self, "parent_ref", None) or self.parent() or None
 
         # Runtime-diagnosed acceleration problems: show the message runtime_torch
         # composed, not a fixed generic one. It already carries the missing-package
@@ -1577,16 +1583,20 @@ class CosmicClarityDialogPro(QDialog):
         # handler swallowed it and told everyone to click Install/Repair, which
         # does not help when the runtime is installed-but-broken.
         if "GPU acceleration runtime" in text or "Hardware acceleration runtime" in text:
-            box = QMessageBox(self)
+            box = QMessageBox(host)
             box.setIcon(QMessageBox.Icon.Warning)
             box.setWindowTitle("Cosmic Clarity")
             box.setText("Hardware acceleration is not usable for this run.")
             box.setInformativeText(text)
             box.setStandardButtons(QMessageBox.StandardButton.Ok)
             box.exec()
-            return
+        else:
+            QMessageBox.critical(host, "Cosmic Clarity", text)
 
-        QMessageBox.critical(self, "Cosmic Clarity", text)
+        if self._headless:
+            # The headless runner waits on finished(); nothing else closes an
+            # invisible dialog. reject() defers until the worker has stopped.
+            self.reject()
 
     def _on_engine_result(self, out_arr: np.ndarray, step_title: str):
         if self._wait:

@@ -9459,19 +9459,12 @@ class AstroSuiteProMainWindow(
             dlg = StatisticalStretchDialog(self, doc)
             dlg._headless = True   # don't follow active doc, don't save geometry
 
-            try:
-                if "target_median" in preset:
-                    dlg.spin_target.setValue(float(preset["target_median"]))
-                if "linked" in preset:
-                    dlg.chk_linked.setChecked(bool(preset["linked"]))
-                if "normalize" in preset:
-                    dlg.chk_normalize.setChecked(bool(preset["normalize"]))
-                if "apply_curves" in preset and hasattr(dlg, "chk_curves"):
-                    dlg.chk_curves.setChecked(bool(preset["apply_curves"]))
-                if "curves_boost" in preset and hasattr(dlg, "sld_curves"):
-                    dlg.sld_curves.setValue(int(round(float(preset["curves_boost"]) * 100)))
-            except Exception:
-                pass
+            # Apply the WHOLE preset (same schema as _stretch_params, which is
+            # what shortcuts store). Keys it omits take the tool defaults, not
+            # whatever the dialog was last left at, so a shortcut, a replay or
+            # a script gives the same result on every machine. seed_from_preset
+            # blocks signals, so the user's saved dialog settings are untouched.
+            dlg.seed_from_preset(dict(preset or {}) or {"target_median": 0.25})
 
             # Compute + commit synchronously, bound to `doc`. No QThread means
             # nothing can change the active document out from under us.
