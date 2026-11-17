@@ -39,7 +39,9 @@ import sep  # PSF estimator
 # Import centralized widgets
 from setiastro.saspro.widgets.spinboxes import CustomSpinBox
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
+from setiastro.saspro.widgets.before_after import (
+    BeforeAfterCompare, display_stretch_params, apply_display_stretch,
+)
 from setiastro.saspro.help_support import make_help_button
 
 from PyQt6.QtCore import QThread, pyqtSignal as _pyqtSignal
@@ -85,7 +87,7 @@ class _DenoiseWorker(QThread):
 
 # --- GraphicsView with Shift+Click LS center + optional scene ctor -----------
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QRectF
 from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene
 from PyQt6.QtGui import QPen, QColor, QWheelEvent
 from typing import Optional, Tuple
@@ -103,14 +105,19 @@ class InteractiveGraphicsView(QGraphicsView):
             self.setScene(scene)
         self.ls_center: Optional[Tuple[float, float]] = None
         self.cross_items = []
+        # Image bounds in scene coords. Side-by-side comparison puts a second
+        # copy left of the image; a centre picked there would be off-image.
+        self.image_rect: QRectF | None = None
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
- 
+
     def mousePressEvent(self, event):
         if (
             event.modifiers() & Qt.KeyboardModifier.ShiftModifier
             and event.button() == Qt.MouseButton.LeftButton
         ):
             scene_pt = self.mapToScene(event.position().toPoint())
+            if self.image_rect is not None and not self.image_rect.contains(scene_pt):
+                return
             x, y = scene_pt.x(), scene_pt.y()
             self.ls_center = (x, y)
             self._draw_crosshair_at(x, y)
@@ -232,6 +239,24 @@ class FloatSliderWithEdit(QWidget):
         self.valueChanged.emit(int_val / self._factor)
 
 
+def _control_value(w):
+    """Current value of a parameter control, for Reset snapshots."""
+    if isinstance(w, QComboBox):
+        return w.currentText()
+    if isinstance(w, QCheckBox):
+        return w.isChecked()
+    return w.value()          # FloatSliderWithEdit / CustomSpinBox
+
+
+def _set_control_value(w, v):
+    if isinstance(w, QComboBox):
+        w.setCurrentText(v)
+    elif isinstance(w, QCheckBox):
+        w.setChecked(v)
+    else:
+        w.setValue(v)
+
+
 # ============= Convo/Deconvo dialog (DocManager-powered) =====================
 class ConvoDeconvoDialog(QDialog):
     """
@@ -339,8 +364,11 @@ class ConvoDeconvoDialog(QDialog):
         row1 = QHBoxLayout()
         self.preview_btn = QPushButton(self.tr("Preview"))
         self.undo_btn    = QPushButton(self.tr("Undo"))
+        self.reset_btn   = QPushButton(self.tr("Reset"))
         self.close_btn   = QPushButton(self.tr("Close"))
-        row1.addWidget(self.preview_btn); row1.addWidget(self.undo_btn)
+        self.undo_btn.setToolTip(self.tr("Discard the preview and show the original image"))
+        self.reset_btn.setToolTip(self.tr("Restore this tab's settings and Strength to their defaults"))
+        row1.addWidget(self.preview_btn); row1.addWidget(self.undo_btn); row1.addWidget(self.reset_btn)
         left_layout.addLayout(row1)
 
         row2 = QHBoxLayout()
@@ -396,9 +424,19 @@ class ConvoDeconvoDialog(QDialog):
         self.pixmap_item = QGraphicsPixmapItem(); self.scene.addItem(self.pixmap_item)
         preview_layout.addWidget(self.view)
 
+        # Before/after comparison: pixmap_item is the "after"; the untouched
+        # image goes underneath through the same display stretch.
+        self._cmp = BeforeAfterCompare(self.view, self.scene, [self.pixmap_item],
+                                       settings_key="convo/compare", host=self)
+        zrow.insertWidget(0, self._cmp.toolbar)
+        self._cmp.fitRequested.connect(self._on_fit_clicked)
+        self._stretch_cache = None     # (before array, target, linked, params)
+        self._pm_before_cache = None   # (before array, stretch key, QPixmap)
+
         # Signals
         self.preview_btn.clicked.connect(self._on_preview)
         self.undo_btn.clicked.connect(self._on_undo)
+        self.reset_btn.clicked.connect(self._on_reset)
         self.push_btn.clicked.connect(self._on_push_to_doc)
         self.close_btn.clicked.connect(self.close)
 
@@ -417,10 +455,8 @@ class ConvoDeconvoDialog(QDialog):
             s.valueChanged.connect(self._update_psf_preview)
         for s in (self.rl_psf_radius_slider, self.rl_psf_shape_slider, self.rl_psf_aspect_slider, self.rl_psf_rotation_slider):
             s.valueChanged.connect(self._update_psf_preview)
-        # Autostretch state — mirrors BlemishBlaster pattern
-        self._stretch_original: np.ndarray | None = None
-        self._stretch_is_mono: bool = False
 
+        self._snapshot_reset_defaults()
         self._update_psf_preview()
 
     def _active_doc(self):
@@ -452,74 +488,77 @@ class ConvoDeconvoDialog(QDialog):
         self._original_image = img.copy() if isinstance(img, np.ndarray) else None
         if self._original_image is not None:
             self._auto_fit = True
-            self._display_in_view(self._original_image)
-            self._cache_stretch_original(self._original_image)
+            self._refresh_display()
 
     def _on_autostretch_toggled(self, on: bool):
         """Enable/disable dependent controls and refresh display."""
         self.s_target_median.setEnabled(on)
         self.cb_linked.setEnabled(on)
         self._refresh_display()
-    
-    
+
+
     def _refresh_display(self, *_):
         """
-        Re-render the preview view from the stored linear original,
-        applying autostretch if enabled.  Called whenever stretch
-        parameters change, or after Preview/Undo/Push updates the image.
-    
-        If no linear original is cached yet, falls back gracefully.
+        Render the preview pane. The preview result (or the original, when
+        there is none) is the "after"; the original is the comparison's
+        "before". Called whenever stretch parameters change, or after
+        Preview/Undo/Push changes either image.
+
+        Autostretch is measured ONCE, on the original, and applied to both
+        sides. Stretching each on its own statistics would shift the result's
+        brightness (a denoise lowers the noise, which moves the black point)
+        and the before/after comparison would show a difference that is not
+        in the data.
         """
-        src = getattr(self, "_stretch_original", None)
-        if src is None:
-            # Nothing to redisplay yet — leave view as-is
+        before = self._original_image
+        after = self._preview_result
+        shown = after if after is not None else before
+        if shown is None:
             return
-    
-        if not self.cb_autostretch.isChecked():
-            self._display_in_view(src)
-            return
-    
-        tm = float(self.s_target_median.value())
-        src_f = np.asarray(src, dtype=np.float32)
-    
-        is_mono = getattr(self, "_stretch_is_mono", False)
-    
-        if is_mono:
-            # Mono: collapse to single plane, stretch, replicate for display
-            if src_f.ndim == 3:
-                plane = src_f[:, :, 0]
-            else:
-                plane = src_f
-            stretched = stretch_mono_image(
-                plane, target_median=tm, normalize=False,
-                apply_curves=False, no_black_clip=False
-            )
-            disp = np.stack([stretched] * 3, axis=-1).astype(np.float32)
+
+        stretch = None
+        if self.cb_autostretch.isChecked():
+            stretch = self._display_stretch(before if before is not None else shown)
+
+        def _disp(a):
+            return apply_display_stretch(a, stretch) if stretch is not None else a
+
+        self.pixmap_item.setPixmap(self._pixmap_from_array(_disp(shown)))
+        h, w = shown.shape[:2]
+        self.view.image_rect = QRectF(0, 0, w, h)
+        self._cmp.set_image_size(w, h)
+
+        if after is not None and before is not None and before.shape[:2] == after.shape[:2]:
+            key = None if stretch is None else (float(self.s_target_median.value()),
+                                                bool(self.cb_linked.isChecked()))
+            c = self._pm_before_cache
+            if c is None or c[0] is not before or c[1] != key:
+                c = (before, key, self._pixmap_from_array(_disp(before)))
+                self._pm_before_cache = c
+            self._cmp.set_before(c[2])
         else:
-            # Color — linked or unlinked
-            linked = self.cb_linked.isChecked()
-            disp = stretch_color_image(
-                src_f, target_median=tm, linked=linked,
-                normalize=False, apply_curves=False, no_black_clip=False
-            ).astype(np.float32)
-    
-        self._display_in_view(np.clip(disp, 0.0, 1.0))
-    
-    
-    def _cache_stretch_original(self, img: np.ndarray):
+            self._pm_before_cache = None
+            self._cmp.set_before(None)
+
+        if self._auto_fit:
+            self.view.resetTransform()
+            self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self._auto_fit = False
+
+    def _display_stretch(self, ref: np.ndarray):
+        """Stretch parameters for `ref`, measured once per image and setting.
+
+        The cache holds the array itself and compares by identity: a new
+        original always re-measures, with no risk of a recycled id() matching.
         """
-        Store a linear copy of `img` for the autostretch display path.
-        Call this any time the working image changes:
-        - on showEvent (initial load)
-        - after Preview produces a result
-        - after Undo
-        - after Push (new baseline)
-        """
-        self._stretch_original = np.asarray(img, dtype=np.float32).copy()
-        self._stretch_is_mono = (
-            img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1)
-        )
-    
+        tm = float(self.s_target_median.value())
+        linked = bool(self.cb_linked.isChecked())
+        c = self._stretch_cache
+        if c is None or c[0] is not ref or c[1] != tm or c[2] != linked:
+            c = (ref, tm, linked, display_stretch_params(ref, target_median=tm, linked=linked))
+            self._stretch_cache = c
+        return c[3]
+
     # ---------------- DocManager IO helpers ----------------
     def _get_active_image_and_meta(self) -> tuple[Optional[np.ndarray], dict]:
         doc = self._active_doc()
@@ -536,8 +575,7 @@ class ConvoDeconvoDialog(QDialog):
             if img is not None:
                 self._original_image = img.copy()
                 self._auto_fit = True
-                self._display_in_view(img)
-                self._cache_stretch_original(img)
+                self._refresh_display()
             self._load_original_on_show = False
         self.conv_psf_label.clear()
         self.sep_psf_preview.clear() if hasattr(self, "sep_psf_preview") else None
@@ -559,7 +597,9 @@ class ConvoDeconvoDialog(QDialog):
         self.sep_psf_preview.clear() if hasattr(self, "sep_psf_preview") else None
         self.rl_status_label.setText("") if hasattr(self, "rl_status_label") else None
         self.custom_psf_bar.setVisible(False) if hasattr(self, "custom_psf_bar") else None
-        self._stretch_original = None
+        self._stretch_cache = None
+        self._pm_before_cache = None
+        self._cmp.detach()
         if getattr(self, "_denoise_worker", None) is not None:
             if self._denoise_worker.isRunning():
                 self._denoise_worker.cancel()
@@ -1312,7 +1352,7 @@ class ConvoDeconvoDialog(QDialog):
 
         elif current_tab_name == "Classical Denoise":
             self._launch_classical_denoise(img)
-            return   # worker calls _display_in_view when done
+            return   # _on_denoise_finished displays the result
 
 
         else:
@@ -1329,7 +1369,6 @@ class ConvoDeconvoDialog(QDialog):
             final_result = processed
 
         self._preview_result = final_result
-        self._cache_stretch_original(final_result)
         self._refresh_display()
 
 
@@ -1360,11 +1399,57 @@ class ConvoDeconvoDialog(QDialog):
     def _on_undo(self):
         if self._original_image is not None:
             self._preview_result = None
-            self._display_in_view(self._original_image)
-            self._cache_stretch_original(self._original_image)  # ← ADD
-            self._refresh_display()                   
+            self._refresh_display()
         else:
             self._show_message("Nothing to undo.")
+
+    def _snapshot_reset_defaults(self):
+        """Record each tab's controls as built, so Reset restores exactly those.
+
+        Groups follow tab order (Convolution, Deconvolution, PSF Estimator,
+        Classical Denoise). Combos lead each group because they drive which
+        parameter panel is visible, and the LS operator precedes the LS blend
+        because changing the operator rewrites the blend.
+        """
+        groups = (
+            (self.conv_radius_slider, self.conv_shape_slider,
+             self.conv_aspect_slider, self.conv_rotation_slider),
+            (self.deconv_algo_combo, self.rl_reg_combo, self.wiener_reg_combo,
+             self.ls_operator_combo, self.ls_blend_combo,
+             self.rl_psf_radius_slider, self.rl_psf_shape_slider,
+             self.rl_psf_aspect_slider, self.rl_psf_rotation_slider,
+             self.rl_iterations_slider, self.rl_clip_checkbox,
+             self.rl_luminance_only_checkbox,
+             self.wiener_nsr_slider, self.wiener_luminance_only_checkbox,
+             self.wiener_dering_checkbox,
+             self.ls_radial_slider, self.ls_angular_slider,
+             self.vc_iterations_slider, self.vc_relax_slider),
+            (self.sep_threshold_slider, self.sep_minarea_spin, self.sep_sat_slider,
+             self.sep_maxstars_spin, self.sep_stamp_spin),
+            (self.denoise_algo_combo, self.wav_wavelet_combo, self.wav_mode_combo,
+             self.denoise_lum_only_chk,
+             self.tv_weight_slider, self.tv_iter_slider, self.tv_multichannel_checkbox,
+             self.nlm_h_slider, self.nlm_patch_slider, self.nlm_dist_slider,
+             self.bil_d_slider, self.bil_sigma_color_slider, self.bil_sigma_space_slider,
+             self.gau_sigma_slider, self.med_size_slider, self.wav_sigma_slider),
+        )
+        self._reset_defaults = [[(w, _control_value(w)) for w in g] for g in groups]
+        self._strength_default = float(self.strength_slider.value())
+
+    def _on_reset(self):
+        """Restore the current tab's settings and Strength to their defaults.
+
+        Settings only: a preview on screen stays until Undo or the next Preview.
+        """
+        idx = self.tabs.currentIndex()
+        if not (0 <= idx < len(self._reset_defaults)):
+            return
+        for w, v in self._reset_defaults[idx]:
+            _set_control_value(w, v)
+        self.strength_slider.setValue(self._strength_default)
+        if idx == 1:
+            self._clear_custom_psf_flag()   # default PSF is the slider-built one
+        self._update_psf_preview()
 
     def _build_replay_preset(self) -> dict | None:
         """
@@ -1684,9 +1769,7 @@ class ConvoDeconvoDialog(QDialog):
         if img_after is not None:
             self._original_image = img_after.copy()
             self._preview_result = None
-            self._display_in_view(self._original_image)
-            self._cache_stretch_original(self._original_image)
-            self._refresh_display()   
+            self._refresh_display()
 
         # 🔴 Replay wiring (unchanged, just moved under try/except)
         try:
@@ -1710,13 +1793,15 @@ class ConvoDeconvoDialog(QDialog):
 
     # ---------------- Utils ----------------
     def _show_message(self, text: str):
-        self.scene.clear()
-        self.pixmap_item = QGraphicsPixmapItem()
-        self.scene.addItem(self.pixmap_item)
-        self.view.resetTransform()
+        # Reuse pixmap_item rather than clearing the scene: a clear would also
+        # delete the comparison overlay and the LS crosshair items the view
+        # still holds references to.
         temp_label = QLabel(text); temp_label.setStyleSheet("color: white; background-color: #222;"); temp_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         pixmap = temp_label.grab()
+        self._cmp.set_before(None)
         self.pixmap_item.setPixmap(pixmap)
+        self._cmp.set_image_size(pixmap.width(), pixmap.height())
+        self.view.resetTransform()
         self.view.fitInView(self.pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
 
     def _convolve_color(self, image: np.ndarray, psf_kernel: np.ndarray) -> np.ndarray:
@@ -1868,10 +1953,16 @@ class ConvoDeconvoDialog(QDialog):
         else:
             return image.copy()
 
-    def _display_in_view(self, array: np.ndarray):
-        arr = array.copy()
+    @staticmethod
+    def _pixmap_from_array(array: np.ndarray) -> QPixmap:
+        """8-bit display pixmap: mono as Grayscale8, colour as RGB888."""
+        arr = np.asarray(array)
+        if arr.ndim == 3 and arr.shape[2] == 1:
+            arr = arr[:, :, 0]
+        elif arr.ndim == 3 and arr.shape[2] > 3:
+            arr = arr[:, :, :3]
         if arr.dtype in (np.float32, np.float64):
-            arr = np.clip(arr, 0.0, 1.0); arr8 = (arr * 255).astype(np.uint8)
+            arr8 = (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
         elif arr.dtype == np.uint16:
             arr8 = (np.clip(arr, 0, 65535) // 257).astype(np.uint8)
         elif arr.dtype == np.uint8:
@@ -1879,31 +1970,21 @@ class ConvoDeconvoDialog(QDialog):
         else:
             mn, mx = arr.min(), arr.max()
             arr8 = ((arr - mn) / (mx - mn) * 255).astype(np.uint8) if mx > mn else np.zeros_like(arr, dtype=np.uint8)
+        arr8 = np.ascontiguousarray(arr8)
 
         h, w = arr8.shape[:2]
         if arr8.ndim == 2:
-            fmt = QImage.Format.Format_Grayscale8; bytespp = w
+            qimg = QImage(arr8.data, w, h, w, QImage.Format.Format_Grayscale8)
         else:
-            fmt = QImage.Format.Format_RGB888; bytespp = 3 * w
-
-        qimg = QImage(arr8.data, w, h, bytespp, fmt)
-        self.pixmap_item.setPixmap(QPixmap.fromImage(qimg))
-        self.scene.setSceneRect(0, 0, w, h)
-
-        if self._auto_fit:
-            self.view.resetTransform()
-            self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-            self._auto_fit = False
+            qimg = QImage(arr8.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+        return QPixmap.fromImage(qimg)   # fromImage copies, so arr8 can go
 
     def zoom_in(self):  self.view.scale(1.2, 1.2)
     def zoom_out(self): self.view.scale(1/1.2, 1/1.2)
 
     def _on_fit_clicked(self):
-        self._auto_fit = True
-        if self._preview_result is not None:
-            self._display_in_view(self._preview_result)
-        elif self._original_image is not None:
-            self._display_in_view(self._original_image)
+        self.view.resetTransform()
+        self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     # ---------------- SEP PSF estimator ----------------
     def _on_run_sep(self):
@@ -2008,6 +2089,8 @@ class ConvoDeconvoDialog(QDialog):
         """Lock/unlock UI around a running denoise job."""
         self.preview_btn.setEnabled(not running)
         self.push_btn.setEnabled(not running)
+        # The worker reads the sliders while it runs; Reset would change them mid-job.
+        self.reset_btn.setEnabled(not running)
         self.denoise_cancel_btn.setVisible(running)
         if not running:
             # re-enable the algo combo and all param sliders
@@ -2056,7 +2139,6 @@ class ConvoDeconvoDialog(QDialog):
             final_result = processed
     
         self._preview_result = final_result
-        self._cache_stretch_original(final_result)
         self._refresh_display()
         self.denoise_status_label.setText("Done.")
 

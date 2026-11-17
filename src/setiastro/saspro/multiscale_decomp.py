@@ -16,7 +16,9 @@ from PyQt6.QtWidgets import (
 )
 from contextlib import contextmanager
 from setiastro.saspro.resources import get_resources, multiscale_decomp_path
-from setiastro.saspro.autostretch import autostretch
+from setiastro.saspro.widgets.before_after import (
+    BeforeAfterCompare, display_stretch_params, apply_display_stretch,
+)
 # Preset drag grip (shortcuts imports this module lazily, so this top-level
 # import does not create a cycle — same pattern as star_stretch/stat_stretch).
 from setiastro.saspro.shortcuts import PresetDragHandle
@@ -472,9 +474,15 @@ class MultiscaleDecompDialog(QDialog):
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._rebuild_preview)
 
+        # One display stretch for before, after and every ROI crop (lazy).
+        self._disp_stretch = None
+        self._pm_before_key = None
+
         self._build_ui()
+        # Reset returns to exactly what the dialog opened with.
+        self._default_preset = self._multiscale_params()
         H, W = self._image.shape[:2]
-        self.scene.setSceneRect(QRectF(0, 0, W, H))
+        self._cmp.set_image_size(W, H)
 
         # Headless preset apply drives seed_from_preset()+_commit_to_doc() itself,
         # both of which recompute the pyramid on demand — so skip the interactive
@@ -530,6 +538,13 @@ class MultiscaleDecompDialog(QDialog):
         self.pix_roi = QGraphicsPixmapItem()
         self.pix_roi.setZValue(10)  # draw above base
         self.scene.addItem(self.pix_roi)
+
+        # Before/after comparison: base + ROI overlay together are the "after";
+        # the source image goes underneath through the same display stretch.
+        self._cmp = BeforeAfterCompare(self.view, self.scene, [self.pix_base, self.pix_roi],
+                                       settings_key="msdecomp/compare", host=self)
+        self._cmp.fitRequested.connect(self._fit_view)
+        left.addWidget(self._cmp.toolbar)
 
         left.addWidget(self.view)
         # Busy overlay (shown during recompute)
@@ -752,6 +767,11 @@ class MultiscaleDecompDialog(QDialog):
         self.btn_apply = QPushButton("Apply to Document")
         self.btn_detail_new = QPushButton("Send to New Document")
         self.btn_split_layers = QPushButton("Split Layers to Documents")
+        self.btn_reset = QPushButton("Reset")
+        self.btn_reset.setToolTip(
+            "Restore layer count, base sigma, mode, Linked RGB and every layer's\n"
+            "settings to the defaults. Preview options are left as they are."
+        )
         self.btn_close = QPushButton("Close")
 
         # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
@@ -775,6 +795,7 @@ class MultiscaleDecompDialog(QDialog):
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_detail_new)
         btn_row.addWidget(self.btn_split_layers)
+        btn_row.addWidget(self.btn_reset)
         btn_row.addWidget(self.btn_close)
         btn_row.addStretch(1)
         btn_row.addWidget(self.preset_drag_handle)
@@ -808,6 +829,7 @@ class MultiscaleDecompDialog(QDialog):
         self.btn_apply.clicked.connect(self._commit_to_doc)
         self.btn_detail_new.clicked.connect(self._send_detail_to_new_doc)
         self.btn_split_layers.clicked.connect(self._split_layers_to_docs)
+        self.btn_reset.clicked.connect(self._reset_params)
         self.btn_close.clicked.connect(self._on_close_clicked)
 
         # Connect viewport scroll changes
@@ -910,6 +932,12 @@ class MultiscaleDecompDialog(QDialog):
         self._invalidate_full_decomp_cache()
         if not self._headless:
             self._schedule_preview()
+
+    def _reset_params(self):
+        """Reset: back to the settings the dialog opened with (captured at
+        construction, before any preset seeding). Preview options — layer
+        preview, fast ROI, autostretch — are display choices and stay put."""
+        self.seed_from_preset(self._default_preset)
 
     def _active_mask_id(self) -> str | None:
         return getattr(self._doc, "active_mask_id", None) or None
@@ -1375,14 +1403,16 @@ class MultiscaleDecompDialog(QDialog):
 
         if sel == "residual":
             out = np.clip(residual, 0.0, 1.0).astype(np.float32, copy=False)
+            out = self._apply_preview_stretch(out)
+        elif not self.residual_enabled:
+            # Mid-grey visualisation, already display-scaled: not stretched,
+            # same as the full-frame path.
+            out = detail_only_vis(out_raw, tuned)
+            if out.ndim == 2:
+                out = np.repeat(out[:, :, None], 3, axis=2)
         else:
-            if not self.residual_enabled:
-                out = detail_only_vis(out_raw, tuned)
-            else:
-                out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
-
-        # Apply stretch for display (on the ROI crop — fast)
-        out = self._apply_preview_stretch(out)
+            out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
+            out = self._apply_preview_stretch(out)
 
         cx0 = x0 - px0
         cy0 = y0 - py0
@@ -1419,6 +1449,23 @@ class MultiscaleDecompDialog(QDialog):
         for w in nonlin_widgets:
             w.setEnabled(not linear)
 
+    def _display_stretch(self):
+        """Display stretch measured once, on the source image.
+
+        Shared by the before, the full-frame after and every ROI crop.
+        Stretching each on its own statistics lets the brightness drift with
+        the result (and an ROI crop's statistics differ from the full
+        frame's), so a before/after comparison would show differences that
+        are not in the data. Same curve family as the main view's
+        autostretch: 3-sigma black point, zeros (no-data) ignored, unlinked,
+        target 0.25.
+        """
+        if self._disp_stretch is None:
+            self._disp_stretch = display_stretch_params(
+                self._image_work, target_median=0.25, linked=False,
+                blackpoint_sigma=3.0, ignore_zeros=True)
+        return self._disp_stretch
+
     def _apply_preview_stretch(self, img: np.ndarray) -> np.ndarray:
         """
         Apply autostretch for display only if the toggle is on.
@@ -1435,10 +1482,18 @@ class MultiscaleDecompDialog(QDialog):
             return img3
 
         try:
-            stretched = autostretch(img3, target_median=0.25, linked=False)
-            return stretched.astype(np.float32, copy=False)
+            return apply_display_stretch(img3, self._display_stretch())
         except Exception:
             return img3
+
+    def _sync_before_pixmap(self):
+        """Give the comparison its "before": the source image through the same
+        display stretch as the preview. Rebuilt only when that stretch changes."""
+        key = bool(self.cb_autostretch.isChecked())
+        if self._pm_before_key == key or self._image is None:
+            return
+        self._pm_before_key = key
+        self._cmp.set_before(self._np_to_qpix(self._apply_preview_stretch(self._image)))
 
     def _np_to_qpix(self, img: np.ndarray) -> QPixmap:
         arr = np.ascontiguousarray(np.clip(img * 255.0, 0, 255).astype(np.uint8))
@@ -1458,7 +1513,8 @@ class MultiscaleDecompDialog(QDialog):
         self.pix_roi.setOffset(0, 0)
 
         H, W = self._image.shape[:2]
-        self.scene.setSceneRect(QRectF(0, 0, W, H))
+        self._cmp.set_image_size(W, H)
+        self._sync_before_pixmap()
 
     def _fast_preview_enabled(self) -> bool:
         return bool(getattr(self, "cb_fast_roi_preview", None)) and self.cb_fast_roi_preview.isChecked()
@@ -1475,7 +1531,8 @@ class MultiscaleDecompDialog(QDialog):
         if self.pix_base.pixmap().isNull():
             return
         self.view.resetTransform()
-        self.view.fitInView(self.pix_base, Qt.AspectRatioMode.KeepAspectRatio)
+        # Scene rect, not pix_base: in side by side it spans both halves.
+        self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         self._schedule_roi_preview()
 
     def _one_to_one(self):
@@ -1815,7 +1872,8 @@ class MultiscaleDecompDialog(QDialog):
 
         # Keep scene bounds as full image, not ROI
         H, W = self._image.shape[:2]
-        self.scene.setSceneRect(QRectF(0, 0, W, H))
+        self._cmp.set_image_size(W, H)
+        self._sync_before_pixmap()
 
 
     def _build_preview_roi(self):
@@ -2317,6 +2375,10 @@ class MultiscaleDecompDialog(QDialog):
         except Exception:
             pass
 
+        try:
+            self._cmp.detach()      # before _release_memory clears the scene
+        except Exception:
+            pass
         try:
             self._release_memory()
         except Exception:

@@ -4632,6 +4632,40 @@ def _bg_match_inplace(img: np.ndarray, *, tgt_med: float, tgt_min: float,
         f"{'RGB'[c]}: bg_shift={offs[c]:.6g}" for c in range(3)))
 
 
+def _cfa_sparse_from_dense(sparse_raw: np.ndarray, dense_norm: np.ndarray):
+    """The CFA-drizzle sparse planes, rebuilt from the NORMALIZED dense frame.
+
+    The sparse copy is split off before normalization, and it used to be
+    written exactly as split: no per-channel sky match, no ABE. The dense
+    _n.fit got both, so the drizzle deposited frames whose skies differed
+    while rejection, weights and AFN were all measured on matched ones. Each
+    output pixel inside a Bayer cell is filled by a different subset of
+    frames, so unmatched skies average to a different level at each position
+    in the cell: a fixed grid in the signal, 13-25 % of the sky on 16
+    synthetic frames with a +-25 % sky swing. Axis-aligned vs rotated square
+    drops made no difference to it.
+
+    Every debayer method keeps the native CFA samples as they are (RCD/AHD
+    to float rounding), so the normalized dense frame already holds the
+    correctly normalized value at every native site. Taking it there carries
+    over every normalization step, whatever it is (sky match, ABE in either
+    mode, the meridian-flip rotation), and keeps the sparse and dense files
+    consistent by construction.
+
+    The sparse frame's own zeros mark the sites. Non-finite values become
+    0.0, the no-data the deposit skips. Returns None when the two frames no
+    longer share a pixel grid (resampled for binning or pixel scale), where
+    there is no native site to take a value from.
+    """
+    sp = np.asarray(sparse_raw)
+    dn = np.asarray(dense_norm)
+    if sp.shape != dn.shape:
+        return None
+    out = np.where(sp != 0.0, dn, np.float32(0.0)).astype(np.float32, copy=False)
+    np.nan_to_num(out, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    return out
+
+
 def _luma_view(img: np.ndarray) -> np.ndarray:
     """Return a float32 2D luma view (no copy if mono)."""
     if img.ndim == 2:
@@ -6376,84 +6410,10 @@ def _try_load_raw_with_rawpy(filename, allow_thumb_preview=True, debug_thumb=Fal
     return img.astype(np.float32) / 65535.0, hdr, bit_depth, is_mono
 
 
-def _enrich_header_from_exif(header: fits.Header, file_path: str) -> fits.Header:
-    """
-    Merge EXIF metadata from a RAW file into an existing header without
-    blowing away other keys. Only fills keys that are missing.
-    """
-    header = header.copy() if header is not None else fits.Header()
-    header.setdefault("SIMPLE", True)
-    header.setdefault("BITPIX", 16)
-    header.setdefault("CREATOR", "SetiAstroSuite")
+# One implementation, in image_manager: it also reads Canon CR3, whose EXIF
+# sits inside an ISO-BMFF container that exifread cannot open on its own.
+from setiastro.saspro.legacy.image_manager import _enrich_header_from_exif  # noqa: E402
 
-    try:
-        with open(file_path, "rb") as f:
-            tags = exifread.process_file(f, details=False)
-    except Exception:
-        # Can't read EXIF → just return what we have
-        return header
-
-    def get_tag(*names):
-        for n in names:
-            t = tags.get(n)
-            if t is not None:
-                return t
-        return None
-
-    # Exposure time
-    exptime_tag = get_tag("EXIF ExposureTime", "EXIF ShutterSpeedValue")
-    if exptime_tag and "EXPTIME" not in header:
-        val = _parse_fraction_or_float(exptime_tag.values)
-        if val is not None:
-            header["EXPTIME"] = (float(val), "Exposure time (s) from EXIF")
-
-    # ISO
-    iso_tag = get_tag("EXIF ISOSpeedRatings", "EXIF PhotographicSensitivity")
-    if iso_tag and "ISO" not in header:
-        try:
-            header["ISO"] = (int(str(iso_tag.values)), "ISO from EXIF")
-        except Exception:
-            header["ISO"] = (str(iso_tag.values), "ISO from EXIF")
-
-    # Date/time
-    date_tag = get_tag(
-        "EXIF DateTimeOriginal",
-        "EXIF DateTimeDigitized",
-        "Image DateTime",
-    )
-    if date_tag and "DATE-OBS" not in header:
-        dt = _parse_exif_datetime(date_tag.values)
-        if dt:
-            header["DATE-OBS"] = (dt, "Start of exposure (camera local time)")
-
-    # Aperture
-    fnum_tag = get_tag("EXIF FNumber")
-    if fnum_tag and "FNUMBER" not in header:
-        val = _parse_fraction_or_float(fnum_tag.values)
-        if val is not None:
-            header["FNUMBER"] = (float(val), "F-number (aperture)")
-
-    # Focal length
-    fl_tag = get_tag("EXIF FocalLength")
-    if fl_tag and "FOCALLEN" not in header:
-        val = _parse_fraction_or_float(fl_tag.values)
-        if val is not None:
-            header["FOCALLEN"] = (float(val), "Focal length (mm)")
-
-    # Camera make/model
-    make_tag  = get_tag("Image Make")
-    model_tag = get_tag("Image Model")
-    cam_parts = []
-    if make_tag:
-        cam_parts.append(str(make_tag.values).strip())
-    if model_tag:
-        cam_parts.append(str(model_tag.values).strip())
-    camera_str = " ".join(p for p in cam_parts if p)
-    if camera_str:
-        header.setdefault("INSTRUME", camera_str)  # instrument / camera
-        header.setdefault("CAMERA", camera_str)    # custom keyword
-
-    return header
 
 def _bias_to_match_light(light_data, master_bias):
     """
@@ -8663,12 +8623,28 @@ class StackingSuiteDialog(QDialog):
 
     def _migrate_drizzle_keys_once(self):
         s = self.settings
-        if s.value("stacking/drizzle_pixfrac", None) is None:
-            # take whichever existed, prefer Integration tab value
-            v = s.value("stacking/drizzle_drop", None, type=float)
-            if v is None:
+        if not s.contains("stacking/drizzle_pixfrac"):
+            # take whichever existed, prefer Integration tab value.
+            # (contains(): value(key, None, type=float) is 0.0 when the key
+            # is missing, which wrote drop shrink 0.0 on every fresh install.)
+            if s.contains("stacking/drizzle_drop"):
+                v = s.value("stacking/drizzle_drop", 0.65, type=float)
+            else:
                 v = s.value("stacking/drop_shrink", 0.65, type=float)
             self._set_drizzle_pixfrac(v)
+
+        # One-time repair (2026-11-17). Until now a missing key read as 0.0
+        # (see _get_drizzle_pixfrac) and that 0.0 was written back to all
+        # three drop-shrink keys, so every fresh install drizzled with point
+        # drops. A stored 0.0 can't be told apart from a chosen one, so every
+        # 0.0 goes to the 0.65 default ONCE; the flag means a user who picks
+        # 0.0 afterwards keeps it. Non-zero values are left alone, apart from
+        # re-syncing the legacy keys to the one the getter reads.
+        flag = "stacking/drop_shrink_zero_reset_done"
+        if not s.value(flag, False, type=bool):
+            v = self._get_drizzle_pixfrac()
+            self._set_drizzle_pixfrac(0.65 if v <= 0.0 else v)
+            s.setValue(flag, True)
 
 
     def _on_align_progress(self, done: int, total: int):
@@ -9801,27 +9777,27 @@ class StackingSuiteDialog(QDialog):
             name, _ = os.path.splitext(base)
             output_filename = os.path.join(self.conversion_output_directory, f"{name}.fit")
 
+            # Converted files are stand-ins for camera files, so they are
+            # written at the SOURCE's depth: 16-bit for camera raws (and 8/16-bit
+            # sources), the same as any astro camera's FITS. Writing a 14-bit
+            # raw out as 32-bit float only doubled the file (a 24 MP raw came
+            # out at 283 MB) and gained nothing. A float or 32-bit source
+            # (32-bit TIFF, float XISF/FITS) keeps 32-bit float, because there
+            # 16-bit really would quantise and clip it.
+            #
+            # This is the INPUT to calibration. Calibrated, normalized and
+            # registered frames are written by the pipeline itself and stay
+            # 32-bit float -- do not carry this choice over to them.
+            _src_bd = str(bit_depth or "").lower()
+            out_bit_depth = ("32-bit floating point"
+                             if ("float" in _src_bd or _src_bd.startswith(("32", "64")))
+                             else "16-bit")
             try:
-                # 32-bit float, not 16-bit. This writes the frames the whole
-                # calibration/registration pipeline then consumes, so it has to
-                # be the lossless end of save_image. The old "16-bit" did four
-                # bad things at once:
-                #   * quantised the data -- a 32-bit TIFF source lost ~0.4% of
-                #     its faint sky signal, and debayer output is interpolated
-                #     float that never was 16-bit to begin with
-                #   * clipped everything above 1.0 (linear frames routinely sit
-                #     above it before stretching)
-                #   * clipped negatives to 0.0 -- and 0.0 is the no-data
-                #     sentinel, so a slightly negative calibrated sky silently
-                #     became no-data
-                #   * emitted BZERO/BSCALE, which astropy then refuses to
-                #     memory-map, so the registration workers could not read
-                #     their own converted frames at all
                 save_image(
                     img_array=image,
                     filename=output_filename,
                     original_format="fit",
-                    bit_depth="32-bit floating point",
+                    bit_depth=out_bit_depth,
                     original_header=header,
                     is_mono=is_mono
                 )
@@ -12320,8 +12296,9 @@ class StackingSuiteDialog(QDialog):
         if s.value("stacking/drizzle_gauss_manual", None) is None:
             manual = False
             try:
-                prev = s.value("stacking/drizzle_gauss_sigma", None, type=float)
-                if prev is not None:
+                # contains(): a typed value() of a missing key is 0.0, not None
+                if s.contains("stacking/drizzle_gauss_sigma"):
+                    prev = s.value("stacking/drizzle_gauss_sigma", 0.0, type=float)
                     manual = abs(float(prev)
                                  - 0.5 * self._get_drizzle_pixfrac()) > 1e-3
             except Exception:
@@ -12350,12 +12327,17 @@ class StackingSuiteDialog(QDialog):
 
     def _get_drizzle_pixfrac(self) -> float:
         s = self.settings
-        # new canonical -> old aliases -> default
-        v = s.value("stacking/drizzle_pixfrac", None, type=float)
-        if v is None:
-            v = s.value("stacking/drizzle_drop", None, type=float)
-        if v is None:
-            v = s.value("stacking/drop_shrink", 0.65, type=float)
+        # new canonical -> old aliases -> default.
+        # contains(), not `value(key, None, type=float) is None`: with a type,
+        # PyQt6 returns 0.0 for a missing key, never None. So a fresh install
+        # read drop shrink 0.0 -- point drops -- the spinbox showed it and
+        # wrote it back to all three keys.
+        v = 0.65
+        for key in ("stacking/drizzle_pixfrac", "stacking/drizzle_drop",
+                    "stacking/drop_shrink"):
+            if s.contains(key):
+                v = s.value(key, 0.65, type=float)
+                break
         # clamp to [0, 1]
         return float(max(0.0, min(1.0, v)))
 
@@ -16667,6 +16649,9 @@ class StackingSuiteDialog(QDialog):
 
             w = int(hdr0.get("NAXIS1", 0) or 0)
             h = int(hdr0.get("NAXIS2", 0) or 0)
+            n3 = int(hdr0.get("NAXIS3", 0) or 0)
+            if w == 3 and n3 > 0 and n3 != 3:   # (H, W, 3) intermediate, see _probe_frame_hw
+                w, h = h, n3
             size = f"{w}x{h}" if (w and h) else "Unknown"
             filt, exp = filt or "Unknown", float(exp)
         except Exception as e:
@@ -28983,10 +28968,26 @@ class StackingSuiteDialog(QDialog):
                         if _cfa_sparse is not None:
                             try:
                                 _cfa_out = self._cfa_sibling_path(out_path)
-                                _ch = fits.Header(orig_header)
-                                _ch["DEBAYERED"] = (True, "Sparse CFA drizzle debayer")
-                                _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
-                                fits.PrimaryHDU(data=np.asarray(_cfa_sparse, dtype=">f4"), header=_ch).writeto(_cfa_out, overwrite=True)
+                                # Same normalization as the dense frame, taken
+                                # from it at the native sites -- see
+                                # _cfa_sparse_from_dense.
+                                _cfa_sparse = _cfa_sparse_from_dense(_cfa_sparse, img)
+                                if _cfa_sparse is None:
+                                    # Resampled frame: no native grid left. A
+                                    # sibling from an earlier run must not be
+                                    # picked up either; without one this frame
+                                    # drizzles from its dense pixels.
+                                    if os.path.exists(_cfa_out):
+                                        os.remove(_cfa_out)
+                                    self.update_status(self.tr(
+                                        f"⚠️ CFA drizzle: {os.path.basename(fp)} was resampled to the "
+                                        f"common pixel grid, so it has no native Bayer sites left; "
+                                        f"drizzling its debayered pixels instead."))
+                                else:
+                                    _ch = fits.Header(orig_header)
+                                    _ch["DEBAYERED"] = (True, "Sparse CFA drizzle debayer")
+                                    _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
+                                    fits.PrimaryHDU(data=np.asarray(_cfa_sparse, dtype=">f4"), header=_ch).writeto(_cfa_out, overwrite=True)
                             except Exception as _e:
                                 self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling: {_e}"))
                         # Carry the satellite-trail mask sidecar onto the
@@ -36563,6 +36564,18 @@ class StackingSuiteDialog(QDialog):
                     if int(h.header.get("NAXIS", 0) or 0) >= 2:
                         ht = int(h.header.get("NAXIS2", 0) or 0)
                         wd = int(h.header.get("NAXIS1", 0) or 0)
+                        # The pipeline's own colour intermediates (Calibrated/,
+                        # Normalized_Images/) are raw writes of the in-memory
+                        # (H, W, 3) array, so NAXIS1 is the channel count and
+                        # the frame is NAXIS3 x NAXIS2. Resolve it the same way
+                        # _MMImageSeek._open_fits and _frame_geometry do.
+                        # Reading NAXIS2 x NAXIS1 here made the normalize canvas
+                        # 3 px wide for every light that was already RGB before
+                        # calibration (converted DSLR raws, RGB TIFF/FITS), so
+                        # each frame was squashed to W x 3 and lost its stars.
+                        n3 = int(h.header.get("NAXIS3", 0) or 0)
+                        if wd == 3 and n3 > 0 and n3 != 3:
+                            ht, wd = n3, ht
                         if ht > 0 and wd > 0:
                             return (ht, wd)
         except Exception:

@@ -56,6 +56,26 @@ hold Ctrl for faster zoom in either case. Click-and-drag pans
 (scroll-hand). The zoom row above the view holds explicit buttons for
 Zoom&nbsp;In, Zoom&nbsp;Out, and Fit-to-Preview.</p>
 
+<h3>Before / after comparison</h3>
+<p>The left end of the zoom row compares the current preview with the
+original image. It works on every tab and lights up once a Preview
+exists:</p>
+<ul>
+  <li><b>After</b> &mdash; the preview result (the default).</li>
+  <li><b>Before</b> &mdash; the untouched image.</li>
+  <li><b>Split</b> &mdash; one frame, original on the left of the divider and
+      the result on the right. Drag the divider in the view, or use the
+      <b>Divider</b> slider. The <b>Vertical / Horizontal</b> button turns
+      the wipe to top/bottom.</li>
+  <li><b>Side by side</b> &mdash; original on the left, result on the
+      right. The view refits when you switch in or out.</li>
+  <li><b>Hold to compare</b> &mdash; press and hold (or hold
+      <b>Space</b>) to flip to the original for as long as you hold it.</li>
+</ul>
+<p>The mode and divider position are remembered between sessions.
+Shift+click for the Larson&ndash;Sekanina centre still works in every
+mode, as long as you click on the result side.</p>
+
 <h3>Auto-stretch display</h3>
 <p>The checkbox above the view applies a statistical stretch <i>to the
 preview only</i> &mdash; the underlying pixel data is never modified by
@@ -66,6 +86,11 @@ linear data without having to Push and then Undo a dedicated stretch.
 to stretch each channel independently (useful when the image has a
 strong colour cast you want to see through). Both controls are
 disabled until the checkbox is on.</p>
+<p>The stretch is measured once, on the original image, and the same
+curve is applied to both the original and the preview. A denoise lowers
+the noise, which would move a freshly measured black point. Sharing one
+stretch means any brightness difference you see in a comparison is in
+the data, not in the display.</p>
 
 <h3>PSF preview chip</h3>
 <p>The 64&times;64 chip below the tabs always shows the PSF that will
@@ -83,7 +108,7 @@ at the end of every Preview on every tab:</p>
 than having to re-run with weaker parameters. The slider accepts values
 from 0.00 (no change) to 1.00 (full effect).</p>
 
-<h3>Preview / Undo / Push</h3>
+<h3>Preview / Undo / Reset / Push</h3>
 <ul>
   <li><b>Preview</b> &mdash; runs the current tab's operation and shows
       the result in the view. The result lives in the dialog only; the
@@ -93,6 +118,12 @@ from 0.00 (no change) to 1.00 (full effect).</p>
       responsive while it works.</li>
   <li><b>Undo</b> &mdash; swap the view back to the original image. Does
       not touch the document; the Preview is just dropped.</li>
+  <li><b>Reset</b> &mdash; returns the <i>current tab's</i> settings and
+      Strength to their defaults. The other tabs keep their settings, and a
+      preview on screen stays until you Undo or Preview again. On the
+      Deconvolution tab Reset also turns off an active stellar PSF, because
+      the default PSF is the one built from the sliders. Reset is disabled
+      while a Classical Denoise preview is running.</li>
   <li><b>Push</b> &mdash; commits the current preview to the active
       document as an undoable edit, step-named &ldquo;Convo/Deconvo&rdquo;.
       The dialog then rebases on the pushed result so you can iterate

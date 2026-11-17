@@ -7,7 +7,7 @@ import datetime as _dt
 import numpy as np
 import time
 import threading
-from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QPointF, QThread
+from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QPointF, QThread, QCoreApplication
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QPen, QColor
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog,
@@ -34,6 +34,10 @@ from setiastro.saspro.legacy.image_manager import load_image
 from setiastro.saspro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from setiastro.saspro.widgets.spinboxes import CustomSpinBox, CustomDoubleSpinBox
 from setiastro.saspro.help_support import make_help_button
+from collections import deque
+from setiastro.saspro import live_stack_worker as _lsw
+from setiastro.saspro.live_stack_worker import (   # also re-exported here
+    as_hwc as _as_hwc, linear_channel_stats, normalize_linear, prepare_frame)
 
 class LiveStackSettingsDialog(QDialog):
     """
@@ -105,18 +109,19 @@ class LiveStackSettingsDialog(QDialog):
             step=0.5
         )
 
-        # Star detection sigma threshold
-        self.star_sigma_spin = CustomDoubleSpinBox(
-            minimum=1.0,
-            maximum=20.0,
-            initial=parent.star_thresh_sigma,
-            step=0.5
+        # Stars to aim for: the detection threshold is chosen by star count
+        self.star_target_spin = CustomSpinBox(
+            minimum=10,
+            maximum=2000,
+            initial=int(getattr(parent, "star_target", _lsw.STAR_TARGET)),
+            step=10
         )
-        self.star_sigma_spin.setToolTip(
-            "Detection threshold for star finding (σ above background).\n"
-            "Lower = more stars found (including faint ones).\n"
-            "Higher = only bright/obvious stars. Default: 7.0"
-        )
+        self.star_target_spin.setToolTip(
+            "How many stars star detection aims for. On a stack's first good frame the\n"
+            "threshold steps down (100σ, 50σ, 25σ … 3.5σ) until it finds at least this\n"
+            "many, and that threshold is then kept for the rest of the stack, so the star\n"
+            "count stays comparable from frame to frame (a cloudy frame shows fewer stars).\n"
+            "Each filter gets its own threshold. A change applies after Reset.")
         # Ignore non-FITS files
         self.fits_only_check = QCheckBox("Ignore non-FITS files (skip TIFF/PNG/JPG/RAW/XISF)")
         self.fits_only_check.setChecked(parent.fits_only)
@@ -154,7 +159,7 @@ class LiveStackSettingsDialog(QDialog):
         form.addRow("Max Eccentricity:", self.ecc_spin)
         form.addRow("Min Star Count:", self.star_spin)
         form.addRow("Acquisition Delay:", self.delay_spin)
-        form.addRow("Star Detection σ:", self.star_sigma_spin)
+        form.addRow("Stars to detect:", self.star_target_spin)
         form.addRow(self.fits_only_check)
         form.addRow(self.weight_check)
         form.addRow("SNR goal (per pixel):", self.snr_goal_spin)
@@ -167,6 +172,26 @@ class LiveStackSettingsDialog(QDialog):
               if parent.narrowband_mapping in opts else 0
         self.mapping_combo.setCurrentIndex(idx)
         form.addRow("Narrowband Mapping:", self.mapping_combo)
+
+        # Demosaic for OSC / Bayer frames: the Stacking Suite's methods
+        # (Strict CFA left out: it only prepares CFA drizzle)
+        self.debayer_combo = QComboBox()
+        for label, tok in DEBAYER_METHODS:
+            self.debayer_combo.addItem(label, tok)
+        cur = str(getattr(parent, "debayer_method", "rcd")).lower()
+        self.debayer_combo.setCurrentIndex(
+            next((i for i in range(self.debayer_combo.count())
+                  if self.debayer_combo.itemData(i) == cur), 0))
+        self.debayer_combo.setToolTip(
+            "Demosaic used for OSC / Bayer frames (FITS with BAYERPAT and camera RAW),\n"
+            "the same methods as the Stacking Suite's Debayer setting:\n"
+            "• RCD: noise-robust, keeps faint colour; best for astro, also OSC narrowband.\n"
+            "• AHD: adaptive homogeneity-directed; slower.\n"
+            "• VNG: sharp on bright subjects, speckles colour in dim noisy areas.\n"
+            "• Edge-aware / Bilinear: fastest, lower quality.\n"
+            "Applies to frames stacked after the change; Reset to restack with it.\n"
+            "X-Trans RAW always uses LibRaw's demosaic.")
+        form.addRow("Debayer:", self.debayer_combo)
 
         # OK / Cancel buttons
         btns = QDialogButtonBox(
@@ -186,7 +211,8 @@ class LiveStackSettingsDialog(QDialog):
         Returns a tuple in order:
             (bootstrap_frames, clip_threshold,
             max_fwhm, max_ecc, min_star_count, mapping, delay,
-            star_thresh_sigma, fits_only, weight_frames, snr_goal)
+            star_target, fits_only, weight_frames, snr_goal,
+            debayer_method)
         """
         bs            = int(self.bs_spin.value())
         sigma         = self.sigma_spin.value()
@@ -195,12 +221,18 @@ class LiveStackSettingsDialog(QDialog):
         stars         = int(self.star_spin.value())
         mapping       = self.mapping_combo.currentText()
         delay         = self.delay_spin.value()
-        star_sigma    = self.star_sigma_spin.value()
+        star_target   = int(self.star_target_spin.value())
         fits_only     = self.fits_only_check.isChecked()
         weight_frames = self.weight_check.isChecked()
         snr_goal      = float(self.snr_goal_spin.value())
-        return (bs, sigma, fwhm, ecc, stars, mapping, delay, star_sigma, fits_only,
-                weight_frames, snr_goal)
+        debayer_method = str(self.debayer_combo.currentData() or "rcd")
+        return (bs, sigma, fwhm, ecc, stars, mapping, delay, star_target, fits_only,
+                weight_frames, snr_goal, debayer_method)
+
+# Debayer methods offered in Settings (the Stacking Suite's, minus Strict CFA)
+DEBAYER_METHODS = (("RCD", "rcd"), ("Edge-aware", "edge"), ("AHD", "ahd"),
+                   ("VNG", "vng"), ("Bilinear", "bilinear"))
+
 
 def _qget(settings: QSettings, key: str, default, typ):
     try:
@@ -222,12 +254,26 @@ class LiveMetricsPanel(QWidget):
       FWHM (px)              · Eccentricity
       Star count             · Frame weight (× this stack's median weight)
       Stack noise (log–log)  · SNR per pixel in the SNR region
+    Every filter is its own series, in its own colour, and its x counts that
+    filter's frames, so in Mono → Color the filters build up side by side
+    from frame 1 (the noise plot too, on log axes).
     Pure random noise falls with slope −½ on the log–log noise plot.
-    Culled frames are red and appear on the per-frame plots only.
+    Culled frames are a red × and appear on the per-frame plots only.
     """
     TITLES = ["FWHM (px)", "Eccentricity", "Star Count",
               "Frame weight (× median)", "Stack noise (log–log)", "SNR / px (region)"]
     _NOISE = 4
+    # filter key → (legend label, colour). "__main__" = the single stack.
+    SERIES = {
+        "__main__": ("", (100, 100, 255)),
+        "L": ("L", (215, 215, 215)),
+        "R": ("R", (255, 85, 85)),
+        "G": ("G", (90, 210, 90)),
+        "B": ("B", (80, 140, 255)),
+        "H": ("Ha", (255, 130, 170)),
+        "O": ("OIII", (50, 215, 230)),
+        "S": ("SII", (255, 190, 50)),
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -237,40 +283,61 @@ class LiveMetricsPanel(QWidget):
 
         n = len(self.TITLES)
         self.plots = []
-        self.scats = []
+        self._series = [dict() for _ in range(n)]   # key → {"x","y","f","item"}
+        self.legend = None
+        # all points of a plot, every series (in arrival order)
         self._data_x = [[] for _ in range(n)]
         self._data_y = [[] for _ in range(n)]
-        self._flags = [[] for _ in range(n)]   # True = culled frame (red)
+        self._flags = [[] for _ in range(n)]   # True = culled frame
 
         for idx, title in enumerate(self.TITLES):
             pw = grid.addPlot(row=idx // 2, col=idx % 2)
             pw.setTitle(title)
             pw.showGrid(x=True, y=True, alpha=0.3)
             if idx == self._NOISE:
-                # PlotDataItem, not a bare ScatterPlotItem: only data items
-                # follow the plot's log mode (a scatter item plots raw values
-                # on log-labelled axes)
-                pw.setLabel('bottom', "Effective frames (N_eff)")
+                # x = frame number like the other plots, so filters line up;
+                # the trend slope is still fitted against N_eff
+                pw.setLabel('bottom', "Frame # (per filter)")
+                # Camera units: a filter's first frame keeps gain 1 and later
+                # frames are scaled to it, so filters share units. Absolute
+                # noise rises with brightness (shot noise); noise relative to
+                # signal is the SNR plot.
+                pw.setLabel('left', "noise (camera units)")
                 pw.setLogMode(x=True, y=True)
-                scat = pw.plot([], [], pen=None, symbol='o', symbolSize=6,
-                               symbolPen=None, symbolBrush=pg.mkBrush(100, 100, 255, 200))
             else:
-                pw.setLabel('bottom', "Frame #")
-                scat = pg.ScatterPlotItem(pen=pg.mkPen(None),
-                                          brush=pg.mkBrush(100, 100, 255, 200),
-                                          size=6)
-                pw.addItem(scat)
+                pw.setLabel('bottom', "Frame # (per filter)")
             self.plots.append(pw)
-            self.scats.append(scat)
 
-    def add_point(self, frame_idx: int, values, flagged: bool = False):
+    def _series_for(self, i, key):
+        s = self._series[i].get(key)
+        if s is not None:
+            return s
+        label, (r, g, b) = self.SERIES.get(key, (str(key), (200, 200, 200)))
+        pw = self.plots[i]
+        if i == self._NOISE:
+            # PlotDataItem, not a bare ScatterPlotItem: only data items
+            # follow the plot's log mode (a scatter item plots raw values
+            # on log-labelled axes)
+            item = pw.plot([], [], pen=None, symbol='o', symbolSize=6,
+                           symbolPen=None, symbolBrush=pg.mkBrush(r, g, b, 220))
+        else:
+            item = pg.ScatterPlotItem(size=6, pen=pg.mkPen(None),
+                                      brush=pg.mkBrush(r, g, b, 220))
+            pw.addItem(item)
+        if label and i == 0:
+            if self.legend is None:
+                self.legend = pw.addLegend(offset=(-10, 10))
+            self.legend.addItem(item, label)
+        s = {"x": [], "y": [], "f": [], "item": item, "color": (r, g, b)}
+        self._series[i][key] = s
+        return s
+
+    def add_point(self, frame_idx: int, values, flagged: bool = False, key="__main__"):
         """values: one entry per plot, in TITLES order; None = no point there.
         An entry may be an (x, y) pair to plot against something other than
-        the frame number (the noise plot uses N_eff)."""
-        good = pg.mkBrush(100, 100, 255, 200)
-        bad = pg.mkBrush(255, 0, 0, 200)
+        the frame number. key: the filter."""
         for i, v in enumerate(values):
-            if i >= len(self.scats) or v is None:
+            if i >= len(self.plots) or v is None:
                 continue
             x = frame_idx
             if isinstance(v, (tuple, list)):
@@ -283,23 +350,45 @@ class LiveMetricsPanel(QWidget):
                 continue
             if i == self._NOISE and (v <= 0 or x <= 0):
                 continue
+            s = self._series_for(i, key)
+            s["x"].append(x)
+            s["y"].append(v)
+            s["f"].append(bool(flagged))
             self._data_x[i].append(x)
             self._data_y[i].append(v)
             self._flags[i].append(bool(flagged))
-            brushes = [bad if f else good for f in self._flags[i]]
-            if i == self._NOISE:
-                self.scats[i].setData(self._data_x[i], self._data_y[i], symbolBrush=brushes)
-            else:
-                self.scats[i].setData(self._data_x[i], self._data_y[i],
-                                      brush=brushes, pen=pg.mkPen(None), size=6)
+            self._redraw(i, s)
+
+    def _redraw(self, i, s):
+        if i == self._NOISE:
+            s["item"].setData(s["x"], s["y"])      # culled frames never get here
+            return
+        r, g, b = s["color"]
+        good = pg.mkBrush(r, g, b, 220)
+        bad = pg.mkBrush(255, 40, 40, 230)
+        s["item"].setData(s["x"], s["y"],
+                          brush=[bad if f else good for f in s["f"]],
+                          symbol=['x' if f else 'o' for f in s["f"]],
+                          size=[9 if f else 6 for f in s["f"]],
+                          pen=pg.mkPen(None))
 
     def clear_all(self):
         """Clear data from all plots."""
-        for i in range(len(self.scats)):
+        for i, series in enumerate(self._series):
+            for s in series.values():
+                try:
+                    self.plots[i].removeItem(s["item"])
+                except Exception:
+                    pass
+            series.clear()
             self._data_x[i].clear()
             self._data_y[i].clear()
             self._flags[i].clear()
-            self.scats[i].clear()
+        if self.legend is not None:
+            try:
+                self.legend.clear()
+            except Exception:
+                pass
 
 class LiveMetricsWindow(QWidget):
     def __init__(self, parent=None):
@@ -314,16 +403,9 @@ class LiveMetricsWindow(QWidget):
         self.metrics_panel = LiveMetricsPanel(self)
         layout.addWidget(self.metrics_panel)
 
-from setiastro.saspro.star_metrics import measure_stars_sep
-
 def compute_frame_star_metrics(image_2d, thresh_sigma: float = 7.0):
-    """
-    Harmonized with Blink metrics:
-      - SEP.Background() for back/noise
-      - thresh = 7σ
-      - median aggregation for FWHM & Ecc
-    """
-    # ensure float32 mono [0..1]
+    """(star_count, fwhm, ecc) with Blink's SEP settings (7σ, minarea 16,
+    deblend 32, median aggregation); see live_stack_worker.star_metrics."""
     data = np.asarray(image_2d)
     if data.ndim == 3:
         data = data.mean(axis=2)
@@ -333,85 +415,7 @@ def compute_frame_star_metrics(image_2d, thresh_sigma: float = 7.0):
         data = data.astype(np.float32) / 65535.0
     else:
         data = data.astype(np.float32, copy=False)
-
-    if data.ndim != 2 or data.shape[0] * data.shape[1] <= 2 * _METRIC_STRIP_PIXELS:
-        star_count, fwhm, ecc = measure_stars_sep(
-            data,
-            thresh_sigma=thresh_sigma,
-            minarea=16,
-            deblend_nthresh=32,
-            aggregate="median",
-        )
-        return star_count, fwhm, ecc
-    return _star_metrics_tiled(data, float(thresh_sigma))
-
-
-# SEP holds the GIL for a whole extract call: about 2-3 s on a 24 MP frame,
-# during which the GUI thread cannot run even though measuring happens on the
-# watch thread. Big frames are therefore extracted in overlapping full-width
-# row strips, each star kept only by the strip that owns its centroid row, so
-# the result matches one full-frame call (objects taller than the margin
-# aside) and the GUI gets the GIL between strips. Full-width strips, not
-# square tiles: each extract call with detections costs ~0.2 s fixed.
-# Background, noise, thresholds and the retry ladder are measure_stars_sep's.
-_METRIC_STRIP_PIXELS = 4_000_000
-_METRIC_MARGIN = 64
-
-
-def _star_metrics_tiled(data, thresh_sigma: float, minarea: int = 16,
-                        deblend_nthresh: int = 32):
-    try:
-        if not np.isfinite(data).all():
-            data = np.nan_to_num(data, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32, copy=False)
-        bkg = sep.Background(data)
-        sub = np.ascontiguousarray(data - bkg.back())
-        grms = float(getattr(bkg, "globalrms", np.nan))
-        if not np.isfinite(grms) or grms <= 0:
-            try:
-                grms = float(np.nanmedian(np.asarray(bkg.rms(), dtype=np.float32)))
-            except Exception:
-                grms = np.nan
-        if not np.isfinite(grms) or grms <= 0:
-            grms = 1e-6
-
-        H, W = sub.shape
-        T, M = max(256, _METRIC_STRIP_PIXELS // max(W, 1)), _METRIC_MARGIN
-        ladder = [
-            (float(thresh_sigma), int(minarea)),
-            (5.0, max(2, int(minarea * 0.75))),
-            (4.0, max(2, int(minarea * 0.50))),
-            (3.5, max(2, int(minarea * 0.35))),
-        ]
-        a_parts, b_parts = [], []
-        for thr, ma in ladder:
-            a_parts, b_parts = [], []
-            for y0 in range(0, H, T):
-                y1 = min(H, y0 + T)
-                ya, yb = max(0, y0 - M), min(H, y1 + M)
-                try:
-                    cat = sep.extract(sub[ya:yb], thr, err=grms, minarea=ma, clean=True,
-                                      deblend_nthresh=int(deblend_nthresh))
-                except Exception:
-                    cat = None
-                if cat is not None and len(cat) > 0:
-                    py = np.floor(cat["y"] + ya + 0.5)
-                    own = (py >= y0) & (py < y1)
-                    a_parts.append(cat["a"][own])
-                    b_parts.append(cat["b"][own])
-                time.sleep(0)              # let the GUI thread take the GIL
-            if sum(len(p) for p in a_parts) > 0:
-                break
-        n = sum(len(p) for p in a_parts)
-        if n == 0:
-            return 0, np.nan, np.nan
-        a = np.clip(np.concatenate(a_parts).astype(np.float32), 1e-6, None)
-        b = np.clip(np.concatenate(b_parts).astype(np.float32), 1e-6, None)
-        fwhm_vals = 2.3548 * np.sqrt(a * b)
-        ratios = np.clip(b / a, 0.0, 1.0)
-        ecc_vals = np.sqrt(np.maximum(0.0, 1.0 - ratios * ratios))
-        return int(n), float(np.nanmedian(fwhm_vals)), float(np.nanmedian(ecc_vals))
-    except Exception:
-        return 0, 30, 1     # same failure values as measure_stars_sep
+    return _lsw.star_metrics(data, float(thresh_sigma))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Linear accumulation
@@ -424,13 +428,7 @@ def _star_metrics_tiled(data, thresh_sigma: float, minarea: int = 16,
 # mean, the variance or the weights.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_RAW_EXTS = ('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')
 _BAND_ROWS = 256   # row band for per-pixel updates; bounds the temporaries
-
-
-def _as_hwc(img) -> np.ndarray:
-    a = np.asarray(img, dtype=np.float32)
-    return a[..., None] if a.ndim == 2 else a
 
 
 def _fmt_hms(seconds: float) -> str:
@@ -441,44 +439,6 @@ def _fmt_hms(seconds: float) -> str:
 def _fmt_dur(seconds: float) -> str:
     m = int(round(max(0.0, float(seconds)) / 60.0))
     return f"{m // 60}h {m % 60:02d}m" if m >= 60 else f"{m} min"
-
-
-def linear_channel_stats(img):
-    """Per-channel (floor, level) over valid pixels: floor = min, level =
-    median(x - floor). Same semantics as the Stacking Suite's per-channel
-    normalization targets. 0.0 / non-finite = no-data."""
-    a = _as_hwc(img)
-    floors = np.zeros(a.shape[2], np.float32)
-    levels = np.zeros(a.shape[2], np.float32)
-    for c in range(a.shape[2]):
-        band = a[..., c]
-        v = band[np.isfinite(band) & (band != 0.0)]
-        if v.size == 0:
-            continue
-        mn = float(v.min())
-        sample = v[::7] if v.size > 2_000_000 else v   # a gain doesn't need the exact median
-        floors[c] = mn
-        levels[c] = float(np.median(sample)) - mn
-    return floors, levels
-
-
-def normalize_linear(img, targets):
-    """Linear per-channel match to `targets` (the stack reference's levels):
-    out = (x - floor) * target / level. No clipping, no stretch.
-    Returns (out (H,W,C) float32, gains)."""
-    a = _as_hwc(img)
-    floors, levels = linear_channel_stats(a)
-    out = np.empty_like(a)
-    gains = np.ones(a.shape[2], np.float32)
-    for c in range(a.shape[2]):
-        t = float(targets[c]) if c < len(targets) else 0.0
-        g = t / float(levels[c]) if (levels[c] > 1e-12 and t > 0.0) else 1.0
-        gains[c] = g
-        band = a[..., c]
-        o = (band - floors[c]) * np.float32(g)
-        o[~(np.isfinite(band) & (band != 0.0))] = 0.0      # no-data stays no-data
-        out[..., c] = o
-    return out, gains
 
 
 def spatial_noise(lum, max_side: int = 2048) -> float:
@@ -702,17 +662,7 @@ class LiveAccumulator:
         noise it removed a sample from ~13% of pixels at B = 8, k = 3, biasing
         the stack low. Bonferroni over the n + 1 candidates, Student t with
         n_rest - 1 degrees of freedom, scaled for predicting a new sample."""
-        n_rest = max(2, int(n_rest))
-        df = n_rest - 1
-        p = 1.0 - alpha / (n_rest + 1)
-        try:
-            from scipy.stats import t as _t
-            q = float(_t.ppf(p, df))
-        except Exception:
-            from statistics import NormalDist
-            z = NormalDist().inv_cdf(p)
-            q = z + (z ** 3 + z) / (4.0 * df)          # Cornish-Fisher, first term
-        return q * float(np.sqrt(1.0 + 1.0 / n_rest))
+        return _lsw.max_outlier_crit(n_rest, alpha)
 
     def _finish_bootstrap(self) -> None:
         """Remove each pixel's brightest bootstrap sample where it is a clear
@@ -775,58 +725,12 @@ def region_snr(acc: "LiveAccumulator", rect, sky: float):
     return signal / noise, signal, noise
 
 
-def _raw_cfa(path: str):
-    """('BAYER', 'RGGB'|'BGGR'|'GRBG'|'GBRG') | ('XTRANS', None) |
-    ('UNKNOWN', None) for a camera RAW. The 2x2 token is read from
-    raw_colors_visible, i.e. for exactly the mosaic load_image returns."""
-    try:
-        import rawpy
-        from setiastro.saspro.stacking_suite import (
-            _rawpy_is_xtrans_or_bayer, _rawpy_pattern_to_token)
-        with rawpy.imread(path) as rp:
-            fam = _rawpy_is_xtrans_or_bayer(rp)
-            if fam == "XTRANS":
-                return fam, None
-            token = None
-            try:
-                cv = np.asarray(rp.raw_colors_visible)[:2, :2].ravel()
-                desc = rp.color_desc
-                letters = []
-                for v in cv:
-                    ch = desc[int(v)]
-                    ch = chr(ch) if isinstance(ch, int) else str(ch)
-                    letters.append(ch.upper()[:1])
-                t = "".join(letters)
-                token = t if t in ("RGGB", "BGGR", "GRBG", "GBRG") else None
-            except Exception:
-                token = None
-            if token is None:
-                token = _rawpy_pattern_to_token(rp)
-            return ("BAYER" if token else fam), token
-    except Exception:
-        return "UNKNOWN", None
-
-
-def _xtrans_linear(path: str):
-    """LibRaw's linear demosaic for X-Trans (as the Stacking Suite does)."""
-    try:
-        import rawpy
-        with rawpy.imread(path) as rp:
-            rgb16 = rp.postprocess(
-                demosaic_algorithm=rawpy.DemosaicAlgorithm.AHD,
-                no_auto_bright=True, gamma=(1.0, 1.0), output_bps=16,
-                use_camera_wb=True,
-                highlight_mode=rawpy.HighlightMode.Clip)
-        return rgb16.astype(np.float32) / 65535.0
-    except Exception:
-        return None
-
-
 _LIVE_THREADS = set()   # keeps a watch thread alive until it has finished
 
 
 class _LiveWatchThread(QThread):
-    """Scans the watch folder and stacks new frames off the GUI thread.
+    """Scans the watch folder, hands new frames to the worker processes
+    (live_stack_worker.prepare_frame) and stacks what they return.
 
     It never touches a widget: each frame's result goes back to the window
     through a queued signal and is applied there (_apply_result)."""
@@ -840,12 +744,15 @@ class _LiveWatchThread(QThread):
     def run(self):
         win = self._win
         try:
-            while not win._should_stop():
+            while True:
                 try:
-                    win._poll_once(self.frameDone.emit, self.message.emit)
+                    win._watch_loop(self.frameDone.emit, self.message.emit)
+                    break
                 except Exception as e:
                     self.message.emit(f"⚠ Live stacking error: {e}")
-                win._stop_event.wait(1.5)
+                    if win._should_stop():
+                        break
+                    win._stop_event.wait(1.5)
         finally:
             self._win = None
 
@@ -899,6 +806,17 @@ class LiveStackWindow(QDialog):
         self._notes_pending = []
         self._worker = None
         self._sky_box = {}        # key → (x0, y0, x1, y1) SNR background sample
+        self._seen_by_key = {}    # key → frames measured (the metrics plots' x)
+        self._star_sigma = {}     # key → star detection threshold, set by its first good frame
+        # Worker processes that prepare frames (load, calibrate, measure,
+        # normalize, align), and the .npy files that carry the masters and
+        # the reference frame to them.
+        self._pool = None
+        self._pool_n = 0
+        self._pool_failed = False
+        self._xfer = {}           # name → (array, path)
+        self._xfer_dir = None
+        self._xfer_seq = 0
         self._sky_rect_item = None
 
         self.cull_folder = None
@@ -925,11 +843,16 @@ class LiveStackWindow(QDialog):
         self.narrowband_mapping = _qget(s, "LiveStack/narrowband_mapping", "Natural", str)
         self.star_trail_mode    = _qget(s, "LiveStack/star_trail_mode",    False, bool)
         self.FILE_STABLE_SECS     = _qget(s, "LiveStack/file_stable_secs",     3.0,   float)
-        self.star_thresh_sigma    = _qget(s, "LiveStack/star_thresh_sigma",     7.0,   float)
+        self.star_target        = _qget(s, "LiveStack/star_target", _lsw.STAR_TARGET, int)
         self.fits_only          = _qget(s, "LiveStack/fits_only",         False, bool)
         self.weight_frames      = _qget(s, "LiveStack/weight_frames",     True,  bool)
         self.snr_goal           = _qget(s, "LiveStack/snr_goal",          10.0,  float)
         self.auto_stretch       = _qget(s, "LiveStack/auto_stretch",      True,  bool)
+        # Until set here, follow the Stacking Suite's Debayer choice (RCD default)
+        _ss_dm = str(s.value("stacking/debayer_method", "rcd") or "rcd").lower()
+        self.debayer_method     = str(_qget(s, "LiveStack/debayer_method", _ss_dm, str)).lower()
+        if self.debayer_method not in dict((t, l) for l, t in DEBAYER_METHODS):
+            self.debayer_method = "rcd"
 
 
         self.total_exposure = 0.0  # seconds
@@ -1264,8 +1187,8 @@ class LiveStackWindow(QDialog):
     def open_settings(self):
         dlg = LiveStackSettingsDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            (bs, sigma, fwhm, ecc, stars, mapping, delay, star_sigma, fits_only,
-             weight_frames, snr_goal) = dlg.getValues()
+            (bs, sigma, fwhm, ecc, stars, mapping, delay, star_target, fits_only,
+             weight_frames, snr_goal, debayer_method) = dlg.getValues()
 
             # 1) Persist into QSettings
             s = QSettings()
@@ -1276,10 +1199,11 @@ class LiveStackWindow(QDialog):
             s.setValue("LiveStack/min_star_count",     stars)
             s.setValue("LiveStack/narrowband_mapping", mapping)
             s.setValue("LiveStack/file_stable_secs",   delay)
-            s.setValue("LiveStack/star_thresh_sigma",  star_sigma)
+            s.setValue("LiveStack/star_target",        star_target)
             s.setValue("LiveStack/fits_only",          fits_only)
             s.setValue("LiveStack/weight_frames",      weight_frames)
             s.setValue("LiveStack/snr_goal",           snr_goal)
+            s.setValue("LiveStack/debayer_method",     debayer_method)
 
             # 2) Apply to this live‐stack session
             self.bootstrap_frames   = bs
@@ -1289,10 +1213,11 @@ class LiveStackWindow(QDialog):
             self.min_star_count     = stars
             self.narrowband_mapping = mapping
             self.FILE_STABLE_SECS   = delay
-            self.star_thresh_sigma  = star_sigma
+            self.star_target        = star_target
             self.fits_only          = fits_only
             self.weight_frames      = weight_frames
             self.snr_goal           = snr_goal
+            self.debayer_method     = debayer_method
             with self._lock:
                 for acc in self.stacks.values():
                     acc.k = float(sigma)   # bootstrap length applies to new stacks
@@ -1301,9 +1226,10 @@ class LiveStackWindow(QDialog):
             self.status_label.setText(
                 f"↺ Settings saved: BS={bs}, σ={sigma:.1f}, "
                 f"FWHM≤{fwhm:.1f}, ECC≤{ecc:.2f}, Stars≥{stars}, "
-                f"Mapping={mapping}, StarSigma={star_sigma:.1f}, "
+                f"Mapping={mapping}, Stars to detect={star_target}, "
                 f"FITS-only={'on' if fits_only else 'off'}, "
-                f"Weights={'on' if weight_frames else 'off'}, SNR goal={snr_goal:g}"
+                f"Weights={'on' if weight_frames else 'off'}, SNR goal={snr_goal:g}, "
+                f"Debayer={debayer_method.upper()}"
             )
             self._preview_cache = None
             self._refresh_preview()
@@ -1480,43 +1406,8 @@ class LiveStackWindow(QDialog):
 
     # ── New helper: map header["FILTER"] to a single letter key
     def _get_filter_key(self, header):
-        """
-        Map a FITS header FILTER string to one of:
-        'L' (luminance),
-        'R','G','B',
-        'H' (H-alpha),
-        'O' (OIII),
-        'S' (SII),
-        or return None if it doesn’t match.
-        """
-        raw = header.get('FILTER', '')
-        fn = raw.strip().upper()
-        if not fn:
-            return None
-
-        # H-alpha
-        if fn in ('H', 'HA', 'HALPHA', 'H-ALPHA'):
-            return 'H'
-        # OIII
-        if fn in ('O', 'O3', 'OIII'):
-            return 'O'
-        # SII
-        if fn in ('S', 'S2', 'SII'):
-            return 'S'
-        # Red
-        if fn in ('R', 'RED', 'RD'):
-            return 'R'
-        # Green
-        if fn in ('G', 'GREEN', 'GRN'):
-            return 'G'
-        # Blue
-        if fn in ('B', 'BLUE', 'BL'):
-            return 'B'
-        # Luminance
-        if fn in ('L', 'LUM', 'LUMI', 'LUMINANCE'):
-            return 'L'
-
-        return None
+        """FITS FILTER -> 'L','R','G','B','H' (Ha),'O' (OIII),'S' (SII), or None."""
+        return _lsw.filter_key(header)
 
     def _build_color_composite(self, planes):
         """
@@ -1791,6 +1682,8 @@ class LiveStackWindow(QDialog):
     def _on_app_quit(self):
         self.stop_live()
         self._wait_worker(15000)
+        self._shutdown_pool()
+        self._cleanup_xfer()
 
     def stop_live(self):
         self._stop_event.set()      # request cancellation immediately
@@ -1828,6 +1721,8 @@ class LiveStackWindow(QDialog):
         # a frame still in flight on the watch thread is dropped (_gen)
         self._gen += 1
         self._sky_box.clear()
+        self._seen_by_key.clear()
+        self._star_sigma.clear()
         self.processed_files.clear()
         self.frame_count = 0
         self.current_stack = None
@@ -1939,73 +1834,276 @@ class LiveStackWindow(QDialog):
             self._poll_busy = False
 
     def _poll_once(self, emit_frame, emit_msg):
-        """One scan of the watch folder. Runs on the watch thread: results and
-        messages go out through emit_frame / emit_msg, never to widgets."""
+        """One scan of the watch folder, every ready frame prepared and stacked
+        on the calling thread (check_for_new_frames)."""
         if self._should_stop() or not self.watch_folder:
             return
-        # Gather candidates
-        exts = self._watch_extensions()
-        all_paths = []
-        for ext in exts:
-            all_paths += glob.glob(os.path.join(self.watch_folder, '**', ext), recursive=True)
-
-        # use normalized keys for "already processed"
-        all_norm = [(self._norm_path(p), p) for p in all_paths]
-        candidates = [orig for (norm, orig) in sorted(all_norm) if norm not in self.processed_files]
-        if not candidates:
-            return
-
-        emit_msg(f"➜ New/updated files: {len(candidates)}")
-
-        processed_now = 0
+        candidates = self._scan_candidates(set())
+        if candidates:
+            emit_msg(f"➜ New/updated files: {len(candidates)}")
         for path in candidates:
             if self._should_stop():
                 break
+            self._inline_frame(path, emit_frame, emit_msg)
 
-            norm = self._norm_path(path)
-            info = self._probe.get(norm)
-            if info and time.time() < info.get("penalty_until", 0.0):
+    def _scan_candidates(self, busy):
+        """Files in the watch folder not yet stacked and not being prepared."""
+        if not self.watch_folder:
+            return []
+        all_paths = []
+        for ext in self._watch_extensions():
+            all_paths += glob.glob(os.path.join(self.watch_folder, '**', ext), recursive=True)
+        all_norm = [(self._norm_path(p), p) for p in all_paths]
+        return [orig for (norm, orig) in sorted(all_norm)
+                if norm not in self.processed_files and norm not in busy]
+
+    def _strike(self, norm, path, e, emit_msg):
+        """A failed frame: cool down, retry, and give up after three tries."""
+        info = self._probe.get(norm) or {"fails": 0, "penalty_until": 0.0}
+        info["fails"] = info.get("fails", 0) + 1
+        info["penalty_until"] = time.time() + self.OPEN_RETRY_PENALTY_SECS
+        self._probe[norm] = info
+        if info["fails"] >= 3:
+            self.processed_files.add(norm)
+            emit_msg(f"⚠ Skipping {os.path.basename(path)} after {info['fails']} failures: {e}")
+        else:
+            emit_msg(f"⚠ Error on {os.path.basename(path)} (try {info['fails']}): {e}")
+
+    def _inline_frame(self, path, emit_frame, emit_msg):
+        """Prepare and stack one frame on this thread. A frame is marked done
+        only when it produced a result (stacked, culled or unreadable): a
+        frame that wasn't ready, was stopped, or was dropped by a Reset is
+        picked up again."""
+        norm = self._norm_path(path)
+        info = self._probe.get(norm)
+        if info and time.time() < info.get("penalty_until", 0.0):
+            return
+        if not self._file_ready(path):
+            return
+        try:
+            res = self._process_core(path)
+        except Exception as e:
+            self._strike(norm, path, e, emit_msg)
+            return
+        if res is not None:
+            self.processed_files.add(norm)
+            emit_frame(res)
+
+    # ── worker processes ─────────────────────────────────────────────────
+    def _watch_loop(self, emit_frame, emit_msg):
+        """The watch thread's loop. Scans the folder every 1.5 s. Frames are
+        prepared in worker processes (or on this thread when those are
+        unavailable, and always in Star-Trail mode) and committed here in
+        file order, so the stack is the same as stacking them one by one.
+        A session's first frame is prepared alone: it becomes the reference
+        every later frame is aligned to."""
+        from concurrent.futures import wait as _fwait
+        pool = self._get_pool(emit_msg)
+        inflight = deque()         # (future, path, gen) in file order
+        busy = set()
+        cands = []
+        next_scan = 0.0
+        said_stopping = False
+        while True:
+            # 1) commit what has finished, in order
+            while inflight and inflight[0][0].done():
+                fut, path, gen = inflight.popleft()
+                busy.discard(path)
+                pool = self._finish_prepared(fut, path, gen, pool, emit_frame, emit_msg)
+            if self._should_stop():
+                if not inflight:
+                    break
+                if not said_stopping:
+                    said_stopping = True
+                    emit_msg(f"■ Stopping: finishing {len(inflight)} frame(s) already being prepared…")
+                _fwait([inflight[0][0]], timeout=0.2)
                 continue
 
-            if not self._file_ready(path):
-                continue
+            # 2) scan
+            now = time.time()
+            if now >= next_scan:
+                next_scan = now + 1.5
+                cands = self._scan_candidates(busy)
 
+            # 3) hand frames out
+            while cands and not self._should_stop():
+                if pool is None or self.star_trail_mode:
+                    if inflight:
+                        break                     # let the workers' frames land first
+                    self._inline_frame(cands.pop(0), emit_frame, emit_msg)
+                    continue
+                if len(inflight) >= self._inflight_cap():
+                    break
+                if self.reference_image_2d is None and inflight:
+                    break                         # the reference frame goes alone
+                path = self._norm_path(cands.pop(0))
+                info = self._probe.get(path)
+                if info and time.time() < info.get("penalty_until", 0.0):
+                    continue
+                if not self._file_ready(path):
+                    continue
+                try:
+                    fut = pool.submit(prepare_frame, self._frame_task(path))
+                except Exception as e:
+                    pool = self._drop_pool(emit_msg, e)
+                    cands.insert(0, path)
+                    continue
+                inflight.append((fut, path, self._gen))
+                busy.add(path)
+
+            # 4) wait for the oldest frame or the next scan
+            if inflight:
+                _fwait([inflight[0][0]], timeout=0.2)
+            else:
+                self._stop_event.wait(0.2)
+
+    def _finish_prepared(self, fut, path, gen, pool, emit_frame, emit_msg):
+        from concurrent.futures.process import BrokenProcessPool
+        try:
+            prep = fut.result()
+        except BrokenProcessPool as e:
+            return self._drop_pool(emit_msg, e)   # not marked: retried on this thread
+        except Exception as e:
+            self._strike(path, path, e, emit_msg)
+            return pool
+        try:
+            res = self._commit_prepared(prep, gen)
+        except Exception as e:
+            self._strike(path, path, e, emit_msg)
+            return pool
+        if res is not None:                        # None: dropped by Reset / mode switch
+            self.processed_files.add(path)
+            emit_frame(res)
+        return pool
+
+    def _n_workers(self) -> int:
+        # A live session needs one frame every few minutes; more workers only
+        # help catching up on a folder (Process & Monitor). Each worker holds
+        # a few full-size frames, so keep the count modest.
+        return max(1, min(3, (os.cpu_count() or 2) // 4))
+
+    def _inflight_cap(self) -> int:
+        n = max(1, int(self._pool_n))
+        acc = next(iter(self.stacks.values()), None)
+        if acc is None:
+            return n
+        try:
+            import psutil
+            frame_bytes = int(np.prod(acc.shape)) * 4
+            avail = int(psutil.virtual_memory().available)
+            # a frame in flight: ~6 working copies in its worker + the result here
+            return max(1, min(n, int(avail * 0.6) // max(1, 8 * frame_bytes)))
+        except Exception:
+            return n
+
+    def _get_pool(self, emit_msg):
+        """The worker processes, started once per window and kept warm across
+        Stop / Start. None when they can't run here; frames are then prepared
+        on the watch thread with the same code."""
+        if self._pool is not None or self._pool_failed:
+            return self._pool
+        try:
+            from setiastro.saspro.worker_env import (
+                check_process_pools, process_pools_ok, process_pools_reason)
+            check_process_pools(log_fn=lambda m: print(f"[LiveStack] {m}"))
+            if not process_pools_ok():
+                raise RuntimeError(process_pools_reason() or "start-up check failed")
+            import multiprocessing as _mp
+            from concurrent.futures import ProcessPoolExecutor
+            n = self._n_workers()
+            emit_msg(f"Starting {n} worker process(es)…")
+            pool = ProcessPoolExecutor(
+                max_workers=n, mp_context=_mp.get_context("spawn"),
+                initializer=_lsw.init_worker,
+                initargs=(QCoreApplication.organizationName(),
+                          QCoreApplication.applicationName()))
             try:
-                res = self._process_core(path)
-                self.processed_files.add(norm)
-                processed_now += 1
-                if res is not None:
-                    emit_frame(res)
-            except Exception as e:
-                info = self._probe.get(norm) or {"fails": 0, "penalty_until": 0.0}
-                info["fails"] = info.get("fails", 0) + 1
-                info["penalty_until"] = time.time() + self.OPEN_RETRY_PENALTY_SECS
-                self._probe[norm] = info
+                for f in [pool.submit(_lsw.warm) for _ in range(n)]:
+                    f.result(timeout=180)       # a worker that can't import fails here
+            except Exception:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            self._pool, self._pool_n = pool, n
+            print(f"[LiveStack] {n} worker process(es) prepare frames")
+        except Exception as e:
+            self._pool_failed = True
+            self._pool = None
+            print(f"[LiveStack] worker processes unavailable: {type(e).__name__}: {e}")
+            emit_msg("ℹ Worker processes unavailable; frames are prepared on a "
+                     "background thread instead (the window may respond more slowly).")
+        return self._pool
 
-                if info["fails"] >= 3:
-                    self.processed_files.add(norm)
-                    emit_msg(f"⚠ Skipping {os.path.basename(path)} after {info['fails']} failures: {e}")
-                else:
-                    emit_msg(f"⚠ Error on {os.path.basename(path)} (try {info['fails']}): {e}")
+    def _drop_pool(self, emit_msg, e=None):
+        """Workers died or can't take work: carry on on the watch thread."""
+        self._pool_failed = True
+        p, self._pool = self._pool, None
+        if p is not None:
+            try:
+                p.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            print(f"[LiveStack] worker processes stopped: {type(e).__name__ if e else ''} {e or ''}")
+            emit_msg("⚠ Worker processes stopped; continuing on a background thread.")
+        return None
 
-        # a single frame keeps its own status line (e.g. why it was culled)
-        if processed_now > 1 and not self._should_stop():
-            emit_msg(f"✔ Processed {processed_now} file(s)")
+    def _shutdown_pool(self):
+        p, self._pool = self._pool, None
+        if p is not None:
+            try:
+                p.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+
+    def _frame_task(self, path, inline: bool = False) -> dict:
+        """Everything prepare_frame needs. For a worker the masters and the
+        reference travel as .npy files written once; in-process, as arrays."""
+        put = (lambda name, a: a) if inline else self._xfer_file
+        flats = {}
+        if self.mono_color_mode:
+            flats = {k: put(f"flat_{k}", v) for k, v in list(self.master_flats.items())
+                     if v is not None}
+        with self._lock:
+            targets = {k: np.asarray(v, np.float32).copy() for k, v in self.norm_targets.items()}
+            ref = self.reference_image_2d
+        return {"path": path, "mono_color_mode": bool(self.mono_color_mode),
+                "debayer_method": str(self.debayer_method),
+                "star_target": int(self.star_target),
+                "star_sigmas": dict(self._star_sigma),
+                "max_fwhm": float(self.max_fwhm), "max_ecc": float(self.max_ecc),
+                "min_star_count": int(self.min_star_count),
+                "dark": put("dark", self.master_dark), "flat": put("flat", self.master_flat),
+                "flats": flats, "ref": put("ref", ref), "targets": targets}
+
+    def _xfer_file(self, name, arr):
+        """Path of an .npy holding arr, written the first time this array is
+        sent. A replaced array gets a new file name, so a worker never reads
+        a stale cached copy."""
+        if arr is None:
+            return None
+        ent = self._xfer.get(name)
+        if ent is not None and ent[0] is arr:
+            return ent[1]
+        if self._xfer_dir is None or not os.path.isdir(self._xfer_dir):
+            self._xfer_dir = tempfile.mkdtemp(prefix="saspro_live_")
+        self._xfer_seq += 1
+        p = os.path.join(self._xfer_dir, f"{name}_{self._xfer_seq}.npy")
+        np.save(p, np.asarray(arr))
+        if ent is not None:
+            try:
+                os.remove(ent[1])
+            except OSError:
+                pass
+        self._xfer[name] = (arr, p)
+        return p
+
+    def _cleanup_xfer(self):
+        self._xfer = {}
+        d, self._xfer_dir = self._xfer_dir, None
+        if d:
+            shutil.rmtree(d, ignore_errors=True)
 
     def _match_master_to_image(self, master: np.ndarray, img: np.ndarray) -> np.ndarray:
-        """
-        Coerce master (dark/flat) to match img dimensionality.
-        - If img is RGB (H,W,3) and master is mono (H,W), expand to (H,W,1).
-        - If img is mono (H,W) and master is RGB (H,W,3), collapse to mono via mean.
-        """
-        if master is None:
-            return None
-
-        if img.ndim == 3 and master.ndim == 2:
-            return master[..., None]  # (H,W,1) broadcasts to (H,W,3)
-        if img.ndim == 2 and master.ndim == 3:
-            return master.mean(axis=2)  # (H,W)
-        return master
+        return _lsw.match_master_to_image(master, img)
 
     def _norm_path(self, p: str) -> str:
         # normpath fixes slashes, normcase fixes Windows case-insensitive matching
@@ -2029,60 +2127,16 @@ class LiveStackWindow(QDialog):
         self._notes_pending.append(text)
 
     def _load_calibrated(self, path):
-        """Load one frame LINEAR, calibrated on the mosaic, then debayered.
-
-        Returns (img, header, mono_key, None) with img (H,W) or (H,W,3)
-        float32, or (None, None, None, reason) when the frame can't be used.
-        Camera RAW goes through load_image like everywhere else (the Bayer
-        mosaic), not LibRaw's gamma-encoded, white-balanced RGB."""
-        img, header, bit_depth, is_mono = load_image(path)
-        if img is None:
-            return None, None, None, "could not be loaded"
-        if "preview" in str(bit_depth).lower():
-            return None, None, None, ("RAW decode failed; only the embedded JPEG "
-                                      "preview was readable, which is not linear")
-        if header is None:
-            header = fits.Header()
-        img = np.asarray(img, dtype=np.float32)
-        if img.ndim == 3 and img.shape[2] == 1:
-            img = img[..., 0]
-
-        bayer = None
-        calibrate = True
-        if path.lower().endswith(_RAW_EXTS) and img.ndim == 2:
-            fam, token = _raw_cfa(path)
-            if fam == "XTRANS":
-                rgb = _xtrans_linear(path)
-                if rgb is None:
-                    return None, None, None, "X-Trans RAW could not be demosaiced"
-                img, calibrate = rgb, False
-                self._note_once("xtrans", "X-Trans RAW uses LibRaw's linear demosaic; "
-                                          "master dark/flat are not applied to X-Trans frames.")
-            else:
-                bayer = token
-        elif img.ndim == 2:
-            bp = header.get("BAYERPAT")
-            if bp:
-                bayer = str(bp[0] if isinstance(bp, tuple) else bp).strip().upper() or None
-
-        mono_key = None
-        if self.mono_color_mode and img.ndim == 2 and bayer is None and header.get("FILTER"):
-            mono_key = self._get_filter_key(header)
-
-        if calibrate:
-            if self.master_dark is not None:
-                md = self._match_master_to_image(self.master_dark, img).astype(np.float32, copy=False)
-                img = img - md
-            if mono_key and mono_key in self.master_flats:
-                mf = self._match_master_to_image(self.master_flats[mono_key], img).astype(np.float32, copy=False)
-                img = apply_flat_division_numba(img, mf)
-            elif self.master_flat is not None:
-                mf = self._match_master_to_image(self.master_flat, img).astype(np.float32, copy=False)
-                img = apply_flat_division_numba(img, mf)
-
-        if bayer:
-            img = debayer_fits_fast(img, bayer)
-        return np.asarray(img, dtype=np.float32), header, mono_key, None
+        """Load one frame linear, calibrated on the mosaic, then debayered
+        (live_stack_worker.load_calibrated). Returns (img, header, mono_key,
+        None) or (None, None, None, reason)."""
+        img, header, mono_key, why, notes = _lsw.load_calibrated(
+            path, mono_color_mode=self.mono_color_mode, dark=self.master_dark,
+            flat=self.master_flat, flats=self.master_flats,
+            debayer_method=self.debayer_method)
+        for tag, text in notes:
+            self._note_once(tag, text)
+        return img, header, mono_key, why
 
     def _frame_weight(self, key, sc, ecc, bg, fwhm) -> float:
         """Stacking Suite 'Balanced' weight: star count x roundness x sky
@@ -2171,7 +2225,8 @@ class LiveStackWindow(QDialog):
             self.status_label.setText(status)
         pt = res.get("point")
         if pt is not None:
-            self.metrics_window.metrics_panel.add_point(pt[0], pt[1], flagged=pt[2])
+            self.metrics_window.metrics_panel.add_point(
+                pt[0], pt[1], flagged=pt[2], key=(pt[3] if len(pt) > 3 else "__main__"))
         if "display" in res:
             if res.get("display_rev") != self._display_rev:
                 self._preview_cache = None      # preview settings changed meanwhile
@@ -2180,9 +2235,11 @@ class LiveStackWindow(QDialog):
                 self._show_display(res["display"])
 
     def _process_core(self, path):
-        """Stack one frame. Runs on the watch thread, so no widget is touched
-        here. Returns a result for _apply_result, or None (not ready, stopped,
-        or dropped by a Reset)."""
+        """Stack one frame on the calling thread: prepare it in-process (the
+        same prepare_frame a worker process runs), then commit it. Used by
+        process_frame and when worker processes are unavailable. Returns a
+        result for _apply_result, or None (not ready, stopped, or dropped by
+        a Reset)."""
         if self._should_stop():
             return None
         if not self._file_ready(path):
@@ -2195,100 +2252,96 @@ class LiveStackWindow(QDialog):
         if self.star_trail_mode:
             return self._star_trail_core(path, gen)
 
+        prep = prepare_frame(self._frame_task(path, inline=True),
+                             should_stop=self._should_stop)
+        return self._commit_prepared(prep, gen)
+
+    def _commit_prepared(self, prep, gen):
+        """The window's side of a prepared frame: frame weight, accumulate,
+        histories, noise and SNR, preview image. Runs on the watch thread (or
+        the caller of process_frame); touches no widget. Returns a result for
+        _apply_result, or None when the frame was stopped or a Reset / mode
+        switch happened while it was being prepared."""
+        if prep is None or prep.get("status") == "stopped" or gen != self._gen:
+            return None
+        path = prep["path"]
         name = os.path.basename(path)
+        for tag, text in prep.get("notes") or []:
+            self._note_once(tag, text)
+        if prep["status"] == "error":
+            return self._result(gen, status=f"⚠ {name}: {prep.get('why')}")
 
-        # 1) Load -> calibrate (on the mosaic) -> debayer. LINEAR from here on.
-        img, header, mono_key, why = self._load_calibrated(path)
-        if img is None:
-            return self._result(gen, status=f"⚠ {name}: {why}")
-        if self._should_stop():
-            return None
-
-        lin = _as_hwc(img)                       # (H,W,1) mono or (H,W,3) colour
-        del img
-        key = mono_key or "__main__"
-        plane = lin[..., 0] if lin.shape[2] == 1 else lin.mean(axis=2)
-
-        # 2) Star metrics measured the way Blink measures them: on a
-        #    statistical-stretch COPY of the frame (SEP's 7σ / 16 px defaults
-        #    are tuned on stretched data; on linear data small stars fall
-        #    under the area cut). Measurement only: the stack stays linear.
-        bg = float(np.median(plane[::4, ::4]))
-        sc, fwhm, ecc = compute_frame_star_metrics(
-            stretch_mono_image(plane, target_median=0.3),
-            thresh_sigma=self.star_thresh_sigma)
-        del plane
+        key = prep["key"]
+        sc, fwhm, ecc, bg = prep["sc"], prep["fwhm"], prep["ecc"], prep["bg"]
+        header = prep.get("header")
+        # The star threshold is chosen by count on the stack's first frames and
+        # then held. A frame prepared before it was held chose its own; use its
+        # measurement at the held threshold when it tried that one.
+        held = self._star_sigma.get(key)
+        own_sig = prep.get("star_sigma")
+        if held is not None and own_sig is not None and float(own_sig) != float(held):
+            alt = (prep.get("star_rungs") or {}).get(float(held))
+            if alt is not None:
+                sc, fwhm, ecc = alt
+                if prep["status"] == "ok":
+                    why = _lsw.cull_reason(sc, fwhm, ecc, self.max_fwhm, self.max_ecc,
+                                           self.min_star_count)
+                    if why is not None:
+                        prep["status"], prep["why"] = "cull", why
         self._frames_seen += 1
-        frame_no = self._frames_seen
-        if self._should_stop():
-            return None
+        frame_no = self._seen_by_key.get(key, 0) + 1     # x counts this filter's frames
+        self._seen_by_key[key] = frame_no
 
-        # 3) The user's cull thresholds (safety net), then the frame weight
-        reason = None
-        if fwhm > self.max_fwhm:
-            reason = f"FWHM {fwhm:.1f} px > {self.max_fwhm:.1f}"
-        elif ecc > self.max_ecc:
-            reason = f"eccentricity {ecc:.2f} > {self.max_ecc:.2f}"
-        elif sc < self.min_star_count:
-            reason = f"{sc} stars < {self.min_star_count}"
+        # Cull thresholds and alignment were checked in prepare_frame; the
+        # weight needs this stack's history, so it is decided here.
+        reason = prep.get("why") if prep["status"] == "cull" else None
         weight = 1.0
         if reason is None and self.weight_frames:
             weight = self._frame_weight(key, sc, ecc, bg, fwhm)
             if not (weight > 0.0):
                 reason = "no usable stars to weight it by"
-
+        frame = prep.get("frame")
         acc = self.stacks.get(key)
-        if reason is None and acc is not None and acc.shape != lin.shape:
-            reason = (f"size {lin.shape[1]}x{lin.shape[0]}x{lin.shape[2]} differs from "
+        if reason is None and acc is not None and acc.shape != frame.shape:
+            reason = (f"size {frame.shape[1]}x{frame.shape[0]}x{frame.shape[2]} differs from "
                       f"this stack's {acc.shape[1]}x{acc.shape[0]}x{acc.shape[2]}")
-
-        # 4) Linear per-channel normalization to this stack's reference levels
-        norm = targets = nplane = aligned = None
-        if reason is None:
-            targets = self.norm_targets.get(key)
-            if targets is None:
-                _floors, targets = linear_channel_stats(lin)
-            norm, _gains = normalize_linear(lin, targets)
-        del lin
-
-        # 5) Align to the reference frame. A frame that can't be placed is
-        #    culled: stacking it unaligned would ghost every star.
-        if reason is None:
-            nplane = norm[..., 0] if norm.shape[2] == 1 else norm.mean(axis=2)
-            ref = self.reference_image_2d
-            if ref is None:
-                aligned = norm
-            elif ref.shape != nplane.shape:
-                reason = "size differs from the reference frame"
-            else:
-                delta = StarRegistrationWorker.compute_affine_transform_astroalign(nplane, ref)
-                if delta is None:
-                    reason = "could not be aligned to the reference frame"
-                else:
-                    aligned = _as_hwc(StarRegistrationThread.apply_affine_transform_static(
-                        norm[..., 0] if norm.shape[2] == 1 else norm, delta))
-        if self._should_stop():
-            return None
-
+        if reason is None and not prep.get("aligned") and self.reference_image_2d is not None:
+            reason = "prepared before the reference frame was chosen"
         if reason is not None:
             return self._result(gen, status=self._cull_frame(path, reason),
-                                point=(frame_no, [fwhm, ecc, sc, None, None, None], True))
+                                point=(frame_no, [fwhm, ecc, sc, None, None, None], True, key))
 
-        # 6) Accumulate: weighted mean + variance, sigma rejection by exclusion.
-        #    Under the lock: GUI readers (export, preview, SNR) never see a
-        #    half-updated stack.
+        # Accumulate: weighted mean + variance, sigma rejection by exclusion.
+        # Under the lock: GUI readers (export, preview, SNR) never see a
+        # half-updated stack.
         with self._lock:
             if gen != self._gen:
-                return None          # Reset or mode switch while this frame was in flight
+                return None          # Reset or mode switch while this frame was prepared
+            targets = self.norm_targets.get(key)
+            used = prep["targets_used"]
+            if targets is not None and prep.get("targets_own"):
+                # Prepared before this stack had its levels, so normalized to
+                # its own. The normalization is a per-channel gain after the
+                # floor, so moving it to the stack's levels is one more gain.
+                for c in range(frame.shape[2]):
+                    if c < len(used) and c < len(targets) and float(used[c]) > 0.0:
+                        frame[..., c] *= np.float32(float(targets[c]) / float(used[c]))
             acc = self.stacks.get(key)
             if acc is None:
-                acc = LiveAccumulator(aligned.shape, self.bootstrap_frames, self.clip_threshold)
+                acc = LiveAccumulator(frame.shape, self.bootstrap_frames, self.clip_threshold)
                 self.stacks[key] = acc
-                self.norm_targets[key] = targets
+                self.norm_targets[key] = targets if targets is not None else used
             if self.reference_image_2d is None:
-                self.reference_image_2d = nplane.copy()
+                self.reference_image_2d = np.ascontiguousarray(
+                    frame[..., 0] if frame.shape[2] == 1 else frame.mean(axis=2))
             acc.k = float(self.clip_threshold)
-            acc.add(aligned, weight)
+            acc.add(frame, weight)
+            if key not in self._star_sigma and prep.get("star_sigma") is not None:
+                # this stack's first good frame chose the star threshold: hold it
+                self._star_sigma[key] = float(prep["star_sigma"])
+                self._note_once(f"starsig_{self._gen}_{key}",
+                                f"Star detection{'' if key == '__main__' else ' (' + str(key) + ')'}: "
+                                f"{self._star_sigma[key]:g}σ finds {sc} stars; held for this stack.")
             self._last_key = key
             self.frame_count += 1
             self._fwhm_hist.setdefault(key, []).append(float(fwhm))
@@ -2297,12 +2350,10 @@ class LiveStackWindow(QDialog):
             w_rel = float(weight) / float(np.median(whist)) if whist else 1.0
             self._add_exposure(key, header)
             self._remember_header(key, header)
-        del aligned, norm, nplane
-        if self._should_stop():
-            return None
+        del frame, prep
 
-        # 7) Stack noise and the SNR readout (reads only: this thread is the
-        #    only writer of the stacks)
+        # Stack noise and the SNR readout (reads only: this thread is the
+        # only writer of the stacks)
         lum = acc.mu[..., 0] if acc.shape[2] == 1 else acc.mu.mean(axis=2)
         noise = spatial_noise(lum)
         with self._lock:
@@ -2321,14 +2372,12 @@ class LiveStackWindow(QDialog):
         elif acc.clipping and acc.bootstrap >= 3:
             msg += (f", σ-clipping on: an outlier was taken back out of "
                     f"{100.0 * acc.bootstrap_removed_frac:.3f}% of pixels")
-        if self._should_stop():
-            return None
 
-        # 8) Preview image (Auto Stretch or linear; display only)
+        # Preview image (Auto Stretch or linear; display only)
         rev = self._display_rev
         disp = self._display_image()
         return self._result(gen, status=msg, mode=mode, snr_text=snr_text,
-                            point=(frame_no, [fwhm, ecc, sc, w_rel, (acc.n_eff, noise), snr], False),
+                            point=(frame_no, [fwhm, ecc, sc, w_rel, noise, snr], False, key),
                             display=disp, display_rev=rev, sky_box=self._sky_box.get(key))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -2634,6 +2683,7 @@ class LiveStackWindow(QDialog):
         try:
             self.stacks.clear()
             self.norm_targets.clear()
+            self._star_sigma.clear()
             self.master_flats.clear()
         except Exception:
             pass
@@ -2643,6 +2693,8 @@ class LiveStackWindow(QDialog):
         self._snr_rect_item = None
         self._sky_rect_item = None
         self._docman = None
+        self._shutdown_pool()
+        self._cleanup_xfer()
 
         try:
             self.pixmap_item.setPixmap(QPixmap())

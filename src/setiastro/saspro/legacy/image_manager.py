@@ -839,9 +839,8 @@ def _try_load_raw_with_rawpy(filename: str, allow_thumb_preview: bool = True, de
         scale = max(1.0, wht - blk)
         arr /= scale
 
-        hdr = fits.Header()
-        # Fill from raw.metadata first
-        hdr = _fill_hdr_from_raw_metadata(raw, hdr)
+        # EXIF first (the camera's exact values), then LibRaw for any gaps.
+        hdr = _fill_hdr_from_raw_metadata(raw, _enrich_header_from_exif(fits.Header(), filename))
 
         # Optional extra bits you already had:
         try:
@@ -901,8 +900,7 @@ def _try_load_raw_with_rawpy(filename: str, allow_thumb_preview: bool = True, de
             )
             img = rgb16.astype(np.float32) / 65535.0  # HxWx3
 
-            hdr = fits.Header()
-            hdr = _fill_hdr_from_raw_metadata(raw, hdr)
+            hdr = _fill_hdr_from_raw_metadata(raw, _enrich_header_from_exif(fits.Header(), filename))
             hdr["RAW_DEM"] = (True, "LibRaw postprocess; linear, no auto-bright, RAW color")
 
             return img, hdr, "16-bit demosaiced", False
@@ -924,8 +922,7 @@ def _try_load_raw_with_rawpy(filename: str, allow_thumb_preview: bool = True, de
                 img = np.array(pil, dtype=np.float32) / 255.0
                 is_mono = (img.ndim == 2)
 
-                hdr = fits.Header()
-                hdr = _fill_hdr_from_raw_metadata(raw2, hdr)
+                hdr = _fill_hdr_from_raw_metadata(raw2, _enrich_header_from_exif(fits.Header(), filename))
                 hdr["RAW_PREV"] = (True, "Embedded JPEG preview (no linear RAW data)")
 
                 return img, hdr, "8-bit preview (JPEG from RAW)", is_mono
@@ -937,6 +934,7 @@ def _try_load_raw_with_rawpy(filename: str, allow_thumb_preview: bool = True, de
 
 import os
 import datetime
+import struct
 
 import exifread
 
@@ -1015,6 +1013,100 @@ def _ensure_minimal_header(header, file_path: str) -> fits.Header:
     return header
 
 
+# ---------------------------------------------------------------------------
+# Canon CR3: EXIF inside an ISO-BMFF container
+# ---------------------------------------------------------------------------
+# CR2/NEF/ARW/DNG/... are TIFF-based, so exifread reads them directly. CR3 is
+# an ISO-BMFF ("MP4") container that exifread rejects ("File format not
+# recognized.") and returns no tags for -- which is why every CR3 converted
+# with EXPTIME=Unknown. Canon keeps the EXIF as small self-contained TIFF
+# streams in a uuid box under moov: CMT1 is IFD0 (Make, Model, DateTime) and
+# CMT2 is the Exif IFD (ExposureTime, ISO, DateTimeOriginal, FNumber,
+# FocalLength). Cut those out and exifread reads them like any CR2.
+_CR3_CANON_UUID = bytes.fromhex("85c0b687820f11e08111f4ce462b6a48")
+
+
+def _bmff_boxes(buf: bytes, start: int, end: int):
+    """Yield (type, body_start, box_end) for the ISO-BMFF boxes in buf[start:end]."""
+    pos = start
+    while pos + 8 <= end:
+        size, typ = struct.unpack(">I4s", buf[pos:pos + 8])
+        hdr = 8
+        if size == 1:
+            if pos + 16 > end:
+                return
+            size = struct.unpack(">Q", buf[pos + 8:pos + 16])[0]
+            hdr = 16
+        elif size == 0:
+            size = end - pos
+        if size < hdr or pos + size > end:
+            return
+        yield typ, pos + hdr, pos + size
+        pos += size
+
+
+def _cr3_exif_blocks(file_path: str) -> dict:
+    """{'CMT1': bytes, 'CMT2': bytes} from a CR3; whichever are found, maybe none."""
+    out = {}
+    try:
+        with open(file_path, "rb") as f:
+            # Seek from box to box and read only moov; the raw data in mdat
+            # is never touched.
+            pos = 0
+            while True:
+                f.seek(pos)
+                head = f.read(16)
+                if len(head) < 8:
+                    break
+                size, typ = struct.unpack(">I4s", head[:8])
+                hdr = 8
+                if size == 1 and len(head) == 16:
+                    size = struct.unpack(">Q", head[8:16])[0]
+                    hdr = 16
+                if size < hdr:
+                    break           # size 0 = "to end of file": that is mdat
+                if typ == b"moov":
+                    if size > 64 * 1024 * 1024:
+                        break
+                    f.seek(pos + hdr)
+                    body = f.read(size - hdr)
+                    for t2, s2, e2 in _bmff_boxes(body, 0, len(body)):
+                        if t2 == b"uuid" and body[s2:s2 + 16] == _CR3_CANON_UUID:
+                            for t3, s3, e3 in _bmff_boxes(body, s2 + 16, e2):
+                                if t3 in (b"CMT1", b"CMT2"):
+                                    out[t3.decode("ascii")] = body[s3:e3]
+                    break
+                pos += size
+    except Exception:
+        return {}
+    return out
+
+
+def _read_exif_tags(file_path: str) -> dict:
+    """exifread's tags for a camera raw, CR3 included; {} when there are none."""
+    if str(file_path).lower().endswith(".cr3"):
+        tags = {}
+        blocks = _cr3_exif_blocks(file_path)
+        for name in ("CMT1", "CMT2"):
+            data = blocks.get(name)
+            if not data:
+                continue
+            try:
+                found = exifread.process_file(BytesIO(data), details=False)
+            except Exception:
+                continue
+            for key, tag in found.items():
+                # Each block parses as its own IFD0, so exifread files the
+                # Exif IFD's tags under "Image ..."; give them their usual
+                # "EXIF ..." names.
+                if name == "CMT2" and key.startswith("Image "):
+                    key = "EXIF " + key[len("Image "):]
+                tags.setdefault(key, tag)
+        return tags
+    with open(file_path, "rb") as f:
+        return exifread.process_file(f, details=False)
+
+
 def _enrich_header_from_exif(header: fits.Header, file_path: str) -> fits.Header:
     """
     Merge EXIF metadata from a RAW file into an existing header without
@@ -1026,8 +1118,7 @@ def _enrich_header_from_exif(header: fits.Header, file_path: str) -> fits.Header
     header.setdefault("CREATOR", "SetiAstroSuite")
 
     try:
-        with open(file_path, "rb") as f:
-            tags = exifread.process_file(f, details=False)
+        tags = _read_exif_tags(file_path)
     except Exception:
         # Can't read EXIF → just return what we have
         return header
@@ -1040,19 +1131,30 @@ def _enrich_header_from_exif(header: fits.Header, file_path: str) -> fits.Header
         return None
 
     # Exposure time
-    exptime_tag = get_tag("EXIF ExposureTime", "EXIF ShutterSpeedValue")
-    if exptime_tag and "EXPTIME" not in header:
-        val = _parse_fraction_or_float(exptime_tag.values)
-        if val is not None:
+    if "EXPTIME" not in header:
+        val = None
+        exptime_tag = get_tag("EXIF ExposureTime")
+        if exptime_tag is not None:
+            val = _parse_fraction_or_float(exptime_tag.values)
+        if not (val is not None and val > 0):
+            # ShutterSpeedValue is APEX Tv, not seconds: t = 2**-Tv. Canon
+            # writes -2**31 there to mean "unset", hence the range guard.
+            tv_tag = get_tag("EXIF ShutterSpeedValue")
+            tv = _parse_fraction_or_float(tv_tag.values) if tv_tag is not None else None
+            val = 2.0 ** (-tv) if (tv is not None and -20.0 < tv < 30.0) else None
+        if val is not None and val > 0:
             header["EXPTIME"] = (float(val), "Exposure time (s) from EXIF")
 
     # ISO
     iso_tag = get_tag("EXIF ISOSpeedRatings", "EXIF PhotographicSensitivity")
     if iso_tag and "ISO" not in header:
+        iso_val = iso_tag.values
+        if isinstance(iso_val, (list, tuple)) and iso_val:
+            iso_val = iso_val[0]        # exifread hands back [3200], not 3200
         try:
-            header["ISO"] = (int(str(iso_tag.values)), "ISO from EXIF")
+            header["ISO"] = (int(iso_val), "ISO from EXIF")
         except Exception:
-            header["ISO"] = (str(iso_tag.values), "ISO from EXIF")
+            header["ISO"] = (str(iso_val), "ISO from EXIF")
 
     # Date/time
     date_tag = get_tag(
@@ -1065,29 +1167,30 @@ def _enrich_header_from_exif(header: fits.Header, file_path: str) -> fits.Header
         if dt:
             header["DATE-OBS"] = (dt, "Start of exposure (camera local time)")
 
-    # Aperture
+    # Aperture and focal length. EXIF writes 0 for "unknown" -- every body on
+    # a telescope or manual lens does -- and FOCALLEN = 0 is not a focal length.
     fnum_tag = get_tag("EXIF FNumber")
     if fnum_tag and "FNUMBER" not in header:
         val = _parse_fraction_or_float(fnum_tag.values)
-        if val is not None:
+        if val is not None and val > 0:
             header["FNUMBER"] = (float(val), "F-number (aperture)")
 
-    # Focal length
     fl_tag = get_tag("EXIF FocalLength")
     if fl_tag and "FOCALLEN" not in header:
         val = _parse_fraction_or_float(fl_tag.values)
-        if val is not None:
+        if val is not None and val > 0:
             header["FOCALLEN"] = (float(val), "Focal length (mm)")
 
     # Camera make/model
     make_tag  = get_tag("Image Make")
     model_tag = get_tag("Image Model")
-    cam_parts = []
-    if make_tag:
-        cam_parts.append(str(make_tag.values).strip())
-    if model_tag:
-        cam_parts.append(str(model_tag.values).strip())
-    camera_str = " ".join(p for p in cam_parts if p)
+    make_str = str(make_tag.values).strip() if make_tag else ""
+    model_str = str(model_tag.values).strip() if model_tag else ""
+    # Canon's Model already starts with the make ("Canon EOS Rebel T8i");
+    # don't write "Canon Canon EOS Rebel T8i".
+    if make_str and model_str.lower().startswith(make_str.lower()):
+        make_str = ""
+    camera_str = " ".join(p for p in (make_str, model_str) if p)
     if camera_str:
         header.setdefault("INSTRUME", camera_str)  # instrument / camera
         header.setdefault("CAMERA", camera_str)    # custom keyword
@@ -1096,63 +1199,57 @@ def _enrich_header_from_exif(header: fits.Header, file_path: str) -> fits.Header
 
 def _fill_hdr_from_raw_metadata(raw, hdr: fits.Header | None = None) -> fits.Header:
     """
-    Merge LibRaw/rawpy metadata into hdr (EXPTIME, ISO, FNUMBER, FOCALLEN, camera, DATE-OBS).
-    Does NOT overwrite existing keys.
+    Fill gaps in hdr from LibRaw's own shot data (rawpy's `raw.other`):
+    EXPTIME, ISO, FNUMBER, FOCALLEN, DATE-OBS. Never overwrites a key, so run
+    it AFTER _enrich_header_from_exif: EXIF holds the camera's exact values,
+    LibRaw's are float32 copies of them.
+
+    This used to read `raw.metadata`, which rawpy has never had, so it left
+    every header untouched.
     """
     if hdr is None:
         hdr = fits.Header()
 
-    try:
-        m = raw.metadata
-    except Exception:
+    other = getattr(raw, "other", None)
+    if other is None:
         return hdr
 
-    # Exposure time (seconds)
-    if hasattr(m, "exposure") and m.exposure is not None and "EXPTIME" not in hdr:
+    def _positive(name):
         try:
-            hdr["EXPTIME"] = (float(m.exposure), "Exposure time (s) from RAW metadata")
+            v = float(getattr(other, name))
         except Exception:
-            pass
+            return None
+        # LibRaw writes 0 for "not recorded" (no lens contacts on a telescope)
+        return v if (np.isfinite(v) and v > 0) else None
 
-    # ISO
-    if hasattr(m, "iso") and m.iso is not None and "ISO" not in hdr:
+    def _f32(v):
+        # LibRaw keeps these as float32; repr them at float32 precision so
+        # 29.8 is written as 29.8, not 29.799999237060547.
+        return float(str(np.float32(v)))
+
+    t = _positive("shutter_speed")
+    if t is not None and "EXPTIME" not in hdr:
+        hdr["EXPTIME"] = (_f32(t), "Exposure time (s) from RAW metadata")
+
+    iso = _positive("iso_speed")
+    if iso is not None and "ISO" not in hdr:
+        hdr["ISO"] = (int(round(iso)), "ISO from RAW metadata")
+
+    ap = _positive("aperture")
+    if ap is not None and "FNUMBER" not in hdr:
+        hdr["FNUMBER"] = (_f32(ap), "F-number (aperture) from RAW metadata")
+
+    fl = _positive("focal_length")
+    if fl is not None and "FOCALLEN" not in hdr:
+        hdr["FOCALLEN"] = (_f32(fl), "Focal length (mm) from RAW metadata")
+
+    # rawpy hands back the camera's own wall clock (LibRaw's time_t round
+    # trip through local time), the same clock EXIF DateTimeOriginal records.
+    ts = getattr(other, "timestamp", None)
+    if isinstance(ts, datetime.datetime) and "DATE-OBS" not in hdr:
         try:
-            hdr["ISO"] = (int(m.iso), "ISO from RAW metadata")
-        except Exception:
-            hdr["ISO"] = (str(m.iso), "ISO from RAW metadata")
-
-    # Aperture
-    if hasattr(m, "aperture") and m.aperture is not None and "FNUMBER" not in hdr:
-        try:
-            hdr["FNUMBER"] = (float(m.aperture), "F-number (aperture) from RAW metadata")
-        except Exception:
-            pass
-
-    # Focal length (mm)
-    if hasattr(m, "focal_len") and m.focal_len is not None and "FOCALLEN" not in hdr:
-        try:
-            hdr["FOCALLEN"] = (float(m.focal_len), "Focal length (mm) from RAW metadata")
-        except Exception:
-            pass
-
-    # Camera make/model
-    make  = getattr(m, "make", None)
-    model = getattr(m, "model", None)
-    cam_parts = []
-    if make:
-        cam_parts.append(str(make).strip())
-    if model:
-        cam_parts.append(str(model).strip())
-    camera_str = " ".join(p for p in cam_parts if p)
-    if camera_str:
-        hdr.setdefault("INSTRUME", camera_str)
-        hdr.setdefault("CAMERA",   camera_str)
-
-    # Timestamp → DATE-OBS in UTC
-    if hasattr(m, "timestamp") and m.timestamp and "DATE-OBS" not in hdr:
-        try:
-            dt = datetime.datetime.fromtimestamp(m.timestamp, tz=datetime.timezone.utc)
-            hdr["DATE-OBS"] = (dt.isoformat(timespec="seconds"), "RAW timestamp (UTC)")
+            hdr["DATE-OBS"] = (ts.replace(tzinfo=None).isoformat(timespec="seconds"),
+                               "Start of exposure (camera local time)")
         except Exception:
             pass
 
