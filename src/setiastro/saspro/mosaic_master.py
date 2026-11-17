@@ -1232,6 +1232,10 @@ def _nodata_regions(nodata, speck_radius: int = NODATA_SPECK_RADIUS) -> np.ndarr
     # sharp angle; take back the no-data right beside a region. Not whole
     # connected pieces: a dead column runs to the frame edge, joins the
     # no-data outside the frame once warped, and would grow into a stripe.
+    # Taken back only from regions INSIDE the array: from the padding it
+    # would also claim every bad pixel within a few px of the frame's edge
+    # and bite the edge (a jagged panel outline).
+    opened[:pad, :] = 0; opened[-pad:, :] = 0; opened[:, :pad] = 0; opened[:, -pad:] = 0
     region = ndp.astype(bool) & cv2.dilate(opened, kr).astype(bool)
     return region[pad:-pad, pad:-pad]
 
@@ -1251,6 +1255,28 @@ def _shrink_valid(valid, px: int) -> np.ndarray:
         return v
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * px + 1,) * 2)
     return v & ~cv2.dilate(region.astype(np.uint8), k).astype(bool)
+
+
+def _valid_masks(img, *, erode_px: int = 6):
+    """(valid, region_valid) for a panel. `valid` is _valid_data_mask's
+    answer. `region_valid` counts the isolated bad pixels as data and only
+    the no-data regions (trimmed by erode_px) as no-data -- what an edge
+    trim after the warp may follow. Decided here, on the source, because
+    after a warp each bad pixel is a 2x2 smear and close neighbours merge
+    into blobs that look like a region."""
+    a = _as_hwc(img)
+    m = np.isfinite(a).all(axis=2) & (a != 0).any(axis=2)
+    if m.all() or not m.any():
+        return m, m
+    region = _nodata_regions(~m)
+    rv = ~region
+    if erode_px > 0 and region.any():
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * erode_px + 1,) * 2)
+        rv = ~cv2.dilate(region.astype(np.uint8), k).astype(bool)
+    valid = rv & m
+    if not valid.any():          # a trim that would erase everything is not applied
+        rv, valid = ~region, m
+    return valid, rv
 
 
 def _valid_data_mask(img, *, erode_px: int = 6) -> np.ndarray:
@@ -4085,9 +4111,9 @@ class MosaicMasterDialog(QDialog):
         dst = (np.zeros((H, W, nch), np.float32) if is_color
                else np.zeros((H, W), np.float32))
         want_mask = src_mask is not None
-        dstm = np.zeros((H, W), np.float32) if want_mask else None
-        mask_f = (np.ascontiguousarray(src_mask.astype(np.float32))
+        mask_f = (np.ascontiguousarray(np.asarray(src_mask).astype(np.float32))
                   if want_mask else None)
+        dstm = (np.zeros((H, W) + mask_f.shape[2:], np.float32) if want_mask else None)
 
         box = self._dst_footprint_bbox(src_img.shape, src_wcs, dst_wcs, (H, W))
         if box is None:
@@ -5254,8 +5280,14 @@ class MosaicMasterDialog(QDialog):
             # The pedestal trick downstream can only see pixels that fall
             # OUTSIDE the warp footprint, so interior holes have to be tracked
             # explicitly, from here all the way through to the coverage mask.
-            src_valid = _valid_data_mask(img_lin)
+            src_valid, src_region = _valid_masks(img_lin)
             src_vfrac = _valid_frac(src_valid)
+            # Both masks ride through the warp together (one 2-channel warp):
+            # the edge trim after it follows the no-data REGIONS only, and the
+            # isolated bad pixels are left out where they land, not grown.
+            _two_masks = not np.array_equal(src_valid, src_region)
+            src_masks = (np.dstack([src_region, src_valid]).astype(np.float32)
+                         if _two_masks else src_valid)
             if src_vfrac < 0.999:
                 print(f"[Mosaic] {_name}: {100.0 * (1.0 - src_vfrac):.1f}% of the "
                       f"source frame is no-data (panel is itself a mosaic?)")
@@ -5314,7 +5346,7 @@ class MosaicMasterDialog(QDialog):
             if mode.startswith("Fast — Homography"):
                 reprojected, cov_warp = self._warp_via_wcs_homography(
                     img_ped, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width),
-                    H_cache=self._H_cache, src_mask=src_valid
+                    H_cache=self._H_cache, src_mask=src_masks
                 )
                 reprojected = self._polish_reprojected(
                     reprojected.astype(np.float32, copy=False))
@@ -5325,7 +5357,7 @@ class MosaicMasterDialog(QDialog):
                 # Also the default for any unrecognized/legacy mode string.
                 reprojected, cov_warp = self._warp_via_wcs_remap_exact(
                     img_ped, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width),
-                    tile=512, src_mask=src_valid,
+                    tile=512, src_mask=src_masks,
                     progress_cb=lambda f, b=_base, i=idx, nm=_name: _tick(
                         b + f, f"Panel {i + 1}/{n_panels} — reprojecting {nm} "
                                f"({f * 100:.0f}%)")
@@ -5337,6 +5369,10 @@ class MosaicMasterDialog(QDialog):
             # value from no-data and is not trustworthy.
             MASK_KEEP = 0.999
             cov_warp = np.asarray(cov_warp, np.float32)
+            if cov_warp.ndim == 3:                      # (regions-only, full)
+                cov_region, cov_warp = cov_warp[..., 0], cov_warp[..., 1]
+            else:
+                cov_region = cov_warp
 
             # Pedestal-free grayscale for star detection (astroalign never sees PED)
             cov_r = (((reprojected if reprojected.ndim == 2 else reprojected[..., 0])
@@ -5420,19 +5456,22 @@ class MosaicMasterDialog(QDialog):
                     aligned = affine_aligned
                     # The validity mask has to take the same ride, or it stops
                     # describing the image it belongs to.
-                    cov_warp = cv2.warpAffine(
-                        cov_warp, transform_matrix, (mosaic_width, mosaic_height),
-                        flags=cv2.INTER_LINEAR,
+                    _cw2 = cv2.warpAffine(
+                        np.dstack([cov_region, cov_warp]), transform_matrix,
+                        (mosaic_width, mosaic_height), flags=cv2.INTER_LINEAR,
                         borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+                    cov_region, cov_warp = _cw2[..., 0], _cw2[..., 1]
 
                     if transform_method in ["Homography Transform", "Polynomial Warp Based Transform"]:
                         self.status_label.setText(f"Starting refined alignment using {transform_method}...")
                         QApplication.processEvents()
                         refined_result = self.refined_alignment(
                             affine_aligned, mosaic_gray, method=transform_method,
-                            extra_mask=cov_warp, valid=cov_r)
+                            extra_mask=np.dstack([cov_region, cov_warp]), valid=cov_r)
                         if refined_result is not None:
-                            aligned, best_inliers2, cov_warp = refined_result
+                            aligned, best_inliers2, _cw2 = refined_result
+                            _cw2 = np.asarray(_cw2, np.float32)
+                            cov_region, cov_warp = _cw2[..., 0], _cw2[..., 1]
                             align_note += f", {transform_method.split()[0].lower()} refinement ({best_inliers2} inliers)"
                             self.status_label.setText(
                                 f"Refined alignment succeeded with {best_inliers2} inliers.")
@@ -5470,9 +5509,10 @@ class MosaicMasterDialog(QDialog):
             # below PED/2, and the band where it only partly falls is the one
             # the trim removes.
             EDGE_TRIM = 12
-            coverage = (gray_ped > (0.5 * PED)) & (cov_warp >= MASK_KEEP)
+            coverage = (gray_ped > (0.5 * PED)) & (cov_region >= MASK_KEEP)
             if EDGE_TRIM > 0 and coverage.any():
                 coverage = _shrink_valid(coverage, EDGE_TRIM)
+            coverage &= cov_warp >= MASK_KEEP          # the bad pixels themselves
 
             if not coverage.any():
                 print(f"[Mosaic] {_name}: empty footprint, skipping.")
