@@ -33,9 +33,28 @@ MAX_CANVAS_SIDE = 40000
 # ─────────────────────────────────────────────────────────────────────────────
 # Worker processes
 # ─────────────────────────────────────────────────────────────────────────────
-def init_worker(org: str = "", app: str = ""):
+def init_worker(org: str = "", app: str = "", threads: int = 0):
     """Give QSettings the app's identity, so a worker finds the user's Gaia
-    library directory (a QSettings value) the way the GUI does."""
+    library directory (a QSettings value) the way the GUI does; and, with
+    `threads`, cap this worker's OpenCV and numba threads to its share of the
+    cores. Uncapped, every worker's warps and parallel debayer each fan out
+    over ALL cores, 8 workers x 36 threads fight for 36, and numba's spinning
+    thread pool pegs the CPU without getting more done."""
+    if threads and int(threads) > 0:
+        t = int(threads)
+        for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                  "NUMEXPR_NUM_THREADS"):
+            os.environ[k] = str(t)
+        try:
+            import cv2
+            cv2.setNumThreads(t)
+        except Exception:
+            pass
+        try:
+            import numba
+            numba.set_num_threads(max(1, min(t, int(numba.config.NUMBA_NUM_THREADS))))
+        except Exception:
+            pass
     try:
         from PyQt6.QtCore import QCoreApplication
         if org:
@@ -184,14 +203,33 @@ def save_cache(cache: dict, max_entries: int = 20000):
 
 
 def cache_get(cache, path):
+    """The cached plate solution (a FITS header string), or None."""
     k = _cache_key(path)
-    return cache.get(k) if k else None
+    v = cache.get(k) if k else None
+    return v if isinstance(v, str) else None
 
 
 def cache_put(cache, path, header_str):
     k = _cache_key(path)
     if k:
         cache[k] = header_str
+
+
+# A frame that can't be solved (clouds, dawn, a bump) stays unsolvable, and a
+# rebuild would otherwise spend a blind solve on it every time. Its entry is
+# {"failed": reason}; the key carries the file's size and time, so a changed
+# file is tried again, and "Re-solve every panel" ignores the record.
+def cache_put_failure(cache, path, reason):
+    k = _cache_key(path)
+    if k:
+        cache[k] = {"failed": str(reason or "no solution")}
+
+
+def cache_failure(cache, path):
+    """Why an earlier build couldn't solve this frame, or None."""
+    k = _cache_key(path)
+    v = cache.get(k) if k else None
+    return str(v.get("failed") or "no solution") if isinstance(v, dict) else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -303,8 +341,48 @@ def frame_sky(img):
     return np.asarray(lev, np.float32)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Prepared frames back to the window through shared memory
+# ─────────────────────────────────────────────────────────────────────────────
+# A prepared frame is ~56 MB (a rotated 2 MP frame's 3.5 MP canvas box, three
+# channels plus the weight). Pickled back through the pool's pipe that is
+# ~60 ms of transfer and unpickling per frame, in the window process, and it
+# capped the stack at ~6 frames/s however many workers ran. Instead the window
+# owns a few shared-memory slots; a worker writes the frame into the slot it
+# was handed and returns only the shape. The window keeps every slot open, so
+# on Windows (where a block lives as long as some process holds it) a slot
+# survives the worker closing its handle.
+def attach_slot(name):
+    from multiprocessing import shared_memory
+    try:
+        return shared_memory.SharedMemory(name=name, track=False)      # Python 3.13+
+    except TypeError:
+        sh = shared_memory.SharedMemory(name=name)
+        if os.name != "nt":
+            # 3.12 and earlier register an attached block with the resource
+            # tracker, which unlinks it when this worker exits -- under the
+            # window that owns it. Not the worker's to clean up.
+            try:
+                from multiprocessing import resource_tracker
+                resource_tracker.unregister(sh._name, "shared_memory")
+            except Exception:
+                pass
+        return sh
+
+
+def slot_views(buf, shape):
+    """(data (h, w, C), weight (h, w)) as views of a slot's buffer."""
+    h, w, c = (int(x) for x in shape)
+    flat = np.ndarray((h * w * (c + 1),), np.float32, buffer=buf)
+    return flat[:h * w * c].reshape(h, w, c), flat[h * w * c:].reshape(h, w)
+
+
+def slot_bytes(box_px, channels):
+    return int(box_px) * (int(channels) + 1) * 4
+
+
 def prepare_frame(path, Hm, bbox, *, image=None, header=None, debayer_method="rcd",
-                  crop=(0, 0, 0, 0), sky=None):
+                  crop=(0, 0, 0, 0), sky=None, out_slot=None):
     """Load, debayer, subtract the frame's own sky, and warp onto its canvas
     box. Returns dict: data (h, w, C) sky-subtracted, weight (h, w) feathered
     (0 = not covered), sky (C,), bbox. None if unreadable."""
@@ -363,6 +441,20 @@ def prepare_frame(path, Hm, bbox, *, image=None, header=None, debayer_method="rc
     d = cv2.distanceTransform(cov.astype(np.uint8), cv2.DIST_L2, 3)
     w = np.clip((d + 1.0) / float(FEATHER_PX), 0.0, 1.0).astype(np.float32)
     w[~cov] = 0.0
+    if out_slot:
+        try:
+            sh = attach_slot(out_slot)
+            try:
+                if sh.size >= slot_bytes(w.size, data.shape[2]):
+                    dv, wv = slot_views(sh.buf, data.shape)
+                    dv[...] = data
+                    wv[...] = w
+                    del dv, wv
+                    return {"slot": out_slot, "shape": tuple(data.shape), "sky": sky, "bbox": bbox}
+            finally:
+                sh.close()
+        except Exception:
+            pass                                 # fall back to returning the arrays
     return {"data": data, "weight": w, "sky": sky, "bbox": bbox}
 
 
@@ -394,12 +486,18 @@ except Exception:                                    # numba missing: plain mean
     _njit = None
 
 if _njit is not None:
-    @_njit(cache=True)
+    from numba import prange as _prange
+
+    # Row-parallel (each canvas pixel belongs to exactly one row) and nogil,
+    # so the window's other threads -- the pool's result handling, the event
+    # loop -- keep running while a frame is added. Entered under SASpro's
+    # NUMBA_PARALLEL_LOCK like every parallel numba region.
+    @_njit(cache=True, parallel=True, nogil=True)
     def _acc_one(S, S2, Wt, N, Hv, Hw, Lv, Lw, v, w, y0, x0, track):
         h, ww, C = v.shape
         KH = Hv.shape[3]
         KL = Lv.shape[3]
-        for y in range(h):
+        for y in _prange(h):
             for x in range(ww):
                 wt = w[y, x]
                 if wt <= 0.0:
@@ -431,16 +529,17 @@ if _njit is not None:
                         Lw[Y, X, c, j] = wt
         return 0
 
-    @_njit(cache=True)
-    def _finish_one(S, S2, Wt, N, Hv, Hw, Lv, Lw, crit, min_frames, min_rest, out):
+    @_njit(cache=True, parallel=True, nogil=True)
+    def _finish_one(S, S2, Wt, N, Hv, Hw, Lv, Lw, crit, min_frames, min_rest, out,
+                    rem_row, con_row):
         H, W, C = S.shape
         KH = Hv.shape[3]
         KL = Lv.shape[3]
         K = KH + KL
-        cs = np.empty(K + 1); cs2 = np.empty(K + 1); cw = np.empty(K + 1)
-        removed = 0
-        considered = 0
-        for Y in range(H):
+        for Y in _prange(H):
+            cs = np.empty(K + 1); cs2 = np.empty(K + 1); cw = np.empty(K + 1)
+            removed = 0
+            considered = 0
             for X in range(W):
                 w0 = Wt[Y, X]
                 n0 = int(N[Y, X])
@@ -489,7 +588,47 @@ if _njit is not None:
                             best = step + 1           # Rosner: the largest passing prefix
                     removed += best
                     out[Y, X, c] = cs[best] / cw[best] if cw[best] > 1e-12 else 0.0
-        return removed, considered
+            rem_row[Y] = removed
+            con_row[Y] = considered
+        return 0
+
+
+def _numba_lock():
+    try:
+        from setiastro.saspro.legacy.numba_utils import NUMBA_PARALLEL_LOCK
+        return NUMBA_PARALLEL_LOCK
+    except Exception:
+        import contextlib
+        return contextlib.nullcontext()
+
+
+class _numba_threads:
+    """Run a parallel kernel on n threads, restoring the caller's setting
+    after (numba's thread count is per calling thread). The accumulation runs
+    while the worker pool keeps every core busy; spread over all of them it
+    mostly waits for cores and takes them from the workers."""
+    def __init__(self, n):
+        self.n = int(n or 0)
+        self.prev = None
+
+    def __enter__(self):
+        if self.n > 0:
+            try:
+                import numba
+                self.prev = numba.get_num_threads()
+                numba.set_num_threads(max(1, min(self.n, int(numba.config.NUMBA_NUM_THREADS))))
+            except Exception:
+                self.prev = None
+        return self
+
+    def __exit__(self, *exc):
+        if self.prev is not None:
+            try:
+                import numba
+                numba.set_num_threads(self.prev)
+            except Exception:
+                pass
+        return False
 
 
 class CanvasStack:
@@ -505,6 +644,9 @@ class CanvasStack:
         self.shape, self.C = (H, W), C
         self.k = clip_k
         self.min_frames = int(min_frames)
+        # threads for each frame's accumulation (0 = numba's default, all
+        # cores); the build sets a few while its worker pool runs
+        self.add_threads = 0
         self.S, _ = smart_zeros((H, W, C), dtype=np.float32)
         self.Wt, _ = smart_zeros((H, W), dtype=np.float32)
         self.N, _ = smart_zeros((H, W), dtype=np.float32)
@@ -534,13 +676,14 @@ class CanvasStack:
             v = np.ascontiguousarray(v[..., :self.C], dtype=np.float32)
             w = np.ascontiguousarray(w, dtype=np.float32)
             S = A(self.S)
-            if self.track:
-                _acc_one(S, A(self.S2), A(self.Wt), A(self.N), A(self.Hv), A(self.Hw),
-                         A(self.Lv), A(self.Lw), v, w, int(y0), int(x0), True)
-            else:
-                d4 = np.zeros((1, 1, 1, 1), np.float32)
-                _acc_one(S, S, A(self.Wt), A(self.N), d4, d4, d4, d4,
-                         v, w, int(y0), int(x0), False)
+            with _numba_lock(), _numba_threads(self.add_threads):
+                if self.track:
+                    _acc_one(S, A(self.S2), A(self.Wt), A(self.N), A(self.Hv), A(self.Hw),
+                             A(self.Lv), A(self.Lw), v, w, int(y0), int(x0), True)
+                else:
+                    d4 = np.zeros((1, 1, 1, 1), np.float32)
+                    _acc_one(S, S, A(self.Wt), A(self.N), d4, d4, d4, d4,
+                             v, w, int(y0), int(x0), False)
             return
         sl = (slice(y0, y1), slice(x0, x1))
         self.S[sl] += w[..., None] * v[..., :self.C]
@@ -564,8 +707,10 @@ class CanvasStack:
             crit[n] = max_outlier_crit(n, REJECT_ALPHA / 2.0)
         A = np.asarray
         out = np.zeros((H, W, self.C), np.float32)
-        r, c = _finish_one(A(self.S), A(self.S2), A(self.Wt), A(self.N), A(self.Hv), A(self.Hw),
-                           A(self.Lv), A(self.Lw), crit, int(self.min_frames),
-                           int(REJECT_MIN_REST), out)
-        self.rejected, self.considered = int(r), int(c)
+        rem = np.zeros(H, np.int64); con = np.zeros(H, np.int64)
+        with _numba_lock():
+            _finish_one(A(self.S), A(self.S2), A(self.Wt), A(self.N), A(self.Hv), A(self.Hw),
+                        A(self.Lv), A(self.Lw), crit, int(self.min_frames),
+                        int(REJECT_MIN_REST), out, rem, con)
+        self.rejected, self.considered = int(rem.sum()), int(con.sum())
         return out

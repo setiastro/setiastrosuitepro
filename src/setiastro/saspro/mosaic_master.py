@@ -2764,8 +2764,15 @@ class MosaicMasterDialog(QDialog):
                     if seestar and state == "failed":
                         sv = QTableWidgetItem("✗ Not solved")
                         sv.setForeground(QColor(235, 90, 80))
-                        sv.setToolTip(f"Plate solving failed: {it.get('solve_error', '')}\n"
-                                      "This frame is left out of the mosaic.")
+                        if it.get("failed_cached"):
+                            sv.setToolTip(f"Plate solving failed in an earlier build: "
+                                          f"{it.get('solve_error', '')}\n"
+                                          "It isn't tried again, and the frame is left out of the "
+                                          "mosaic.\nTurn on Re-solve every panel (Preparation) "
+                                          "to try it again.")
+                        else:
+                            sv.setToolTip(f"Plate solving failed: {it.get('solve_error', '')}\n"
+                                          "This frame is left out of the mosaic.")
                     elif seestar and state == "solving":
                         sv = QTableWidgetItem("Solving…")
                         sv.setForeground(blue)
@@ -2974,12 +2981,25 @@ class MosaicMasterDialog(QDialog):
             import multiprocessing as _mp
             from concurrent.futures import ProcessPoolExecutor
             from PyQt6.QtCore import QCoreApplication as _QCA
-            nw = max(1, min(8, (os.cpu_count() or 2) // 2, n_tasks))
+            ncpu = os.cpu_count() or 2
+            nw = max(1, min(16, ncpu // 2, n_tasks))
+            try:                                           # testing overrides
+                nw = max(1, min(int(os.environ.get("SASPRO_SEESTAR_WORKERS") or nw), n_tasks))
+            except ValueError:
+                pass
+            # each worker gets its share of the cores (CLAUDE.md lesson 8)
+            nt = max(1, ncpu // nw)
+            try:
+                _e = int(os.environ.get("SASPRO_SEESTAR_THREADS") or nt)
+                nt = 0 if _e < 0 else max(1, _e)           # -1: uncapped (for comparison)
+            except ValueError:
+                pass
             pool = ProcessPoolExecutor(max_workers=nw, mp_context=_mp.get_context("spawn"),
                                        initializer=sm.init_worker,
-                                       initargs=(_QCA.organizationName(), _QCA.applicationName()))
+                                       initargs=(_QCA.organizationName(), _QCA.applicationName(), nt))
             pool._saspro_workers = nw
-            print(f"[Seestar] {nw} worker processes")
+            print(f"[Seestar] {nw} worker processes, "
+                  + (f"{nt} thread{'s' if nt != 1 else ''} each" if nt else "threads uncapped"))
             return pool
         except Exception as e:
             print(f"[Seestar] worker processes unavailable ({e}); working in this process")
@@ -3001,6 +3021,8 @@ class MosaicMasterDialog(QDialog):
         row_of = {id(x): r for r, x in enumerate(self.loaded_images)}
         changed = set()
 
+        new_failures = []
+
         def _handle(it, res):
             nonlocal n_done, n_fail
             n_done += 1
@@ -3016,6 +3038,11 @@ class MosaicMasterDialog(QDialog):
             n_fail += 1
             it["solve_state"] = "failed"
             it["solve_error"] = (res or {}).get("error") or "no solution"
+            it.pop("failed_cached", None)
+            # remembered only if the solver ran and said no (not a crashed worker)
+            if res is not None and not res.get("_exception") \
+                    and not self._is_view_path(it.get("path", "")):
+                new_failures.append(it)
 
         nw = getattr(pool, "_saspro_workers", None) if pool is not None else None
 
@@ -3073,7 +3100,8 @@ class MosaicMasterDialog(QDialog):
                         try:
                             res = f.result()
                         except Exception as e:
-                            res = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                            res = {"ok": False, "error": f"{type(e).__name__}: {e}",
+                                   "_exception": True}
                         _handle(fut[f], res)
                     _ui()
                     if progress.wasCanceled():
@@ -3098,6 +3126,13 @@ class MosaicMasterDialog(QDialog):
                                 x.pop("solve_state", None)
                         return False
         finally:
+            # Remember the frames that failed -- but only when others solved:
+            # if every frame fails, the cause is the setup (no Gaia library,
+            # wrong scale in the headers), not the frames, and it can be fixed.
+            if new_failures and any(x.get("wcs") is not None and x.get("solve_state") != "failed"
+                                    for x in self.loaded_images):
+                for x in new_failures:
+                    sm.cache_put_failure(cache, x["path"], x.get("solve_error"))
             sm.save_cache(cache)
             _ui(True)
         print(f"[Seestar] plate solved {n - n_fail}/{n} frames in {_time.time() - t0:.0f} s")
@@ -3148,6 +3183,12 @@ class MosaicMasterDialog(QDialog):
                     hs = sm.cache_get(cache, it["path"])
                     if hs and self._seestar_adopt(it, hs, "cached"):
                         continue
+                    why = sm.cache_failure(cache, it["path"])
+                    if why:
+                        it["solve_state"] = "failed"
+                        it["solve_error"] = why
+                        it["failed_cached"] = True
+                        continue
                 todo.append(it)
             if todo and not self._seestar_solve(todo, cache, progress, pool):
                 self.status_label.setText("Cancelled.")
@@ -3187,6 +3228,12 @@ class MosaicMasterDialog(QDialog):
             # 3) average in one pass (outliers are tested at the end, sm.CanvasStack)
             clip = 3.0 if self.seestarRejectCheck.isChecked() else None
             stack = sm.CanvasStack((Hc, Wc), C, clip_k=clip)
+            if pool is not None:
+                # the pool keeps every core busy: a few threads add each frame
+                try:
+                    stack.add_threads = max(1, int(os.environ.get("SASPRO_SEESTAR_ADD_THREADS") or 4))
+                except ValueError:
+                    stack.add_threads = 4
             dm = str(self.settings.value("stacking/debayer_method", "rcd") or "rcd").lower()
             crop = ((int(self.cropLeftSpin.value()), int(self.cropRightSpin.value()),
                      int(self.cropTopSpin.value()), int(self.cropBottomSpin.value()))
@@ -3199,22 +3246,46 @@ class MosaicMasterDialog(QDialog):
             total = len(solved) * len(passes)
             progress.setRange(0, total)
             k_done = 0
+            # frames in flight: enough to keep every worker busy
+            depth = nthreads + 4
+            slots, free_slots, slot_of = {}, [], {}
+            if pool is not None:
+                # prepared frames come back through shared memory (sm.attach_slot)
+                try:
+                    from multiprocessing import shared_memory
+                    cap = sm.slot_bytes(max((b[2] - b[0]) * (b[3] - b[1]) for b in boxes), 3)
+                    for _ in range(depth):
+                        sh = shared_memory.SharedMemory(create=True, size=cap)
+                        slots[sh.name] = sh
+                        free_slots.append(sh.name)
+                except Exception as e:
+                    print(f"[Seestar] shared memory unavailable ({e}); results come back pickled")
+                    for sh in slots.values():
+                        try:
+                            sh.close(); sh.unlink()
+                        except Exception:
+                            pass
+                    slots, free_slots = {}, []
             for ps in passes:
                 # frames are prepared (read, debayer, sky, warp) in the worker
                 # processes when there are some, and added here in order
                 ex = pool if pool is not None else cf.ThreadPoolExecutor(max_workers=nthreads)
+                window = {}
                 try:
                     def _submit(i):
                         it = solved[i]
                         img = it.get("image")
+                        slot = free_slots.pop() if free_slots else None
+                        slot_of[i] = slot
                         return ex.submit(sm.prepare_frame, it["path"], Hms[i], boxes[i],
                                          image=(np.asarray(img) if img is not None else None),
                                          header=(it.get("header") if img is not None else None),
-                                         debayer_method=dm, crop=crop, sky=sky_of.get(i))
+                                         debayer_method=dm, crop=crop, sky=sky_of.get(i),
+                                         out_slot=slot)
                     window = {}
                     nxt = 0
                     for i in range(len(solved)):
-                        while nxt < len(solved) and nxt < i + 2 * nthreads:
+                        while nxt < len(solved) and nxt < i + depth:
                             window[nxt] = _submit(nxt)
                             nxt += 1
                         fut_i = window.pop(i)
@@ -3228,6 +3299,9 @@ class MosaicMasterDialog(QDialog):
                                 self.status_label.setText("Cancelled.")
                                 return
                         pr = fut_i.result()
+                        if pr is not None and pr.get("slot"):
+                            pr["data"], pr["weight"] = sm.slot_views(slots[pr["slot"]].buf,
+                                                                     pr["shape"])
                         if pr is not None:
                             if pr["data"].shape[2] < C:
                                 pr["data"] = np.repeat(pr["data"][..., :1], C, axis=2)
@@ -3237,6 +3311,9 @@ class MosaicMasterDialog(QDialog):
                                 sky_of[i] = pr["sky"]
                                 skies.append(pr["sky"][:C] if pr["sky"].size >= C
                                              else np.repeat(pr["sky"][:1], C))
+                        pr = None                         # drop the slot views
+                        if slot_of.get(i):
+                            free_slots.append(slot_of.pop(i))
                         k_done += 1
                         progress.setValue(k_done)
                         progress.setLabelText(f"Stacking… frame {i + 1}/{len(solved)}")
@@ -3249,6 +3326,19 @@ class MosaicMasterDialog(QDialog):
                 finally:
                     if ex is not pool:
                         ex.shutdown(wait=False, cancel_futures=True)
+                    if slots:
+                        # a cancelled build can leave frames in flight: let the
+                        # pool finish them before their slots go away
+                        if pool is not None:
+                            for f in window.values():
+                                f.cancel()
+                            cf.wait(list(window.values()), timeout=30)
+                        for sh in slots.values():
+                            try:
+                                sh.close()
+                                sh.unlink()
+                            except Exception:
+                                pass
 
             progress.setLabelText("Taking out satellites and other outliers…" if clip
                                   else "Finishing…")
@@ -4272,6 +4362,12 @@ class MosaicMasterDialog(QDialog):
                 hs = _sm.cache_get(self._seestar_cache, path)
                 if hs:
                     self._seestar_adopt(item, hs, "cached")
+                else:
+                    why = _sm.cache_failure(self._seestar_cache, path)
+                    if why:
+                        item["solve_state"] = "failed"
+                        item["solve_error"] = why
+                        item["failed_cached"] = True
             except Exception:
                 pass
         return item
