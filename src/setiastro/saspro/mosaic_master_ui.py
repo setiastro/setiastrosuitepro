@@ -67,8 +67,13 @@ def coverage_polygon(mask, max_side: int = 600):
     s = min(1.0, float(max_side) / float(max(H, W)))
     small = m.astype(np.uint8)
     if s < 1.0:
-        small = cv2.resize(small, (max(1, int(round(W * s))), max(1, int(round(H * s)))),
-                           interpolation=cv2.INTER_NEAREST)
+        # Area-averaged, not nearest: where a panel's bad pixels are left out
+        # one by one (a master's darkest sky clipped to 0), nearest sampling
+        # lands on them about as often as not and the outline dips there. A
+        # block counts as covered when a quarter of it is; empty areas are 0.
+        frac = cv2.resize(m.astype(np.float32), (max(1, int(round(W * s))), max(1, int(round(H * s)))),
+                          interpolation=cv2.INTER_AREA)
+        small = (frac >= 0.25).astype(np.uint8)
     cs, _ = cv2.findContours(small, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cs:
         return None

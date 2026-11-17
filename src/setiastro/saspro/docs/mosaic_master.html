@@ -90,7 +90,7 @@ Drop your panel files on the <b>Panels</b> list (or use <b>+ Files</b> / <b>+ Vi
 <a href="#s15_6">15.6 Footprint-bbox restriction</a><br>
 <a href="#s15_7">15.7 Fast homography mode</a><br>
 <a href="#s15_8">15.8 Pedestal coverage preservation</a><br>
-<a href="#s15_9">15.9 Edge trim for Lanczos ringing</a><br>
+<a href="#s15_9">15.9 Edge trim</a><br>
 <a href="#s15_10">15.10 Sky pedestal match</a><br>
 <a href="#s15_11">15.11 Overlap gain fit with sky pivot</a><br>
 <a href="#s15_12">15.12 Block-mean reduction</a><br>
@@ -279,19 +279,17 @@ CD2_2 = -s cos(&theta;)</div>
 <p>Correctness: exact for SIP-free TAN panels on small fields (where the tangent-plane approximation holds across the panel). For panels with real SIP distortion, the global homography collapses the per-pixel polynomial corrections into a single average linear warp, and stars near the edges can double by a few pixels.</p>
 
 <h3 id="s15_8">15.8 Pedestal coverage preservation</h3>
-<p>During warping, OpenCV fills pixels outside the source frame with <code>borderValue=0</code>. Any linear astronomical data also has values near zero in the sky background. If you tried to compute &ldquo;which pixels are inside the warped panel&rdquo; by thresholding <code>&gt; 0</code>, the sky background would be indistinguishable from border fill.</p>
-<p>SASpro's fix: add a +1.0 pedestal <i>before</i> warping, so the panel's data lives at [1.0, ~2.0] while the border fill stays at 0.0. The coverage test becomes trivial:</p>
-<div class="matheq">I' = I + P</div>
-<div class="matheq">\mathrm{coverage} = \{(x, y) : I'(x, y) > 0.5 \cdot P\}</div>
-<p>The threshold is half the pedestal, not just under it. The sky match (&sect;15.10) shifts a panel whose sky is brighter than the reference panel's <i>down</i>, so its darkest real pixels (cold pixels, noise in dark nebulae) can go slightly negative; a threshold of 0.995&middot;P threw those out, and the edge trim below grew each one into a black hole about 25&nbsp;px across in the finished mosaic. Past the panel's edge the warp falls to 0, far below P/2, and the band where it only partly falls is the one the edge trim removes.</p>
-<p>After the coverage mask is extracted (and eroded &mdash; &sect;15.9), the pedestal is stripped and any value outside the coverage region is zeroed:</p>
+<p>A warp has to say which output pixels came from real data. A panel's own no-data (exact 0.0 or NaN) is filled with the panel's sky level before the warp, and the area outside the frame is filled with the same sky level by the warp itself, all on a +1.0 pedestal:</p>
+<div class="matheq">I' = I + P, \qquad I'_{\mathrm{outside}} = s + P</div>
+<p>With no hard step anywhere, Lanczos has nothing to ring on. Which pixels are real data comes from the panel's validity mask, warped alongside the image:</p>
+<div class="matheq">\mathrm{coverage} = \{(x, y) : M'(x, y) \ge 0.999\}</div>
+<p>A 0.0 pixel in a panel is left out at its own pixel (2&times;2 after the warp), and nothing around it is lost. After the edge trim (&sect;15.9) the pedestal is stripped and anything outside the coverage is zeroed:</p>
 <div class="matheq">I_{\mathrm{out}} = (I_{\mathrm{warped}} - P) \cdot \mathbb{1}_{\mathrm{coverage}}</div>
-<p>Astroalign and the subsequent brightness match see pedestal-free data, so they're not biased by the +1.0 offset.</p>
+<p>Astroalign and the brightness match see pedestal-free data. Ragged stacking edges are best removed with <b>Crop every panel</b> (Preparation).</p>
 
-<h3 id="s15_9">15.9 Edge trim for Lanczos ringing</h3>
-<p>Lanczos4 interpolation spans an 8&times;8 kernel. When Lanczos is applied near the border between real data and the zero border fill, it rings &mdash; overshoot pushes some pixels briefly above the pedestal threshold even though they're contaminated by the zero border. The overshoot can be larger than 0.005&middot;P, meaning the coverage test would wrongly include contaminated ring pixels.</p>
-<p>SASpro trims a 12-pixel band (elliptical structuring element) from the coverage mask along its no-data <i>regions</i> to clear the contamination band. A 12-px trim is a tiny loss on a typical mosaic panel (0.5% of area), well worth paying to keep the seam clean of ringing artefacts.</p>
-<p>Only regions are trimmed: a panel's border, the empty part of a panel that is itself a mosaic. No-data thinner than 5&nbsp;px, such as an isolated bad pixel (an exact 0.0, which SASpro treats as no-data, as a PixInsight master can carry) or a dead column, is left out at its own pixels but not grown. Eroding the whole mask used to grow every such pixel, together with the 6&nbsp;px trim in the panel's own no-data mask, into a black dot about 37&nbsp;px across wherever only one panel covered the sky. Which no-data is a region is decided on the source panel, before the warp, and both masks travel through the warp (and any star refinement) together: after a warp each bad pixel is a 2&times;2 smear, and where a master's darkest sky is clipped to exactly 0 they lie so close that they would merge into blobs that look like a region. Thin wedges of no-data along the array's edge, which a slightly rotated frame leaves in its box, still count as regions; bad pixels merely near the edge do not, so they don't bite into it. On masks with no isolated bad pixels the trim is identical to a plain erosion.</p>
+<h3 id="s15_9">15.9 Edge trim</h3>
+<p>Within Lanczos reach (4&nbsp;px) of the frame's edge, an output pixel mixes in some of the sky fill from outside, so a 4&nbsp;px band along the outside edge of the coverage is trimmed. Holes inside the coverage are not grown by this trim.</p>
+<p>Earlier versions warped onto a zero border and eroded the whole coverage mask by 12&nbsp;px to clear the ringing it caused; that also grew every isolated 0.0 pixel into a black dot 25&ndash;37&nbsp;px across where only one panel covered the sky (GitHub issue #138).</p>
 
 <h3 id="s15_10">15.10 Sky pedestal match</h3>
 <p>For each panel, the sky level is measured via <code>estimate_background_level()</code>:</p>

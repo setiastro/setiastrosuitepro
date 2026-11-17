@@ -435,19 +435,18 @@ def prepare_frame(path, Hm, bbox, *, image=None, header=None, debayer_method="rc
         data = data[..., None]
 
     cov = _wp(valid.astype(np.float32), cv2.INTER_LINEAR) >= 0.999
-    # The edge trim and the feather follow the frame's no-data REGIONS only
-    # (its border, a cropped edge). An isolated bad pixel is left out at its
-    # own pixels, without a hole around it or a dip in the feather
-    # (mosaic_master._nodata_regions, GitHub issue #138).
-    from setiastro.saspro.mosaic_master import _nodata_regions
-    region = _nodata_regions(~cov)
-    keep = ~region
-    if EDGE_ERODE_PX > 0 and keep.any():
+    # Trim and feather follow the frame's OUTSIDE edge: holes inside (bad
+    # pixels) are filled first, so they are left out at their own pixels
+    # without a hole around them or a dip in the feather (GitHub issue #138).
+    from scipy.ndimage import binary_fill_holes
+    foot = binary_fill_holes(cov)
+    if EDGE_ERODE_PX > 0 and foot.any():
         k = cv2.getStructuringElement(cv2.MORPH_RECT, (2 * EDGE_ERODE_PX + 1,) * 2)
-        keep = cv2.erode(keep.astype(np.uint8), k).astype(bool)
-    d = cv2.distanceTransform(keep.astype(np.uint8), cv2.DIST_L2, 3)
+        foot = cv2.erode(foot.astype(np.uint8), k, borderType=cv2.BORDER_CONSTANT,
+                         borderValue=0).astype(bool)
+    d = cv2.distanceTransform(foot.astype(np.uint8), cv2.DIST_L2, 3)
     w = np.clip((d + 1.0) / float(FEATHER_PX), 0.0, 1.0).astype(np.float32)
-    w[~(keep & cov)] = 0.0
+    w[~(foot & cov)] = 0.0
     if out_slot:
         try:
             sh = attach_slot(out_slot)
