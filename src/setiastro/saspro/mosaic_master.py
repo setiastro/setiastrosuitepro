@@ -1205,6 +1205,54 @@ def _as_hwc(img):
     return a[:, :, None] if a.ndim == 2 else a
 
 
+# No-data thinner than this (2*r+1 px) is a bad pixel or a bad line, not a
+# region: an exact-zero pixel a PixInsight master carries, a dead column.
+NODATA_SPECK_RADIUS = 2
+
+
+def _nodata_regions(nodata, speck_radius: int = NODATA_SPECK_RADIUS) -> np.ndarray:
+    """The no-data REGIONS of a no-data mask (bool): a frame's border, the
+    empty part of a panel that is itself a mosaic. A morphological opening
+    drops the specks and thin lines -- isolated bad pixels -- which are
+    no-data at their own pixels but have no edge to trim."""
+    nd = np.asarray(nodata, bool)
+    if speck_radius <= 0 or not nd.any():
+        return nd
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * speck_radius + 1,) * 2)
+    r = 2 * speck_radius + 2
+    kr = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1,) * 2)
+    # Beyond the array counts as no-data here: a slightly rotated frame in
+    # its box leaves thin wedges of no-data along the array's edges, and those
+    # are the frame's edge -- the opening must not take them for specks.
+    pad = r + speck_radius + 1
+    ndp = cv2.copyMakeBorder(nd.astype(np.uint8), pad, pad, pad, pad,
+                             cv2.BORDER_CONSTANT, value=1)
+    opened = cv2.morphologyEx(ndp, cv2.MORPH_OPEN, k)
+    # The opening also shaves the thin tip where two no-data edges meet at a
+    # sharp angle; take back the no-data right beside a region. Not whole
+    # connected pieces: a dead column runs to the frame edge, joins the
+    # no-data outside the frame once warped, and would grow into a stripe.
+    region = ndp.astype(bool) & cv2.dilate(opened, kr).astype(bool)
+    return region[pad:-pad, pad:-pad]
+
+
+def _shrink_valid(valid, px: int) -> np.ndarray:
+    """`valid` minus a px-wide band around its no-data regions (the ramp a
+    resample leaves at an edge). Isolated bad pixels stay excluded but are
+    NOT grown: eroding the whole mask turned every single bad pixel into a
+    hole 2*px+1 wide, and where only one panel covered the sky those holes
+    were black dots in the mosaic (GitHub issue #138; a 6 px erosion here and
+    the 12 px coverage trim after the warp made them ~37 px across)."""
+    v = np.asarray(valid, bool)
+    if px <= 0 or v.all() or not v.any():
+        return v
+    region = _nodata_regions(~v)
+    if not region.any():
+        return v
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * px + 1,) * 2)
+    return v & ~cv2.dilate(region.astype(np.uint8), k).astype(bool)
+
+
 def _valid_data_mask(img, *, erode_px: int = 6) -> np.ndarray:
     """True where the panel actually carries data; False on no-data fill.
 
@@ -1235,9 +1283,9 @@ def _valid_data_mask(img, *, erode_px: int = 6) -> np.ndarray:
     a = _as_hwc(img)
     m = np.isfinite(a).all(axis=2) & (a != 0).any(axis=2)
     if erode_px > 0 and m.any() and not m.all():
-        k = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (2 * erode_px + 1, 2 * erode_px + 1))
-        eroded = cv2.erode(m.astype(np.uint8), k).astype(bool)
+        # only the no-data REGIONS are trimmed; an isolated zero pixel stays
+        # a single excluded pixel (_shrink_valid, issue #138)
+        eroded = _shrink_valid(m, erode_px)
         if eroded.any():
             m = eroded
     return m
@@ -5292,7 +5340,7 @@ class MosaicMasterDialog(QDialog):
 
             # Pedestal-free grayscale for star detection (astroalign never sees PED)
             cov_r = (((reprojected if reprojected.ndim == 2 else reprojected[..., 0])
-                      > (0.995 * PED)) & (cov_warp >= MASK_KEEP))
+                      > (0.5 * PED)) & (cov_warp >= MASK_KEEP))
             reproj_red = self._strip_pedestal(
                 reprojected if reprojected.ndim == 2 else reprojected[..., 0], PED, cov_r
             )
@@ -5412,12 +5460,19 @@ class MosaicMasterDialog(QDialog):
             # Lanczos4 spans 8x8, so edge contamination extends ~4px in; erode
             # to clear the ringing band, where overshoot can push a contaminated
             # pixel back above PED.
+            #
+            # The pedestal test is at HALF the pedestal, not just under it: the
+            # sky match shifts a panel whose sky is brighter than the
+            # reference's DOWN, and its darkest real pixels (cold pixels, dark
+            # nebula noise) go a little negative. At 0.995*PED each of those
+            # failed, and the trim below grew it into a ~25 px black dot
+            # (GitHub issue #138). Past the edge the warp falls to 0, far
+            # below PED/2, and the band where it only partly falls is the one
+            # the trim removes.
             EDGE_TRIM = 12
-            coverage = (gray_ped > (0.995 * PED)) & (cov_warp >= MASK_KEEP)
+            coverage = (gray_ped > (0.5 * PED)) & (cov_warp >= MASK_KEEP)
             if EDGE_TRIM > 0 and coverage.any():
-                k = cv2.getStructuringElement(
-                    cv2.MORPH_ELLIPSE, (2 * EDGE_TRIM + 1, 2 * EDGE_TRIM + 1))
-                coverage = cv2.erode(coverage.astype(np.uint8), k).astype(bool)
+                coverage = _shrink_valid(coverage, EDGE_TRIM)
 
             if not coverage.any():
                 print(f"[Mosaic] {_name}: empty footprint, skipping.")
