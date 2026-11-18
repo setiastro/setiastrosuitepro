@@ -10285,6 +10285,36 @@ class WIMIDialog(QDialog):
         coord = SkyCoord(ra_center, dec_center, unit="deg")
         unique_entries = {}
 
+        # Every row needs a non-empty name that is unique: the tree, the
+        # overlay highlight and both click handlers all find an object by its
+        # name. Most of these catalogues have no _2MASS/Source/SDSS12 column,
+        # so rows used to come back named "" -- every click then matched the
+        # first row, and the overlay never highlighted (it skips an empty
+        # selected name).
+        _VZ_ID_COLS = ("_2MASS", "2MASS", "SDSS12", "Source", "objID", "UCAC4",
+                       "PGC", "_6dFGS", "6dFGS", "GLADE_", "Name", "PSCz",
+                       "IRAS", "CATAID", "SEQNUM")
+
+        def _vz_name(row, label, ra, dec):
+            for col in _VZ_ID_COLS:
+                if col not in row.colnames:
+                    continue
+                try:
+                    v = row[col]
+                    if np.ma.is_masked(v):
+                        continue
+                    if isinstance(v, bytes):
+                        v = v.decode("utf-8", "replace")
+                    v = str(v).strip()
+                except Exception:
+                    continue
+                if v and v.lower() not in ("--", "nan", "none", "n/a"):
+                    return f"{label} {v}"
+            try:
+                return f"{label} J{float(ra):.5f}{float(dec):+.5f}"
+            except Exception:
+                return f"{label} {ra} {dec}"
+
         # VizieR has its own hosts and its own endpoint (/viz-bin/votable),
         # so it gets its own health check. Gating this on SIMBAD was wrong in
         # both directions: a SIMBAD TAP outage disabled a VizieR search that
@@ -10382,8 +10412,8 @@ class WIMIDialog(QDialog):
                     key = (ra_str, dec_str)
 
                     # Name & types
-                    name       = str(row.get("_2MASS", "") or row.get("Source", "") or row.get("SDSS12", ""))
                     type_short = CATALOG_NAMES.get(catalog_id, catalog_id)
+                    name       = _vz_name(row, type_short, ra, dec)
                     long_type  = str(row.get("SpType", "N/A"))
                     diameter   = catalog_id
 
@@ -10458,6 +10488,13 @@ class WIMIDialog(QDialog):
 
             # Hand off; the tree is rebuilt from these dicts by update_results_tree().
             all_results = list(unique_entries.values())
+            _seen_names: dict = {}
+            for _e in all_results:
+                _n = _e["name"]
+                _k = _seen_names.get(_n, 0) + 1
+                _seen_names[_n] = _k
+                if _k > 1:
+                    _e["name"] = f"{_n} #{_k}"
             self.main_preview.set_query_results(all_results)
             self.query_results = all_results
             self.update_results_tree()

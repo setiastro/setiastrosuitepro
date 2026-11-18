@@ -83,7 +83,9 @@ from setiastro.saspro.legacy.image_manager import save_image, load_image
 
 # Shared helpers from the hub. syqon_tools imports THIS module lazily, so this
 # top-level import does not create a cycle.
-from setiastro.saspro.syqon_tools import _WorkerCloseGuardMixin, _blend_result_with_mask
+from setiastro.saspro.syqon_tools import (
+    _WorkerCloseGuardMixin, _blend_result_with_mask, _start_syqon_thread,
+)
 
 # Stars-only / gradient side-products are pushed into a new view.
 from setiastro.saspro.remove_stars import _push_as_new_doc
@@ -396,7 +398,7 @@ class _SyQonStudioCLIThread(QThread):
     # err == "__cancelled__" for a user cancel (SASpro-side cancel, SIGINT/130,
     # or GUI-editor Cancel which exits 20).
     progress = pyqtSignal(int, str)
-    finished = pyqtSignal(object, object, dict, str)
+    result = pyqtSignal(object, object, dict, str)
 
     def __init__(self, *, input_rgb01, scale_factor, exe, model_id, argv_opts: dict,
                  want_secondary: bool, secondary_flag: str | None, parent=None):
@@ -569,13 +571,13 @@ class _SyQonStudioCLIThread(QThread):
                     secondary = None
 
             self._emit(100, "Complete")
-            self.finished.emit(primary, secondary, info, "")
+            self.result.emit(primary, secondary, info, "")
 
         except Exception as e:
             import traceback
             info["traceback"] = traceback.format_exc()
             msg = str(e)
-            self.finished.emit(None, None, info, msg)
+            self.result.emit(None, None, info, msg)
 
         finally:
             try:
@@ -1221,9 +1223,8 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             parent=None,  # keep the worker out of the widget tree
         )
         self.proc_thr.progress.connect(self._on_worker_progress)
-        self.proc_thr.finished.connect(self._on_worker_finished)
-        self.proc_thr.finished.connect(self.proc_thr.deleteLater)
-        self.proc_thr.start()
+        self.proc_thr.result.connect(self._on_worker_finished)
+        _start_syqon_thread(self.proc_thr)
 
     def _cancel_processing(self):
         thr = getattr(self, "proc_thr", None)
