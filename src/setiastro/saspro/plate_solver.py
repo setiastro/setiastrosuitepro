@@ -6577,7 +6577,8 @@ class PlateSolverDialog(QDialog):
                 except Exception:
                     pass
             files = [str(p) for p in (b.get("file_paths") or []) if p]
-            choices.append((name, ptrs, files))
+            uids = b.get("doc_uids") if isinstance(b.get("doc_uids"), dict) else {}
+            choices.append((name, ptrs, files, uids))
         return choices
 
     def _pick_view_bundle(self):
@@ -6590,9 +6591,9 @@ class PlateSolverDialog(QDialog):
         v = QVBoxLayout(dlg)
         v.addWidget(QLabel(self.tr("Select a View Bundle:")))
         lb = QListWidget(dlg)
-        for name, ptrs, files in choices:
+        for name, ptrs, files, uids in choices:
             it = QListWidgetItem(f"{name}  ({len(ptrs)} views, {len(files)} files)")
-            it.setData(Qt.ItemDataRole.UserRole, (ptrs, files))
+            it.setData(Qt.ItemDataRole.UserRole, (ptrs, files, uids))
             lb.addItem(it)
         if lb.count():
             lb.setCurrentRow(0)
@@ -6641,8 +6642,8 @@ class PlateSolverDialog(QDialog):
         picked = self._pick_view_bundle()
         if not picked:
             return
-        ptrs, files = picked
-        from setiastro.saspro.view_bundle import _find_main_window, _resolve_doc_and_subwindow
+        ptrs, files, uids = picked
+        from setiastro.saspro.view_bundle import _find_main_window, resolve_bundle_member
         mw = _find_main_window(self) or self.parent()
         applied = 0
         errors = []
@@ -6655,7 +6656,7 @@ class PlateSolverDialog(QDialog):
                 doc = None
                 sw = None
                 if mw is not None:
-                    doc, sw = _resolve_doc_and_subwindow(mw, p)
+                    doc, sw = resolve_bundle_member(mw, uids, p)
                     if sw is not None and hasattr(mw, "mdi"):
                         try:
                             mw.mdi.setActiveSubWindow(sw)

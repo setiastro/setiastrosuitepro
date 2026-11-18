@@ -74,6 +74,52 @@ def _resolve_doc_and_subwindow(mw, doc_ptr):
     return None, None
 
 
+# A bundle remembers its views by id() of the document, and Python gives a
+# closed document's id() to the next object of its size: open another image
+# after closing a bundled view and the bundle used to adopt it, so the next
+# shortcut dropped on the bundle ran on an image nobody put there. Each bundle
+# therefore also records, per pointer, the UID of the document it was added
+# with ("doc_uids": {str(ptr): uid}), and a pointer only counts while that
+# same document is behind it. UIDs are uuid4 per document, so a member from a
+# previous session never matches either.
+
+def _member_uid(doc, sw=None) -> str | None:
+    """The UID a bundle member stands for: the view's base document when there
+    is a view (its .document may be a _DocProxy, whose uid follows the active
+    preview tab), else the document itself."""
+    target = None
+    if sw is not None:
+        try:
+            target = getattr(sw.widget(), "base_document", None)
+        except Exception:
+            target = None
+    if target is None:
+        target = doc
+    try:
+        u = getattr(target, "uid", None)
+    except Exception:
+        u = None
+    return u if isinstance(u, str) and u else None
+
+
+def resolve_bundle_member(mw, doc_uids, doc_ptr):
+    """(doc, subwindow) for one view of a View Bundle, or (None, None) once the
+    document it was added with is gone. `doc_uids` is the bundle's "doc_uids"
+    map (or the bundle dict itself). A member recorded without a UID (a bundle
+    saved by an older version) resolves by pointer alone, as before."""
+    if isinstance(doc_uids, dict) and isinstance(doc_uids.get("doc_uids"), dict):
+        doc_uids = doc_uids["doc_uids"]
+    try:
+        ptr = int(doc_ptr)
+    except Exception:
+        return None, None
+    doc, sw = _resolve_doc_and_subwindow(mw, ptr)
+    want = doc_uids.get(str(ptr)) if isinstance(doc_uids, dict) else None
+    if want and doc is not None and _member_uid(doc, sw) != want:
+        return None, None
+    return doc, sw
+
+
 def _unpack_cmd_safely(raw: bytes):
     """
     Lazy-import the real unpacker to avoid circular imports.
@@ -956,7 +1002,10 @@ class ViewBundleDialog(QDialog):
                     ptrs = [int(x) for x in (b.get("doc_ptrs") or []) if isinstance(x, (int, str))]
                     fps  = [str(p) for p in (b.get("file_paths") or []) if isinstance(p, (str,))]
                     u = b.get("uuid") or self._new_uuid()
-                    out.append({"uuid": u, "name": nm, "doc_ptrs": ptrs, "file_paths": fps})
+                    raw_uids = b.get("doc_uids") if isinstance(b.get("doc_uids"), dict) else {}
+                    uids = {str(p): str(raw_uids[str(p)]) for p in ptrs if raw_uids.get(str(p))}
+                    out.append({"uuid": u, "name": nm, "doc_ptrs": ptrs, "file_paths": fps,
+                                "doc_uids": uids})
                 return out
         except Exception:
             pass
@@ -1061,6 +1110,8 @@ class ViewBundleDialog(QDialog):
             if p not in seen:
                 seen.add(p); uniq.append(p)
         b["doc_ptrs"] = uniq
+        uids = b.get("doc_uids") if isinstance(b.get("doc_uids"), dict) else {}
+        b["doc_uids"] = {str(p): uids[str(p)] for p in uniq if uids.get(str(p))}
         self._save_all()
         # update chip title/count if needed
         if bundle_uuid in self._chips:
@@ -1072,9 +1123,26 @@ class ViewBundleDialog(QDialog):
         b = self._get_bundle(bundle_uuid)
         if not b:
             return
+        ptrs = [int(p) for p in ptrs]
+        # Every caller hands over pointers of views that are open right now (a
+        # drop or the Add-from-Open picker), so this is the moment to record
+        # which document each one is. Re-adding a pointer re-records it.
+        uids = b.get("doc_uids") if isinstance(b.get("doc_uids"), dict) else {}
+        mw = self._find_mw()
+        for p in ptrs:
+            u = None
+            if mw is not None:
+                try:
+                    u = _member_uid(*_resolve_doc_and_subwindow(mw, p))
+                except Exception:
+                    u = None
+            if u:
+                uids[str(p)] = u
+            else:
+                uids.pop(str(p), None)
+        b["doc_uids"] = uids
         cur = list(b.get("doc_ptrs", []))
-        merged = cur + [int(p) for p in ptrs]
-        self._set_bundle_ptrs_by_uuid(bundle_uuid, merged)
+        self._set_bundle_ptrs_by_uuid(bundle_uuid, cur + ptrs)
 
     def _set_current_bundle_ptrs(self, ptrs: Iterable[int]):
         u = self._current_uuid()
@@ -1161,10 +1229,11 @@ class ViewBundleDialog(QDialog):
         mw = _find_main_window(self)
 
         # --- views ---
+        cur = self._current_bundle()
         for p in self.current_bundle_doc_ptrs():
             title = f"(unresolved) [{p}]"
             if mw is not None:
-                d, sw = _resolve_doc_and_subwindow(mw, p)
+                d, sw = resolve_bundle_member(mw, cur, p)
                 if d is not None:
                     title = sw.windowTitle() if sw else (getattr(d, "display_name", lambda: "Untitled")())
             it = QListWidgetItem(f"[view] {title}")
@@ -1233,7 +1302,7 @@ class ViewBundleDialog(QDialog):
         mw = self._find_mw()
         if mw is None:
             return
-        doc, sw = _resolve_doc_and_subwindow(mw, doc_ptr)
+        doc, sw = resolve_bundle_member(mw, self._current_bundle(), doc_ptr)
         if sw is None:
             return
         try:
@@ -1299,7 +1368,8 @@ class ViewBundleDialog(QDialog):
         cp = {
             "uuid": self._new_uuid(),
             "name": f"{b.get('name','Bundle')} (copy)",
-            "doc_ptrs": list(b.get("doc_ptrs", []))
+            "doc_ptrs": list(b.get("doc_ptrs", [])),
+            "doc_uids": dict(b.get("doc_uids") or {}),
         }
         self._bundles.insert(i + 1, cp)
         self._save_all(); self._refresh_bundle_list()
@@ -1434,11 +1504,8 @@ class ViewBundleDialog(QDialog):
             try:
                 st = json.loads(bytes(md.data(MIME_VIEWSTATE)).decode("utf-8"))
                 doc_ptr = int(st.get("doc_ptr", 0))
-                doc_uid = st.get("doc_uid")
                 if doc_ptr:
-                    self._add_doc_ptrs_to_uuid(u, [doc_ptr])
-                if doc_uid:
-                    self._add_doc_uids_to_uuid(u, [doc_uid])
+                    self._add_doc_ptrs_to_uuid(u, [doc_ptr])   # records the doc's UID too
             except Exception:
                 pass
             e.acceptProposedAction()
@@ -1514,7 +1581,7 @@ class ViewBundleDialog(QDialog):
 
         copied, failed, seen = [], [], {id(src_doc)}
         for ptr in list((b or {}).get("doc_ptrs", [])):
-            _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
+            _doc, sw = resolve_bundle_member(mw, b, ptr)
             if sw is None:
                 continue                      # view closed since it was added
             tgt = mw._target_doc_from_subwindow(sw)
@@ -1572,6 +1639,7 @@ class ViewBundleDialog(QDialog):
             ptrs = [] if not b else list(b.get("doc_ptrs", []))
             file_paths = [] if not b else list(b.get("file_paths", []))
         else:
+            b = self._current_bundle()
             ptrs = self.current_bundle_doc_ptrs()
             file_paths = self.current_bundle_file_paths()
 
@@ -1603,7 +1671,7 @@ class ViewBundleDialog(QDialog):
                 for ptr in ptrs:
                     if prog.cancelled:
                         break
-                    _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
+                    _doc, sw = resolve_bundle_member(mw, b, ptr)
                     if sw is None:
                         prog.end_item(view_applied, len(view_errors))
                         continue
@@ -1631,7 +1699,7 @@ class ViewBundleDialog(QDialog):
             for ptr in ptrs:
                 if prog.cancelled:
                     break
-                _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
+                _doc, sw = resolve_bundle_member(mw, b, ptr)
                 if sw is None:
                     prog.end_item(view_applied, len(view_errors))
                     continue

@@ -3232,6 +3232,20 @@ class MosaicMasterDialog(QDialog):
                     return str(it.get("path", ""))
             solved.sort(key=_date)
             shapes = [tuple(it.get("shape") or np.asarray(it["image"]).shape[:2]) for it in solved]
+            # A frame that overlaps no other one has a wrong plate solution;
+            # left in, it stretched the canvas until the build failed.
+            iso = set(sm.isolated_frames([it["wcs"] for it in solved], shapes))
+            if iso:
+                for k in sorted(iso):
+                    it = solved[k]
+                    it["solve_state"] = "failed"
+                    it["solve_error"] = ("its plate solution puts it away from every other "
+                                         "frame, so it is almost certainly wrong")
+                    print(f"[Seestar] left out {self._item_label(it)}: plate solution "
+                          f"overlaps no other frame")
+                solved = [it for k, it in enumerate(solved) if k not in iso]
+                shapes = [sh for k, sh in enumerate(shapes) if k not in iso]
+                n_fail += len(iso)
             try:
                 cw, (Hc, Wc) = sm.make_canvas([it["wcs"] for it in solved], shapes)
             except Exception as e:
@@ -3269,6 +3283,7 @@ class MosaicMasterDialog(QDialog):
             # frames in flight: enough to keep every worker busy
             depth = nthreads + 4
             slots, free_slots, slot_of = {}, [], {}
+            skipped = {}                   # frame index -> why it isn't in the stack
             if pool is not None:
                 # prepared frames come back through shared memory (sm.attach_slot)
                 try:
@@ -3318,7 +3333,20 @@ class MosaicMasterDialog(QDialog):
                                     f.cancel()
                                 self.status_label.setText("Cancelled.")
                                 return
-                        pr = fut_i.result()
+                        # One frame that can't be read or prepared is left out;
+                        # it used to fail the whole build. A dead pool still does.
+                        try:
+                            pr = fut_i.result()
+                        except cf.BrokenExecutor:
+                            raise
+                        except Exception as e:
+                            pr = None
+                            skipped[i] = f"{type(e).__name__}: {e}"
+                        else:
+                            if pr is None:
+                                skipped[i] = "could not be read"
+                        if i in skipped:
+                            print(f"[Seestar] left out {self._item_label(solved[i])}: {skipped[i]}")
                         if pr is not None and pr.get("slot"):
                             pr["data"], pr["weight"] = sm.slot_views(slots[pr["slot"]].buf,
                                                                      pr["shape"])
@@ -3360,6 +3388,11 @@ class MosaicMasterDialog(QDialog):
                             except Exception:
                                 pass
 
+            if len(skipped) == len(solved):
+                raise RuntimeError(f"none of the {len(solved)} plate-solved frames could be "
+                                   f"stacked ({next(iter(skipped.values()))})")
+            stacked = [it for k, it in enumerate(solved) if k not in skipped]
+
             progress.setLabelText("Taking out satellites and other outliers…" if clip
                                   else "Finishing…")
             QApplication.processEvents()
@@ -3379,7 +3412,7 @@ class MosaicMasterDialog(QDialog):
             hdr["NAXIS1"] = Wc
             hdr["NAXIS2"] = Hc
             exps = []
-            for it in solved:
+            for it in stacked:
                 try:
                     exps.append(float((it.get("header") or {}).get("EXPTIME", 0) or 0))
                 except Exception:
@@ -3388,7 +3421,7 @@ class MosaicMasterDialog(QDialog):
             if exps:
                 hdr["EXPTIME"] = (float(np.median(exps)), "per frame (s)")
                 hdr["TOTALEXP"] = (float(np.sum(exps)), "total integration (s)")
-            hdr["NCOMBINE"] = (len(solved), "frames stacked")
+            hdr["NCOMBINE"] = (len(stacked), "frames stacked")
             hdr["HISTORY"] = "SASpro Mosaic Master: Seestar frames plate-solved (Gaia DR3), placed by WCS, averaged"
             self.wcs_metadata = hdr
             self.was_single_channel = (C == 1)
@@ -3398,7 +3431,8 @@ class MosaicMasterDialog(QDialog):
             sc = min(1.0, 900.0 / max(Hc, Wc))
             heat = (cv2.resize(N, (max(1, int(Wc * sc)), max(1, int(Hc * sc))),
                                interpolation=cv2.INTER_AREA) if sc < 1.0 else N.copy())
-            frames = [sm.canvas_corners(h, sh) for h, sh in zip(Hms, shapes)]
+            frames = [sm.canvas_corners(h, sh) for k, (h, sh) in enumerate(zip(Hms, shapes))
+                      if k not in skipped]
             self._build_report = {
                 "mode": "seestar", "panels": [], "seams": [], "sigma": None,
                 "shape": (Hc, Wc),
@@ -3413,8 +3447,10 @@ class MosaicMasterDialog(QDialog):
                                              self.autostretchPreviewCheck.isChecked()),
                               "Seestar Mosaic")
             self.status_label.setText(
-                f"Seestar mosaic ready — {len(solved)} frames"
+                f"Seestar mosaic ready — {len(stacked)} frames"
                 + (f" ({n_fail} not solved, left out)" if n_fail else "")
+                + (f" ({len(skipped)} could not be read, left out — see the log)"
+                   if skipped else "")
                 + f", {Wc}×{Hc} px, up to {int(N.max())} frames deep{rej}. "
                   "Plate-solved: the mosaic carries its WCS.")
         finally:

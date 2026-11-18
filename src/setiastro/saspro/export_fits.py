@@ -1164,7 +1164,8 @@ class ExportFitsDialog(QDialog):
                 except Exception:
                     pass
             files = [str(p) for p in (bundle.get("file_paths") or []) if p]
-            choices.append((name, ptrs, files))
+            uids = bundle.get("doc_uids") if isinstance(bundle.get("doc_uids"), dict) else {}
+            choices.append((name, ptrs, files, uids))
         return choices
 
     def _pick_view_bundle(self):
@@ -1178,9 +1179,9 @@ class ExportFitsDialog(QDialog):
         v = QVBoxLayout(dlg)
         v.addWidget(QLabel("Select a View Bundle:"))
         lb = QListWidget(dlg)
-        for name, ptrs, files in choices:
+        for name, ptrs, files, uids in choices:
             it = QListWidgetItem(f"{name}  ({len(ptrs)} views, {len(files)} files)")
-            it.setData(Qt.ItemDataRole.UserRole, (ptrs, files))
+            it.setData(Qt.ItemDataRole.UserRole, (ptrs, files, uids))
             lb.addItem(it)
         if lb.count():
             lb.setCurrentRow(0)
@@ -1221,14 +1222,14 @@ class ExportFitsDialog(QDialog):
         picked = self._pick_view_bundle()
         if not picked:
             return
-        ptrs, files = picked
-        from setiastro.saspro.view_bundle import _find_main_window, _resolve_doc_and_subwindow
+        ptrs, files, uids = picked
+        from setiastro.saspro.view_bundle import _find_main_window, resolve_bundle_member
         mw = _find_main_window(self) or self._mw
         docs = []
         for ptr in ptrs or []:
             doc = None
             if mw is not None:
-                doc, sw = _resolve_doc_and_subwindow(mw, ptr)
+                doc, sw = resolve_bundle_member(mw, uids, ptr)
                 if sw is not None and hasattr(mw, "mdi"):
                     try:
                         mw.mdi.setActiveSubWindow(sw)

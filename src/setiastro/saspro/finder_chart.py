@@ -13,7 +13,8 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
-    QCheckBox, QFileDialog, QMessageBox, QSpinBox, QSlider, QApplication, QDoubleSpinBox
+    QCheckBox, QFileDialog, QMessageBox, QSpinBox, QSlider, QApplication, QDoubleSpinBox,
+    QStackedWidget, QWidget,
 )
 from astropy.io.fits import Header
 from astropy.wcs import WCS
@@ -207,6 +208,11 @@ class FinderChartRequest:
     sensor_w_px: int = 6248
     sensor_h_px: int = 4176
     rotation_deg: float = 0.0      # clockwise from north
+
+    # Sky chart overlay (skychart_engine): constellations, deep-sky shapes to
+    # scale, star names, drawn on the survey image's own WCS
+    show_skychart: bool = False
+    skychart_layers: Optional[dict] = None
 
 # ---------------- Catalog loading (cached) ----------------
 
@@ -1178,6 +1184,30 @@ def _draw_star_names(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, *,
         )
 
 
+_SKYCHART_OVERLAY_CACHE: dict = {}
+
+
+def _skychart_overlay_rgba(bg_wcs: "WCS", w: int, h: int, layers: Optional[dict]):
+    """RGBA overlay of the sky chart layers on a survey cutout, FITS row order.
+    Cached on the cutout's WCS, size and layer choice, so toggling the compass or
+    the grid does not redraw it."""
+    from setiastro.saspro import skychart_engine as E
+    lay = dict(layers or {})
+    key = (bg_wcs.to_header_string(), int(w), int(h), tuple(sorted((k, bool(v)) for k, v in lay.items())))
+    hit = _SKYCHART_OVERLAY_CACHE.get(key)
+    if hit is not None:
+        return hit
+    data = E.get_data(log=print)
+    # The chart is drawn at 900-2400 px and then shown inside matplotlib axes
+    # that take ~70% of the figure, so print-sized labels end up unreadable:
+    # half again as large, and lines a little heavier, read well on a photo.
+    ov = E.render_overlay(E.overlay_params(lay, text_scale=1.5, graphics_scale=1.4),
+                          data, bg_wcs, int(w), int(h), log=print)
+    _SKYCHART_OVERLAY_CACHE.clear()
+    _SKYCHART_OVERLAY_CACHE[key] = ov
+    return ov
+
+
 def render_finder_chart_cached(
     *,
     doc_image: np.ndarray,
@@ -1224,6 +1254,15 @@ def render_finder_chart_cached(
             else:
                 ax.imshow(bg, origin="lower")
 
+        # ---- sky chart overlay: constellations, deep-sky shapes, star names ----
+        if getattr(req, "show_skychart", False) and bg_wcs is not None:
+            try:
+                ov = _skychart_overlay_rgba(bg_wcs, int(bg.shape[1]), int(bg.shape[0]),
+                                            getattr(req, "skychart_layers", None))
+                if ov is not None:
+                    ax.imshow(ov, origin="lower")
+            except Exception as e:
+                print(f"[FinderChart] sky chart overlay failed: {type(e).__name__}: {e}")
 
         # footprint polygon in pixel coords
         if bg_wcs is not None:
@@ -1419,7 +1458,115 @@ def _draw_fov_box(ax, bg_wcs: "WCS", center: "SkyCoord", req: "FinderChartReques
     except Exception as e:
         print(f"[FOV box] draw failed: {e}")
 
-class FinderChartFromCoordDialog(QDialog):
+class _SkyChartHostMixin:
+    """
+    What both Finder Chart dialogs share for the sky chart:
+
+      * a Style switch -- "Survey image" (the dialog as it always was) or
+        "Drawn chart" (skychart_ui.SkyChartPanel, created on first use);
+      * on the survey page, a "Sky chart overlay" toggle with a Layers... picker.
+
+    The dialog builds its survey controls into self._survey_page instead of
+    itself, then calls _install_sky_chart_host() at the end of __init__.
+    """
+
+    _STYLE_KEY = "finder_chart/style"
+    _OVERLAY_KEY = "finder_chart/skychart_overlay"
+    _LAYERS_KEY = "finder_chart/skychart_layers"
+
+    def _install_sky_chart_host(self):
+        import json as _json
+        self._sky_panel = None
+        try:
+            self._skychart_layers = _json.loads(self._settings.value(self._LAYERS_KEY, "", type=str) or "{}")
+        except Exception:
+            self._skychart_layers = {}
+
+        # overlay row, under the survey page's first two rows
+        row = QHBoxLayout()
+        self.chk_skychart = QCheckBox("Sky chart overlay")
+        self.chk_skychart.setToolTip("Draw constellations, deep-sky objects to scale and star names "
+                                     "over the survey image")
+        self.chk_skychart.setChecked(self._settings.value(self._OVERLAY_KEY, False, type=bool))
+        self.btn_skychart_layers = QPushButton("Layers…")
+        self.btn_skychart_layers.setToolTip("Choose which sky chart layers the overlay draws")
+        row.addWidget(self.chk_skychart)
+        row.addWidget(self.btn_skychart_layers)
+        row.addStretch(1)
+        self._survey_page.layout().insertLayout(2, row)
+        self.chk_skychart.toggled.connect(self._on_skychart_overlay_toggled)
+        self.btn_skychart_layers.clicked.connect(self._pick_skychart_layers)
+
+        outer = QVBoxLayout(self)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Style:"))
+        self.cmb_style = QComboBox()
+        self.cmb_style.addItems(["Survey image", "Drawn chart"])
+        self.cmb_style.setToolTip("Survey image: a sky survey photograph with overlays.\n"
+                                  "Drawn chart: a vector star chart (SVG / PDF / PNG / new image).")
+        top.addWidget(self.cmb_style)
+        top.addStretch(1)
+        outer.addLayout(top)
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._survey_page)
+        outer.addWidget(self._stack, 1)
+        self.cmb_style.currentIndexChanged.connect(self._on_style_changed)
+        # finished fires for Close, the title-bar X and Escape alike
+        self.finished.connect(lambda _r=0: self._shutdown_sky_panel())
+        if self._settings.value(self._STYLE_KEY, "Survey image", type=str) == "Drawn chart":
+            QTimer.singleShot(0, lambda: self.cmb_style.setCurrentIndex(1))
+
+    def _on_skychart_overlay_toggled(self, on: bool):
+        self._settings.setValue(self._OVERLAY_KEY, bool(on))
+        self._schedule_render(force_refetch=False, delay_ms=150)
+
+    def _pick_skychart_layers(self):
+        import json as _json
+        from setiastro.saspro.skychart_ui import OverlayLayersDialog
+        dlg = OverlayLayersDialog(self._skychart_layers, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._skychart_layers = dlg.layers()
+            self._settings.setValue(self._LAYERS_KEY, _json.dumps(self._skychart_layers))
+            if not self.chk_skychart.isChecked():
+                self.chk_skychart.setChecked(True)      # renders via the toggle
+            else:
+                self._schedule_render(force_refetch=False, delay_ms=50)
+
+    def _skychart_req_fields(self) -> dict:
+        return dict(show_skychart=bool(getattr(self, "chk_skychart", None) is not None
+                                       and self.chk_skychart.isChecked()),
+                    skychart_layers=dict(getattr(self, "_skychart_layers", {}) or {}))
+
+    def _on_style_changed(self, idx: int):
+        self._settings.setValue(self._STYLE_KEY, self.cmb_style.currentText())
+        if idx != 1:
+            self._stack.setCurrentIndex(0)
+            return
+        first = self._sky_panel is None
+        if first:
+            from setiastro.saspro.skychart_ui import SkyChartPanel, AppContext, find_main_window
+            mw = find_main_window(self.parent()) or find_main_window(self)
+            self._sky_panel = SkyChartPanel(AppContext(mw), parent=self._stack)
+            self._stack.addWidget(self._sky_panel)
+        self._stack.setCurrentWidget(self._sky_panel)
+        if self.width() < 1300 or self.height() < 880:
+            self.resize(max(self.width(), 1380), max(self.height(), 920))
+        if first:
+            QTimer.singleShot(0, self._seed_sky_panel)
+
+    def _seed_sky_panel(self):
+        """Point a new drawn chart at what this Finder Chart shows."""
+        raise NotImplementedError
+
+    def _shutdown_sky_panel(self):
+        if getattr(self, "_sky_panel", None) is not None:
+            try:
+                self._sky_panel.shutdown()
+            except Exception:
+                pass
+
+
+class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
     """
     Finder chart driven directly from RA/Dec + user-chosen FOV.
     No document WCS needed — used by WIMS object search.
@@ -1451,7 +1598,9 @@ class FinderChartFromCoordDialog(QDialog):
         self.setModal(False)
         self.resize(920, 980)
 
-        root = QVBoxLayout(self)
+        self._survey_page = QWidget()
+        root = QVBoxLayout(self._survey_page)
+        root.setContentsMargins(0, 0, 0, 0)
 
         # Row 1: survey + FOV radius + grid
         row1 = QHBoxLayout()
@@ -1626,7 +1775,22 @@ class FinderChartFromCoordDialog(QDialog):
         self._on_imaging_train_changed()  # update the FOV readout label
         self.lbl.setText("Fetching survey background…")
         self.lbl.setStyleSheet("QLabel { background:#111; border:1px solid #333; color:#ccc; }")
+        self._install_sky_chart_host()
         QTimer.singleShot(0, lambda: self._render_now(force_refetch=True))
+
+    def _seed_sky_panel(self):
+        p = self._sky_panel
+        if p is None or not p._ensure_data():
+            return
+        p._loading = True
+        try:
+            p._set_center(self._ra_deg, self._dec_deg)
+            p.sp_rot.setValue(0.0)
+            p.sp_fov.setValue(round(max(self._fov_deg(), 0.05), 3))
+            p.ed_title.setText(str(self._name or ""))
+        finally:
+            p._loading = False
+        p.preview()
 
     def _load_imaging_settings(self):
         s = self._settings
@@ -1700,6 +1864,7 @@ class FinderChartFromCoordDialog(QDialog):
             sensor_w_px=int(self.sb_sensor_w.value()),
             sensor_h_px=int(self.sb_sensor_h.value()),
             rotation_deg=float(self.sb_rotation.value()),
+            **self._skychart_req_fields(),
         )
 
     def _on_imaging_train_changed(self):
@@ -1858,7 +2023,7 @@ class FinderChartFromCoordDialog(QDialog):
             except Exception:
                 pass
 
-class FinderChartDialog(QDialog):
+class FinderChartDialog(_SkyChartHostMixin, QDialog):
     """
     Minimal v1 Finder Chart dialog:
     - Survey dropdown
@@ -1898,7 +2063,9 @@ class FinderChartDialog(QDialog):
         self.setModal(False)
         self.resize(920, 980)
 
-        root = QVBoxLayout(self)
+        self._survey_page = QWidget()
+        root = QVBoxLayout(self._survey_page)
+        root.setContentsMargins(0, 0, 0, 0)
 
         # controls row 1 (primary)
         row1 = QHBoxLayout()
@@ -2070,8 +2237,22 @@ class FinderChartDialog(QDialog):
         self.chk_scale.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
 
         self._set_overlay_controls_enabled()
+        self._install_sky_chart_host()
         # kick initial render AFTER the dialog has had a chance to show/paint
         QTimer.singleShot(0, self._initial_render)
+
+    def _seed_sky_panel(self):
+        # centre, field, rotation, mirroring and outline from this image's own WCS
+        p = self._sky_panel
+        if p is None:
+            return
+        title = ""
+        try:
+            dn = getattr(self._doc, "display_name", None)
+            title = str(dn() if callable(dn) else (dn or ""))
+        except Exception:
+            title = ""
+        p.from_image(doc=self._doc, title=title)
 
     def _maybe_schedule_stars(self, delay_ms: int = 150):
         # Only auto-refresh if the overlay is enabled
@@ -2233,6 +2414,7 @@ class FinderChartDialog(QDialog):
 
             out_px=out_px,
             overlay_opacity=overlay_opacity,
+            **self._skychart_req_fields(),
         )
 
 

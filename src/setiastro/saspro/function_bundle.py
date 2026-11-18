@@ -1313,7 +1313,8 @@ class FunctionBundleDialog(QDialog):
 
             # (optional) you can show how many files are in the bundle too
             # files = b.get("file_paths") or []
-            choices.append((name, ptrs))
+            uids = b.get("doc_uids") if isinstance(b.get("doc_uids"), dict) else {}
+            choices.append((name, ptrs, uids))
 
         if not choices:
             QMessageBox.information(self, "Apply", "No View Bundles found.")
@@ -1327,9 +1328,9 @@ class FunctionBundleDialog(QDialog):
         lb = QListWidget()
         v.addWidget(lb, 1)
 
-        for name, ptrs in choices:
+        for name, ptrs, uids in choices:
             it = QListWidgetItem(f"{name}  ({len(ptrs)} views)")
-            it.setData(Qt.ItemDataRole.UserRole, ptrs)
+            it.setData(Qt.ItemDataRole.UserRole, (ptrs, uids))
             lb.addItem(it)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -1344,7 +1345,7 @@ class FunctionBundleDialog(QDialog):
         if not cur:
             return
 
-        ptrs = cur.data(Qt.ItemDataRole.UserRole) or []
+        ptrs, uids = cur.data(Qt.ItemDataRole.UserRole) or ([], {})
         steps = self.current_steps()
         if not steps:
             QMessageBox.information(self, "Apply", "This Function Bundle is empty.")
@@ -1355,9 +1356,14 @@ class FunctionBundleDialog(QDialog):
         except Exception:
             pass
 
+        # View Bundle members resolve the View Bundle way: by the pointer a tab
+        # drop records (the base document's id(), which this module's own
+        # resolver -- matching view.document only -- does not look for), and
+        # only while the document they were added with is still behind it.
+        from setiastro.saspro.view_bundle import resolve_bundle_member
         applied = 0
         for p in ptrs:
-            _doc, sw = _resolve_doc_and_subwindow(mw, p)
+            _doc, sw = resolve_bundle_member(mw, uids, p)
             if sw is None:
                 self._pump_events(0)
                 continue

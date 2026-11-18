@@ -723,7 +723,7 @@ class SettingsDialog(QDialog):
         right_col.addRow(_w_mb)
 
         # ---- RA/Dec Overlay ----
-        right_col.addRow(QLabel(self.tr("<b>RA/Dec Overlay</b>")))
+        right_col.addRow(QLabel(self.tr("<b>WCS + Chart Overlay</b>")))
         self.chk_wcs_enabled = QCheckBox(self.tr("Show RA/Dec grid"))
         right_col.addRow(self.chk_wcs_enabled)
 
@@ -753,6 +753,34 @@ class SettingsDialog(QDialog):
         _w = QWidget()
         _w.setLayout(row_wcs)
         right_col.addRow(_w)
+
+        # Chart layers drawn with the grid by each view's WCS button
+        self.chk_wcs_cons = QCheckBox(self.tr("Constellations (lines, borders, names)"))
+        self.chk_wcs_dso = QCheckBox(self.tr("Deep-sky objects"))
+        self.chk_wcs_dso.setToolTip(self.tr(
+            "Messier, NGC, IC, Sharpless, LBN, LDN, Abell and planetary nebulae,\n"
+            "drawn to scale at their catalogued position angle, with their names"))
+        self.sp_wcs_dso_mag = QDoubleSpinBox()
+        self.sp_wcs_dso_mag.setRange(0.0, 20.0)
+        self.sp_wcs_dso_mag.setDecimals(1)
+        self.sp_wcs_dso_mag.setSingleStep(0.5)
+        self.sp_wcs_dso_mag.setSpecialValueText(self.tr("Auto"))
+        self.sp_wcs_dso_mag.setToolTip(self.tr(
+            "Faintest deep-sky object shown. Auto follows the field of view."))
+        self.chk_wcs_dso.toggled.connect(self.sp_wcs_dso_mag.setEnabled)
+        self.chk_wcs_stars = QCheckBox(self.tr("Star names (proper names, Bayer / Flamsteed)"))
+        right_col.addRow(self.chk_wcs_cons)
+        row_dso = QHBoxLayout()
+        row_dso.setContentsMargins(0, 0, 0, 0)
+        row_dso.addWidget(self.chk_wcs_dso)
+        row_dso.addSpacing(8)
+        row_dso.addWidget(QLabel(self.tr("Mag ≤")))
+        row_dso.addWidget(self.sp_wcs_dso_mag)
+        row_dso.addStretch(1)
+        _wd = QWidget()
+        _wd.setLayout(row_dso)
+        right_col.addRow(_wd)
+        right_col.addRow(self.chk_wcs_stars)
 
         # ---- Updates ----
         right_col.addRow(QLabel(self.tr("<b>Updates</b>")))
@@ -2023,6 +2051,11 @@ class SettingsDialog(QDialog):
         self.cb_wcs_unit.blockSignals(False)
         
         self.sp_wcs_step.setValue(self.settings.value("wcs_grid/step_value", 1.0, type=float))
+        self.chk_wcs_cons.setChecked(self.settings.value("wcs_chart/constellations", True, type=bool))
+        self.chk_wcs_dso.setChecked(self.settings.value("wcs_chart/dso", True, type=bool))
+        self.sp_wcs_dso_mag.setValue(self.settings.value("wcs_chart/dso_mag", 0.0, type=float))
+        self.sp_wcs_dso_mag.setEnabled(self.chk_wcs_dso.isChecked())
+        self.chk_wcs_stars.setChecked(self.settings.value("wcs_chart/star_names", True, type=bool))
         self.sp_wcs_step.setEnabled(self.cb_wcs_mode.currentIndex() == 1)
         self.sp_wcs_step.setSuffix(" °" if self.cb_wcs_unit.currentIndex() == 0 else " arcmin")
 
@@ -2209,6 +2242,10 @@ class SettingsDialog(QDialog):
         self.settings.setValue("wcs_grid/mode", "auto" if self.cb_wcs_mode.currentIndex() == 0 else "fixed")
         self.settings.setValue("wcs_grid/step_unit", "deg" if self.cb_wcs_unit.currentIndex() == 0 else "arcmin")
         self.settings.setValue("wcs_grid/step_value", float(self.sp_wcs_step.value()))
+        self.settings.setValue("wcs_chart/constellations", self.chk_wcs_cons.isChecked())
+        self.settings.setValue("wcs_chart/dso", self.chk_wcs_dso.isChecked())
+        self.settings.setValue("wcs_chart/dso_mag", float(self.sp_wcs_dso_mag.value()))
+        self.settings.setValue("wcs_chart/star_names", self.chk_wcs_stars.isChecked())
 
 
         # Updates + Display

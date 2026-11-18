@@ -809,7 +809,10 @@ class ImageSubWindow(QWidget):
         # ── NEW: WCS grid toggle ─────────────────────────────────────────
         self._btn_wcs = QToolButton(self)
         self._btn_wcs.setText("⌗")
-        self._btn_wcs.setToolTip(self.tr("Toggle WCS grid overlay (if WCS exists)"))
+        self._btn_wcs.setToolTip(self.tr(
+            "Toggle the WCS + chart overlay (needs a plate-solved image): RA/Dec grid,\n"
+            "constellations, deep-sky objects and star names. Choose what it shows in\n"
+            "Settings > WCS + Chart Overlay."))
         self._btn_wcs.setCheckable(True)
 
         # Start OFF on every new view, regardless of WCS presence or past sessions
@@ -4012,7 +4015,10 @@ class ImageSubWindow(QWidget):
         # (and vice-versa). Also key on pm_base.cacheKey() so a rebuild of
         # _pm_src invalidates the grid cache for free.
         if getattr(self, "_show_wcs_grid", False):
-            cache_key = (pm_base.cacheKey(), int(sw), int(sh), mode, float(self.scale))
+            # The overlay's own settings are part of the key, so changing them in
+            # Settings re-bakes an open view instead of leaving the old bake up.
+            cache_key = (pm_base.cacheKey(), int(sw), int(sh), mode, float(self.scale),
+                         self._wcs_overlay_settings_sig())
             if getattr(self, "_pm_src_wcs_key", None) != cache_key or getattr(self, "_pm_src_wcs", None) is None:
                 pm_scaled = self._draw_wcs_grid_on_pixmap(pm_scaled)
                 self._pm_src_wcs = pm_scaled
@@ -4102,7 +4108,54 @@ class ImageSubWindow(QWidget):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             warnings.simplefilter("ignore", UserWarning)
-            return self._draw_wcs_grid_on_pixmap_impl(pm_scaled)
+            pm = self._draw_wcs_grid_on_pixmap_impl(pm_scaled)
+            return self._draw_chart_overlay_on_pixmap(pm, pm_scaled)
+
+    @staticmethod
+    def _wcs_overlay_settings_sig() -> tuple:
+        s = QSettings()
+        keys = ("wcs_grid/enabled", "wcs_grid/mode", "wcs_grid/step_unit", "wcs_grid/step_value",
+                "wcs_chart/constellations", "wcs_chart/dso", "wcs_chart/dso_mag",
+                "wcs_chart/star_names")
+        return tuple(str(s.value(k, "")) for k in keys)
+
+    def _draw_chart_overlay_on_pixmap(self, pm: QPixmap, pm_scaled: QPixmap) -> QPixmap:
+        """
+        Constellations, deep-sky objects and star names from the sky chart engine,
+        painted after the RA/Dec grid onto the same pixmap. Positions come from
+        the image's full WCS (distortion included) through the grid's own
+        pixel-to-pixmap mapping, so the two agree; label sizes stay fixed on
+        screen while the image zooms.
+        """
+        s = QSettings()
+        cons = s.value("wcs_chart/constellations", True, type=bool)
+        dso = s.value("wcs_chart/dso", True, type=bool)
+        stars = s.value("wcs_chart/star_names", True, type=bool)
+        if not (cons or dso or stars):
+            return pm
+        wcs2 = self._get_celestial_wcs()
+        src = getattr(self.document, "image", None)
+        if wcs2 is None or src is None:
+            return pm
+        H_full, W_full = int(np.asarray(src).shape[0]), int(np.asarray(src).shape[1])
+        if pm is pm_scaled:
+            pm = QPixmap(pm_scaled)      # never paint on the cached scaled pixmap
+        dso_mag = s.value("wcs_chart/dso_mag", 0.0, type=float)
+        try:
+            from setiastro.saspro import skychart_engine as _sce
+            from PyQt6.QtGui import QPainter
+            data = _sce.get_data(log=lambda _m: None)
+            p = QPainter(pm)
+            try:
+                _sce.paint_wcs_overlay(
+                    p, wcs2, W_full, H_full, float(pm.width()) / float(max(1, W_full)), data,
+                    constellations=cons, dso=dso, star_names=stars,
+                    dso_mag=(dso_mag if dso_mag > 0 else None), log=lambda _m: None)
+            finally:
+                p.end()
+        except Exception as e:
+            print(f"[WCS overlay] chart layers not drawn: {type(e).__name__}: {e}")
+        return pm
 
     def _draw_wcs_grid_on_pixmap_impl(self, pm_scaled: QPixmap) -> QPixmap:
         """

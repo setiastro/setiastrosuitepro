@@ -251,6 +251,45 @@ def frame_outline(wcs, shape, n=8):
     return np.asarray(ra, float), np.asarray(dec, float)
 
 
+def isolated_frames(wcs_list, shapes):
+    """Indices of frames whose footprint cannot touch any other frame's: the
+    angle between centres exceeds this frame's half-diagonal plus the largest
+    one in the set. Every frame of a mosaic overlaps another, so such a frame
+    carries a wrong plate solution -- and one placed degrees away stretches the
+    canvas until the build runs out of memory or past MAX_CANVAS_SIDE, which
+    used to stop the whole build over one bad frame. Returns [] for fewer than
+    3 frames, or when isolated frames are not a clear minority (then something
+    other than a stray solution is going on, and the layout should say so)."""
+    n = len(wcs_list)
+    if n < 3:
+        return []
+    cen = np.full((n, 3), np.nan)
+    rad = np.zeros(n)
+    for k, (w, sh) in enumerate(zip(wcs_list, shapes)):
+        try:
+            H, W = sh[:2]
+            rc, dc = w.all_pix2world([(W - 1) / 2.0], [(H - 1) / 2.0], 0)
+            c = _radec_to_vec(rc, dc)[0]
+            ra, dec = frame_outline(w, sh)
+            g = np.isfinite(ra) & np.isfinite(dec)
+            if not np.all(np.isfinite(c)) or not g.any():
+                continue
+            edge = _radec_to_vec(ra[g], dec[g])
+            rad[k] = float(np.max(np.arccos(np.clip(edge @ c, -1.0, 1.0))))
+            cen[k] = c
+        except Exception:
+            continue
+    ok = np.isfinite(cen).all(axis=1)
+    if ok.sum() < 3:
+        return []
+    from scipy.spatial import cKDTree
+    idx = np.flatnonzero(ok)
+    d, _ = cKDTree(cen[idx]).query(cen[idx], k=2)
+    nn = 2.0 * np.arcsin(np.clip(d[:, 1] / 2.0, 0.0, 1.0))     # chord -> angle
+    iso = [int(i) for i, a in zip(idx, nn) if a > rad[i] + float(rad[idx].max())]
+    return iso if len(iso) * 2 < n else []
+
+
 def make_canvas(wcs_list, shapes, pad: int = 4):
     """Canvas WCS around every frame: TAN at the mean pointing, the frames'
     median pixel scale, north up and east left as displayed (row 0 at the

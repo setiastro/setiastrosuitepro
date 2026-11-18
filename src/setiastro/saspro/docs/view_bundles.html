@@ -80,6 +80,7 @@
     "uuid":       "d4f1&hellip;",                   # stable identity
     "name":       "Narrowband set",
     "doc_ptrs":   [ 140234567, 140234592 ],   # id(doc) for open views
+    "doc_uids":   { "140234567": "9c2e&hellip;", &hellip; },  # which document each pointer was added with
     "file_paths": [ "/data/H_1.fits", &hellip; ],   # absolute paths
 }</div>
 <p>The two panes mirror this: the left pane lists bundles, the right pane shows the targets in the currently selected bundle &mdash; views labelled <code>[view]</code> with their window title, files labelled <code>[file]</code> with their absolute path. Resolved view titles update automatically as the underlying windows are renamed.</p>
@@ -196,10 +197,11 @@
 <h3>11. Doc resolution for views</h3>
 <p>Views are identified by <code>id()</code>, which is specific to a particular <code>ImageDocument</code> instance. Resolving a stored <code>doc_ptr</code> back to the live doc and its subwindow goes through two layers:</p>
 <ul>
-<li><b>Preferred</b>: <code>DocManager.resolve_doc_from_drag(doc_ptr=&hellip;)</code>. The DocManager knows about proxies (undo-safe clones), ROI documents (crops of a parent), and uid / file-path lookup &mdash; so if the user closed and reopened the file, resolve can still find it by the stable uid or path.</li>
+<li><b>Preferred</b>: <code>DocManager.resolve_doc_from_drag(doc_ptr=&hellip;)</code>. The DocManager knows about proxies (undo-safe clones) and ROI documents (crops of a parent).</li>
 <li><b>Fallback</b>: scan every subwindow in the MDI, comparing <code>id(sw.widget().document)</code> against the stored pointer, and also comparing the pointer against any <code>_doc</code> / <code>_document</code> / <code>_base</code> underlying attribute the doc might expose.</li>
 </ul>
-<p>If both layers fail, the view is marked <code>(unresolved)</code> in the targets list and skipped at apply time (not an error, just not applied).</p>
+<p><b>Identity check.</b> Python can hand a closed document's <code>id()</code> to a document created later, so a pointer alone could pull a newly opened image into a bundle it was never added to. When a view is added, the bundle also records the UID of the document behind it (the view's base document, which stays the same whichever preview tab is active) in <code>doc_uids</code>. A pointer then counts only while that same document is behind it. UIDs are unique per document instance, so a closed and reopened file is a new document: drag its tab in again. Bundles saved by older versions have no <code>doc_uids</code> and resolve by pointer alone. The Export, Plate Solver and Function Bundle "Apply to View Bundle&hellip;" pickers use the same check (<code>view_bundle.resolve_bundle_member</code>).</p>
+<p>If the view can't be resolved, it is marked <code>(unresolved)</code> in the targets list and skipped at apply time (not an error, just not applied).</p>
 
 <h3>12. Payload unwrap</h3>
 <p>Some older code paths and some third-party scripts wrap command payloads a layer too deep, like:</p>
