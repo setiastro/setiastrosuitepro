@@ -15,6 +15,7 @@ import time
 from setiastro.saspro.dnd_mime import MIME_CMD
 from setiastro.saspro.ops.commands import normalize_cid
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.shortcut_registry import add_shortcut
 
 def _pin_on_top_mac(win: QDialog):
     if sys.platform == "darwin":
@@ -529,7 +530,8 @@ class FunctionBundleDialog(QDialog):
         self.btn_dup.clicked.connect(self._dup_bundle)
         self.btn_del.clicked.connect(self._del_bundle)
         # rename shortcuts
-        QShortcut(QKeySequence("F2"), self.list, activated=self._rename_bundle)
+        add_shortcut(self.list, "F2", self._rename_bundle,
+                     label="Rename the selected bundle", context="Function Bundles")
         self.list.itemDoubleClicked.connect(lambda _it: self._rename_bundle())
 
         # step context menu
@@ -537,8 +539,10 @@ class FunctionBundleDialog(QDialog):
 
         self.steps.itemSelectionChanged.connect(self._sync_edit_button_enabled)
         self.btn_edit_preset.clicked.connect(self._edit_selected_step_preset)
-        QShortcut(QKeySequence("Return"), self.steps, activated=self._edit_selected_step_preset)   # handy
-        QShortcut(QKeySequence("Enter"),  self.steps, activated=self._edit_selected_step_preset)
+        add_shortcut(self.steps, "Return", self._edit_selected_step_preset,
+                     label="Edit the selected step's preset", context="Function Bundles")
+        add_shortcut(self.steps, "Enter", self._edit_selected_step_preset,
+                     label="Edit the selected step's preset", context="Function Bundles")
 
         self.btn_remove.clicked.connect(self._remove_selected_steps)
         self.btn_clear.clicked.connect(self._clear_steps)
@@ -555,9 +559,12 @@ class FunctionBundleDialog(QDialog):
         if self.list.count():
             self.list.setCurrentRow(0)
 
-        QShortcut(QKeySequence("Delete"), self.steps, activated=self._remove_selected_steps)
-        QShortcut(QKeySequence("Backspace"), self.steps, activated=self._remove_selected_steps)
-        QShortcut(QKeySequence("Ctrl+A"), self.steps, activated=self.steps.selectAll)
+        add_shortcut(self.steps, "Delete", self._remove_selected_steps,
+                     label="Remove the selected steps", context="Function Bundles")
+        add_shortcut(self.steps, "Backspace", self._remove_selected_steps,
+                     label="Remove the selected steps", context="Function Bundles")
+        add_shortcut(self.steps, "Ctrl+A", self.steps.selectAll,
+                     label="Select all steps", context="Function Bundles")
 
         # chips per bundle index
         self._chips: dict[int, FunctionBundleChip] = {}

@@ -635,8 +635,10 @@ class AstroSuiteProMainWindow(
         self.mdi.subWindowActivated.connect(self._remember_active_pair)
         self.mdi.subWindowActivated.connect(self._reveal_activated_view)
         self.mdi.backgroundDoubleClicked.connect(self.open_files)   # <- new
-        QShortcut(QKeySequence("Ctrl+PgDown"), self, activated=self._toggle_last_active_view)
-        QShortcut(QKeySequence("Ctrl+PgUp"), self, activated=self._toggle_last_active_view)
+        add_shortcut(self, "Ctrl+PgDown", self._toggle_last_active_view,
+                     label="Switch back to the previously active view", context="Global")
+        add_shortcut(self, "Ctrl+PgUp", self._toggle_last_active_view,
+                     label="Switch back to the previously active view", context="Global")
         self.setCentralWidget(self.mdi)
 
         # Pannable workspace. The chip overlay does not exist yet (the
@@ -1999,83 +2001,19 @@ class AstroSuiteProMainWindow(
         self.script_editor_dock.activateWindow()
 
     def _build_cheats_keyboard_rows(self):
-        rows = []
-
-        # 1) All QActions (you already have a collector; fall back if missing)
-        try:
-            actions = self._collect_all_qactions()
-        except Exception:
-            actions = self.findChildren(QAction)
-
-        for act in actions:
-            for seq in _seqs_for_action(act):
-                rows.append((_qs_to_str(seq), _describe_action(act), _where_for_action(act)))
-
-        # 2) Ad-hoc QShortcuts created in code
-        for sc in self.findChildren(QShortcut):
-            seq = sc.key()
-            if seq and not seq.isEmpty():
-                rows.append((_qs_to_str(seq), _describe_shortcut(sc), _where_for_shortcut(sc)))
-
-        # 3) App-level shortcuts not represented by QAction/QShortcut
-        try:
-            add_extra_shortcuts(rows)  # ✅ Ctrl+K, Ctrl+Alt+M, etc.
-        except Exception:
-            pass
-
-        # De-duplicate and sort by shortcut text
-        rows = _uniq_keep_order(rows)
-        rows.sort(key=lambda r: (r[0].lower(), r[1].lower()))
-        return rows
+        # Read from the live menus, toolbars and labelled shortcuts every time,
+        # so the cheat sheet cannot drift from what the keys actually do. See
+        # cheat_sheet.py and shortcut_registry.py.
+        return _collect_cheat_keyboard_rows(self)
 
     def _build_cheats_gesture_rows(self):
-        # Manual list (extend anytime). Format: (Gesture, Context, Effect)
-        rows = [
-            # Command search
-            ("A", "Display Stretch", self.tr("Toggle Display Auto-Stretch")),
-            ("Ctrl+I", "Invert", self.tr("Invert the Image")),
-            ("Ctrl+Shift+P", "Command Search", self.tr("Focus the command search bar; Enter runs first match")),
-
-            # View Icon
-            ("Drag view -> Off to Canvas", "View", self.tr("Duplicate Image")),
-            ("Drag view -> On to Other Image", "View", self.tr("Copy Zoom and Pan")),
-            ("Shift+Drag -> On to Other Image", "View", self.tr("Apply that image to the other as a mask")), 
-            ("Ctrl+Drag -> On to Other Image", "View", self.tr("Copy Astrometric Solution")),            
-
-            # View zoom
-            ("Ctrl+1", "View", self.tr("Zoom to 100% (1:1)")),
-            ("Ctrl+0", "View", self.tr("Fit image to current window")),
-            ("Ctrl++", "View", self.tr("Zoom In")),
-            ("Ctrl+-", "View", self.tr("Zoom Out")),
-
-            # Window switching
-            ("Ctrl+PgDown", "MDI", self.tr("Switch to previously active view")),
-            ("Ctrl+PgUp",   "MDI", self.tr("Switch to next active view")),
-
-            # Shortcuts canvas + buttons
-            ("Alt+Drag (toolbar button)", "Toolbar", self.tr("Create a desktop shortcut for that action")),
-            ("Alt+Drag (shortcut button -> view)", "Shortcuts", self.tr("Headless apply the shortcut's command/preset to a view")),
-            ("Ctrl/Shift+Click", "Shortcuts", self.tr("Multi-select shortcut buttons")),
-            ("Drag (selection)", "Shortcuts", self.tr("Move selected shortcut buttons")),
-            ("Delete / Backspace", "Shortcuts", self.tr("Delete selected shortcut buttons")),
-            ("Ctrl+A", "Shortcuts", self.tr("Select all shortcut buttons")),
-            ("Double-click empty area", "MDI background", self.tr("Open files dialog")),
-
-            # Layers dock
-            ("Drag view -> Layers list", "Layers", self.tr("Add dragged view as a new layer (on top)")),
-            ("Shift+Drag mask -> Layers list", "Layers", self.tr("Attach dragged image as mask to the selected layer")),
-
-            # Crop tool
-            ("Click-drag", "Crop Tool", self.tr("Draw a crop rectangle")),
-            ("Drag corner handles", "Crop Tool", self.tr("Resize crop rectangle")),
-            ("Shift+Drag on box", "Crop Tool", self.tr("Rotate crop rectangle")),
-        ]
-        return rows
+        # Declared next to the code that implements each gesture.
+        return _collect_cheat_gesture_rows()
 
     def _show_cheat_sheet(self):
-        kb = self._build_cheats_keyboard_rows()
+        rows, groups = self._build_cheats_keyboard_rows()
         gs = self._build_cheats_gesture_rows()
-        dlg = _CheatSheetDialog(self, kb, gs)
+        dlg = _CheatSheetDialog(self, rows, gs, groups)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dlg.show()
 
@@ -9757,7 +9695,9 @@ class AstroSuiteProMainWindow(
         self._cmd_completer.activated[QModelIndex].connect(self._run_selected_completion)
 
         # Shortcut to focus it
-        QShortcut(QKeySequence("Ctrl+Shift+P"), self, activated=self._focus_command_search)
+        add_shortcut(self, "Ctrl+Shift+P", self._focus_command_search,
+                     label="Command Search (the search bar, or a centred palette when it is hidden)",
+                     context="Global")
 
 
         # Enter runs the matched / highlighted completion (not blindly row 0)
@@ -9831,8 +9771,25 @@ class AstroSuiteProMainWindow(
             self._run_selected_completion(m.index(0, 0))
 
     def _focus_command_search(self):
-        self._cmd_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
-        self._cmd_edit.selectAll()
+        # The dock's search box only helps if it is on screen. isVisible() is
+        # False when the dock is closed, collapsed into its rail (the rail
+        # hides the docks), or tabbed behind another panel -- and focusing a
+        # hidden line edit used to make Ctrl+Shift+P do nothing at all. In
+        # those cases pop a palette over the middle of the window instead.
+        edit = getattr(self, "_cmd_edit", None)
+        if edit is not None and edit.isVisible() and not self.isMinimized():
+            edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            edit.selectAll()
+            return
+        pal = getattr(self, "_cmd_palette", None)
+        if pal is None:
+            from setiastro.saspro.gui.command_palette import CommandPalette
+            pal = CommandPalette(self, self._cmd_model, self._run_selected_completion)
+            self._cmd_palette = pal
+        if pal.isVisible():
+            pal.hide()
+        else:
+            pal.popup_centered()
 
     # --- Actions ----------------------------------------
     def set_document(self, doc):
@@ -11409,15 +11366,12 @@ class AstroSuiteProMainWindow(
 # CheatSheet dialog and helper functions imported from setiastro.saspro.cheat_sheet
 from setiastro.saspro.cheat_sheet import (
     CheatSheetDialog as _CheatSheetDialog,
-    add_extra_shortcuts,
-    _qs_to_str,
-    _clean_text,
-    _uniq_keep_order,
-    _seqs_for_action,
-    _where_for_action,
-    _describe_action,
-    _describe_shortcut,
-    _where_for_shortcut,
+    collect_keyboard_rows as _collect_cheat_keyboard_rows,
+    collect_gesture_rows as _collect_cheat_gesture_rows,
 )
+from setiastro.saspro.shortcut_registry import add_shortcut, declare_gesture
+
+# mdi.backgroundDoubleClicked -> open_files (wired in __init__).
+declare_gesture("Double-click empty canvas", "Main window", "Open image files")
 
 # _ProjectSaveWorker and install_crash_handlers imported from setiastro.saspro.widgets.common_utilities

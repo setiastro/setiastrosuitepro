@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import QMessageBox as _QMB
 from PyQt6.QtGui import QDrag, QCloseEvent, QCursor, QShortcut, QKeySequence
 from setiastro.saspro.legacy.image_manager import load_image, save_image
 from setiastro.saspro.dnd_mime import MIME_CMD, MIME_VIEWSTATE
+from setiastro.saspro.shortcut_registry import add_shortcut
 from setiastro.saspro.doc_manager import ImageDocument
 from setiastro.saspro.help_support import make_help_button
 def _pin_on_top_mac(win: QDialog):
@@ -745,7 +746,8 @@ class ViewBundleDialog(QDialog):
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._bundles_context_menu)
         self.list.itemDoubleClicked.connect(lambda _it: self._rename_bundle())
-        QShortcut(QKeySequence("F2"), self.list, activated=self._rename_bundle)
+        add_shortcut(self.list, "F2", self._rename_bundle,
+                     label="Rename the selected bundle", context="View Bundles")
 
 
         self.docs = QListWidget()

@@ -98,6 +98,30 @@ from setiastro.saspro.dnd_mime import (
     MIME_VIEWSTATE,
 )
 from setiastro.saspro.shortcuts import _unpack_cmd_payload
+from setiastro.saspro.shortcut_registry import add_shortcut, declare_key, declare_gesture
+
+# Image-view keys: one table, so the shortcut each view creates and the line
+# the cheat sheet shows cannot disagree. Declared at import too, so the cheat
+# sheet lists them before any image is open. (A is the toolbar's
+# Display-Stretch action, not a view shortcut.)
+_VIEW_KEYS = (
+    ("F2",          "_rename_document",    "Rename the image"),
+    ("F3",          "_rename_document",    "Rename the image"),
+    ("Ctrl+Space",  "toggle_autostretch",  "Toggle display auto-stretch"),
+    ("Alt+Shift+A", "toggle_autostretch",  "Toggle display auto-stretch"),
+    ("Ctrl+K",      "toggle_mask_overlay", "Show/hide the mask overlay"),
+)
+for _k, _m, _lab in _VIEW_KEYS:
+    declare_key(_k, _lab, "Image view")
+declare_key("Space", "Hold, then click or drag: read pixel values (and WCS)", "Image view")
+# The view tab's drag is chosen by modifier in _DragTab.mouseMoveEvent.
+declare_gesture("Drag the ⧉ tab onto another view", "Image view", "Copy this view's zoom and pan to it")
+declare_gesture("Drag the ⧉ tab onto empty canvas", "Image view", "Duplicate the image")
+declare_gesture("Alt+drag the ⧉ tab onto another view", "Image view", "Link the two views (live pan/zoom sync)")
+declare_gesture("Shift+drag the ⧉ tab onto another view", "Image view", "Apply this image to it as a mask")
+declare_gesture("Ctrl+drag the ⧉ tab onto another view", "Image view", "Copy the astrometric solution (WCS) to it")
+declare_gesture("Mouse wheel", "Image view", "Zoom at the cursor")
+declare_gesture("Space+click or Space+drag", "Image view", "Read pixel values (and WCS) under the cursor")
 from setiastro.saspro.widgets.image_utils import ensure_contiguous
 from setiastro.saspro.imageops.viewport_render import resize_for_display, to_uint8_rgb
 from setiastro.saspro.imageops.viewport_canvas import ViewportImageCanvas
@@ -913,12 +937,8 @@ class ImageSubWindow(QWidget):
         # Context menu + shortcuts
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_ctx_menu)
-        QShortcut(QKeySequence("F2"), self, activated=self._rename_document)
-        QShortcut(QKeySequence("F3"), self, activated=self._rename_document)
-        #QShortcut(QKeySequence("A"), self, activated=self.toggle_autostretch)
-        QShortcut(QKeySequence("Ctrl+Space"), self, activated=self.toggle_autostretch)
-        QShortcut(QKeySequence("Alt+Shift+A"), self, activated=self.toggle_autostretch)
-        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.toggle_mask_overlay)
+        for _k, _m, _lab in _VIEW_KEYS:
+            add_shortcut(self, _k, getattr(self, _m), label=_lab, context="Image view")
 
         # Re-render when the document changes
         self.document.changed.connect(self._on_document_changed)

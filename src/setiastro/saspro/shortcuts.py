@@ -29,6 +29,21 @@ from setiastro.saspro.dnd_mime import (MIME_VIEWSTATE, MIME_CMD, MIME_MASK,
 
 from pathlib import Path
 import os  # ← NEW
+from setiastro.saspro.shortcut_registry import declare_key, declare_gesture
+
+# Cheat sheet. Keys: ShortcutCanvas.keyPressEvent. Toolbar drags:
+# _start_drag_for_action (any of Alt/Ctrl/Shift starts one; Alt also carries
+# the command, so a view accepts the drop). Canvas: ShortcutButton handlers.
+declare_key("Delete", "Delete the selected desktop shortcuts", "Desktop shortcuts")
+declare_key("Backspace", "Delete the selected desktop shortcuts", "Desktop shortcuts")
+declare_key("Ctrl+A", "Select all desktop shortcuts", "Desktop shortcuts")
+declare_gesture("Alt, Ctrl or Shift+drag a toolbar button onto the canvas", "Toolbar", "Create a desktop shortcut for that command")
+declare_gesture("Alt+drag a toolbar button onto a view", "Toolbar", "Run that command on the view")
+declare_gesture("Double-click a desktop shortcut", "Desktop shortcuts", "Open its tool, with its preset if it has one")
+declare_gesture("Drag a desktop shortcut onto a view", "Desktop shortcuts", "Run its command and preset on that view")
+declare_gesture("Drag desktop shortcuts", "Desktop shortcuts", "Move them; a selection moves together")
+declare_gesture("Ctrl/Shift+click a desktop shortcut", "Desktop shortcuts", "Add it to or remove it from the selection")
+declare_gesture("Drag on empty canvas", "Desktop shortcuts", "Rubber-band select; hold Ctrl/Shift to add")
 
 SASS_KIND   = "sas.shortcuts"
 SASS_VER    = 1

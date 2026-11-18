@@ -25,6 +25,11 @@ from setiastro.saspro.layers import LayerTransform
 from setiastro.saspro.dnd_mime import MIME_VIEWSTATE, MIME_MASK
 from setiastro.saspro.layers import composite_stack, ImageLayer, BLEND_MODES, _apply_levels, _ensure_3c, _float01
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.shortcut_registry import declare_gesture
+
+# Cheat sheet: what LayersDock.dropEvent accepts.
+declare_gesture("Drag a view's ⧉ tab onto the Layers list", "Layers", "Add that image as a new layer on top")
+declare_gesture("Shift+drag a view's ⧉ tab onto the Layers list", "Layers", "Attach that image as a mask to the selected layer")
 
 # ─────────────────────────────────────────────────────────────
 # Helpers

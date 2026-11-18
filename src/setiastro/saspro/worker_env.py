@@ -53,15 +53,41 @@ def _probe_worker():
     try:
         import numba        # noqa: F401
         _numba_v = numba.__version__
-    except Exception:
+        _numba_err = None
+    except Exception as e:
         _numba_v = None
+        _numba_err = f"{type(e).__name__}: {e}"
     import scipy as _sp
     return {
         "numpy": _np.__version__, "numpy_file": _np.__file__,
         "scipy": _sp.__version__, "scipy_file": _sp.__file__,
-        "numba": _numba_v,
+        "numba": _numba_v, "numba_error": _numba_err,
         "executable": sys.executable,
     }
+
+
+def _parent_numpy() -> tuple[str, str]:
+    np_mod = sys.modules.get("numpy")
+    return (str(getattr(np_mod, "__version__", "?")), str(getattr(np_mod, "__file__", "?")))
+
+
+def _worker_problem(v: dict) -> str:
+    """Why the probed worker can't do SASpro's work, or "" if it can. numba is
+    not optional for the workers (debayer, star detection, the stacking
+    kernels), so a worker that can't import it -- while this process can --
+    is as broken as one that can't import numpy."""
+    if v.get("numba") is not None or not v.get("numba_error"):
+        return ""
+    try:
+        import importlib.util
+        parent_has = "numba" in sys.modules or importlib.util.find_spec("numba") is not None
+    except Exception:
+        parent_has = "numba" in sys.modules
+    if not parent_has:
+        return ""
+    pv, pf = _parent_numpy()
+    return (f"workers can't import numba ({v['numba_error']}). They loaded numpy "
+            f"{v.get('numpy')} from {v.get('numpy_file')}; SASpro runs numpy {pv} from {pf}.")
 
 
 def check_process_pools(timeout: float = 40.0, log_fn=None, force: bool | None = None) -> bool:
@@ -91,12 +117,26 @@ def check_process_pools(timeout: float = 40.0, log_fn=None, force: bool | None =
         ctx = _mp.get_context("spawn")  # matches how the real pools spawn (Qt-safe)
         with ProcessPoolExecutor(max_workers=1, mp_context=ctx) as ex:
             _PP_VERSIONS = ex.submit(_probe_worker).result(timeout=timeout)
+        v = _PP_VERSIONS
+        problem = _worker_problem(v)
+        if problem:
+            # Not a reinstall problem (the worker found a different numpy than
+            # this process), so no pip command: it would not help.
+            _PP_OK = False
+            _PP_REASON = problem
+            if log_fn:
+                log_fn("⚠️ Multi-process workers unavailable: " + problem
+                       + " Running single-process (slower).")
+            return _PP_OK
         _PP_OK = True
         _PP_REASON = "ok"
         if log_fn:
-            v = _PP_VERSIONS
             log_fn(f"Worker preflight OK (numpy {v['numpy']}, scipy {v['scipy']}, "
                    f"numba {v['numba']}).")
+            pv, pf = _parent_numpy()
+            if v.get("numpy") != pv:
+                log_fn(f"Workers load numpy {v.get('numpy')} from {v.get('numpy_file')}; "
+                       f"SASpro runs numpy {pv} from {pf}.")
     except Exception as e:
         _PP_OK = False
         _PP_REASON = f"{type(e).__name__}: {e}"
