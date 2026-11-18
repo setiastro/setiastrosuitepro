@@ -556,10 +556,26 @@ def _rgb01_to_qimage(rgb01: np.ndarray):
     return q.copy()
 
 
+# The SyQon workers are Python-owned QThreads (parent=None), so the C++ thread
+# is deleted the moment its last Python reference goes. Their `result` signal
+# fires from inside run(), and the slots drop proc_thr right there -- while
+# run() is still unwinding. A QThread deleted while running is a Qt fatal
+# error ("QThread: Destroyed while thread is still running"): the whole app
+# vanishes with nothing in the crash log. Hold a reference until the real
+# QThread.finished, which fires after run() returns, and delete it then.
+_LIVE_SYQON_THREADS: set = set()
+
+
+def _start_syqon_thread(thr):
+    _LIVE_SYQON_THREADS.add(thr)
+    thr.finished.connect(lambda t=thr: (_LIVE_SYQON_THREADS.discard(t), t.deleteLater()))
+    thr.start()
+
+
 class _SyQonProcessThread(QThread):
     progress = pyqtSignal(int, str)
     preview  = pyqtSignal(object)
-    finished = pyqtSignal(object, object, dict, str)
+    result = pyqtSignal(object, object, dict, str)
 
 
     def __init__(
@@ -722,12 +738,12 @@ class _SyQonProcessThread(QThread):
                 except Exception:
                     info["engine_info"] = engine_info
 
-            self.finished.emit(starless_s, stars_s, info, "")
+            self.result.emit(starless_s, stars_s, info, "")
 
         except Exception as e:
             import traceback
             info["traceback"] = traceback.format_exc()
-            self.finished.emit(None, None, info, str(e))
+            self.result.emit(None, None, info, str(e))
 
 
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit
@@ -1672,10 +1688,8 @@ class SyQonStarlessDialog(QDialog):
                                # (deleteChildren -> 'destroyed while running' -> abort)
             )
             self.proc_thr.progress.connect(self._on_worker_progress)
-            self.proc_thr.finished.connect(self._on_worker_finished)
-            # delete the thread only AFTER run() has fully unwound
-            self.proc_thr.finished.connect(self.proc_thr.deleteLater)
-            self.proc_thr.start()
+            self.proc_thr.result.connect(self._on_worker_finished)
+            _start_syqon_thread(self.proc_thr)
             return
 
 
@@ -1740,10 +1754,8 @@ class SyQonStarlessDialog(QDialog):
         )
         self.proc_thr.progress.connect(self._on_worker_progress)
         self.proc_thr.preview.connect(self._on_worker_preview)
-        self.proc_thr.finished.connect(self._on_worker_finished)
-        # delete the thread only AFTER run() has fully unwound
-        self.proc_thr.finished.connect(self.proc_thr.deleteLater)
-        self.proc_thr.start()
+        self.proc_thr.result.connect(self._on_worker_finished)
+        _start_syqon_thread(self.proc_thr)
 
     def closeEvent(self, ev):
         try:
@@ -1800,7 +1812,7 @@ from astropy.io import fits
 
 class _SyQonStandaloneCLIThread(QThread):
     progress = pyqtSignal(int, str)
-    finished = pyqtSignal(object, object, dict, str)
+    result = pyqtSignal(object, object, dict, str)
 
     def __init__(
         self,
@@ -2011,12 +2023,12 @@ class _SyQonStandaloneCLIThread(QThread):
                 pass
 
             self._emit(100, "Standalone CLI: complete")
-            self.finished.emit(starless_rgb01, stars_rgb01, info, "")
+            self.result.emit(starless_rgb01, stars_rgb01, info, "")
 
         except Exception as e:
             import traceback
             info["traceback"] = traceback.format_exc()
-            self.finished.emit(None, None, info, str(e))
+            self.result.emit(None, None, info, str(e))
 
         finally:
             try:

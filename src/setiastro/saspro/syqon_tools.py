@@ -28,6 +28,7 @@ from setiastro.saspro.remove_stars import (
     _mtf_params_unlinked,
     _apply_mtf_unlinked_rgb,
     _invert_mtf_unlinked_rgb,
+    _start_syqon_thread,
 )
 from setiastro.saspro.resources import starnet_path, get_icons
 
@@ -1153,10 +1154,8 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         )
         self.proc_thr.progress.connect(self._on_worker_progress)
         self.proc_thr.preview.connect(self._on_worker_preview)              # ← ADD
-        self.proc_thr.finished.connect(self._on_worker_finished)
-        # Delete only AFTER run() has fully unwound (finished fires post-run).
-        self.proc_thr.finished.connect(self.proc_thr.deleteLater)
-        self.proc_thr.start()
+        self.proc_thr.result.connect(self._on_worker_finished)
+        _start_syqon_thread(self.proc_thr)
 
     def _clear_ai_cache(self):
         errors = []
@@ -1895,14 +1894,13 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
             batch_size      = batch_size,
         )
         self.proc_thr.progress.connect(self._on_progress)
-        self.proc_thr.finished.connect(self._on_finished)
-        self.proc_thr.finished.connect(self.proc_thr.deleteLater)
-        self.proc_thr.start()
+        self.proc_thr.result.connect(self._on_finished)
+        _start_syqon_thread(self.proc_thr)
  
  
 class _SyQonParallaxProcessThread(QThread):
     progress = pyqtSignal(int, str)
-    finished = pyqtSignal(object, dict, str)
+    result = pyqtSignal(object, dict, str)
  
     def __init__(self, x_for_net, *, do_correct, correction_path, star_level,
                  star_path, sharpen_alpha, sharpen_path, tile, overlap, pad,
@@ -1983,20 +1981,20 @@ class _SyQonParallaxProcessThread(QThread):
                 )
                 info["sharpen"] = inf
  
-            self.finished.emit(current, info, "")
+            self.result.emit(current, info, "")
  
         except InterruptedError:
-            self.finished.emit(None, info, "__cancelled__")
+            self.result.emit(None, info, "__cancelled__")
         except Exception as e:
             import traceback
             info["traceback"] = traceback.format_exc()
-            self.finished.emit(None, info, str(e))
+            self.result.emit(None, info, str(e))
 
 
 class _SyQonPrismProcessThread(QThread):
     progress = pyqtSignal(int, str)          # percent, stage
     preview  = pyqtSignal(object)            # QImage or None  ← ADD
-    finished = pyqtSignal(object, dict, str) # denoised, info, err
+    result = pyqtSignal(object, dict, str) # denoised, info, err
 
     def __init__(
         self,
@@ -2188,14 +2186,14 @@ class _SyQonPrismProcessThread(QThread):
                 except Exception:
                     info["engine_info"] = engine_info
 
-            self.finished.emit(denoised, info, "")
+            self.result.emit(denoised, info, "")
 
         except InterruptedError:
-            self.finished.emit(None, info, "__cancelled__")
+            self.result.emit(None, info, "__cancelled__")
         except Exception as e:
             import traceback
             info["traceback"] = traceback.format_exc()
-            self.finished.emit(None, info, str(e))
+            self.result.emit(None, info, str(e))
 
 def run_syqon_tools_via_preset(main, doc, preset: dict | None = None):
     """
@@ -2437,10 +2435,10 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
         dlg.close()
  
     thr.progress.connect(_on_prog)
-    thr.finished.connect(_on_done)
+    thr.result.connect(_on_done)
     dlg.cancel_button.clicked.connect(lambda: thr.cancel())
     dlg.show()
-    thr.start()
+    _start_syqon_thread(thr)
     dlg.exec()
 
 
@@ -2593,10 +2591,10 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
         dlg.close()
 
     thr.progress.connect(_on_prog)
-    thr.finished.connect(_on_done)
+    thr.result.connect(_on_done)
     dlg.cancel_button.clicked.connect(lambda: thr.cancel())
     dlg.show()
-    thr.start()
+    _start_syqon_thread(thr)
     dlg.exec()
 
 
@@ -2764,10 +2762,10 @@ def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
         dlg.close()
 
     thr.progress.connect(_on_prog)
-    thr.finished.connect(_on_done)
+    thr.result.connect(_on_done)
     dlg.cancel_button.clicked.connect(lambda: thr.cancel())
     dlg.show()
-    thr.start()
+    _start_syqon_thread(thr)
     dlg.exec()    
 
 
