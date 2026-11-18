@@ -290,6 +290,100 @@ def isolated_frames(wcs_list, shapes):
     return iso if len(iso) * 2 < n else []
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SRGC per frame: ONE survey reference for the whole mosaic
+# ─────────────────────────────────────────────────────────────────────────────
+# A Robotic mosaic is hundreds of frames scattered over the field, each with
+# its own sky gradient (light pollution and moon move with the alt-az pointing
+# and turn with field rotation), and only a flat sky level was taken out of
+# each. SRGC fixes a frame against an outside reference without needing any
+# other frame -- but a survey fetch per frame would be hundreds of requests.
+# So the reference is fetched once over the area every frame covers, at the
+# pixel scale of a frame's SRGC work grid, and each frame gets its own part of
+# it resampled onto that grid.
+SRGC_REF_MAX_SIDE = 4096       # one request; past this the reference is coarser
+
+
+def srgc_area_grid(wcs_list, shapes, work_long_side: int = 1024,
+                   max_side: int = SRGC_REF_MAX_SIDE):
+    """(WCS, (h, w)) for one reference covering every frame: the canvas TAN
+    around them (make_canvas), at the pixel scale each frame's SRGC work grid
+    has (frame long side / work_long_side), capped at max_side pixels."""
+    from setiastro.saspro.survey_gradient import _rescaled_wcs
+    cw, (Hc, Wc) = make_canvas(wcs_list, shapes)
+    f = float(np.median([max(1.0, max(sh[:2]) / float(max(64, work_long_side)))
+                         for sh in shapes]))
+    f = max(f, max(Hc, Wc) / float(max_side), 1.0)
+    h, w = max(8, int(round(Hc / f))), max(8, int(round(Wc / f)))
+    return _rescaled_wcs(cw, (Hc, Wc), (h, w)), (h, w)
+
+
+def reference_covers(ref_wcs, ref_hw, wcs_list, shapes, tol: float = 1.0) -> bool:
+    """True when every frame's outline lands inside the reference grid."""
+    h, w = ref_hw
+    for wc, sh in zip(wcs_list, shapes):
+        try:
+            ra, dec = frame_outline(wc, sh, n=4)
+            x, y = ref_wcs.wcs_world2pix(ra, dec, 0)
+        except Exception:
+            return False
+        if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
+            return False
+        if x.min() < -0.5 - tol or y.min() < -0.5 - tol or \
+                x.max() > w - 0.5 + tol or y.max() > h - 0.5 + tol:
+            return False
+    return True
+
+
+def srgc_work_reference(ref, ref_wcs, frame_wcs, frame_shape, work_long_side: int = 1024):
+    """This frame's part of the area reference, on the frame's SRGC work grid
+    (the grid survey_gradient_model builds for it). Outside the survey or the
+    reference: NaN, which the model already treats as no coverage."""
+    import cv2
+    from setiastro.saspro.survey_gradient import _work_shape
+    H, W = int(frame_shape[0]), int(frame_shape[1])
+    hw, ww = _work_shape(H, W, work_long_side)
+    Hr = frame_homography(frame_wcs, (H, W), ref_wcs)      # frame px -> reference px
+    fx, fy = W / float(ww), H / float(hw)
+    # work px -> frame px, the half-pixel convention of _rescaled_wcs
+    S = np.array([[fx, 0.0, 0.5 * fx - 0.5], [0.0, fy, 0.5 * fy - 0.5], [0.0, 0.0, 1.0]])
+    M = Hr @ S
+    a = np.asarray(ref, np.float32)
+    planes = [a] if a.ndim == 2 else [a[..., c] for c in range(a.shape[2])]
+    out = [cv2.warpPerspective(np.ascontiguousarray(p), M, (ww, hw),
+                               flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                               borderMode=cv2.BORDER_CONSTANT, borderValue=float("nan"))
+           for p in planes]
+    return out[0] if a.ndim == 2 else np.dstack(out).astype(np.float32, copy=False)
+
+
+def _apply_srgc(a, srgc):
+    """Subtract the frame's survey gradient. `a` is (H, W, C), the frame's own
+    pixels; `srgc` carries its reference cutout, its solved header and the
+    model settings. Plain subtraction, 0.0 kept as no-data: the frame's sky is
+    measured and taken out right after, so apply_survey_gradient's median
+    restore and [0, 1] fitting (made for a finished image) are not wanted
+    here -- they would reshape bright star cores frame by frame."""
+    from astropy.io.fits import Header
+    import setiastro.saspro.survey_gradient as sg
+    try:
+        import multiprocessing as _mp
+        if _mp.parent_process() is not None:
+            sg.DEBUG = False          # a worker: its trace goes nowhere useful
+    except Exception:
+        pass
+    img = a[..., 0] if a.shape[2] == 1 else a
+    res = sg.survey_gradient_model(img, Header.fromstring(srgc["header"]),
+                                   reference=srgc["ref"], **srgc["kw"])
+    g = np.asarray(res["gradient"], np.float32)
+    if g.ndim == 2:
+        g = g[..., None]
+    nodata = ~(a != 0).any(axis=2)
+    out = a - float(srgc.get("strength", 1.0)) * g
+    out[nodata] = 0.0
+    return out.astype(np.float32, copy=False)
+
+
 def make_canvas(wcs_list, shapes, pad: int = 4):
     """Canvas WCS around every frame: TAN at the mean pointing, the frames'
     median pixel scale, north up and east left as displayed (row 0 at the
@@ -421,10 +515,16 @@ def slot_bytes(box_px, channels):
 
 
 def prepare_frame(path, Hm, bbox, *, image=None, header=None, debayer_method="rcd",
-                  crop=(0, 0, 0, 0), sky=None, out_slot=None):
+                  crop=(0, 0, 0, 0), sky=None, out_slot=None, srgc=None):
     """Load, debayer, subtract the frame's own sky, and warp onto its canvas
     box. Returns dict: data (h, w, C) sky-subtracted, weight (h, w) feathered
-    (0 = not covered), sky (C,), bbox. None if unreadable."""
+    (0 = not covered), sky (C,), bbox, srgc. None if unreadable.
+
+    `srgc`: optional {"ref", "header", "kw", "strength"} -- the frame's part of
+    the mosaic's survey reference (srgc_work_reference) and SRGC settings. Its
+    gradient is taken out of the frame's own pixels before the sky is
+    measured. A frame SRGC can't model is stacked uncorrected; the "srgc" key
+    says "ok" or why not (None when SRGC is off)."""
     import cv2
     from setiastro.saspro.star_alignment import _warp_antiring
     if image is None:
@@ -441,6 +541,13 @@ def prepare_frame(path, Hm, bbox, *, image=None, header=None, debayer_method="rc
     if a.ndim == 2:
         a = a[..., None]
     a = a[..., :3]
+    srgc_note = None
+    if srgc is not None:
+        try:
+            a = _apply_srgc(a, srgc)
+            srgc_note = "ok"
+        except Exception as e:
+            srgc_note = f"{type(e).__name__}: {e}"
     Hs, Ws = a.shape[:2]
     valid = np.isfinite(a).all(axis=2) & (a != 0).any(axis=2)
     l, r, t, b = (int(v) for v in crop)
@@ -495,12 +602,13 @@ def prepare_frame(path, Hm, bbox, *, image=None, header=None, debayer_method="rc
                     dv[...] = data
                     wv[...] = w
                     del dv, wv
-                    return {"slot": out_slot, "shape": tuple(data.shape), "sky": sky, "bbox": bbox}
+                    return {"slot": out_slot, "shape": tuple(data.shape), "sky": sky,
+                            "bbox": bbox, "srgc": srgc_note}
             finally:
                 sh.close()
         except Exception:
             pass                                 # fall back to returning the arrays
-    return {"data": data, "weight": w, "sky": sky, "bbox": bbox}
+    return {"data": data, "weight": w, "sky": sky, "bbox": bbox, "srgc": srgc_note}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

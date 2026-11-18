@@ -2481,18 +2481,15 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
                             "Parallax needs at least one stage enabled.")
         return
 
-    src = np.asarray(doc.image).astype(np.float32, copy=False)
+    # The image exactly as the document holds it, as the Studio page sends it:
+    # no normalisation, no clipping, no mono-to-RGB.
+    src = np.asarray(doc.image, dtype=np.float32)
     orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
-    x = np.nan_to_num(src, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
-
-    scale_factor = float(np.max(x)) if x.size else 1.0
-    x01 = np.clip(x / scale_factor, 0.0, 1.0) if scale_factor > 1.01 else np.clip(x, 0.0, 1.0)
-    if x01.ndim == 2:
-        xrgb = np.stack([x01] * 3, axis=-1)
-    elif x01.ndim == 3 and x01.shape[2] == 1:
-        xrgb = np.repeat(x01, 3, axis=2)
-    else:
-        xrgb = x01[..., :3]
+    x_in = src[:, :, 0] if (src.ndim == 3 and src.shape[2] == 1) else src
+    try:
+        doc_in_unit_range = bool(np.nanmin(src) >= 0.0 and np.nanmax(src) <= 1.0)
+    except Exception:
+        doc_in_unit_range = True
 
     opts = dict(
         domain=str(preset.get("studio_domain", "auto") or "auto"),
@@ -2523,7 +2520,7 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
     dlg.append_text(f"Starting SyQon Studio ({mid})…\n")
 
     thr = _SyQonStudioCLIThread(
-        input_rgb01=xrgb, scale_factor=scale_factor, exe=exe, model_id=mid,
+        input_image=x_in, exe=exe, model_id=mid,
         argv_opts=opts, want_secondary=want_secondary, secondary_flag=secondary_flag,
         parent=dlg,
     )
@@ -2566,7 +2563,10 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
 
         final_rgb = _blend_result_with_mask(primary, orig_rgb, doc)
         final_to_apply = final_rgb.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else final_rgb
-        final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
+        final_to_apply = np.asarray(final_to_apply, dtype=np.float32)
+        # Clip only a document that was in [0, 1] to begin with.
+        if doc_in_unit_range:
+            final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
 
         step_name = {"prism": "Denoised", "parallax": "Sharpened",
                      "axiom": "Stars Removed", "deep-gradient": "Gradient Removed"}.get(fam, "SyQon Studio")

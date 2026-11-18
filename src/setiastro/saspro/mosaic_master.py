@@ -2281,12 +2281,16 @@ class MosaicMasterDialog(QDialog):
             sp.valueChanged.connect(lambda _v: _persist_crop())
         _sync_crop(self.cropEachCheckBox.isChecked())
 
-        self.srgcEachCheckBox = QCheckBox("Survey colour/gradient correction (SRGC)")
+        self.srgcEachCheckBox = QCheckBox("Survey gradient correction (SRGC) - Much Slower")
         self.srgcEachCheckBox.setToolTip(
             "Survey Reference Gradient Correction on every panel after it is\n"
             "plate-solved. Fetches a public survey cutout for that field and\n"
             "subtracts only the additive gradient the survey does not explain.\n"
-            "Needs a network connection and a plate solution on each panel.")
+            "Needs a network connection and a plate solution on each panel.\n\n"
+            "Robotic Mosaic: every frame is corrected on its own, against ONE\n"
+            "survey reference fetched for the whole mosaic area -- each frame's\n"
+            "light-pollution and moon gradient turns with the field rotation,\n"
+            "so it is taken out before the frames are stacked.")
         self.srgcEachCheckBox.setChecked(
             qs_bool(s, "mosaic/srgc_each", qs_bool(s, "mosaic/adbe_each", False)))
         self.srgcSurveyCombo = QComboBox()
@@ -2305,9 +2309,18 @@ class MosaicMasterDialog(QDialog):
                                         "DSS2 colour is all-sky. NSNS options are northern only.")
         self.srgcSurveyCombo.currentTextChanged.connect(
             lambda name: self._persist("mosaic/srgc_survey", str(name)))
+        self.srgcViewRefBtn = QPushButton("View reference…")
+        self.srgcViewRefBtn.setToolTip(
+            "Fetch the chosen survey over the whole area the frames cover and show it,\n"
+            "with every frame's outline drawn on it -- to check the survey covers the\n"
+            "field and shows the sky you expect before building. Frames not solved yet\n"
+            "are placed from their header pointing. A Robotic build reuses this\n"
+            "reference when it covers every solved frame.")
+        self.srgcViewRefBtn.clicked.connect(self._srgc_view_reference)
 
         def _sync_srgc(on):
             self.srgcSurveyCombo.setEnabled(bool(on))
+            self.srgcViewRefBtn.setEnabled(bool(on))
             self._persist("mosaic/srgc_each", bool(on))
         self.srgcEachCheckBox.toggled.connect(_sync_srgc)
         _sync_srgc(self.srgcEachCheckBox.isChecked())
@@ -2316,6 +2329,7 @@ class MosaicMasterDialog(QDialog):
         sr.setContentsMargins(0, 0, 0, 0)
         sr.addWidget(self.srgcEachCheckBox)
         sr.addWidget(self.srgcSurveyCombo, 1)
+        sr.addWidget(self.srgcViewRefBtn)
         pf.addRow(srgc_w)
 
         self.forceBlindCheckBox = QCheckBox("Re-solve every panel (ignore existing plate solutions)")
@@ -3059,6 +3073,13 @@ class MosaicMasterDialog(QDialog):
             it["solve_state"] = "failed"
             it["solve_error"] = (res or {}).get("error") or "no solution"
             it.pop("failed_cached", None)
+            # One line per failure, from this process: worker processes' own
+            # solver output never reaches the log, so without this a run of
+            # failing frames left the log silent.
+            _el = (res or {}).get("elapsed")
+            print(f"[Seestar] not solved: {self._item_label(it)}"
+                  + (f" ({_el:.0f} s)" if isinstance(_el, (int, float)) else "")
+                  + f" — {it['solve_error']}")
             # remembered only if the solver ran and said no (not a crashed worker)
             if res is not None and not res.get("_exception") \
                     and not self._is_view_path(it.get("path", "")):
@@ -3131,13 +3152,17 @@ class MosaicMasterDialog(QDialog):
                             fut[f].pop("solve_state", None)
                         return False
             else:
+                # On a helper thread: a frame that fails its seeded solve goes
+                # on to a blind search that can run for minutes and logs
+                # nothing, and on the GUI thread the window froze through it
+                # -- no repaint, no Cancel -- which reads as a hang.
                 for it in todo:
                     if it.get("image") is not None:
                         h = it.get("header")
                         hs = (h if isinstance(h, Header) else coerce_to_header(h) or Header()).tostring()
-                        res = sm.solve_frame(it["path"], np.asarray(it["image"]), hs)
+                        res = self._run_live(sm.solve_frame, it["path"], np.asarray(it["image"]), hs)
                     else:
-                        res = sm.solve_frame(it["path"])
+                        res = self._run_live(sm.solve_frame, it["path"])
                     _handle(it, res)
                     _ui(True)
                     if progress.wasCanceled():
@@ -3189,6 +3214,7 @@ class MosaicMasterDialog(QDialog):
             self.spinnerMovie.start()
         QApplication.processEvents()
         pool = self._seestar_pool(len(items))
+        _sg_debug = None                     # SRGC's trace, quieted while stacking here
         try:
             # 1) plate solve whatever isn't solved (cache first)
             cache = getattr(self, "_seestar_cache", None) or sm.load_cache()
@@ -3272,6 +3298,40 @@ class MosaicMasterDialog(QDialog):
             crop = ((int(self.cropLeftSpin.value()), int(self.cropRightSpin.value()),
                      int(self.cropTopSpin.value()), int(self.cropBottomSpin.value()))
                     if self.cropEachCheckBox.isChecked() else (0, 0, 0, 0))
+            # SRGC per frame, against one survey reference for the whole area
+            srgc_ref, srgc_kw, srgc_strength = None, None, 1.0
+            srgc_ok, srgc_bad = 0, {}
+            if self.srgcEachCheckBox.isChecked():
+                sp = self._srgc_params()
+                progress.setRange(0, 0)
+                try:
+                    srgc_ref = self._srgc_area_reference([it["wcs"] for it in solved], shapes,
+                                                         progress)
+                except InterruptedError:
+                    self.status_label.setText("Cancelled.")
+                    return
+                except Exception as e:
+                    print(f"[Mosaic] SRGC reference unavailable: {e}")
+                    ans = QMessageBox.question(
+                        self, "Mosaic Master",
+                        f"The survey reference for SRGC could not be fetched:\n{e}\n\n"
+                        "Build without SRGC?")
+                    if ans != QMessageBox.StandardButton.Yes:
+                        self.status_label.setText("Not built: the SRGC survey reference "
+                                                  "is unavailable.")
+                        return
+                if srgc_ref is not None:
+                    srgc_kw = dict(work_long_side=sp["work_long_side"], degree=sp["degree"],
+                                   use_rbf=sp["rbf"], num_samples=sp["samples"],
+                                   patch_size=sp["patch"],
+                                   exclusion_fraction=sp["exclude"] / 100.0,
+                                   protect_k=sp["protect_k"])
+                    srgc_strength = sp["strength"] / 100.0
+                    if pool is None:
+                        # frames are corrected in this process: hundreds of
+                        # per-frame SRGC traces would bury the log
+                        import setiastro.saspro.survey_gradient as _sg
+                        _sg_debug, _sg.DEBUG = _sg.DEBUG, False
             passes = (1,)
             skies = []
             sky_of = {}
@@ -3312,11 +3372,18 @@ class MosaicMasterDialog(QDialog):
                         img = it.get("image")
                         slot = free_slots.pop() if free_slots else None
                         slot_of[i] = slot
+                        task = None
+                        if srgc_ref is not None:
+                            try:
+                                task = self._srgc_frame_task(srgc_ref, it, shapes[i],
+                                                             srgc_kw, srgc_strength)
+                            except Exception as e:
+                                srgc_bad[i] = f"no reference cutout ({e})"
                         return ex.submit(sm.prepare_frame, it["path"], Hms[i], boxes[i],
                                          image=(np.asarray(img) if img is not None else None),
                                          header=(it.get("header") if img is not None else None),
                                          debayer_method=dm, crop=crop, sky=sky_of.get(i),
-                                         out_slot=slot)
+                                         out_slot=slot, srgc=task)
                     window = {}
                     nxt = 0
                     for i in range(len(solved)):
@@ -3347,6 +3414,14 @@ class MosaicMasterDialog(QDialog):
                                 skipped[i] = "could not be read"
                         if i in skipped:
                             print(f"[Seestar] left out {self._item_label(solved[i])}: {skipped[i]}")
+                        elif srgc_ref is not None:
+                            note = pr.get("srgc")
+                            if note == "ok":
+                                srgc_ok += 1
+                            else:
+                                srgc_bad.setdefault(i, note or "not corrected")
+                                print(f"[Seestar] SRGC left {self._item_label(solved[i])} "
+                                      f"uncorrected: {srgc_bad[i]}")
                         if pr is not None and pr.get("slot"):
                             pr["data"], pr["weight"] = sm.slot_views(slots[pr["slot"]].buf,
                                                                      pr["shape"])
@@ -3423,6 +3498,11 @@ class MosaicMasterDialog(QDialog):
                 hdr["TOTALEXP"] = (float(np.sum(exps)), "total integration (s)")
             hdr["NCOMBINE"] = (len(stacked), "frames stacked")
             hdr["HISTORY"] = "SASpro Mosaic Master: Seestar frames plate-solved (Gaia DR3), placed by WCS, averaged"
+            if srgc_ok:
+                # FITS cards are printable ASCII; survey names carry dashes like "—"
+                _sv = "".join(ch if 32 <= ord(ch) < 127 else "-" for ch in srgc_ref["survey"])
+                hdr["HISTORY"] = (f"SRGC per frame ({srgc_ok} frames) against one "
+                                  f"{_sv} reference for the mosaic area")
             self.wcs_metadata = hdr
             self.was_single_channel = (C == 1)
 
@@ -3451,9 +3531,16 @@ class MosaicMasterDialog(QDialog):
                 + (f" ({n_fail} not solved, left out)" if n_fail else "")
                 + (f" ({len(skipped)} could not be read, left out — see the log)"
                    if skipped else "")
+                + (f", SRGC on {srgc_ok}" if srgc_ref is not None else "")
+                + (f" ({sum(1 for k in srgc_bad if k not in skipped)} left uncorrected — "
+                   f"see the log)" if srgc_ref is not None
+                   and any(k not in skipped for k in srgc_bad) else "")
                 + f", {Wc}×{Hc} px, up to {int(N.max())} frames deep{rej}. "
                   "Plate-solved: the mosaic carries its WCS.")
         finally:
+            if _sg_debug is not None:
+                import setiastro.saspro.survey_gradient as _sg
+                _sg.DEBUG = _sg_debug
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
             try:
@@ -4671,6 +4758,219 @@ class MosaicMasterDialog(QDialog):
         new_header, new_wcs = self._shift_wcs_for_crop(
             header, wcs, x0, y0, new_w, new_h)
         return cropped, new_header, new_wcs
+
+    # ── SRGC for Robotic mosaics: one survey reference for the whole area ──
+    def _srgc_params(self) -> dict:
+        """The SRGC settings both modes use: survey from the dropdown, the
+        model parameters from the SRGC dialog's settings."""
+        s = self.settings
+        return {
+            "survey": str(self.srgcSurveyCombo.currentText() or ""),
+            "work_long_side": int(s.value("srgc/work_long_side", 1024)),
+            "degree": int(s.value("srgc/degree", 1)),
+            "rbf": qs_bool(s, "srgc/rbf", True),
+            "samples": int(s.value("srgc/samples", 200)),
+            "patch": int(s.value("srgc/patch", 15)),
+            "exclude": int(s.value("srgc/exclude", 50)),
+            "protect_k": float(s.value("srgc/protect_k", 3.0)),
+            "strength": int(s.value("srgc/strength", 100)),
+        }
+
+    def _approx_pointing_wcs(self, item):
+        """(WCS, (D, D)) from a frame's header pointing, for one not solved
+        yet: north up, D = the frame's diagonal, so the box holds the frame at
+        any field rotation. None without RA/DEC and a pixel scale."""
+        try:
+            from setiastro.saspro.plate_solver import (
+                _parse_ra_deg, _parse_dec_deg, _estimate_scale_arcsec_from_header)
+            h = item.get("header")
+            hh = h if isinstance(h, Header) else coerce_to_header(h)
+            if hh is None:
+                return None
+            ra, dec = _parse_ra_deg(hh), _parse_dec_deg(hh)
+            sc = _estimate_scale_arcsec_from_header(hh)
+            sh = item.get("shape")
+            if not sh and item.get("image") is not None:
+                sh = np.asarray(item["image"]).shape[:2]
+            if not sh:
+                sh = (int(hh.get("NAXIS2", 0)), int(hh.get("NAXIS1", 0)))
+            if ra is None or dec is None or not sc or not sh or min(sh[:2]) <= 0:
+                return None
+            D = int(math.ceil(math.hypot(sh[0], sh[1])))
+            w = WCS(naxis=2)
+            w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+            w.wcs.crval = [float(ra), float(dec)]
+            w.wcs.crpix = [D / 2.0 + 0.5, D / 2.0 + 0.5]
+            w.wcs.cd = np.array([[-sc / 3600.0, 0.0], [0.0, sc / 3600.0]])
+            return w, (D, D)
+        except Exception:
+            return None
+
+    def _run_live_label(self, fn, progress, last):
+        """_run_live, showing last[0] on the progress dialog as it changes.
+        The work itself can't be interrupted (a network fetch); a Cancel
+        pressed meanwhile is honoured when it returns."""
+        import concurrent.futures as cf
+        with cf.ThreadPoolExecutor(max_workers=1) as ex:
+            f = ex.submit(fn)
+            while not f.done():
+                cf.wait([f], timeout=0.1)
+                if progress is not None:
+                    progress.setLabelText(str(last[0])[:160])
+                QApplication.processEvents()
+            res = f.result()
+        if progress is not None and progress.wasCanceled():
+            raise InterruptedError("cancelled")
+        return res
+
+    def _srgc_area_reference(self, wcs_list, shapes, progress):
+        """The survey reference over every frame's area. The last one is
+        reused when it is the same survey and work scale and covers every
+        frame; otherwise it is fetched once, now. Returns {survey, wls, wcs,
+        shape, data, info}. Raises SurveyFetchError (or another error) when
+        it can't be had, InterruptedError when cancelled."""
+        import setiastro.saspro.seestar_mosaic as sm
+        from setiastro.saspro.survey_gradient import (
+            SURVEYS, DEFAULT_SURVEY, SurveyFetchError, fetch_reference_channels,
+            reset_dead_hosts, describe_reference_provenance)
+        p = self._srgc_params()
+        survey = p["survey"] if p["survey"] in SURVEYS else DEFAULT_SURVEY
+        wls = int(p["work_long_side"])
+        cached = getattr(self, "_srgc_area_ref", None)
+        if (cached is not None and cached["survey"] == survey and cached["wls"] == wls
+                and sm.reference_covers(cached["wcs"], cached["shape"], wcs_list, shapes)):
+            print(f"[Mosaic] SRGC: reusing the {survey} reference "
+                  f"({cached['shape'][1]}×{cached['shape'][0]} px) for {len(wcs_list)} frames")
+            return cached
+        ref_wcs, (h, w) = sm.srgc_area_grid(wcs_list, shapes, wls)
+        channels = list(SURVEYS[survey].get("channels") or [])
+        info = {}
+        last = [f"Fetching the {survey} reference for the whole area ({w}×{h} px)…"]
+        print(f"[Mosaic] SRGC: one {survey} reference for {len(wcs_list)} frames, {w}×{h} px")
+
+        def _cb(m):
+            last[0] = f"Survey reference: {m}"
+
+        def _fetch():
+            reset_dead_hosts()
+            return fetch_reference_channels(ref_wcs, (h, w), channels, progress_cb=_cb, info=info)
+
+        data = np.asarray(self._run_live_label(_fetch, progress, last), np.float32)
+        fin = np.isfinite(data) if data.ndim == 2 else np.isfinite(data).all(axis=2)
+        if not np.any(fin):
+            raise SurveyFetchError(f"{survey} returned no usable pixels over this area "
+                                   f"(outside its footprint?)")
+        try:
+            print("[Mosaic] SRGC reference: " + describe_reference_provenance(info))
+        except Exception:
+            pass
+        ref = {"survey": survey, "wls": wls, "wcs": ref_wcs, "shape": (h, w),
+               "data": data, "info": info}
+        self._srgc_area_ref = ref
+        return ref
+
+    def _srgc_frame_task(self, ref, item, shape, kw, strength):
+        """prepare_frame's `srgc` argument for one solved frame: its part of
+        the area reference on its SRGC work grid, its plate solution, and the
+        model settings."""
+        import setiastro.saspro.seestar_mosaic as sm
+        hs = item.get("solved_header")
+        if isinstance(hs, Header):
+            hs = hs.tostring()
+        if not hs:
+            hs = item["wcs"].to_header(relax=True).tostring()
+        cut = sm.srgc_work_reference(ref["data"], ref["wcs"], item["wcs"], shape,
+                                     kw["work_long_side"])
+        return {"ref": cut, "header": hs, "kw": kw, "strength": strength}
+
+    def _srgc_view_reference(self):
+        """View reference…: fetch (or reuse) the whole-area survey reference
+        and show it with every frame's outline on it."""
+        import setiastro.saspro.seestar_mosaic as sm
+        frames = []                        # (wcs, shape, from header pointing?)
+        for it in self.loaded_images:
+            w = it.get("wcs")
+            if w is not None and it.get("solve_state") != "failed":
+                sh = it.get("shape")
+                if not sh and it.get("image") is not None:
+                    sh = np.asarray(it["image"]).shape[:2]
+                if sh:
+                    frames.append((w, tuple(sh[:2]), False))
+                    continue
+            ap = self._approx_pointing_wcs(it)
+            if ap is not None:
+                frames.append((ap[0], ap[1], True))
+        if not frames:
+            QMessageBox.information(
+                self, "SRGC reference",
+                "No frame has a sky position yet. Plate-solve the frames (Build does it),\n"
+                "or add frames whose headers carry RA/DEC and a pixel scale.")
+            return
+        progress = QProgressDialog("Fetching the survey reference…", "Cancel", 0, 0, self)
+        progress.setWindowTitle("SRGC reference")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        QApplication.processEvents()
+        try:
+            ref = self._srgc_area_reference([f[0] for f in frames], [f[1] for f in frames],
+                                            progress)
+        except InterruptedError:
+            return
+        except Exception as e:
+            QMessageBox.warning(self, "SRGC reference",
+                                f"Could not fetch the survey reference:\n{e}")
+            return
+        finally:
+            try:
+                progress.close()
+            except Exception:
+                pass
+        disp = self._srgc_reference_display(ref, frames)
+        n_ap = sum(1 for f in frames if f[2])
+        title = (f"SRGC reference — {ref['survey']} — {len(frames)} frames"
+                 + (f" (orange: {n_ap} placed from the header pointing)" if n_ap else ""))
+        win = MosaicPreviewWindow(disp, title=title, parent=self)
+        win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        try:
+            win.push_btn.hide()
+        except Exception:
+            pass
+        self._srgc_ref_win = win
+        win.show()
+
+    @staticmethod
+    def _srgc_reference_display(ref, frames):
+        """The reference as an RGB display image, each frame's outline on it:
+        green for a plate solution, orange for a header-pointing box."""
+        import setiastro.saspro.seestar_mosaic as sm
+        a = np.asarray(ref["data"], np.float32)
+        if a.ndim == 2:
+            a = a[..., None]
+        out = np.zeros(a.shape[:2] + (a.shape[2],), np.float32)
+        for c in range(a.shape[2]):
+            v = a[..., c]
+            f = np.isfinite(v)
+            if f.any():
+                lo, hi = np.percentile(v[f], (1.0, 99.7))
+                out[..., c] = np.where(f, np.clip((v - lo) / max(hi - lo, 1e-12), 0, 1), 0.0)
+        if out.shape[2] == 1:
+            out = np.repeat(out, 3, axis=2)
+        out = np.ascontiguousarray(out[..., :3])
+        rw = ref["wcs"]
+        for w, sh, approx in frames:
+            try:
+                ra, dec = sm.frame_outline(w, sh, n=6)
+                x, y = rw.wcs_world2pix(ra, dec, 0)
+                g = np.isfinite(x) & np.isfinite(y)
+                if g.sum() < 3:
+                    continue
+                pts = np.round(np.c_[x[g], y[g]]).astype(np.int32).reshape(-1, 1, 2)
+                cv2.polylines(out, [pts], True,
+                              (1.0, 0.65, 0.2) if approx else (0.35, 1.0, 0.35), 1, cv2.LINE_8)
+            except Exception:
+                continue
+        return out
 
     def _header_for_srgc(self, item):
         """Header carrying the panel's current plate solution for SRGC."""
