@@ -818,13 +818,18 @@ def _place_label_inside(ax, x, y, text, *, dx=6, dy=4, fontsize=9,
 
     return t
 
+# Survey ids are the CDS registry's own (MocServer). Two were wrong and could
+# never have resolved, outage or not: "CDS/P/DSS2/IR" (the tree is NIR) and
+# "CDS/P/PanSTARRS/DR1/color" (the composites are color-i-r-g and
+# color-z-zg-g; i-r-g is the one with a mirror outside CDS). Checked
+# 2026-11-18. The labels are unchanged, so a saved survey choice still loads.
 SURVEY_HIPS = {
     # Optical
     "DSS2 (Color)":               "CDS/P/DSS2/color",
     "DSS2 (Red)":                 "CDS/P/DSS2/red",
     "DSS2 (Blue)":                "CDS/P/DSS2/blue",
-    "DSS2 (IR)":                  "CDS/P/DSS2/IR",
-    "Pan-STARRS DR1 (Color)":     "CDS/P/PanSTARRS/DR1/color",
+    "DSS2 (IR)":                  "CDS/P/DSS2/NIR",
+    "Pan-STARRS DR1 (Color)":     "CDS/P/PanSTARRS/DR1/color-i-r-g",
     "SDSS9 (Color Alt)":          "CDS/P/SDSS9/color-alt",
     "DESI Legacy DR10 (Color)":   "CDS/P/DESI-Legacy-Surveys/DR10/color",
 
@@ -835,189 +840,137 @@ SURVEY_HIPS = {
     # Gaia
     "Gaia DR3 (Flux Color)":      "CDS/P/Gaia/DR3/flux-color",
 
-    # Northern Sky Narrowband Survey (simg.de — fetched directly, not via hips2fits)
-    "NSNS DR0.1 (True Color)":    "SIMG/simg.de/P/NSNS/DR0_1/tc8",
-    "NSNS DR0.1 (Hα)":            "SIMG/simg.de/P/NSNS/DR0_1/halpha8",
-    "NSNS DR0.2 (Hα)":            "SIMG/simg.de/P/NSNS/DR0_2/halpha8",
-    "NSNS DR0.2 ([OIII])":        "SIMG/simg.de/P/NSNS/DR0_2/oiii8",
-    "NSNS DR0.2 ([SII])":         "SIMG/simg.de/P/NSNS/DR0_2/sii8",
+    # Northern Sky Narrowband Survey (8-bit display trees)
+    "NSNS DR0.1 (True Color)":    "simg.de/P/NSNS/DR0_1/tc8",
+    "NSNS DR0.1 (Hα)":            "simg.de/P/NSNS/DR0_1/halpha8",
+    "NSNS DR0.2 (Hα)":            "simg.de/P/NSNS/DR0_2/halpha8",
+    "NSNS DR0.2 ([OIII])":        "simg.de/P/NSNS/DR0_2/oiii8",
+    "NSNS DR0.2 ([SII])":         "simg.de/P/NSNS/DR0_2/sii8",
 }
 
 def _survey_to_hips_id(label: str) -> str:
     return SURVEY_HIPS.get(label, "CDS/P/DSS2/color")
 
-_SIMG_SURVEY_URLS = {
-    "simg.de/P/NSNS/DR0_1/tc8":      ("http://www.simg.de/nebulae3/dr0_1/tc8",      5),
-    "simg.de/P/NSNS/DR0_1/halpha8":  ("http://www.simg.de/nebulae3/dr0_1/halpha8",  6),
-    "simg.de/P/NSNS/DR0_2/halpha8":  ("http://www.simg.de/nebulae3/dr0_2/halpha8",  6),
-    "simg.de/P/NSNS/DR0_2/oiii8":    ("http://www.simg.de/nebulae3/dr0_2/oiii8",    6),
-    "simg.de/P/NSNS/DR0_2/sii8":     ("http://www.simg.de/nebulae3/dr0_2/sii8",     6),
+
+def _cds_trees(path: str) -> list:
+    """The two CDS static-tree hosts for one path, backup host first."""
+    return [f"https://alaskybis.cds.unistra.fr/{path}",
+            f"https://alasky.cds.unistra.fr/{path}"]
+
+
+def _nsns_trees(release: str, layer: str) -> list:
+    rel = release.lower()          # "DR0_2" -> dr0_2 on simg.de
+    return ([f"http://www.simg.de/nebulae3/{rel}/{layer}"]
+            + _cds_trees(f"simg.de/simg.de_P_NSNS_{release}_{layer}"))
+
+
+# Direct HiPS tile trees for the surveys SRGC does not already register
+# (DSS2 colour, red and blue come from survey_gradient's own measured lists).
+# MEASURED 2026-11-18, during a CDS outage: alasky answered 404 for every
+# static tree and for hips2fits, alaskybis timed out. Every non-CDS URL here
+# returned a /properties file that day; the CDS paths are the ones the CDS
+# registry lists, kept so the tile route works again the moment CDS does.
+# DSS2 NIR, SDSS9 color-alt and DESI DR10 have NO mirror outside CDS -- probed
+# at IRSA, CASDA and ESA, all 404 -- and Gaia DR3 flux-color could not be
+# found in the registry at all, so it relies on hips2fits by id.
+_FINDER_TILE_MIRRORS = {
+    "CDS/P/DSS2/NIR": _cds_trees("DSS/DSS2-NIR"),
+    "CDS/P/PanSTARRS/DR1/color-i-r-g": (
+        ["https://stpubdata.s3.us-east-1.amazonaws.com/mast/skybackgrounds/PanSTARRS"]
+        + _cds_trees("Pan-STARRS/DR1/color-i-r-g")),
+    "CDS/P/SDSS9/color-alt": _cds_trees("SDSS/DR9/color-alt"),
+    "CDS/P/DESI-Legacy-Surveys/DR10/color": _cds_trees(
+        "DESI-legacy-surveys/DR10/CDS_P_DESI-Legacy-Surveys_DR10_color"),
+    "CDS/P/2MASS/J": (["https://irsa.ipac.caltech.edu/data/hips/CDS/2MASS/J"]
+                      + _cds_trees("2MASS/J")),
+    "CDS/P/2MASS/H": (["https://irsa.ipac.caltech.edu/data/hips/CDS/2MASS/H"]
+                      + _cds_trees("2MASS/H")),
+    "CDS/P/Gaia/DR3/flux-color": [],
+    "simg.de/P/NSNS/DR0_1/tc8":     _nsns_trees("DR0_1", "tc8"),
+    "simg.de/P/NSNS/DR0_1/halpha8": _nsns_trees("DR0_1", "halpha8"),
+    "simg.de/P/NSNS/DR0_2/halpha8": _nsns_trees("DR0_2", "halpha8"),
+    "simg.de/P/NSNS/DR0_2/oiii8":   _nsns_trees("DR0_2", "oiii8"),
+    "simg.de/P/NSNS/DR0_2/sii8":    _nsns_trees("DR0_2", "sii8"),
 }
 
 
-
-def _fetch_via_hips2fits_url(hips_url: str, center: "SkyCoord", fov_deg: float, out_px: int):
-    """Fetch any HiPS via its base URL using the CDS hips2fits HTTP API directly."""
-    import urllib.request
-    import io as _io
-    import numpy as np
-    from astropy.io import fits as _fits
-    from astropy.wcs import WCS as _WCS
-    import astropy.units as u
-    from astropy.coordinates import Angle
-
+def _finder_query_wcs(center: "SkyCoord", fov_deg: float, out_px: int) -> WCS:
+    """
+    The grid hips2fits used to be asked for: TAN, square, `fov_deg` across,
+    north up and east left. Built here because the tile route reprojects
+    locally and needs the WCS up front, and so both routes land on the same
+    grid -- the chart's overlays are drawn with this WCS either way.
+    """
+    s = float(fov_deg) / float(out_px)
+    w = WCS(naxis=2)
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    w.wcs.crval = [float(center.ra.deg), float(center.dec.deg)]
+    w.wcs.crpix = [(out_px + 1) / 2.0, (out_px + 1) / 2.0]
+    w.wcs.cdelt = [-s, s]
+    w.wcs.radesys = "ICRS"
+    w.wcs.set()
     try:
-        ra  = float(center.ra.deg)
-        dec = float(center.dec.deg)
-        fov = float(fov_deg)
-        px  = int(out_px)
+        w.pixel_shape = (int(out_px), int(out_px))
+    except Exception:
+        pass
+    return w
 
-        # hips2fits accepts a hips parameter that can be a full URL
-        url = (
-            f"https://alasky.cds.unistra.fr/hips-image-services/hips2fits?"
-            f"hips={urllib.parse.quote(hips_url, safe='')}"
-            f"&width={px}&height={px}"
-            f"&fov={fov}"
-            f"&projection=TAN"
-            f"&coordsys=icrs"
-            f"&ra={ra}&dec={dec}"
-            f"&format=fits"
-        )
-
-        import urllib.parse
-        url = (
-            f"https://alasky.cds.unistra.fr/hips-image-services/hips2fits?"
-            f"hips={urllib.parse.quote(hips_url, safe='')}"
-            f"&width={px}&height={px}"
-            f"&fov={fov}"
-            f"&projection=TAN"
-            f"&coordsys=icrs"
-            f"&ra={ra}&dec={dec}"
-            f"&format=fits"
-        )
-
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "SASpro/FinderChart"}
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
-
-        hdul = _fits.open(_io.BytesIO(data))
-        arr  = np.array(hdul[0].data, dtype=np.float32)
-
-        bg_wcs = None
-        try:
-            bg_wcs = _WCS(hdul[0].header, relax=True)
-            if hasattr(bg_wcs, "celestial") and bg_wcs.celestial is not None:
-                bg_wcs = bg_wcs.celestial
-        except Exception:
-            pass
-
-        # Normalise to RGB float01
-        if arr.ndim == 2:
-            arr = np.repeat(arr[..., None], 3, axis=2)
-        elif arr.ndim == 3 and arr.shape[0] in (3, 4):
-            arr = np.transpose(arr[:3], (1, 2, 0))
-        elif arr.ndim == 3 and arr.shape[2] >= 3:
-            arr = arr[..., :3]
-
-        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-        lo, hi = np.percentile(arr, [1.0, 99.5])
-        if hi > lo:
-            arr = (arr - lo) / (hi - lo)
-
-        return np.clip(arr, 0.0, 1.0), bg_wcs, None
-
-    except Exception as e:
-        return None, None, f"{type(e).__name__}: {e}"      
 
 def try_fetch_hips_cutout(center: "SkyCoord", fov_deg: float, out_px: int, survey_label: str):
-    hips_id = _survey_to_hips_id(survey_label)
+    """
+    Background cutout for the finder chart -> (rgb01, wcs, error).
 
-    # In try_fetch_hips_cutout, replace the SIMG routing with this:
-    if hips_id.startswith("SIMG/"):
-        hips_path = hips_id[len("SIMG/"):]
-        survey_info = _SIMG_SURVEY_URLS.get(hips_path)
-        if survey_info is None:
-            return None, None, f"Unknown NSNS survey: {hips_path}"
-        base_url, _ = survey_info
-        # Pass the full service URL directly to hips2fits instead of a CDS ID
-        return _fetch_via_hips2fits_url(base_url, center, fov_deg, out_px)
-
+    Goes through SRGC's fetch_reference, so it gets the same failover the
+    rest of SASpro has: the survey's direct tile trees on every registered
+    mirror (non-CDS hosts first), then hips2fits on both CDS endpoints, with
+    the per-session dead-host memory and TCP pre-flight. This used to call
+    hips2fits on alasky and nothing else, so a CDS outage took every survey
+    down at once while IRSA, CASDA, ESA, MAST and simg.de were all serving.
+    """
     try:
-        from astroquery.hips2fits import hips2fits
+        from setiastro.saspro import survey_gradient as sg
     except Exception as e:
         return None, None, f"{type(e).__name__}: {e}"
 
-    def _decode(hdul):
-        data = np.array(hdul[0].data, dtype=np.float32)
+    hips_id = _survey_to_hips_id(survey_label)
+    px = int(out_px)
+    mirrors = _FINDER_TILE_MIRRORS.get(hips_id)
+    if mirrors is None:
+        mirrors = sg.mirrors_for(hips_id)
 
-        bg_wcs = None
-        try:
-            bg_wcs = WCS(hdul[0].header, relax=True)
-            if hasattr(bg_wcs, "celestial") and bg_wcs.celestial is not None:
-                bg_wcs = bg_wcs.celestial
-        except Exception:
-            bg_wcs = None
+    try:
+        qw = _finder_query_wcs(center, fov_deg, px)
+        data = sg.fetch_reference(qw, (px, px), hips_id, mirrors=mirrors,
+                                  keep_bands=True)
+    except Exception as e:
+        full = str(e)
+        print(f"[FinderChart] {survey_label} ({hips_id}): {full}")
+        # The full report lists every route with its timing; the chart has
+        # room for which routes were tried, not why each one failed.
+        routes = [ln.strip().lstrip("\u2022").strip().split(" (", 1)[0].split(":", 1)[0]
+                  for ln in full.splitlines() if ln.strip().startswith("\u2022")]
+        if routes:
+            return None, None, ("Every survey route failed:\n"
+                                + "\n".join(routes[:8]))
+        return None, None, f"{type(e).__name__}: {e}"
 
-        # Normalize to RGB
-        if data.ndim == 2:
-            data = np.repeat(data[..., None], 3, axis=2)
-        elif data.ndim == 3 and data.shape[0] in (3, 4):
-            data = np.transpose(data[:3, ...], (1, 2, 0))
-        elif data.ndim == 3 and data.shape[2] >= 3:
-            data = data[..., :3]
+    data = np.asarray(data, dtype=np.float32)
+    if data.ndim == 2:
+        data = np.repeat(data[..., None], 3, axis=2)
+    elif data.ndim == 3 and data.shape[2] == 1:
+        data = np.repeat(data, 3, axis=2)
+    elif data.ndim == 3:
+        data = data[..., :3]
 
-        data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
-
-        lo, hi = np.percentile(data, [1.0, 99.5])
+    # Stretch on real pixels only. The tile route marks out-of-footprint as
+    # NaN; letting those in as zeros would pin the black point to the void.
+    fin = np.isfinite(data)
+    if fin.any():
+        lo, hi = np.percentile(data[fin], [1.0, 99.5])
         if hi > lo:
             data = (data - lo) / (hi - lo)
-
-        return np.clip(data, 0.0, 1.0), bg_wcs
-
-    out_px = int(out_px)
-    ra_deg = float(center.ra.deg)
-    dec_deg = float(center.dec.deg)
-
-    # Prefer quantity for fov, but fall back if this build wants float
-    try:
-        import astropy.units as u
-        fov = float(fov_deg) * u.deg
-    except Exception:
-        fov = float(fov_deg)
-
-    last_err = None
-
-    # ---- Correct signature for YOUR astroquery 0.4.11 ----
-    # query(hips, width, height, projection, ra, dec, fov, *, coordsys='icrs', ...)
-    import astropy.units as u
-    from astropy.coordinates import Angle
-
-    out_px = int(out_px)
-
-    # IMPORTANT: pass Angle/Quantity, not floats
-    ra  = center.ra.to(u.deg)          # Angle
-    dec = center.dec.to(u.deg)         # Angle
-    fov = Angle(float(fov_deg), unit=u.deg)
-
-    try:
-        hdul = hips2fits.query(
-            hips_id,
-            out_px, out_px,
-            "TAN",
-            ra, dec,
-            fov,
-            coordsys="icrs",
-            format="fits",
-        )
-        rgb01, bg_wcs = _decode(hdul)
-        return rgb01, bg_wcs, None
-
-    except Exception as e:
-        return None, None, f"{type(e).__name__}: {e}"
-
-    return None, None, last_err
+    data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+    return np.clip(data, 0.0, 1.0).astype(np.float32), qw, None
 
 
 def render_finder_chart(doc_image: np.ndarray, meta: dict, req: FinderChartRequest) -> Optional[np.ndarray]:
@@ -1473,6 +1426,11 @@ class FinderChartFromCoordDialog(QDialog):
     """
     def __init__(self, name: str, ra_deg: float, dec_deg: float, settings, parent=None):
         super().__init__(parent)
+        try:
+            from setiastro.saspro.survey_gradient import reset_dead_hosts
+            reset_dead_hosts()
+        except Exception:
+            pass
         self._name    = name
         self._ra_deg  = float(ra_deg)
         self._dec_deg = float(dec_deg)
@@ -1912,6 +1870,11 @@ class FinderChartDialog(QDialog):
     """
     def __init__(self, doc, settings, parent=None):
         super().__init__(parent)
+        try:
+            from setiastro.saspro.survey_gradient import reset_dead_hosts
+            reset_dead_hosts()
+        except Exception:
+            pass
         self._doc = doc
         self._settings = settings
         self._last_rgb_u8: Optional[np.ndarray] = None
