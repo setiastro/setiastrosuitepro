@@ -1066,3 +1066,93 @@ def open_star_stretch_with_preset(main_window, preset: dict | None = None):
     except Exception:
         pass
     dlg.show(); dlg.raise_(); dlg.activateWindow()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def apply_star_stretch_preset_to_doc(doc, preset: dict | None = None):
+    """
+    Headless Star Stretch on a specific document: what a shortcut or a drop on
+    a view runs, and the command-line tool. Uses the Numba kernel
+    (applyPixelMath_numba); raises if it is unavailable.
+    """
+    import numpy as np
+    preset = dict(preset or {})
+    try:
+        from setiastro.saspro.legacy.numba_utils import applyPixelMath_numba, applySCNR_numba
+        _has_numba = True
+    except Exception:
+        _has_numba = False
+        applyPixelMath_numba = None
+        # lightweight SCNR fallback (same as in pro/star_stretch.py)
+        def applySCNR_numba(image_array: np.ndarray) -> np.ndarray:
+            img = image_array.astype(np.float32, copy=False)
+            if img.ndim != 3 or img.shape[2] != 3:
+                return img
+            r = img[..., 0]; g = img[..., 1]; b = img[..., 2]
+            g2 = np.minimum(g, 0.5 * (r + b))
+            out = img.copy()
+            out[..., 1] = g2
+            return np.clip(out, 0.0, 1.0)
+
+    img = getattr(doc, "image", None)
+    if img is None:
+        raise RuntimeError("Document has no image.")
+
+    # read preset (accept a few aliases)
+    amount = float(preset.get("stretch_factor",
+            preset.get("stretch_amount",
+            preset.get("amount", 5.0))))  # 0..8
+    sat    = float(preset.get("color_boost", preset.get("saturation", 1.0)))  # 0..2
+    scnr   = bool(preset.get("scnr_green", preset.get("scnr", False)))
+
+    # convert to float 0..1
+    a = np.asarray(img)
+    if a.dtype.kind in "ui":
+        a = a.astype(np.float32) / float(np.iinfo(a.dtype).max)
+    elif a.dtype.kind == "f":
+        mx = float(a.max()) if a.size else 1.0
+        a = a.astype(np.float32) / (mx if mx > 1.0 else 1.0)
+    else:
+        a = a.astype(np.float32)
+
+    # mono -> 3ch temporarily
+    need_collapse = False
+    if a.ndim == 2:
+        a = np.stack([a]*3, axis=-1); need_collapse = True
+    elif a.ndim == 3 and a.shape[2] == 1:
+        a = np.repeat(a, 3, axis=2); need_collapse = True
+
+    if applyPixelMath_numba is None:
+        raise RuntimeError("Star Stretch requires Numba kernel (applyPixelMath_numba) for headless run.")
+
+    out = applyPixelMath_numba(a, amount)
+
+    # color boost
+    if out.ndim == 3 and out.shape[2] == 3 and abs(sat - 1.0) > 1e-6:
+        mean = out.mean(axis=2, keepdims=True)
+        out = mean + (out - mean) * sat
+        out = np.clip(out, 0.0, 1.0)
+
+    # SCNR
+    if scnr and out.ndim == 3 and out.shape[2] == 3:
+        out = applySCNR_numba(out.astype(np.float32, copy=False))
+
+    if need_collapse:
+        out = out[..., 0]
+
+    meta = {
+        "step_name": "Star Stretch",
+        "command_id": "star_stretch",
+        "preset": {
+            "stretch_factor": amount,
+            "color_boost": sat,
+            "scnr_green": scnr,
+        },
+        "star_stretch": {
+            "stretch_factor": amount,
+            "color_boost": sat,
+            "scnr_green": scnr,
+            "numba": _has_numba,
+        }
+    }
+    doc.apply_edit(out.astype(np.float32, copy=False), metadata=meta, step_name="Star Stretch")

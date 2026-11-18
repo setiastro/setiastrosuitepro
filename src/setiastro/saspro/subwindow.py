@@ -98,6 +98,31 @@ from setiastro.saspro.dnd_mime import (
     MIME_VIEWSTATE,
 )
 from setiastro.saspro.shortcuts import _unpack_cmd_payload
+from setiastro.saspro.shortcut_registry import add_shortcut, declare_key, declare_gesture
+
+# Image-view keys: one table, so the shortcut each view creates and the line
+# the cheat sheet shows cannot disagree. Declared at import too, so the cheat
+# sheet lists them before any image is open. (A is the toolbar's
+# Display-Stretch action, not a view shortcut.)
+_VIEW_KEYS = (
+    ("F2",          "_rename_document",    "Rename the image"),
+    ("F3",          "_rename_document",    "Rename the image"),
+    ("Ctrl+Space",  "toggle_autostretch",  "Toggle display auto-stretch"),
+    ("Alt+Shift+A", "toggle_autostretch",  "Toggle display auto-stretch"),
+    ("Ctrl+K",      "toggle_mask_overlay", "Show/hide the mask overlay"),
+)
+for _k, _m, _lab in _VIEW_KEYS:
+    declare_key(_k, _lab, "Image view")
+declare_key("Space", "Hold, then click or drag: read pixel values (and WCS)", "Image view")
+# The view tab's drag is chosen by modifier in _DragTab.mouseMoveEvent.
+declare_gesture("Drag the ⧉ tab onto another view", "Image view", "Copy this view's zoom and pan to it")
+declare_gesture("Drag the ⧉ tab onto empty canvas", "Image view", "Duplicate the image")
+declare_gesture("Alt+drag the ⧉ tab onto another view", "Image view", "Link the two views (live pan/zoom sync)")
+declare_gesture("Shift+drag the ⧉ tab onto another view", "Image view", "Apply this image to it as a mask")
+declare_gesture("Ctrl+drag the ⧉ tab onto another view", "Image view", "Copy the astrometric solution (WCS) to it")
+declare_gesture("Ctrl+drag the ⧉ tab onto a View Bundle", "Image view", "Copy the astrometric solution (WCS) to every open view in the bundle")
+declare_gesture("Mouse wheel", "Image view", "Zoom at the cursor")
+declare_gesture("Space+click or Space+drag", "Image view", "Read pixel values (and WCS) under the cursor")
 from setiastro.saspro.widgets.image_utils import ensure_contiguous
 from setiastro.saspro.imageops.viewport_render import resize_for_display, to_uint8_rgb
 from setiastro.saspro.imageops.viewport_canvas import ViewportImageCanvas
@@ -155,7 +180,8 @@ class _DragTab(QLabel):
             "Drag to duplicate/copy view.\n"
             "Hold Alt while dragging to LINK this view with another (live pan/zoom sync).\n"
             "Hold Shift while dragging to drop this image as a mask onto another view.\n"
-            "Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view."
+            "Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view,\n"
+            "or to every open view in a View Bundle."
         ))
 
         self.setFixedSize(22, 18)
@@ -783,7 +809,10 @@ class ImageSubWindow(QWidget):
         # ── NEW: WCS grid toggle ─────────────────────────────────────────
         self._btn_wcs = QToolButton(self)
         self._btn_wcs.setText("⌗")
-        self._btn_wcs.setToolTip(self.tr("Toggle WCS grid overlay (if WCS exists)"))
+        self._btn_wcs.setToolTip(self.tr(
+            "Toggle the WCS + chart overlay (needs a plate-solved image): RA/Dec grid,\n"
+            "constellations, deep-sky objects and star names. Choose what it shows in\n"
+            "Settings > WCS + Chart Overlay."))
         self._btn_wcs.setCheckable(True)
 
         # Start OFF on every new view, regardless of WCS presence or past sessions
@@ -913,12 +942,8 @@ class ImageSubWindow(QWidget):
         # Context menu + shortcuts
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_ctx_menu)
-        QShortcut(QKeySequence("F2"), self, activated=self._rename_document)
-        QShortcut(QKeySequence("F3"), self, activated=self._rename_document)
-        #QShortcut(QKeySequence("A"), self, activated=self.toggle_autostretch)
-        QShortcut(QKeySequence("Ctrl+Space"), self, activated=self.toggle_autostretch)
-        QShortcut(QKeySequence("Alt+Shift+A"), self, activated=self.toggle_autostretch)
-        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.toggle_mask_overlay)
+        for _k, _m, _lab in _VIEW_KEYS:
+            add_shortcut(self, _k, getattr(self, _m), label=_lab, context="Image view")
 
         # Re-render when the document changes
         self.document.changed.connect(self._on_document_changed)
@@ -3990,7 +4015,10 @@ class ImageSubWindow(QWidget):
         # (and vice-versa). Also key on pm_base.cacheKey() so a rebuild of
         # _pm_src invalidates the grid cache for free.
         if getattr(self, "_show_wcs_grid", False):
-            cache_key = (pm_base.cacheKey(), int(sw), int(sh), mode, float(self.scale))
+            # The overlay's own settings are part of the key, so changing them in
+            # Settings re-bakes an open view instead of leaving the old bake up.
+            cache_key = (pm_base.cacheKey(), int(sw), int(sh), mode, float(self.scale),
+                         self._wcs_overlay_settings_sig())
             if getattr(self, "_pm_src_wcs_key", None) != cache_key or getattr(self, "_pm_src_wcs", None) is None:
                 pm_scaled = self._draw_wcs_grid_on_pixmap(pm_scaled)
                 self._pm_src_wcs = pm_scaled
@@ -4080,7 +4108,58 @@ class ImageSubWindow(QWidget):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             warnings.simplefilter("ignore", UserWarning)
-            return self._draw_wcs_grid_on_pixmap_impl(pm_scaled)
+            pm = self._draw_wcs_grid_on_pixmap_impl(pm_scaled)
+            return self._draw_chart_overlay_on_pixmap(pm, pm_scaled)
+
+    @staticmethod
+    def _wcs_overlay_settings_sig() -> tuple:
+        s = QSettings()
+        keys = ("wcs_grid/enabled", "wcs_grid/mode", "wcs_grid/step_unit", "wcs_grid/step_value",
+                "wcs_chart/constellations", "wcs_chart/dso", "wcs_chart/dso_mag",
+                "wcs_chart/star_names", "wcs_chart/layers", "wcs_chart/text_scale",
+                "wcs_chart/graphics_scale")
+        return tuple(str(s.value(k, "")) for k in keys)
+
+    def _draw_chart_overlay_on_pixmap(self, pm: QPixmap, pm_scaled: QPixmap) -> QPixmap:
+        """
+        Constellations, deep-sky objects and star names from the sky chart engine,
+        painted after the RA/Dec grid onto the same pixmap. Positions come from
+        the image's full WCS (distortion included) through the grid's own
+        pixel-to-pixmap mapping, so the two agree; label sizes stay fixed on
+        screen while the image zooms.
+        """
+        try:
+            from setiastro.saspro import skychart_engine as _sce
+            cfg = _sce.wcs_overlay_config(QSettings())   # Settings > ... > Layers…
+        except Exception as e:
+            print(f"[WCS overlay] chart layers not drawn: {type(e).__name__}: {e}")
+            return pm
+        if not any(cfg["layers"].values()):
+            return pm
+        wcs2 = self._get_celestial_wcs()
+        src = getattr(self.document, "image", None)
+        if wcs2 is None or src is None:
+            return pm
+        H_full, W_full = int(np.asarray(src).shape[0]), int(np.asarray(src).shape[1])
+        if pm is pm_scaled:
+            pm = QPixmap(pm_scaled)      # never paint on the cached scaled pixmap
+        dso_mag = float(cfg["dso_mag"])
+        try:
+            from PyQt6.QtGui import QPainter
+            data = _sce.get_data(log=lambda _m: None)
+            p = QPainter(pm)
+            try:
+                _sce.paint_wcs_overlay(
+                    p, wcs2, W_full, H_full, float(pm.width()) / float(max(1, W_full)), data,
+                    layers=cfg["layers"],
+                    dso_mag=(dso_mag if dso_mag > 0 else None),
+                    text_scale=float(cfg["text_scale"]),
+                    graphics_scale=float(cfg["graphics_scale"]), log=lambda _m: None)
+            finally:
+                p.end()
+        except Exception as e:
+            print(f"[WCS overlay] chart layers not drawn: {type(e).__name__}: {e}")
+        return pm
 
     def _draw_wcs_grid_on_pixmap_impl(self, pm_scaled: QPixmap) -> QPixmap:
         """

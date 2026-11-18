@@ -47,6 +47,15 @@ def _cc_subcommands() -> list[str]:
             "sharpen", "superres"]
 
 
+def _process_tools() -> list[str]:
+    """The process tool names, read off its own table so they cannot drift."""
+    try:
+        from setiastro.saspro.process_cli import TOOLS
+        return sorted(TOOLS)
+    except Exception:
+        return []
+
+
 def _version_string() -> str:
     for mod, attrs in (("setiastro.saspro.versioning",
                         ("__version__", "VERSION", "version")),
@@ -75,6 +84,9 @@ def top_level_help() -> str:
     cc = textwrap.fill(f"Subcommands: {', '.join(_cc_subcommands())}",
                        width=78, initial_indent=" " * 15,
                        subsequent_indent=" " * 15).lstrip()
+    tools = textwrap.fill(f"Tools: {', '.join(_process_tools())}",
+                          width=78, initial_indent=" " * 15,
+                          subsequent_indent=" " * 15).lstrip()
     return f"""Seti Astro Suite Pro \u2014 command line
 
 USAGE
@@ -82,6 +94,7 @@ USAGE
   setiastrosuitepro IMAGE [IMAGE ...]        launch the GUI with files opened
   setiastrosuitepro <command> [options]      run a command headlessly
   setiastrosuitepro <command> --help         full options for that command
+  setiastrosuitepro help <command|tool>      the same, e.g. "help solve", "help abe"
 
 COMMANDS
   solve        Plate-solve images. In-house Gaia DR3 solver (blind or seeded),
@@ -96,6 +109,13 @@ COMMANDS
                {cc}
                These may be run directly, with or without the leading "cc".
                Aliases: cosmicclarity
+
+  process      Run SASpro's own processing tools on image files, with the
+               same code and preset keys as the app's shortcuts: one image,
+               a folder (--batch), or several tools in one pass (pipeline).
+               {tools}
+               "process list" describes each tool; "process TOOL --help"
+               gives its options and examples.
 
   report       Write a diagnostics report (versions, paths, GPU, libraries).
                Attach its output to bug reports.
@@ -126,6 +146,18 @@ EXAMPLES
   Denoise an image on the GPU:
     setiastrosuitepro cc denoise -i in.tif -o out.tif --denoise-luma 0.6
 
+  Stretch an image:
+    setiastrosuitepro process stat_stretch -i stack.fits -o stretched.fits --target-median 0.2
+
+  Remove the gradient from every image in a folder:
+    setiastrosuitepro process abe -i ./stacks -o ./abe --batch --degree 3
+
+  Several tools in one pass (steps.json in Function Bundle form):
+    setiastrosuitepro process pipeline -i stack.fits -o final.tif --steps steps.json
+
+  One tool's options and examples:
+    setiastrosuitepro process wavescale_hdr --help
+
   Diagnostics for a bug report:
     setiastrosuitepro report --save
 
@@ -134,7 +166,8 @@ NOTES
   error, so these commands can be driven from a script.
 
   Run "setiastrosuitepro <command> --help" for the full option list of any
-  command \u2014 this page is only the overview.
+  command \u2014 this page is only the overview. -h, --help, -help, --h, -?, /?
+  and "help" all work, here and after any command or tool.
 """
 
 
@@ -435,6 +468,11 @@ def _run_cc(argv: list[str]) -> int:
         return 2
 
 
+def _run_process(argv: list[str]) -> int:
+    from setiastro.saspro.process_cli import main as process_main
+    return int(process_main(argv))
+
+
 def _run_solve(argv: list[str]) -> int:
     from setiastro.saspro.plate_solve_cli import main as solve_main
     return int(solve_main(argv))
@@ -470,6 +508,32 @@ def _run_report(argv: list[str]) -> int:
     return 0
 
 
+def _help_for(rest: list[str]) -> int:
+    """`setiastrosuitepro help <command|tool> [...]`: that thing's own help."""
+    target = rest[0].lower()
+    if target == "process":
+        return _run_process(["help", *rest[1:2]])
+    if target in ("solve", "platesolve"):
+        return _run_solve(["--help"])
+    if target == "report":
+        return _run_report(["--help"])
+    if target in ("cc", "cosmicclarity"):
+        return _run_cc(["--help"] if len(rest) < 2 else [rest[1], "--help"])
+    if target in set(_cc_subcommands()):
+        return _run_cc([target, "--help"])
+    if target in ("pipeline", "list"):
+        return _run_process([target, "--help"])
+    try:
+        from setiastro.saspro.process_cli import resolve_tool
+        if resolve_tool(target) is not None:
+            return _run_process([target, "--help"])
+    except Exception:
+        pass
+    print(f"setiastrosuitepro: no command or tool named {rest[0]!r}\n", file=sys.stderr)
+    _print_top_level_help(sys.stderr)
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -494,6 +558,19 @@ def main(argv: list[str] | None = None) -> int:
     if head in HELP_TOKENS and len(argv) == 1:
         return _print_top_level_help()
 
+    # "help solve", "--help abe", "-? process"
+    if head in HELP_TOKENS and len(argv) > 1:
+        return _help_for(argv[1:])
+
+    # Any help spelling after a command means --help to its parser; argparse
+    # would read "--h" as an ambiguous abbreviation and "/?" as a stray
+    # argument. ("help" stays literal there: it could be an option's value.
+    # process handles its own.)
+    if head in {"solve", "platesolve", "report", "cc", "cosmicclarity"} | set(_cc_subcommands()):
+        argv = [argv[0], *("--help" if a in HELP_TOKENS - {"help"} else a for a in argv[1:])]
+        if len(argv) == 2 and argv[1] == "help":     # "solve help": nothing else it could mean
+            argv[1] = "--help"
+
     if head in VERSION_TOKENS and len(argv) == 1:
         print(f"Seti Astro Suite Pro {_version_string()}")
         return 0
@@ -506,6 +583,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if argv and argv[0].lower() == "report":
         return _run_report(argv[1:])
+
+    if argv and argv[0].lower() == "process":
+        return _run_process(argv[1:])
 
     if _looks_like_path_token(argv[0]):
         paths = [str(Path(a)) for a in argv if _looks_like_path_token(a)]

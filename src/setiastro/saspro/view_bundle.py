@@ -16,7 +16,8 @@ import traceback
 from PyQt6.QtWidgets import QMessageBox as _QMB
 from PyQt6.QtGui import QDrag, QCloseEvent, QCursor, QShortcut, QKeySequence
 from setiastro.saspro.legacy.image_manager import load_image, save_image
-from setiastro.saspro.dnd_mime import MIME_CMD, MIME_VIEWSTATE
+from setiastro.saspro.dnd_mime import MIME_ASTROMETRY, MIME_CMD, MIME_VIEWSTATE
+from setiastro.saspro.shortcut_registry import add_shortcut
 from setiastro.saspro.doc_manager import ImageDocument
 from setiastro.saspro.help_support import make_help_button
 def _pin_on_top_mac(win: QDialog):
@@ -71,6 +72,52 @@ def _resolve_doc_and_subwindow(mw, doc_ptr):
     except Exception:
         pass
     return None, None
+
+
+# A bundle remembers its views by id() of the document, and Python gives a
+# closed document's id() to the next object of its size: open another image
+# after closing a bundled view and the bundle used to adopt it, so the next
+# shortcut dropped on the bundle ran on an image nobody put there. Each bundle
+# therefore also records, per pointer, the UID of the document it was added
+# with ("doc_uids": {str(ptr): uid}), and a pointer only counts while that
+# same document is behind it. UIDs are uuid4 per document, so a member from a
+# previous session never matches either.
+
+def _member_uid(doc, sw=None) -> str | None:
+    """The UID a bundle member stands for: the view's base document when there
+    is a view (its .document may be a _DocProxy, whose uid follows the active
+    preview tab), else the document itself."""
+    target = None
+    if sw is not None:
+        try:
+            target = getattr(sw.widget(), "base_document", None)
+        except Exception:
+            target = None
+    if target is None:
+        target = doc
+    try:
+        u = getattr(target, "uid", None)
+    except Exception:
+        u = None
+    return u if isinstance(u, str) and u else None
+
+
+def resolve_bundle_member(mw, doc_uids, doc_ptr):
+    """(doc, subwindow) for one view of a View Bundle, or (None, None) once the
+    document it was added with is gone. `doc_uids` is the bundle's "doc_uids"
+    map (or the bundle dict itself). A member recorded without a UID (a bundle
+    saved by an older version) resolves by pointer alone, as before."""
+    if isinstance(doc_uids, dict) and isinstance(doc_uids.get("doc_uids"), dict):
+        doc_uids = doc_uids["doc_uids"]
+    try:
+        ptr = int(doc_ptr)
+    except Exception:
+        return None, None
+    doc, sw = _resolve_doc_and_subwindow(mw, ptr)
+    want = doc_uids.get(str(ptr)) if isinstance(doc_uids, dict) else None
+    if want and doc is not None and _member_uid(doc, sw) != want:
+        return None, None
+    return doc, sw
 
 
 def _unpack_cmd_safely(raw: bytes):
@@ -143,6 +190,8 @@ class BundleChip(QWidget):
       - Ctrl+drag: start external DnD with MIME_CMD payload (command_id="bundle")
       - Drop a view (MIME_VIEWSTATE): add that view to this bundle
       - Drop a shortcut (MIME_CMD): apply that shortcut to all views in the bundle
+      - Drop a Ctrl+dragged view tab (MIME_ASTROMETRY): copy its astrometric
+        solution to all open views in the bundle
       - Double-click: re-open the View Bundle dialog (event is accepted so it won't propagate)
 
     Each chip is bound to ONE bundle via a persistent UUID.
@@ -389,13 +438,25 @@ class BundleChip(QWidget):
 
     # --- accept drops onto the chip ---
     def dragEnterEvent(self, e):
-        if e.mimeData().hasFormat(MIME_VIEWSTATE) or e.mimeData().hasFormat(MIME_CMD):
+        md = e.mimeData()
+        if (md.hasFormat(MIME_VIEWSTATE) or md.hasFormat(MIME_CMD)
+                or md.hasFormat(MIME_ASTROMETRY)):
             e.acceptProposedAction()
         else:
             e.ignore()
 
     def dropEvent(self, e):
         md = e.mimeData()
+        # Copy an astrometric solution to every open view in this bundle
+        if md.hasFormat(MIME_ASTROMETRY):
+            e.acceptProposedAction()
+            try:
+                payload = json.loads(bytes(md.data(MIME_ASTROMETRY)).decode("utf-8"))
+            except Exception:
+                return
+            self._panel._apply_astrometry_to_bundle(payload, target_uuid=self._bundle_uuid)
+            return
+
         # Add a view to this bundle
         if md.hasFormat(MIME_VIEWSTATE):
             try:
@@ -713,6 +774,7 @@ class ViewBundleDialog(QDialog):
       • Drag a view (from ⧉ tab) → add to bundle
       • Add from list of open views
       • Drop a shortcut (MIME_CMD) onto the bundle/panel/chip → apply to all views in THAT bundle
+      • Ctrl+drag a view tab (MIME_ASTROMETRY) onto the panel/chip → copy its WCS to the bundle's open views
       • Compress → spawns a small Chip on the ShortcutCanvas that keeps accepting DnD
       • Multiple chips at once (one per bundle)
     """
@@ -745,7 +807,8 @@ class ViewBundleDialog(QDialog):
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._bundles_context_menu)
         self.list.itemDoubleClicked.connect(lambda _it: self._rename_bundle())
-        QShortcut(QKeySequence("F2"), self.list, activated=self._rename_bundle)
+        add_shortcut(self.list, "F2", self._rename_bundle,
+                     label="Rename the selected bundle", context="View Bundles")
 
 
         self.docs = QListWidget()
@@ -939,7 +1002,10 @@ class ViewBundleDialog(QDialog):
                     ptrs = [int(x) for x in (b.get("doc_ptrs") or []) if isinstance(x, (int, str))]
                     fps  = [str(p) for p in (b.get("file_paths") or []) if isinstance(p, (str,))]
                     u = b.get("uuid") or self._new_uuid()
-                    out.append({"uuid": u, "name": nm, "doc_ptrs": ptrs, "file_paths": fps})
+                    raw_uids = b.get("doc_uids") if isinstance(b.get("doc_uids"), dict) else {}
+                    uids = {str(p): str(raw_uids[str(p)]) for p in ptrs if raw_uids.get(str(p))}
+                    out.append({"uuid": u, "name": nm, "doc_ptrs": ptrs, "file_paths": fps,
+                                "doc_uids": uids})
                 return out
         except Exception:
             pass
@@ -1044,6 +1110,8 @@ class ViewBundleDialog(QDialog):
             if p not in seen:
                 seen.add(p); uniq.append(p)
         b["doc_ptrs"] = uniq
+        uids = b.get("doc_uids") if isinstance(b.get("doc_uids"), dict) else {}
+        b["doc_uids"] = {str(p): uids[str(p)] for p in uniq if uids.get(str(p))}
         self._save_all()
         # update chip title/count if needed
         if bundle_uuid in self._chips:
@@ -1055,9 +1123,26 @@ class ViewBundleDialog(QDialog):
         b = self._get_bundle(bundle_uuid)
         if not b:
             return
+        ptrs = [int(p) for p in ptrs]
+        # Every caller hands over pointers of views that are open right now (a
+        # drop or the Add-from-Open picker), so this is the moment to record
+        # which document each one is. Re-adding a pointer re-records it.
+        uids = b.get("doc_uids") if isinstance(b.get("doc_uids"), dict) else {}
+        mw = self._find_mw()
+        for p in ptrs:
+            u = None
+            if mw is not None:
+                try:
+                    u = _member_uid(*_resolve_doc_and_subwindow(mw, p))
+                except Exception:
+                    u = None
+            if u:
+                uids[str(p)] = u
+            else:
+                uids.pop(str(p), None)
+        b["doc_uids"] = uids
         cur = list(b.get("doc_ptrs", []))
-        merged = cur + [int(p) for p in ptrs]
-        self._set_bundle_ptrs_by_uuid(bundle_uuid, merged)
+        self._set_bundle_ptrs_by_uuid(bundle_uuid, cur + ptrs)
 
     def _set_current_bundle_ptrs(self, ptrs: Iterable[int]):
         u = self._current_uuid()
@@ -1144,10 +1229,11 @@ class ViewBundleDialog(QDialog):
         mw = _find_main_window(self)
 
         # --- views ---
+        cur = self._current_bundle()
         for p in self.current_bundle_doc_ptrs():
             title = f"(unresolved) [{p}]"
             if mw is not None:
-                d, sw = _resolve_doc_and_subwindow(mw, p)
+                d, sw = resolve_bundle_member(mw, cur, p)
                 if d is not None:
                     title = sw.windowTitle() if sw else (getattr(d, "display_name", lambda: "Untitled")())
             it = QListWidgetItem(f"[view] {title}")
@@ -1216,7 +1302,7 @@ class ViewBundleDialog(QDialog):
         mw = self._find_mw()
         if mw is None:
             return
-        doc, sw = _resolve_doc_and_subwindow(mw, doc_ptr)
+        doc, sw = resolve_bundle_member(mw, self._current_bundle(), doc_ptr)
         if sw is None:
             return
         try:
@@ -1282,7 +1368,8 @@ class ViewBundleDialog(QDialog):
         cp = {
             "uuid": self._new_uuid(),
             "name": f"{b.get('name','Bundle')} (copy)",
-            "doc_ptrs": list(b.get("doc_ptrs", []))
+            "doc_ptrs": list(b.get("doc_ptrs", [])),
+            "doc_uids": dict(b.get("doc_uids") or {}),
         }
         self._bundles.insert(i + 1, cp)
         self._save_all(); self._refresh_bundle_list()
@@ -1392,26 +1479,33 @@ class ViewBundleDialog(QDialog):
     # ---------- DnD into the PANEL (applies to CURRENT bundle only) ----------
     def dragEnterEvent(self, e):
         md = e.mimeData()
-        if md.hasFormat(MIME_VIEWSTATE) or md.hasFormat(MIME_CMD) or md.hasUrls():
+        if (md.hasFormat(MIME_VIEWSTATE) or md.hasFormat(MIME_CMD)
+                or md.hasFormat(MIME_ASTROMETRY) or md.hasUrls()):
             e.acceptProposedAction()
         else:
             e.ignore()
-            
+
     def dropEvent(self, e):
         md = e.mimeData()
         u = self._current_uuid()
         if not u:
             e.ignore(); return
 
+        if md.hasFormat(MIME_ASTROMETRY):
+            e.acceptProposedAction()
+            try:
+                payload = json.loads(bytes(md.data(MIME_ASTROMETRY)).decode("utf-8"))
+            except Exception:
+                return
+            self._apply_astrometry_to_bundle(payload, target_uuid=u)
+            return
+
         if md.hasFormat(MIME_VIEWSTATE):
             try:
                 st = json.loads(bytes(md.data(MIME_VIEWSTATE)).decode("utf-8"))
                 doc_ptr = int(st.get("doc_ptr", 0))
-                doc_uid = st.get("doc_uid")
                 if doc_ptr:
-                    self._add_doc_ptrs_to_uuid(u, [doc_ptr])
-                if doc_uid:
-                    self._add_doc_uids_to_uuid(u, [doc_uid])
+                    self._add_doc_ptrs_to_uuid(u, [doc_ptr])   # records the doc's UID too
             except Exception:
                 pass
             e.acceptProposedAction()
@@ -1448,6 +1542,81 @@ class ViewBundleDialog(QDialog):
                 _QMB.warning(self, "Apply to Bundle", f"Could not parse/execute shortcut:\n{ex}")
         e.ignore()
 
+    # ---------- copying an astrometric solution to all views in a bundle ----------
+    def _apply_astrometry_to_bundle(self, payload: dict, target_uuid: Optional[str] = None):
+        """Ctrl+drag of a view's tab onto a bundle: copy that view's WCS/SIP
+        solution to every open view in the bundle, as dropping it on each view
+        would (MainWindow._on_astrometry_drop). Files in the bundle are left
+        alone -- copying to them would rewrite them on disk."""
+        title = "Copy Astrometry"
+        mw = self._find_mw()
+        if mw is None or not all(hasattr(mw, a) for a in (
+                "_resolve_doc_from_payload", "_extract_wcs_dict",
+                "_apply_wcs_dict_to_doc", "_target_doc_from_subwindow")):
+            _QMB.information(self, title, "Main window not available.")
+            return
+
+        src_doc = mw._resolve_doc_from_payload(payload or {}, prefer_base=True)
+        if src_doc is None:
+            _QMB.information(self, title, "Source view not found.")
+            return
+        try:
+            wcs = mw._extract_wcs_dict(src_doc) or {}
+        except Exception:
+            wcs = {}
+        if not wcs:
+            _QMB.information(self, title, "Source has no WCS/SIP solution.")
+            return
+
+        b = self._get_bundle(target_uuid) if target_uuid else self._current_bundle()
+        bname = (b or {}).get("name") or "bundle"
+        n_files = len((b or {}).get("file_paths", []))
+
+        def _name(doc, sw=None):
+            try:
+                n = doc.display_name()
+            except Exception:
+                n = None
+            return n or (sw.windowTitle() if sw is not None else "") or "view"
+
+        copied, failed, seen = [], [], {id(src_doc)}
+        for ptr in list((b or {}).get("doc_ptrs", [])):
+            _doc, sw = resolve_bundle_member(mw, b, ptr)
+            if sw is None:
+                continue                      # view closed since it was added
+            tgt = mw._target_doc_from_subwindow(sw)
+            if tgt is None or id(tgt) in seen:
+                continue                      # the source itself, or a repeat
+            seen.add(id(tgt))
+            try:
+                ok = bool(mw._apply_wcs_dict_to_doc(tgt, dict(wcs)))
+            except Exception:
+                ok = False
+            (copied if ok else failed).append(_name(tgt, sw))
+
+        # Each apply announced its target as the current document (that is
+        # how a single drop refreshes the header viewer). Point the tools that
+        # follow the active view back at the view the user is actually on.
+        try:
+            asw = mw.mdi.activeSubWindow()
+            aw = asw.widget() if asw is not None else None
+            mw.currentDocumentChanged.emit(getattr(aw, "document", None))
+        except Exception:
+            pass
+
+        msg = []
+        if copied:
+            msg.append(f"Copied the solution from '{_name(src_doc)}' to {len(copied)} "
+                       f"view(s) in '{bname}'.")
+        else:
+            msg.append(f"'{bname}' has no other open views to copy the solution to.")
+        if failed:
+            msg.append("Could not apply it to:\n  " + "\n  ".join(failed))
+        if n_files:
+            msg.append(f"{n_files} file(s) in the bundle were left unchanged; open them "
+                       f"as views to copy the solution to them.")
+        (_QMB.warning if failed else _QMB.information)(self, title, "\n\n".join(msg))
+
     # ---------- applying shortcuts to all views in a bundle ----------
     def _apply_payload_to_bundle(self, payload: dict, target_uuid: Optional[str] = None):
         mw = self._find_mw()
@@ -1470,6 +1639,7 @@ class ViewBundleDialog(QDialog):
             ptrs = [] if not b else list(b.get("doc_ptrs", []))
             file_paths = [] if not b else list(b.get("file_paths", []))
         else:
+            b = self._current_bundle()
             ptrs = self.current_bundle_doc_ptrs()
             file_paths = self.current_bundle_file_paths()
 
@@ -1501,7 +1671,7 @@ class ViewBundleDialog(QDialog):
                 for ptr in ptrs:
                     if prog.cancelled:
                         break
-                    _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
+                    _doc, sw = resolve_bundle_member(mw, b, ptr)
                     if sw is None:
                         prog.end_item(view_applied, len(view_errors))
                         continue
@@ -1529,7 +1699,7 @@ class ViewBundleDialog(QDialog):
             for ptr in ptrs:
                 if prog.cancelled:
                     break
-                _doc, sw = _resolve_doc_and_subwindow(mw, ptr)
+                _doc, sw = resolve_bundle_member(mw, b, ptr)
                 if sw is None:
                     prog.end_item(view_applied, len(view_errors))
                     continue

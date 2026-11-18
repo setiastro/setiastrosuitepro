@@ -594,14 +594,20 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
                 auto_sigma_min_stars=auto_min,
             )
     except Exception as e:
-        # Fallback: if SEP missing or star detection fails, try Auto WB
+        # Fallback: if SEP missing or star detection fails, try Auto WB --
+        # and say so, in the console and in the edit's metadata, rather than
+        # hand back a gray-world balance labelled as a star-based one.
         if mode == "star":
             try:
                 out = apply_auto_white_balance(base_n)
             except Exception:
                 raise e
+            fallback_note = f"star-based balance failed ({e}); gray-world auto used instead"
+            print(f"[White Balance] {fallback_note}")
         else:
             raise
+    else:
+        fallback_note = None
 
     # Destination-mask blend (if any)
     m = _active_mask_array_from_doc(doc)
@@ -613,10 +619,13 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
         base_for_blend = _to_float01(np.asarray(doc.image).astype(np.float32, copy=False))
         out = base_for_blend * (1.0 - m3) + out * m3
 
+    meta = {"step_name": "White Balance", "preset": p}
+    if fallback_note:
+        meta["white_balance_fallback"] = fallback_note
     doc.apply_edit(
         out.astype(np.float32, copy=False),
-        metadata={"step_name": "White Balance", "preset": p},
-        step_name="White Balance",
+        metadata=meta,
+        step_name="White Balance" if not fallback_note else "White Balance (gray-world fallback)",
     )
 
 def apply_pivot_gain(img: np.ndarray, med: np.ndarray, gains: np.ndarray) -> np.ndarray:

@@ -723,7 +723,7 @@ class SettingsDialog(QDialog):
         right_col.addRow(_w_mb)
 
         # ---- RA/Dec Overlay ----
-        right_col.addRow(QLabel(self.tr("<b>RA/Dec Overlay</b>")))
+        right_col.addRow(QLabel(self.tr("<b>WCS + Chart Overlay</b>")))
         self.chk_wcs_enabled = QCheckBox(self.tr("Show RA/Dec grid"))
         right_col.addRow(self.chk_wcs_enabled)
 
@@ -753,6 +753,30 @@ class SettingsDialog(QDialog):
         _w = QWidget()
         _w.setLayout(row_wcs)
         right_col.addRow(_w)
+
+        # Chart layers drawn with the grid by each view's WCS button: picked
+        # one by one in the sky chart's own layer dialog (Layers…), held here
+        # until OK like every other setting on this page.
+        self._wcs_chart_cfg = None
+        self.lbl_wcs_layers = QLabel()
+        self.lbl_wcs_layers.setWordWrap(True)
+        self.lbl_wcs_layers.setStyleSheet("color: #9aa0aa;")
+        self.btn_wcs_layers = QPushButton(self.tr("Layers…"))
+        self.btn_wcs_layers.setToolTip(self.tr(
+            "Choose the sky chart layers drawn with the RA/Dec grid when a view's\n"
+            "WCS button is on: constellations, each deep-sky catalogue, star names,\n"
+            "Bayer / Flamsteed, variable and double stars, the ecliptic and the\n"
+            "galactic equator -- plus the faintest deep-sky object, label size and\n"
+            "line weight."))
+        self.btn_wcs_layers.clicked.connect(self._pick_wcs_chart_layers)
+        row_layers = QHBoxLayout()
+        row_layers.setContentsMargins(0, 0, 0, 0)
+        row_layers.addWidget(QLabel(self.tr("Chart layers:")))
+        row_layers.addWidget(self.lbl_wcs_layers, 1)
+        row_layers.addWidget(self.btn_wcs_layers)
+        _wl = QWidget()
+        _wl.setLayout(row_layers)
+        right_col.addRow(_wl)
 
         # ---- Updates ----
         right_col.addRow(QLabel(self.tr("<b>Updates</b>")))
@@ -1025,6 +1049,42 @@ class SettingsDialog(QDialog):
                     "Asteroids: {1:,}\nComets: {2:,}").format(
                         manifest.version, manifest.counts_asteroids,
                         manifest.counts_comets))
+
+    def _sync_wcs_layers_label(self):
+        cfg = self._wcs_chart_cfg
+        if cfg is None:
+            self.lbl_wcs_layers.setText(self.tr("unavailable"))
+            self.btn_wcs_layers.setEnabled(False)
+            return
+        from setiastro.saspro.skychart_engine import wcs_overlay_summary
+        txt = wcs_overlay_summary(cfg)
+        self.lbl_wcs_layers.setText(txt)
+        self.lbl_wcs_layers.setToolTip(txt)
+
+    def _pick_wcs_chart_layers(self):
+        """The sky chart's layer dialog, for the image views' WCS overlay."""
+        if self._wcs_chart_cfg is None:
+            return
+        from setiastro.saspro.skychart_engine import (
+            WCS_OVERLAY_DEFAULTS, WCS_OVERLAY_OPTION_DEFAULTS)
+        from setiastro.saspro.skychart_ui import OverlayLayersDialog
+        cfg = self._wcs_chart_cfg
+        dlg = OverlayLayersDialog(
+            cfg["layers"], self,
+            title=self.tr("WCS Overlay Chart Layers"),
+            note=self.tr("Drawn with the RA/Dec grid when a view's WCS button is on. "
+                         "The photograph already shows the stars, nebulae and Milky Way, "
+                         "so those are labelled, never painted."),
+            defaults=WCS_OVERLAY_DEFAULTS,
+            options={k: cfg[k] for k in WCS_OVERLAY_OPTION_DEFAULTS},
+            option_defaults=WCS_OVERLAY_OPTION_DEFAULTS)
+        try:
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                cfg["layers"] = dlg.layers()
+                cfg.update(dlg.options())
+                self._sync_wcs_layers_label()
+        finally:
+            dlg.deleteLater()
 
     def _open_minorbody_releases(self):
         from PyQt6.QtWidgets import QMessageBox
@@ -2023,6 +2083,13 @@ class SettingsDialog(QDialog):
         self.cb_wcs_unit.blockSignals(False)
         
         self.sp_wcs_step.setValue(self.settings.value("wcs_grid/step_value", 1.0, type=float))
+        try:
+            from setiastro.saspro.skychart_engine import wcs_overlay_config
+            self._wcs_chart_cfg = wcs_overlay_config(self.settings)
+        except Exception as e:
+            print(f"[Settings] chart layers unavailable: {e}")
+            self._wcs_chart_cfg = None
+        self._sync_wcs_layers_label()
         self.sp_wcs_step.setEnabled(self.cb_wcs_mode.currentIndex() == 1)
         self.sp_wcs_step.setSuffix(" °" if self.cb_wcs_unit.currentIndex() == 0 else " arcmin")
 
@@ -2209,6 +2276,12 @@ class SettingsDialog(QDialog):
         self.settings.setValue("wcs_grid/mode", "auto" if self.cb_wcs_mode.currentIndex() == 0 else "fixed")
         self.settings.setValue("wcs_grid/step_unit", "deg" if self.cb_wcs_unit.currentIndex() == 0 else "arcmin")
         self.settings.setValue("wcs_grid/step_value", float(self.sp_wcs_step.value()))
+        if self._wcs_chart_cfg is not None:
+            try:
+                from setiastro.saspro.skychart_engine import save_wcs_overlay_config
+                save_wcs_overlay_config(self.settings, self._wcs_chart_cfg)
+            except Exception as e:
+                print(f"[Settings] chart layers not saved: {e}")
 
 
         # Updates + Display

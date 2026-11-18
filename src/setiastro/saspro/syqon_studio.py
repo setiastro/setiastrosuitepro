@@ -109,8 +109,10 @@ STUDIO_MODELS: list[tuple[str, str, str, str, str]] = [
     ("prism-max",       "Prism Deep Max — Denoise",        "Licensed", "prism",         "Linear or non-linear"),
     ("prism-legacy-v1", "Prism Legacy V1 — Denoise",       "Licensed", "prism",         "Legacy display-domain input"),
     ("prism-legacy-v2", "Prism Legacy V2 — Denoise",       "Licensed", "prism",         "Robust linear input"),
+    ("parallax-nano",   "Parallax Nano — Correct / Reduce / Deblur", "Free", "parallax", "Linear or non-linear"),
     ("parallax",        "Parallax — Correct / Reduce / Deblur", "Licensed", "parallax",  "Linear or non-linear"),
-    ("axiom",           "Axiom V3 — Starless",             "Licensed", "axiom",         "Linear (Axiom stretch) or non-linear"),
+    ("axiom-mini",      "Axiom Mini — Starless",           "Free",     "axiom",         "Linear (Axiom stretch) or non-linear"),
+    ("axiom",           "Axiom V4 — Starless",             "Licensed", "axiom",         "Linear (Axiom stretch) or non-linear"),
     ("deep-gradient",   "Deep Gradient (Untested Beta) — Gradient removal", "Included", "deep-gradient", "Linear RGB or mono"),
 ]
 
@@ -341,7 +343,9 @@ def build_studio_argv(
         argv += ["--application", f"{float(application):.4f}"]
 
     if family == "parallax":
-        argv += ["--family", str(parallax_family)]
+        # Parallax Nano has no family selector; only the full model takes one.
+        if model_id != "parallax-nano":
+            argv += ["--family", str(parallax_family)]
         argv += ["--correction", "true" if parallax_correction else "false"]
         argv += ["--reduction", "true" if parallax_reduction else "false"]
         if parallax_reduction:
@@ -385,9 +389,56 @@ _EXIT_MESSAGES = {
         "confirm this model is included with your account."),
     5: "Inference failed — no output was produced.",
     6: "Output encoding failed. Try a different precision or destination.",
-    7: "Output was saved, but the application handoff step failed.",
+    7: "The Studio editor failed to launch, crashed, or could not hand the image back. Check the Studio installation.",
     20: "Cancelled from the SyQon Studio editor.",
 }
+
+
+def _stop_cli_process(p) -> None:
+    """
+    Stop syqon-cli and everything it started. Even headless, syqon-cli runs the
+    work in a child "SyQon Studio.exe" (and -gui shows its editor that way), so
+    terminating the CLI alone leaves the engine running until it notices. The
+    children are listed first, while the CLI is still their parent, then all
+    are terminated. Nothing here waits: the worker's own wait() sees the CLI
+    exit. (taskkill /T, the Siril bridge's way, also takes the tree but blocks
+    for several seconds while the engine tears down its GPU context.)
+    """
+    try:
+        if p is None or p.poll() is not None:
+            return
+        kids = []
+        try:
+            import psutil
+            kids = psutil.Process(p.pid).children(recursive=True)
+        except Exception:
+            kids = None
+        if kids is None and os.name == "nt":
+            # No psutil: let taskkill find and end the tree.
+            subprocess.Popen(
+                ["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+            )
+            return
+        p.terminate()
+        for c in kids or ():
+            try:
+                c.terminate()
+            except Exception:
+                pass
+    except Exception:
+        try:
+            p.kill()
+        except Exception:
+            pass
+
+
+def _same_file(a: str, b: str) -> bool:
+    try:
+        return (os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b)))
+    except Exception:
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -400,11 +451,11 @@ class _SyQonStudioCLIThread(QThread):
     progress = pyqtSignal(int, str)
     result = pyqtSignal(object, object, dict, str)
 
-    def __init__(self, *, input_rgb01, scale_factor, exe, model_id, argv_opts: dict,
+    def __init__(self, *, input_image, exe, model_id, argv_opts: dict,
                  want_secondary: bool, secondary_flag: str | None, parent=None):
         super().__init__(parent)
-        self.input_rgb01 = np.asarray(input_rgb01, dtype=np.float32)
-        self.scale_factor = float(scale_factor)
+        # The document's pixels exactly as stored: (H, W) mono or (H, W, 3).
+        self.input_image = np.asarray(input_image, dtype=np.float32)
         self.exe = str(exe)
         self.model_id = str(model_id)
         self.argv_opts = dict(argv_opts or {})
@@ -418,33 +469,48 @@ class _SyQonStudioCLIThread(QThread):
 
     def cancel(self):
         self._cancel = True
-        p = self._p
-        try:
-            if p is not None and p.poll() is None:
-                # SIGTERM on POSIX; terminate() maps to TerminateProcess on Windows.
-                # For the GUI editor this closes the editor window and the CLI
-                # exits non-zero; we treat that as a cancel.
-                p.terminate()
-        except Exception:
-            pass
+        # Closes the GUI editor too; the CLI then exits and the worker
+        # reports a cancel.
+        _stop_cli_process(self._p)
 
     def _emit(self, pct: int, stage: str):
         self.progress.emit(int(np.clip(pct, 0, 100)), str(stage or ""))
 
-    def _load_rgb01(self, path: str):
-        arr, _, _, _ = load_image(path)
-        if arr is None:
-            return None
-        arr = np.asarray(arr, dtype=np.float32)
-        if arr.ndim == 2:
-            arr = np.stack([arr] * 3, axis=-1)
-        elif arr.ndim == 3 and arr.shape[2] == 1:
-            arr = np.repeat(arr, 3, axis=2)
-        else:
-            arr = arr[..., :3]
-        if self.scale_factor > 1.01:
-            arr = arr * self.scale_factor
-        return np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False)
+    @staticmethod
+    def _write_fits(path: str, arr: np.ndarray):
+        """The image exactly as SASpro holds it, as 32-bit float FITS: no
+        normalisation, no clipping, no channel replication, no colour profile.
+        Mono stays a 2-D image; colour is written as the (3, H, W) cube FITS
+        expects. Written with astropy directly so no export path can touch it
+        (save_image's TIFF writer embeds a Display P3 ICC profile, which a
+        colour-managed reader is entitled to convert)."""
+        from astropy.io import fits as _fits
+        a = np.asarray(arr, dtype=np.float32)
+        if a.ndim == 3 and a.shape[2] == 1:
+            a = a[:, :, 0]
+        if a.ndim == 3:
+            a = np.ascontiguousarray(np.transpose(a[:, :, :3], (2, 0, 1)))
+        _fits.PrimaryHDU(a).writeto(path, overwrite=True)
+
+    @staticmethod
+    def _load_result(path: str):
+        """SyQon's output read back as it wrote it: (H, W) or (H, W, 3) float32,
+        values untouched. Row order follows the same rule load_image applies:
+        flipped only for an explicit ROWORDER = BOTTOM-UP."""
+        from astropy.io import fits as _fits
+        with _fits.open(path, memmap=False) as hdul:
+            hdu = next((h for h in hdul if getattr(h, "data", None) is not None), None)
+            if hdu is None:
+                return None
+            arr = np.asarray(hdu.data, dtype=np.float32)
+            roworder = str(hdu.header.get("ROWORDER", "")).strip().upper()
+        if arr.ndim == 3 and arr.shape[0] in (1, 3, 4) and arr.shape[0] < arr.shape[-1]:
+            arr = np.transpose(arr, (1, 2, 0))
+        if arr.ndim == 3:
+            arr = arr[:, :, 0] if arr.shape[2] == 1 else arr[:, :, :3]
+        if roworder == "BOTTOM-UP":
+            arr = arr[::-1]
+        return np.ascontiguousarray(arr, dtype=np.float32)
 
     def run(self):
         fam = studio_family_for(self.model_id)
@@ -486,20 +552,16 @@ class _SyQonStudioCLIThread(QThread):
             tag = f"studio_{os.getpid()}_{int(time.time() * 1000)}"
             tmpdir = Path(tempfile.gettempdir()) / "SASpro_SyQon_Studio"
             tmpdir.mkdir(parents=True, exist_ok=True)
-            # TIFF both ways: the editor requires matching container formats
-            # (TIFF→TIFF, FITS→FITS, …). TIFF is the obvious lossless pick for
-            # a round-trip of f32 data and matches what the headless path uses.
-            self._tmp_in = str(tmpdir / f"{tag}_in.tif")
-            self._tmp_out = str(tmpdir / f"{tag}_out.tif")
+            # 32-bit float FITS both ways (the CLI requires matching
+            # containers: FITS->FITS). FITS carries the data as-is; the TIFF
+            # writer this used to go through embeds an ICC profile.
+            self._tmp_in = str(tmpdir / f"{tag}_in.fits")
+            self._tmp_out = str(tmpdir / f"{tag}_out.fits")
             if self.want_secondary and self.secondary_flag:
-                self._tmp_sec = str(tmpdir / f"{tag}_sec.tif")
+                self._tmp_sec = str(tmpdir / f"{tag}_sec.fits")
 
             self._emit(2, "Writing temp image…")
-            save_image(
-                self.input_rgb01, self._tmp_in,
-                original_format="tif", bit_depth="32-bit floating point",
-                original_header=None, is_mono=False, image_meta=None, file_meta=None,
-            )
+            self._write_fits(self._tmp_in, self.input_image)
             if self._cancel:
                 raise RuntimeError("__cancelled__")
 
@@ -552,21 +614,27 @@ class _SyQonStudioCLIThread(QThread):
                     msg = f"{msg}\n\n{tail}"
                 raise RuntimeError(msg)
 
-            # stdout is the absolute saved-output path; prefer it, fall back to ours.
+            # stdout on exit 0 is the saved-output path. Only ever import the
+            # file SASpro asked for: a different path (an image saved elsewhere
+            # from the editor, say) is refused, as the Siril bridge does.
             declared = (stdout_lines[-1].strip() if stdout_lines else "")
-            primary_path = declared if (declared and os.path.exists(declared)) else self._tmp_out
+            if declared and not _same_file(declared, self._tmp_out):
+                raise RuntimeError(
+                    "SyQon Studio reported a different output file than the one SASpro "
+                    f"asked for, so nothing was applied.  Reported: {declared}")
+            primary_path = self._tmp_out
             if not os.path.exists(primary_path):
                 raise RuntimeError("SyQon CLI reported success but no output file was found.")
 
             self._emit(96, "Loading result…")
-            primary = self._load_rgb01(primary_path)
+            primary = self._load_result(primary_path)
             if primary is None:
                 raise RuntimeError("Could not load the SyQon CLI output.")
 
             secondary = None
             if self.want_secondary and self._tmp_sec and os.path.exists(self._tmp_sec):
                 try:
-                    secondary = self._load_rgb01(self._tmp_sec)
+                    secondary = self._load_result(self._tmp_sec)
                 except Exception:
                     secondary = None
 
@@ -580,11 +648,7 @@ class _SyQonStudioCLIThread(QThread):
             self.result.emit(None, None, info, msg)
 
         finally:
-            try:
-                if self._p is not None and self._p.poll() is None:
-                    self._p.terminate()
-            except Exception:
-                pass
+            _stop_cli_process(self._p)
             for p in (self._tmp_in, self._tmp_out, self._tmp_sec):
                 try:
                     if p and os.path.exists(p):
@@ -676,7 +740,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
 
         self.cmb_model = QComboBox(self)
         for mid, label, access, _fam, _note in STUDIO_MODELS:
-            tag = "" if access == "Included" else "  ·  Licensed"
+            tag = {"Included": "", "Free": "  ·  Free"}.get(access, "  ·  Licensed")
             self.cmb_model.addItem(f"{label}{tag}", userData=mid)
         self.cmb_model.currentIndexChanged.connect(self._on_model_changed)
         form.addRow("Model:", self.cmb_model)
@@ -1010,7 +1074,9 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
                     f"Input contract: {note}  ·  editor is included with Studio."
                 )
             else:
-                tag = "included with your account" if access == "Included" else "requires a licensed entitlement"
+                tag = {"Included": "included with your account",
+                       "Free": "free with a signed-in Studio account"}.get(
+                           access, "requires a licensed entitlement")
                 self.lbl_contract.setText(f"Input contract: {note}  ·  {tag}.")
 
         self.opt_stack.setCurrentIndex(self._family_page.get(fam, 0))
@@ -1027,6 +1093,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         self.spin_tile.setEnabled(uses_tiles and not is_gui)
         self.spin_overlap.setEnabled(uses_tiles and not is_gui)
         self.cmb_domain.setEnabled(not is_gui)
+        self.cmb_px_family.setEnabled(mid != "parallax-nano")
 
     # ---- preset ------------------------------------------------------------
     def get_preset(self) -> dict:
@@ -1174,22 +1241,21 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         self.main = main
         self._persist()
 
-        src = np.asarray(doc.image).astype(np.float32, copy=False)
+        # SyQon gets the image exactly as the document holds it -- no
+        # normalisation by the maximum, no clipping, no mono-to-RGB -- and
+        # handles the range itself (its models take linear RGB or mono).
+        # Normalising here and multiplying back afterwards also clipped every
+        # result to 1.0, so any image whose maximum exceeded 1 came back with
+        # its highlights cut.
+        src = np.asarray(doc.image, dtype=np.float32)
         orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
-        x = np.nan_to_num(src, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
-
-        scale_factor = float(np.max(x)) if x.size else 1.0
-        x01 = np.clip(x / scale_factor, 0.0, 1.0) if scale_factor > 1.01 else np.clip(x, 0.0, 1.0)
-
-        if x01.ndim == 2:
-            xrgb = np.stack([x01] * 3, axis=-1)
-        elif x01.ndim == 3 and x01.shape[2] == 1:
-            xrgb = np.repeat(x01, 3, axis=2)
-        else:
-            xrgb = x01[..., :3]
-
-        self._scale_factor = scale_factor
+        x_in = src[:, :, 0] if (src.ndim == 3 and src.shape[2] == 1) else src
         self._orig_was_mono = orig_was_mono
+        # The result keeps the document's own range convention (see apply)
+        try:
+            self._doc_in_unit_range = bool(np.nanmin(src) >= 0.0 and np.nanmax(src) <= 1.0)
+        except Exception:
+            self._doc_in_unit_range = True
 
         # Secondary output selection (not applicable to the GUI editor path —
         # the editor doesn't accept --stars-output / --gradient-output).
@@ -1213,8 +1279,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             self.lbl_status.setText("Processing…")
 
         self.proc_thr = _SyQonStudioCLIThread(
-            input_rgb01=xrgb,
-            scale_factor=scale_factor,
+            input_image=x_in,
             exe=exe,
             model_id=mid,
             argv_opts=self._collect_opts(),
@@ -1315,7 +1380,11 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         else:
             final_rgb = _blend_result_with_mask(primary, orig_rgb, self.doc)
             final_to_apply = final_rgb.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else final_rgb
-        final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
+        final_to_apply = np.asarray(final_to_apply, dtype=np.float32)
+        # Clip only a document that was in [0, 1] to begin with; one that held
+        # values beyond it gets SyQon's result as returned.
+        if getattr(self, "_doc_in_unit_range", True):
+            final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
 
         step_name = {
             "prism": "Denoised",

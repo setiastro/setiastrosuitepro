@@ -2073,6 +2073,7 @@ def import_torch(
     global _TORCH_CACHED
     if _TORCH_CACHED is not None:
         return _TORCH_CACHED
+    _install_worker_path_guard()      # every path below may prepend the venv
 
     # torchaudio is installed opportunistically (see _install_torch) but is NOT a
     # required dependency of any SASpro tool. Never let its absence gate import,
@@ -2749,7 +2750,93 @@ def runtime_python_preflight(status_cb=None) -> dict | None:
         return None
 
 
+# ── Spawned workers must import the parent's numpy ──────────────────────────
+# The runtime venv's site-packages goes to sys.path[0] so `import torch` finds
+# the wheel. By then the parent has already imported numpy (numba_bootstrap,
+# first thing in gui_entry), so the parent keeps the numpy it ships with. A
+# spawned worker does not: multiprocessing hands it the parent's sys.path
+# before it imports anything (a frozen worker reaches freeze_support() in
+# __main__.entry() before numba_bootstrap), so its first `import numpy` finds
+# the venv's copy -- whatever the torchvision install left there. With numpy
+# 2.4 in the venv, the bundle's numba 0.63 refused to import and every worker
+# died: "Numba needs NumPy 2.3 or less. Got NumPy 2.4." With the py312/313
+# pin (numpy 1.26) workers silently ran a different numpy from the parent.
+#
+# So a worker's sys.path puts the venv after the entry that supplied the
+# parent's numpy. In a frozen build that entry is the bundle, which never holds
+# torch (the spec excludes it): torch still comes from the venv, and what the
+# app ships comes from the app, as in the parent. In a pip/source install it is
+# the user's environment; if that has its own torch, a worker now imports that
+# one -- a difference on the GPU paths only, against a numpy mismatch that can
+# take down every worker.
+
+def _worker_path_key(p) -> str:
+    return os.path.normcase(os.path.abspath(str(p))).rstrip("\\/")
+
+
+def _worker_sys_path(path: list) -> list:
+    """`path` (the parent's sys.path) as a spawned worker should start with
+    it: runtime-venv entries ahead of the entry holding the parent's numpy
+    move to just after that entry. Returned unchanged when numpy isn't
+    imported, came from the venv itself, or its entry isn't on the path."""
+    np_mod = sys.modules.get("numpy")
+    np_file = getattr(np_mod, "__file__", None) if np_mod is not None else None
+    if not np_file:
+        return path
+    try:
+        rt = _worker_path_key(_runtime_base_dir())
+        np_root = _worker_path_key(Path(np_file).parent.parent)
+        keys = [_worker_path_key(p) if isinstance(p, str) and p else "" for p in path]
+    except Exception:
+        return path
+
+    def _in_rt(k: str) -> bool:
+        return bool(k) and (k == rt or k.startswith(rt + os.sep))
+
+    if _in_rt(np_root) or np_root not in keys:
+        return path
+    k = keys.index(np_root)
+    early = [i for i in range(k) if _in_rt(keys[i])]
+    if not early:
+        return path
+    moved = [path[i] for i in early]
+    rest = [p for i, p in enumerate(path) if i not in early]
+    k -= len(early)
+    out = rest[:k + 1] + moved + rest[k + 1:]
+    if not getattr(_worker_sys_path, "_logged", False):
+        _worker_sys_path._logged = True
+        print(f"[RT] worker processes: runtime site-packages placed after "
+              f"{path[keys.index(np_root)]} so workers import numpy "
+              f"{getattr(np_mod, '__version__', '?')} like this process")
+    return out
+
+
+def _install_worker_path_guard() -> None:
+    """Start every spawned worker from _worker_sys_path(sys.path). Idempotent;
+    on any failure multiprocessing is left as it was."""
+    try:
+        import multiprocessing.spawn as _spawn
+        orig = _spawn.get_preparation_data
+        if getattr(orig, "_saspro_worker_path_guard", False):
+            return
+
+        def get_preparation_data(name):
+            d = orig(name)
+            try:
+                if d.get("sys_path"):
+                    d["sys_path"] = _worker_sys_path(list(d["sys_path"]))
+            except Exception:
+                pass
+            return d
+
+        get_preparation_data._saspro_worker_path_guard = True
+        _spawn.get_preparation_data = get_preparation_data
+    except Exception:
+        pass
+
+
 def add_runtime_to_sys_path(status_cb=print) -> None:
+    _install_worker_path_guard()
     rt = _user_runtime_dir(status_cb=status_cb)
     p = _venv_paths(rt)
     vpy = p["python"]

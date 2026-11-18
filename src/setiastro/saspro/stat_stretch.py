@@ -1744,3 +1744,34 @@ def open_stat_stretch_with_preset(main_window, preset: dict | None = None):
     except Exception:
         pass
     dlg.show(); dlg.raise_(); dlg.activateWindow()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def apply_stat_stretch_preset_to_doc(parent, doc, preset: dict | None = None):
+    """
+    Headless Statistical Stretch on a specific document, synchronous and pinned
+    to `doc` (no async job, no following the active view, no dialog or thread
+    left behind). What shortcuts, drops and the command-line tool run.
+
+    The WHOLE preset is applied (the schema of _stretch_params, which is what
+    shortcuts store): keys it omits take the tool defaults, not whatever the
+    dialog was last left at, so every machine gives the same result.
+    seed_from_preset blocks signals, so the user's saved dialog settings are
+    untouched. Needs a QApplication; `parent` may be any QWidget or None.
+    """
+    dlg = None
+    try:
+        dlg = StatisticalStretchDialog(parent, doc)
+        dlg._headless = True   # don't follow active doc, don't save geometry
+        dlg.seed_from_preset(dict(preset or {}) or {"target_median": 0.25})
+        # Compute + commit synchronously, bound to `doc`.
+        out = dlg._run_stretch()
+        if out is not None:
+            dlg._apply_out_to_doc(out)
+    finally:
+        try:
+            if dlg is not None:
+                dlg.close()
+                dlg.deleteLater()
+        except Exception:
+            pass

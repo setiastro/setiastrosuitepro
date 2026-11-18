@@ -155,8 +155,18 @@ def _wcs_from_pixscale_posang(hdr):
 def _best_wcs_source(metadata, hdr0):
     """Pick the best WCS to crop from.
     Priority: live WCS object → stored wcs_header → hdr0 as-is → rebuild from PIXSCALE/POSANGLE.
-    Anything whose scale disagrees with hdr0's PIXSCALE by >20% is rejected.
-    Returns (WCS, header_used) or (None, None)."""
+
+    A candidate whose scale agrees with hdr0's PIXSCALE (within 20%) is
+    preferred. But a real matrix is never thrown away for disagreeing with
+    PIXSCALE: that keyword is capture-software metadata, and after a plate
+    solve it is routinely stale (focal length set wrong in the capture
+    program, binning, drizzle) while the solution is the measured truth. It
+    used to be, and the PIXSCALE/POSANGLE rebuild that replaced it assumes
+    the parity (east left unless FLIPPED) and reads CROTA2 as its angle --
+    so the cropped image came back mirrored on a mirrored optical train,
+    and off in scale and rotation on every image. The rebuild now runs only
+    when there is no real matrix at all (astropy's PC=I, CDELT=1 fallback
+    does not count as one). Returns (WCS, header_used) or (None, None)."""
     from astropy.io import fits
     from astropy.wcs import WCS
 
@@ -172,15 +182,17 @@ def _best_wcs_source(metadata, hdr0):
         except Exception:
             return False
 
+    candidates = []          # real (non-fallback) matrices, in priority order
+
     # 1) live WCS
     try:
         w_live = metadata.get("wcs")
-        if w_live is not None and not _wcs_appears_default(w_live) and _scale_ok(w_live):
-            return w_live, w_live.to_header(relax=True)
+        if w_live is not None and not _wcs_appears_default(w_live):
+            candidates.append((w_live, w_live.to_header(relax=True)))
     except Exception:
         pass
 
-    # 2) stored wcs_header — only if its scale actually matches hdr0's PIXSCALE
+    # 2) stored wcs_header
     try:
         wh = metadata.get("wcs_header")
         wh_hdr = None
@@ -199,8 +211,8 @@ def _best_wcs_source(metadata, hdr0):
         if wh_hdr is not None:
             try:
                 w_wh = WCS(wh_hdr, relax=True)
-                if not _wcs_appears_default(w_wh) and _scale_ok(w_wh):
-                    return w_wh, wh_hdr
+                if not _wcs_appears_default(w_wh):
+                    candidates.append((w_wh, wh_hdr))
             except Exception:
                 pass
     except Exception:
@@ -210,12 +222,25 @@ def _best_wcs_source(metadata, hdr0):
     try:
         hdr_use = _coerce_header_to_2d(hdr0) if _needs_2d_coercion(hdr0) else hdr0
         w_h = WCS(hdr_use, relax=True)
-        if not _wcs_appears_default(w_h) and _scale_ok(w_h):
-            return w_h, hdr_use
+        if not _wcs_appears_default(w_h) and w_h.has_celestial:
+            candidates.append((w_h, hdr_use))
     except Exception:
         pass
 
-    # 4) rebuild from PIXSCALE + POSANGLE
+    for w_c, h_c in candidates:
+        if _scale_ok(w_c):
+            return w_c, h_c
+    if candidates:
+        w_c, h_c = candidates[0]
+        try:
+            sx, sy, _ = _pixscale_rot_from_wcs(w_c)
+            print(f"[WCS-CROP] header PIXSCALE {expected_scale:.4f}\"/px disagrees with the "
+                  f"plate solution ({sx:.4f} x {sy:.4f}\"/px); keeping the plate solution.")
+        except Exception:
+            pass
+        return w_c, h_c
+
+    # 4) rebuild from PIXSCALE + POSANGLE -- only when there is no real matrix
     try:
         rebuilt = _wcs_from_pixscale_posang(hdr0)
         if rebuilt is not None:
@@ -383,13 +408,26 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
     # ------------------------------------------------------------------
     # 6) Fit NEW forward WCS
     # ------------------------------------------------------------------
+    # Tangent point: where the OLD solution puts the new image's centre.
+    # proj_point='center' builds it from the min/max longitude and latitude of
+    # the points, which goes wrong when a field surrounds a celestial pole
+    # (longitudes span 0-360): tested at dec -89.7 it left errors of minutes
+    # of arc.
+    try:
+        cx, cy = (out_w - 1) / 2.0, (out_h - 1) / 2.0
+        pc = M_dst_to_src @ np.array([cx, cy, 1.0])
+        proj_pt = w_old.pixel_to_world(pc[0] / pc[2], pc[1] / pc[2])
+        if not isinstance(proj_pt, SkyCoord):
+            proj_pt = SkyCoord(proj_pt.ra, proj_pt.dec)
+    except Exception:
+        proj_pt = 'center'
     try:
         w_new = fit_wcs_from_points(
             (x_new, y_new),
             sky_flat,
             sip_degree=sip_degree,
             projection='TAN',
-            proj_point='center'
+            proj_point=proj_pt
         )
         w_new.array_shape = (out_h, out_w)
     except Exception as e:

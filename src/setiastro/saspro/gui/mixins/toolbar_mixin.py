@@ -876,6 +876,10 @@ class ToolbarMixin:
         self.act_redo = QAction(QIcon(redoicon_path), self.tr("Redo"), self)
         self.act_undo.setShortcut(QKeySequence.StandardKey.Undo)               # Ctrl+Z
         self.act_redo.setShortcuts([QKeySequence.StandardKey.Redo])  # Shift+Ctrl+Z / Ctrl+Y
+        # Their text becomes "Undo <step name>" as history changes; the cheat
+        # sheet wants the command itself.
+        self.act_undo.setProperty("cheat_label", self.tr("Undo"))
+        self.act_redo.setProperty("cheat_label", self.tr("Redo"))
         self.act_undo.setIconVisibleInMenu(True)
         self.act_redo.setIconVisibleInMenu(True)
         self.act_undo.triggered.connect(self._undo_active)
@@ -977,14 +981,6 @@ class ToolbarMixin:
 
         self.act_auto_fit_resize.toggled.connect(self._toggle_auto_fit_on_resize)
 
-        # View state copy/paste (optional quick commands)
-        self._copied_view_state = None
-        self.act_copy_view = QAction(self.tr("Copy View (zoom/pan)"), self)
-        self.act_paste_view = QAction(self.tr("Paste View"), self)
-        self.act_copy_view.setShortcut("Ctrl+Shift+C")
-        self.act_paste_view.setShortcut("Ctrl+Shift+V")
-        self.act_copy_view.triggered.connect(self._copy_active_view)
-        self.act_paste_view.triggered.connect(self._paste_active_view)
         # --- Edit: Mono -> RGB (triplicate channels) ---
 
         self.act_copy = QAction(QIcon.fromTheme("edit-copy"), self.tr("Copy"), self)

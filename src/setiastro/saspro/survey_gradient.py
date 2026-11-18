@@ -516,6 +516,10 @@ def _dss2_colour(band: int) -> dict:
             # A fourth non-CDS host for the one entry that still reaches
             # the blue plate while Strasbourg is down.
             "https://data.stellarium.org/surveys/dss",
+            # MAST's copy in AWS S3, listed by the CDS registry as a
+            # hips_service_url for ivo://CDS/P/DSS2/color. Verified
+            # 2026-11-18 during a CDS outage: jpeg, order 9, 179 ms.
+            "https://stpubdata.s3.us-east-1.amazonaws.com/mast/skybackgrounds/DSSColor",
             "https://alaskybis.cds.unistra.fr/DSS/DSSColor",
             "https://alasky.cds.unistra.fr/DSS/DSSColor",
         ],
@@ -1175,7 +1179,8 @@ def _ordered_endpoints() -> list[str]:
 
 
 def _fetch_via_hips2fits(qw: WCS, h: int, w: int, hips_id: str,
-                         endpoint: str, timeout: float) -> np.ndarray:
+                         endpoint: str, timeout: float,
+                         keep_bands: bool = False) -> np.ndarray:
     from astroquery.hips2fits import hips2fits
     prev = getattr(hips2fits, "server", None)
     try:
@@ -1222,7 +1227,18 @@ def _fetch_via_hips2fits(qw: WCS, h: int, w: int, hips_id: str,
              f"BITPIX={result[0].header.get('BITPIX')}")
     except Exception:
         data = result
-    out = _flatten_to_2d(data, h, w)
+    if keep_bands:
+        # The finder chart DISPLAYS a colour survey, so it needs the planes
+        # this module otherwise collapses to luminance. Bands go last, the
+        # same layout the tile route already returns.
+        out = np.asarray(data, dtype=np.float32)
+        if out.ndim == 3 and out.shape[0] in (3, 4) and out.shape[0] < out.shape[-1]:
+            out = np.transpose(out[:3], (1, 2, 0))
+        if out.shape[:2] != (h, w):
+            raise SurveyFetchError(
+                f"cutout shape {out.shape[:2]} != requested grid {(h, w)}")
+    else:
+        out = _flatten_to_2d(data, h, w)
     _log("  " + _array_stats(out, "hips2fits"))
     return out
 
@@ -1815,7 +1831,8 @@ def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
                     *, mirrors: list[str] | None = None,
                     progress_cb=None, timeout: float = HIPS_TIMEOUT,
                     allow_tiles: bool = True,
-                    info: dict | None = None) -> np.ndarray:
+                    info: dict | None = None,
+                    keep_bands: bool = False) -> np.ndarray:
     """
     Pull a reference cutout for `wcs`, trying every route we know about.
 
@@ -1826,7 +1843,12 @@ def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
          locally. Slower, but survives a total hips2fits outage and can use
          hosts that have nothing to do with CDS.
 
-    Returns a float32 (h, w) array. Pixels outside the survey footprint come
+    keep_bands keeps a colour tree's planes on the hips2fits route as well
+    (the tile route always does), for callers that display the cutout
+    rather than fit a background to it -- the finder chart.
+
+    Returns a float32 (h, w) array, or (h, w, bands) for a colour tree.
+    Pixels outside the survey footprint come
     back as NaN and are carried through — a partially covered field is still
     usable, and a mostly uncovered one is caught by the coverage check in
     survey_gradient_model().
@@ -1927,7 +1949,8 @@ def fetch_reference(wcs: WCS, out_hw: tuple[int, int], hips_id: str,
             _log(f"-- route: hips2fits @ {host}")
             t0 = time.monotonic()
             try:
-                data = _fetch_via_hips2fits(qw, h, w, hips_id, ep, timeout)
+                data = _fetch_via_hips2fits(qw, h, w, hips_id, ep, timeout,
+                                            keep_bands=keep_bands)
                 dt = (time.monotonic() - t0) * 1000.0
                 _remember_endpoint(ep)
                 _log(f"   OK in {dt:.0f} ms")

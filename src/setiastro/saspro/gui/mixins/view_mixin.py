@@ -630,33 +630,3 @@ class ViewMixin:
             if hasattr(view, "set_autostretch"):
                 view.set_autostretch(True)
             self._sync_autostretch_action(True)
-
-    def _copy_active_view(self):
-        """Copy the current view state (zoom/pan) for pasting to other views."""
-        sw = self.mdi.activeSubWindow()
-        if not sw:
-            return
-        view = sw.widget()
-        self._copied_view_state = {
-            "scale": getattr(view, "scale", 1.0),
-            "hbar": view.scroll.horizontalScrollBar().value() if hasattr(view, "scroll") else 0,
-            "vbar": view.scroll.verticalScrollBar().value() if hasattr(view, "scroll") else 0,
-        }
-        self._log("View state copied")
-
-    def _paste_active_view(self):
-        """Paste a previously copied view state to the active view."""
-        if not getattr(self, "_copied_view_state", None):
-            return
-        sw = self.mdi.activeSubWindow()
-        if not sw:
-            return
-        view = sw.widget()
-        state = self._copied_view_state
-        
-        if hasattr(view, "set_scale"):
-            view.set_scale(state.get("scale", 1.0))
-        if hasattr(view, "scroll"):
-            view.scroll.horizontalScrollBar().setValue(state.get("hbar", 0))
-            view.scroll.verticalScrollBar().setValue(state.get("vbar", 0))
-        self._log("View state pasted")
