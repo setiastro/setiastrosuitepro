@@ -1,10 +1,10 @@
 {
-  "version": "1.24.5",
+  "version": "1.24.6",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.24.5/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.24.5/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.24.5/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.24.5/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.24.6/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.24.6/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.24.6/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.24.6/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro\n\nV1.24.5\nMosaic Master rebuilt with a new window, sky map, seam quality panel map, Advanced panel matching and a fast plate-solve based Robotic Mosaic mode for Seestar and DWARF frames, plus the black dot fix (GitHub 138). It also adds a Workflow Assistant Graph View, linear Live Stacking with SNR goals and worker processes, before and after comparison in Convolution and Multiscale Decomposition, and Stacking Suite fixes for colour lights, CFA drizzle, drop shrink and Canon CR3 files."
+  "notes": "Seti Astro Suite Pro\n\nV1.24.6\nFinder Chart can now draw sky charts: an annotated chart over the survey image, with constellations, deep-sky objects drawn to scale and star names, and a Drawn chart style that makes a full vector atlas page with SVG, PDF and PNG output, based on Jean d'Hooghvorst's Sky Chart Generator. The same chart layers can be drawn on any plate-solved image with the view's WCS button. A new setiastrosuitepro process command runs 17 processing tools from the command line, on one image, a folder or a pipeline, with the same settings as the app's shortcuts. Ctrl+Shift+P opens command search anywhere, the keyboard cheat sheet now lists every shortcut, Robotic Mosaic corrects each frame with SRGC, and SyQon Studio receives your image unaltered. Fixes include occasional mirrored plate solutions, Finder Chart survey mirrors, crops of plate-solved images on mirrored optics, and worker processes failing with numpy 2.4. See the release notes for the full list."
 }
