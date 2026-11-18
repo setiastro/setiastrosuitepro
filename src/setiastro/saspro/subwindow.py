@@ -4116,7 +4116,8 @@ class ImageSubWindow(QWidget):
         s = QSettings()
         keys = ("wcs_grid/enabled", "wcs_grid/mode", "wcs_grid/step_unit", "wcs_grid/step_value",
                 "wcs_chart/constellations", "wcs_chart/dso", "wcs_chart/dso_mag",
-                "wcs_chart/star_names")
+                "wcs_chart/star_names", "wcs_chart/layers", "wcs_chart/text_scale",
+                "wcs_chart/graphics_scale")
         return tuple(str(s.value(k, "")) for k in keys)
 
     def _draw_chart_overlay_on_pixmap(self, pm: QPixmap, pm_scaled: QPixmap) -> QPixmap:
@@ -4127,11 +4128,13 @@ class ImageSubWindow(QWidget):
         pixel-to-pixmap mapping, so the two agree; label sizes stay fixed on
         screen while the image zooms.
         """
-        s = QSettings()
-        cons = s.value("wcs_chart/constellations", True, type=bool)
-        dso = s.value("wcs_chart/dso", True, type=bool)
-        stars = s.value("wcs_chart/star_names", True, type=bool)
-        if not (cons or dso or stars):
+        try:
+            from setiastro.saspro import skychart_engine as _sce
+            cfg = _sce.wcs_overlay_config(QSettings())   # Settings > ... > Layers…
+        except Exception as e:
+            print(f"[WCS overlay] chart layers not drawn: {type(e).__name__}: {e}")
+            return pm
+        if not any(cfg["layers"].values()):
             return pm
         wcs2 = self._get_celestial_wcs()
         src = getattr(self.document, "image", None)
@@ -4140,17 +4143,18 @@ class ImageSubWindow(QWidget):
         H_full, W_full = int(np.asarray(src).shape[0]), int(np.asarray(src).shape[1])
         if pm is pm_scaled:
             pm = QPixmap(pm_scaled)      # never paint on the cached scaled pixmap
-        dso_mag = s.value("wcs_chart/dso_mag", 0.0, type=float)
+        dso_mag = float(cfg["dso_mag"])
         try:
-            from setiastro.saspro import skychart_engine as _sce
             from PyQt6.QtGui import QPainter
             data = _sce.get_data(log=lambda _m: None)
             p = QPainter(pm)
             try:
                 _sce.paint_wcs_overlay(
                     p, wcs2, W_full, H_full, float(pm.width()) / float(max(1, W_full)), data,
-                    constellations=cons, dso=dso, star_names=stars,
-                    dso_mag=(dso_mag if dso_mag > 0 else None), log=lambda _m: None)
+                    layers=cfg["layers"],
+                    dso_mag=(dso_mag if dso_mag > 0 else None),
+                    text_scale=float(cfg["text_scale"]),
+                    graphics_scale=float(cfg["graphics_scale"]), log=lambda _m: None)
             finally:
                 p.end()
         except Exception as e:

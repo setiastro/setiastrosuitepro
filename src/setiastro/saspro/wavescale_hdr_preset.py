@@ -117,3 +117,50 @@ def _clear_wavescale_flags(main, settings):
     for name in ("_wavescale_headless_running", "_wavescale_guard"):
         try: delattr(main, name)
         except Exception: setattr(main, name, False)
+
+
+def apply_wavescale_hdr_to_doc(doc, preset: dict | None = None) -> None:
+    """
+    WaveScale HDR straight onto `doc`, with no dialog, thread or event loop:
+    the steps the dialog takes in headless mode (_start_preview -> HDRWorker
+    -> _on_finished -> _apply_to_doc), with its slider clamps and 0.01
+    quantisation. Raises on failure where the dialog would show a box. Used
+    by the command-line tool, which has no one to dismiss a box.
+    """
+    import numpy as np
+    from .wavescale_hdr import compute_wavescale_hdr, _B3
+    from .wavescalede_preset import _get_doc_active_mask_2d
+
+    p = dict(preset or {})
+    ns = max(2, min(10, int(p.get("n_scales", 5))))
+    comp = int(max(10, min(500, round(float(p.get("compression_factor", 1.5)) * 100)))) / 100.0
+    mg = int(max(10, min(1000, round(float(p.get("mask_gamma", 5.0)) * 100)))) / 100.0
+
+    base = getattr(doc, "image", None)
+    if base is None:
+        raise RuntimeError("Document has no image.")
+    img = np.asarray(base, dtype=np.float32)
+    if img.ndim == 2:
+        rgb, mono_shape = np.repeat(img[:, :, None], 3, axis=2), img.shape
+    elif img.ndim == 3 and img.shape[2] == 1:
+        rgb, mono_shape = np.repeat(img, 3, axis=2), img.shape
+    else:
+        rgb, mono_shape = img[:, :, :3], None
+    rgb = np.clip(rgb, 0.0, 1.0).astype(np.float32, copy=False)
+
+    transformed, mask = compute_wavescale_hdr(rgb, ns, comp, mg, _B3)
+    m_doc = _get_doc_active_mask_2d(doc, target_hw=rgb.shape[:2])
+    if m_doc is not None:
+        mask = np.clip(mask * m_doc, 0.0, 1.0)
+    m3 = np.repeat(mask[..., None], 3, axis=2)
+    out = rgb * (1.0 - m3) + transformed * m3
+
+    if mono_shape is not None:
+        out = np.mean(out, axis=2, dtype=np.float32)
+        if len(mono_shape) == 3:
+            out = out[:, :, None]
+    out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+    doc.set_image(out, metadata={"step_name": "WaveScale HDR", "command_id": "wavescale_hdr",
+                                 "preset": {"n_scales": ns, "compression_factor": comp,
+                                            "mask_gamma": mg}},
+                  step_name="WaveScale HDR")

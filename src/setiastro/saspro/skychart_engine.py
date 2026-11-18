@@ -4074,8 +4074,76 @@ WCS_OVERLAY_GROUPS = {
 }
 
 
+# Image views' own layer choice (Settings > WCS + Chart Overlay > Layers…),
+# kept apart from Finder Chart's. Until it is saved, the three switches it
+# replaced seed it (each turning its whole group above on or off), so what a
+# view draws doesn't change until the layers are actually picked.
+WCS_OVERLAY_LAYERS_KEY = "wcs_chart/layers"
+WCS_OVERLAY_DEFAULTS = {k: (k in {m for g in WCS_OVERLAY_GROUPS.values() for m in g})
+                        for k in OVERLAY_LAYERS}
+WCS_OVERLAY_OPTION_DEFAULTS = {"dso_mag": 0.0, "text_scale": 1.6, "graphics_scale": 1.3}
+_WCS_OVERLAY_LEGACY = {"constellations": "wcs_chart/constellations", "dso": "wcs_chart/dso",
+                       "stars": "wcs_chart/star_names"}
+_WCS_OVERLAY_GROUP_NAMES = {"constellations": "Constellations",
+                            "dso": "all deep-sky catalogs", "stars": "star labels"}
+
+
+def wcs_overlay_config(settings) -> dict:
+    """The image views' chart overlay: {"layers": {key: on} for every
+    OVERLAY_LAYERS key, "dso_mag" (0 = automatic), "text_scale",
+    "graphics_scale"}."""
+    import json as _json
+    lay = None
+    raw = settings.value(WCS_OVERLAY_LAYERS_KEY, "", type=str) or ""
+    if raw:
+        try:
+            d = _json.loads(raw)
+            if isinstance(d, dict):
+                lay = {k: bool(d.get(k, False)) for k in OVERLAY_LAYERS}
+        except Exception:
+            lay = None
+    if lay is None:
+        lay = {k: False for k in OVERLAY_LAYERS}
+        for g, key in _WCS_OVERLAY_LEGACY.items():
+            on = bool(settings.value(key, True, type=bool))
+            for k in WCS_OVERLAY_GROUPS[g]:
+                lay[k] = on
+    out = {"layers": lay}
+    for k, d in WCS_OVERLAY_OPTION_DEFAULTS.items():
+        try:
+            out[k] = float(settings.value(f"wcs_chart/{k}", d, type=float))
+        except Exception:
+            out[k] = float(d)
+    return out
+
+
+def save_wcs_overlay_config(settings, cfg: dict) -> None:
+    import json as _json
+    lay = cfg.get("layers") or {}
+    settings.setValue(WCS_OVERLAY_LAYERS_KEY,
+                      _json.dumps({k: bool(lay.get(k, False)) for k in OVERLAY_LAYERS}))
+    for k, d in WCS_OVERLAY_OPTION_DEFAULTS.items():
+        settings.setValue(f"wcs_chart/{k}", float(cfg.get(k, d)))
+
+
+def wcs_overlay_summary(cfg: dict) -> str:
+    """Short description of the chosen layers, for the Settings page."""
+    lay = cfg.get("layers") or {}
+    names = {k: n for k, n, _d, _on in LAYERS}
+    parts, done = [], set()
+    for g, keys in WCS_OVERLAY_GROUPS.items():
+        if all(lay.get(k) for k in keys):
+            parts.append(_WCS_OVERLAY_GROUP_NAMES[g])
+            done.update(keys)
+    for k in OVERLAY_LAYERS:
+        if lay.get(k) and k not in done:
+            parts.append(names.get(k, k))
+    return ", ".join(parts) if parts else "None"
+
+
 def paint_wcs_overlay(painter: QPainter, wcs, w_full: int, h_full: int, zoom: float,
                       data: "ChartData", *, constellations=True, dso=True, star_names=True,
+                      layers: dict | None = None,
                       dso_mag=None, px_per_mm: float = 3.8, text_scale: float = 1.6,
                       graphics_scale: float = 1.3, log=print) -> dict:
     """
@@ -4087,14 +4155,20 @@ def paint_wcs_overlay(painter: QPainter, wcs, w_full: int, h_full: int, zoom: fl
     and the label placer declutters for each zoom level -- zooming in shows more.
     Annotation only: no star discs, nebula fills or Milky Way; the image has them.
     Returns the renderer's info dict.
+
+    `layers` ({key: on}, keys in OVERLAY_LAYERS) picks layers one by one and
+    overrides the three group switches. Either way every layer is given an
+    explicit on/off: overlay_params() fills a missing key from
+    OVERLAY_DEFAULTS, so a group switched off used to come back on.
     """
-    lay = {}
-    if constellations:
-        lay.update({k: True for k in WCS_OVERLAY_GROUPS["constellations"]})
-    if dso:
-        lay.update({k: True for k in WCS_OVERLAY_GROUPS["dso"]})
-    if star_names:
-        lay.update({k: True for k in WCS_OVERLAY_GROUPS["stars"]})
+    if layers is not None:
+        lay = {k: bool(layers.get(k, False)) for k in OVERLAY_LAYERS}
+    else:
+        lay = {k: False for k in OVERLAY_LAYERS}
+        for g, on in (("constellations", constellations), ("dso", dso),
+                      ("stars", star_names)):
+            if on:
+                lay.update({k: True for k in WCS_OVERLAY_GROUPS[g]})
     P = overlay_params(lay, text_scale=text_scale, graphics_scale=graphics_scale)
     P = replace(P, catalog_ids=False)
     if dso_mag is not None:

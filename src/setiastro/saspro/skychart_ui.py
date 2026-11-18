@@ -1916,14 +1916,24 @@ class SkyChartPanel(QWidget):
 
 
 class OverlayLayersDialog(QDialog):
-    """Which sky-chart layers Finder Chart draws over a survey image."""
+    """Which sky-chart layers an overlay draws: Finder Chart over a survey
+    image, or an image view's WCS overlay over the photograph.
 
-    def __init__(self, layers: dict, parent=None):
+    Optional: `title` and `note` for the caller's wording; `defaults`, what the
+    Defaults button restores (OVERLAY_DEFAULTS otherwise); `options`, a dict
+    with any of "dso_mag" (0 = automatic), "text_scale", "graphics_scale" --
+    when given, those are editable too and options() returns them, with
+    `option_defaults` restored by Defaults."""
+
+    def __init__(self, layers: dict, parent=None, *, title: str | None = None,
+                 note: str | None = None, defaults: dict | None = None,
+                 options: dict | None = None, option_defaults: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Sky Chart Overlay Layers")
+        self.setWindowTitle(title or "Sky Chart Overlay Layers")
+        defaults = dict(OVERLAY_DEFAULTS if defaults is None else defaults)
         v = QVBoxLayout(self)
-        lbl = QLabel("Drawn over the survey image. The photograph already shows the stars, "
-                     "nebulae and Milky Way, so those are labelled, never painted.")
+        lbl = QLabel(note or "Drawn over the survey image. The photograph already shows the stars, "
+                             "nebulae and Milky Way, so those are labelled, never painted.")
         lbl.setWordWrap(True)
         v.addWidget(lbl)
         names = {k: (n, d) for k, n, d, _on in LAYERS}
@@ -1933,17 +1943,53 @@ class OverlayLayersDialog(QDialog):
             n, d = names.get(key, (key, ""))
             cb = QCheckBox(n)
             cb.setToolTip(d)
-            cb.setChecked(bool(layers.get(key, OVERLAY_DEFAULTS.get(key, False))))
+            cb.setChecked(bool(layers.get(key, defaults.get(key, False))))
             self._checks[key] = cb
             grid.addWidget(cb, i // 2, i % 2)
         v.addLayout(grid)
+
+        self._opts = {}
+        self._opt_defaults = dict(option_defaults or {})
+        if options is not None:
+            from PyQt6.QtWidgets import QDoubleSpinBox, QFormLayout
+            form = QFormLayout()
+            if "dso_mag" in options:
+                sp = QDoubleSpinBox()
+                sp.setRange(0.0, 20.0); sp.setDecimals(1); sp.setSingleStep(0.5)
+                sp.setSpecialValueText("Auto")
+                sp.setToolTip("Faintest deep-sky object drawn. Auto follows the field of view.")
+                sp.setValue(float(options["dso_mag"]))
+                self._opts["dso_mag"] = sp
+                form.addRow("Faintest deep-sky object, mag ≤", sp)
+            for key, label, tip in (
+                    ("text_scale", "Label size",
+                     "Size of names and labels on screen; they stay this size while you zoom."),
+                    ("graphics_scale", "Line weight",
+                     "Thickness of constellation lines, borders and object outlines.")):
+                if key in options:
+                    sp = QDoubleSpinBox()
+                    sp.setRange(0.5, 4.0); sp.setDecimals(1); sp.setSingleStep(0.1)
+                    sp.setSuffix(" ×")
+                    sp.setToolTip(tip)
+                    sp.setValue(float(options[key]))
+                    self._opts[key] = sp
+                    form.addRow(label, sp)
+            v.addLayout(form)
+
         row = QHBoxLayout()
         for txt, on in (("All", True), ("None", False)):
             b = QPushButton(txt)
             b.clicked.connect(lambda _=False, val=on: [c.setChecked(val) for c in self._checks.values()])
             row.addWidget(b)
         b = QPushButton("Defaults")
-        b.clicked.connect(lambda: [c.setChecked(OVERLAY_DEFAULTS.get(k, False)) for k, c in self._checks.items()])
+
+        def _defaults():
+            for k, c in self._checks.items():
+                c.setChecked(bool(defaults.get(k, False)))
+            for k, sp in self._opts.items():
+                if k in self._opt_defaults:
+                    sp.setValue(float(self._opt_defaults[k]))
+        b.clicked.connect(_defaults)
         row.addWidget(b)
         row.addStretch(1)
         v.addLayout(row)
@@ -1954,3 +2000,6 @@ class OverlayLayersDialog(QDialog):
 
     def layers(self) -> dict:
         return {k: cb.isChecked() for k, cb in self._checks.items()}
+
+    def options(self) -> dict:
+        return {k: float(sp.value()) for k, sp in self._opts.items()}

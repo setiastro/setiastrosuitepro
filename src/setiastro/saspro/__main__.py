@@ -22,6 +22,9 @@ CLI_SUBCOMMANDS = {
     # plate solving (headless; blind-capable)
     "solve", "platesolve",
 
+    # headless image processing (stretches, colour, detail tools)
+    "process",
+
     # other CLI tools you may add
     "benchmark",
     "report",
