@@ -578,7 +578,13 @@ def blind_seed(image: np.ndarray,
         return False, res.get("error", "blind solve failed")
 
     sc_deg = res["scale_arcsec"] / 3600.0
-    th = math.radians(res["roll_deg"])
+    # roll_deg is arg(m) of the quad similarity  cat = m*img + t  (img
+    # conjugated when flipped), so the true CD is +s*R(roll) -- or its
+    # mirror. The matrix below is written as -s*R(th), so th = roll + 180.
+    # Built with th = roll, it was a half turn out at every roll and parity:
+    # measured on a real 3.1 x 2.1 deg frame, 8342" median error against the
+    # refined solution, in both parities.
+    th = math.radians(res["roll_deg"] + 180.0)
     par = -1.0 if res["parity"] == "flipped" else 1.0
 
     hdr = Header()
@@ -602,7 +608,14 @@ def blind_seed(image: np.ndarray,
     else:                            # det = +sc^2
         hdr["CD1_1"], hdr["CD1_2"] = -sc_deg * _c,  sc_deg * _s
         hdr["CD2_1"], hdr["CD2_2"] = -sc_deg * _s, -sc_deg * _c
-    hdr["CROTA2"] = float(res["roll_deg"])
+    # CROTA2 is a POSITION ANGLE, and _make_seed_wcs() reads it as one:
+    # PA = th + 180 when det > 0, PA = -th when det < 0 (see the comment
+    # there). For a normal frame that is roll itself, which is why writing
+    # roll here looked right; for a mirrored one it is 180 - roll, and the
+    # quad-seed fallback, which rebuilds the WCS from this card, came back
+    # rotated.
+    _th_deg = res["roll_deg"] + 180.0
+    hdr["CROTA2"] = float(((-_th_deg) if par < 0 else (_th_deg + 180.0)) % 360.0)
     hdr["RADESYS"] = "ICRS"
     hdr["WCSAXES"] = 2
     hdr["BLNDODDS"] = (round(res["log_odds"], 1),
