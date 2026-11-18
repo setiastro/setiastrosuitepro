@@ -120,6 +120,7 @@ declare_gesture("Drag the ⧉ tab onto empty canvas", "Image view", "Duplicate t
 declare_gesture("Alt+drag the ⧉ tab onto another view", "Image view", "Link the two views (live pan/zoom sync)")
 declare_gesture("Shift+drag the ⧉ tab onto another view", "Image view", "Apply this image to it as a mask")
 declare_gesture("Ctrl+drag the ⧉ tab onto another view", "Image view", "Copy the astrometric solution (WCS) to it")
+declare_gesture("Ctrl+drag the ⧉ tab onto a View Bundle", "Image view", "Copy the astrometric solution (WCS) to every open view in the bundle")
 declare_gesture("Mouse wheel", "Image view", "Zoom at the cursor")
 declare_gesture("Space+click or Space+drag", "Image view", "Read pixel values (and WCS) under the cursor")
 from setiastro.saspro.widgets.image_utils import ensure_contiguous
@@ -179,7 +180,8 @@ class _DragTab(QLabel):
             "Drag to duplicate/copy view.\n"
             "Hold Alt while dragging to LINK this view with another (live pan/zoom sync).\n"
             "Hold Shift while dragging to drop this image as a mask onto another view.\n"
-            "Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view."
+            "Hold Ctrl while dragging to copy the astrometric solution (WCS) to another view,\n"
+            "or to every open view in a View Bundle."
         ))
 
         self.setFixedSize(22, 18)

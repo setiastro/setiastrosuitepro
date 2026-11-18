@@ -148,6 +148,7 @@
 <li><b>Drop files or folders from the OS</b> on the chip &rarr; add them to the bundle (directories walked recursively).</li>
 <li><b>Drop a shortcut tile</b> on the chip &rarr; apply it to every target in the bundle (same semantics as dropping into the dialog).</li>
 <li><b>Drop a Function Bundle</b> on the chip &rarr; apply its whole step sequence to every target.</li>
+<li><b>Ctrl+drag a view's &#x29C9; tab</b> onto the chip (or the dialog) &rarr; copy that view's astrometric solution (WCS/SIP) to every open view in the bundle, exactly as Ctrl+dropping it on each view would. The source view is skipped if it is in the bundle. Files in the bundle are left unchanged, since copying to them would rewrite them on disk; open them as views first if they need the solution.</li>
 <li><b>Ctrl+drag</b> the chip &rarr; starts an external drag with a <code>bundle</code> payload (<code>{"command_id": "bundle", "steps": [&hellip;], "bundle_uuid": "&hellip;"}</code>). This isn't meant to be dropped on a target to execute &mdash; it's a reference payload for chaining into other systems.</li>
 <li><b>Left-drag</b> &rarr; move the chip within the canvas; position is clamped and saved on release.</li>
 <li><b>Double-click</b> &rarr; reopen the dialog and focus this bundle.</li>

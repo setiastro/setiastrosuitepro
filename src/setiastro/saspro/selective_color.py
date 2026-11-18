@@ -127,11 +127,16 @@ def _hue_mask(img01: np.ndarray,
               max_light: float,
               smooth_deg: float,
               invert_range: bool = False,
-              soft: bool = False) -> np.ndarray:
+              soft: bool = False,
+              soft_by: str = "chroma") -> np.ndarray:
     """
     Return mask in 0..1 for the UNION of hue bands in ranges_deg (degrees).
     Handles wrap-around without recursion. If invert_range=True, selects the
     COMPLEMENT of the union on the hue circle (before chroma/light gating).
+
+    soft=True makes the mask proportional rather than in/out. soft_by picks
+    what it is proportional TO: "chroma" (vivid colour gets the most) or
+    "lightness" (bright pixels get the most).
     """
     hsv  = _rgb_to_hsv01(img01)                 # H in [0..1)
     Hdeg = (np.mod(hsv[..., 0] * 360.0, 360.0)).astype(np.float32)
@@ -147,7 +152,21 @@ def _hue_mask(img01: np.ndarray,
         m = 1.0 - m
 
     # chroma/light gating
-    if soft:
+    if soft and soft_by == "lightness":
+        # Lightness-proportional: the weight IS the pixel's lightness, mapped
+        # across the Lightness min/max window -- none at min, full at max. At
+        # the default 0..1 window that is the plain luminosity mask, so faint
+        # background takes little of the correction and bright structure takes
+        # it all. Lightness here is V, the same measure the min/max boxes gate.
+        # Chroma goes back to being a gate, exactly as in the hard mask.
+        if min_chroma > 0:
+            chroma = (S * V).astype(np.float32)
+            m *= _softstep(chroma, float(min_chroma)*0.7, float(min_chroma))
+        lo, hi = float(min_light), float(max_light)
+        m *= np.clip((V - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+        if max_light < 1:
+            m *= (1.0 - _softstep(V, hi, min(1.0, hi + 0.10)))
+    elif soft:
         #sasproportional selection: weight by how strongly the pixel is colored
         # (chroma) and feather the lightness limits, so the mask fades in/out
         # continuously instead of snapping. Edge pixels of a colored region are
@@ -690,12 +709,34 @@ class SelectiveColorCorrection(QDialog):
         self.cb_soft_mask = QCheckBox("Soft (proportional)")
         self.cb_soft_mask.setChecked(False)
         self.cb_soft_mask.setToolTip(
-            "Weight the mask by how strongly each pixel matches the color "
-            "(chroma), and feather the lightness limits, instead of a hard "
-            "in/out selection. Softens blobby, hard-edged corrections."
+            "Weight the mask continuously instead of a hard in/out selection. "
+            "Softens blobby, hard-edged corrections."
         )
         self.cb_soft_mask.toggled.connect(self._recompute_mask_and_preview)
-        gl.addWidget(self.cb_soft_mask, 6, 6, 1, 2)
+
+        # What the soft mask is proportional to. Shares the checkbox's grid
+        # cell so the rest of the layout does not move.
+        self.dd_soft_by = QComboBox()
+        self.dd_soft_by.addItems(["Chromaticity", "Lightness"])
+        self.dd_soft_by.setToolTip(
+            "Chromaticity: the more vivid a pixel's colour, the more of the "
+            "correction it gets; the lightness limits are feathered.\n"
+            "Lightness: the brighter the pixel, the more it gets -- none at "
+            "Lightness min, full at Lightness max (at 0 to 1 that is a "
+            "luminosity mask). Min chroma becomes a plain cut-off."
+        )
+        self.dd_soft_by.setEnabled(False)
+        self.dd_soft_by.currentIndexChanged.connect(self._recompute_mask_and_preview)
+        self.cb_soft_mask.toggled.connect(self.dd_soft_by.setEnabled)
+
+        soft_row = QWidget()
+        soft_lay = QHBoxLayout(soft_row)
+        soft_lay.setContentsMargins(0, 0, 0, 0)
+        soft_lay.setSpacing(4)
+        soft_lay.addWidget(self.cb_soft_mask)
+        soft_lay.addWidget(QLabel("by"))
+        soft_lay.addWidget(self.dd_soft_by, 1)
+        gl.addWidget(soft_row, 6, 6, 1, 2)
 
         # Row 7: imported mask
         self.cb_use_imported = QCheckBox("Use imported mask")
@@ -1174,6 +1215,8 @@ class SelectiveColorCorrection(QDialog):
         setv(self.ds_smooth, 10.0)
         setv(self.cb_invert, False)
         setv(self.cb_soft_mask, False)
+        setv(self.dd_soft_by, "Chromaticity")
+        self.dd_soft_by.setEnabled(False)   # signals were blocked above
 
         # Shadows/Highlights/Balance
         setv(self.ds_sh, 0.0)
@@ -1616,6 +1659,7 @@ class SelectiveColorCorrection(QDialog):
                 smooth_deg=float(self.ds_smooth.value()),
                 invert_range=self.cb_invert.isChecked(),
                 soft=self.cb_soft_mask.isChecked(),
+                soft_by=("lightness" if self.dd_soft_by.currentIndex() == 1 else "chroma"),
             )
 
             mask = _weight_shadows_highlights(
@@ -1863,6 +1907,7 @@ class SelectiveColorCorrection(QDialog):
             smooth_deg=float(self.ds_smooth.value()),
             invert_range=self.cb_invert.isChecked(),
             soft=self.cb_soft_mask.isChecked(),
+            soft_by=("lightness" if self.dd_soft_by.currentIndex() == 1 else "chroma"),
         )
 
         mask = _weight_shadows_highlights(
