@@ -2984,9 +2984,14 @@ def _merge_blind_seed(original: "Header | None", blind: "Header") -> "Header":
     """
     base = (_strip_wcs_keys(original.copy())
             if isinstance(original, Header) else Header())
+    # BLNDPAR must come across with the rest. _solve_with_GAIA reads the
+    # parity for its quad-seed fallback from THIS header, defaulting to
+    # "normal" -- so without it, a mirrored field that failed refinement was
+    # handed back as an unmirrored WCS: right centre, right scale, image
+    # flipped against the sky.
     for k in ("CTYPE1", "CTYPE2", "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2",
               "CD1_1", "CD1_2", "CD2_1", "CD2_2", "CROTA1", "CROTA2",
-              "RADESYS", "WCSAXES", "BLNDODDS", "BLNDLAYR"):
+              "RADESYS", "WCSAXES", "BLNDODDS", "BLNDLAYR", "BLNDPAR"):
         if k in blind:
             try:
                 base[k] = blind[k]
@@ -4574,6 +4579,51 @@ def _gaia_fit_and_validate(
                             _r_wcs.pixel_to_world(_r_img[:, 0],
                                                   _r_img[:, 1])).arcsec
                         _r_rms = float(np.sqrt(np.mean(_r_sep ** 2)))
+                        # A least-squares refit on these pairs can never
+                        # honestly do worse than the solution it starts from
+                        # does on the SAME pairs -- that solution is in its
+                        # model family. When it does, the optimiser failed,
+                        # not the data. Measured on a real M31 frame: SIP-4
+                        # at 0.56" on 713 pairs "refitted" to 5.15" on 1155,
+                        # the gate refused it, and a correctly matched seeded
+                        # solve fell through to the blind retry.
+                        #
+                        # Falling back to the current solution alone is not
+                        # enough: it was fitted on the inner pairs and still
+                        # extrapolates at the edge (1.4" -> 2.0" on the same
+                        # frame), while SIP-3 on these very pairs converges
+                        # to 0.63". So step DOWN the degrees -- the one that
+                        # diverged is the highest -- and keep whichever of
+                        # them, or the current solution, fits best.
+                        _k_sep = _r_sky.separation(
+                            wcs_solution.pixel_to_world(_r_img[:, 0],
+                                                        _r_img[:, 1])).arcsec
+                        _k_rms = float(np.sqrt(np.mean(_k_sep ** 2)))
+                        if _k_rms < _r_rms:
+                            _pick = (wcs_solution, _k_rms, "the current solution")
+                            for _dd in range((_rdeg or 0) - 1, 1, -1):
+                                try:
+                                    _w_dd = fit_wcs_from_points(
+                                        (_r_img[:, 0], _r_img[:, 1]), _r_sky,
+                                        **dict(_kw, sip_degree=_dd))
+                                    _w_dd.array_shape = (img_h, img_w)
+                                    _s_dd = float(np.sqrt(np.mean(_r_sky.separation(
+                                        _w_dd.pixel_to_world(_r_img[:, 0],
+                                                             _r_img[:, 1])).arcsec ** 2)))
+                                    print(f"[GaiaLocal] recover: SIP-{_dd} "
+                                          f"refit {_s_dd:.3f}\"")
+                                    if _s_dd < _pick[1]:
+                                        _pick = (_w_dd, _s_dd, f"a SIP-{_dd} refit")
+                                except Exception as _e_dd:
+                                    print(f"[GaiaLocal] recover: SIP-{_dd} "
+                                          f"refit failed: {_e_dd}")
+                            print(f"[GaiaLocal] recover: refit went "
+                                  f"{_r_rms:.3f}\" but the current solution "
+                                  f"already fits these {_n_rec} pairs at "
+                                  f"{_k_rms:.3f}\" -- the refit did not "
+                                  f"converge; using {_pick[2]} at "
+                                  f"{_pick[1]:.3f}\"")
+                            _r_wcs, _r_rms = _pick[0], _pick[1]
                         _cov_after = float(np.hypot(_r_img[:, 0] - _cx0,
                                                     _r_img[:, 1] - _cy0).max())
                         _corner = float(np.hypot(_cx0, _cy0))
