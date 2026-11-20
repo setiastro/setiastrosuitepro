@@ -6,6 +6,8 @@ This module provides centralized implementations for wavelet operations
 used across wavescale_hdr.py, wavescalede.py, and other modules.
 """
 from __future__ import annotations
+import os
+import threading
 import numpy as np
 
 
@@ -21,6 +23,345 @@ except ImportError:
     _HAVE_SCIPY = False
     _nd_convolve = None
     _nd_gauss = None
+
+try:
+    from scipy.ndimage._filters import _gaussian_kernel1d as _nd_gauss_kernel1d
+except Exception:
+    _nd_gauss_kernel1d = None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fast exact paths: numba kernels that release the GIL, run on row bands
+#
+# Bit-identical stand-ins for the two SciPy filters above, 2-D float32 only.
+# They accumulate in float64 in exactly SciPy's order:
+#   conv_sep_reflect -> ndimage.convolve (N-D correlate): kernel flipped, taps
+#       in kernel order, zero taps skipped, acc = 0.0 then acc += w * x.
+#   gauss_blur -> ndimage.gaussian_filter: correlate1d on axis 0 then axis 1,
+#       float32 in between; symmetric-kernel path acc = x * w[c], then
+#       acc += (left + right) * w[d], outermost pair first.
+# Border: 'reflect' (d c b a | a b c d | d c b a).  Anything outside that
+# envelope (other dtypes, kernel radius > image side, no numba) goes to SciPy.
+# Speed: ~10x per pass, and a worker thread using them no longer holds the
+# GIL, so the GUI keeps painting.
+# ─────────────────────────────────────────────────────────────────────────────
+
+try:
+    from numba import njit as _njit
+except Exception:
+    _njit = None
+
+_FAST_OK = bool(_HAVE_SCIPY and _njit is not None)
+
+if _FAST_OK:
+    @_njit(nogil=True, cache=True)
+    def _nb_corr_x(src, out, taps, ws, xmap, r0, r1):
+        # taps index the reflect-padded row: tap t reads pad[x + taps[t]]
+        W = src.shape[1]
+        P = xmap.shape[0]
+        T = taps.shape[0]
+        pad = np.empty(P, dtype=np.float64)
+        acc = np.empty(W, dtype=np.float64)
+        for y in range(r0, r1):
+            for p in range(P):
+                pad[p] = np.float64(src[y, xmap[p]])
+            for x in range(W):
+                acc[x] = 0.0
+            for t in range(T):
+                w = ws[t]
+                o = taps[t]
+                for x in range(W):
+                    acc[x] += w * pad[x + o]
+            for x in range(W):
+                out[y, x] = np.float32(acc[x])
+
+    @_njit(nogil=True, cache=True)
+    def _nb_corr_y(src, out, taps, ws, ymap, r0, r1):
+        W = src.shape[1]
+        T = taps.shape[0]
+        acc = np.empty(W, dtype=np.float64)
+        for y in range(r0, r1):
+            for x in range(W):
+                acc[x] = 0.0
+            for t in range(T):
+                w = ws[t]
+                yy = ymap[y + taps[t]]
+                for x in range(W):
+                    acc[x] += w * np.float64(src[yy, x])
+            for x in range(W):
+                out[y, x] = np.float32(acc[x])
+
+    @_njit(nogil=True, cache=True)
+    def _nb_corr_y_detail(src, cur, out, det, taps, ws, ymap, r0, r1):
+        # _nb_corr_y, plus det = cur - out (float32, as numpy's current - smooth)
+        W = src.shape[1]
+        T = taps.shape[0]
+        acc = np.empty(W, dtype=np.float64)
+        for y in range(r0, r1):
+            for x in range(W):
+                acc[x] = 0.0
+            for t in range(T):
+                w = ws[t]
+                yy = ymap[y + taps[t]]
+                for x in range(W):
+                    acc[x] += w * np.float64(src[yy, x])
+            for x in range(W):
+                s = np.float32(acc[x])
+                out[y, x] = s
+                det[y, x] = cur[y, x] - s
+
+    @_njit(nogil=True, cache=True)
+    def _nb_sym_x(src, out, w, xmap, r0, r1):
+        W = src.shape[1]
+        P = xmap.shape[0]
+        R = w.shape[0] // 2
+        wc = w[R]
+        pad = np.empty(P, dtype=np.float64)
+        acc = np.empty(W, dtype=np.float64)
+        for y in range(r0, r1):
+            for p in range(P):
+                pad[p] = np.float64(src[y, xmap[p]])
+            for x in range(W):
+                acc[x] = pad[x + R] * wc
+            for d in range(R, 0, -1):
+                wd = w[R - d]
+                for x in range(W):
+                    acc[x] += (pad[x + R - d] + pad[x + R + d]) * wd
+            for x in range(W):
+                out[y, x] = np.float32(acc[x])
+
+    @_njit(nogil=True, cache=True)
+    def _nb_sym_y(src, out, w, ymap, r0, r1):
+        W = src.shape[1]
+        R = w.shape[0] // 2
+        wc = w[R]
+        acc = np.empty(W, dtype=np.float64)
+        for y in range(r0, r1):
+            for x in range(W):
+                acc[x] = np.float64(src[y, x]) * wc
+            for d in range(R, 0, -1):
+                wd = w[R - d]
+                ya = ymap[y + R - d]
+                yb = ymap[y + R + d]
+                for x in range(W):
+                    acc[x] += (np.float64(src[ya, x]) + np.float64(src[yb, x])) * wd
+            for x in range(W):
+                out[y, x] = np.float32(acc[x])
+
+
+_POOL = None
+_POOL_LOCK = threading.Lock()
+_POOL_WORKERS = max(1, min(8, os.cpu_count() or 1))
+
+
+def _row_pool():
+    global _POOL
+    if _POOL is None:
+        with _POOL_LOCK:
+            if _POOL is None:
+                from concurrent.futures import ThreadPoolExecutor
+                _POOL = ThreadPoolExecutor(max_workers=_POOL_WORKERS,
+                                           thread_name_prefix="wavelet")
+    return _POOL
+
+
+def _run_row_bands(kern, H: int, W: int, args: tuple) -> None:
+    """kern(*args, r0, r1) over row bands; bands only write their own rows."""
+    if _POOL_WORKERS <= 1 or H * W < (1 << 18) or H < 2:
+        kern(*args, 0, H)
+        return
+    nb = min(H, _POOL_WORKERS * 4)
+    step = -(-H // nb)
+    pool = _row_pool()
+    futs = [pool.submit(kern, *args, r0, min(H, r0 + step)) for r0 in range(0, H, step)]
+    for f in futs:
+        f.result()
+
+
+def run_row_bands(fn, H: int) -> None:
+    """Call fn(slice(r0, r1)) for row bands covering 0..H, in the shared pool.
+
+    For elementwise numpy work on large images: numpy releases the GIL in its
+    loops, so the bands run in parallel and the result is the same as one call
+    over all rows. Each band must write only its own rows, and fn must not call
+    anything that uses this pool itself (conv_sep_reflect, gauss_blur).
+    """
+    H = int(H)
+    if _POOL_WORKERS <= 1 or H < 64:
+        fn(slice(0, H))
+        return
+    nb = min(H // 16, _POOL_WORKERS * 2)
+    step = -(-H // nb)
+    pool = _row_pool()
+    futs = [pool.submit(fn, slice(r0, min(H, r0 + step))) for r0 in range(0, H, step)]
+    for f in futs:
+        f.result()
+
+
+def _reflect_index_map(n: int, R: int) -> np.ndarray:
+    """Source index for padded positions -R .. n-1+R (ndimage 'reflect'; R <= n)."""
+    idx = np.arange(-R, n + R, dtype=np.int64) % (2 * n)
+    return np.ascontiguousarray(np.where(idx >= n, 2 * n - 1 - idx, idx).astype(np.int64))
+
+
+_SELF_CHECK = None      # None: not run yet; then True/False
+
+
+def _fast_paths_verified() -> bool:
+    """One-time check that the fast paths reproduce the installed SciPy bit for
+    bit (guards against a SciPy whose filters or private kernel helper changed).
+    On any mismatch or error the fast paths stay off and SciPy is used."""
+    global _SELF_CHECK, _FAST_OK
+    if _SELF_CHECK is None:
+        ok = False
+        try:
+            rng = np.random.default_rng(12345)
+            x = rng.random((67, 71), dtype=np.float32)
+            x[::7, ::5] = 0.0
+            ok = True
+            for s in range(3):
+                k = build_spaced_kernel(B3_KERNEL, s)
+                for ax in (0, 1):
+                    kk = k.reshape(1, -1) if ax == 1 else k.reshape(-1, 1)
+                    a = _nd_convolve(x, kk, mode="reflect")
+                    b = _conv_sep_reflect_fast_unchecked(x, k, ax)
+                    ok = ok and b is not None and np.array_equal(a.view(np.uint32), b.view(np.uint32))
+                t = _nd_convolve(x, k.reshape(1, -1), mode="reflect")
+                a = _nd_convolve(t, k.reshape(-1, 1), mode="reflect")
+                sd = _smooth_and_detail_fast_unchecked(t, x, k)
+                ok = (ok and sd is not None
+                      and np.array_equal(a.view(np.uint32), sd[0].view(np.uint32))
+                      and np.array_equal((x - a).view(np.uint32), sd[1].view(np.uint32)))
+            if _nd_gauss_kernel1d is not None:
+                for sg in (3.0, 1.3):
+                    a = _nd_gauss(x, sigma=sg, mode="reflect")
+                    b = _gauss_blur_fast_unchecked(x, sg)
+                    ok = ok and b is not None and np.array_equal(a.view(np.uint32), b.view(np.uint32))
+        except Exception:
+            ok = False
+        _SELF_CHECK = bool(ok)
+        if not ok:
+            _FAST_OK = False
+    return bool(_SELF_CHECK)
+
+
+def _fast_2d_f32(image2d) -> bool:
+    return (_FAST_OK and isinstance(image2d, np.ndarray) and image2d.ndim == 2
+            and image2d.dtype == np.float32 and image2d.size > 0)
+
+
+def _conv_sep_reflect_fast(image2d: np.ndarray, k1d: np.ndarray, axis: int):
+    """Exact ndimage.convolve(image2d, k1d along axis, mode='reflect'), or None."""
+    if not _fast_2d_f32(image2d) or not _fast_paths_verified():
+        return None
+    return _conv_sep_reflect_fast_unchecked(image2d, k1d, axis)
+
+
+def _conv_sep_reflect_fast_unchecked(image2d: np.ndarray, k1d: np.ndarray, axis: int):
+    global _FAST_OK
+    if not _fast_2d_f32(image2d) or axis not in (0, 1):
+        return None
+    k = np.asarray(k1d)
+    if k.ndim != 1 or (k.shape[0] & 1) == 0 or k.dtype.kind not in "fiu":
+        return None
+    w = np.asarray(k, dtype=np.float64)[::-1]      # convolve = correlate, kernel flipped
+    R = w.shape[0] // 2
+    H, W = image2d.shape
+    if R > (H if axis == 0 else W):
+        return None
+    keep = np.abs(w) > np.finfo(np.float64).eps   # SciPy's footprint (zero taps skipped)
+    taps = np.ascontiguousarray(np.nonzero(keep)[0].astype(np.int64))
+    ws = np.ascontiguousarray(w[keep])
+    if taps.size == 0:
+        return None
+    src = np.ascontiguousarray(image2d)
+    out = np.empty((H, W), dtype=np.float32)
+    try:
+        if axis == 1:
+            _run_row_bands(_nb_corr_x, H, W, (src, out, taps, ws, _reflect_index_map(W, R)))
+        else:
+            _run_row_bands(_nb_corr_y, H, W, (src, out, taps, ws, _reflect_index_map(H, R)))
+    except Exception:
+        _FAST_OK = False                              # e.g. numba cannot compile here
+        return None
+    return out
+
+
+def _smooth_and_detail_fast(tmp: np.ndarray, cur: np.ndarray, k1d: np.ndarray):
+    """(conv_sep_reflect(tmp, k1d, 0), cur - that) in one pass, or None."""
+    if not _fast_2d_f32(tmp) or not _fast_paths_verified():
+        return None
+    return _smooth_and_detail_fast_unchecked(tmp, cur, k1d)
+
+
+def _smooth_and_detail_fast_unchecked(tmp: np.ndarray, cur: np.ndarray, k1d: np.ndarray):
+    global _FAST_OK
+    if not (_fast_2d_f32(tmp) and _fast_2d_f32(cur) and tmp.shape == cur.shape):
+        return None
+    k = np.asarray(k1d)
+    if k.ndim != 1 or (k.shape[0] & 1) == 0 or k.dtype.kind not in "fiu":
+        return None
+    w = np.asarray(k, dtype=np.float64)[::-1]
+    R = w.shape[0] // 2
+    H, W = tmp.shape
+    if R > H:
+        return None
+    keep = np.abs(w) > np.finfo(np.float64).eps
+    taps = np.ascontiguousarray(np.nonzero(keep)[0].astype(np.int64))
+    ws = np.ascontiguousarray(w[keep])
+    if taps.size == 0:
+        return None
+    src = np.ascontiguousarray(tmp)
+    c = np.ascontiguousarray(cur)
+    out = np.empty((H, W), dtype=np.float32)
+    det = np.empty((H, W), dtype=np.float32)
+    try:
+        _run_row_bands(_nb_corr_y_detail, H, W, (src, c, out, det, taps, ws, _reflect_index_map(H, R)))
+    except Exception:
+        _FAST_OK = False
+        return None
+    return out, det
+
+
+def _gauss_blur_fast(image2d: np.ndarray, sigma: float):
+    """Exact ndimage.gaussian_filter(image2d, sigma, mode='reflect'), or None."""
+    if not _fast_2d_f32(image2d) or not _fast_paths_verified():
+        return None
+    return _gauss_blur_fast_unchecked(image2d, sigma)
+
+
+def _gauss_blur_fast_unchecked(image2d: np.ndarray, sigma: float):
+    global _FAST_OK
+    if not _fast_2d_f32(image2d) or _nd_gauss_kernel1d is None:
+        return None
+    try:
+        sd = float(sigma)
+    except Exception:
+        return None
+    if not (sd > 1e-15):
+        return None
+    lw = int(4.0 * sd + 0.5)                          # gaussian_filter1d, truncate=4.0
+    if lw < 1:
+        return None
+    w = np.ascontiguousarray(np.asarray(_nd_gauss_kernel1d(sigma, 0, lw)[::-1], dtype=np.float64))
+    R = w.shape[0] // 2
+    eps = np.finfo(np.float64).eps
+    for ii in range(1, R + 1):                       # correlate1d's symmetric-path test
+        if abs(w[R + ii] - w[R - ii]) > eps:
+            return None
+    H, W = image2d.shape
+    if R > H or R > W:
+        return None
+    src = np.ascontiguousarray(image2d)
+    tmp = np.empty((H, W), dtype=np.float32)
+    out = np.empty((H, W), dtype=np.float32)
+    try:
+        _run_row_bands(_nb_sym_y, H, W, (src, tmp, w, _reflect_index_map(H, R)))
+        _run_row_bands(_nb_sym_x, H, W, (tmp, out, w, _reflect_index_map(W, R)))
+    except Exception:
+        _FAST_OK = False
+        return None
+    return out
 
 
 def conv_sep_reflect(image2d: np.ndarray, k1d: np.ndarray, axis: int) -> np.ndarray:
@@ -38,6 +379,9 @@ def conv_sep_reflect(image2d: np.ndarray, k1d: np.ndarray, axis: int) -> np.ndar
         Convolved array, same shape as input
     """
     if _HAVE_SCIPY:
+        fast = _conv_sep_reflect_fast(image2d, k1d, axis)
+        if fast is not None:
+            return fast
         if axis == 1:  # x
             # Use 'reflect' mode to match original behavior
             return _nd_convolve(image2d, k1d.reshape(1, -1), mode="reflect")
@@ -112,6 +456,9 @@ def gauss_blur(image2d: np.ndarray, sigma: float) -> np.ndarray:
         Blurred array
     """
     if _HAVE_SCIPY and _nd_gauss is not None:
+        fast = _gauss_blur_fast(image2d, sigma)
+        if fast is not None:
+            return fast
         return _nd_gauss(image2d, sigma=sigma, mode="reflect")
     
     # Try OpenCV GaussianBlur first -> much faster
@@ -184,8 +531,13 @@ def atrous_decompose(img2d: np.ndarray, n_scales: int,
     for s in range(n_scales):
         k = build_spaced_kernel(base_kernel, s)
         tmp = conv_sep_reflect(current, k, axis=1)
-        smooth = conv_sep_reflect(tmp, k, axis=0)
-        planes.append(current - smooth)  # detail = current - smoothed
+        fused = _smooth_and_detail_fast(tmp, current, k)
+        if fused is not None:
+            smooth, detail = fused
+        else:
+            smooth = conv_sep_reflect(tmp, k, axis=0)
+            detail = current - smooth
+        planes.append(detail)  # detail = current - smoothed
         current = smooth
     
     planes.append(current)  # residual (lowest frequency)
@@ -239,6 +591,17 @@ _XYZ_TO_RGB_MATRIX = np.array([
 # D65 illuminant reference white
 _D65_WHITE = np.array([0.95047, 1.0, 1.08883], dtype=np.float32)
 
+# The numba Lab kernels hold the GIL for a whole call. Feeding them ~2 MP row
+# chunks (the kernels are per-pixel, per-row) lets the GUI thread in between
+# when a worker converts a large image; output is identical.
+_LAB_CHUNK_PX = 1 << 21
+
+
+def _lab_chunk_rows(arr: np.ndarray) -> int:
+    if arr.ndim != 3:
+        return max(1, arr.shape[0])
+    return max(1, _LAB_CHUNK_PX // max(1, arr.shape[1]))
+
 
 def rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
     """
@@ -253,9 +616,13 @@ def rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
         Lab image (H, W, 3) where L is [0, 100], a/b are roughly [-128, 127]
     """
     if _HAVE_NUMBA:
-        rgb32 = np.ascontiguousarray(rgb.astype(np.float32))
-        xyz = rgb_to_xyz_numba(rgb32)
-        lab = xyz_to_lab_numba(xyz)
+        rgb32 = np.ascontiguousarray(rgb, dtype=np.float32)
+        step = _lab_chunk_rows(rgb32)
+        if step >= rgb32.shape[0]:
+            return xyz_to_lab_numba(rgb_to_xyz_numba(rgb32))
+        lab = np.empty(rgb32.shape[:2] + (3,), dtype=np.float32)
+        for y0 in range(0, rgb32.shape[0], step):
+            lab[y0:y0 + step] = xyz_to_lab_numba(rgb_to_xyz_numba(rgb32[y0:y0 + step]))
         return lab
     
     # Numpy fallback
@@ -299,10 +666,15 @@ def lab_to_rgb(lab: np.ndarray) -> np.ndarray:
         RGB image (H, W, 3) float32 in [0, 1]
     """
     if _HAVE_NUMBA:
-        lab32 = np.ascontiguousarray(lab.astype(np.float32))
-        xyz = lab_to_xyz_numba(lab32)
-        rgb = xyz_to_rgb_numba(xyz)
-        return np.clip(rgb, 0.0, 1.0)
+        lab32 = np.ascontiguousarray(lab, dtype=np.float32)
+        step = _lab_chunk_rows(lab32)
+        if step >= lab32.shape[0]:
+            return np.clip(xyz_to_rgb_numba(lab_to_xyz_numba(lab32)), 0.0, 1.0)
+        rgb = np.empty(lab32.shape[:2] + (3,), dtype=np.float32)
+        for y0 in range(0, lab32.shape[0], step):
+            part = xyz_to_rgb_numba(lab_to_xyz_numba(lab32[y0:y0 + step]))
+            np.clip(part, 0.0, 1.0, out=rgb[y0:y0 + step])
+        return rgb
     
     # Numpy fallback
     lab = np.asarray(lab, dtype=np.float32)

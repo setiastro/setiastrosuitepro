@@ -1551,6 +1551,18 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
     except RuntimeError:
         pass
 
+    # --firstrun: a throwaway settings store, so this launch looks like a new
+    # install (settings_sandbox.py). Before the splash, which reads settings.
+    # Idempotent when __main__.entry() already did it.
+    try:
+        from setiastro.saspro.settings_sandbox import wants_firstrun, enter_firstrun_sandbox
+        if wants_firstrun(argv if argv is not None else sys.argv[1:]):
+            enter_firstrun_sandbox()
+    except Exception:
+        import traceback as _tb
+        print("[firstrun] could not set up the settings sandbox:")
+        _tb.print_exc()
+
     # ── Single-instance handoff ──────────────────────────────────────────────
     # If another SASpro is already running (in the same bucket — frozen builds
     # share one bucket, source checkouts share another; see single_instance.py
@@ -1792,9 +1804,13 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
                     logging.exception("[single-instance] handoff handler crashed")
 
             # Hang the server off the main window so GC doesn't eat it.
-            win._single_instance_server = install_primary_listener(
-                _app, _on_handoff, status_cb=lambda m: logging.info(m)
-            )
+            # Not for a --firstrun sandbox: a file double-clicked while one is
+            # open belongs in the real session, not in a throwaway one.
+            from setiastro.saspro.settings_sandbox import active as _sandbox_active
+            if not _sandbox_active():
+                win._single_instance_server = install_primary_listener(
+                    _app, _on_handoff, status_cb=lambda m: logging.info(m)
+                )
         except Exception:
             logging.exception("[single-instance] failed to install primary listener (continuing)")
 

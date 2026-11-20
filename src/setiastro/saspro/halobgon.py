@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, QRectF
+from PyQt6.QtCore import Qt, QTimer, QRectF, QThread, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QTransform, QPainter
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QLabel, QPushButton,
@@ -22,6 +22,7 @@ except Exception:
 
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 
 # =============================================================================
 # Helpers
@@ -42,6 +43,23 @@ def _qimage_from_rgb01(a: np.ndarray) -> QImage:
     a8 = (a * 255.0).astype(np.uint8)
     h, w = a8.shape[:2]
     return QImage(a8.data, w, h, w*3, QImage.Format.Format_RGB888).copy()
+
+def _qimage_from_u8(u8: np.ndarray) -> QImage:
+    """8-bit (H,W) or (H,W,3) -> QImage owning its pixels, already in the 32-bit
+    format QPixmap.fromImage keeps as is, so the GUI thread does no conversion.
+    Mono goes in as Grayscale8 (same pixels as the replicated RGB). Same pixels
+    as _qimage_from_rgb01 on the float result. Safe off the GUI thread."""
+    u8 = np.ascontiguousarray(u8)
+    h, w = u8.shape[:2]
+    fmt = QImage.Format.Format_Grayscale8 if u8.ndim == 2 else QImage.Format.Format_RGB888
+    return QImage(u8.data, w, h, int(u8.strides[0]), fmt).convertToFormat(QImage.Format.Format_RGB32)
+
+# k -> float32(k) / 255.0, exactly what .astype(np.float32) / 255.0 gives
+_U8_TO_F01 = np.arange(256, dtype=np.float32) / 255.0
+
+def _u8_to_f01(u8: np.ndarray) -> np.ndarray:
+    """u8.astype(np.float32) / 255.0, as one table lookup."""
+    return cv2.LUT(np.ascontiguousarray(u8), _U8_TO_F01)
 
 def _maybe_get_mask(parent, ref_img: np.ndarray) -> Optional[np.ndarray]:
     """Fetch an applied mask as float [0..1], broadcastable to ref_img."""
@@ -108,7 +126,18 @@ def compute_halo_b_gon(image: np.ndarray, reduction_level: int = 0, is_linear: b
     Returns the SAME shape as input (2D stays 2D; RGB stays RGB; 1-chan stays 1-chan).
     """
     img = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
+    work, inv, dup = _halo_prep(img, is_linear)
+    out = _u8_to_f01(_halo_u8(work, inv, dup, reduction_level))
 
+    # restore 1-channel shape if input was (H,W,1)
+    if img.ndim == 3 and img.shape[2] == 1 and out.ndim == 2:
+        out = out[:, :, None]
+
+    return out
+
+def _halo_prep(img: np.ndarray, is_linear: bool):
+    """The part of compute_halo_b_gon that does not depend on the level, for an
+    image already clipped to [0..1] float32: (work, inv, dup)."""
     # Work buffer (apply gamma-domain if linear)
     work = img
     if is_linear:
@@ -130,12 +159,18 @@ def compute_halo_b_gon(image: np.ndarray, reduction_level: int = 0, is_linear: b
     # --- Enhanced mask (exact SASv2 order) ---
     inv = 1.0 - unsharp
     dup = cv2.GaussianBlur(unsharp, (0, 0), sigmaX=2)
+    return work, inv, dup
+
+def _halo_u8(work: np.ndarray, inv: np.ndarray, dup: np.ndarray, reduction_level: int) -> np.ndarray:
+    """The level-dependent part: the 8-bit result, same shape as work.
+    compute_halo_b_gon returns exactly this / 255.0."""
     scale = float(max(0, min(3, int(reduction_level)))) * 0.33
     enhanced_mask = inv - dup * scale
 
     # Match mask shape to image shape
     if work.ndim == 3 and work.shape[2] == 3:
-        mask = np.repeat(enhanced_mask[:, :, None], 3, axis=2).astype(work.dtype, copy=False)
+        # same values as np.repeat(..., 3, axis=2), which holds the GIL ~0.3 s on 22 MP
+        mask = cv2.merge((enhanced_mask, enhanced_mask, enhanced_mask)).astype(work.dtype, copy=False)
     else:
         mask = enhanced_mask.astype(work.dtype, copy=False)
 
@@ -150,16 +185,11 @@ def compute_halo_b_gon(image: np.ndarray, reduction_level: int = 0, is_linear: b
     g = gammas[int(max(0, min(3, reduction_level)))]
     lut = (np.clip((np.linspace(0, 1, 256, dtype=np.float32) ** g) * 255.0, 0, 255)).astype(np.uint8)
 
-    u8 = (np.clip(masked, 0.0, 1.0) * 255.0).astype(np.uint8, copy=False)
-    mapped = cv2.LUT(u8, lut).astype(np.float32) / 255.0
-
-    out = np.clip(mapped, 0.0, 1.0).astype(np.float32, copy=False)
-
-    # restore 1-channel shape if input was (H,W,1)
-    if img.ndim == 3 and img.shape[2] == 1 and out.ndim == 2:
-        out = out[:, :, None]
-
-    return out
+    # (clip(masked) * 255).astype(uint8), in place: masked is our own buffer
+    np.clip(masked, 0.0, 1.0, out=masked)
+    np.multiply(masked, 255.0, out=masked)
+    u8 = masked.astype(np.uint8)
+    return cv2.LUT(u8, lut)
 
 # =============================================================================
 # Headless apply
@@ -240,6 +270,31 @@ class _PreviewView(QGraphicsView):
         self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
         self._zoom = 1.0
 
+class _HaloPreviewWorker(QThread):
+    """One preview off the GUI thread (2-3.5 s on 22 MP, all of it on the GUI
+    thread before). cv2 and numpy ufuncs only, which release the GIL. A QImage,
+    unlike a QPixmap, may be built here."""
+    ready = pyqtSignal(object)    # dict, see run()
+
+    def __init__(self, orig, level: int, linear: bool, prep):
+        super().__init__()        # no parent: thread_keeper owns it
+        self.orig = orig
+        self.level = int(level)
+        self.linear = bool(linear)
+        self.prep = prep          # cached (work, inv, dup) for this orig/linear, or None
+
+    def run(self):
+        res = {"orig": self.orig, "level": self.level, "linear": self.linear}
+        try:
+            prep = self.prep if self.prep is not None else _halo_prep(self.orig, self.linear)
+            u8 = _halo_u8(*prep, self.level)
+            res.update(prep=prep, u8=u8, qimg=_qimage_from_u8(u8))
+        except Exception as e:
+            res["error"] = str(e)
+        self.orig = self.prep = None
+        self.ready.emit(res)
+
+
 class HaloBGonDialogPro(QDialog):
     """
     Minimal, fast UI:
@@ -271,9 +326,13 @@ class HaloBGonDialogPro(QDialog):
         self.doc = doc
         self.orig = np.clip(np.asarray(doc.image, dtype=np.float32), 0.0, 1.0)
 
-        # Display base is RGB
-        disp = _as_rgb(self.orig)
-        self._disp_base = disp
+        # Preview worker state. The level-independent part (_halo_prep) is kept
+        # so a level change redoes only the cheap tail, and the preview's 8-bit
+        # result is kept so Apply reuses it (it is the applied result * 255).
+        self._pv_thread = None
+        self._pv_pending = False
+        self._pv_prep = None      # (orig, linear, (work, inv, dup))
+        self._pv_result = None    # (orig, level, linear, u8) of the preview on screen
 
         # ---- UI ----
         v = QVBoxLayout(self)
@@ -362,8 +421,9 @@ class HaloBGonDialogPro(QDialog):
 
         self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.timeout.connect(self._update_preview)
 
-        self._set_pix(self._disp_base)
-        self._update_preview()
+        # First preview on the worker once the event loop runs (seed_from_preset
+        # starts it at once instead).
+        self._timer.start(0)
         self.resize(900, 620)
 
     def _debounce(self): self._timer.start(180)
@@ -409,13 +469,53 @@ class HaloBGonDialogPro(QDialog):
         self._update_preview()
 
     def _update_preview(self):
+        """Preview on a worker, one at a time. A change made while one runs
+        re-runs it with the latest settings when it lands."""
+        self._timer.stop()
+        if self.orig is None:
+            return
+        if thread_running(self._pv_thread):
+            self._pv_pending = True
+            return
         lvl, lin = self._params()
-        try:
-            out = compute_halo_b_gon(self.orig, reduction_level=lvl, is_linear=lin)
-            # Display only: convert mono → RGB for the pixmap
-            self._set_pix(_as_rgb(out))
-        except Exception as e:
-            QMessageBox.warning(self, "Halo-B-Gon", f"Preview failed:\n{e}")
+        prep = self._pv_prep
+        if prep is not None and (prep[0] is not self.orig or prep[1] != lin):
+            self._pv_prep = prep = None      # other image / Linear toggled: free it now
+        thr = _HaloPreviewWorker(self.orig, lvl, lin, prep[2] if prep is not None else None)
+        thr.ready.connect(self._on_preview_ready)
+        thr.finished.connect(self._on_preview_finished)
+        self._pv_thread = thr
+        start_owned_thread(thr)
+
+    def _on_preview_ready(self, res: dict):
+        if getattr(self, "_memory_released", False) or res.get("orig") is not self.orig:
+            return                           # closed, or the image changed meanwhile
+        if "error" in res:
+            QMessageBox.warning(self, "Halo-B-Gon", f"Preview failed:\n{res['error']}")
+            return
+        self._pv_prep = (res["orig"], res["linear"], res["prep"])
+        self._pv_result = (res["orig"], res["level"], res["linear"], res["u8"])
+        self.pix.setPixmap(QPixmap.fromImage(res["qimg"]))
+        self.view.setSceneRect(self.pix.boundingRect())
+
+    def _on_preview_finished(self):
+        if not self._pv_pending or getattr(self, "_memory_released", False):
+            return
+        self._pv_pending = False
+        r = self._pv_result
+        if r is not None and r[0] is self.orig and (r[1], r[2]) == self._params():
+            return                           # what is on screen already matches
+        self._update_preview()
+
+    def _compute_out(self, lvl: int, lin: bool) -> np.ndarray:
+        """compute_halo_b_gon(self.orig, lvl, lin), reusing the preview work."""
+        r = self._pv_result
+        if r is not None and r[0] is self.orig and r[1] == lvl and r[2] == lin:
+            return _u8_to_f01(r[3])
+        prep = self._pv_prep
+        if prep is not None and prep[0] is self.orig and prep[1] == lin:
+            return _u8_to_f01(_halo_u8(*prep[2], lvl))
+        return compute_halo_b_gon(self.orig, reduction_level=lvl, is_linear=lin)
 
     def _apply_overwrite(self, out: np.ndarray):
         if hasattr(self.doc, "set_image"):
@@ -426,7 +526,7 @@ class HaloBGonDialogPro(QDialog):
     def _apply(self):
         lvl, lin = self._params()
         try:
-            out = compute_halo_b_gon(self.orig, reduction_level=lvl, is_linear=lin)
+            out = self._compute_out(lvl, lin)
 
             # Mask blend (same as your preview path)
             m = _maybe_get_mask(self.parent_ref, np.asarray(self.orig, dtype=np.float32))
@@ -536,10 +636,8 @@ class HaloBGonDialogPro(QDialog):
                     self.doc = new_doc
                     # Refresh preview for new document
                     self.orig = np.clip(np.asarray(new_doc.image, dtype=np.float32), 0.0, 1.0)
-                    disp = self.orig
-                    if disp.ndim == 2: disp = disp[..., None].repeat(3, axis=2)
-                    elif disp.ndim == 3 and disp.shape[2] == 1: disp = disp.repeat(3, axis=2)
-                    self._disp_base = disp
+                    self._pv_prep = None
+                    self._pv_result = None
                     self._update_preview()
         except Exception:
             pass
@@ -548,7 +646,6 @@ class HaloBGonDialogPro(QDialog):
     def _reset(self):
         self.sl.setValue(0)
         self.cb_linear.setChecked(False)
-        self._set_pix(self._disp_base)
         self._update_preview()
 
     def closeEvent(self, ev):
@@ -563,9 +660,14 @@ class HaloBGonDialogPro(QDialog):
         if getattr(self, "_memory_released", False):
             return
         self._memory_released = True
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
 
         self.orig = None
-        self._disp_base = None
+        self._pv_prep = None
+        self._pv_result = None
         self.doc = None
         try:
             self.pix.setPixmap(QPixmap())

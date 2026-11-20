@@ -20,6 +20,7 @@ from setiastro.saspro.widgets.image_utils import (
 )
 
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 
 # ─── image helpers ────────────────────────────────────────────────────────────
 
@@ -205,7 +206,9 @@ def texture_clarity_headless(doc, texture_amount=0.0, texture_radius=1.0,
 # ─── worker ───────────────────────────────────────────────────────────────────
 
 class TextureClarityWorker(QThread):
-    preview_ready = pyqtSignal(object)   # np.ndarray
+    # QImage of the result. Built here, not on the GUI thread, where the
+    # full-frame 8-bit conversion took 0.3-0.6 s per preview.
+    preview_ready = pyqtSignal(object)
 
     def __init__(self, image: np.ndarray, params: dict,
                  mask01: np.ndarray | None = None):
@@ -226,8 +229,11 @@ class TextureClarityWorker(QThread):
         if self._cancel:
             return
         out = _blend_mask(out, src, self.mask01)
+        if self._cancel:
+            return
+        qimg = _as_qimage_rgb8(out)
         if not self._cancel:
-            self.preview_ready.emit(out)
+            self.preview_ready.emit(qimg)
 
 
 # ─── dialog ───────────────────────────────────────────────────────────────────
@@ -513,9 +519,12 @@ class TextureClarityDialog(QDialog):
     def _trigger_preview(self):
         if self.doc is None or getattr(self.doc, "image", None) is None:
             return
-        if self._worker is not None and self._worker.isRunning():
+        # A running preview is cancelled and left to finish on its own:
+        # thread_keeper holds it until then. Waiting 300 ms and dropping the
+        # last reference destroyed a QThread that could still be running
+        # (qFatal), and blocked the GUI on every slider change.
+        if thread_running(self._worker):
             self._worker.cancel()
-            self._worker.wait(300)
 
         params = {
             "t_amt":    self.sl_t_amt.value() / 100.0,
@@ -528,12 +537,15 @@ class TextureClarityDialog(QDialog):
             "mask_str": self.sl_mask.value()  / 100.0,
         }
         mask01 = _active_mask_array_from_doc(self.doc)
-        self._worker = TextureClarityWorker(self.doc.image, params, mask01)
-        self._worker.preview_ready.connect(self._on_preview_ready)
-        self._worker.start()
+        w = TextureClarityWorker(self.doc.image, params, mask01)
+        w.preview_ready.connect(self._on_preview_ready)
+        self._worker = w
+        start_owned_thread(w)
 
-    def _on_preview_ready(self, out: np.ndarray):
-        self._pix_processed = QPixmap.fromImage(_as_qimage_rgb8(out))
+    def _on_preview_ready(self, qimg):
+        if self.sender() is not self._worker:
+            return               # a superseded preview finishing late
+        self._pix_processed = QPixmap.fromImage(qimg)
         if not self._showing_original:
             self._show_pixmap(self._pix_processed)
         if not self._did_initial_fit:
@@ -809,9 +821,8 @@ class TextureClarityDialog(QDialog):
                                           self._fit() if self._pix_processed else None))
 
     def closeEvent(self, ev):
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(500)
+        if thread_running(self._worker):
+            self._worker.cancel()        # thread_keeper holds it until it finishes
         if self._connected_doc_change and hasattr(self.main, "currentDocumentChanged"):
             try:
                 self.main.currentDocumentChanged.disconnect(self._on_active_doc_changed)

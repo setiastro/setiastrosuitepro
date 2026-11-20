@@ -96,6 +96,11 @@ def parse_instance_flags(argv: list[str] | None) -> ParsedArgv:
     if force_single:
         force_new = False
 
+    # --firstrun runs on a throwaway settings store (settings_sandbox.py), so
+    # it is always its own instance. The flag stays in the argv for main().
+    if any(t.lower() in ("--firstrun", "--first-run") for t in cleaned):
+        force_new = True
+
     return ParsedArgv(cleaned, force_new, force_single)
 
 

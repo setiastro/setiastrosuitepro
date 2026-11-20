@@ -1203,7 +1203,9 @@ _register(Tool(
         Param("model", "choice", "edge", "edge (star matching, homography), homography, affine, poly3, poly4, "
               "or planet-centroid (translation only, for planetary discs).",
               choices=["edge", "homography", "affine", "poly3", "poly4", "planet-centroid"]),
-        Param("sep_sigma", "float", 3.0, "Star detection threshold for --model edge.", min=0.5, max=50.0),
+        Param("sep_sigma", "float", 3.0, "Lowest SEP sigma for --model edge. Detection steps down "
+              "100, 50, 20, 10, 5, 3 and stops at 500 green stars or 100 edge matches.",
+              min=0.5, max=50.0),
     ], aliases=["rgbalign", "channel_align"]))
 
 

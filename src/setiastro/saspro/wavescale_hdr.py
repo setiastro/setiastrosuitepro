@@ -1,5 +1,6 @@
 #saspro/wavescale_hdr.py
 from __future__ import annotations
+import functools
 import numpy as np
 
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, QThread, QTimer, QSettings
@@ -14,6 +15,7 @@ from PyQt6.QtWidgets import (
 from setiastro.saspro.widgets.graphics_views import ZoomableGraphicsView
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 # Import shared wavelet utilities
 from setiastro.saspro.widgets.wavelet_utils import (
     conv_sep_reflect as _conv_sep_reflect,
@@ -22,6 +24,7 @@ from setiastro.saspro.widgets.wavelet_utils import (
     atrous_reconstruct as _atrous_reconstruct,
     rgb_to_lab as _rgb_to_lab,
     lab_to_rgb as _lab_to_rgb,
+    run_row_bands as _run_row_bands,
     B3_KERNEL as _B3,
 )
 
@@ -80,37 +83,220 @@ def compute_wavescale_hdr(rgb_image: np.ndarray,
                           mask_gamma: float = 1.0,
                           base_kernel: np.ndarray = _B3,
                           decay_rate: float = 0.5,
-                          dim_gamma: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+                          dim_gamma: float | None = None,
+                          *, lab_cache: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """
     Returns (transformed_rgb, luminance_mask).
     If dim_gamma is None, uses auto gamma = 1.0 + 0.2 * n_scales.
+    lab_cache: _rgb_to_lab(rgb_image) computed earlier (copied, not modified).
     """
-    lab = _rgb_to_lab(rgb_image)
+    lab = _rgb_to_lab(rgb_image) if lab_cache is None else lab_cache.copy()
     L0 = lab[..., 0].astype(np.float32, copy=True)
     scales = _atrous_decompose(L0, n_scales, base_kernel)
+    H = L0.shape[0]
 
-    mask = _mask_from_L(L0, mask_gamma)
+    # The elementwise steps below run on row bands in parallel (numpy releases
+    # the GIL); every pixel sees exactly the same float32 operations as one
+    # whole-image call.
+    mask = np.empty(L0.shape, dtype=np.float32)
+
+    def _mask_rows(sl):
+        mask[sl] = _mask_from_L(L0[sl], mask_gamma)
+    _run_row_bands(_mask_rows, H)
+
     planes, residual = scales[:-1], scales[-1]
+    Lr = np.empty(residual.shape, dtype=np.float32)
 
-    for i, wp in enumerate(planes):
-        decay = decay_rate ** i
-        scale = (1.0 + (compression_factor - 1.0) * mask * decay) * 2.0
-        planes[i] = wp * scale
-
-    Lr = _atrous_reconstruct(planes + [residual])
+    def _scale_and_rebuild_rows(sl):
+        # planes[i] *= (1 + (c-1)·mask·decay^i)·2, then residual + Σ planes
+        m = mask[sl]
+        out = residual[sl].astype(np.float32, copy=True)
+        for i, wp in enumerate(planes):
+            decay = decay_rate ** i
+            scale = (1.0 + (compression_factor - 1.0) * m * decay) * 2.0
+            out += wp[sl] * scale
+        Lr[sl] = out
+    _run_row_bands(_scale_and_rebuild_rows, H)
 
     # midtones alignment
     med0 = float(np.median(L0))
     med1 = float(np.median(Lr)) or 1.0
-    Lr = np.clip(Lr * (med0 / med1), 0.0, 100.0)
+    ratio = med0 / med1
 
-    lab[..., 0] = Lr
+    def _store_L_rows(sl):
+        lab[sl, :, 0] = np.clip(Lr[sl] * ratio, 0.0, 100.0)
+    _run_row_bands(_store_L_rows, H)
     rgb = _lab_to_rgb(lab)
 
     # dimming curve
     g = (1.0 + n_scales * 0.2) if dim_gamma is None else float(dim_gamma)
-    rgb = _apply_dim_curve(rgb, gamma=g)
-    return rgb, mask
+    out_rgb = np.empty(rgb.shape, dtype=np.float32)
+
+    def _dim_rows(sl):
+        out_rgb[sl] = _apply_dim_curve(rgb[sl], gamma=g)
+    _run_row_bands(_dim_rows, H)
+    return out_rgb, mask
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Display helpers: plain numpy + QImage, so they run off the GUI thread.
+# The GUI then only does QPixmap.fromImage (free for an RGB32 image).
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _doc_mask_finish(m: np.ndarray, H: int, W: int) -> np.ndarray:
+    """Tail of the dialogs' _get_doc_active_mask_2d: clip to [0,1] and resize
+    (nearest) to H x W. The heavy part, so the jobs run it off the GUI thread."""
+    m = np.clip(m, 0.0, 1.0)
+    if m.shape != (H, W):
+        yi = (np.linspace(0, m.shape[0] - 1, H)).astype(np.int32)
+        xi = (np.linspace(0, m.shape[1] - 1, W)).astype(np.int32)
+        m = m[yi][:, xi]
+    return m
+
+
+def _apply_output(preview: np.ndarray, was_mono: bool, mono_shape) -> np.ndarray:
+    """The array Apply hands the document: mono -> channel mean (2-D or H x W x 1
+    as the source was), clipped to [0,1], float32. Row bands in parallel; same
+    values as np.clip(np.mean(preview, axis=2, dtype=float32), 0, 1)."""
+    H = preview.shape[0]
+    if was_mono:
+        keep3 = bool(mono_shape and len(mono_shape) == 3 and mono_shape[2] == 1)
+        out = np.empty(preview.shape[:2] + ((1,) if keep3 else ()), dtype=np.float32)
+        o2 = out[:, :, 0] if keep3 else out
+
+        def _rows(sl):
+            o2[sl] = np.clip(np.mean(preview[sl], axis=2, dtype=np.float32), 0.0, 1.0)
+    else:
+        out = np.empty(preview.shape, dtype=np.float32)
+
+        def _rows(sl):
+            out[sl] = np.clip(preview[sl], 0.0, 1.0)
+    _run_row_bands(_rows, H)
+    return out
+
+
+def _rgb01(img: np.ndarray) -> np.ndarray:
+    """np.clip(img as H x W x 3, 0, 1).astype(float32) - what the dialogs built
+    with np.repeat (mono: H x W or H x W x 1) + np.clip - on row bands in
+    parallel. Same values; the clip runs before the mono replication."""
+    if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
+        src, mono = (img if img.ndim == 2 else img[:, :, 0]), True
+    elif img.ndim == 3 and img.shape[2] == 3:
+        src, mono = img, False
+    else:
+        return np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
+    out = np.empty(src.shape[:2] + (3,), dtype=np.float32)
+
+    def _rows(sl):
+        c = np.clip(src[sl], 0.0, 1.0)
+        if mono:
+            for k in range(3):
+                out[sl, :, k] = c
+        else:
+            out[sl] = c
+    _run_row_bands(_rows, out.shape[0])
+    return out
+
+
+def _rgb_to_qimage(rgb: np.ndarray) -> QImage:
+    """The preview view's image: same pixels _set_pix shows, as an RGB32 QImage
+    that owns its data."""
+    arr = np.empty(rgb.shape, dtype=np.uint8)
+
+    def _rows(sl):
+        arr[sl] = (np.clip(rgb[sl], 0, 1) * 255).astype(np.uint8)
+    _run_row_bands(_rows, rgb.shape[0])
+    h, w, _ = arr.shape
+    q = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+    return q.convertToFormat(QImage.Format.Format_RGB32)
+
+
+def _mask_thumb_qimage(mask: np.ndarray, box_w: int, box_h: int) -> QImage:
+    """The mask window's thumbnail: same pixels MaskDisplayWindow.update_mask shows."""
+    m8 = np.empty(mask.shape, dtype=np.uint8)
+
+    def _rows(sl):
+        m8[sl] = (np.clip(mask[sl], 0, 1).astype(np.float32) * 255.0).astype(np.uint8)
+    _run_row_bands(_rows, mask.shape[0])
+    if m8.ndim == 2:
+        h, w = m8.shape
+        q = QImage(m8.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+    else:
+        h, w, _ = m8.shape
+        q = QImage(m8.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+    return q.scaled(int(box_w), int(box_h), Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation)
+
+
+def _hdr_preview_payload(original: np.ndarray, transformed: np.ndarray, mask: np.ndarray,
+                         doc_mask_pre: np.ndarray | None, thumb_wh, want_qimage: bool) -> dict:
+    """What _on_finished used to build on the GUI thread: the doc-mask-combined
+    mask, the blended preview, and their display images."""
+    doc_mask = None if doc_mask_pre is None else _doc_mask_finish(doc_mask_pre, *original.shape[:2])
+    # combine HDR's luminance mask with the doc's active mask (if present)
+    mask_comb = mask if doc_mask is None else np.clip(mask * doc_mask, 0.0, 1.0)
+    # blend preview: original*(1-mask) + transformed*mask, per channel: the same
+    # float32 ops as the np.repeat'ed mask, without repeat's GIL-held copy
+    inv = 1.0 - mask_comb
+    dt = np.result_type(original.dtype, inv.dtype, transformed.dtype, mask_comb.dtype)
+    preview = np.empty(original.shape, dtype=dt)
+    for c in range(original.shape[2]):
+        np.add(original[..., c] * inv, transformed[..., c] * mask_comb, out=preview[..., c])
+    return {
+        "preview": preview,
+        "qimg": _rgb_to_qimage(preview) if want_qimage else None,
+        "thumb": _mask_thumb_qimage(mask_comb, *thumb_wh) if thumb_wh else None,
+        "has_doc_mask": doc_mask is not None,
+    }
+
+
+def _hdr_mask_job(original: np.ndarray, cache: dict, gamma: float,
+                  doc_mask_pre: np.ndarray | None, thumb_wh, want_qimage: bool) -> dict:
+    """Mask-window refresh (and, first time, the Lab/L cache and the original's
+    display image). Only the slider-dependent part is redone per gamma step."""
+    out = {}
+    doc_mask = None if doc_mask_pre is None else _doc_mask_finish(doc_mask_pre, *original.shape[:2])
+    lab, L, mbase = cache.get("lab"), cache.get("L"), cache.get("mbase")
+    if L is None:
+        lab = _rgb_to_lab(original)
+        L = lab[..., 0].astype(np.float32, copy=True)
+        out["lab"], out["L"] = lab, L
+    if mbase is None:
+        # _mask_from_L's gamma-independent part
+        mbase = np.clip(L / 100.0, 0.0, 1.0).astype(np.float32)
+        out["mbase"] = mbase
+    if gamma == 1.0:
+        hdr_mask = mbase
+    else:
+        hdr_mask = np.empty(mbase.shape, dtype=np.float32)
+
+        def _pow_rows(sl):
+            hdr_mask[sl] = np.power(mbase[sl], gamma, dtype=np.float32)
+        _run_row_bands(_pow_rows, mbase.shape[0])
+    mask_comb = hdr_mask if doc_mask is None else np.clip(hdr_mask * doc_mask, 0.0, 1.0)
+    out["thumb"] = _mask_thumb_qimage(mask_comb, *thumb_wh)
+    out["has_doc_mask"] = doc_mask is not None
+    if want_qimage:
+        out["qimg"] = _rgb_to_qimage(original)
+    return out
+
+
+class _JobThread(QThread):
+    """Runs fn() off the GUI thread; the result arrives via `done` (QThread's own
+    `finished` is left alone - thread_keeper uses it to release the thread)."""
+    done = pyqtSignal(object, object)                     # (result, error text)
+
+    def __init__(self, fn):
+        super().__init__()                                # no parent: thread_keeper owns it
+        self._fn = fn
+
+    def run(self):
+        try:
+            res, err = self._fn(), None
+        except Exception as e:
+            res, err = None, f"{type(e).__name__}: {e}"
+        self._fn = None
+        self.done.emit(res, err)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -119,16 +305,19 @@ def compute_wavescale_hdr(rgb_image: np.ndarray,
 
 class HDRWorker(QObject):
     progress_update = pyqtSignal(str, int)                # (step, percent)
-    finished = pyqtSignal(np.ndarray, np.ndarray)         # (transformed_rgb, mask)
+    finished = pyqtSignal(object, object)                 # (transformed_rgb, mask) | (payload, None)
 
     def __init__(self, rgb_image: np.ndarray, n_scales: int, compression_factor: float,
-                 mask_gamma: float, base_kernel: np.ndarray):
+                 mask_gamma: float, base_kernel: np.ndarray, *, post=None,
+                 lab_cache: np.ndarray | None = None):
         super().__init__()
         self.rgb_image = rgb_image
         self.n_scales = n_scales
         self.compression_factor = compression_factor
         self.mask_gamma = mask_gamma
         self.base_kernel = base_kernel
+        self.post = post              # post(transformed, mask) -> payload dict, run here
+        self.lab_cache = lab_cache
 
     def run(self):
         try:
@@ -137,10 +326,14 @@ class HDRWorker(QObject):
             self.progress_update.emit(self.tr("Decomposing luminance with starlet…"), 20)
             # full compute
             transformed, mask = compute_wavescale_hdr(
-                self.rgb_image, self.n_scales, self.compression_factor, self.mask_gamma, self.base_kernel
+                self.rgb_image, self.n_scales, self.compression_factor, self.mask_gamma, self.base_kernel,
+                lab_cache=self.lab_cache
             )
             self.progress_update.emit(self.tr("Finalizing…"), 95)
-            self.finished.emit(transformed, mask)
+            if self.post is not None:
+                self.finished.emit(self.post(transformed, mask), None)
+            else:
+                self.finished.emit(transformed, mask)
         except Exception as e:
             print("WaveScale HDR error:", e)
             self.finished.emit(None, None)
@@ -174,6 +367,10 @@ class MaskDisplayWindow(QDialog):
             self.lbl.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
         )
         self.lbl.setPixmap(pix)
+
+    def set_thumb(self, qimg: QImage):
+        """Show a thumbnail already built by _mask_thumb_qimage."""
+        self.lbl.setPixmap(QPixmap.fromImage(qimg))
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Dialog
@@ -217,11 +414,11 @@ class WaveScaleHDRDialogPro(QDialog):
         # normalize to float32 [0..1] RGB for processing/preview
         img = np.asarray(base, dtype=np.float32)
         if img.ndim == 2:
-            img_rgb = np.repeat(img[:, :, None], 3, axis=2)
+            img_rgb = img               # replicated to 3 channels by _rgb01 below
             self._was_mono = True
             self._mono_shape = img.shape
         elif img.ndim == 3 and img.shape[2] == 1:
-            img_rgb = np.repeat(img, 3, axis=2)
+            img_rgb = img
             self._was_mono = True
             self._mono_shape = img.shape
         else:
@@ -232,10 +429,18 @@ class WaveScaleHDRDialogPro(QDialog):
         if img.dtype.kind in "ui":
             maxv = float(np.nanmax(img_rgb)) or 1.0
             img_rgb = img_rgb / max(1.0, maxv)
-        img_rgb = np.clip(img_rgb, 0.0, 1.0).astype(np.float32, copy=False)
+        img_rgb = _rgb01(img_rgb)       # == np.clip(3-channel, 0, 1).astype(float32)
 
         self.original_rgb = img_rgb
-        self.preview_rgb  = img_rgb.copy()
+        self.preview_rgb  = img_rgb          # never modified in place; replaced by each preview
+
+        # off-GUI-thread state: Lab/L/mask cache, the two view pixmaps, mask jobs
+        self._mask_cache = {}
+        self._pm_original = None
+        self._pm_preview = None
+        self._mask_busy = False
+        self._mask_pending = False
+        self._mask_thr = None
 
         # scene/view (⚠️ use ZoomableGraphicsView)
         self.scene = QGraphicsScene(self)
@@ -404,19 +609,15 @@ class WaveScaleHDRDialogPro(QDialog):
         self.btn_fit.clicked.connect(lambda: self.view.fit_item(self.pix))
 
         # ── Mask shown immediately ───────────────────────────────────────────
-        # Precompute L from original and push initial mask to the small window
-        self._lab_original = _rgb_to_lab(self.original_rgb)
-        self._L_original = self._lab_original[..., 0].astype(np.float32, copy=True)
+        # L from the original (Lab), the initial mask and the original's display
+        # image are built by a background job; the dialog opens without waiting.
         self._mask_timer = QTimer(self)
         self._mask_timer.setSingleShot(True)
         self._mask_timer.timeout.connect(self._update_mask_from_gamma)
         self.s_gamma.valueChanged.connect(self._schedule_mask_refresh)
 
-        # show initial mask right away
+        # show initial mask (and the image) as soon as the job is done
         self._update_mask_from_gamma()
-
-        # initial pix
-        self._set_pix(self.preview_rgb)
 
     def apply_preset(self, p: dict):
         # sliders are integer; map floats to their scales
@@ -503,6 +704,16 @@ class WaveScaleHDRDialogPro(QDialog):
         Return the document's active mask as a 2-D float32 in [0..1],
         resized to the current image size. If none, return None.
         """
+        m = self._doc_mask_prenorm()
+        if m is None:
+            return None
+        H, W = self.original_rgb.shape[:2]
+        return _doc_mask_finish(m, H, W)
+
+    def _doc_mask_prenorm(self) -> np.ndarray | None:
+        """GUI-thread part of _get_doc_active_mask_2d: find the active mask,
+        collapse to 2-D float32 and normalise (in place, as before). The clip and
+        resize (_doc_mask_finish) are left to the caller / background jobs."""
         doc = getattr(self, "_doc", None)
         if doc is None:
             return None
@@ -551,16 +762,9 @@ class WaveScaleHDRDialogPro(QDialog):
         else:
             mx = float(m.max()) if m.size else 1.0
             if mx > 1.0:
-                m /= mx
-        m = np.clip(m, 0.0, 1.0)
-
-        # resize to current image size (nearest)
-        H, W = self.original_rgb.shape[:2]
-        if m.shape != (H, W):
-            yi = (np.linspace(0, m.shape[0] - 1, H)).astype(np.int32)
-            xi = (np.linspace(0, m.shape[1] - 1, W)).astype(np.int32)
-            m = m[yi][:, xi]
-
+                # a new array: astype(copy=False) can hand back the document's
+                # own float32 mask, which `m /= mx` divided in place
+                m = m / mx
         return m
 
 
@@ -583,20 +787,39 @@ class WaveScaleHDRDialogPro(QDialog):
         self.pix.setPixmap(QPixmap.fromImage(q))
         self.view.setSceneRect(self.pix.boundingRect())
 
+    def _show_pixmap(self, pm: QPixmap):
+        self.pix.setPixmap(pm)
+        self.view.setSceneRect(self.pix.boundingRect())
+
+    def _show_original(self):
+        if self._pm_original is not None:
+            self._show_pixmap(self._pm_original)
+        elif self.original_rgb is not None:
+            self._set_pix(self.original_rgb)
+
+    def _show_preview(self):
+        if self.preview_rgb is self.original_rgb:
+            self._show_original()
+        elif self._pm_preview is not None:
+            self._show_pixmap(self._pm_preview)
+        elif self.preview_rgb is not None:
+            self._set_pix(self.preview_rgb)
+
     def _toggle(self):
         if self.btn_toggle.isChecked():
             self.btn_toggle.setText(self.tr("Show Preview"))
-            self._set_pix(self.original_rgb)
+            self._show_original()
         else:
             self.btn_toggle.setText(self.tr("Show Original"))
-            self._set_pix(self.preview_rgb)
+            self._show_preview()
 
     def _reset(self):
         self.s_scales.setValue(5)
         self.s_comp.setValue(150)
         self.s_gamma.setValue(500)
-        self.preview_rgb = self.original_rgb.copy()
-        self._set_pix(self.preview_rgb)
+        self.preview_rgb = self.original_rgb
+        self._pm_preview = None
+        self._show_original()
         self.lbl_step.setText(self.tr("Idle")); self.bar.setValue(0)
         self.btn_apply.setEnabled(False)
         self.btn_toggle.setChecked(False); self.btn_toggle.setText(self.tr("Show Original"))
@@ -607,41 +830,52 @@ class WaveScaleHDRDialogPro(QDialog):
         comp     = float(self.s_comp.value()) / 100.0
         mgamma   = float(self.s_gamma.value()) / 100.0
 
-        self.thread = QThread(self)
-        self.worker = HDRWorker(self.original_rgb, n_scales, comp, mgamma, self.base_kernel)
+        # blend + display images are built in the worker too; the doc mask is
+        # read here, on the GUI thread
+        post = functools.partial(
+            _hdr_preview_payload, self.original_rgb,
+            doc_mask_pre=self._doc_mask_prenorm(),
+            thumb_wh=None if self._headless else self._mask_box(),
+            want_qimage=not self._headless,
+        )
+        # no parent: thread_keeper holds it, so closing the dialog mid-run is safe
+        self.thread = QThread()
+        self.worker = HDRWorker(self.original_rgb, n_scales, comp, mgamma, self.base_kernel,
+                                post=post, lab_cache=self._mask_cache.get("lab"))
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress_update.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
         self.worker.finished.connect(self.thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.start()
+        start_owned_thread(self.thread)
 
     def _on_progress(self, step: str, pct: int):
         self.lbl_step.setText(step); self.bar.setValue(pct)
 
-    def _on_finished(self, transformed_rgb: np.ndarray, mask: np.ndarray):
+    def _on_finished(self, payload, _unused=None):
+        if getattr(self, "_memory_released", False):
+            return              # dialog closed while the worker ran
         self.btn_preview.setEnabled(True)
-        if transformed_rgb is None:
+        if payload is None:
             QMessageBox.critical(self, self.tr("WaveScale HDR"), self.tr("Processing failed."))
             if self._headless:
                 self.reject()   # end the headless exec() loop
             return
 
-        # ← NEW: combine HDR's luminance mask with the doc's active mask (if present)
-        mask_comb = self._combine_with_doc_mask(mask)
-
-        # blend preview: original*(1-mask) + transformed*mask
-        m3 = np.repeat(mask_comb[..., None], 3, axis=2)
-        self.preview_rgb = self.original_rgb * (1.0 - m3) + transformed_rgb * m3
-        self._set_pix(self.preview_rgb)
+        # mask combine + blend + display images were done in the worker
+        self.preview_rgb = payload["preview"]
+        qimg = payload.get("qimg")
+        self._pm_preview = QPixmap.fromImage(qimg) if qimg is not None else None
+        if not self._headless:
+            self._show_preview()
 
         # show the *combined* mask in the little window
         self.mask_win.setWindowTitle(
-            self.tr("HDR Mask (L × Active Mask)") if self._get_doc_active_mask_2d() is not None else self.tr("HDR Mask (L-based)")
+            self.tr("HDR Mask (L × Active Mask)") if payload.get("has_doc_mask") else self.tr("HDR Mask (L-based)")
         )
-        self.mask_win.update_mask(mask_comb)
+        if payload.get("thumb") is not None:
+            self.mask_win.set_thumb(payload["thumb"])
 
         self.btn_apply.setEnabled(True)
         self.btn_toggle.setChecked(False); self.btn_toggle.setText(self.tr("Show Original"))
@@ -651,15 +885,8 @@ class WaveScaleHDRDialogPro(QDialog):
             QTimer.singleShot(0, self._apply_to_doc)
 
     def _apply_to_doc(self):
-        out = self.preview_rgb
-        if self._was_mono:
-            # collapse back to mono (keep original shape: 2D or H×W×1)
-            mono = np.mean(out, axis=2, dtype=np.float32)
-            if self._mono_shape and len(self._mono_shape) == 3 and self._mono_shape[2] == 1:
-                mono = mono[:, :, None]
-            out = mono
-
-        out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+        # collapse back to mono (keep original shape: 2D or H×W×1), clip to [0,1]
+        out = _apply_output(self.preview_rgb, self._was_mono, self._mono_shape)
         _meta = {"step_name": "WaveScale HDR",
                  "command_id": "wavescale_hdr",
                  "preset": dict(self.get_preset())}
@@ -745,21 +972,58 @@ class WaveScaleHDRDialogPro(QDialog):
         # debounce to ~0.25s
         self._mask_timer.start(250)
 
+    def _mask_box(self) -> tuple[int, int]:
+        sz = self.mask_win.lbl.size()
+        return (sz.width(), sz.height())
+
     def _update_mask_from_gamma(self):
-        gamma = float(self.s_gamma.value()) / 100.0
-        hdr_mask = _mask_from_L(self._L_original, gamma=gamma)
-        mask_comb = self._combine_with_doc_mask(hdr_mask)
-        self.mask_win.setWindowTitle(
-            self.tr("HDR Mask (L × Active Mask)") if self._get_doc_active_mask_2d() is not None else self.tr("HDR Mask (L-based)")
+        """Refresh the mask window. The work runs in a background job; a request
+        made while one runs is queued and runs next with the then-current slider."""
+        if self._headless or getattr(self, "_memory_released", False):
+            return              # headless: the mask window is never shown
+        if self._mask_busy:
+            self._mask_pending = True
+            return
+        self._mask_pending = False
+        job = functools.partial(
+            _hdr_mask_job, self.original_rgb, dict(self._mask_cache),
+            float(self.s_gamma.value()) / 100.0,
+            self._doc_mask_prenorm(), self._mask_box(),
+            self._pm_original is None,
         )
-        self.mask_win.update_mask(mask_comb)
+        self._mask_busy = True
+        self._mask_thr = _JobThread(job)
+        self._mask_thr.done.connect(self._on_mask_job_done)
+        start_owned_thread(self._mask_thr)
+
+    def _on_mask_job_done(self, res, err):
+        self._mask_busy = False
+        if getattr(self, "_memory_released", False):
+            return
+        if err is not None:
+            print("WaveScale HDR mask error:", err)
+        if res is not None:
+            for k in ("lab", "L", "mbase"):
+                if k in res:
+                    self._mask_cache[k] = res[k]
+            if res.get("qimg") is not None and self._pm_original is None:
+                self._pm_original = QPixmap.fromImage(res["qimg"])
+                if self.btn_toggle.isChecked() or self.preview_rgb is self.original_rgb:
+                    self._show_original()
+            self.mask_win.setWindowTitle(
+                self.tr("HDR Mask (L × Active Mask)") if res.get("has_doc_mask") else self.tr("HDR Mask (L-based)")
+            )
+            self.mask_win.set_thumb(res["thumb"])
+        if self._mask_pending:
+            self._update_mask_from_gamma()
 
     def closeEvent(self, ev):
+        # Running jobs are held by thread_keeper and finish on their own; their
+        # results are dropped once the dialog has released its buffers.
         try:
             thr = getattr(self, "thread", None)
-            if thr is not None and thr.isRunning():
+            if thread_running(thr):
                 thr.quit()
-                thr.wait(2000)
         except Exception:
             pass
         try:
@@ -778,6 +1042,9 @@ class WaveScaleHDRDialogPro(QDialog):
         self.preview_rgb = None
         self._lab_original = None
         self._L_original = None
+        self._mask_cache = {}
+        self._pm_original = None
+        self._pm_preview = None
         self._last_preview = None
         self._doc = None
         self.worker = None

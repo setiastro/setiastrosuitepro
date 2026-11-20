@@ -29,6 +29,7 @@ from setiastro.saspro.cosmicclarity_engines.sharpen_engine import sharpen_rgb01
 from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.cosmicclarity_engines.denoise_engine import denoise_rgb01
 from setiastro.saspro.cosmicclarity_engines.superres_engine import superres_rgb01
+from setiastro.saspro.cosmicclarity_engines._backend_guard import EngineCancelled
 from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
     get_satellite_models,
     satellite_remove_image,
@@ -258,11 +259,23 @@ def _satellite_exe_name() -> str:
 
 
 class WaitDialog(QDialog):
+    """Progress window for a Cosmic Clarity run.
+
+    The bar is a busy indicator until the engine reports real progress, and an
+    elapsed clock ticks on the GUI thread, so a long model load or tile pass reads
+    as working rather than hung. Closing it (title-bar X or Esc) means Cancel: it is
+    never just hidden over a worker that keeps going. The owner calls finish() once
+    the worker has actually stopped.
+    """
     cancelled = pyqtSignal()
 
     def __init__(self, title="Processing…", parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
+        self._finished = False
+        self._cancel_requested = False
+        self._has_progress = False
+        self._t0 = time.monotonic()
 
         v = QVBoxLayout(self)
         self.lbl = QLabel("Processing, please wait…")
@@ -270,20 +283,78 @@ class WaitDialog(QDialog):
         self.txt.setReadOnly(True)
 
         self.pb = QProgressBar()
-        self.pb.setRange(0, 100)
-        self.pb.setValue(0)
+        self.pb.setRange(0, 0)          # busy until the engine reports progress
         self.pb.setFormat("%p%")
 
-        btn = QPushButton("Cancel")
-        btn.clicked.connect(self.cancelled.emit)
+        self.lbl_elapsed = QLabel("")
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.request_cancel)
 
         v.addWidget(self.lbl)
         v.addWidget(self.txt)
         v.addWidget(self.pb)
-        v.addWidget(btn)
+        v.addWidget(self.lbl_elapsed)
+        v.addWidget(self.btn_cancel)
+
+        self._clock = QTimer(self)
+        self._clock.setInterval(1000)
+        self._clock.timeout.connect(self._update_elapsed)
+        self._clock.start()
+        self._update_elapsed()
+
+    def _update_elapsed(self):
+        secs = int(time.monotonic() - self._t0)
+        h, rem = divmod(secs, 3600)
+        m, sec = divmod(rem, 60)
+        self.lbl_elapsed.setText(f"Elapsed {h}:{m:02d}:{sec:02d}" if h else f"Elapsed {m}:{sec:02d}")
 
     def append_output(self, line: str):
         self.txt.append(line)
+
+    def set_stage(self, text: str):
+        if not self._cancel_requested:
+            self.lbl.setText(str(text))
+
+    def mark_cancelling(self):
+        """Show that a cancel is under way. Does not emit cancelled."""
+        if self._cancel_requested or self._finished:
+            return
+        self._cancel_requested = True
+        self.btn_cancel.setEnabled(False)
+        self.btn_cancel.setText("Cancelling…")
+        self.lbl.setText("Cancelling: stopping after the current tile batch…")
+        self.txt.append("Cancel requested… waiting for the worker to stop.")
+
+    def request_cancel(self):
+        if self._finished or self._cancel_requested:
+            return
+        self.mark_cancelling()
+        self.cancelled.emit()
+
+    def finish(self):
+        """Close for real. Call once the worker has stopped."""
+        self._finished = True
+        self._clock.stop()
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.close()
+
+    def closeEvent(self, e):
+        # The title-bar X while the worker runs is a cancel, not a hide. A
+        # programmatic close() (not spontaneous) still closes as it always did.
+        if not self._finished and e.spontaneous():
+            e.ignore()
+            self.request_cancel()
+            return
+        self._clock.stop()
+        super().closeEvent(e)
+
+    def keyPressEvent(self, e):
+        # QDialog maps Esc to reject(), which would only hide the window.
+        if e.key() == Qt.Key.Key_Escape and not self._finished:
+            e.accept()
+            self.request_cancel()
+            return
+        super().keyPressEvent(e)
 
     def set_progress(self, done: int, total: int | None = None):
         """
@@ -293,42 +364,124 @@ class WaitDialog(QDialog):
             set_progress(done, total)
         """
 
-        # Percent mode (legacy CC dialog usage)
+        # Percent mode (CC dialog)
         if total is None:
             pct = max(0, min(100, int(done)))
-            self.lbl.setText("Processing…")
-            self.pb.setRange(0, 100)
+            if pct <= 0 and not self._has_progress:
+                return              # stay busy until real work has been reported
+            self._has_progress = True
+            if self.pb.maximum() != 100:
+                self.pb.setRange(0, 100)
+                self.pb.setFormat("%p%")
             self.pb.setValue(pct)
-            self.pb.setFormat("%p%")
             return
 
         # Indeterminate mode
         if total <= 0:
-            self.lbl.setText("Waiting for files…")
+            if not self._cancel_requested:
+                self.lbl.setText("Waiting for files…")
             self.pb.setRange(0, 0)
             return
 
         # done / total mode
         done = max(0, min(int(done), int(total)))
-        self.lbl.setText("Batch processing files…")
+        if not self._cancel_requested:
+            self.lbl.setText("Batch processing files…")
         self.pb.setRange(0, int(total))
         self.pb.setValue(done)
         self.pb.setFormat(f"{done} / {total} files")
+
+
+# Worker threads are owned by thread_keeper, not by any window: closing or
+# deleting a dialog mid-run must never destroy a running QThread (a qFatal).
+from setiastro.saspro.thread_keeper import (  # noqa: E402
+    start_owned_thread as _start_cc_thread,
+    thread_running as _cc_thread_running,
+)
+
+
+def _blend_cc_mask(processed: np.ndarray, src: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """out = m*processed + (1-m)*src, with the dialog's historical mask handling.
+
+    src is the image the run started from (3-channel); a blank mask is no effect,
+    and a non-finite result falls back to the unblended output."""
+    m = np.asarray(mask).astype(np.float32)
+    if m.size == 0:
+        return processed
+    mx = float(m.max())
+    if mx > 1.0:
+        m = m / mx
+    elif mx == 0.0:
+        return processed
+    m = np.clip(m, 0.0, 1.0)
+
+    mh, mw = m.shape[:2]
+    oh, ow = processed.shape[:2]
+    if (mh, mw) != (oh, ow):
+        yi = np.linspace(0, mh - 1, oh).astype(np.int32)
+        xi = np.linspace(0, mw - 1, ow).astype(np.int32)
+        m = m[yi][:, xi]
+
+    src = np.asarray(src, dtype=np.float32)
+    out = processed.astype(np.float32)
+    if out.ndim == 3 and out.shape[2] >= 3:
+        m = m[..., None]
+        if src.ndim == 2:
+            src = np.stack([src] * 3, axis=-1)
+    elif out.ndim == 2:
+        if src.ndim == 3:
+            src = src[..., 0]
+
+    result = m * out + (1.0 - m) * src
+    if not np.isfinite(result).all():
+        return processed
+    return result.astype(np.float32)
+
 
 class CosmicClarityEngineWorker(QThread):
     progress = pyqtSignal(int)      # 0..100
     log      = pyqtSignal(str)
     result   = pyqtSignal(object, str)  # (np.ndarray float32 RGB01, final_step_title)
     error    = pyqtSignal(str)
+    stage    = pyqtSignal(str)      # label for the running stage
+    cancelled = pyqtSignal()        # stopped on request; nothing to apply
 
-    def __init__(self, img_rgb01: np.ndarray, preset: dict, parent=None):
+    _STAGE_LABELS = {
+        "sharpen": "Sharpening",
+        "denoise": "Denoising",
+        "superres": "Super resolution",
+        "aberration": "Aberration correction",
+    }
+
+    def __init__(self, img_rgb01: np.ndarray, preset: dict, parent=None, *,
+                 mask: np.ndarray | None = None, collapse_to_mono: bool = False):
         super().__init__(parent)
         self._img = np.asarray(img_rgb01, dtype=np.float32)
         self._preset = dict(preset)
         self._cancel = False
+        # Finishing (mono collapse, mask blend) runs here, not in the GUI slot:
+        # a full-frame blend on the GUI thread freezes the window on big images.
+        self._mask = mask
+        self._collapse_to_mono = bool(collapse_to_mono)
+        self._last_pct = -1
 
     def cancel(self):
         self._cancel = True
+
+    def _stop_requested(self) -> bool:
+        return bool(self._cancel or self.isInterruptionRequested())
+
+    def _finish_output(self, out: np.ndarray, src: np.ndarray, mode: str) -> np.ndarray:
+        if self._collapse_to_mono and out.ndim == 3:
+            out = out.mean(axis=2).astype(np.float32)
+        if self._mask is None:
+            return out
+        if mode == "superres":
+            # The mask is in the source geometry and super-res changes it (the
+            # old GUI-side blend raised on the shape mismatch).
+            self.log.emit("Mask not used: Super Resolution changes the image size.")
+            return out
+        return _blend_cc_mask(out, src, self._mask)
 
     # ---- progress adapter ----
     def _mk_progress_cb(self, stage_label: str, stage_weight: float, base_pct: float, total_stages: int):
@@ -337,14 +490,15 @@ class CosmicClarityEngineWorker(QThread):
         base_pct: starting % for this stage
         """
         def _cb(done: int, total: int):
-            if self._cancel or self.isInterruptionRequested():
+            if self._stop_requested():
                 return False
             if total <= 0:
                 return True
             frac = float(done) / float(total)
-            pct = base_pct + stage_weight * 100.0 * frac
-            self.progress.emit(int(max(0, min(100, round(pct)))))
-            # optional: throttle logs; keep it quiet
+            pct = int(max(0, min(100, round(base_pct + stage_weight * 100.0 * frac))))
+            if pct != self._last_pct:       # one signal per visible step, not per tile
+                self._last_pct = pct
+                self.progress.emit(pct)
             return True
         return _cb
 
@@ -388,12 +542,12 @@ class CosmicClarityEngineWorker(QThread):
             self.progress.emit(0)
 
             for si, st in enumerate(stages):
-                if self._cancel:
-                    self.error.emit("Cancelled.")
-                    return
+                if self._stop_requested():
+                    raise EngineCancelled("Cancelled.")
 
                 base_pct = (100.0 * si) / float(n)
                 self.log.emit(f"Running {st}…")
+                self.stage.emit(self._STAGE_LABELS.get(st, st.title()) + "…")
 
                 if st == "sharpen":
                     sharpening_mode = p.get("sharpening_mode", "Both")
@@ -476,7 +630,8 @@ class CosmicClarityEngineWorker(QThread):
                 else:
                     raise RuntimeError(f"Unknown stage: {st}")
 
-            self.progress.emit(100)
+            if self._stop_requested():
+                raise EngineCancelled("Cancelled.")
 
             # Title for history
             if mode == "both":
@@ -486,10 +641,21 @@ class CosmicClarityEngineWorker(QThread):
             else:
                 step_title = f"Cosmic Clarity – {mode.title()}"
 
-            self.result.emit(np.clip(out, 0.0, 1.0).astype(np.float32, copy=False), step_title)
+            out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+            out = self._finish_output(out, img, mode)
+            if self._stop_requested():
+                raise EngineCancelled("Cancelled.")
+            self.progress.emit(100)
+            self.result.emit(out, step_title)
 
+        except EngineCancelled:
+            self.cancelled.emit()
         except Exception as e:
-            self.error.emit(str(e))
+            if self._stop_requested():
+                # An engine path that surfaced the cancel as a plain error.
+                self.cancelled.emit()
+            else:
+                self.error.emit(str(e))
 
 
 # =============================================================================
@@ -557,12 +723,9 @@ class CosmicClarityDialogPro(QDialog):
         self.doc = doc
         self._engine_thread = None
         self._closing_after_cancel = False
-        _orig = np.clip(np.asarray(doc.image, dtype=np.float32), 0.0, 1.0)
-        if _orig.ndim == 2:
-            _orig = np.stack([_orig, _orig, _orig], axis=-1)
-        elif _orig.ndim == 3 and _orig.shape[2] == 1:
-            _orig = np.repeat(_orig, 3, axis=2)
-        self.orig = _orig
+        # The mask blend uses the image as it is at Execute (in the worker), so the
+        # dialog no longer holds a full-frame copy for as long as it is open.
+        self.orig = None
         self.cosmic_root = ""
  
         # ------------------------------------------------------------------
@@ -872,6 +1035,7 @@ class CosmicClarityDialogPro(QDialog):
         self.btn_clear_cache.clicked.connect(self._clear_ai_cache_clicked)
         b_run = QPushButton(self.tr("Execute"))
         b_run.clicked.connect(self._run_main)
+        self.btn_run = b_run
         b_close = QPushButton(self.tr("Close"))
         b_close.clicked.connect(self.reject)
         row.addWidget(self.btn_clear_cache)
@@ -1428,6 +1592,12 @@ class CosmicClarityDialogPro(QDialog):
 
     # ----- Execution -----
     def _run_main(self):
+        # One run at a time: a second Execute used to replace (and orphan) the first worker.
+        if _cc_thread_running(getattr(self, "_engine_thread", None)):
+            if self._wait is not None:
+                self._wait.raise_()
+                self._wait.activateWindow()
+            return
         # --- Basic safety: make sure we have an image ---
         try:
             img = np.asarray(getattr(self.doc, "image", None))
@@ -1462,6 +1632,7 @@ class CosmicClarityDialogPro(QDialog):
         # --- Snapshot UI preset ---
         preset = self.build_preset_from_ui()
         mode = str(preset.get("mode", "sharpen")).lower()
+        self._run_preset = dict(preset)     # recorded with the result, whatever the UI shows by then
 
         # --- Walking noise model availability check ---
         if preset.get("denoise_walking", False) and mode in ("denoise", "both"):
@@ -1508,6 +1679,23 @@ class CosmicClarityDialogPro(QDialog):
 
         # Stash for use in result handler
         self._orig_was_mono = orig_was_mono
+        self._run_cancel_requested = False
+
+        # Snapshot the active mask now. The worker blends with the mask as it was
+        # at Execute, so editing the mask mid-run cannot change this run's result.
+        mask, mask_id = None, None
+        try:
+            mask_id = self._active_mask_id()
+            layer = getattr(self.doc, "masks", {}).get(mask_id) if mask_id else None
+            # doc.add_mask() stores a bare float32 array; mask_mixin stores a layer with .data
+            data = layer if isinstance(layer, np.ndarray) else getattr(layer, "data", None)
+            if data is not None and np.asarray(data).size:
+                mask = np.array(data, dtype=np.float32, copy=True)
+        except Exception:
+            mask = None
+        self._run_mask_id = mask_id if mask is not None else None
+        if mode == "superres":
+            self._run_mask_id = None    # the worker does not use a mask for super-res
 
         # --- Show wait/progress UI ---
         title = "Cosmic Clarity – " + (
@@ -1516,53 +1704,84 @@ class CosmicClarityDialogPro(QDialog):
             mode.title()
         )
         self._wait = WaitDialog(title, self)
-        self._wait.set_progress(0)
         self._wait.append_output("Starting…")
+        self._wait.set_stage("Starting…")
         self._wait.cancelled.connect(self._cancel_all_engine)
         self._wait.show()
 
         # --- Run the in-process engine worker ---
-        self._engine_thread = CosmicClarityEngineWorker(arr, preset, parent=self)
+        # No Qt parent: _start_cc_thread owns the thread until it finishes, so this
+        # dialog can close, or be deleted, mid-run without destroying a running
+        # QThread. The slots are bound methods, which Qt disconnects if the dialog
+        # goes first (the old lambdas would have called into a deleted dialog).
+        thr = CosmicClarityEngineWorker(
+            arr, preset, parent=None,
+            mask=mask, collapse_to_mono=orig_was_mono,
+        )
+        thr.progress.connect(self._on_engine_progress)
+        thr.log.connect(self._on_engine_log)
+        thr.stage.connect(self._on_engine_stage)
+        thr.error.connect(self._on_engine_error)
+        thr.cancelled.connect(self._on_engine_cancelled)
+        thr.result.connect(self._on_engine_result)
+        thr.finished.connect(self._engine_cleanup_and_maybe_close)
+        self._engine_thread = thr
 
-        self._engine_thread.progress.connect(lambda p: self._wait.set_progress(int(p)) if self._wait else None)
-        self._engine_thread.log.connect(lambda s: self._wait.append_output(str(s)) if self._wait else None)
-        self._engine_thread.error.connect(self._on_engine_error)
-        self._engine_thread.result.connect(self._on_engine_result)
+        # No cache clearing and no second Execute while this run is active.
+        self._set_run_controls_enabled(False)
+        _start_cc_thread(thr)
 
-        # IMPORTANT: cleanup when the thread actually finishes
-        self._engine_thread.finished.connect(self._engine_cleanup_and_maybe_close)
-        # disable cache clearing during an active run
-        try:
-            self.btn_clear_cache.setEnabled(False)
-        except Exception:
-            pass
-        self._engine_thread.start()
+    def _set_run_controls_enabled(self, enabled: bool):
+        for name in ("btn_clear_cache", "btn_run"):
+            w = getattr(self, name, None)
+            if w is not None:
+                try:
+                    w.setEnabled(bool(enabled))
+                except RuntimeError:
+                    pass
 
+    def _on_engine_progress(self, pct: int):
+        if self._wait is not None:
+            self._wait.set_progress(int(pct))
+
+    def _on_engine_log(self, line: str):
+        if self._wait is not None:
+            self._wait.append_output(str(line))
+
+    def _on_engine_stage(self, text: str):
+        if self._wait is not None:
+            self._wait.set_stage(str(text))
 
     def _cancel_all_engine(self):
+        self._run_cancel_requested = True
         thr = getattr(self, "_engine_thread", None)
         if thr is not None:
             try:
-                thr.cancel()                # your flag
+                thr.cancel()                # checked at every tile batch
                 thr.requestInterruption()   # Qt-native interruption request
-            except Exception:
+            except RuntimeError:
                 pass
+        # The wait window stays up, showing "Cancelling…", until the worker stops.
+        if self._wait is not None:
+            self._wait.mark_cancelling()
 
-        # Keep the wait dialog open (or show "Canceling…") instead of closing immediately
-        if self._wait:
-            self._wait.append_output("Cancel requested… waiting for worker to stop.")
-            self._wait.set_progress(0)
-            # optionally disable cancel button to avoid spam clicks:
-            # (you'd need to store the cancel button in WaitDialog to disable it)
+    def _close_wait(self):
+        if self._wait is not None:
+            try:
+                self._wait.finish()
+            except RuntimeError:
+                pass
+            self._wait = None
 
-            # If you really want to hide it, do hide() not close() (close may cascade deletes)
-            # self._wait.hide()
-
+    def _on_engine_cancelled(self):
+        self._close_wait()
+        if self._headless:
+            self._headless_error = "Cancelled."
+            # reject() defers until the worker has stopped, then closes.
+            self.reject()
 
     def _on_engine_error(self, msg: str):
-        if self._wait:
-            self._wait.close()
-            self._wait = None
+        self._close_wait()
 
         text = str(msg)
         self._headless_error = text
@@ -1599,22 +1818,23 @@ class CosmicClarityDialogPro(QDialog):
             self.reject()
 
     def _on_engine_result(self, out_arr: np.ndarray, step_title: str):
-        if self._wait:
-            self._wait.close()
-            self._wait = None
+        self._close_wait()
+        if getattr(self, "_run_cancel_requested", False):
+            # Cancel was pressed after the engine's last batch: cancel still wins.
+            self._on_engine_cancelled()
+            return
+        if getattr(self, "doc", None) is None:
+            return
 
-        # Capture preset HERE on the main thread before any processing
-        preset = {}
-        try:
-            preset = self.build_preset_from_ui()
-        except Exception:
-            pass
+        # The preset this run used, snapshotted at Execute.
+        preset = dict(getattr(self, "_run_preset", None) or {})
+        if not preset:
+            try:
+                preset = self.build_preset_from_ui()
+            except Exception:
+                preset = {}
 
-        if getattr(self, "_orig_was_mono", False):
-            if out_arr.ndim == 3:
-                out_arr = out_arr.mean(axis=2).astype(np.float32)
-
-        out_arr = self._blend_with_mask(out_arr)
+        # The mono collapse and the mask blend already ran in the worker.
 
         create_new = (self.cmb_target.currentIndex() == 1)
         if create_new:
@@ -1644,59 +1864,8 @@ class CosmicClarityDialogPro(QDialog):
     def _active_mask_id(self) -> str | None:
         return getattr(self.doc, "active_mask_id", None) or None
 
-    def _blend_with_mask(self, processed: np.ndarray) -> np.ndarray:
-        mid = self._active_mask_id()
-        if not mid:
-            return processed
-
-        layer = getattr(self.doc, "masks", {}).get(mid)
-        if layer is None:
-            return processed
-
-        m = np.asarray(getattr(layer, "data", None))
-        if m is None or m.size == 0:
-            return processed
-
-        m = m.astype(np.float32)
-        # Guard against uint mask or float mask with values > 1
-        if m.dtype.kind in "ui":
-            imax = float(np.iinfo(m.dtype).max)
-            m = m / imax if imax > 0 else m
-        else:
-            mx = float(m.max()) if m.size else 0.0
-            if mx > 1.0:
-                m = m / mx
-            elif mx == 0.0:
-                return processed  # ← blank mask = no effect, return unmodified
-
-        m = np.clip(m, 0.0, 1.0)
-
-        mh, mw = m.shape[:2]
-        oh, ow = processed.shape[:2]
-        if (mh, mw) != (oh, ow):
-            yi = np.linspace(0, mh - 1, oh).astype(np.int32)
-            xi = np.linspace(0, mw - 1, ow).astype(np.int32)
-            m = m[yi][:, xi]
-
-        src = self.orig.astype(np.float32)  # always 3-channel now
-
-        out = processed.astype(np.float32)
-
-        if out.ndim == 3 and out.shape[2] >= 3:
-            m = m[..., None]
-            if src.ndim == 2:
-                src = np.stack([src] * 3, axis=-1)
-        elif out.ndim == 2:
-            if src.ndim == 3:
-                src = src[..., 0]
-
-        result = m * out + (1.0 - m) * src
-        if not np.isfinite(result).all():
-            return processed  # ← safety net: never return NaN to the document
-        return result.astype(np.float32)
-
     def _apply_to_active(self, arr: np.ndarray, step_title: str, preset: dict | None = None):
-        mid = self._active_mask_id()
+        mid = getattr(self, "_run_mask_id", None)     # the mask this run was blended with
 
         if preset is None:
             preset = {}
@@ -1925,7 +2094,7 @@ class CosmicClarityDialogPro(QDialog):
 
     def closeEvent(self, e):
         thr = getattr(self, "_engine_thread", None)
-        if thr is not None and thr.isRunning():
+        if _cc_thread_running(thr):
             self._closing_after_cancel = True
             self._cancel_all_engine()
             e.ignore()
@@ -1959,7 +2128,7 @@ class CosmicClarityDialogPro(QDialog):
 
     def reject(self):
         thr = getattr(self, "_engine_thread", None)
-        if thr is not None and thr.isRunning():
+        if _cc_thread_running(thr):
             self._closing_after_cancel = True
             self._cancel_all_engine()
             return
@@ -1971,20 +2140,11 @@ class CosmicClarityDialogPro(QDialog):
         super().reject()
 
     def _engine_cleanup_and_maybe_close(self):
-        # Called when thread has truly stopped
-        try:
-            if self._engine_thread is not None:
-                self._engine_thread.deleteLater()
-        except Exception:
-            pass
+        # Called when the thread has truly stopped. _start_cc_thread owns and
+        # deletes the thread object; this only drops the dialog's handle.
         self._engine_thread = None
-
-        # ✅ re-enable cache button
-        try:
-            if hasattr(self, "btn_clear_cache") and self.btn_clear_cache is not None:
-                self.btn_clear_cache.setEnabled(True)
-        except Exception:
-            pass
+        self._close_wait()      # never leave a progress window behind
+        self._set_run_controls_enabled(True)
 
         if self._closing_after_cancel:
             self._closing_after_cancel = False
@@ -2384,13 +2544,9 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
     # ---------- Single image processing ----------
     def _process_single_image(self):
-        from PyQt6.QtCore import QCoreApplication, Qt
-        from PyQt6.QtWidgets import QMessageBox, QFileDialog, QInputDialog, QProgressDialog
-
-        from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
-            get_satellite_models,
-            satellite_remove_image,
-        )
+        if self._sat_busy():
+            return
+        from PyQt6.QtWidgets import QMessageBox, QFileDialog, QInputDialog
 
         # ----------------------------
         # Decide source: view or file
@@ -2477,129 +2633,113 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 QMessageBox.critical(self, "Error", f"Failed to load image:\n{e}")
                 return
 
-        # ----------------------------
-        # Load/cached models ONCE
-        # ----------------------------
-        try:
-            import traceback as _tb
-            models = get_satellite_models(use_gpu=use_gpu, status_cb=lambda s: None)
-        except Exception as e:
-            detail = _tb.format_exc()
-            QMessageBox.critical(
-                self, "Error",
-                f"Failed to load Satellite models:\n{e}\n\n{detail}"
-            )
-            return
-
-        # ----------------------------
-        #sasprogress dialog helper
-        #   IMPORTANT: create/show AFTER input is chosen
-        # ----------------------------
-        pd = QProgressDialog("Satellite removal…", "Cancel", 0, 100, self)
-        pd.setWindowModality(Qt.WindowModality.WindowModal)
-        pd.setMinimumDuration(250)   # helps prevent weird cancel behavior
-        pd.setAutoClose(True)
-        pd.setAutoReset(True)
-        pd.setValue(0)
-
-        cancelled = {"flag": False}
-
-        def _on_cancel():
-            cancelled["flag"] = True
-
-        pd.canceled.connect(_on_cancel)
-
-        def _progress(done: int, total: int):
-            if total > 0:
-                pd.setValue(int((done * 100) / total))
-            else:
-                pd.setValue(0)
-
-            QCoreApplication.processEvents()
-
-            # IMPORTANT: return True to continue, False to cancel
-            return (not cancelled["flag"]) and (not pd.wasCanceled())
-
-        # ----------------------------
-        # Run engine
-        # ----------------------------
-        try:
-            cancelled["flag"] = False  # reset right before run
-            pd.show()
-
-            out, detected = satellite_remove_image(
-                img,
-                models=models,
-                mode=mode,
-                clip_trail=clip_trail,
-                sensitivity=sensitivity,
-                compatibility_mode=compatibility_mode,
-                progress_cb=_progress,
-            )
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error processing image:\n{e}")
-            return
-
-        finally:
-            pass
-
-        # ----------------------------
-        # Handle cancel / skip-save
-        # ----------------------------
-        if cancelled["flag"]:
-            QMessageBox.information(self, "Cancelled", "Operation cancelled.")
-            return
-
-        if skip_if_none and (not detected):
-            QMessageBox.information(self, "Satellite Removal", "No satellite trail detected (skip-save enabled).")
-            return
-
-        out = np.asarray(out, dtype=np.float32, order="C")
-
-        # ----------------------------
-        # Apply or save
-        # ----------------------------
-        if use_view:
-            if hasattr(chosen_doc, "set_image"):
-                chosen_doc.set_image(out, step_name="Cosmic Clarity – Satellite Removal")
-            else:
-                chosen_doc.image = out
-            return
-
-        # file path save
-        try:
+        # ----------------------------------------------------
+        # Run off the GUI thread: model load, removal and, for a
+        # file, the save. The old path ran the engine right here and
+        # kept the window alive with processEvents().
+        # ----------------------------------------------------
+        dst = ""
+        image_meta = None
+        if not use_view:
             # Not splitext + same ext: there is no Rice/gzip FITS writer and no
             # RAW writer, so a .fz / .fits.gz / .cr2 source is saved as plain
             # .fits and the name has to say so up front.
             dst = satellite_output_name(file_path)
-
             image_meta = meta.get("xisf_meta") if meta else None
             if image_meta is not None and not isinstance(image_meta, list):
                 image_meta = [image_meta]
 
-            fmt, _ = _save_fmt_and_bitdepth_from_path_for_legacy(dst)
-            save_image(
-                out, dst, fmt or "fits",
-                bd or "32-bit floating point",
-                hdr, mono,
-                image_meta=image_meta,
-                file_meta=None,
-            )
-            QMessageBox.information(self, "Success", f"Processed image saved to:\n{dst}")
+        thr = SatelliteSingleImageThread(
+            img,
+            use_gpu=use_gpu,
+            mode=mode,
+            clip_trail=clip_trail,
+            sensitivity=sensitivity,
+            compatibility_mode=compatibility_mode,
+            skip_if_none=skip_if_none,
+            save_to=dst,
+            save_hdr=hdr,
+            save_mono=mono,
+            save_bd=(bd if not use_view else None),
+            image_meta=image_meta,
+        )
+        self._single_ctx = {
+            "use_view": use_view, "doc": chosen_doc, "file_path": file_path,
+            "skip_if_none": skip_if_none,
+        }
+        self._sat_cancel_requested = False
+        self._wait = WaitDialog("Satellite removal", self)
+        self._wait.set_stage("Removing satellite trails…")
+        self._wait.cancelled.connect(self._cancel_sat_thread)
+        thr.progress.connect(self._on_single_progress)
+        thr.log.connect(self._wait.append_output)
+        thr.result.connect(self._on_single_result)
+        thr.error.connect(self._on_single_error)
+        thr.cancelled.connect(self._on_single_cancelled)
+        thr.finished.connect(self._on_single_finished)
+        self._single_thread = thr
+        self._set_sat_buttons_enabled(False)
+        self._wait.show()
+        _start_cc_thread(thr)
 
-            if self.chk_delete_original.isChecked():
-                try:
-                    if os.path.abspath(file_path) != os.path.abspath(dst):
-                        os.remove(file_path)
-                        self._refresh_tree(self.tree_in, self.input_folder)
-                except Exception as ex:
-                    QMessageBox.warning(
-                        self, "Delete Original",
-                        f"Could not delete original:\n{ex}"
-                    )
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save result:\n{e}")
+    def _on_single_progress(self, pct: int):
+        if self._wait is not None:
+            self._wait.set_progress(int(pct))
+
+    def _on_single_result(self, out, detected: bool, saved: str):
+        self._close_sat_wait()
+        ctx = getattr(self, "_single_ctx", None) or {}
+        stopped = bool(getattr(self, "_sat_cancel_requested", False) or self._closing_after_cancel)
+
+        if ctx.get("skip_if_none") and not detected:
+            if not stopped:
+                QMessageBox.information(self, "Satellite Removal",
+                                        "No satellite trail detected (skip-save enabled).")
+            return
+
+        if ctx.get("use_view"):
+            if stopped:
+                return      # cancel raced the last tile: leave the view untouched
+            doc = ctx.get("doc")
+            if doc is None:
+                return
+            if hasattr(doc, "set_image"):
+                doc.set_image(out, step_name="Cosmic Clarity – Satellite Removal")
+            else:
+                doc.image = out
+            return
+
+        if not saved:
+            return
+        QMessageBox.information(self, "Success", f"Processed image saved to:\n{saved}")
+        if self.chk_delete_original.isChecked():
+            file_path = ctx.get("file_path") or ""
+            try:
+                if file_path and os.path.abspath(file_path) != os.path.abspath(saved):
+                    os.remove(file_path)
+                    self._refresh_tree(self.tree_in, self.input_folder)
+            except Exception as ex:
+                QMessageBox.warning(
+                    self, "Delete Original",
+                    f"Could not delete original:\n{ex}"
+                )
+
+    def _on_single_error(self, msg: str):
+        self._close_sat_wait()
+        QMessageBox.critical(self, "Error", str(msg))
+
+    def _on_single_cancelled(self):
+        self._close_sat_wait()
+        if not self._closing_after_cancel:
+            QMessageBox.information(self, "Cancelled", "Operation cancelled.")
+
+    def _on_single_finished(self):
+        self._single_thread = None
+        self._close_sat_wait()
+        self._set_sat_buttons_enabled(True)
+        if self._closing_after_cancel:
+            self._closing_after_cancel = False
+            QTimer.singleShot(0, self.close)
 
     def _collect_open_views(self):
         """
@@ -2665,7 +2805,30 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self._run_engine_thread(monitor=True, title="Satellite – Live monitoring",
                                 on_finish=lambda: self.sld_sens.setEnabled(True))
 
+    def _sat_busy(self) -> bool:
+        return (_cc_thread_running(getattr(self, "_sat_thread", None))
+                or _cc_thread_running(getattr(self, "_single_thread", None)))
+
+    def _set_sat_buttons_enabled(self, enabled: bool):
+        for name in ("btn_single", "btn_batch", "btn_monitor"):
+            w = getattr(self, name, None)
+            if w is not None:
+                try:
+                    w.setEnabled(bool(enabled))
+                except RuntimeError:
+                    pass
+
+    def _close_sat_wait(self):
+        if self._wait is not None:
+            try:
+                self._wait.finish()
+            except RuntimeError:
+                pass
+            self._wait = None
+
     def _run_engine_thread(self, *, monitor: bool, title: str, on_finish=None):
+        if self._sat_busy():
+            return
         use_gpu = (self.cmb_gpu.currentText() == "Yes")
         mode = self.cmb_mode.currentText().lower()  # "full" / "luminance"
         clip_trail = bool(self.chk_clip.isChecked())
@@ -2673,9 +2836,12 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         skip_save = bool(self.chk_skip.isChecked())
         compatibility_mode = bool(self.chk_gpu_compat.isChecked())
         delete_original = bool(self.chk_delete_original.isChecked())
+        self._sat_cancel_requested = False
         self._wait = WaitDialog(title, self)
         self._wait.show()
 
+        # No Qt parent, owned by _start_cc_thread: closing this window can no
+        # longer garbage-collect a running thread (a qFatal, i.e. a silent exit).
         self._sat_thread = SatelliteEngineThread(
             input_dir=self.input_folder,
             output_dir=self.output_folder,
@@ -2688,11 +2854,13 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             compatibility_mode=compatibility_mode,
             delete_original=delete_original,
         )
+        self._sat_on_finish = on_finish
         self._sat_thread.log_signal.connect(self._wait.append_output)
         self._sat_thread.progress_signal.connect(self._on_sat_progress)
-        self._sat_thread.finished_signal.connect(lambda: self._on_thread_finished(on_finish))
+        self._sat_thread.finished_signal.connect(self._on_sat_thread_finished)
         self._wait.cancelled.connect(self._cancel_sat_thread)
-        self._sat_thread.start()
+        self._set_sat_buttons_enabled(False)
+        _start_cc_thread(self._sat_thread)
 
     def _on_sat_progress(self, done: int, total: int):
         if not self._wait:
@@ -2702,25 +2870,55 @@ class CosmicClaritySatelliteDialogPro(QDialog):
     # ---------- Command / run ----------
 
     def _cancel_sat_thread(self):
-        if self._sat_thread:
-            self._sat_thread.cancel()
-        if self._wait:
-            self._wait.close()
-            self._wait = None
+        self._sat_cancel_requested = True
+        for thr in (getattr(self, "_sat_thread", None), getattr(self, "_single_thread", None)):
+            if _cc_thread_running(thr):
+                try:
+                    thr.cancel()
+                    thr.requestInterruption()
+                except RuntimeError:
+                    pass
+        # Keep the progress window up, showing "Cancelling…", until the worker
+        # has actually stopped; the finished handlers close it.
+        if self._wait is not None:
+            self._wait.mark_cancelling()
+
+    def _on_sat_thread_finished(self):
+        self._on_thread_finished(getattr(self, "_sat_on_finish", None))
 
     def _on_thread_finished(self, on_finish):
-        if self._wait: self._wait.close(); self._wait = None
+        thr = getattr(self, "_sat_thread", None)
+        monitor = bool(getattr(thr, "monitor", False))
+        self._close_sat_wait()
+        self._sat_thread = None
+        self._set_sat_buttons_enabled(True)
         if callable(on_finish):
             try: on_finish()
             except Exception as e:
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-        QMessageBox.information(self, "Done", "Processing finished.")
+        if self._closing_after_cancel:
+            self._closing_after_cancel = False
+            QTimer.singleShot(0, self.close)
+            return
+        if monitor:
+            QMessageBox.information(self, "Live Monitor", "Live monitor stopped.")
+        elif getattr(self, "_sat_cancel_requested", False):
+            QMessageBox.information(self, "Cancelled", "Processing cancelled.")
+        else:
+            QMessageBox.information(self, "Done", "Processing finished.")
 
     def closeEvent(self, e):
+        if self._sat_busy():
+            # Stop the worker first; the window closes itself once it has stopped.
+            # A live monitor used to keep running with no window at all.
+            self._closing_after_cancel = True
+            self._cancel_sat_thread()
+            e.ignore()
+            return
         self._save_satellite_settings()
         super().closeEvent(e)
-        
+
     # ---------- Utils ----------
     @staticmethod
     def _create_temp_folder(base="~"):
@@ -2728,6 +2926,104 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         temp_folder = os.path.join(user_dir, "CosmicClarityTemp")
         os.makedirs(temp_folder, exist_ok=True)
         return temp_folder
+
+class SatelliteSingleImageThread(QThread):
+    """One Satellite Removal run off the GUI thread: model load, removal, file save."""
+    progress  = pyqtSignal(int)                  # 0..100
+    log       = pyqtSignal(str)
+    result    = pyqtSignal(object, bool, str)    # image, trail detected, saved path ("" = none)
+    error     = pyqtSignal(str)
+    cancelled = pyqtSignal()
+
+    def __init__(self, img, *, use_gpu: bool, mode: str, clip_trail: bool,
+                 sensitivity: float, compatibility_mode: bool, skip_if_none: bool,
+                 save_to: str = "", save_hdr=None, save_mono: bool = False,
+                 save_bd=None, image_meta=None):
+        super().__init__()
+        self.img = img
+        self.use_gpu = bool(use_gpu)
+        self.mode = mode
+        self.clip_trail = bool(clip_trail)
+        self.sensitivity = float(sensitivity)
+        self.compatibility_mode = bool(compatibility_mode)
+        self.skip_if_none = bool(skip_if_none)
+        self.save_to = save_to or ""
+        self.save_hdr = save_hdr
+        self.save_mono = bool(save_mono)
+        self.save_bd = save_bd
+        self.image_meta = image_meta
+        self._cancel = False
+        self._last_pct = -1
+
+    def cancel(self):
+        self._cancel = True
+
+    def _stop_requested(self) -> bool:
+        return bool(self._cancel or self.isInterruptionRequested())
+
+    def _progress(self, done: int, total: int):
+        if self._stop_requested():
+            return False                # the engine raises EngineCancelled
+        pct = int((done * 100) / total) if total > 0 else 0
+        if pct != self._last_pct:
+            self._last_pct = pct
+            self.progress.emit(pct)
+        return True
+
+    def run(self):
+        phase = "load"
+        try:
+            from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+                get_satellite_models,
+                satellite_remove_image,
+            )
+            self.log.emit("Loading Satellite models…")
+            models = get_satellite_models(use_gpu=self.use_gpu, status_cb=lambda s: None)
+            if self._stop_requested():
+                raise EngineCancelled("Cancelled.")
+
+            phase = "process"
+            self.log.emit("Removing satellite trails…")
+            out, detected = satellite_remove_image(
+                self.img,
+                models=models,
+                mode=self.mode,
+                clip_trail=self.clip_trail,
+                sensitivity=self.sensitivity,
+                compatibility_mode=self.compatibility_mode,
+                progress_cb=self._progress,
+            )
+            if self._stop_requested():
+                raise EngineCancelled("Cancelled.")
+            out = np.asarray(out, dtype=np.float32, order="C")
+
+            saved = ""
+            if self.save_to and not (self.skip_if_none and not detected):
+                phase = "save"
+                fmt, _ = _save_fmt_and_bitdepth_from_path_for_legacy(self.save_to)
+                save_image(
+                    out, self.save_to, fmt or "fits",
+                    self.save_bd or "32-bit floating point",
+                    self.save_hdr, self.save_mono,
+                    image_meta=self.image_meta,
+                    file_meta=None,
+                )
+                saved = self.save_to
+            self.result.emit(out, bool(detected), saved)
+
+        except EngineCancelled:
+            self.cancelled.emit()
+        except Exception as e:
+            if self._stop_requested():
+                self.cancelled.emit()
+            elif phase == "load":
+                import traceback as _tb
+                self.error.emit(f"Failed to load Satellite models:\n{e}\n\n{_tb.format_exc()}")
+            elif phase == "save":
+                self.error.emit(f"Failed to save result:\n{e}")
+            else:
+                self.error.emit(f"Error processing image:\n{e}")
+
 
 class SatelliteEngineThread(QThread):
     log_signal = pyqtSignal(str)
@@ -2889,7 +3185,8 @@ class SatelliteEngineThread(QThread):
                     clip_trail=self.clip_trail,
                     sensitivity=float(self.sensitivity),
                     compatibility_mode=self.compatibility_mode,
-                    progress_cb=None,
+                    # Cancel lands mid-file (EngineCancelled), not only between files.
+                    progress_cb=lambda _d, _t: not self._cancel,
                     detect_tiles=known_tiles,
                     status_cb=self.log_signal.emit,
                 )
@@ -3025,6 +3322,8 @@ class SatelliteEngineThread(QThread):
                     self.log_signal.emit(f"Processing: {fn}")
                     try:
                         process_one(fp_in, fp_out, real_tiles_by_file.get(fn))
+                    except EngineCancelled:
+                        break
                     except Exception as e:
                         self.log_signal.emit(f"Error {fn}: {e}")
 

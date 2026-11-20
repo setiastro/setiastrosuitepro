@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import cv2
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QFormLayout,
@@ -19,38 +19,57 @@ from setiastro.saspro.widgets.image_utils import (
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 
 # ---------------- Core (unchanged) ----------------
+# The operation runs on 8-bit data, so it splits into: the 8-bit input (fixed
+# for an image), the cv2 op on it, and /255 back to float. The dialog keeps the
+# first and shows the second directly; that is the same picture the float
+# result gave, since u8 -> /255 -> *255 -> u8 is the identity for all 256 levels.
+def _morph_base_u8(img: np.ndarray) -> np.ndarray:
+    """8-bit input of apply_morphology for an image already clipped to [0..1]
+    float32: (H,W) for mono / (H,W,1), (H,W,3) for RGB."""
+    if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
+        return (img.squeeze() * 255.0).astype(np.uint8)
+    if img.ndim == 3 and img.shape[2] == 3:
+        return (img * 255.0).astype(np.uint8)
+    raise ValueError("Input image must be mono (H,W)/(H,W,1) or RGB (H,W,3).")
+
+def _morph_u8(u8: np.ndarray, operation: str, kernel_size: int, iterations: int) -> np.ndarray:
+    if kernel_size % 2 == 0: kernel_size += 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    # OpenCV morphology functions handle multi-channel images natively (independent channels)
+    if operation == "erosion":  return cv2.erode(u8, kernel, iterations=iterations)
+    if operation == "dilation": return cv2.dilate(u8, kernel, iterations=iterations)
+    if operation == "opening":  return cv2.morphologyEx(u8, cv2.MORPH_OPEN, kernel, iterations=iterations)
+    if operation == "closing":  return cv2.morphologyEx(u8, cv2.MORPH_CLOSE, kernel, iterations=iterations)
+    raise ValueError(f"Unsupported morphological operation: {operation}")
+
+# k -> float32(k) / 255.0, exactly what .astype(np.float32) / 255.0 gives
+_U8_TO_F01 = np.arange(256, dtype=np.float32) / 255.0
+
+def _morph_out_f01(out_u8: np.ndarray, was_hw1: bool) -> np.ndarray:
+    """out_u8.astype(np.float32) / 255.0 (already inside [0, 1]) as one lookup."""
+    out = cv2.LUT(np.ascontiguousarray(out_u8), _U8_TO_F01)
+    return out[..., None] if was_hw1 else out
+
+def _qimage_from_u8(u8: np.ndarray) -> QImage:
+    """8-bit (H,W) or (H,W,3) -> QImage owning its pixels, already in the 32-bit
+    format QPixmap.fromImage keeps as is (no conversion on the GUI thread).
+    Mono goes in as Grayscale8: the same pixels as the replicated RGB."""
+    u8 = np.ascontiguousarray(u8)
+    h, w = u8.shape[:2]
+    fmt = QImage.Format.Format_Grayscale8 if u8.ndim == 2 else QImage.Format.Format_RGB888
+    return QImage(u8.data, w, h, int(u8.strides[0]), fmt).convertToFormat(QImage.Format.Format_RGB32)
+
 def apply_morphology(image: np.ndarray, *, operation: str = "erosion",
                      kernel_size: int = 3, iterations: int = 1) -> np.ndarray:
-    # ... (existing body unchanged)
     if image is None:
         raise ValueError("image is None")
     img = np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
     was_hw1 = (img.ndim == 3 and img.shape[2] == 1)
-    if kernel_size % 2 == 0: kernel_size += 1
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-
-    def _do(u8):
-        if operation == "erosion":  return cv2.erode(u8, kernel, iterations=iterations)
-        if operation == "dilation": return cv2.dilate(u8, kernel, iterations=iterations)
-        if operation == "opening":  return cv2.morphologyEx(u8, cv2.MORPH_OPEN, kernel, iterations=iterations)
-        if operation == "closing":  return cv2.morphologyEx(u8, cv2.MORPH_CLOSE, kernel, iterations=iterations)
-        raise ValueError(f"Unsupported morphological operation: {operation}")
-
-    if img.ndim == 2 or was_hw1:
-        mono = (img.squeeze() * 255.0).astype(np.uint8)
-        out = _do(mono).astype(np.float32) / 255.0
-        out = np.clip(out, 0.0, 1.0)
-        return out[..., None] if was_hw1 else out
-
-    if img.ndim == 3 and img.shape[2] == 3:
-        u8 = (img * 255.0).astype(np.uint8)
-        # OpenCV morphology functions handle multi-channel images natively (independent channels)
-        out_u8 = _do(u8)
-        return (out_u8.astype(np.float32) / 255.0).clip(0.0, 1.0)
-
-    raise ValueError("Input image must be mono (H,W)/(H,W,1) or RGB (H,W,3).")
+    out_u8 = _morph_u8(_morph_base_u8(img), operation, kernel_size, iterations)
+    return _morph_out_f01(out_u8, was_hw1)
 
 def apply_morphology_to_doc(doc, preset: dict | None):
     if doc is None or getattr(doc, "image", None) is None:
@@ -85,6 +104,36 @@ def apply_morphology_to_doc(doc, preset: dict | None):
 
 
 # ---------------- Dialog ----------------
+class _MorphPreviewWorker(QThread):
+    """One preview off the GUI thread. cv2 and numpy only (they release the
+    GIL). A QImage, unlike a QPixmap, may be built here."""
+    ready = pyqtSignal(object)    # dict, see run()
+
+    def __init__(self, orig, base_u8, op: str, k: int, it: int, mask):
+        super().__init__()        # no parent: thread_keeper owns it
+        self.orig = orig
+        self.base_u8 = base_u8    # cached _morph_base_u8(orig), or None
+        self.key = (op, int(k), int(it))
+        self.mask = mask
+
+    def run(self):
+        res = {"orig": self.orig, "key": self.key}
+        try:
+            base = self.base_u8 if self.base_u8 is not None else _morph_base_u8(self.orig)
+            out_u8 = _morph_u8(base, *self.key)
+            disp = out_u8
+            if self.mask is not None:
+                # same blend the float preview did, then its 8-bit display
+                src = self.orig.squeeze() if out_u8.ndim == 2 else self.orig
+                b = _blend_with_mask(src, _morph_out_f01(out_u8, False), self.mask)
+                disp = (np.clip(b, 0, 1) * 255).astype(np.uint8)
+            res.update(base_u8=base, out_u8=out_u8, qimg=_qimage_from_u8(disp))
+        except Exception as e:
+            res["error"] = str(e)
+        self.orig = self.base_u8 = self.mask = None
+        self.ready.emit(res)
+
+
 class MorphologyDialogPro(QDialog):
     OPS = ["Erosion", "Dilation", "Opening", "Closing"]
     OP_MAP = {"Erosion":"erosion","Dilation":"dilation","Opening":"opening","Closing":"closing"}
@@ -111,10 +160,13 @@ class MorphologyDialogPro(QDialog):
         self.doc  = doc
         self.orig = np.clip(np.asarray(doc.image, dtype=np.float32), 0.0, 1.0)
 
-        disp = self.orig
-        if disp.ndim == 2: disp = disp[..., None].repeat(3, axis=2)
-        elif disp.ndim == 3 and disp.shape[2] == 1: disp = disp.repeat(3, axis=2)
-        self._disp_base = disp
+        # Preview worker state. The 8-bit input never changes for an image, and
+        # the preview's 8-bit result is what Apply needs (it is the result * 255).
+        self._pv_thread = None
+        self._pv_pending = False
+        self._pv_fit = True       # fit the view to the first preview
+        self._base_u8 = None      # (orig, _morph_base_u8(orig))
+        self._pv_result = None    # (orig, (op, k, it), out_u8) of the preview on screen
 
         v = QVBoxLayout(self)
 
@@ -201,12 +253,15 @@ class MorphologyDialogPro(QDialog):
 
         self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.timeout.connect(self._update_preview)
 
-        self._set_pix(self._disp_base)
-        self._update_preview()
-        # initial fit
-        self.view.fit_to_item(self.pix)
+        # First preview on the worker once the event loop runs; the view is
+        # fitted to it when it lands (seed_from_preset starts it at once).
+        self._timer.start(0)
 
     def _debounce(self): self._timer.start(200)
+
+    def _show_u8(self, u8: np.ndarray):
+        self.pix.setPixmap(QPixmap.fromImage(_qimage_from_u8(u8)))
+        self.scene.setSceneRect(self.pix.boundingRect())
 
     def _set_pix(self, rgb):
         arr = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
@@ -262,25 +317,68 @@ class MorphologyDialogPro(QDialog):
         self._update_preview()
 
     def _update_preview(self):
+        """Preview on a worker, one at a time. A change made while one runs
+        re-runs it with the latest settings when it lands."""
+        self._timer.stop()
+        if self.orig is None:
+            return
+        if thread_running(self._pv_thread):
+            self._pv_pending = True
+            return
         op, k, it = self._params()
         try:
-            out = apply_morphology(self._disp_base, operation=op, kernel_size=k, iterations=it)
-
-            # Blend preview with active mask (preview is on _disp_base size)
-            H, W = out.shape[:2]
+            # Blend preview with active mask (full size, like the image)
+            H, W = self.orig.shape[:2]
             m = _get_active_mask_resized(self.doc, H, W)
-            if m is not None:
-                base = self._disp_base.astype(np.float32)
-                out = _blend_with_mask(base, out.astype(np.float32), m)
-
-            self._set_pix(out)
         except Exception as e:
             QMessageBox.warning(self, "Morphology", f"Preview failed:\n{e}")
+            return
+        b = self._base_u8
+        base_u8 = b[1] if (b is not None and b[0] is self.orig) else None
+        thr = _MorphPreviewWorker(self.orig, base_u8, op, k, it, m)
+        thr.ready.connect(self._on_preview_ready)
+        thr.finished.connect(self._on_preview_finished)
+        self._pv_thread = thr
+        start_owned_thread(thr)
+
+    def _on_preview_ready(self, res: dict):
+        if getattr(self, "_memory_released", False) or res.get("orig") is not self.orig:
+            return                           # closed, or the image changed meanwhile
+        if "error" in res:
+            QMessageBox.warning(self, "Morphology", f"Preview failed:\n{res['error']}")
+            return
+        self._base_u8 = (res["orig"], res["base_u8"])
+        self._pv_result = (res["orig"], res["key"], res["out_u8"])
+        self.pix.setPixmap(QPixmap.fromImage(res["qimg"]))
+        self.scene.setSceneRect(self.pix.boundingRect())
+        if self._pv_fit:
+            self._pv_fit = False
+            self.view.fit_to_item(self.pix)
+
+    def _on_preview_finished(self):
+        if not self._pv_pending or getattr(self, "_memory_released", False):
+            return
+        self._pv_pending = False
+        r = self._pv_result
+        if r is not None and r[0] is self.orig and r[1] == self._params():
+            return                           # what is on screen already matches
+        self._update_preview()
+
+    def _compute_out(self, op: str, k: int, it: int) -> np.ndarray:
+        """apply_morphology(self.orig, ...), reusing the preview work."""
+        was_hw1 = (self.orig.ndim == 3 and self.orig.shape[2] == 1)
+        r = self._pv_result
+        if r is not None and r[0] is self.orig and r[1] == (op, int(k), int(it)):
+            return _morph_out_f01(r[2], was_hw1)
+        b = self._base_u8
+        if b is not None and b[0] is self.orig:
+            return _morph_out_f01(_morph_u8(b[1], op, k, it), was_hw1)
+        return apply_morphology(self.orig, operation=op, kernel_size=k, iterations=it)
 
     def _apply(self):
         op, k, it = self._params()
         try:
-            out = apply_morphology(self.orig, operation=op, kernel_size=k, iterations=it)
+            out = self._compute_out(op, k, it)
             out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
             # Blend with active mask at full resolution
@@ -351,10 +449,8 @@ class MorphologyDialogPro(QDialog):
                     self.doc = new_doc
                     # Refresh preview for new document
                     self.orig = np.clip(np.asarray(new_doc.image, dtype=np.float32), 0.0, 1.0)
-                    disp = self.orig
-                    if disp.ndim == 2: disp = disp[..., None].repeat(3, axis=2)
-                    elif disp.ndim == 3 and disp.shape[2] == 1: disp = disp.repeat(3, axis=2)
-                    self._disp_base = disp
+                    self._base_u8 = None
+                    self._pv_result = None
                     self._update_preview()
         except Exception:
             pass
@@ -365,7 +461,12 @@ class MorphologyDialogPro(QDialog):
         self.cb_op.setCurrentText("Erosion")
         self.sp_kernel.setValue(3)
         self.sp_iter.setValue(1)
-        self._set_pix(self._disp_base)
+        # show the unprocessed image (its 8-bit form is what the old float
+        # display gave) until the debounced preview lands
+        b = self._base_u8
+        if b is None or b[0] is not self.orig:
+            b = self._base_u8 = (self.orig, _morph_base_u8(self.orig))
+        self._show_u8(b[1])
         self.view.fit_to_item(self.pix)
 
     def closeEvent(self, ev):
@@ -380,9 +481,14 @@ class MorphologyDialogPro(QDialog):
         if getattr(self, "_memory_released", False):
             return
         self._memory_released = True
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
 
         self.orig = None
-        self._disp_base = None
+        self._base_u8 = None
+        self._pv_result = None
         self.doc = None
         try:
             self.pix.setPixmap(QPixmap())

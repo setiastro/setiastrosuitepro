@@ -505,8 +505,9 @@ class SelectiveColorCorrection(QDialog):
             QMessageBox.information(self, "No image", "Open an image first.")
             self.close(); return
 
-        self.img = np.clip(self.document.image.astype(np.float32), 0.0, 1.0)
-        self.preview_img = self.img.copy()
+        # one full-frame copy (np.clip makes it); astype() + .copy() made two more
+        self.img = np.clip(np.asarray(self.document.image, dtype=np.float32), 0.0, 1.0)
+        self._ds_cache = None               # (img, its small-preview downsample)
         self._syncing_hue = False
         self._imported_mask_full = None     # full-res mask (H x W) float32 0..1
         self._imported_mask_name = None     # nice label to show in UI
@@ -526,9 +527,10 @@ class SelectiveColorCorrection(QDialog):
         self._adj_timer = QTimer(self)
         self._adj_timer.setSingleShot(True)
         self._adj_timer.timeout.connect(self._update_preview_pixmap)    
-        self.dd_preset.setCurrentText("Red")
+        self.dd_preset.setCurrentText("Red")      # -> _on_preset_change recomputes
         self._setting_preset = False
-        self._recompute_mask_and_preview()
+        if getattr(self, "_last_base", None) is None:
+            self._recompute_mask_and_preview()
         self._panning = False
         self._pan_start_pos = None       # QPointF in label coords
         self._pan_start_scroll = (0, 0)  # (hval, vval)    
@@ -650,14 +652,14 @@ class SelectiveColorCorrection(QDialog):
         gl.addWidget(QLabel("Min chroma:"), 3, 2)
         self.ds_minC = QDoubleSpinBox(); self.ds_minC.setRange(0,1); self.ds_minC.setSingleStep(0.05); self.ds_minC.setValue(0.05)
 
-        self.ds_minC.valueChanged.connect(self._recompute_mask_and_preview)
+        self.ds_minC.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_minC, 3, 3)
 
         gl.addWidget(QLabel("Lightness min/max:"), 3, 4)
         self.ds_minL = QDoubleSpinBox(); self.ds_minL.setRange(0,1); self.ds_minL.setSingleStep(0.05); self.ds_minL.setValue(0.0)
         self.ds_maxL = QDoubleSpinBox(); self.ds_maxL.setRange(0,1); self.ds_maxL.setSingleStep(0.05); self.ds_maxL.setValue(1.0)
-        self.ds_minL.valueChanged.connect(self._recompute_mask_and_preview)
-        self.ds_maxL.valueChanged.connect(self._recompute_mask_and_preview)
+        self.ds_minL.valueChanged.connect(self._schedule_mask)
+        self.ds_maxL.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_minL, 3, 5)
         gl.addWidget(QLabel("to"), 3, 6)
         gl.addWidget(self.ds_maxL, 3, 7)
@@ -665,7 +667,7 @@ class SelectiveColorCorrection(QDialog):
         # Row 4: smoothness + invert
         gl.addWidget(QLabel("Smoothness (deg):"), 4, 2)
         self.ds_smooth = QDoubleSpinBox(); self.ds_smooth.setRange(0,60); self.ds_smooth.setSingleStep(1.0); self.ds_smooth.setValue(10.0)
-        self.ds_smooth.valueChanged.connect(self._recompute_mask_and_preview)
+        self.ds_smooth.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_smooth, 4, 3)
 
         self.cb_invert = QCheckBox("Invert hue range")
@@ -676,27 +678,27 @@ class SelectiveColorCorrection(QDialog):
         # Row 5: shadows/highlights + intensity
         gl.addWidget(QLabel("Shadows:"), 5, 2)
         self.ds_sh = QDoubleSpinBox(); self.ds_sh.setRange(0,1); self.ds_sh.setSingleStep(0.05); self.ds_sh.setValue(0.0)
-        self.ds_sh.valueChanged.connect(self._recompute_mask_and_preview)
+        self.ds_sh.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_sh, 5, 3)
 
         gl.addWidget(QLabel("Highlights:"), 5, 4)
         self.ds_hi = QDoubleSpinBox(); self.ds_hi.setRange(0,1); self.ds_hi.setSingleStep(0.05); self.ds_hi.setValue(1.0)
-        self.ds_hi.valueChanged.connect(self._recompute_mask_and_preview)
+        self.ds_hi.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_hi, 5, 5)
 
         self.ds_bal = QDoubleSpinBox(); self.ds_bal.setRange(0,1); self.ds_bal.setSingleStep(0.05); self.ds_bal.setValue(0.5)
-        self.ds_bal.valueChanged.connect(self._recompute_mask_and_preview)
+        self.ds_bal.valueChanged.connect(self._schedule_mask)
         self.ds_bal.setVisible(False)  # used in math, hidden in UI
 
         gl.addWidget(QLabel("Intensity:"), 5, 6)
         self.ds_int = QDoubleSpinBox(); self.ds_int.setRange(0, 2.0); self.ds_int.setSingleStep(0.05); self.ds_int.setValue(1.0)
-        self.ds_int.valueChanged.connect(self._recompute_mask_and_preview)
+        self.ds_int.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_int, 5, 7)
 
         # Row 6: blur + overlay
         gl.addWidget(QLabel("Edge blur (px):"), 6, 2)
         self.sb_blur = QSpinBox(); self.sb_blur.setRange(0, 150); self.sb_blur.setValue(0)
-        self.sb_blur.valueChanged.connect(self._recompute_mask_and_preview)
+        self.sb_blur.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.sb_blur, 6, 3)
 
         self.cb_show_mask = QCheckBox("Show mask overlay")
@@ -952,8 +954,9 @@ class SelectiveColorCorrection(QDialog):
             self.splitter.splitterMoved.connect(lambda *_: self._save_window_state())
         except Exception:
             pass
-        # First paint
-        self._update_preview_pixmap()
+        # First paint: done by the constructor right after this (the preset
+        # change recomputes the mask); painting here too only built a mask
+        # for the "Custom" range that was thrown away at once.
 
     # --- Lasso helpers ---------------------------------------------------
     def _clear_region_mask(self):
@@ -1622,11 +1625,24 @@ class SelectiveColorCorrection(QDialog):
             return cv2.resize(img, (int(w*k), int(h*k))) if False else img[::int(1/k), ::int(1/k)]
         return cv2.resize(img, (int(w*k), int(h*k)), interpolation=cv2.INTER_AREA)
 
+    def _preview_base(self) -> np.ndarray:
+        """The image the preview works on: self.img, or for the small preview its
+        1200 px downsample, made once per self.img (it was redone on every mask
+        change, ~0.3 s on 22 MP, four times while opening)."""
+        c = self._ds_cache
+        if c is not None and c[0] is not self.img:
+            self._ds_cache = c = None          # self.img was replaced: drop the old pair
+        if not self.cb_small_preview.isChecked():
+            return self.img
+        if c is None:
+            self._ds_cache = c = (self.img, self._downsample(self.img, 1200))
+        return c[1]
+
     def _recompute_mask_and_preview(self):
         if self.img is None:
             return
 
-        base = self._downsample(self.img, 1200) if self.cb_small_preview.isChecked() else self.img
+        base = self._preview_base()
         self._last_base = base
 
         if self._use_imported_mask and self._imported_mask_full is not None:
@@ -1959,7 +1975,7 @@ class SelectiveColorCorrection(QDialog):
                 self.docman.open_array(result, title=f"{name} [SelectiveColor]")
 
         # make the processed image the new working base for further tweaks
-        self.img = np.clip(result.astype(np.float32), 0.0, 1.0)
+        self.img = np.clip(np.asarray(result, dtype=np.float32), 0.0, 1.0)
         self._last_base = None   # force rebuild from current self.img
         self._reset_controls()   # reset knobs; dialog remains open
 
@@ -1989,7 +2005,7 @@ class SelectiveColorCorrection(QDialog):
             self.lbl_target.setText(f"Target View:  <b>{disp}</b>")
 
         # new working base is the processed pixels either way
-        self.img = np.clip(result.astype(np.float32), 0.0, 1.0)
+        self.img = np.clip(np.asarray(result, dtype=np.float32), 0.0, 1.0)
         self._last_base = None
         self._reset_controls()
 
@@ -2076,7 +2092,7 @@ class SelectiveColorCorrection(QDialog):
             pass
 
         self.img = None
-        self.preview_img = None
+        self._ds_cache = None
         self._last_base = None
         self._base_pm = None
         self._imported_mask_full = None

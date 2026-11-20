@@ -12,7 +12,8 @@ from PyQt6.QtCore import Qt
 # Reuse widgets/utilities from convo.py
 from .convo import (
     ConvoDeconvoDialog, FloatSliderWithEdit,
-    make_elliptical_gaussian_psf, van_cittert_deconv, larson_sekanina
+    make_elliptical_gaussian_psf, van_cittert_deconv, larson_sekanina,
+    preset_psf_kernel,
 )
 
 # ---------------------------- Preset Editor Dialog ----------------------------
@@ -69,6 +70,20 @@ class ConvoPresetDialog(QDialog):
         self.form_deconv.addRow("PSF Kurtosis:", self.psf_kurtosis)
         self.form_deconv.addRow("PSF Aspect:", self.psf_aspect)
         self.form_deconv.addRow("PSF Rotation:", self.psf_rot)
+
+        # A preset saved from RL/Wiener on a stellar PSF carries that kernel;
+        # keep it through an edit unless the user turns it off.
+        self._psf_kernel = p.get("psf_kernel")
+        try:
+            _ks = preset_psf_kernel(p)
+        except ValueError:
+            _ks, self._psf_kernel = None, None
+        self.chk_stellar_psf = QCheckBox(
+            f"Use the stellar PSF saved in this preset ({_ks.shape[1]}×{_ks.shape[0]}) "
+            "instead of the PSF sliders" if _ks is not None else "")
+        self.chk_stellar_psf.setChecked(_ks is not None)
+        self.chk_stellar_psf.setVisible(_ks is not None)
+        self.form_deconv.addRow("", self.chk_stellar_psf)
 
         # RL options
         self.rl_iter      = FloatSliderWithEdit(minimum=1, maximum=200, step=1, initial=float(p.get("rl_iter", 30)))
@@ -250,6 +265,8 @@ class ConvoPresetDialog(QDialog):
                 "strength": self.deconv_strength.value(),
                 # optional center for LS (x,y) — if omitted we’ll use image center
                 # "center": [x, y],
+                **({"psf_kernel": self._psf_kernel}
+                   if self._psf_kernel is not None and self.chk_stellar_psf.isChecked() else {}),
             }
         # denoise
         algo = self.dn_algo.currentText()
@@ -333,12 +350,15 @@ def apply_convo_via_preset(main_window, doc, preset: dict):
     elif op == "deconvolution":
         algo = p.get("algo", "Richardson-Lucy")
         if algo in ("Richardson-Lucy", "Wiener"):
-            psf = make_elliptical_gaussian_psf(
-                float(p.get("psf_radius", 3.0)),
-                float(p.get("psf_kurtosis", 2.0)),
-                float(p.get("psf_aspect", 1.0)),
-                float(p.get("psf_rotation", 0.0)),
-            ).astype(np.float32)
+            # The stellar PSF the dialog deconvolved with, when it used one.
+            psf = preset_psf_kernel(p)
+            if psf is None:
+                psf = make_elliptical_gaussian_psf(
+                    float(p.get("psf_radius", 3.0)),
+                    float(p.get("psf_kurtosis", 2.0)),
+                    float(p.get("psf_aspect", 1.0)),
+                    float(p.get("psf_rotation", 0.0)),
+                ).astype(np.float32)
 
         if algo == "Richardson-Lucy":
             iters = int(round(float(p.get("rl_iter", 30))))
@@ -357,7 +377,10 @@ def apply_convo_via_preset(main_window, doc, preset: dict):
 
         elif algo == "Wiener":
             nsr   = float(p.get("wiener_nsr", 0.01))
-            reg   = p.get("wiener_reg", "None (Classical Wiener)")
+            # The dialog hands _wiener_deconvolve "Wiener" or "Tikhonov", and it
+            # regularises only on exactly "Tikhonov"; the combo text used to be
+            # passed here, so a Tikhonov preset replayed as classical Wiener.
+            reg   = "Tikhonov" if str(p.get("wiener_reg", "")).startswith("Tikhonov") else "Wiener"
             dering= bool(p.get("wiener_dering", True))
             lum_only = bool(p.get("luminance_only", True))
             if lum_only and img.ndim == 3 and img.shape[2] == 3:

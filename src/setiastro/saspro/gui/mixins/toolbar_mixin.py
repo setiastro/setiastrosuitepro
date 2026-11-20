@@ -1670,6 +1670,11 @@ class ToolbarMixin:
         self.act_welcome.setStatusTip(self.tr("Show the SASpro welcome screen again"))
         self.act_welcome.triggered.connect(self._show_welcome)
 
+        self.act_first_steps = QAction(self.tr("First Steps Tour…"), self)
+        self.act_first_steps.setStatusTip(self.tr(
+            "Walk through a first edit: open an image, Statistical Stretch, Curves"))
+        self.act_first_steps.triggered.connect(self._show_first_steps_tour)
+
         self.act_file_associations = QAction(
             self.tr("File Associations..."), self
         )

@@ -841,9 +841,7 @@ def _infer_chunks_batched_rgb(
                     outputs[s + bi] = tile_out
 
                 done += len(batch)
-                if progress_cb is not None:
-                    if progress_cb(progress_done_start + done, progress_total) is False:
-                        raise RuntimeError("Cancelled.")
+                _tick(progress_cb, progress_done_start + done, progress_total)
 
             return outputs
 
@@ -909,9 +907,7 @@ def _infer_chunks_batched(
         outputs = []
         for idx, ch in enumerate(chunks2d, start=1):
             outputs.append(_infer_chunk(models, model, ch))
-            if progress_cb is not None:
-                if progress_cb(progress_done_start + idx, progress_total) is False:
-                    raise RuntimeError("Cancelled.")
+            _tick(progress_cb, progress_done_start + idx, progress_total)
         return outputs
 
     torch = models.torch
@@ -974,6 +970,8 @@ def _infer_chunks_batched(
 
             return outputs
 
+        except EngineCancelled:
+            raise
         except Exception as e:
             last_err = e
             if bs == 1 or not _is_recoverable_batch_error(e):
@@ -1051,12 +1049,12 @@ def _infer_chunks_psf_batched(
                     outputs[s + bi] = out_ch[:oh, :ow].astype(np.float32, copy=False)
 
                 done += len(batch)
-                if progress_cb is not None:
-                    if progress_cb(progress_done_start + done, progress_total) is False:
-                        raise RuntimeError("Cancelled.")
+                _tick(progress_cb, progress_done_start + done, progress_total)
 
             return outputs
 
+        except EngineCancelled:
+            raise
         except Exception as e:
             last_err = e
             if bs == 1 or not _is_recoverable_batch_error(e):

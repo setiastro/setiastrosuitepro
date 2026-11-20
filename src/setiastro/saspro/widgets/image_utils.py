@@ -476,6 +476,14 @@ def blend_with_mask(base: np.ndarray, out: np.ndarray, mask: np.ndarray) -> np.n
     mask = np.clip(np.asarray(mask, dtype=np.float32), 0.0, 1.0)
     
     if out.ndim == 3:
+        if mask.ndim == 2:
+            # Broadcast instead of .repeat(): same values element for element,
+            # without three full-frame copies built while holding the GIL
+            # (~0.3-0.5 s on 22 MP, which froze the GUI even from a worker).
+            if base.ndim == 2:
+                base = base[:, :, None]
+            M = mask[:, :, None]
+            return np.clip(base * (1.0 - M) + out * M, 0.0, 1.0)
         # Ensure base is 3D
         if base.ndim == 2:
             base = base[:, :, None].repeat(out.shape[2], axis=2)

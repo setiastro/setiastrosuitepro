@@ -25,6 +25,7 @@ from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usab
 
 
 from setiastro.saspro.resources import get_resources
+from setiastro.saspro.cosmicclarity_engines._backend_guard import tick as _tick
 
 def _load_torch_superres_model(torch, device, pth_path: str):
     nn = torch.nn
@@ -395,9 +396,8 @@ def superres_rgb01(
             processed.append((out_np, i, j))
 
             done0 += 1
-            if progress_cb is not None:
-                # You can interpret as global progress across all channels:
-                progress_cb((c * total) + done0, 3 * total)
+            # Global progress across all channels; a False return cancels.
+            _tick(progress_cb, (c * total) + done0, 3 * total)
 
         # stitch
         stitched = stitch_chunks_ignore_border(processed, up.shape[:2], border_size=16)

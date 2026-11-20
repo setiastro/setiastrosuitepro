@@ -1,5 +1,6 @@
 #saspro/wavescalede.py
 from __future__ import annotations
+import functools
 import math
 import numpy as np
 
@@ -13,15 +14,20 @@ from PyQt6.QtWidgets import (
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.widgets.graphics_views import ZoomableGraphicsView
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
+# off-GUI-thread display helpers shared with WaveScale HDR
+from setiastro.saspro.wavescale_hdr import (
+    _JobThread, _apply_output, _doc_mask_finish, _mask_thumb_qimage, _rgb01, _rgb_to_qimage,
+)
 # Import shared wavelet utilities
 from setiastro.saspro.widgets.wavelet_utils import (
     conv_sep_reflect as _conv_sep_reflect,
     build_spaced_kernel as _build_spaced_kernel,
     atrous_decompose as _atrous_decompose,
-    atrous_reconstruct as _atrous_reconstruct,
     rgb_to_lab as _rgb_to_lab,
     lab_to_rgb as _lab_to_rgb,
     gauss_blur as _gauss_blur,
+    run_row_bands as _run_row_bands,
     B3_KERNEL as _B3,
 )
 
@@ -39,22 +45,76 @@ def _resize_mask_nn(mask2d: np.ndarray, target_hw: tuple[int, int]) -> np.ndarra
 
 # Darkness mask (scales 2–4, negative parts, mean → normalize → gamma → smooth → mild S-curve)
 def _darkness_mask(L: np.ndarray, n_scales: int, base_k: np.ndarray, gamma: float) -> np.ndarray:
-    planes = _atrous_decompose(L, n_scales, base_k)
+    return _darkness_mask_finish(_darkness_mask_base(L, n_scales, base_k), gamma)
+
+def _darkness_mask_base(L: np.ndarray, n_scales: int, base_k: np.ndarray) -> np.ndarray:
+    """The gamma-independent part of _darkness_mask (the dialog caches it)."""
+    # Only planes[1:4] are read, and the à-trous planes below index 4 do not
+    # depend on how many scales follow, so decomposing min(n, 4) scales gives
+    # the same planes[1:4] (for n < 4 that slice includes the residual).
+    planes = _atrous_decompose(L, min(n_scales, 4), base_k)
     # mid-scales: 1:4 (0-based → skip 0)
     sel = planes[1:4]
-    neg = [np.clip(-p, 0, None) for p in sel]
-    if len(neg) == 0:
-        m = np.zeros_like(L, dtype=np.float32)
-    else:
-        combined = np.mean(neg, axis=0).astype(np.float32)
-        denom = float(np.max(combined) + 1e-8)
-        m = combined / denom
+    if len(sel) == 0:
+        return np.zeros_like(L, dtype=np.float32)
+    # Elementwise steps run on row bands in parallel (numpy releases the GIL);
+    # every pixel sees the same float32 operations as a whole-image call.
+    combined = np.empty(sel[0].shape, dtype=np.float32)
+
+    def _neg_mean_rows(sl):
+        neg = [np.clip(-p[sl], 0, None) for p in sel]
+        combined[sl] = np.mean(neg, axis=0).astype(np.float32)
+    _run_row_bands(_neg_mean_rows, combined.shape[0])
+    denom = float(np.max(combined) + 1e-8)
+
+    def _norm_rows(sl):
+        combined[sl] = combined[sl] / denom
+    _run_row_bands(_norm_rows, combined.shape[0])
+    return combined
+
+def _darkness_mask_finish(m: np.ndarray, gamma: float) -> np.ndarray:
+    """gamma → smooth → mild S-curve; never modifies m."""
+    H = m.shape[0]
     if gamma != 1.0:
-        m = np.power(m, float(gamma), dtype=np.float32)
-    m = _gauss_blur(m, sigma=3.0).astype(np.float32)
+        p = np.empty(m.shape, dtype=np.float32)
+
+        def _pow_rows(sl):
+            p[sl] = np.power(m[sl], float(gamma), dtype=np.float32)
+        _run_row_bands(_pow_rows, H)
+        m = p
+    m = _gauss_blur(m, sigma=3.0).astype(np.float32, copy=False)
     # gentle brighten of mids
-    m = np.clip(1.5 * m - 0.5 * (m * m), 0.0, 1.0).astype(np.float32)
-    return m
+    out = np.empty(m.shape, dtype=np.float32)
+
+    def _curve_rows(sl):
+        g = m[sl]
+        out[sl] = np.clip(1.5 * g - 0.5 * (g * g), 0.0, 1.0).astype(np.float32)
+    _run_row_bands(_curve_rows, H)
+    return out
+
+
+def _enhance_and_rebuild(planes: list, residual: np.ndarray, mask: np.ndarray,
+                         boost_factor: float, decay_rate: float, hi: float) -> np.ndarray:
+    """One Dark Enhancer iteration after the decomposition: for i >= 1,
+    planes[i] -= clip(-planes[i], 0)·mask·(boost-1)·decay^i, then
+    clip(residual + Σ planes, 0, hi). Row bands in parallel, same float32 ops
+    per pixel as the whole-image version."""
+    out = np.empty(residual.shape, dtype=np.float32)
+
+    def _rows(sl):
+        m = mask[sl]
+        acc = residual[sl].astype(np.float32, copy=True)
+        for i in range(len(planes)):
+            p = planes[i][sl]
+            if i != 0:      # skip highest frequency
+                decay = decay_rate ** i
+                neg = np.clip(-p, 0, None)
+                enhancement = neg * m * (boost_factor - 1.0) * decay
+                p = p - enhancement
+            acc += p
+        out[sl] = np.clip(acc, 0.0, hi)
+    _run_row_bands(_rows, residual.shape[0])
+    return out
 
 # Main compute (mono or RGB)
 def compute_wavescale_dse(image: np.ndarray,
@@ -92,14 +152,7 @@ def compute_wavescale_dse(image: np.ndarray,
 
             planes = _atrous_decompose(L, n_scales, base_kernel)
             residual = planes.pop()
-            for i in range(len(planes)):
-                if i == 0:
-                    continue  # skip highest frequency
-                decay = decay_rate ** i
-                neg = np.clip(-planes[i], 0, None)
-                enhancement = neg * mask * (boost_factor - 1.0) * decay
-                planes[i] = planes[i] - enhancement
-            L = np.clip(_atrous_reconstruct(planes + [residual]), 0.0, 1.0)
+            L = _enhance_and_rebuild(planes, residual, mask, boost_factor, decay_rate, 1.0)
 
         out = L.astype(np.float32, copy=False)
         return out, mask.astype(np.float32, copy=False)
@@ -116,14 +169,7 @@ def compute_wavescale_dse(image: np.ndarray,
 
         planes = _atrous_decompose(L, n_scales, base_kernel)
         residual = planes.pop()
-        for i in range(len(planes)):
-            if i == 0:
-                continue
-            decay = decay_rate ** i
-            neg = np.clip(-planes[i], 0, None)
-            enhancement = neg * mask * (boost_factor - 1.0) * decay
-            planes[i] = planes[i] - enhancement
-        L = np.clip(_atrous_reconstruct(planes + [residual]), 0.0, 100.0)
+        L = _enhance_and_rebuild(planes, residual, mask, boost_factor, decay_rate, 100.0)
 
     lab[..., 0] = L
     out_rgb = _lab_to_rgb(lab)
@@ -134,12 +180,15 @@ def compute_wavescale_dse(image: np.ndarray,
 # ─────────────────────────────────────────────────────────────────────────────
 class DSEWorker(QObject):
     progress_update = pyqtSignal(str, int)
-    finished = pyqtSignal(np.ndarray, np.ndarray)  # (output, mask)
+    finished = pyqtSignal(object, object)  # (output, mask) | (payload, None)
 
     def __init__(self, image: np.ndarray, n_scales: int, boost: float, gamma: float,
                  base_kernel: np.ndarray, iterations: int,
-                 external_mask: np.ndarray | None = None): 
+                 external_mask: np.ndarray | None = None, *, post=None,
+                 doc_mask_pre: np.ndarray | None = None):
         super().__init__()
+        self.post = post              # post(out, mask, doc_mask) -> payload dict, run here
+        self.doc_mask_pre = doc_mask_pre   # _doc_mask_prenorm(); clip + resize run here
         self.image = image
         self.n_scales = n_scales
         self.boost = boost
@@ -151,16 +200,78 @@ class DSEWorker(QObject):
     def run(self):
         try:
             self.progress_update.emit(self.tr("Analyzing dark structure…"), 20)
+            if self.doc_mask_pre is not None:
+                self.external_mask = _doc_mask_finish(self.doc_mask_pre, *self.image.shape[:2])
             out, mask = compute_wavescale_dse(
                 self.image, self.n_scales, self.boost, self.gamma,
                 self.iterations, self.base_kernel,
                 external_mask=self.external_mask             # ← NEW
             )
             self.progress_update.emit(self.tr("Finalizing…"), 95)
-            self.finished.emit(out, mask)
+            if self.post is not None:
+                self.finished.emit(self.post(out, mask, self.external_mask), None)
+            else:
+                self.finished.emit(out, mask)
         except Exception as e:
             print("WaveScale DSE error:", e)
             self.finished.emit(None, None)
+
+
+def _dse_preview_payload(original: np.ndarray, out: np.ndarray, mask: np.ndarray,
+                         doc_mask: np.ndarray | None, box_wh, want_qimage: bool) -> dict:
+    """What _on_finished used to build on the GUI thread."""
+    if out.ndim == 2:
+        out_rgb = np.repeat(out[:, :, None], 3, axis=2)
+    else:
+        out_rgb = out
+
+    # Respect the document mask: original*(1-M) + out*M, per channel (the same
+    # float32 ops as the np.repeat'ed mask, without repeat's GIL-held copy)
+    if doc_mask is not None:
+        M = doc_mask.astype(np.float32)
+        inv = 1.0 - M
+        dt = np.result_type(original.dtype, inv.dtype, out_rgb.dtype, M.dtype)
+        preview = np.empty(original.shape, dtype=dt)
+        for c in range(original.shape[2]):
+            np.add(original[..., c] * inv, out_rgb[..., c] * M, out=preview[..., c])
+    else:
+        preview = out_rgb
+
+    # show combined mask (internal darkness mask × doc mask)
+    if doc_mask is not None:
+        mask = np.clip(mask.astype(np.float32) * doc_mask.astype(np.float32), 0.0, 1.0)
+    return {
+        "preview": preview,
+        "qimg": _rgb_to_qimage(preview) if want_qimage else None,
+        "thumb": _mask_thumb_qimage(mask, *box_wh) if box_wh else None,
+    }
+
+
+def _dse_mask_job(original: np.ndarray, cache: dict, n_scales: int, base_k: np.ndarray,
+                  gamma: float, doc_mask_pre: np.ndarray | None, box_wh, want_qimage: bool) -> dict:
+    """Mask-window refresh off the GUI thread. L and the gamma-independent part
+    of the darkness mask are cached; a gamma step only redoes gamma + blur."""
+    out = {}
+    doc_mask = None if doc_mask_pre is None else _doc_mask_finish(doc_mask_pre, *original.shape[:2])
+    L01 = cache.get("L01")
+    if L01 is None:
+        lab = _rgb_to_lab(original)
+        L = lab[..., 0] / 100.0
+        L01 = np.clip(L, 0.0, 1.0)
+        out["L01"] = L01
+    key = min(n_scales, 4)
+    base = cache.get("base") if cache.get("base_key") == key else None
+    if base is None:
+        base = _darkness_mask_base(L01, n_scales, base_k)
+        out["base"], out["base_key"] = base, key
+    algo_mask = _darkness_mask_finish(base, gamma)
+    if doc_mask is not None:
+        algo_mask = np.clip(algo_mask.astype(np.float32) * doc_mask.astype(np.float32), 0.0, 1.0)
+    out["thumb"] = _mask_thumb_qimage(algo_mask, *box_wh)
+    out["has_doc_mask"] = doc_mask is not None
+    if want_qimage:
+        out["qimg"] = _rgb_to_qimage(original)
+    return out
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Small mask window (fixed ~400×400, always shows a zoomed-out mask)
@@ -188,6 +299,10 @@ class _MaskWindow(QDialog):
         box = self.size()
         pm2 = pm.scaled(box, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         self.lbl.setPixmap(pm2)
+
+    def set_thumb(self, qimg: QImage):
+        """Show a thumbnail already built (off the GUI thread) by _mask_thumb_qimage."""
+        self.lbl.setPixmap(QPixmap.fromImage(qimg))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dialog
@@ -221,11 +336,11 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         if img.ndim == 2:
             self._was_mono = True
             self._mono_shape = img.shape
-            rgb = np.repeat(img[:, :, None], 3, axis=2)
+            rgb = img                   # replicated to 3 channels by _rgb01 below
         elif img.ndim == 3 and img.shape[2] == 1:
             self._was_mono = True
             self._mono_shape = img.shape
-            rgb = np.repeat(img, 3, axis=2)
+            rgb = img
         else:
             self._was_mono = False
             self._mono_shape = None
@@ -233,10 +348,18 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         if img.dtype.kind in "ui":
             maxv = float(np.nanmax(rgb)) or 1.0
             rgb = rgb / max(1.0, maxv)
-        rgb = np.clip(rgb, 0.0, 1.0).astype(np.float32, copy=False)
+        rgb = _rgb01(rgb)               # == np.clip(3-channel, 0, 1).astype(float32)
 
         self.original = rgb
-        self.preview  = rgb.copy()
+        self.preview  = rgb          # never modified in place; replaced by each preview
+
+        # off-GUI-thread state: L / darkness-mask cache, the two view pixmaps, mask jobs
+        self._mask_cache = {}
+        self._pm_original = None
+        self._pm_preview = None
+        self._mask_busy = False
+        self._mask_pending = False
+        self._mask_thr = None
 
         # scene/view
         self.scene = QGraphicsScene(self)
@@ -349,8 +472,8 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self._gamma_timer.timeout.connect(self._update_mask_only)
         self.s_gamma.valueChanged.connect(lambda _v: self._gamma_timer.start(250))
 
-        # init preview & initial mask
-        self._set_pix(self.preview)
+        # init preview & initial mask (built by a background job; the dialog
+        # opens without waiting for it)
         self._update_mask_only()
 
     def _combine_with_doc_mask(self, op_mask: np.ndarray | None) -> np.ndarray | None:
@@ -370,6 +493,16 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         """
         Return active document mask as 2-D float32 [0..1], resized to current image.
         """
+        m = self._doc_mask_prenorm()
+        if m is None:
+            return None
+        H, W = self.original.shape[:2]
+        return _doc_mask_finish(m, H, W)
+
+    def _doc_mask_prenorm(self) -> np.ndarray | None:
+        """GUI-thread part of _get_doc_active_mask_2d: find the active mask,
+        collapse to 2-D float32 and normalise (in place, as before). The clip and
+        resize (_doc_mask_finish) are left to the caller / background jobs."""
         doc = getattr(self, "_doc", None)
         if doc is None:
             return None
@@ -409,16 +542,9 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         # normalize to [0,1] if needed
         mx = float(m.max()) if m.size else 1.0
         if mx > 1.0:
-            m /= mx
-        m = np.clip(m, 0.0, 1.0)
-
-        # resize (nearest) to current image size
-        H, W = self.original.shape[:2]
-        if m.shape != (H, W):
-            yi = (np.linspace(0, m.shape[0] - 1, H)).astype(np.int32)
-            xi = (np.linspace(0, m.shape[1] - 1, W)).astype(np.int32)
-            m = m[yi][:, xi]
-
+            # a new array: astype(copy=False) can hand back the document's
+            # own float32 mask, which `m /= mx` divided in place
+            m = m / mx
         return m
 
 
@@ -437,14 +563,32 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.pix.setPixmap(QPixmap.fromImage(q))
         self.view.setSceneRect(self.pix.boundingRect())
 
+    def _show_pixmap(self, pm: QPixmap):
+        self.pix.setPixmap(pm)
+        self.view.setSceneRect(self.pix.boundingRect())
+
+    def _show_original(self):
+        if self._pm_original is not None:
+            self._show_pixmap(self._pm_original)
+        elif self.original is not None:
+            self._set_pix(self.original)
+
+    def _show_preview(self):
+        if self.preview is self.original:
+            self._show_original()
+        elif self._pm_preview is not None:
+            self._show_pixmap(self._pm_preview)
+        elif self.preview is not None:
+            self._set_pix(self.preview)
+
     # --- toggle ---
     def _toggle(self):
         if self.btn_toggle.isChecked():
             self.btn_toggle.setText(self.tr("Show Preview"))
-            self._set_pix(self.original)
+            self._show_original()
         else:
             self.btn_toggle.setText(self.tr("Show Original"))
-            self._set_pix(self.preview)
+            self._show_preview()
 
     # --- reset ---
     def _reset(self):
@@ -452,8 +596,9 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.s_boost.setValue(500)
         self.s_gamma.setValue(100)
         self.s_iters.setValue(2)
-        self.preview = self.original.copy()
-        self._set_pix(self.preview)
+        self.preview = self.original
+        self._pm_preview = None
+        self._show_original()
         self.lbl_step.setText(self.tr("Idle")); self.bar.setValue(0)
         self.btn_apply.setEnabled(False)
         self.btn_toggle.setChecked(False); self.btn_toggle.setText(self.tr("Show Original"))
@@ -502,19 +647,51 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
             pass
 
     # --- live mask (no full recompute) ---
+    def _mask_box(self) -> tuple[int, int]:
+        sz = self.mask_win.size()
+        return (sz.width(), sz.height())
+
     def _update_mask_only(self):
-        mgamma = float(self.s_gamma.value()) / 100.0
-        base = self.original
-        lab = _rgb_to_lab(base)
-        L = lab[..., 0] / 100.0
-        algo_mask = _darkness_mask(np.clip(L, 0.0, 1.0),
-                                int(self.s_scales.value()),
-                                self.base_kernel, mgamma)
-        mask_comb = self._combine_with_doc_mask(algo_mask)
-        self.mask_win.setWindowTitle(
-            self.tr("Dark Mask (Algo × Active Mask)") if self._get_doc_active_mask_2d() is not None else self.tr("Dark Mask")
+        """Refresh the mask window. The work runs in a background job; a request
+        made while one runs is queued and runs next with the then-current sliders."""
+        if getattr(self, "_memory_released", False):
+            return
+        if self._mask_busy:
+            self._mask_pending = True
+            return
+        self._mask_pending = False
+        job = functools.partial(
+            _dse_mask_job, self.original, dict(self._mask_cache),
+            int(self.s_scales.value()), self.base_kernel,
+            float(self.s_gamma.value()) / 100.0,
+            self._doc_mask_prenorm(), self._mask_box(),
+            self._pm_original is None,
         )
-        self.mask_win.set_mask(mask_comb)
+        self._mask_busy = True
+        self._mask_thr = _JobThread(job)
+        self._mask_thr.done.connect(self._on_mask_job_done)
+        start_owned_thread(self._mask_thr)
+
+    def _on_mask_job_done(self, res, err):
+        self._mask_busy = False
+        if getattr(self, "_memory_released", False):
+            return
+        if err is not None:
+            print("WaveScale DSE mask error:", err)
+        if res is not None:
+            for k in ("L01", "base", "base_key"):
+                if k in res:
+                    self._mask_cache[k] = res[k]
+            if res.get("qimg") is not None and self._pm_original is None:
+                self._pm_original = QPixmap.fromImage(res["qimg"])
+                if self.btn_toggle.isChecked() or self.preview is self.original:
+                    self._show_original()
+            self.mask_win.setWindowTitle(
+                self.tr("Dark Mask (Algo × Active Mask)") if res.get("has_doc_mask") else self.tr("Dark Mask")
+            )
+            self.mask_win.set_thumb(res["thumb"])
+        if self._mask_pending:
+            self._update_mask_only()
     # --- threaded preview ---
     def _start_preview(self):
         self.btn_preview.setEnabled(False); self.btn_apply.setEnabled(False)
@@ -522,48 +699,42 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         boost    = float(self.s_boost.value()) / 100.0
         mgamma   = float(self.s_gamma.value()) / 100.0
         iters    = int(self.s_iters.value())
-        docmask  = self._get_doc_active_mask_2d() 
-
-        self.thread = QThread(self)
+        # the doc mask's clip + resize, the blend and the display images all run
+        # in the worker (the mask lookup + normalisation stays here)
+        docmask_pre = self._doc_mask_prenorm()
+        post = functools.partial(_dse_preview_payload, self.original,
+                                 box_wh=self._mask_box(), want_qimage=True)
+        # no parent: thread_keeper holds it, so closing the dialog mid-run is safe
+        self.thread = QThread()
         self.worker = DSEWorker(self.original, n_scales, boost, mgamma,
                                 self.base_kernel, iters,
-                                external_mask=docmask)
+                                post=post, doc_mask_pre=docmask_pre)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress_update.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
         self.worker.finished.connect(self.thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.start()
+        start_owned_thread(self.thread)
 
     def _on_progress(self, step: str, pct: int):
         self.lbl_step.setText(step); self.bar.setValue(pct)
 
-    def _on_finished(self, out: np.ndarray, mask: np.ndarray):
+    def _on_finished(self, payload, _unused=None):
+        if getattr(self, "_memory_released", False):
+            return              # dialog closed while the worker ran
         self.btn_preview.setEnabled(True)
-        if out is None:
+        if payload is None:
             QMessageBox.critical(self, self.tr("WaveScale Dark Enhancer"), self.tr("Processing failed."))
             return
 
-        # Respect the document mask
-        doc_m = self._get_doc_active_mask_2d()
-        if out.ndim == 2:
-            out_rgb = np.repeat(out[:, :, None], 3, axis=2)
-        else:
-            out_rgb = out
-
-        if doc_m is not None:
-            M3 = np.repeat(doc_m[:, :, None], 3, axis=2).astype(np.float32)
-            self.preview = self.original * (1.0 - M3) + out_rgb * M3
-        else:
-            self.preview = out_rgb
-
-        # show combined mask (internal darkness mask × doc mask)
-        mask = self._combine_with_doc_mask(mask)
-
-        self._set_pix(self.preview)
-        self.mask_win.set_mask(mask)
+        # doc-mask blend, combined mask and display images were done in the worker
+        self.preview = payload["preview"]
+        qimg = payload.get("qimg")
+        self._pm_preview = QPixmap.fromImage(qimg) if qimg is not None else None
+        self._show_preview()
+        if payload.get("thumb") is not None:
+            self.mask_win.set_thumb(payload["thumb"])
         self.btn_apply.setEnabled(True)
         self.btn_toggle.setChecked(False); self.btn_toggle.setText(self.tr("Show Original"))
         self.lbl_step.setText(self.tr("Preview ready")); self.bar.setValue(100)
@@ -571,13 +742,8 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
     # --- apply back to doc ---
     # --- apply back to doc ---
     def _apply_to_doc(self):
-        out = self.preview
-        if self._was_mono:
-            mono = np.mean(out, axis=2, dtype=np.float32)
-            if self._mono_shape and len(self._mono_shape) == 3 and self._mono_shape[2] == 1:
-                mono = mono[:, :, None]
-            out = mono
-        out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+        # mono: channel mean (2-D or H×W×1 as the source was); clip to [0,1]
+        out = _apply_output(self.preview, self._was_mono, self._mono_shape)
         _meta = {"step_name": "WaveScale Dark Enhancer",
                  "command_id": "wavescale_dark_enhance",
                  "preset": dict(self.get_preset())}
@@ -649,11 +815,12 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
             pass
 
     def closeEvent(self, ev):
+        # Running jobs are held by thread_keeper and finish on their own; their
+        # results are dropped once the dialog has released its buffers.
         try:
             thr = getattr(self, "thread", None)
-            if thr is not None and thr.isRunning():
+            if thread_running(thr):
                 thr.quit()
-                thr.wait(2000)
         except Exception:
             pass
         try:
@@ -671,6 +838,9 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.original = None
         self.preview = None
         self._L_original = None
+        self._mask_cache = {}
+        self._pm_original = None
+        self._pm_preview = None
         self._last_preview = None
         self._doc = None
         self.worker = None

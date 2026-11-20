@@ -245,11 +245,13 @@ flatten. See &sect;&nbsp;13.5 for the full algorithm.</p>
 
 <h2>6. Push Final to New View</h2>
 <p>Once you've picked a palette, click <b>Push Final to New View</b>.
-This opens the <b>Adjust Palette Intensities</b> dialog:</p>
+With <b>Open balancing preview when pushing</b> checked (the default),
+this opens the <b>Adjust Palette Intensities</b> dialog:</p>
 <ul>
   <li>Three sliders (Ha, OIII, SII) at 0&ndash;200% apply a per-channel
       intensity multiplier before the palette is recombined.</li>
-  <li>A live preview updates with a 300&nbsp;ms debounce.</li>
+  <li>A live preview updates with a 150&nbsp;ms debounce. It is built in
+      the background, so the dialog stays responsive on large images.</li>
   <li>Zoom and pan work exactly like the main preview (Ctrl+wheel,
       zoom buttons, Fit, click-drag pan).</li>
   <li><b>Reset</b> returns all three sliders to 100%.</li>
@@ -258,6 +260,13 @@ This opens the <b>Adjust Palette Intensities</b> dialog:</p>
       palette (e.g. &ldquo;SHO&rdquo;, &ldquo;Dynamic Inverse&rdquo;).</li>
   <li><b>Discard</b> closes without pushing.</li>
 </ul>
+<p>If you never touch the sliders, uncheck <b>Open balancing preview
+when pushing</b> (just below the Push button). Push Final then creates
+the new document straight away with the palette exactly as previewed
+&mdash; the same image you would get by opening the dialog and clicking
+<b>Accept</b> without moving a slider. The setting is remembered
+between sessions.</p>
+
 <p>This is where you tune the balance between emission lines without
 having to rebuild upstream: if the Dynamic Inverse looks great but
 SII is overpowering the midtones, drop its slider to ~60% and you've
@@ -393,10 +402,11 @@ distinct hues even when they overlap &mdash; while the inverse logic
 in the red channel reveals structure that gets buried in flat SHO.</p>
 
 <h3>13.6 Thumbnail sizing strategy</h3>
-<p>Thumbnails are built from a <i>half-size view of the full
-rectangle</i>, not a centre crop. The first step resizes every
-loaded channel to the reference frame's full dimensions; the second
-step scales uniformly to 50% of width and height. The result is a
+<p>Thumbnails are built from a <i>reduced view of the full
+rectangle</i>, not a centre crop. Every loaded channel is first shrunk
+to about twice the button size (never more than 50%), size-matched to
+the reference frame, and only then run through the 18 palette
+formulas, in the background. The result is a
 220&times;110 button icon that shows the whole composition at
 reduced resolution, so you can see edge features, nebular extent,
 and overall balance &mdash; information lost in a centre crop. This
@@ -419,11 +429,14 @@ the <b>Adjust Palette Intensities</b> dialog with sliders backed by
 the <i>same</i> prepared Ha / OIII / SII buffers the palette build
 used. The sliders multiply each channel before the palette formula
 runs, and the formula runs again from scratch on every slider move
-(debounced at 300&nbsp;ms). The &ldquo;Accept&rdquo; path writes the
+(debounced at 150&nbsp;ms, computed off the GUI thread). The
+&ldquo;Accept&rdquo; path writes the
 adjusted result back into the main preview and creates a new
 document through DocManager with the palette name as the title. If
 DocManager isn't available (unusual &mdash; standalone usage), a
-basic viewer window is opened as a fallback.</p>
+basic viewer window is opened as a fallback. With <b>Open balancing
+preview when pushing</b> unchecked the dialog is skipped and the
+untouched (all sliders at 100%) result is pushed directly.</p>
 
 <div class="credit">
 <b>Credits.</b> <b>Dynamic Inverse</b> is Frank's own palette, developed

@@ -88,7 +88,7 @@ from setiastro.saspro.syqon_tools import (
 )
 
 # Stars-only / gradient side-products are pushed into a new view.
-from setiastro.saspro.remove_stars import _push_as_new_doc
+from setiastro.saspro.remove_stars import _push_as_new_doc, _extract_stars_only
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -442,6 +442,89 @@ def _same_file(a: str, b: str) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Stars-only layer
+#
+# Studio's own stars layer is a SCREEN layer (SYQON_STAR_LAYER_FORMAT = SCREEN,
+# SYQON_STAR_RECOMBINATION = SETIASTRO_SCREEN): screen(starless, stars) gives
+# back the original. Headless Axiom writes it to the --stars-output path we
+# choose. The editor (-gui) takes no such flag; its "Save star mask" writes
+# the layer beside the input as syqon_<input stem>_stars.<ext>, which is why
+# the worker gives each run a private directory and looks there. When Studio
+# hands back no layer, the same layer is derived by unscreen.
+# ─────────────────────────────────────────────────────────────────────────────
+def _header_is_star_removal(hdr) -> bool:
+    """True when a Studio output header says Axiom made it. Headless runs stamp
+    SYQON_CLI_MODEL; the editor stamps SYQON_AXIOM_* cards instead."""
+    if hdr is None:
+        return False
+    try:
+        if str(hdr.get("SYQON_CLI_MODEL", "")).strip().lower().startswith("axiom"):
+            return True
+        return any(str(k).upper().startswith("SYQON_AXIOM") for k in hdr.keys())
+    except Exception:
+        return False
+
+
+def _find_editor_star_layer(run_dir: str, exclude=()) -> str | None:
+    """The stars layer the Studio editor saved into this run's directory, or
+    None. Studio's dot-prefixed .syq-export-* files are its own leftover
+    copies and are skipped. The layer is recognised by its star-layer card,
+    or failing that by Studio's _stars file name."""
+    if not run_dir or not os.path.isdir(run_dir):
+        return None
+    skip = {os.path.normcase(os.path.abspath(p)) for p in exclude if p}
+    named = None
+    from astropy.io import fits as _fits
+    for name in sorted(os.listdir(run_dir)):
+        path = os.path.join(run_dir, name)
+        if name.startswith(".") or not os.path.isfile(path):
+            continue
+        if os.path.normcase(os.path.abspath(path)) in skip:
+            continue
+        try:
+            if "SYQON_STAR_LAYER_FORMAT" in _fits.getheader(path):
+                return path
+        except Exception:
+            pass
+        if named is None and os.path.splitext(name)[0].lower().endswith("_stars"):
+            named = path
+    return named
+
+
+def _unscreen_star_layer(original: np.ndarray, starless: np.ndarray) -> np.ndarray | None:
+    """
+    Stars-only layer from the image before and after star removal:
+
+        stars = 1 - (1 - original) / (1 - starless)
+
+    the inverse of screen(starless, stars) = 1 - (1 - starless)(1 - stars).
+    This is the layer Studio itself writes; on an axiom-mini run the two
+    agreed to 1e-7. Plain original - starless is short by stars*starless,
+    which costs the star cores most where they sit on nebulosity.
+
+    Screen is defined on [0, 1], so an image that peaks above 1 is scaled by
+    its peak and the stars scaled back. Returns None when the two images do
+    not share a geometry.
+    """
+    o = np.nan_to_num(np.asarray(original, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    s = np.nan_to_num(np.asarray(starless, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    if o.shape[:2] != s.shape[:2]:
+        return None
+    if o.ndim == 2 and s.ndim == 3:
+        o = o[..., None]
+    elif s.ndim == 2 and o.ndim == 3:
+        s = s[..., None]
+    peak = max(float(o.max()), float(s.max()), 1.0)
+    if peak > 1.0:
+        o = o / peak
+        s = s / peak
+    stars = _extract_stars_only(o, s, mode="unscreen")
+    if peak > 1.0:
+        stars = stars * peak
+    return np.ascontiguousarray(stars, dtype=np.float32)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Worker thread
 # ─────────────────────────────────────────────────────────────────────────────
 class _SyQonStudioCLIThread(QThread):
@@ -460,9 +543,13 @@ class _SyQonStudioCLIThread(QThread):
         self.model_id = str(model_id)
         self.argv_opts = dict(argv_opts or {})
         self.want_secondary = bool(want_secondary)
-        self.secondary_flag = secondary_flag  # "--stars-output" | "--gradient-output" | None
+        # "--stars-output" | "--gradient-output" | None. None with
+        # want_secondary is the editor: it takes no output flag, so its
+        # stars layer is found in the run directory (or derived by unscreen).
+        self.secondary_flag = secondary_flag
         self._cancel = False
         self._p = None
+        self._run_dir = None
         self._tmp_in = None
         self._tmp_out = None
         self._tmp_sec = None
@@ -512,6 +599,14 @@ class _SyQonStudioCLIThread(QThread):
             arr = arr[::-1]
         return np.ascontiguousarray(arr, dtype=np.float32)
 
+    @staticmethod
+    def _read_header(path: str):
+        from astropy.io import fits as _fits
+        try:
+            return _fits.getheader(path)
+        except Exception:
+            return None
+
     def run(self):
         fam = studio_family_for(self.model_id)
         is_gui = (fam == "gui")
@@ -550,15 +645,20 @@ class _SyQonStudioCLIThread(QThread):
                 raise RuntimeError(f"SyQon CLI not found:\n{self.exe}")
 
             tag = f"studio_{os.getpid()}_{int(time.time() * 1000)}"
-            tmpdir = Path(tempfile.gettempdir()) / "SASpro_SyQon_Studio"
-            tmpdir.mkdir(parents=True, exist_ok=True)
+            # A directory of its own per run: Studio writes files beside the
+            # input that we never name (the editor's syqon_<stem>_stars layer,
+            # and .syq-export-* copies it leaves behind), and the whole
+            # directory goes when the run ends.
+            run_dir = Path(tempfile.gettempdir()) / "SASpro_SyQon_Studio" / tag
+            run_dir.mkdir(parents=True, exist_ok=True)
+            self._run_dir = str(run_dir)
             # 32-bit float FITS both ways (the CLI requires matching
             # containers: FITS->FITS). FITS carries the data as-is; the TIFF
             # writer this used to go through embeds an ICC profile.
-            self._tmp_in = str(tmpdir / f"{tag}_in.fits")
-            self._tmp_out = str(tmpdir / f"{tag}_out.fits")
+            self._tmp_in = str(run_dir / f"{tag}_in.fits")
+            self._tmp_out = str(run_dir / f"{tag}_out.fits")
             if self.want_secondary and self.secondary_flag:
-                self._tmp_sec = str(tmpdir / f"{tag}_sec.fits")
+                self._tmp_sec = str(run_dir / f"{tag}_sec.fits")
 
             self._emit(2, "Writing temp image…")
             self._write_fits(self._tmp_in, self.input_image)
@@ -632,11 +732,35 @@ class _SyQonStudioCLIThread(QThread):
                 raise RuntimeError("Could not load the SyQon CLI output.")
 
             secondary = None
-            if self.want_secondary and self._tmp_sec and os.path.exists(self._tmp_sec):
-                try:
-                    secondary = self._load_result(self._tmp_sec)
-                except Exception:
-                    secondary = None
+            if self.want_secondary:
+                # Studio's own layer first: the --stars-output / --gradient-
+                # output file, or the stars layer the editor saved.
+                sec_path = None
+                if self._tmp_sec and os.path.exists(self._tmp_sec):
+                    sec_path = self._tmp_sec
+                elif is_gui:
+                    sec_path = _find_editor_star_layer(
+                        self._run_dir, exclude=(self._tmp_in, self._tmp_out))
+                if sec_path:
+                    try:
+                        secondary = self._load_result(sec_path)
+                        info["secondary_source"] = "studio"
+                    except Exception as e:
+                        print(f"[SyQon Studio] could not load {sec_path}: {e!r}", flush=True)
+                        secondary = None
+
+                # A star removal Studio returned no stars layer for (the editor
+                # without "Save star mask"): derive the same layer by unscreen.
+                star_removal = (fam == "axiom") or (is_gui and (
+                    secondary is not None
+                    or _header_is_star_removal(self._read_header(primary_path))))
+                info["star_removal"] = bool(star_removal)
+                if secondary is None and star_removal:
+                    self._emit(98, "Extracting stars (unscreen)…")
+                    secondary = _unscreen_star_layer(self.input_image, primary)
+                    if secondary is not None:
+                        info["secondary_source"] = "unscreen"
+                print(f"[SyQon Studio] secondary: {info.get('secondary_source', 'none')}", flush=True)
 
             self._emit(100, "Complete")
             self.result.emit(primary, secondary, info, "")
@@ -649,12 +773,8 @@ class _SyQonStudioCLIThread(QThread):
 
         finally:
             _stop_cli_process(self._p)
-            for p in (self._tmp_in, self._tmp_out, self._tmp_sec):
-                try:
-                    if p and os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
+            if self._run_dir:
+                shutil.rmtree(self._run_dir, ignore_errors=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1005,6 +1125,18 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         lbl.setTextFormat(Qt.TextFormat.RichText)
         lbl.setWordWrap(True); lbl.setStyleSheet("color:#8e8e93;")
         v.addWidget(lbl)
+
+        # Same setting (and preset key) as the Axiom page's checkbox, so the
+        # two always agree.
+        self.chk_gui_stars = QCheckBox("If the editor removes stars, also create a Stars-Only document", self)
+        self.chk_gui_stars.setChecked(self.chk_ax_stars.isChecked())
+        self.chk_gui_stars.toggled.connect(self.chk_ax_stars.setChecked)
+        self.chk_ax_stars.toggled.connect(self.chk_gui_stars.setChecked)
+        v.addWidget(self.chk_gui_stars)
+        note = QLabel("Uses the layer Studio saves with Save star mask; without "
+                      "one, the same layer is computed by unscreen.", self)
+        note.setWordWrap(True); note.setStyleSheet("color:#8e8e93; font-size:11px;")
+        v.addWidget(note)
         return w
 
     # ---- CLI helpers -------------------------------------------------------
@@ -1257,14 +1389,16 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         except Exception:
             self._doc_in_unit_range = True
 
-        # Secondary output selection (not applicable to the GUI editor path —
-        # the editor doesn't accept --stars-output / --gradient-output).
+        # Secondary output selection. The editor takes no --stars-output, so
+        # for it the worker finds the stars layer itself (no flag).
         want_secondary = False
         secondary_flag = None
         if fam == "axiom" and self.chk_ax_stars.isChecked():
             want_secondary = True; secondary_flag = "--stars-output"
         elif fam == "deep-gradient" and self.chk_dg_gradient.isChecked():
             want_secondary = True; secondary_flag = "--gradient-output"
+        elif fam == "gui" and self.chk_ax_stars.isChecked():
+            want_secondary = True
 
         try:
             if self.proc_thr is not None and self.proc_thr.isRunning():
@@ -1426,19 +1560,21 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             print(f"[SyQon apply] apply_edit RAISED: {_ae!r}", file=_sys.stderr, flush=True)
             traceback.print_exc(file=_sys.stderr); _sys.stderr.flush()
 
-        # Now push the secondary as a new view (stars-only for Axiom, gradient
-        # for Deep Gradient). Done AFTER apply_edit so nothing it does can
-        # interfere with the primary being written to the original doc. The
-        # GUI editor path never produces a secondary.
+        # Now push the secondary as a new view (stars-only for Axiom or an
+        # editor star removal, gradient for Deep Gradient). Done AFTER
+        # apply_edit so nothing it does can interfere with the primary being
+        # written to the original doc.
         if secondary is not None:
             try:
                 sec = np.asarray(secondary, dtype=np.float32)
                 if sec.ndim == 2:
                     sec = np.stack([sec] * 3, axis=-1)
-                if fam == "axiom":
-                    suffix, source = "_stars", "Stars-Only (SyQon Axiom)"
-                else:
+                if fam == "deep-gradient":
                     suffix, source = "_gradient", "Gradient (SyQon Deep Gradient)"
+                elif info.get("secondary_source") == "unscreen":
+                    suffix, source = "_stars", "Stars-Only (SyQon Axiom, unscreen)"
+                else:
+                    suffix, source = "_stars", "Stars-Only (SyQon Axiom)"
                 sec_push = sec.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else sec
                 _push_as_new_doc(self.main, self.doc, sec_push, title_suffix=suffix, source=source)
             except Exception as _se:

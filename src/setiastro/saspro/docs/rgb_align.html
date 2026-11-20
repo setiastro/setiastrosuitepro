@@ -78,7 +78,7 @@
 <p>EDGE flips this on its head: throw out the central stars entirely and solve only on outer-ring stars where the CA actually lives. Specifically:</p>
 
 <ol>
-  <li>Run SEP star detection on both the source channel (R or B) and the reference channel (G).</li>
+  <li>Run SEP star detection on both the source channel (R or B) and the reference channel (G), stepping the threshold down from σ = 100 until there are enough stars (section 6).</li>
   <li>Compute each star's distance from frame center.</li>
   <li>Keep only stars where r ≥ 0.38 × R<sub>max</sub> (the outer 62% of the radial range). The inner 38% is thrown out — those stars have little or no CA to measure.</li>
   <li>Require at least 6 stars in the outer 55-100% ring (the "very edge" region). If this isn't met, EDGE declines and falls back to astroalign.</li>
@@ -118,16 +118,21 @@
 
 <p>All three run a "hungry" fallback pass if the first solve returns stars too clustered in the center: lower sigma (3.0 instead of 5.0), smaller min_area (3 instead of 5), higher max control points (120 instead of 50). This usually fixes the "central cluster" bias on the standard-mode solvers (the EDGE mode addresses it structurally instead).</p>
 
-<h2>6. The SEP sigma control and Trial Detect</h2>
+<p><b>How the stars are found.</b> With hardware acceleration on and a GPU runtime installed, SASpro's GPU star detector finds the stars and a solve takes about a second. Without it (no GPU runtime, acceleration switched off, or a GPU match that fails), SEP detects them with a sigma waterfall: it starts at sigma 100 and steps down (50, 25, 12, 7, 5, and on the hungry pass 4 and 3), stopping at the first sigma that finds twice as many stars as the solve uses (100 on the first pass, 240 on the hungry one). The solve only ever uses the brightest stars, and a fixed sigma 5 on a deep nebula master found tens of thousands of sources and kept SASpro busy for minutes. The summary after Align says which detector was used and at what sigma.</p>
 
-<p>EDGE and the standard star-matching modes need SEP to detect stars first. The <b>SEP sigma</b> spinbox sets the detection threshold:</p>
+<h2>6. Star detection: the sigma waterfall and Trial Detect</h2>
+
+<p>EDGE finds its stars with SEP, brightest first. It runs detection at σ = 100, 50, 20, 10, 5 and 3 in turn, on both the channel being aligned and green, and stops at the first threshold that finds <b>500 stars in green</b> or <b>100 matched edge-ring pairs</b> (with at least the 6 pairs a fit needs). Most frames stop at σ = 100 or 50: a few hundred bright stars are plenty to fit corner CA, and bright stars have the best centroids. Red and blue each run their own waterfall.</p>
 
 <div class="keys">
-<b>SEP sigma</b> — detection threshold in sigmas above background. Default 5. Lower (3) catches more stars but may include noise; higher (10-20) only keeps bright stars but risks too few matches on sparse fields.
-<br><b>Trial detect stars</b> — runs SEP on the green channel with the current sigma, reports total stars found and how many are in the EDGE outer ring. Perfect for pre-flight tuning without committing to a full alignment run.
+<b>Lowest SEP sigma</b> — the lowest threshold the waterfall may reach. Default 3. Raise it to stop sooner on frames where faint detections are mostly noise; a value below 3 (1 or 2) adds one last step for very sparse fields.
+<br><b>Trial detect stars</b> — runs the same detection without aligning and lists, for each σ tried, the green stars, the stars in the channel being aligned and the edge matches, marking the σ that Align would use.
+<br><b>Cancel</b> — stops an alignment or trial detect; nothing is applied. Closing the window while one runs cancels it too.
 </div>
 
-<p>Trial Detect output reads like <code>sigma = 5.0, total stars (green): 342, outer-ring stars (used by EDGE): 61</code>. If outer-ring count is below 20 for EDGE mode, lower sigma. If total count exceeds 10,000, raise it (dense star fields confuse the triangle matcher).</p>
+<p>If even the lowest sigma gives fewer than 6 edge matches, EDGE declines and falls back to astroalign, as before.</p>
+
+<p>SEP blocks the rest of SASpro while each call runs, so a single call over a whole deep frame used to freeze the window for as long as it took (over a minute at σ = 1 on a 9-megapixel frame). A threshold that catches a lot of the frame (a deep threshold, or bright nebulosity) is now detected tile by tile, which keeps the window responsive and lets Cancel take effect within a tile.</p>
 
 <h2>7. Signal floor (Planet Centroid mode)</h2>
 
@@ -174,7 +179,7 @@ Blue → Green:
 <h2>10. Workflow recipes</h2>
 
 <div class="workflow">
-<b>Lens CA on wide-field stacks.</b> You've stacked a wide-field frame from a fast astrograph and the corner stars have visible cyan/red fringing. Model: <b>EDGE</b>. SEP sigma: start at 5, Trial Detect, aim for 30+ outer-ring stars. Run Align. Create new document checked, so you can inspect corners side-by-side. If the corner fringes are gone, apply. If some corners improved more than others, try EDGE again with sigma 3 to catch more stars.
+<b>Lens CA on wide-field stacks.</b> You've stacked a wide-field frame from a fast astrograph and the corner stars have visible cyan/red fringing. Model: <b>EDGE</b>. Leave Lowest SEP sigma at 3; Trial Detect shows which σ it settles on and how many edge matches it finds. Run Align with Create new document checked, so you can inspect corners side-by-side. If the corner fringes are gone, apply.
 </div>
 
 <div class="workflow">
@@ -190,7 +195,7 @@ Blue → Green:
 </div>
 
 <div class="workflow">
-<b>Camera lens shots of the Milky Way.</b> DSLR or mirrorless camera-lens shots almost always have strong radial CA, worst at the corners. Model: <b>EDGE</b>. The lens-corner CA is exactly what this mode was built for. Trial Detect first — camera lens frames usually have thousands of stars; sigma 10-15 catches the brightest few hundred, which is plenty.
+<b>Camera lens shots of the Milky Way.</b> DSLR or mirrorless camera-lens shots almost always have strong radial CA, worst at the corners. Model: <b>EDGE</b>. The lens-corner CA is exactly what this mode was built for. Camera lens frames usually have thousands of stars, so the waterfall normally stops at σ = 100 or 50 with the brightest few hundred, which is plenty.
 </div>
 
 <h2>11. Headless use</h2>
@@ -290,7 +295,7 @@ Blue → Green:
 
 <h3>12.6 Astroalign hungry fallback</h3>
 
-<p>Standard-mode solves (Homography / Affine / Poly) start with astroalign at sigma 5.0, min_area 5, max_control_points 50 — tuned for typical fields. If the resulting matched points are too clustered in the center (checked via the same radial geometry as EDGE: fewer than 6 points at &gt; 0.55 × R<sub>max</sub>), astroalign re-runs with "hungry" settings: sigma 3.0, min_area 3, max_control_points 120. The hungry pass catches dimmer stars at the edges that the tighter default missed. If the hungry pass improves coverage, its results are used; otherwise the first pass's results stand.</p>
+<p>Standard-mode solves (Homography / Affine / Poly) start with astroalign at sigma 5.0, min_area 5, max_control_points 50 (with SEP detecting, sigma 5.0 is the floor of the waterfall described in section 5) — tuned for typical fields. If the resulting matched points are too clustered in the center (checked via the same radial geometry as EDGE: fewer than 6 points at &gt; 0.55 × R<sub>max</sub>), astroalign re-runs with "hungry" settings: sigma 3.0 (the waterfall's floor), min_area 3, max_control_points 120. The hungry pass catches dimmer stars at the edges that the tighter default missed. If the hungry pass improves coverage, its results are used; otherwise the first pass's results stand.</p>
 
 <p>This two-stage approach keeps the common case fast (default settings succeed on most frames) while automatically recovering on sparse or center-dominated fields.</p>
 

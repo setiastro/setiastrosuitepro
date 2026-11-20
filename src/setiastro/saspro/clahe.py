@@ -10,7 +10,7 @@ from PyQt6.QtCore import (
     pyqtSignal, pyqtSlot
 )
 from PyQt6.QtGui import (
-    QImage, QPixmap, QIcon, QCursor, QPen, QBrush, QColor, QPainterPath, QTransform
+    QImage, QPixmap, QIcon, QCursor, QPen, QBrush, QColor, QPainterPath, QTransform, QPainter
 )
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
@@ -248,16 +248,23 @@ def apply_clahe_to_doc(doc, preset: dict | None):
 
 # ----------------------- preview worker -----------------------
 class _PreviewSignals(QObject):
-    done = pyqtSignal(int, object, float)
+    # (gen, out, seconds, display) - display is (after_u8, stf) or None
+    done = pyqtSignal(int, object, float, object)
     failed = pyqtSignal(int, str)
+
+
+def _display_u8(rgb: np.ndarray) -> np.ndarray:
+    """HxWx3 float [0,1] -> contiguous uint8, the bytes the preview shows."""
+    return np.ascontiguousarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8))
 
 
 class _PreviewJob(QRunnable):
     """One CLAHE preview render. Stale jobs drop out at entry via gen_box."""
 
-    def __init__(self, gen, gen_box, signals, base, clip, grid, blend, precision, mask):
+    def __init__(self, gen, gen_box, signals, base, clip, grid, blend, precision, mask, stf=None):
         super().__init__()
         self.setAutoDelete(True)
+        self._stf = stf     # (lo, m) when the preview is display-stretched
         self._gen = int(gen)
         self._gen_box = gen_box
         self._sig = signals
@@ -291,8 +298,21 @@ class _PreviewJob(QRunnable):
                 out = np.clip(base * (1.0 - M) + out * M, 0.0, 1.0)
             if self._gen != self._gen_box[0]:
                 return
-            self._sig.done.emit(self._gen, out.astype(np.float32, copy=False),
-                                time.perf_counter() - t0)
+            out = out.astype(np.float32, copy=False)
+            # The after side's display bytes are made here, not on the GUI
+            # thread: with the display stretch on, that conversion froze the
+            # dialog 2-3 s per preview (5-7 s side by side).
+            mono = out.ndim == 2 or (out.ndim == 3 and out.shape[2] == 1)
+            # mono: stretch and convert the single plane, then replicate the
+            # bytes (same bytes as _to_rgb first; its np.repeat holds the GIL)
+            disp = (out.reshape(out.shape[:2]) if mono else _to_rgb(out))
+            if self._stf is not None:
+                disp = stf_apply(disp, *self._stf)
+            u8 = _display_u8(disp)
+            if mono:
+                u8 = cv2.cvtColor(u8, cv2.COLOR_GRAY2RGB)
+            self._sig.done.emit(self._gen, out, time.perf_counter() - t0,
+                                (u8, self._stf))
         except Exception as e:
             self._sig.failed.emit(self._gen, f"{type(e).__name__}: {e}")
 
@@ -364,6 +384,7 @@ class CLAHEDialogPro(QDialog):
         self._pm_before = None
         self._pm_after = None
         self._pm_sbs = None
+        self._before_key = None
         self._refit_pending = False
 
         root = QVBoxLayout(self)
@@ -861,6 +882,7 @@ class CLAHEDialogPro(QDialog):
         self._stf = None
         self._last_sig = None
         self._pm_before = self._pm_after = self._pm_sbs = None
+        self._before_key = None
         self._refit_pending = False
 
     def _update_preview(self):
@@ -884,18 +906,19 @@ class CLAHEDialogPro(QDialog):
         gen = self._gen_box[0]
         self._rendering = True
         self._update_status()
+        stf = self._stf_for() if self.chk_stretch.isChecked() else None
         job = _PreviewJob(gen, self._gen_box, self._sig, self.orig, clip, grid, blend,
-                          prec, self._mask_for())
+                          prec, self._mask_for(), stf)
         self._pool.start(job)
 
-    @pyqtSlot(int, object, float)
-    def _on_preview_ready(self, gen: int, out, secs: float):
+    @pyqtSlot(int, object, float, object)
+    def _on_preview_ready(self, gen: int, out, secs: float, disp=None):
         if gen != self._gen_box[0]:
             return
         self._preview = out
         self._rendering = False
         self._last_ms = float(secs) * 1000.0
-        self._rebuild_pixmaps()
+        self._rebuild_pixmaps(disp)
         self._compose_and_show()
         if getattr(self, "_refit_pending", False):
             self._refit_pending = False
@@ -923,29 +946,43 @@ class CLAHEDialogPro(QDialog):
             return 1.0
 
     def _pixmap_from(self, rgb) -> QPixmap:
-        arr = np.ascontiguousarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8))
+        return self._pixmap_from_u8(_display_u8(rgb))
+
+    @staticmethod
+    def _pixmap_from_u8(arr: np.ndarray) -> QPixmap:
         h, w, _ = arr.shape
         q = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888)
         return QPixmap.fromImage(q)      # fromImage copies, so arr can go
 
-    def _rebuild_pixmaps(self):
+    def _rebuild_pixmaps(self, disp=None):
         """Convert the current before/after pair once.
 
         Mode switches, hold-to-compare and divider drags then touch no pixels.
+        The before side never changes between previews, so it is converted only
+        when the original or the display stretch changes. `disp` is the after
+        side's display bytes from the preview job, (u8, stf) - used when made
+        with the stretch currently selected.
         """
         if self._preview is None:
             self._pm_before = self._pm_after = self._pm_sbs = None
             return
-        before = self._disp_base
-        after = _to_rgb(self._preview)
-        if after.shape[:2] != before.shape[:2]:
+        if self._preview.shape[:2] != self._disp_base.shape[:2]:
             return
-        if self.chk_stretch.isChecked():
-            lo, m = self._stf_for()
-            before = stf_apply(before, lo, m)
-            after = stf_apply(after, lo, m)
-        self._pm_before = self._pixmap_from(before)
-        self._pm_after = self._pixmap_from(after)
+        stf = self._stf_for() if self.chk_stretch.isChecked() else None
+        key = (id(self._disp_base), stf)
+        if self._pm_before is None or self._before_key != key:
+            before = self._disp_base
+            if stf is not None:
+                before = stf_apply(before, *stf)
+            self._pm_before = self._pixmap_from(before)
+            self._before_key = key
+        if disp is not None and disp[1] == stf:
+            self._pm_after = self._pixmap_from_u8(disp[0])
+        else:
+            after = _to_rgb(self._preview)
+            if stf is not None:
+                after = stf_apply(after, *stf)
+            self._pm_after = self._pixmap_from(after)
         self._pm_sbs = None
         self._pix_after.setPixmap(self._pm_after)
 
@@ -979,14 +1016,19 @@ class CLAHEDialogPro(QDialog):
         split = (mode == _MODE_SPLIT)
         if mode == _MODE_SBS:
             if self._pm_sbs is None and self._preview is not None:
-                before = self._disp_base
-                after = _to_rgb(self._preview)
-                if self.chk_stretch.isChecked():
-                    lo, m = self._stf_for()
-                    before = stf_apply(before, lo, m)
-                    after = stf_apply(after, lo, m)
-                gap = np.zeros((before.shape[0], 4, 3), dtype=np.float32)
-                self._pm_sbs = self._pixmap_from(np.concatenate([before, gap, after], axis=1))
+                # Paint the two converted sides 1:1 with a 4 px black gap: the
+                # same pixels as stretching and converting a concatenated
+                # double-width frame, which it used to redo on every preview.
+                pb, pa = self._pm_before, self._pm_after
+                sbs = QPixmap(pb.width() + 4 + pa.width(), max(pb.height(), pa.height()))
+                sbs.fill(QColor(0, 0, 0))
+                p = QPainter(sbs)
+                try:
+                    p.drawPixmap(0, 0, pb)
+                    p.drawPixmap(pb.width() + 4, 0, pa)
+                finally:
+                    p.end()
+                self._pm_sbs = sbs
             if self._pm_sbs is not None:
                 self.pix.setPixmap(self._pm_sbs)
         elif mode == _MODE_AFTER:

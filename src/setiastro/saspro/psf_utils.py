@@ -28,7 +28,8 @@ def detect_stars_waterfall(gray: np.ndarray,
                            sigma_ladder: Tuple[float, ...] = (100.0, 50.0, 25.0, 12.0, 6.0, 3.0),
                            target_count: int = 1000,
                            min_area: int = 5,
-                           quality_filter: bool = True) -> Optional[dict]:
+                           quality_filter: bool = True,
+                           strips: bool = False) -> Optional[dict]:
     """
     Descending-threshold star detection. Runs sep.Background once and
     re-extracts at each rung of `sigma_ladder` until the (optionally
@@ -40,6 +41,14 @@ def detect_stars_waterfall(gray: np.ndarray,
       - malformed ellipse (a > 0, b > 0, b <= a)
     Set False to preserve pre-filter counts (matches older callers that
     computed statistics over the raw extract).
+
+    strips=True extracts a dense rung over horizontal strips
+    (sep_tiled.extract_strips): the same catalogue, but sep.extract holds the
+    GIL for the whole call -- one full-frame call on a rich 26 MP master is
+    ~6 s at sigma 100 and ~3 min at sigma 15 with the GUI frozen -- and strips
+    hold it ~0.5 s at a time (and are faster there). For callers on a QThread
+    in the GUI process. Only dense star-field rungs are stripped (_strips_pay);
+    elsewhere one call is faster and holds the GIL about as long.
 
     Returns None if even the last rung produced no usable stars, otherwise
     a dict of float64 arrays plus:
@@ -62,7 +71,11 @@ def detect_stars_waterfall(gray: np.ndarray,
     best: Optional[dict] = None
     for sig in sigma_ladder:
         try:
-            stars = sep.extract(sub, thresh=float(sig), err=rms)
+            if strips and _strips_pay(sub, float(sig) * float(rms), int(min_area)):
+                from setiastro.saspro.sep_tiled import extract_strips
+                stars = extract_strips(sep, sub, float(sig), err=rms, minarea=int(min_area))
+            else:
+                stars = sep.extract(sub, thresh=float(sig), err=rms, minarea=int(min_area))
         except Exception:
             # Pixstack overflow at very low sigma on a huge field lands here;
             # keep whatever we already had and stop descending.
@@ -104,6 +117,94 @@ def detect_stars_waterfall(gray: np.ndarray,
             break
 
     return best
+
+
+# Strips keep each GIL hold short, but every strip call also sets up SEP's
+# process-global pixel stack (20M in the GUI process, ~0.25 s a call), so they
+# only pay on a dense star field, where one call's cost grows faster than its
+# object count. On nebulosity they lose: an object taller than two strip
+# margins makes every strip it crosses re-extract with wider margins, so the
+# strips cost several times one call and their GIL holds grow toward one
+# call's anyway. Connected components of the smoothed, thresholded image
+# predict both (object count and tall objects), and cv2 counts them without
+# holding the GIL. Measured on real masters, one call vs 256-row strips:
+#   star fields  9.2k objects, 0 tall   6.4 s vs 5.4 s  (longest hold 0.44 s)
+#                41.7k objects, 0 tall  ~3 min vs 33 s (4.2 s)
+#                8.2k objects, 3 tall   13.1 s vs 5.9 s (0.64 s)
+#                13.1k objects, 5 tall  45 s vs 25 s    (3.3 s)
+#   nebulosity   5.8k objects, 11 tall  7.4 s vs 26 s   (4.2 s)  -> one call
+#                2.9k objects           2.9 s vs 12.6 s          -> one call
+_STRIP_MIN_OBJECTS = 4000
+_STRIP_TALL_ROWS = 128          # 2 x sep_tiled.extract_strips' default margin
+_SEP_SMOOTH = np.array([[1, 2, 1], [2, 4, 2], [1, 2, 1]], np.float32) / 16.0  # SEP's default filter
+
+
+def _strips_pay(sub: np.ndarray, level: float, min_area: int) -> bool:
+    """Is extracting at absolute `level` a dense star field, where strips beat one call?"""
+    min_area = max(1, int(min_area))
+    if int(np.count_nonzero(sub > level)) <= _STRIP_MIN_OBJECTS * min_area:
+        return False                       # too few pixels for that many objects
+    try:
+        import cv2
+        sm = cv2.filter2D(sub, -1, _SEP_SMOOTH, borderType=cv2.BORDER_REPLICATE)
+        _, _, stats, _ = cv2.connectedComponentsWithStats((sm > level).astype(np.uint8), connectivity=8)
+    except Exception:
+        return False                       # one call, as without strips
+    st = stats[1:]
+    st = st[st[:, cv2.CC_STAT_AREA] >= min_area]
+    n_obj = int(len(st))
+    if n_obj <= _STRIP_MIN_OBJECTS:
+        return False
+    n_tall = int(np.count_nonzero(st[:, cv2.CC_STAT_HEIGHT] > _STRIP_TALL_ROWS))
+    return n_tall * 1000 <= n_obj          # at most ~1 extended object per 1000
+
+
+def median_star_stamp(gray: np.ndarray, xs, ys, half: int,
+                      max_stars: int = 500) -> Optional[np.ndarray]:
+    """
+    Median of real-image cutouts around detected stars: what an actual star
+    in this image looks like at native pixel resolution. The PSF Viewer's
+    "true pixels" star and Convolution/Deconvolution's stellar PSF both come
+    from here.
+
+    Each (2*half+1)^2 cutout is centred on the rounded centroid, has the
+    median of its 1-pixel border subtracted as background and is divided by
+    its peak, so bright stars don't dominate the median and a neighbour in one
+    cutout doesn't survive it. Cutouts that leave the image are skipped. Over
+    max_stars detections, an even spread through the catalogue is used.
+    Returns peak-normalised float32 (peak ~1), or None if no cutout fit.
+    """
+    img = np.ascontiguousarray(gray, dtype=np.float32)
+    H, W = img.shape
+    xs = np.asarray(xs, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    if xs.size == 0:
+        return None
+
+    # Cap for speed -- 500 stamps is plenty to nail a median.
+    if xs.size > max_stars:
+        idx = np.linspace(0, xs.size - 1, max_stars).astype(int)
+        xs = xs[idx]; ys = ys[idx]
+
+    stamps = []
+    for xi, yi in zip(xs, ys):
+        cx = int(round(xi)); cy = int(round(yi))
+        x0 = cx - half; x1 = cx + half + 1
+        y0 = cy - half; y1 = cy + half + 1
+        if x0 < 0 or y0 < 0 or x1 > W or y1 > H:
+            continue
+        s = img[y0:y1, x0:x1]
+        # Background from the 1-pixel edge of the stamp
+        border = np.concatenate([s[0], s[-1], s[1:-1, 0], s[1:-1, -1]])
+        bg = float(np.median(border))
+        s  = s - bg
+        pk = float(s.max())
+        if pk > 0.0:
+            stamps.append(s / pk)
+
+    if not stamps:
+        return None
+    return np.median(np.stack(stamps, axis=0), axis=0).astype(np.float32)
 
 
 def _to_luma(img: np.ndarray) -> np.ndarray:

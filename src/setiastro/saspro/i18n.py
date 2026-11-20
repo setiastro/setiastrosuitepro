@@ -77,7 +77,8 @@ def get_saved_language() -> str:
     Returns:
         Language code from settings, defaults to "en"
     """
-    settings = QSettings("SetiAstro", "SetiAstroSuitePro")
+    from setiastro.saspro.settings_sandbox import named_settings  # follows --firstrun
+    settings = named_settings("SetiAstro", "SetiAstroSuitePro")
     return settings.value("ui/language", "en", type=str) or "en"
 
 
@@ -88,7 +89,8 @@ def save_language(lang_code: str) -> None:
     Args:
         lang_code: Language code (e.g., "it", "fr", "es")
     """
-    settings = QSettings("SetiAstro", "SetiAstroSuitePro")
+    from setiastro.saspro.settings_sandbox import named_settings  # follows --firstrun
+    settings = named_settings("SetiAstro", "SetiAstroSuitePro")
     settings.setValue("ui/language", lang_code)
     settings.sync()
 

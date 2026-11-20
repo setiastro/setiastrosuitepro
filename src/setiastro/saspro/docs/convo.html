@@ -145,7 +145,13 @@ headlessly. Each tab has its own preset schema: Convolution carries
 the four PSF sliders + strength; Deconvolution carries every slider on
 every algorithm's panel (plus the Larson&ndash;Sekanina centre if one has
 been clicked) so that Replay Last Action and the shortcut re-create the
-<i>exact</i> run; Classical Denoise carries the method + its parameters.</p>
+<i>exact</i> run; Classical Denoise carries the method + its parameters.
+When Richardson&ndash;Lucy or Wiener runs on a stellar PSF from the PSF
+Estimator tab, the preset also carries that PSF itself, so Replay Last
+Action, History Explorer and the shortcut deconvolve with the same
+measured PSF rather than the sliders. Opening such a shortcut makes its
+stellar PSF the active one, and its preset editor has a checkbox to fall
+back to the sliders.</p>
 
 <h2>2. Convolution tab</h2>
 <p>Blurs the image with a parametric elliptical super-Gaussian. All four
@@ -293,33 +299,44 @@ and is applied to each channel independently; the four PSF sliders at the
 top of the Deconvolution tab are ignored.</p>
 
 <h2>4. PSF Estimator tab</h2>
-<p>Measures the real point-spread function of the image by stacking
-normalised postage stamps around detected stars, using SEP for
-detection. The result can be sent straight into RL or Wiener as a
-custom PSF, or saved for use later.</p>
+<p>Measures the real point-spread function of the image the same way
+the PSF Viewer does: the same star detection, and the same median of
+real-pixel stamps around the detected stars. The result can be sent
+straight into RL or Wiener as a custom PSF, or saved for use later.</p>
 <ul>
-  <li><b>Detection &sigma;</b> (1.0&ndash;5.0, default 2.5) &mdash;
-      threshold for SEP's star detector in units of background RMS.
-      Low values catch faint stars (and noise); 2.5 is a good compromise.</li>
+  <li><b>Auto (waterfall &rarr; ~1000 stars)</b> (default on) &mdash;
+      the PSF Viewer's detector. SEP measures the background once, then
+      extracts at &sigma; = 100, 50, 25, 12, 6, 3 and stops as soon as
+      ~1000 well-formed stars are in hand. Fast on rich fields; a sparse
+      field descends further and keeps what it finds.</li>
+  <li><b>Detection &sigma;</b> (1.0&ndash;50.0, default 15) &mdash; used
+      only with Auto unchecked: one extraction at exactly this threshold,
+      in units of background RMS. Low values on a large, rich frame find
+      tens of thousands of objects and can take minutes.</li>
   <li><b>Min area (px&sup2;)</b> (1&ndash;100, default 5) &mdash; minimum
       connected-pixel count for a detection. Keeps hot pixels and single
       cosmic-ray hits out.</li>
   <li><b>Saturation cutoff (ADU)</b> (1000&ndash;100000, default 50000)
-      &mdash; sources whose peak exceeds this are discarded, so clipped
-      star cores don't flatten the stacked PSF. For a 16-bit image
-      consider 60000&ndash;64000; for already-stretched 32-bit float
-      data drop it to the equivalent of ~90&nbsp;% of max.</li>
-  <li><b>Max stars</b> (1&ndash;500, default 50) &mdash; cap on how many
-      brightest-valid sources go into the stack. More stars = smoother
-      PSF but slower.</li>
+      &mdash; stars whose brightest core pixel (any channel) reaches this
+      are left out, so clipped cores don't flatten the PSF. The value is
+      16-bit ADU: on a normalised (0&ndash;1) image, 65535 is full scale,
+      so the default leaves out stars above ~76&nbsp;%. Set it to
+      100000 to keep every star.</li>
+  <li><b>Max stars</b> (1&ndash;500, default 500) &mdash; how many stars
+      are median-stacked, spread evenly through the detections (the PSF
+      Viewer uses 500). More stars = a cleaner PSF; 500 stamps take well
+      under a second.</li>
   <li><b>Half-width (px)</b> (5&ndash;50, default 15) &mdash; the postage
       stamp around each star is <code>(2w+1)&times;(2w+1)</code>. The
       stamp has to comfortably contain the whole stellar profile
       including a quiet annulus around it; too small clips the wings,
       too large wastes memory on sky.</li>
 </ul>
-<p><b>Run SEP Extraction</b> runs detection, stacks the stamps, and
-updates the small PSF preview below. <b>Use as Current PSF</b> loads
+<p><b>Run SEP Extraction</b> runs detection and stacks the stamps in
+the background (the window stays usable), then updates the small PSF
+preview and the status line under it: how many stars were found at
+which &sigma;, how many went into the PSF and how many were left out as
+saturated, the median FWHM and the kernel size. <b>Use as Current PSF</b> loads
 that kernel into RL/Wiener, switches the algorithm to Richardson&ndash;Lucy,
 lights the Custom PSF bar on the Deconvolution tab, and refuses to
 reset until you click Disable or move a PSF slider. <b>Save PSF&hellip;</b>
@@ -497,18 +514,26 @@ fixed <code>&sigma;&nbsp;=&nbsp;3</code> separable Gaussian built from a
 &beta; and modest iteration counts. Each channel runs independently.</p>
 
 <h3>6.7 SEP stellar PSF estimator</h3>
-<p>For each selected source <code>i</code> inside the saturation cap,
-a <code>(2w+1)&times;(2w+1)</code> stamp is cut from the
-background-subtracted frame around its integer-rounded centre,
-flux-normalised, and summed:</p>
-<div class="matheq-hero">\mathrm{PSF}(x,y) \;=\; \frac{1}{N}\sum_{i=1}^{N}\frac{\mathrm{stamp}_i(x,y)}{\sum_{x,y}\mathrm{stamp}_i(x,y)}</div>
-<p>Sources are sorted by SEP's reported peak value descending, so the
-<i>brightest unsaturated</i> stars dominate the first entries; the
-<i>Max stars</i> cap trims the tail. The final kernel is
-sum-normalised so convolution preserves image mean. If a source's
-stamp runs off the edge or has non-positive total flux it is skipped;
-if every candidate fails, Preview reports the error and no PSF is
-produced.</p>
+<p>Detection is the PSF Viewer's waterfall (<code>psf_utils.detect_stars_waterfall</code>):
+SEP keeps detections with flag 0, at least <i>Min area</i> pixels and a
+well-formed ellipse. Stars whose brightest pixel in the 3&times;3 core
+reaches the saturation cutoff are dropped, and up to <i>Max stars</i>
+of the rest, spread evenly through the catalogue, give the PSF. For each
+star <code>i</code> a <code>(2w+1)&times;(2w+1)</code> stamp is cut
+around its integer-rounded centre, the median <code>b<sub>i</sub></code>
+of the stamp's one-pixel border is subtracted, and the stamp is divided
+by its peak <code>p<sub>i</sub></code>. The stamps are median-combined
+(<code>psf_utils.median_star_stamp</code>, the PSF Viewer's
+&ldquo;true pixels&rdquo; star):</p>
+<div class="matheq-hero">\mathrm{M}(x,y) \;=\; \mathrm{median}_{i}\;\frac{\mathrm{stamp}_i(x,y) - b_i}{p_i}</div>
+<p>The median throws out neighbouring stars and cosmic rays that land in
+a few stamps, and peak normalisation keeps bright stars from dominating.
+What is left around the star is noise about zero: values within
+3&nbsp;&sigma; of that noise (measured on the stamp's outer two-pixel
+ring) are set to zero, so they don't add a flat pedestal, and the kernel
+is sum-normalised so convolution preserves the image mean. If no stars
+are found, every one is saturated, or every stamp runs off the edge, the
+estimator reports why and no PSF is produced.</p>
 
 <h3>6.8 Classical denoisers</h3>
 <p>Each method dispatches through

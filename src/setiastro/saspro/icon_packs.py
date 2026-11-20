@@ -29,9 +29,10 @@ _SWAPPABLE_EXTS = (".png", ".svg")  # interchangeable: both load through QIcon
 
 def _settings():
     # Explicit scope, like the language preference: icons are resolved at import
-    # time, before the QApplication identity has been set.
-    from PyQt6.QtCore import QSettings
-    return QSettings("SetiAstro", "SetiAstroSuitePro")
+    # time, before the QApplication identity has been set. named_settings() is
+    # QSettings("SetiAstro", "SetiAstroSuitePro") that also follows --firstrun.
+    from setiastro.saspro.settings_sandbox import named_settings
+    return named_settings("SetiAstro", "SetiAstroSuitePro")
 
 
 def get_saved_icon_pack() -> str:

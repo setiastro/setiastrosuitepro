@@ -6,7 +6,7 @@ import numpy as np
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QTimer
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QApplication,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QMessageBox, QProgressBar, QPlainTextEdit,
     QSpinBox, QDoubleSpinBox, QGridLayout, QWidget
 )
@@ -15,6 +15,10 @@ from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
 
 from setiastro.saspro import astroalign
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
+from setiastro.saspro.sep_tiled import (
+    ensure_pixstack, extract_small_first, waterfall_extract, STAR_LADDER,
+)
 import sep
 sep.set_extract_pixstack(20000000)
 
@@ -90,30 +94,102 @@ def _planet_centroid(ch: np.ndarray, signal_floor: float = 0.05):
 # ─────────────────────────────────────────────────────────────────────
 # Worker
 # ─────────────────────────────────────────────────────────────────────
+class RGBAlignCancelled(RuntimeError):
+    """The user cancelled an alignment or trial run."""
+
+
 class RGBAlignWorker(QThread):
     progress = pyqtSignal(int, str)     # (percent, message)
     done = pyqtSignal(np.ndarray)       # aligned RGB image
     failed = pyqtSignal(str)
+    cancelled = pyqtSignal()            # stopped on request; nothing to apply
+    trial_done = pyqtSignal(str)        # Trial Detect report (trial=True runs)
     EDGE_FRAC = 0.55      # 55% of max radius
     MIN_EDGE_PTS = 6      # want at least 6 out there
     EDGE_INNER_FRAC = 0.38   # toss center 38% radius
     MATCH_MAX_DIST = 10.0    # px, generous for CA
     MIN_MATCHES = 6
 
+    # EDGE star detection steps sigma down this ladder and stops at the first
+    # sigma that finds TARGET_STARS in green or TARGET_EDGE_MATCHES edge pairs.
+    # The user's sigma is the floor. A fixed low sigma on a deep stack ran for
+    # many minutes; a few hundred bright stars are plenty for a CA fit.
+    SIGMA_LADDER = (100.0, 50.0, 20.0, 10.0, 5.0, 3.0)
+    TARGET_STARS = 500
+    TARGET_EDGE_MATCHES = 100
+    # SEP holds the GIL for a whole extract() call, so one full-frame call froze
+    # the GUI even from this thread (67 s at sigma 1 on a 9 MP frame). A sparse
+    # rung is one call; a dense one goes tile by tile, which releases the GIL
+    # between tiles and gives Cancel somewhere to land. On a 3008x3008 frame with
+    # the GUI process's 20M pixel stack, one call held the GIL 0.8 s at 65k
+    # pixels over threshold, 1.8 s at 114k, 4.1 s at 198k and 69 s at 1.76M.
+    # Every call also pays ~0.2 s to allocate that stack, so tiles are not free.
+    # sep_tiled.extract_strips was tried for the dense case and rejected: its
+    # adaptive margin grows toward the whole frame when nebulosity crosses the
+    # cuts (122 s, with one 40 s call, at sigma 1 on the same frame).
+    ONE_CALL_MAX_ABOVE = 100_000
+    DETECT_TILE = 768
+    DETECT_PAD = 32       # overlap; each star is kept by the tile owning its centroid
+
+    # Homography / Affine / Poly (and EDGE's fallback) fit the brightest
+    # control points with astroalign. The GPU detector finds them in well under
+    # a second. Its SEP fallback used a fixed sigma 5 (3 on the second pass):
+    # ~40k sources on a 6248x4176 Ha master, 134 s with the GIL held 74 s per
+    # pair (345 s / 189 s on the sigma-3 pass). The matcher only uses the
+    # brightest max_control_points, so SEP steps down sep_tiled.STAR_LADDER
+    # and stops at the first sigma that finds CP_TARGET_FACTOR times that many.
+    CP_TARGET_FACTOR = 2
+
 
     def __init__(self, img: np.ndarray, model: str, sep_sigma: float = 3.0,
-                 planet_floor: float = 0.05):
+                 planet_floor: float = 0.05, *, trial: bool = False):
         super().__init__()
         self.img = img
         self.model = model
         self.sep_sigma = float(sep_sigma)
         self.planet_floor = float(planet_floor)
+        self.trial = bool(trial)
 
 
         self.r_xform = None
         self.b_xform = None
         self.r_pairs = None
         self.b_pairs = None
+
+        self._cancel = False
+        self._stage_pct = 0
+        self._bkg_cache: dict = {}   # id(channel) -> (channel, background-subtracted, global rms)
+        self._det_cache: dict = {}   # (id(channel), sigma) -> (channel, (N,2) points brightest first)
+        self.waterfall: dict = {}    # label -> {"rungs": [(sigma, n_green, n_src, n_match)], "sigma": used}
+        self.tile_failures = 0
+        self._cp_cache: dict = {}    # (id(channel), backend, sigma, area, cp) -> (channel, points, sigma used)
+        self.detect_notes: dict = {} # label -> how the astroalign control points were found
+
+    def cancel(self):
+        self._cancel = True
+
+    def _check_cancel(self):
+        if self._cancel or self.isInterruptionRequested():
+            raise RGBAlignCancelled("Cancelled.")
+
+    def waterfall_lines(self) -> list:
+        lines = []
+        for label, info in self.waterfall.items():
+            rungs = info.get("rungs") or []
+            if not rungs:
+                continue
+            used = info.get("sigma")
+            lines.append(f"{label} → Green star detection (σ waterfall):")
+            for sigma, n_ref, n_src, n_match in rungs:
+                mark = "   ← used" if used is not None and sigma == used else ""
+                lines.append(f"  σ={sigma:g}: {n_ref} green stars, {n_src} {label.lower()} stars, "
+                             f"{n_match} edge matches{mark}")
+            if used is None:
+                lines.append(f"  fewer than {self.MIN_MATCHES} edge matches at every σ: EDGE falls back to astroalign")
+        lines.extend(self.detect_notes.values())
+        if self.tile_failures:
+            lines.append(f"({self.tile_failures} detection tile(s) failed and were skipped)")
+        return lines
 
     def _pts_too_central(self, pts: np.ndarray | None, shape) -> bool:
         """
@@ -131,20 +207,88 @@ class RGBAlignWorker(QThread):
         edge_mask = r > (self.EDGE_FRAC * rmax)
         return edge_mask.sum() < self.MIN_EDGE_PTS
 
+    def _sigma_ladder(self) -> list:
+        floor = max(0.5, float(self.sep_sigma))
+        rungs = [sg for sg in self.SIGMA_LADDER if sg >= floor]
+        if not rungs or rungs[-1] > floor:
+            rungs.append(floor)      # a floor between or below the rungs ends the ladder
+        return rungs
+
+    def _background_sub(self, img: np.ndarray):
+        hit = self._bkg_cache.get(id(img))
+        if hit is not None and hit[0] is img:
+            return hit[1], hit[2]
+        data = np.ascontiguousarray(img, dtype=np.float32)
+        bkg = sep.Background(data)
+        sub = np.ascontiguousarray(data - bkg, dtype=np.float32)
+        rms = float(bkg.globalrms)
+        self._bkg_cache[id(img)] = (img, sub, rms)
+        return sub, rms
+
+    def _detect_tiled(self, img: np.ndarray, sigma: float):
+        """SEP detection: (N,2) x,y points, brightest peak first, or None.
+
+        One full-frame call when the rung is sparse, tile by tile when it is
+        dense (ONE_CALL_MAX_ABOVE). Same background and threshold either way
+        (global background model and rms); tiles overlap by DETECT_PAD and each
+        star is kept only by the tile whose core holds its centroid."""
+        key = (id(img), float(sigma))
+        hit = self._det_cache.get(key)
+        if hit is not None and hit[0] is img:
+            return hit[1]
+        sub, rms = self._background_sub(img)
+        self._check_cancel()
+        if int(np.count_nonzero(sub > float(sigma) * rms)) <= self.ONE_CALL_MAX_ABOVE:
+            objs = extract_small_first(sep, sub, float(sigma), err=rms)
+            pts = None
+            if objs is not None and len(objs):
+                order = np.argsort(objs["peak"])[::-1]
+                pts = np.stack([objs["x"][order], objs["y"][order]], axis=1)
+            self._det_cache[key] = (img, pts)
+            return pts
+        H, W = sub.shape[:2]
+        T, P = int(self.DETECT_TILE), int(self.DETECT_PAD)
+        xs, ys, pk = [], [], []
+        for y0 in range(0, H, T):
+            for x0 in range(0, W, T):
+                self._check_cancel()
+                y1, x1 = min(y0 + T, H), min(x0 + T, W)
+                py0, px0 = max(0, y0 - P), max(0, x0 - P)
+                tile = np.ascontiguousarray(sub[py0:min(H, y1 + P), px0:min(W, x1 + P)])
+                try:
+                    ensure_pixstack(sep, tile.size)     # only ever raises it (see sep_tiled)
+                    objs = sep.extract(tile, float(sigma), err=rms)
+                except Exception:
+                    self.tile_failures += 1      # e.g. deblending overflow in a dense tile
+                    continue
+                if objs is None or len(objs) == 0:
+                    continue
+                ox = objs["x"] + px0
+                oy = objs["y"] + py0
+                lox = -np.inf if x0 == 0 else x0 - 0.5
+                hix = np.inf if x1 >= W else x1 - 0.5
+                loy = -np.inf if y0 == 0 else y0 - 0.5
+                hiy = np.inf if y1 >= H else y1 - 0.5
+                own = (ox >= lox) & (ox < hix) & (oy >= loy) & (oy < hiy)
+                if own.any():
+                    xs.append(ox[own])
+                    ys.append(oy[own])
+                    pk.append(objs["peak"][own])
+        if not xs:
+            pts = None
+        else:
+            x = np.concatenate(xs)
+            y = np.concatenate(ys)
+            order = np.argsort(np.concatenate(pk))[::-1]
+            pts = np.stack([x[order], y[order]], axis=1)
+        self._det_cache[key] = (img, pts)
+        return pts
+
     def _sep_detect_points(self, img: np.ndarray):
-        """Return (N,2) points from SEP, brightest first, using user sigma."""
+        """Return (N,2) points from SEP, brightest first, at the user sigma."""
         if sep is None:
             return None
-        data = img.astype(np.float32, copy=False)
-        bkg = sep.Background(data)
-        data_sub = data - bkg
-        # use the promoted sigma here 👇
-        objs = sep.extract(data_sub, self.sep_sigma, err=bkg.globalrms)
-        if objs is None or len(objs) == 0:
-            return None
-        idx = np.argsort(objs["peak"])[::-1]
-        pts = np.stack([objs["x"][idx], objs["y"][idx]], axis=1)
-        return pts
+        return self._detect_tiled(img, self.sep_sigma)
 
     def _filter_edge_ring(self, pts: np.ndarray, shape, inner_frac=EDGE_INNER_FRAC):
         """Keep only points outside inner_frac * Rmax."""
@@ -158,43 +302,73 @@ class RGBAlignWorker(QThread):
         pts_edge = pts[mask]
         return pts_edge if pts_edge.size else None
 
-    def _pair_edge_points(self, src_img, ref_img, shape):
-        """Detect in BOTH images, keep only edge ring in REF, then NN-match in SRC."""
-        ref_pts = self._sep_detect_points(ref_img)
-        src_pts = self._sep_detect_points(src_img)
+    def _match_edge(self, src_pts, ref_pts, shape):
+        """Keep REF's edge ring, then nearest-neighbour match into SRC within MATCH_MAX_DIST."""
         if ref_pts is None or src_pts is None:
             return None, None
-
         ref_edge = self._filter_edge_ring(ref_pts, shape)
         if ref_edge is None:
             return None, None
-
-        # brute-force NN, small N, so ok
         src_arr = np.asarray(src_pts, dtype=np.float32)
-        pairs_src = []
-        pairs_dst = []
-        for (x_ref, y_ref) in ref_edge:
+        ref_arr = np.asarray(ref_edge, dtype=np.float32)
+        try:
+            from scipy.spatial import cKDTree
+        except ImportError:
+            cKDTree = None
+        if cKDTree is not None:
+            # Same nearest neighbour as the old per-star argmin loop, which was
+            # O(N^2) and took tens of seconds once N reached the tens of thousands.
+            dist, j = cKDTree(src_arr).query(ref_arr, k=1)
+            ok = dist <= self.MATCH_MAX_DIST
+            return src_arr[j[ok]], ref_arr[ok]
+        pairs_src, pairs_dst = [], []
+        for (x_ref, y_ref) in ref_arr:
             dxy = src_arr - np.array([x_ref, y_ref], dtype=np.float32)
-            dist = np.hypot(dxy[:,0], dxy[:,1])
-            j = np.argmin(dist)
-            if dist[j] <= self.MATCH_MAX_DIST:
-                # src point is in the channel we want to warp → source
-                pairs_src.append(src_arr[j])
-                # ref point is the green channel → destination
+            dist = np.hypot(dxy[:, 0], dxy[:, 1])
+            jj = int(np.argmin(dist))
+            if dist[jj] <= self.MATCH_MAX_DIST:
+                pairs_src.append(src_arr[jj])
                 pairs_dst.append([x_ref, y_ref])
+        return (np.array(pairs_src, dtype=np.float32).reshape(-1, 2),
+                np.array(pairs_dst, dtype=np.float32).reshape(-1, 2))
 
-        if len(pairs_src) < self.MIN_MATCHES:
+    def _pair_edge_points(self, src_img, ref_img, shape, label: str = ""):
+        """EDGE pairs via the sigma waterfall.
+
+        At each sigma: detect in BOTH images, keep the edge ring in REF, NN-match
+        into SRC. Stop at the first sigma reaching TARGET_STARS green stars or
+        TARGET_EDGE_MATCHES pairs (with at least MIN_MATCHES to fit). Returns the
+        pairs from the best sigma tried, or (None, None) if none had MIN_MATCHES."""
+        name = label or f"Channel {len(self.waterfall) + 1}"
+        rungs = []
+        best = (None, None, None, -1)      # src_xy, dst_xy, sigma, n_match
+        for sigma in self._sigma_ladder():
+            self._check_cancel()
+            self.progress.emit(self._stage_pct, f"Aligning {name} → Green: detecting stars at σ={sigma:g}…")
+            ref_pts = self._detect_tiled(ref_img, sigma)
+            src_pts = self._detect_tiled(src_img, sigma)
+            n_ref = 0 if ref_pts is None else len(ref_pts)
+            n_src = 0 if src_pts is None else len(src_pts)
+            s_xy, d_xy = self._match_edge(src_pts, ref_pts, shape)
+            n_match = 0 if s_xy is None else len(s_xy)
+            rungs.append((float(sigma), n_ref, n_src, n_match))
+            if n_match >= best[3]:
+                best = (s_xy, d_xy, float(sigma), n_match)
+            if n_match >= self.MIN_MATCHES and (n_ref >= self.TARGET_STARS
+                                                 or n_match >= self.TARGET_EDGE_MATCHES):
+                break
+        ok = best[3] >= self.MIN_MATCHES
+        self.waterfall[name] = {"rungs": rungs, "sigma": best[2] if ok else None}
+        if not ok:
             return None, None
-
-        return (np.array(pairs_src, dtype=np.float32),
-                np.array(pairs_dst, dtype=np.float32))
+        return best[0], best[1]
 
 
     def run(self):
         if self.img is None or self.img.ndim != 3 or self.img.shape[2] < 3:
             self.failed.emit("Image must be RGB (3 channels).")
             return
-        if astroalign is None:
+        if astroalign is None and not self.trial:
             self.failed.emit("astroalign is not available.")
             return
 
@@ -204,27 +378,53 @@ class RGBAlignWorker(QThread):
             G = np.ascontiguousarray(self.img[..., 1].astype(np.float32, copy=False))
             B = np.ascontiguousarray(self.img[..., 2].astype(np.float32, copy=False))
 
+            if self.trial:
+                self._run_trial(R, G, B)
+                return
+
             # R → G
+            self._stage_pct = 15
             self.progress.emit(15, "Aligning Red → Green…")
-            kind_R, X_R, (r_src, r_dst) = self._estimate_transform(R, G, self.model)
+            kind_R, X_R, (r_src, r_dst) = self._estimate_transform(R, G, self.model, label="Red")
+            self._check_cancel()
             self.r_xform = (kind_R, X_R)
             self.r_pairs = (r_src, r_dst)
             self.progress.emit(35, f"Red transform = {kind_R}")
             R_aligned = self._warp_channel(R, kind_R, X_R, G.shape)
 
             # B → G
+            self._check_cancel()
+            self._stage_pct = 55
             self.progress.emit(55, "Aligning Blue → Green…")
-            kind_B, X_B, (b_src, b_dst) = self._estimate_transform(B, G, self.model)
+            kind_B, X_B, (b_src, b_dst) = self._estimate_transform(B, G, self.model, label="Blue")
+            self._check_cancel()
             self.b_xform = (kind_B, X_B)
             self.b_pairs = (b_src, b_dst)
             self.progress.emit(75, f"Blue transform = {kind_B}")
             B_aligned = self._warp_channel(B, kind_B, X_B, G.shape)
 
             out = np.stack([R_aligned, G, B_aligned], axis=2).astype(self.img.dtype, copy=False)
+            self._check_cancel()
             self.progress.emit(100, "Done.")
             self.done.emit(out)
+        except RGBAlignCancelled:
+            self.cancelled.emit()
         except Exception as e:
-            self.failed.emit(str(e))
+            if self._cancel or self.isInterruptionRequested():
+                self.cancelled.emit()
+            else:
+                self.failed.emit(str(e))
+
+    def _run_trial(self, R, G, B):
+        """Trial Detect: the EDGE waterfall for red and blue, reported, no fit or warp."""
+        H, W = G.shape[:2]
+        self._stage_pct = 15
+        self._pair_edge_points(R, G, (H, W), label="Red")
+        self._check_cancel()
+        self._stage_pct = 55
+        self._pair_edge_points(B, G, (H, W), label="Blue")
+        self.progress.emit(100, "Trial detect done.")
+        self.trial_done.emit("\n".join(["[Trial detect: EDGE σ waterfall]"] + self.waterfall_lines()))
 
     def _planet_centroid(self, ch: np.ndarray, signal_floor: float = 0.05):
         """
@@ -406,7 +606,67 @@ class RGBAlignWorker(QThread):
 
 
     # ───── helpers (basically mini versions of your big star alignment logic) ─────
-    def _estimate_transform(self, src: np.ndarray, ref: np.ndarray, model: str):
+    def _control_points(self, img: np.ndarray, backend: str, sigma: float, area: int, cp: int):
+        """Stars for astroalign: ((N,2) x,y brightest first or None, sigma used).
+
+        "gpu": astroalign's GPU detector at `sigma` (None when it is switched
+        off or unavailable). "sep": the SEP waterfall, STAR_LADDER down to
+        `sigma`, stopping at CP_TARGET_FACTOR * cp stars."""
+        key = (id(img), backend, float(sigma), int(area), int(cp))
+        hit = self._cp_cache.get(key)
+        if hit is not None and hit[0] is img:
+            return hit[1], hit[2]
+        self._check_cancel()
+        pts, used = None, None
+        if backend == "gpu":
+            pts = astroalign._find_sources(img, detection_sigma=sigma, min_area=area,
+                                           backend="gpu", max_stars=cp)
+            used = float(sigma)
+        else:
+            ladder = [r for r in STAR_LADDER if r[0] >= sigma]
+            if not ladder or ladder[-1][0] > sigma:
+                ladder.append((float(sigma), int(area)))
+            r = waterfall_extract(sep, img, self.CP_TARGET_FACTOR * int(cp), ladder=ladder)
+            if r is not None and len(r["cat"]):
+                cat = r["cat"]
+                order = np.argsort(-np.asarray(cat["flux"]))
+                pts = np.stack([cat["x"][order], cat["y"][order]], axis=1).astype(np.float64)
+                used = float(r["sigma"])
+        self._cp_cache[key] = (img, pts, used)
+        return pts, used
+
+    def _astroalign_transform(self, src, ref, cp: int, sigma: float, area: int, label: str):
+        """astroalign.find_transform on detected control points, in the order
+        its own "auto" detector uses: GPU first; SEP when the GPU detector is
+        off, finds fewer than 3 stars, or its match fails.
+        Returns (tform, (src_pts, dst_pts), note)."""
+        name = label or "Channel"
+        err = None
+        for backend in ("gpu", "sep"):
+            self._check_cancel()
+            if backend == "sep":
+                self.progress.emit(self._stage_pct,
+                                   f"Aligning {name} → Green: detecting stars (SEP, σ waterfall to {sigma:g})…")
+            s_pts, s_sig = self._control_points(src, backend, sigma, area, cp)
+            r_pts, r_sig = self._control_points(ref, backend, sigma, area, cp)
+            if s_pts is None or r_pts is None or len(s_pts) < 3 or len(r_pts) < 3:
+                continue
+            try:
+                tform, (sp, dp) = astroalign.find_transform(s_pts, r_pts, max_control_points=cp)
+            except Exception as e:
+                err = e
+                continue
+            if backend == "gpu":
+                note = f"{name} → Green: GPU star detection at σ={sigma:g}, {len(sp)} matched stars"
+            else:
+                note = (f"{name} → Green: SEP star detection, σ={s_sig:g} ({name.lower()}) / "
+                        f"σ={r_sig:g} (green), {len(sp)} matched stars")
+            return tform, (sp, dp), note
+        if err is not None:
+            raise err
+        raise ValueError(f"Too few stars to align {name} to Green.")
+
+    def _estimate_transform(self, src: np.ndarray, ref: np.ndarray, model: str, label: str = ""):
         H, W = ref.shape[:2]
 
         # ── Planet centroid ADC mode ─────────────────────────────
@@ -425,7 +685,7 @@ class RGBAlignWorker(QThread):
 
         # ── 0) edge-only, SEP-based path ─────────────────────────────
         if model == "edge-sep":
-            src_xy, dst_xy = self._pair_edge_points(src, ref, (H, W))
+            src_xy, dst_xy = self._pair_edge_points(src, ref, (H, W), label=label)
             if src_xy is not None and dst_xy is not None and cv2 is not None:
                 # 0a) try homography first (better for corner warp)
                 Hh, inliers = cv2.findHomography(
@@ -453,25 +713,16 @@ class RGBAlignWorker(QThread):
         # ─────────────────────────────────────────────────────────────
         # 1) astroalign normal pass
         # ─────────────────────────────────────────────────────────────
-        tform, (src_pts, dst_pts) = astroalign.find_transform(
-            np.ascontiguousarray(src),
-            np.ascontiguousarray(ref),
-            max_control_points=50,
-            detection_sigma=5.0,
-            min_area=5,
-        )
+        src = np.ascontiguousarray(src)
+        ref = np.ascontiguousarray(ref)
+        tform, (src_pts, dst_pts), note = self._astroalign_transform(src, ref, 50, 5.0, 5, label)
 
         # 2) 'hungry' pass if too central
         if self._pts_too_central(dst_pts, ref.shape):
-            tform2, (src_pts2, dst_pts2) = astroalign.find_transform(
-                np.ascontiguousarray(src),
-                np.ascontiguousarray(ref),
-                max_control_points=120,
-                detection_sigma=3.0,
-                min_area=3,
-            )
+            tform2, (src_pts2, dst_pts2), note2 = self._astroalign_transform(src, ref, 120, 3.0, 3, label)
             if not self._pts_too_central(dst_pts2, ref.shape):
-                tform, src_pts, dst_pts = tform2, src_pts2, dst_pts2
+                tform, src_pts, dst_pts, note = tform2, src_pts2, dst_pts2, note2
+        self.detect_notes[label or f"Channel {len(self.detect_notes) + 1}"] = note
 
         # 3) original branching
         P = np.asarray(tform.params, dtype=np.float64)
@@ -697,16 +948,17 @@ class RGBAlignDialog(QDialog):
 
         # ── SEP controls ─────────────────────────
         sep_row = QHBoxLayout()
-        sep_row.addWidget(QLabel(self.tr("SEP sigma:")))
+        sep_row.addWidget(QLabel(self.tr("Lowest SEP sigma:")))
         self.sep_spin = QSpinBox()
         self.sep_spin.setRange(1, 100)
-        self.sep_spin.setValue(5)
-        self.sep_spin.setToolTip("Detection threshold (σ) for SEP star finding in EDGE mode.\n"
-                                 "Higher = fewer stars, lower = more stars.")
+        self.sep_spin.setValue(3)
+        self.sep_spin.setToolTip("EDGE detects stars at σ = 100, 50, 20, 10, 5, 3 in turn and stops at the\n"
+                                 "first that finds 500 stars in green or 100 edge-ring matches.\n"
+                                 "This is the lowest σ it may go to; a value below 3 adds one last step.")
         sep_row.addWidget(self.sep_spin)
         self.btn_trial_sep = QPushButton(self.tr("Trial detect stars"))
-        self.btn_trial_sep.setToolTip("Run SEP on the green channel with this sigma and report how many "
-                                      "stars it finds and how many are in the EDGE ring.")
+        self.btn_trial_sep.setToolTip("Run the EDGE star detection for red and blue against green without aligning:\n"
+                                      "for each σ tried, the green stars and edge matches, and the σ Align would use.")
         self.btn_trial_sep.clicked.connect(self._trial_sep_detect)
         sep_row.addWidget(self.btn_trial_sep)
         # wrap in a widget so we can show/hide the whole row including its label
@@ -763,8 +1015,12 @@ class RGBAlignDialog(QDialog):
 
         self.btn_manual.clicked.connect(self._open_manual)
 
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
+        self.btn_cancel.setEnabled(False)
+        self.btn_cancel.setToolTip("Stop the running alignment or trial detect. Nothing is applied.")
         self.btn_close = QPushButton(self.tr("Close"))
         btns.addWidget(self.btn_run)
+        btns.addWidget(self.btn_cancel)
         btns.addWidget(self.btn_manual)
         btns.addWidget(self.btn_close)
         btns.addStretch(1)
@@ -772,11 +1028,14 @@ class RGBAlignDialog(QDialog):
         lay.addLayout(btns)
 
         self.btn_run.clicked.connect(self._start_align)
+        self.btn_cancel.clicked.connect(self._cancel_align)
         self.btn_close.clicked.connect(self.close)
         self.model_combo.currentIndexChanged.connect(self._update_mode_ui)
         self._update_mode_ui()   # set initial state
 
         self.worker: RGBAlignWorker | None = None
+        self._closing_after_cancel = False
+        self._cancel_requested = False
 
     def _open_manual(self):
         if self.image is None or self.image.ndim != 3 or self.image.shape[2] < 3:
@@ -838,46 +1097,98 @@ class RGBAlignDialog(QDialog):
 
 
     def _trial_sep_detect(self):
+        if self._busy():
+            return
         if self.image is None:
             QMessageBox.warning(self, "RGB Align", "No image loaded.")
+            return
+        if self.image.ndim != 3 or self.image.shape[2] < 3:
+            QMessageBox.warning(self, "RGB Align", "Image must be RGB (3 channels).")
             return
         if sep is None:
             QMessageBox.warning(self, "RGB Align", "python-sep is not available.")
             return
-        self.progress_label.setText(f"Trial Detection In Progress…")
-        QApplication.processEvents()
-        # use green channel as reference, same as align
-        G = np.ascontiguousarray(self.image[..., 1].astype(np.float32, copy=False))
-        sigma = float(self.sep_spin.value())
+        # Same detection as Align, on a worker: it used to run on the GUI thread.
+        self._launch(
+            RGBAlignWorker(self.image, "edge-sep", sep_sigma=float(self.sep_spin.value()), trial=True),
+            "Trial detection in progress…",
+        )
 
-        # run a mini version of what the worker does
-        bkg = sep.Background(G)
-        data_sub = G - bkg
-        objs = sep.extract(data_sub, sigma, err=bkg.globalrms)
-        total = 0 if objs is None else len(objs)
+    # ---- run lifecycle (align and trial share it) ----
+    def _busy(self) -> bool:
+        return thread_running(self.worker)
 
-        # compute how many are in the EDGE ring, using same logic/constants
-        h, w = G.shape[:2]
-        cx, cy = w * 0.5, h * 0.5
-        rmax = np.hypot(cx, cy)
-        edge_inner = RGBAlignWorker.EDGE_INNER_FRAC * rmax
+    def _set_busy(self, busy: bool):
+        for b in (self.btn_run, self.btn_trial_sep, self.btn_manual):
+            b.setEnabled(not busy)
+        self.btn_cancel.setEnabled(busy)
+        self.btn_cancel.setText(self.tr("Cancel"))
 
-        if objs is not None and total > 0:
-            r = np.hypot(objs["x"] - cx, objs["y"] - cy)
-            edge_mask = r >= edge_inner
-            edge_count = int(edge_mask.sum())
-        else:
-            edge_count = 0
+    def _launch(self, worker: RGBAlignWorker, label: str):
+        """Start a worker this dialog does not own (thread_keeper does), so closing
+        or deleting the dialog mid-run can never destroy a running QThread."""
+        self._cancel_requested = False
+        self.progress_label.setText(label)
+        self.progress_bar.setValue(0)
+        worker.progress.connect(self._on_worker_progress)
+        worker.done.connect(self._on_worker_done)
+        worker.failed.connect(self._on_worker_failed)
+        worker.cancelled.connect(self._on_worker_cancelled)
+        worker.trial_done.connect(self._on_trial_done)
+        worker.finished.connect(self._on_worker_finished)
+        self.worker = worker
+        self._set_busy(True)
+        start_owned_thread(worker)
 
-        msg = (f"[Trial SEP]\n"
-               f"sigma = {sigma}\n"
-               f"total stars (green): {total}\n"
-               f"outer-ring stars (used by EDGE): {edge_count}")
-        self.summary_box.setPlainText(msg)
-        self.progress_label.setText(f"Trial SEP: {total} stars, {edge_count} edge")
+    def _cancel_align(self):
+        w = self.worker
+        if not thread_running(w):
+            return
+        self._cancel_requested = True
+        try:
+            w.cancel()
+            w.requestInterruption()
+        except RuntimeError:
+            pass
+        self.btn_cancel.setEnabled(False)
+        self.btn_cancel.setText(self.tr("Cancelling…"))
+        self.progress_label.setText("Cancelling…")
+
+    def _on_worker_cancelled(self):
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Cancelled. Nothing was applied.")
+
+    def _on_trial_done(self, report: str):
+        self.summary_box.setPlainText(report)
+        self.progress_label.setText("Trial detect done: see the summary below.")
+
+    def _on_worker_finished(self):
+        self._set_busy(False)
+        if self._closing_after_cancel:
+            self._closing_after_cancel = False
+            QTimer.singleShot(0, self.close)
+
+    def closeEvent(self, e):
+        if self._busy():
+            # Stop the worker first; the window closes itself once it has stopped.
+            self._closing_after_cancel = True
+            self._cancel_align()
+            e.ignore()
+            return
+        super().closeEvent(e)
+
+    def reject(self):
+        # Esc behaves like closing the window.
+        if self._busy():
+            self._closing_after_cancel = True
+            self._cancel_align()
+            return
+        super().reject()
 
 
     def _start_align(self):
+        if self._busy():
+            return
         if self.image is None:
             QMessageBox.warning(self, "RGB Align", "No image found in active view.")
             return
@@ -896,17 +1207,11 @@ class RGBAlignDialog(QDialog):
                     or "centroid" in self.model_combo.currentText().lower() \
                     or "adc" in self.model_combo.currentText().lower()
         planet_floor = float(self.planet_floor_spin.value()) if is_planet else 0.05
-        self.worker = RGBAlignWorker(
+        self._launch(RGBAlignWorker(
             self.image, model,
             sep_sigma=sep_sigma,
             planet_floor=planet_floor,
-        )
-
-        self.worker.progress.connect(self._on_worker_progress)
-        self.worker.done.connect(self._on_worker_done)
-        self.worker.failed.connect(self._on_worker_failed)
-        self.worker.start()
-        self.btn_run.setEnabled(False)
+        ), "Starting…")
 
     def _selected_model(self) -> str:
         txt = self.model_combo.currentText().lower()
@@ -936,6 +1241,10 @@ class RGBAlignDialog(QDialog):
         QMessageBox.critical(self, "RGB Align", err)
 
     def _on_worker_done(self, out: np.ndarray):
+        if self._cancel_requested:
+            # Cancel was pressed after the last step: cancel still wins.
+            self._on_worker_cancelled()
+            return
         self.btn_run.setEnabled(True)
         self.progress_bar.setValue(100)
         self.progress_label.setText("Applying…")
@@ -1010,6 +1319,8 @@ class RGBAlignDialog(QDialog):
                 else:
                     summary_lines.append("  (non-matrix; warp callable)")
 
+        if w is not None and getattr(w, "waterfall", None):
+            summary_lines = list(w.waterfall_lines()) + ([""] if summary_lines else []) + summary_lines
         summary_text = "\n".join(summary_lines) if summary_lines else "No transform info."
         self.summary_box.setPlainText(summary_text)
 
@@ -1073,6 +1384,34 @@ def align_rgb_array(img: np.ndarray, model: str = "edge-sep", sep_sigma: float =
     except Exception as e:
         raise RuntimeError(str(e))
 
+def _align_rgb_off_gui(img: np.ndarray, model: str, sep_sigma: float, status=None) -> np.ndarray:
+    """align_rgb_array on a worker thread, waited for with a local event loop.
+
+    Shortcut and Function Bundle callers expect the result on return, but on the
+    GUI thread SEP froze the window for the whole detection. Without a running
+    QApplication (or off the GUI thread) this is plain align_rgb_array."""
+    from PyQt6.QtCore import QCoreApplication, QEventLoop
+    app = QCoreApplication.instance()
+    if app is None or QThread.currentThread() is not app.thread():
+        return align_rgb_array(img, model=model, sep_sigma=sep_sigma)
+    if img is None or img.ndim != 3 or img.shape[2] < 3:
+        raise RuntimeError("Image must be RGB (3 channels).")
+    worker = RGBAlignWorker(img, model, sep_sigma=sep_sigma)
+    box = {}
+    loop = QEventLoop()
+    worker.done.connect(lambda out: box.__setitem__("out", out))
+    worker.failed.connect(lambda m: box.__setitem__("err", m))
+    worker.cancelled.connect(lambda: box.__setitem__("err", "Cancelled."))
+    if callable(status):
+        worker.progress.connect(lambda _pct, msg: status(msg))
+    worker.finished.connect(loop.quit)
+    start_owned_thread(worker)
+    loop.exec()
+    if "out" in box:
+        return box["out"]
+    raise RuntimeError(box.get("err") or "RGB Align did not complete.")
+
+
 def run_rgb_align_headless(main_window, document, preset: dict | None = None):
     if document is None:
         QMessageBox.warning(main_window, "RGB Align", "No active document.")
@@ -1089,8 +1428,10 @@ def run_rgb_align_headless(main_window, document, preset: dict | None = None):
         sb().showMessage(f"RGB Align ({model})…", 3000)
 
     try:
-        out = align_rgb_array(img, model=model if model != "edge" else "edge-sep",
-                              sep_sigma=sep_sigma)
+        out = _align_rgb_off_gui(
+            img, model=model if model != "edge" else "edge-sep", sep_sigma=sep_sigma,
+            status=(lambda m: sb().showMessage(f"RGB Align: {m}")) if callable(sb) else None,
+        )
     except Exception as e:
         QMessageBox.critical(main_window, "RGB Align (headless)", str(e))
         return

@@ -1949,8 +1949,11 @@ class ShortcutManager:
                     # was already live on the canvas (merge-mode collision);
                     # use the returned sid for the preset lookup so it lands
                     # on the shortcut we actually just created.
+                    # Replacing: the file's own layout, put back exactly.
+                    # Merging: nudge off the chips already on the canvas.
                     actual_sid = self.add_shortcut(
-                        cid, QPoint(x, y), label=label, shortcut_id=sid
+                        cid, QPoint(x, y), label=label, shortcut_id=sid,
+                        exact=replace_existing,
                     ) or sid
 
                     # Restore the inlined per-instance preset (written by
@@ -2083,7 +2086,8 @@ class ShortcutManager:
                      pos: QPoint,
                      *,
                      label: Optional[str] = None,
-                     shortcut_id: Optional[str] = None) -> Optional[str]:
+                     shortcut_id: Optional[str] = None,
+                     exact: bool = False) -> Optional[str]:
         """
         Always creates a NEW instance (multiple per command_id allowed).
 
@@ -2091,6 +2095,10 @@ class ShortcutManager:
         Callers that need to look the new widget back up (to attach a
         per-instance preset, for example) must use the returned sid, not
         the one they passed in — see the collision guard below.
+
+        `exact`: put the chip at `pos` as given, for restoring a saved
+        layout (startup, project load, a replacing import). New chips are
+        nudged off occupied spots instead.
         """
         act = self.registry.get(command_id)
         if not act:
@@ -2116,7 +2124,16 @@ class ShortcutManager:
         # an occupied cell). User-initiated drags go through move_selected_by
         # and are left alone — if the user drops on top of another chip,
         # that's their call.
-        free_pos = self._find_free_position(w, pos)
+        #
+        # A restored layout is never nudged: overlap there is the user's own
+        # placement. Reported 2026-11-20: chips arranged in two columns on the
+        # right came back scattered on every restart. Wherever two chip
+        # rectangles touched (a long label reaches into the next column), the
+        # load nudged one -- and load_shortcuts() runs before the window is
+        # sized, so the only "free" spots on offer were inside Qt's default
+        # 640x480 viewport. A chip saved at x=1785 came back at x=561, and that
+        # spot became its remembered placement.
+        free_pos = QPoint(pos) if exact else self._find_free_position(w, pos)
         w.move(free_pos)
         w._desired_pos = QPoint(free_pos)   # remember intended spot for reflow/persist
         w.show()
@@ -2298,7 +2315,8 @@ class ShortcutManager:
                         x = int(entry.get("x", 10))
                         y = int(entry.get("y", 10))
                         label = entry.get("label") or self._default_label_for(cid)
-                        self.add_shortcut(cid, QPoint(x, y), label=label, shortcut_id=sid)
+                        self.add_shortcut(cid, QPoint(x, y), label=label, shortcut_id=sid,
+                                          exact=True)
                     return
                 except Exception as e:
                     try:
@@ -2319,7 +2337,8 @@ class ShortcutManager:
                     # each old entry becomes its own instance
                     sid = uuid.uuid4().hex
                     label = self._default_label_for(cid)
-                    self.add_shortcut(cid, QPoint(x, y), label=label, shortcut_id=sid)
+                    self.add_shortcut(cid, QPoint(x, y), label=label, shortcut_id=sid,
+                                      exact=True)
                 migrated_v1 = True
             except Exception as e:
                 try:
