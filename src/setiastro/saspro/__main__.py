@@ -156,6 +156,12 @@ def entry(argv: list[str] | None = None) -> int:
     # single_instance.py is stdlib-only (socket, json, tempfile, pathlib), so
     # importing it here is virtually free. If the probe succeeds, PyQt6 never
     # loads in this process at all and we exit in ~50ms + Python startup.
+    #
+    # --firstrun: switch to a throwaway settings store before gui_entry's
+    # import reads any setting (icon pack, language). It never hands off.
+    from setiastro.saspro.settings_sandbox import wants_firstrun, enter_firstrun_sandbox
+    if wants_firstrun(argv):
+        enter_firstrun_sandbox()
     try:
         from setiastro.saspro.single_instance import maybe_handoff_and_exit
         _cleaned = maybe_handoff_and_exit(argv)

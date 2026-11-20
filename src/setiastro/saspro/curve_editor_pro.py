@@ -1432,15 +1432,18 @@ def _downsample_for_preview(img01: np.ndarray, max_w: int = 1200) -> np.ndarray:
         return img01.copy()
     s = max_w / float(w)
     new_w, new_h = max_w, int(round(h * s))
-    u8 = (np.clip(img01, 0, 1) * 255).astype(np.uint8)
+    # Resize the float data. This used to go through 8-bit first, which left a
+    # linear frame (median ~0.001) with ~100 levels and half its pixels at 0.0,
+    # so Curves / GHS previewed posterized bands that Apply (float) never makes.
+    src = np.ascontiguousarray(np.clip(img01, 0, 1), dtype=np.float32)
     try:
         import cv2
-        out = cv2.resize(u8, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        out = cv2.resize(src, (new_w, new_h), interpolation=cv2.INTER_AREA)
     except Exception:
         y_idx = np.linspace(0, h-1, new_h).astype(np.int32)
         x_idx = np.linspace(0, w-1, new_w).astype(np.int32)
-        out = u8[y_idx][:, x_idx]
-    return out.astype(np.float32) / 255.0
+        out = src[y_idx][:, x_idx]
+    return out.astype(np.float32, copy=False)
 
 
 def build_curve_lut(curve_func, size=65536):

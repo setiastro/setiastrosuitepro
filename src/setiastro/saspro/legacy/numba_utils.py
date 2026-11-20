@@ -4324,7 +4324,7 @@ def numba_mono_final_formula(rescaled, median_rescaled, target_median):
 
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def numba_mono_from_img(img, bp, denom, median_rescaled, target_median):
     H, W = img.shape
     out = np.empty_like(img)
@@ -4343,7 +4343,7 @@ def numba_mono_from_img(img, bp, denom, median_rescaled, target_median):
             out[y, x] = numer / denom2
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def numba_color_linked_from_img(img, bp, denom, median_rescaled, target_median):
     H, W, C = img.shape
     out = np.empty_like(img)
@@ -4363,7 +4363,7 @@ def numba_color_linked_from_img(img, bp, denom, median_rescaled, target_median):
                 out[y, x, c] = numer / denom2
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def numba_color_unlinked_from_img(img, bp3, denom3, meds_rescaled3, target_median):
     H, W, C = img.shape
     out = np.empty_like(img)
@@ -4384,7 +4384,7 @@ def numba_color_unlinked_from_img(img, bp3, denom3, meds_rescaled3, target_media
                 out[y, x, c] = numer / denom2
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def numba_mono_final_formula(rescaled, median_rescaled, target_median):
     """
     Applies the final formula *after* we already have the rescaled values.
@@ -4411,7 +4411,7 @@ def numba_mono_final_formula(rescaled, median_rescaled, target_median):
 
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def numba_color_final_formula_linked(rescaled, median_rescaled, target_median):
     """
     Linked color transform: we use one median_rescaled for all channels.
@@ -4435,7 +4435,7 @@ def numba_color_final_formula_linked(rescaled, median_rescaled, target_median):
 
     return out
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def numba_color_final_formula_unlinked(rescaled, medians_rescaled, target_median):
     """
     Unlinked color transform: a separate median_rescaled per channel.

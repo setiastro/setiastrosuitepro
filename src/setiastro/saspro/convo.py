@@ -7,9 +7,12 @@ import numpy as np
 from typing import Optional, Tuple
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
+import logging
+import threading
 
 # ── SciPy / scikit-image
 from scipy.signal import fftconvolve
+import scipy.fft as _sp_fft
 from scipy.ndimage import laplace
 from numpy.fft import fft2, ifft2, ifftshift
 
@@ -34,7 +37,6 @@ import cv2
 # Optional FITS export
 from astropy.io import fits
 
-import sep  # PSF estimator
 
 # Import centralized widgets
 from setiastro.saspro.widgets.spinboxes import CustomSpinBox
@@ -43,47 +45,81 @@ from setiastro.saspro.widgets.before_after import (
     BeforeAfterCompare, display_stretch_params, apply_display_stretch,
 )
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
+from setiastro.saspro.psf_utils import detect_stars_waterfall, median_star_stamp
 
 from PyQt6.QtCore import QThread, pyqtSignal as _pyqtSignal
 import numpy as np
  
  
-class _DenoiseWorker(QThread):
+class _Canceled(Exception):
+    """Raised inside a preview job once its cancel flag is set."""
+
+
+class _PreviewWorker(QThread):
     """
-    Runs ConvoDeconvoDialog._apply_classical_denoise() on a background thread.
- 
+    Computes one Convo/Deconvo preview off the GUI thread.
+
+    The job is a plain function that ConvoDeconvoDialog._build_job makes from a
+    snapshot of the settings, so nothing here reads a widget. Started with
+    thread_keeper.start_owned_thread (no parent): the dialog may close, or be
+    deleted, at any point of a run, and its result is then dropped by job id.
+
     Signals
     -------
-    progress(str)           — short status message for the UI label
-    finished(object, str)   — (result_ndarray | None, error_msg)
+    progress(int, str)        — job id, short status text
+    result(int, object, str)  — job id, payload dict | None, error
+                                ("" ok, "__canceled__", else the traceback)
+    QThread.finished is not shadowed: thread_keeper releases the thread on it.
     """
-    progress = _pyqtSignal(str)
-    finished = _pyqtSignal(object, str)   # ndarray | None, error
- 
-    def __init__(self, dialog, img: np.ndarray, parent=None):
-        super().__init__(parent)
-        self._dialog = dialog   # reference to the dialog (read-only during run)
-        self._img    = img
-        self._canceled = False
- 
+    progress = _pyqtSignal(int, str)
+    result = _pyqtSignal(int, object, str)
+
+    def __init__(self, job_id: int, fn):
+        super().__init__(None)
+        self._job_id = job_id
+        self._fn = fn
+        self._stop = threading.Event()
+
     def cancel(self):
-        self._canceled = True
- 
+        self._stop.set()
+
+    def _report(self, text: str):
+        self.progress.emit(self._job_id, str(text))
+
     def run(self):
+        payload, err = None, ""
         try:
-            algo = self._dialog.denoise_algo_combo.currentText()
-            self.progress.emit(f"Running {algo}…")
-            result = self._dialog._apply_classical_denoise(self._img)
-            if self._canceled:
-                self.finished.emit(None, "__canceled__")
-            else:
-                self.finished.emit(result, "")
+            payload = self._fn(self._report, self._stop.is_set)
+            if self._stop.is_set():
+                payload, err = None, "__canceled__"
+        except _Canceled:
+            err = "__canceled__"
         except Exception as exc:
             import traceback
-            if self._canceled:
-                self.finished.emit(None, "__canceled__")
-            else:
-                self.finished.emit(None, f"{exc}\n\n{traceback.format_exc()}")
+            err = "__canceled__" if self._stop.is_set() else f"{exc}\n\n{traceback.format_exc()}"
+        self._fn = None   # the job's arrays leave with the payload, not with the thread
+        self.result.emit(self._job_id, payload, err)
+
+
+class _JobSpec:
+    """One preview request, read from the widgets on the GUI thread.
+
+    compute_raw(report, canceled) gives the tool's output before Strength and
+    mask; blend(raw) applies Strength exactly as the dialog always has. raw_key
+    holds every setting compute_raw depends on, so equal keys over the same
+    image give the same raw result.
+    """
+    __slots__ = ("doc", "img", "orig", "tab", "raw_key", "strength", "mask_id", "mask_data",
+                 "compute_raw", "blend", "denoise", "label", "preset")
+
+    def same_raw(self, other) -> bool:
+        return other is not None and self.raw_key == other.raw_key and self.img is other.img
+
+    def same_result(self, other) -> bool:
+        return (self.same_raw(other) and self.strength == other.strength
+                and self.orig is other.orig and self.mask_id == other.mask_id
+                and self.mask_data is other.mask_data)
 
 # --- GraphicsView with Shift+Click LS center + optional scene ctor -----------
 
@@ -286,8 +322,18 @@ class ConvoDeconvoDialog(QDialog):
         self._use_custom_psf = False
         self._custom_psf: Optional[np.ndarray] = None
         self._last_stellar_psf: Optional[np.ndarray] = None
+        self._psf_job = None        # running _PSFEstimateJob, if any
         self._original_image: Optional[np.ndarray] = None
         self._preview_result: Optional[np.ndarray] = None
+        # Previews are computed on a worker thread, one job at a time (_start_job).
+        self._preview_spec = None      # _JobSpec that _preview_result was computed for
+        self._raw_cache = None         # (_JobSpec, result before Strength/mask): Strength-only changes re-blend
+        self._job = None               # running job: {"id", "spec", "worker", "canceled"}
+        self._job_seq = 0
+        self._queued_preview = False   # Preview clicked mid-run: rerun with the latest settings
+        self._push_spec = None         # Push clicked with no preview for its settings yet
+        self._shown = None             # array the pane shows, and its stretch key (None = unstretched)
+        self._shown_stretch_key = None
         self._auto_fit = False
         self._load_original_on_show = True
         self._pending_ls_center = None  # stash for double-click-open LS center seed
@@ -373,6 +419,8 @@ class ConvoDeconvoDialog(QDialog):
 
         row2 = QHBoxLayout()
         self.push_btn    = QPushButton(self.tr("Push"))
+        self.push_btn.setToolTip(self.tr("Apply the current settings to the image. "
+                                         "Computes them first when there is no preview for them."))
         row2.addWidget(self.push_btn); row2.addWidget(self.close_btn)
         left_layout.addLayout(row2)
 
@@ -407,7 +455,16 @@ class ConvoDeconvoDialog(QDialog):
         left_layout.addStretch()
         self.rl_status_label = QLabel(""); self.rl_status_label.setStyleSheet("color:#fff;background:#333;padding:4px;")
         self.rl_status_label.setFixedHeight(24)
-        left_layout.addWidget(self.rl_status_label)
+        # Cancel for a preview (or Push) still computing; hidden when idle.
+        self.job_cancel_btn = QPushButton(self.tr("Cancel"))
+        self.job_cancel_btn.setToolTip(self.tr("Stop the computation in progress"))
+        self.job_cancel_btn.setFixedHeight(24)
+        self.job_cancel_btn.setVisible(False)
+        self.job_cancel_btn.clicked.connect(self._cancel_jobs)
+        status_row = QHBoxLayout(); status_row.setSpacing(4)
+        status_row.addWidget(self.rl_status_label, stretch=1)
+        status_row.addWidget(self.job_cancel_btn)
+        left_layout.addLayout(status_row)
 
         # Zoom & Preview
         zrow = QHBoxLayout(); zrow.addStretch()
@@ -439,6 +496,8 @@ class ConvoDeconvoDialog(QDialog):
         self.reset_btn.clicked.connect(self._on_reset)
         self.push_btn.clicked.connect(self._on_push_to_doc)
         self.close_btn.clicked.connect(self.close)
+        # Esc / reject() closes without a closeEvent (Qt >= 6.3); both paths emit finished.
+        self.finished.connect(self._teardown_jobs)
 
         self.zoom_in_btn.clicked.connect(self.zoom_in)
         self.zoom_out_btn.clicked.connect(self.zoom_out)
@@ -484,6 +543,7 @@ class ConvoDeconvoDialog(QDialog):
             return
 
         img = getattr(doc, "image", None)
+        self._teardown_jobs()
         self._preview_result = None
         self._original_image = img.copy() if isinstance(img, np.ndarray) else None
         if self._original_image is not None:
@@ -497,7 +557,7 @@ class ConvoDeconvoDialog(QDialog):
         self._refresh_display()
 
 
-    def _refresh_display(self, *_):
+    def _refresh_display(self, *_, prebuilt=None):
         """
         Render the preview pane. The preview result (or the original, when
         there is none) is the "after"; the original is the comparison's
@@ -509,6 +569,9 @@ class ConvoDeconvoDialog(QDialog):
         brightness (a denoise lowers the noise, which moves the black point)
         and the before/after comparison would show a difference that is not
         in the data.
+
+        prebuilt: the images a preview job already made off the GUI thread
+        (_display_images). Used only while the display settings still match.
         """
         before = self._original_image
         after = self._preview_result
@@ -516,24 +579,43 @@ class ConvoDeconvoDialog(QDialog):
         if shown is None:
             return
 
+        auto = self.cb_autostretch.isChecked()
+        tm = float(self.s_target_median.value())
+        linked = bool(self.cb_linked.isChecked())
+        pre = prebuilt
+        if pre is not None and not (pre["shown"] is shown and pre["orig"] is before
+                                    and pre["auto"] == auto
+                                    and (not auto or (pre["tm"] == tm and pre["linked"] == linked))):
+            pre = None      # the display settings moved while the job ran
+
         stretch = None
-        if self.cb_autostretch.isChecked():
+        if auto:
+            if pre is not None and pre["params"] is not None and before is not None:
+                self._stretch_cache = (before, tm, linked, pre["params"])
             stretch = self._display_stretch(before if before is not None else shown)
 
         def _disp(a):
             return apply_display_stretch(a, stretch) if stretch is not None else a
 
-        self.pixmap_item.setPixmap(self._pixmap_from_array(_disp(shown)))
+        if pre is not None:
+            self.pixmap_item.setPixmap(QPixmap.fromImage(pre["after"][0]))
+        else:
+            self.pixmap_item.setPixmap(self._pixmap_from_array(_disp(shown)))
+        self._shown = shown
+        self._shown_stretch_key = None if stretch is None else (tm, linked)
         h, w = shown.shape[:2]
         self.view.image_rect = QRectF(0, 0, w, h)
         self._cmp.set_image_size(w, h)
 
         if after is not None and before is not None and before.shape[:2] == after.shape[:2]:
-            key = None if stretch is None else (float(self.s_target_median.value()),
-                                                bool(self.cb_linked.isChecked()))
+            key = None if stretch is None else (tm, linked)
             c = self._pm_before_cache
             if c is None or c[0] is not before or c[1] != key:
-                c = (before, key, self._pixmap_from_array(_disp(before)))
+                if pre is not None and pre["before"] is not None:
+                    pm = QPixmap.fromImage(pre["before"][0])
+                else:
+                    pm = self._pixmap_from_array(_disp(before))
+                c = (before, key, pm)
                 self._pm_before_cache = c
             self._cmp.set_before(c[2])
         else:
@@ -570,6 +652,7 @@ class ConvoDeconvoDialog(QDialog):
     def showEvent(self, ev):
         super().showEvent(ev)
         self._preview_result = None
+        self._preview_spec = None
         if self._load_original_on_show:
             img, _ = self._get_active_image_and_meta()
             if img is not None:
@@ -593,6 +676,8 @@ class ConvoDeconvoDialog(QDialog):
         self._last_stellar_psf = None
         self._custom_psf = None
         self._use_custom_psf = False
+        self._psf_job = None        # a running estimate finishes unseen (thread_keeper holds it)
+        self._set_psf_busy(False, "")
         self.conv_psf_label.clear() if hasattr(self, "conv_psf_label") else None
         self.sep_psf_preview.clear() if hasattr(self, "sep_psf_preview") else None
         self.rl_status_label.setText("") if hasattr(self, "rl_status_label") else None
@@ -600,11 +685,9 @@ class ConvoDeconvoDialog(QDialog):
         self._stretch_cache = None
         self._pm_before_cache = None
         self._cmp.detach()
-        if getattr(self, "_denoise_worker", None) is not None:
-            if self._denoise_worker.isRunning():
-                self._denoise_worker.cancel()
-                self._denoise_worker.wait(2000)
-            self._denoise_worker = None
+        # thread_keeper owns the worker: cancel it and let it end on its own,
+        # instead of blocking the GUI in wait().
+        self._teardown_jobs()
 
 
         super().closeEvent(ev)
@@ -755,13 +838,35 @@ class ConvoDeconvoDialog(QDialog):
         h_image.addWidget(self.sep_image_label); layout.addLayout(h_image)
 
         form = QFormLayout(); form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.sep_threshold_slider = FloatSliderWithEdit(minimum=1.0, maximum=5.0, step=0.1, initial=2.5, suffix=" σ")
+        # Detection is the PSF Viewer's (psf_utils): Auto descends the sigma
+        # ladder until ~1000 good stars are in hand; unchecked, one extraction
+        # at the slider value. Same range and default as the PSF Viewer.
+        self.sep_auto_checkbox = QCheckBox(f"Auto (waterfall → ~{PSF_AUTO_TARGET} stars)")
+        self.sep_auto_checkbox.setToolTip(
+            "When checked, descend through σ = 100, 50, 25, 12, 6, 3 and stop "
+            f"as soon as ~{PSF_AUTO_TARGET} quality stars are detected, as the PSF Viewer does. "
+            "Fast on rich fields. Uncheck to use the Detection σ value literally "
+            "(low σ on a large, rich frame can take minutes)."
+        )
+        self.sep_auto_checkbox.setChecked(True)
+        form.addRow("", self.sep_auto_checkbox)
+        self.sep_threshold_slider = FloatSliderWithEdit(minimum=1.0, maximum=50.0, step=0.1, initial=15.0, suffix=" σ")
+        self.sep_threshold_slider.setEnabled(False)
+        self.sep_auto_checkbox.toggled.connect(lambda on: self.sep_threshold_slider.setEnabled(not on))
         form.addRow("Detection σ:", self.sep_threshold_slider)
         self.sep_minarea_spin = CustomSpinBox(minimum=1, maximum=100, initial=5, step=1)
         form.addRow("Min Area (px²):", self.sep_minarea_spin)
         self.sep_sat_slider = FloatSliderWithEdit(minimum=1000, maximum=100000, step=500, initial=50000, suffix=" ADU")
+        self.sep_sat_slider.setToolTip(
+            "Stars whose brightest pixel reaches this level are left out of the PSF. "
+            "16-bit ADU: on a normalised (0–1) image 65535 is full scale."
+        )
         form.addRow("Saturation Cutoff:", self.sep_sat_slider)
-        self.sep_maxstars_spin = CustomSpinBox(minimum=1, maximum=500, initial=50, step=1)
+        self.sep_maxstars_spin = CustomSpinBox(minimum=1, maximum=500, initial=500, step=1)
+        self.sep_maxstars_spin.setToolTip(
+            "Stars median-stacked into the PSF, spread evenly through the detections "
+            "(the PSF Viewer uses 500)."
+        )
         form.addRow("Max Stars:", self.sep_maxstars_spin)
         self.sep_stamp_spin = CustomSpinBox(minimum=5, maximum=50, initial=15, step=1)
         form.addRow("Half‐Width (px):", self.sep_stamp_spin)
@@ -779,6 +884,9 @@ class ConvoDeconvoDialog(QDialog):
         self.sep_psf_preview = QLabel(); self.sep_psf_preview.setFixedSize(64, 64)
         self.sep_psf_preview.setStyleSheet("border: 1px solid #888;")
         layout.addWidget(self.sep_psf_preview, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.sep_status_label = QLabel("")
+        self.sep_status_label.setWordWrap(True)
+        layout.addWidget(self.sep_status_label)
 
         layout.addStretch()
         self.tabs.addTab(psf_tab, self.tr("PSF Estimator"))
@@ -986,7 +1094,7 @@ class ConvoDeconvoDialog(QDialog):
             " border-radius: 3px; padding: 2px 6px; font-size: 10px; }"
             "QPushButton:hover { background: rgba(200,80,0,0.45); }"
         )
-        self.denoise_cancel_btn.clicked.connect(self._cancel_denoise)
+        self.denoise_cancel_btn.clicked.connect(self._cancel_jobs)
         status_row.addWidget(self.denoise_cancel_btn)
         outer.addLayout(status_row)
     
@@ -994,9 +1102,6 @@ class ConvoDeconvoDialog(QDialog):
     
         # Wire combo → show/hide panels
         self.denoise_algo_combo.currentTextChanged.connect(self._on_denoise_algo_changed)
-    
-        # Worker slot (created fresh on each Preview click)
-        self._denoise_worker = None
     
         self.tabs.addTab(tvd_tab, self.tr("Classical Denoise"))
 
@@ -1008,119 +1113,40 @@ class ConvoDeconvoDialog(QDialog):
             w.setVisible(key == algo)
 
 
+    def _denoise_params(self) -> dict:
+        """Classical Denoise settings as plain values (read on the GUI thread)."""
+        return {
+            "algo": self.denoise_algo_combo.currentText(),
+            "lum_only": bool(self.denoise_lum_only_chk.isChecked()),
+            "tv_weight": float(self.tv_weight_slider.value()),
+            "tv_iter": int(round(float(self.tv_iter_slider.value()))),
+            "nlm_h": float(self.nlm_h_slider.value()),
+            "nlm_patch": int(round(float(self.nlm_patch_slider.value()))),
+            "nlm_dist": int(round(float(self.nlm_dist_slider.value()))),
+            "bil_d": int(round(float(self.bil_d_slider.value()))),
+            "bil_sigma_color": float(self.bil_sigma_color_slider.value()),
+            "bil_sigma_space": float(self.bil_sigma_space_slider.value()),
+            "gau_sigma": float(self.gau_sigma_slider.value()),
+            "med_size": int(round(float(self.med_size_slider.value()))),
+            "wav_sigma": float(self.wav_sigma_slider.value()),
+            "wav_wavelet": self.wav_wavelet_combo.currentText(),
+            "wav_mode": self.wav_mode_combo.currentText(),
+        }
+
     def _apply_classical_denoise(self, img: np.ndarray) -> np.ndarray:
         """
         Dispatch to the selected classical denoiser.
         Handles L*-only mode for color images uniformly.
         Returns float32 [0,1].
         """
-        from skimage.color import rgb2lab, lab2rgb
-    
-        algo = self.denoise_algo_combo.currentText()
-        lum_only = self.denoise_lum_only_chk.isChecked()
-        is_color = (img.ndim == 3 and img.shape[2] == 3)
-    
-        img_f = np.asarray(img, dtype=np.float32)
+        return _classical_denoise(img, self._denoise_params())
 
-        # ── L*-only mode: extract L, denoise it, put back ────────
-        if lum_only and is_color:
-            lab = rgb2lab(img_f)
-            L_norm = (lab[:, :, 0] / 100.0).astype(np.float32)
-            L_denoised = self._denoise_single_channel(algo, L_norm)   # ← was _denoise_single_channel(self, ...)
-            lab[:, :, 0] = np.clip(L_denoised * 100.0, 0.0, 100.0)
-            result = np.clip(lab2rgb(lab).astype(np.float32), 0.0, 1.0)
-            return result
-
-        # ── Per-channel mode ────────────────────────────────────
-        if is_color:
-            channels = [
-                self._denoise_single_channel(algo, img_f[:, :, c])   # ← same fix
-                for c in range(3)
-            ]
-            return np.clip(np.stack(channels, axis=2), 0.0, 1.0)
-
-        # ── Mono ─────────────────────────────────────────────────
-        mono = img_f.reshape(img_f.shape[0], img_f.shape[1])
-        return np.clip(self._denoise_single_channel(algo, mono), 0.0, 1.0) 
-    
-    
     def _denoise_single_channel(self, algo: str, ch: np.ndarray) -> np.ndarray:
         """
         Run the selected algorithm on a single 2-D float32 [0,1] channel.
         Returns float32 [0,1].
         """
-        ch = np.asarray(ch, dtype=np.float32)
-    
-        if algo == "TV Chambolle":
-            weight   = float(self.tv_weight_slider.value())
-            max_iter = int(round(float(self.tv_iter_slider.value())))
-            return denoise_tv_chambolle(
-                ch, weight=weight, max_num_iter=max_iter, channel_axis=None
-            ).astype(np.float32)
-    
-        elif algo == "Non-Local Means":
-            h_val      = float(self.nlm_h_slider.value())
-            patch_size = int(round(float(self.nlm_patch_slider.value())))
-            patch_dist = int(round(float(self.nlm_dist_slider.value())))
-            # Ensure odd
-            if patch_size % 2 == 0:
-                patch_size += 1
-            if patch_dist % 2 == 0:
-                patch_dist += 1
-            sigma_est = float(np.mean(estimate_sigma(ch, channel_axis=None)))
-            return denoise_nl_means(
-                ch,
-                h=h_val,
-                fast_mode=True,
-                patch_size=patch_size,
-                patch_distance=patch_dist,
-                sigma=sigma_est,
-                channel_axis=None,
-            ).astype(np.float32)
-    
-        elif algo == "Bilateral":
-            d           = int(round(float(self.bil_d_slider.value())))
-            sigma_color = float(self.bil_sigma_color_slider.value())
-            sigma_space = float(self.bil_sigma_space_slider.value())
-            # cv2 bilateral works on 8-bit; convert, filter, convert back
-            ch8 = np.clip(ch * 255.0, 0, 255).astype(np.uint8)
-            filtered = cv2.bilateralFilter(ch8, d, sigma_color, sigma_space)
-            return (filtered.astype(np.float32) / 255.0)
-    
-        elif algo == "Gaussian":
-            sigma = float(self.gau_sigma_slider.value())
-            return np.clip(
-                gaussian_filter(ch, sigma=sigma).astype(np.float32), 0.0, 1.0
-            )
-    
-        elif algo == "Median":
-            size = int(round(float(self.med_size_slider.value())))
-            if size % 2 == 0:
-                size += 1   # enforce odd
-            return np.clip(
-                median_filter(ch, size=size).astype(np.float32), 0.0, 1.0
-            )
-    
-        elif algo == "Wavelet":
-            sigma_val = float(self.wav_sigma_slider.value())
-            wavelet   = self.wav_wavelet_combo.currentText()
-            mode      = self.wav_mode_combo.currentText()
-            # sigma=None triggers BayesShrink auto-estimate
-            sigma_arg = None if sigma_val < 1e-6 else sigma_val
-            return np.clip(
-                denoise_wavelet(
-                    ch,
-                    sigma=sigma_arg,
-                    wavelet=wavelet,
-                    mode=mode,
-                    method="BayesShrink",
-                    channel_axis=None,
-                ).astype(np.float32),
-                0.0, 1.0,
-            )
-    
-        else:
-            return ch.copy()
+        return _denoise_channel(algo, ch, self._denoise_params())
 
     # ---------------- UI reactions ----------------
     def _on_deconv_algo_changed(self, selected: str):
@@ -1195,18 +1221,7 @@ class ConvoDeconvoDialog(QDialog):
             if data is None:
                 return None
 
-            m = np.asarray(data)
-            # If RGB(A) mask, convert to gray
-            if m.ndim == 3:
-                if cv2 is not None:
-                    m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
-                else:
-                    m = m.mean(axis=2)
-
-            m = m.astype(np.float32, copy=False)
-            if m.max() > 1.0:
-                m /= 255.0
-            return np.clip(m, 0.0, 1.0)
+            return _mask_float2d(data)
         except Exception:
             return None
 
@@ -1242,19 +1257,67 @@ class ConvoDeconvoDialog(QDialog):
         return np.clip(m.astype(np.float32, copy=False), 0.0, 1.0)
 
     # ---------------- Core actions ----------------
+    # Preview and Push run the tool on a worker thread (_PreviewWorker), one job
+    # at a time. A Preview click while a job runs is never dropped: the job is
+    # stopped if it was a preview for other settings, and a fresh one starts
+    # from the settings current when it ends. Push without a preview for the
+    # current settings computes it first, through the same steps, then pushes.
     def _on_preview(self):
+        spec = self._build_job_spec()
+        if spec is None:
+            return
+        job = self._job
+        if job is None:
+            self._start_job(spec)
+            return
+        if not job["canceled"] and spec.same_result(job["spec"]):
+            return                          # already computing exactly this
+        if self._push_spec is None:
+            self._stop_job(job)             # superseded preview: stop it, drop its result
+        self._queued_preview = True         # rerun with the settings current when it ends
+        self._show_busy()
+
+    def _active_mask_ref(self):
+        """(active mask id, its data array) of the active doc, or (None, None)."""
+        try:
+            doc = self._active_doc()
+            mid = getattr(doc, "active_mask_id", None) if doc is not None else None
+            if not mid:
+                return None, None
+            layer = (getattr(doc, "masks", {}) or {}).get(mid)
+            data = getattr(layer, "data", None) if layer is not None else None
+            return (mid, data) if data is not None else (None, None)
+        except Exception:
+            return None, None
+
+    def _build_job_spec(self):
+        """Snapshot everything a preview of the current tab needs, on the GUI thread.
+
+        Returns None, after telling the user why, when there is nothing to run.
+        The compute and Strength steps are the dialog's Preview steps moved into
+        functions the worker can run; their results are bit-identical.
+        """
         doc = self._active_doc()
         if hasattr(self.doc_manager, "set_active_document"):
-            self.doc_manager.set_active_document(doc)        
+            self.doc_manager.set_active_document(doc)
         img, _ = self._get_active_image_and_meta()
         if img is None:
             self._show_message("No active image to process.")
-            return
+            return None
 
         if self._original_image is None:
             self._original_image = img.copy()
+        orig = self._original_image
 
         current_tab_name = self.tabs.tabText(self.tabs.currentIndex())
+        s = self.strength_slider.value()
+        is_rgb = img.ndim == 3 and img.shape[2] == 3
+
+        spec = _JobSpec()
+        spec.doc, spec.img, spec.orig, spec.tab, spec.strength = doc, img, orig, current_tab_name, s
+        spec.denoise = False
+        spec.label = self.tr("Computing preview…")
+        spec.blend = lambda raw: raw * s + (1 - s) * img
 
         if current_tab_name == "Convolution":
             radius  = self.conv_radius_slider.value()
@@ -1262,143 +1325,315 @@ class ConvoDeconvoDialog(QDialog):
             aspect  = self.conv_aspect_slider.value()
             rotation= self.conv_rotation_slider.value()
             psf_kernel = make_elliptical_gaussian_psf(radius, kurtosis, aspect, rotation).astype(np.float32)
-            processed = self._convolve_color(img, psf_kernel)
-            processed = processed * self.strength_slider.value() + (1 - self.strength_slider.value()) * img
+            spec.raw_key = ("conv", radius, kurtosis, aspect, rotation)
+
+            def compute_raw(report, canceled):
+                return _convolve_image(img, psf_kernel)
 
         elif current_tab_name == "Deconvolution":
             algo = self.deconv_algo_combo.currentText()
             if algo == "Richardson-Lucy":
                 iters = int(round(self.rl_iterations_slider.value()))
                 reg_type = self.rl_reg_combo.currentText()
-                pr, ps, pa, pt = (self.rl_psf_radius_slider.value(), self.rl_psf_shape_slider.value(),
-                                  self.rl_psf_aspect_slider.value(), self.rl_psf_rotation_slider.value())
-                psf_kernel = make_elliptical_gaussian_psf(pr, ps, pa, pt).astype(np.float32)
-                clip_flag = self.rl_clip_checkbox.isChecked()
-
-                if self.rl_luminance_only_checkbox.isChecked() and img.ndim == 3 and img.shape[2] == 3:
-                    lab = rgb2lab(img.astype(np.float32))
-                    L = (lab[:, :, 0] / 100.0).astype(np.float32)
-                    deconv_L = self._richardson_lucy_color(L, psf_kernel, iterations=iters, reg_type=reg_type, clip_flag=clip_flag)
-                    lab[:, :, 0] = np.clip(deconv_L * 100.0, 0.0, 100.0)
-                    rgb_deconv = lab2rgb(lab.astype(np.float32))
-                    processed = np.clip(rgb_deconv.astype(np.float32), 0.0, 1.0)
+                # "Use as Current PSF" selects RL for the stellar PSF, so RL
+                # must use it (it used to fall through to the slider model).
+                if self._use_custom_psf and (self._custom_psf is not None):
+                    psf_kernel = self._custom_psf.astype(np.float32)
+                    psf_key = ("stellar", psf_kernel.shape, psf_kernel.tobytes())
                 else:
-                    processed = self._richardson_lucy_color(img.astype(np.float32), psf_kernel, iters, reg_type, clip_flag)
+                    pr, ps, pa, pt = (self.rl_psf_radius_slider.value(), self.rl_psf_shape_slider.value(),
+                                      self.rl_psf_aspect_slider.value(), self.rl_psf_rotation_slider.value())
+                    psf_kernel = make_elliptical_gaussian_psf(pr, ps, pa, pt).astype(np.float32)
+                    psf_key = ("model", pr, ps, pa, pt)
+                clip_flag = self.rl_clip_checkbox.isChecked()
+                lum_only = self.rl_luminance_only_checkbox.isChecked() and is_rgb
+                spec.raw_key = ("rl", iters, reg_type, psf_key, clip_flag, lum_only)
 
-                processed = processed * self.strength_slider.value() + (1 - self.strength_slider.value()) * img
+                def compute_raw(report, canceled):
+                    if lum_only:
+                        lab = _rgb2lab_rows(img.astype(np.float32, copy=False))
+                        L = (lab[:, :, 0] / 100.0).astype(np.float32)
+                        deconv_L = _rl_deconvolve(L, psf_kernel, iters, reg_type, clip_flag,
+                                                  progress=report, cancel=canceled)
+                        lab[:, :, 0] = np.clip(deconv_L * 100.0, 0.0, 100.0)
+                        rgb_deconv = _lab2rgb_rows(lab.astype(np.float32, copy=False))
+                        return np.clip(rgb_deconv.astype(np.float32, copy=False), 0.0, 1.0)
+                    return _rl_deconvolve(img.astype(np.float32, copy=False), psf_kernel, iters, reg_type,
+                                          clip_flag, progress=report, cancel=canceled)
 
             elif algo == "Wiener":
                 if self._use_custom_psf and (self._custom_psf is not None):
                     small_psf = self._custom_psf.astype(np.float32)
+                    psf_key = ("stellar", small_psf.shape, small_psf.tobytes())
                 else:
                     pr, ps, pa, pt = (self.rl_psf_radius_slider.value(), self.rl_psf_shape_slider.value(),
                                       self.rl_psf_aspect_slider.value(), self.rl_psf_rotation_slider.value())
                     small_psf = make_elliptical_gaussian_psf(pr, ps, pa, pt).astype(np.float32)
+                    psf_key = ("model", pr, ps, pa, pt)
 
                 nsr = self.wiener_nsr_slider.value()
                 reg_type = "Wiener" if self.wiener_reg_combo.currentText() == "None (Classical Wiener)" else "Tikhonov"
                 do_dering = self.wiener_dering_checkbox.isChecked()
+                lum_only = self.wiener_luminance_only_checkbox.isChecked() and is_rgb
+                spec.raw_key = ("wiener", psf_key, nsr, reg_type, do_dering, lum_only)
 
-                if self.wiener_luminance_only_checkbox.isChecked() and img.ndim == 3 and img.shape[2] == 3:
-                    lab = rgb2lab(img.astype(np.float32))
-                    L = (lab[:, :, 0] / 100.0).astype(np.float32)
-                    deconv_L = self._wiener_deconv_with_kernel(L, small_psf, nsr, reg_type, do_dering)
-                    lab[:, :, 0] = np.clip(deconv_L * 100.0, 0.0, 100.0)
-                    rgb_deconv = lab2rgb(lab.astype(np.float32))
-                    processed = np.clip(rgb_deconv.astype(np.float32), 0.0, 1.0)
-                else:
-                    processed = self._wiener_deconv_with_kernel(img, small_psf, nsr, reg_type, do_dering)
-                    processed = np.clip(processed, 0.0, 1.0)
-
-                processed = processed * self.strength_slider.value() + (1 - self.strength_slider.value()) * img
+                def compute_raw(report, canceled):
+                    if lum_only:
+                        lab = _rgb2lab_rows(img.astype(np.float32, copy=False))
+                        L = (lab[:, :, 0] / 100.0).astype(np.float32)
+                        deconv_L = _wiener_deconvolve(L, small_psf, nsr, reg_type, do_dering, cancel=canceled)
+                        lab[:, :, 0] = np.clip(deconv_L * 100.0, 0.0, 100.0)
+                        rgb_deconv = _lab2rgb_rows(lab.astype(np.float32, copy=False))
+                        return np.clip(rgb_deconv.astype(np.float32, copy=False), 0.0, 1.0)
+                    processed = _wiener_deconvolve(img, small_psf, nsr, reg_type, do_dering, cancel=canceled)
+                    return np.clip(processed, 0.0, 1.0)
 
             elif algo == "Larson-Sekanina":
                 if not hasattr(self.view, "ls_center") or self.view.ls_center is None:
                     QMessageBox.information(self, "Hold Shift + Click",
                         "To choose a Larson–Sekanina center, hold Shift and click on the preview.")
-                    return
+                    return None
 
                 center = self.view.ls_center
                 rstep  = self.ls_radial_slider.value()
                 astep  = self.ls_angular_slider.value()
                 operator = self.ls_operator_combo.currentText()
                 blend_mode = self.ls_blend_combo.currentText()
+                spec.raw_key = ("ls", tuple(center), rstep, astep, operator, blend_mode)
 
-                B = larson_sekanina(image=img, center=center, radial_step=rstep, angular_step_deg=astep, operator=operator)
-                A = img
-                if A.ndim == 3 and A.shape[2] == 3:
-                    B_rgb, A_rgb = np.repeat(B[:, :, None], 3, axis=2), A
-                else:
-                    B_rgb, A_rgb = B[..., None], A[..., None]
-                C = (A_rgb + B_rgb - (A_rgb * B_rgb)) if blend_mode == "Screen" else ((1 - 2 * B_rgb) * (A_rgb**2) + 2 * B_rgb * A_rgb)
-                processed = np.clip(C, 0.0, 1.0)
-                processed = processed[..., 0] if img.ndim == 2 else processed
-                processed = processed * self.strength_slider.value() + (1 - self.strength_slider.value()) * img
+                def compute_raw(report, canceled):
+                    B = larson_sekanina(image=img, center=center, radial_step=rstep, angular_step_deg=astep, operator=operator)
+                    A = img
+                    if A.ndim == 3 and A.shape[2] == 3:
+                        # B broadcasts over the channels: the values of repeating it 3x, without the copy
+                        B_rgb, A_rgb = B[:, :, None], A
+                    else:
+                        B_rgb, A_rgb = B[..., None], A[..., None]
+                    C = (A_rgb + B_rgb - (A_rgb * B_rgb)) if blend_mode == "Screen" else ((1 - 2 * B_rgb) * (A_rgb**2) + 2 * B_rgb * A_rgb)
+                    processed = np.clip(C, 0.0, 1.0)
+                    return processed[..., 0] if img.ndim == 2 else processed
 
             elif algo == "Van Cittert":
-                iters2 = self.vc_iterations_slider.value()
+                # The slider value is a float and range() needs an int (passing
+                # the float raised TypeError, so this preview never worked).
+                iters2 = int(round(self.vc_iterations_slider.value()))
                 relax  = self.vc_relax_slider.value()
-                if img.ndim == 3 and img.shape[2] == 3:
-                    chans = [van_cittert_deconv(img[:, :, c], iters2, relax) for c in range(3)]
-                    processed = np.stack(chans, axis=2)
-                else:
-                    processed = van_cittert_deconv(img, iters2, relax)
-                processed = np.clip(processed, 0.0, 1.0)
-                processed = processed * self.strength_slider.value() + (1 - self.strength_slider.value()) * img
+                spec.raw_key = ("vc", iters2, relax)
+
+                def compute_raw(report, canceled):
+                    if is_rgb:
+                        chans = _run_parallel(
+                            lambda c: van_cittert_deconv(img[:, :, c], iters2, relax, cancel=canceled),
+                            range(3), workers=3)
+                        processed = np.stack(chans, axis=2)
+                    else:
+                        processed = van_cittert_deconv(img, iters2, relax, cancel=canceled)
+                    return np.clip(processed, 0.0, 1.0)
 
             else:
                 self._show_message("Unknown deconvolution algorithm")
-                return
+                return None
 
         elif current_tab_name == "Classical Denoise":
-            self._launch_classical_denoise(img)
-            return   # _on_denoise_finished displays the result
+            p = self._denoise_params()
+            spec.denoise = True
+            spec.label = f"Running {p['algo']}…"
+            spec.raw_key = ("denoise", p["algo"], p["lum_only"] and is_rgb) + tuple(
+                p[k] for k in _DENOISE_PARAM_KEYS.get(p["algo"], ()))
+            # The denoise path has always blended against the dialog's copy of the image.
+            spec.blend = lambda raw: np.clip(raw, 0.0, 1.0) * s + (1.0 - s) * orig
 
+            def compute_raw(report, canceled):
+                return _classical_denoise(img, p)
 
         else:
             self._show_message("Unknown tab")
-            return
+            return None
 
-        # Masked blend if an active mask exists
-        mask = self._get_active_mask_from_doc(processed.shape)
-        if mask is not None:
-            if processed.ndim == 3 and mask.ndim == 2:
-                mask = mask[..., None]
-            final_result = np.clip(processed * mask + self._original_image * (1.0 - mask), 0.0, 1.0)
+        spec.compute_raw = compute_raw
+        spec.mask_id, spec.mask_data = self._active_mask_ref()
+        spec.preset = self._build_replay_preset()
+        return spec
+
+    def _build_job(self, spec, for_push: bool = False):
+        """The function the worker runs for `spec`. It closes over arrays and plain
+        values only (no widgets, no dialog), so it is safe on another thread."""
+        c = self._raw_cache
+        raw_hit = c[1] if (c is not None and spec.same_raw(c[0])) else None
+        if not for_push:
+            disp = self._display_snapshot(spec.orig)
+        elif not self.cb_autostretch.isChecked():
+            # After the push the pane shows these pixels unstretched as the new
+            # baseline (_commit_push), so only that picture is worth making here.
+            disp = {"auto": False, "tm": float(self.s_target_median.value()),
+                    "linked": bool(self.cb_linked.isChecked()), "params": None, "need_before": False}
         else:
-            final_result = processed
+            disp = None     # stretched: the new baseline needs its own stretch, made after the push
+        compute_raw, blend, orig, mask_data = spec.compute_raw, spec.blend, spec.orig, spec.mask_data
 
-        self._preview_result = final_result
-        self._refresh_display()
+        def job(report, canceled):
+            raw = raw_hit if raw_hit is not None else compute_raw(report, canceled)
+            if canceled():
+                raise _Canceled()
+            processed = blend(raw)
+            final = _apply_mask_blend(processed, orig, _mask_or_none(mask_data))
+            del processed
+            display = _display_images(final, orig, disp) if disp is not None else None
+            return {"raw": raw, "final": final, "display": display}
+        return job
 
+    def _display_snapshot(self, orig):
+        """The display state a new result will be drawn with, read on the GUI thread."""
+        auto = bool(self.cb_autostretch.isChecked())
+        tm = float(self.s_target_median.value())
+        linked = bool(self.cb_linked.isChecked())
+        params = None
+        c = self._stretch_cache
+        if auto and c is not None and c[0] is orig and c[1] == tm and c[2] == linked:
+            params = c[3]
+        key = (tm, linked) if auto else None
+        pc = self._pm_before_cache
+        need_before = pc is None or pc[0] is not orig or pc[1] != key
+        return {"auto": auto, "tm": tm, "linked": linked, "params": params, "need_before": need_before}
 
-    def _launch_classical_denoise(self, img: np.ndarray):
-        """
-        Kick off _DenoiseWorker for the Classical Denoise tab.
-        Returns immediately; result arrives via _on_denoise_finished.
-        """
-        # Cancel any previous run that somehow didn't finish
-        if self._denoise_worker is not None and self._denoise_worker.isRunning():
-            self._denoise_worker.cancel()
-            self._denoise_worker.wait(2000)
-    
-        algo = self.denoise_algo_combo.currentText()
-        self.denoise_status_label.setText(f"Running {algo}…")
-        self._set_denoise_running(True)
-    
-        worker = _DenoiseWorker(self, img, parent=self)
-        worker.progress.connect(
-            lambda msg: self.denoise_status_label.setText(msg)
-        )
-        worker.finished.connect(self._on_denoise_finished)
-        self._denoise_worker = worker
-        worker.start()
+    def _start_job(self, spec):
+        self._job_seq += 1
+        for_push = self._push_spec is not None and spec.same_result(self._push_spec)
+        worker = _PreviewWorker(self._job_seq, self._build_job(spec, for_push=for_push))
+        worker.progress.connect(self._on_job_progress)
+        worker.result.connect(self._on_job_result)
+        self._job = {"id": self._job_seq, "spec": spec, "worker": worker, "canceled": False,
+                     "for_push": for_push}
+        if spec.denoise:
+            self.denoise_status_label.setText(spec.label)
+        self._show_busy()
+        start_owned_thread(worker)
+
+    def _on_job_progress(self, job_id: int, text: str):
+        job = self._job
+        if job is None or job_id != job["id"] or job["canceled"]:
+            return
+        self.rl_status_label.setText(text or self._busy_text())
+
+    def _on_job_result(self, job_id: int, payload, err: str):
+        job = self._job
+        if job is None or job_id != job["id"]:
+            return                                  # superseded, or the dialog let go of it
+        self._job = None
+        spec = job["spec"]
+        if job["canceled"]:
+            payload, err = None, "__canceled__"
+        ok = (not err) and payload is not None
+
+        if ok:
+            self._raw_cache = (spec, payload["raw"])
+            self._preview_result = payload["final"]
+            self._preview_spec = spec
+            # A push job's picture is shown by _commit_push, as the new baseline.
+            if payload.get("display") is not None and not job["for_push"]:
+                self._refresh_display(prebuilt=payload["display"])
+            if spec.denoise:
+                self.denoise_status_label.setText("Done.")
+        elif err == "__canceled__":
+            if spec.denoise:
+                self.denoise_status_label.setText("Canceled.")
+        else:
+            if spec.denoise:
+                self.denoise_status_label.setText("Error.")
+            if self._push_spec is not None and self._push_spec.same_result(spec):
+                self._push_spec = None
+            logging.getLogger(__name__).error("Convo/Deconvo preview failed:\n%s", err)
+            what = "Denoising" if spec.denoise else "The preview"
+            QMessageBox.critical(
+                self, "Denoise Error" if spec.denoise else "Preview Error",
+                f"{what} failed:\n\n{err.splitlines()[0] if err else 'Unknown error'}\n\n"
+                "Check the SASpro log for details."
+            )
+
+        push = self._push_spec
+        if push is not None:
+            if ok and push.same_result(spec):
+                self._push_spec = None
+                self._commit_push(payload["final"], push,
+                                  prebuilt=payload.get("display") if job["for_push"] else None)
+            else:
+                self._start_job(push)               # the push's own job, after the one it displaced
+                return
+        elif ok and job["for_push"]:
+            self._refresh_display(prebuilt=payload.get("display"))   # its push went away: show it
+        if self._queued_preview:
+            self._queued_preview = False
+            nxt = self._build_job_spec()
+            if nxt is not None and not (self._preview_result is not None
+                                        and nxt.same_result(self._preview_spec)):
+                self._start_job(nxt)
+                return
+        self._show_idle()
+
+    def _stop_job(self, job):
+        job["canceled"] = True
+        job["worker"].cancel()
+
+    def _cancel_jobs(self, *_):
+        """Cancel buttons / Undo: stop the running job and drop anything queued."""
+        self._push_spec = None
+        self._queued_preview = False
+        job = self._job
+        if job is not None and not job["canceled"]:
+            self._stop_job(job)
+            self.rl_status_label.setText(self.tr("Canceling…"))
+            if job["spec"].denoise:
+                self.denoise_status_label.setText("Canceling…")
+        self.push_btn.setEnabled(True)
+
+    def _teardown_jobs(self, *_):
+        """Dialog closing, or its image changing: cancel and forget all work.
+        The thread stays with thread_keeper until it returns."""
+        self._push_spec = None
+        self._queued_preview = False
+        job, self._job = self._job, None
+        if job is not None:
+            w = job["worker"]
+            for sig, slot in ((w.result, self._on_job_result), (w.progress, self._on_job_progress)):
+                try:
+                    sig.disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
+            w.cancel()
+        self._raw_cache = None
+        self._preview_spec = None
+        try:
+            self._show_idle()
+        except RuntimeError:
+            pass
+
+    def _busy_text(self) -> str:
+        if self._push_spec is not None:
+            return self.tr("Computing, then pushing…")
+        return self.tr("Computing preview…")
+
+    def _show_busy(self):
+        job = self._job
+        self.rl_status_label.setText(self._busy_text())
+        self.job_cancel_btn.setVisible(True)
+        self.denoise_cancel_btn.setVisible(job is not None and job["spec"].denoise)
+        self.push_btn.setEnabled(self._push_spec is None)
+        self.setCursor(Qt.CursorShape.BusyCursor)
+
+    def _show_idle(self):
+        self.rl_status_label.setText("")
+        self.job_cancel_btn.setVisible(False)
+        self.denoise_cancel_btn.setVisible(False)
+        self.push_btn.setEnabled(True)
+        self.unsetCursor()
     
 
 
     def _on_undo(self):
         if self._original_image is not None:
+            self._cancel_jobs()   # a preview still computing would land after the Undo
             self._preview_result = None
+            self._preview_spec = None
             self._refresh_display()
         else:
             self._show_message("Nothing to undo.")
@@ -1424,8 +1659,8 @@ class ConvoDeconvoDialog(QDialog):
              self.wiener_dering_checkbox,
              self.ls_radial_slider, self.ls_angular_slider,
              self.vc_iterations_slider, self.vc_relax_slider),
-            (self.sep_threshold_slider, self.sep_minarea_spin, self.sep_sat_slider,
-             self.sep_maxstars_spin, self.sep_stamp_spin),
+            (self.sep_auto_checkbox, self.sep_threshold_slider, self.sep_minarea_spin,
+             self.sep_sat_slider, self.sep_maxstars_spin, self.sep_stamp_spin),
             (self.denoise_algo_combo, self.wav_wavelet_combo, self.wav_mode_combo,
              self.denoise_lum_only_chk,
              self.tv_weight_slider, self.tv_iter_slider, self.tv_multichannel_checkbox,
@@ -1486,7 +1721,7 @@ class ConvoDeconvoDialog(QDialog):
                 "rl_iter":   float(self.rl_iterations_slider.value()),
                 "rl_reg":    self.rl_reg_combo.currentText(),
                 "rl_dering": bool(self.rl_clip_checkbox.isChecked()),
-                "luminance_only": bool(self.rl_luminance_only_checkbox.isChecked()),
+                "luminance_only": self._deconv_lum_only(algo),
                 # Wiener options
                 "wiener_nsr":    float(self.wiener_nsr_slider.value()),
                 "wiener_reg":    self.wiener_reg_combo.currentText(),
@@ -1509,6 +1744,7 @@ class ConvoDeconvoDialog(QDialog):
                 cx, cy = self.view.ls_center  # (x, y)
                 p["center"] = [float(cx), float(cy)]
 
+            p.update(self._stellar_psf_preset(algo))
             return p
 
         # ── Classical Denoise tab ───────────────────────────────────────
@@ -1517,6 +1753,22 @@ class ConvoDeconvoDialog(QDialog):
             return self.get_preset()
 
         return None
+
+    def _deconv_lum_only(self, algo: str) -> bool:
+        """A preset has one luminance_only key: the running algorithm's L* box.
+        (It used to be RL's box even for Wiener.)"""
+        box = (self.wiener_luminance_only_checkbox if algo == "Wiener"
+               else self.rl_luminance_only_checkbox)
+        return bool(box.isChecked())
+
+    def _stellar_psf_preset(self, algo: str) -> dict:
+        """{"psf_kernel": [[...]]} when RL/Wiener runs on the stellar PSF, so
+        Replay Last Action, the grip and History replay deconvolve with the same
+        kernel (float32 -> list -> float32 is exact); {} for the slider PSF."""
+        if (algo in ("Richardson-Lucy", "Wiener") and self._use_custom_psf
+                and self._custom_psf is not None):
+            return {"psf_kernel": np.asarray(self._custom_psf, dtype=np.float32).tolist()}
+        return {}
 
     # -------- preset emit (grip) --------
     def get_preset(self) -> dict | None:
@@ -1537,9 +1789,10 @@ class ConvoDeconvoDialog(QDialog):
             }
 
         if tab == self.tr("Deconvolution") or tab == "Deconvolution":
+            algo = self.deconv_algo_combo.currentText()
             p = {
                 "op": "deconvolution",
-                "algo": self.deconv_algo_combo.currentText(),
+                "algo": algo,
                 "psf_radius":   float(self.rl_psf_radius_slider.value()),
                 "psf_kurtosis": float(self.rl_psf_shape_slider.value()),
                 "psf_aspect":   float(self.rl_psf_aspect_slider.value()),
@@ -1547,7 +1800,7 @@ class ConvoDeconvoDialog(QDialog):
                 "rl_iter":   float(self.rl_iterations_slider.value()),
                 "rl_reg":    self.rl_reg_combo.currentText(),
                 "rl_dering": bool(self.rl_clip_checkbox.isChecked()),
-                "luminance_only": bool(self.rl_luminance_only_checkbox.isChecked()),
+                "luminance_only": self._deconv_lum_only(algo),
                 "wiener_nsr":    float(self.wiener_nsr_slider.value()),
                 "wiener_reg":    self.wiener_reg_combo.currentText(),
                 "wiener_dering": bool(self.wiener_dering_checkbox.isChecked()),
@@ -1562,6 +1815,7 @@ class ConvoDeconvoDialog(QDialog):
             if getattr(self.view, "ls_center", None) is not None:
                 cx, cy = self.view.ls_center  # (x, y)
                 p["center"] = [float(cx), float(cy)]
+            p.update(self._stellar_psf_preset(algo))
             return p
 
         # Classical Denoise tab -> op:"denoise", carries the selected method + its params.
@@ -1640,6 +1894,7 @@ class ConvoDeconvoDialog(QDialog):
             _combo(self.rl_reg_combo,        "rl_reg")
             _chk(self.rl_clip_checkbox,      "rl_dering")
             _chk(self.rl_luminance_only_checkbox, "luminance_only")
+            _chk(self.wiener_luminance_only_checkbox, "luminance_only")
             _sv(self.wiener_nsr_slider,      "wiener_nsr")
             _combo(self.wiener_reg_combo,    "wiener_reg")
             _chk(self.wiener_dering_checkbox,"wiener_dering")
@@ -1650,6 +1905,18 @@ class ConvoDeconvoDialog(QDialog):
             _sv(self.vc_iterations_slider,   "vc_iter")
             _sv(self.vc_relax_slider,        "vc_relax")
             _sv(self.strength_slider,        "strength")
+            # After the PSF sliders (moving one drops a stellar PSF): the preset's
+            # stellar PSF becomes the active one; a preset without one leaves the
+            # slider PSF in charge, as it will be when the preset is applied.
+            try:
+                kern = preset_psf_kernel(p)
+            except ValueError as e:
+                kern = None
+                QMessageBox.warning(self, "Stellar PSF", f"{e}\nThe slider PSF is used instead.")
+            if kern is not None:
+                self._activate_custom_psf(kern)
+            else:
+                self._clear_custom_psf_flag()
             # Drive algo-dependent panel/PSF-group visibility.
             try:
                 self._on_deconv_algo_changed(self.deconv_algo_combo.currentText())
@@ -1660,6 +1927,7 @@ class ConvoDeconvoDialog(QDialog):
             if c and len(c) == 2:
                 self._pending_ls_center = (float(c[0]), float(c[1]))
             self._select_tab(self.tr("Deconvolution"), "Deconvolution")
+            self._update_psf_preview()
 
         else:  # denoise (or legacy "tv")
             # Legacy tv presets have no denoise_algo -> map to TV Chambolle.
@@ -1726,9 +1994,57 @@ class ConvoDeconvoDialog(QDialog):
         if doc is None:
             QMessageBox.warning(self, "No Document", "No active document to push into.")
             return
+        if self._push_spec is not None:
+            return                                  # a push is already on its way
 
-        if self._preview_result is None:
-            QMessageBox.warning(self, "No Preview", "No preview to push. Click Preview first.")
+        spec = self._build_job_spec()
+        if spec is None:
+            return
+        # The preview on screen was computed for these exact settings: push it.
+        if self._preview_result is not None and spec.same_result(self._preview_spec):
+            self._commit_push(self._preview_result, spec)
+            return
+
+        # No preview for these settings (none yet, or they changed since): compute
+        # it on the worker through the same steps as Preview, then push that.
+        self._push_spec = spec
+        job = self._job
+        if job is None:
+            self._start_job(spec)
+            return
+        if not job["canceled"] and not spec.same_result(job["spec"]):
+            self._stop_job(job)        # a preview for other settings; the push job follows it
+        self._show_busy()              # (a running job for these settings is pushed when it lands)
+
+    def _show_pushed_pixels(self, result, img_after, prebuilt) -> bool:
+        """After a push, show the new baseline without rebuilding its picture when
+        the document kept `result` itself and the pane is unstretched: the pixels,
+        and so the 8-bit picture, are the ones already made. False = redraw."""
+        if img_after is not result or self.cb_autostretch.isChecked():
+            return False
+        if prebuilt is not None and prebuilt.get("shown") is result and not prebuilt["auto"]:
+            self.pixmap_item.setPixmap(QPixmap.fromImage(prebuilt["after"][0]))
+        elif not (self._shown is result and self._shown_stretch_key is None):
+            return False
+        self._shown, self._shown_stretch_key = self._original_image, None
+        self._pm_before_cache = None
+        self._cmp.set_before(None)
+        h, w = self._original_image.shape[:2]
+        self.view.image_rect = QRectF(0, 0, w, h)
+        self._cmp.set_image_size(w, h)
+        return True
+
+    def _commit_push(self, result, spec, prebuilt=None):
+        """Apply `result` (computed for `spec`) to the document; HEAD's Push body.
+        prebuilt: an unstretched picture of `result` made by its push job."""
+        doc = self._active_doc()
+        if doc is None:
+            QMessageBox.warning(self, "No Document", "No active document to push into.")
+            return
+        if doc is not spec.doc:
+            QMessageBox.warning(self, "Not pushed",
+                                "The active image changed while the result was computing; nothing was pushed.")
+            self._refresh_display()
             return
 
         # Grab current metadata from this specific doc
@@ -1736,7 +2052,8 @@ class ConvoDeconvoDialog(QDialog):
         new_meta = dict(meta)
         new_meta["source"] = "ConvoDeconvo"
 
-        _cv_preset = self._build_replay_preset()
+        # Settings as they were when Preview/Push was clicked, i.e. what made `result`.
+        _cv_preset = spec.preset
         if _cv_preset:
             new_meta["command_id"] = "convo"
             new_meta["preset"] = dict(_cv_preset)
@@ -1744,10 +2061,12 @@ class ConvoDeconvoDialog(QDialog):
         # the extractor still labels it 'convo' by step_name, just preset-less.
 
         try:
+            # `result` is this dialog's own array and is let go just below, so it
+            # goes in without the defensive copy (one image-sized copy less).
             if hasattr(doc, "apply_edit"):
-                # ⭐ Preferred: update this exact Document (ROI or full) so all views update
+                # Preferred: update this exact Document (ROI or full) so all views update
                 doc.apply_edit(
-                    self._preview_result.copy(),
+                    result,
                     metadata=new_meta,
                     step_name="Convo/Deconvo",
                 )
@@ -1756,12 +2075,13 @@ class ConvoDeconvoDialog(QDialog):
                 if hasattr(self.doc_manager, "set_active_document"):
                     self.doc_manager.set_active_document(doc)
                 self.doc_manager.update_active_document(
-                    self._preview_result.copy(),
+                    result,
                     metadata=new_meta,
                     step_name="Convo/Deconvo",
                 )
         except Exception as e:
             QMessageBox.critical(self, "Push failed", str(e))
+            self._refresh_display()
             return
 
         # Make the pushed image the new baseline so you can iterate
@@ -1769,16 +2089,19 @@ class ConvoDeconvoDialog(QDialog):
         if img_after is not None:
             self._original_image = img_after.copy()
             self._preview_result = None
-            self._refresh_display()
+            self._preview_spec = None
+            self._raw_cache = None
+            if not self._show_pushed_pixels(result, img_after, prebuilt):
+                self._refresh_display()
 
-        # 🔴 Replay wiring (unchanged, just moved under try/except)
+        # Replay wiring (unchanged, just moved under try/except)
         try:
             if self._main is not None:
-                preset = self._build_replay_preset()
+                preset = spec.preset
                 if preset:
                     self._main._last_headless_command = {
                         "cid": "convo",
-                        "preset": preset,
+                        "preset": dict(preset),
                     }
                     if hasattr(self._main, "_log"):
                         op = preset.get("op", "convolution")
@@ -1799,6 +2122,7 @@ class ConvoDeconvoDialog(QDialog):
         temp_label = QLabel(text); temp_label.setStyleSheet("color: white; background-color: #222;"); temp_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         pixmap = temp_label.grab()
         self._cmp.set_before(None)
+        self._shown = None
         self.pixmap_item.setPixmap(pixmap)
         self._cmp.set_image_size(pixmap.width(), pixmap.height())
         self.view.resetTransform()
@@ -1809,175 +2133,26 @@ class ConvoDeconvoDialog(QDialog):
         Convolve image with psf_kernel using reflect padding so we don't get
         dark borders from zero–padding. Returns same H×W (and channels) as input.
         """
-        if image is None or psf_kernel is None:
-            return image
+        return _convolve_image(image, psf_kernel)
 
-        img = image.astype(np.float32, copy=False)
-        kh, kw = psf_kernel.shape
-        pad_y = kh // 2
-        pad_x = kw // 2
-
-        def _conv_single_channel(im2d: np.ndarray) -> np.ndarray:
-            if pad_y or pad_x:
-                padded = np.pad(
-                    im2d,
-                    ((pad_y, pad_y), (pad_x, pad_x)),
-                    mode="reflect"
-                )
-            else:
-                padded = im2d
-
-            conv_full = fftconvolve(padded, psf_kernel, mode="same")
-
-            if pad_y or pad_x:
-                conv = conv_full[pad_y:-pad_y or None, pad_x:-pad_x or None]
-            else:
-                conv = conv_full
-
-            return conv.astype(np.float32)
-
-        if img.ndim == 2:
-            out = _conv_single_channel(img)
-        elif img.ndim == 3 and img.shape[2] == 3:
-            chans = [_conv_single_channel(img[:, :, c]) for c in range(3)]
-            out = np.stack(chans, axis=2)
-        else:
-            # Unknown layout; just return a copy to be safe
-            return img.copy()
-
-        # PSF is normalized, but clamp just in case of numeric noise
-        return np.clip(out, 0.0, 1.0)
-
+    def _rl_status_gui(self, text: str):
+        """R-L status on the GUI thread (headless callers): label + repaint."""
+        self.rl_status_label.setText(text); QApplication.processEvents()
 
     def _richardson_lucy_color(self, image: np.ndarray, psf_kernel: np.ndarray, iterations: int,
                                reg_type: str = "None (Plain R–L)", clip_flag: bool = True) -> np.ndarray:
-        iters = int(round(iterations))
-        psf = psf_kernel.astype(np.float32)
-
-        def _deconv_2d_parallel(gray: np.ndarray) -> np.ndarray:
-            H, W = gray.shape
-            psf_h, psf_w = psf.shape
-            half_psf = max(psf_h, psf_w) // 2
-            extra = 15
-            pad = half_psf + extra
-            overlap = pad
-
-            n_cores = min((os.cpu_count() or 1), H)
-            tile_h = math.ceil(H / n_cores)
-            tile_ranges = []
-            for i in range(n_cores):
-                y0 = i * tile_h; y1 = min((i + 1) * tile_h, H)
-                if y0 >= H: break
-                tile_ranges.append((y0, y1))
-
-            accum_image = np.zeros((H, W), dtype=np.float32)
-            accum_weight = np.zeros((H, W), dtype=np.float32)
-
-            def _build_vertical_ramp(L: int, ov: int) -> np.ndarray:
-                w = np.ones(L, dtype=np.float32)
-                if ov <= 0: return w
-                if 2 * ov >= L:
-                    for i in range(L):
-                        w[i] = 1.0 - abs((i - (L - 1) / 2) / ((L - 1) / 2))
-                    return w
-                for i in range(ov):
-                    w[i] = (i + 1) / float(ov)
-                    w[L - 1 - i] = (i + 1) / float(ov)
-                return w
-
-            tile_inputs = []
-            for idx, (y0, y1) in enumerate(tile_ranges):
-                y0_ext = max(0, y0 - overlap); y1_ext = min(H, y1 + overlap)
-                core_tile = gray[y0_ext:y1_ext, :]
-                padded = np.pad(core_tile, ((pad, pad), (pad, pad)), mode="reflect")
-                L_ext = y1_ext - y0_ext
-                tile_inputs.append((idx, padded, psf, iters, clip_flag, pad, reg_type, y0_ext, y1_ext, L_ext))
-
-            results = [None] * len(tile_inputs)
-            max_workers = min(len(tile_inputs), os.cpu_count() or 1)
-            if max_workers < 1:
-                max_workers = 1
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                for tile_index, deconv_ext in executor.map(_rl_tile_process_reg, tile_inputs):
-                    results[tile_index] = deconv_ext
-
-            for idx, (y0, y1) in enumerate(tile_ranges):
-                (_, _, _, _, _, _, _, y0_ext, y1_ext, L_ext) = tile_inputs[idx]
-                deconv_ext = results[idx]
-                w = _build_vertical_ramp(L_ext, overlap)
-                w2d = np.broadcast_to(w[:, None], (L_ext, W)).astype(np.float32)
-                accum_image[y0_ext:y1_ext, :] += deconv_ext * w2d
-                accum_weight[y0_ext:y1_ext, :] += w2d
-
-            final_deconv = np.zeros_like(accum_image, dtype=np.float32)
-            nz = accum_weight > 0
-            final_deconv[nz] = accum_image[nz] / accum_weight[nz]
-            return final_deconv
-
-        if image.ndim == 2:
-            self.rl_status_label.setText(f"Running RL for {iters} iterations"); QApplication.processEvents()
-            deconv = _deconv_2d_parallel(image.astype(np.float32))
-            self.rl_status_label.setText(""); QApplication.processEvents()
-            return np.clip(deconv, 0.0, 1.0)
-        elif image.ndim == 3 and image.shape[2] == 3:
-            outs = []
-            for c in range(3):
-                self.rl_status_label.setText(f"Running RL on ch {c+1} for {iters} iterations"); QApplication.processEvents()
-                outs.append(np.clip(_deconv_2d_parallel(image[:, :, c].astype(np.float32)), 0.0, 1.0))
-            self.rl_status_label.setText(""); QApplication.processEvents()
-            return np.stack(outs, axis=2)
-        else:
-            return image.copy()
+        return _rl_deconvolve(image, psf_kernel, iterations, reg_type, clip_flag,
+                              progress=self._rl_status_gui)
 
     def _wiener_deconv_with_kernel(self, image: np.ndarray, small_psf: np.ndarray, nsr: float,
                                    reg_type: str, do_dering: bool) -> np.ndarray:
-        def _deconv_gray(im2d: np.ndarray, do_dering_flag: bool) -> np.ndarray:
-            H, W = im2d.shape
-            psf_h, psf_w = small_psf.shape
-            Hpsf = np.zeros((H, W), dtype=np.float32)
-            cy, cx = H // 2, W // 2
-            y0 = cy - psf_h // 2; x0 = cx - psf_w // 2
-            Hpsf[y0:y0+psf_h, x0:x0+psf_w] = small_psf
-            H_f = fft2(ifftshift(Hpsf)); H_f_conj = np.conj(H_f); mag2 = np.abs(H_f) ** 2
-            K = nsr * nsr if reg_type == "Tikhonov" else nsr
-            Wf = H_f_conj / (mag2 + K)
-            deconv = np.real(ifft2(Wf * fft2(im2d))).astype(np.float32)
-            if do_dering_flag:
-                deconv = denoise_bilateral(deconv, sigma_color=0.08, sigma_spatial=1)
-            return deconv.clip(0.0, 1.0)
-
-        if image.ndim == 2:
-            return _deconv_gray(image.astype(np.float32), do_dering)
-        elif image.ndim == 3 and image.shape[2] == 3:
-            return np.stack([_deconv_gray(image[:, :, c].astype(np.float32), do_dering) for c in range(3)], axis=2)
-        else:
-            return image.copy()
+        return _wiener_deconvolve(image, small_psf, nsr, reg_type, do_dering)
 
     @staticmethod
     def _pixmap_from_array(array: np.ndarray) -> QPixmap:
         """8-bit display pixmap: mono as Grayscale8, colour as RGB888."""
-        arr = np.asarray(array)
-        if arr.ndim == 3 and arr.shape[2] == 1:
-            arr = arr[:, :, 0]
-        elif arr.ndim == 3 and arr.shape[2] > 3:
-            arr = arr[:, :, :3]
-        if arr.dtype in (np.float32, np.float64):
-            arr8 = (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
-        elif arr.dtype == np.uint16:
-            arr8 = (np.clip(arr, 0, 65535) // 257).astype(np.uint8)
-        elif arr.dtype == np.uint8:
-            arr8 = arr
-        else:
-            mn, mx = arr.min(), arr.max()
-            arr8 = ((arr - mn) / (mx - mn) * 255).astype(np.uint8) if mx > mn else np.zeros_like(arr, dtype=np.uint8)
-        arr8 = np.ascontiguousarray(arr8)
-
-        h, w = arr8.shape[:2]
-        if arr8.ndim == 2:
-            qimg = QImage(arr8.data, w, h, w, QImage.Format.Format_Grayscale8)
-        else:
-            qimg = QImage(arr8.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-        return QPixmap.fromImage(qimg)   # fromImage copies, so arr8 can go
+        qimg, _buf = _qimage_from_array(array)
+        return QPixmap.fromImage(qimg)   # fromImage copies, so the buffer can go
 
     def zoom_in(self):  self.view.scale(1.2, 1.2)
     def zoom_out(self): self.view.scale(1/1.2, 1/1.2)
@@ -1992,28 +2167,40 @@ class ConvoDeconvoDialog(QDialog):
         if img is None:
             QMessageBox.warning(self, "No Image", "Please select an image before estimating PSF.")
             return
-
-        img_gray = img.mean(axis=2).astype(np.float32) if (img.ndim == 3) else img.astype(np.float32)
-
-        sigma    = float(self.sep_threshold_slider.value())
-        minarea  = int(self.sep_minarea_spin.value())     # ✅
-        sat      = float(self.sep_sat_slider.value())
-        maxstars = int(self.sep_maxstars_spin.value())    # ✅
-        half_w   = int(self.sep_stamp_spin.value())       # ✅
-
-        try:
-            psf_kernel = estimate_psf_from_image(
-                image_array=img_gray,
-                threshold_sigma=sigma,
-                min_area=minarea,
-                saturation_limit=sat,
-                max_stars=maxstars,
-                stamp_half_width=half_w
-            )
-        except RuntimeError as e:
-            QMessageBox.critical(self, "PSF Error", str(e))
+        if thread_running(self._psf_job):
             return
 
+        params = dict(
+            threshold_sigma=float(self.sep_threshold_slider.value()),
+            min_area=int(self.sep_minarea_spin.value()),
+            saturation_limit=float(self.sep_sat_slider.value()),
+            max_stars=int(self.sep_maxstars_spin.value()),
+            stamp_half_width=int(self.sep_stamp_spin.value()),
+            auto=bool(self.sep_auto_checkbox.isChecked()),
+        )
+        job = _PSFEstimateJob(img, params)
+        job.done.connect(self._on_psf_estimate_done)
+        self._psf_job = job
+        self._set_psf_busy(True, self.tr("Detecting stars…"))
+        start_owned_thread(job)
+
+    def _set_psf_busy(self, busy: bool, status: str):
+        if not hasattr(self, "sep_run_button"):
+            return
+        self.sep_run_button.setEnabled(not busy)
+        self.sep_run_button.setText(self.tr("Estimating…") if busy else self.tr("Run SEP Extraction"))
+        self.sep_status_label.setText(status)
+
+    def _on_psf_estimate_done(self, res):
+        if self.sender() is not self._psf_job:
+            return                    # dialog closed meanwhile
+        self._psf_job = None
+        if isinstance(res, Exception):   # sep raises plain Exception too (e.g. pixel buffer full)
+            self._set_psf_busy(False, self.tr("PSF estimate failed."))
+            QMessageBox.critical(self, "PSF Error", str(res))
+            return
+        psf_kernel, info = res
+        self._set_psf_busy(False, info["status"])
         self._last_stellar_psf = psf_kernel
         self._show_stellar_psf_preview(psf_kernel)
 
@@ -2031,14 +2218,22 @@ class ConvoDeconvoDialog(QDialog):
         if self._last_stellar_psf is None:
             QMessageBox.warning(self, "No PSF", "Run SEP extraction first.")
             return
-        self._custom_psf = self._last_stellar_psf.copy()
-        self._use_custom_psf = True
-        self.conv_psf_label.setPixmap(self._make_stellar_psf_pixmap(self._custom_psf))
+        self._activate_custom_psf(self._last_stellar_psf)
         self.deconv_algo_combo.setCurrentText("Richardson-Lucy")
         self.rl_custom_label.setVisible(True)
         self.rl_disable_custom_btn.setVisible(True)
         self.custom_psf_bar.setVisible(True)
         QMessageBox.information(self, "PSF Selected", "Stellar PSF is now active for Richardson–Lucy.")
+
+    def _activate_custom_psf(self, kernel: np.ndarray):
+        """Make `kernel` the stellar PSF RL/Wiener use (a private float32 copy)."""
+        self._custom_psf = np.array(kernel, dtype=np.float32)
+        self._use_custom_psf = True
+        self.conv_psf_label.setPixmap(self._make_stellar_psf_pixmap(self._custom_psf))
+        self.rl_custom_label.setVisible(True)
+        self.rl_disable_custom_btn.setVisible(True)
+        self.custom_psf_bar.setVisible(
+            self.deconv_algo_combo.currentText() in ("Richardson-Lucy", "Wiener"))
 
     def _clear_custom_psf_flag(self, _=None):
         if self._use_custom_psf:
@@ -2078,122 +2273,132 @@ class ConvoDeconvoDialog(QDialog):
         QMessageBox.information(self, "Saved", f"PSF saved to:\n{path}")
 
 
-    def _cancel_denoise(self):
-        """Cancel a running denoise worker."""
-        if self._denoise_worker is not None and self._denoise_worker.isRunning():
-            self._denoise_worker.cancel()
-            self.denoise_status_label.setText("Canceling…")
-    
-    
-    def _set_denoise_running(self, running: bool):
-        """Lock/unlock UI around a running denoise job."""
-        self.preview_btn.setEnabled(not running)
-        self.push_btn.setEnabled(not running)
-        # The worker reads the sliders while it runs; Reset would change them mid-job.
-        self.reset_btn.setEnabled(not running)
-        self.denoise_cancel_btn.setVisible(running)
-        if not running:
-            # re-enable the algo combo and all param sliders
-            self.denoise_algo_combo.setEnabled(True)
-            self.denoise_lum_only_chk.setEnabled(True)
-            self._denoise_stack_container.setEnabled(True)
-        else:
-            self.denoise_algo_combo.setEnabled(False)
-            self.denoise_lum_only_chk.setEnabled(False)
-            self._denoise_stack_container.setEnabled(False)
-    
-    
-    def _on_denoise_finished(self, result, error_msg: str):
-        """Slot called when _DenoiseWorker finishes."""
-        self._set_denoise_running(False)
-        self._denoise_worker = None
-    
-        if error_msg == "__canceled__":
-            self.denoise_status_label.setText("Canceled.")
-            return
-    
-        if error_msg or result is None:
-            self.denoise_status_label.setText("Error.")
-            QMessageBox.critical(
-                self, "Denoise Error",
-                f"Denoising failed:\n\n{error_msg.splitlines()[0] if error_msg else 'Unknown error'}\n\n"
-                "Check the SASpro log for details."
-            )
-            return
-    
-        # Apply strength blend on GUI thread (fast — just math on arrays)
-        img = self._original_image
-        strength = self.strength_slider.value()
-        processed = np.clip(result, 0.0, 1.0)
-        processed = processed * strength + (1.0 - strength) * img
-    
-        # Masked blend
-        mask = self._get_active_mask_from_doc(processed.shape)
-        if mask is not None:
-            if processed.ndim == 3 and mask.ndim == 2:
-                mask = mask[..., None]
-            final_result = np.clip(
-                processed * mask + self._original_image * (1.0 - mask), 0.0, 1.0
-            )
-        else:
-            final_result = processed
-    
-        self._preview_result = final_result
-        self._refresh_display()
-        self.denoise_status_label.setText("Done.")
-
-
-
 # ─────────────────────────────────────────────────────────────────────────────
+def preset_psf_kernel(p: dict) -> Optional[np.ndarray]:
+    """The stellar PSF a Convo/Deconvo preset carries ("psf_kernel"), as the
+    float32 array the dialog used, or None when it uses the slider PSF.
+    Raises ValueError for a kernel that can't be one: a replay must not
+    quietly deconvolve with a different PSF than the one recorded."""
+    v = (p or {}).get("psf_kernel")
+    if v is None:
+        return None
+    try:
+        k = np.asarray(v, dtype=np.float32)
+    except (TypeError, ValueError):
+        k = None
+    if (k is None or k.ndim != 2 or k.size == 0
+            or not np.all(np.isfinite(k)) or float(k.sum()) <= 0.0):
+        raise ValueError("This preset's stellar PSF (psf_kernel) is not a usable 2-D PSF.")
+    return k
+
+
+# The PSF Viewer's detection: same sigma ladder and target.
+PSF_AUTO_LADDER = (100.0, 50.0, 25.0, 12.0, 6.0, 3.0)
+PSF_AUTO_TARGET = 1000
+
+
 def estimate_psf_from_image(image_array: np.ndarray,
                             threshold_sigma: float,
                             min_area: int,
                             saturation_limit: float,
                             max_stars: int,
-                            stamp_half_width: int) -> np.ndarray:
-    data = image_array.astype(np.float32)
-    bkg = sep.Background(data)
-    bkg_sub = data - bkg.back()
-    sources = sep.extract(bkg_sub, thresh=threshold_sigma, err=bkg.globalrms, minarea=min_area)
-    if len(sources) == 0:
-        raise RuntimeError(f"No sources found with SEP threshold = {threshold_sigma:.1f} σ.")
+                            stamp_half_width: int,
+                            auto: bool = True,
+                            target_stars: int = PSF_AUTO_TARGET) -> tuple[np.ndarray, dict]:
+    """
+    Stellar PSF as a deconvolution kernel ((2*stamp_half_width+1)^2, >= 0,
+    sums to 1), plus a summary dict with a ready-made "status" line.
 
-    valid_sources = [s for s in sources if s['peak'] < saturation_limit]
-    if len(valid_sources) == 0:
-        raise RuntimeError(f"All detected sources exceed saturation limit {int(saturation_limit)}.")
+    Estimated the way the PSF Viewer does it, with its psf_utils code:
+    - Detection: detect_stars_waterfall. Auto descends sigma 100 -> 3 and
+      stops at ~target_stars well-formed stars (flag 0, npix >= min_area,
+      sane ellipse); manual is one extraction at threshold_sigma. This used to
+      be one extraction at the old 2.5 sigma default, which on a 26 MP master
+      ran ~20 minutes inside SEP, holding the GIL. Extraction runs in strips
+      (same catalogue) so the GUI stays responsive.
+    - Shape: median_star_stamp, the median of border-subtracted,
+      peak-normalised cutouts (the PSF Viewer's "true pixels" star), over up
+      to max_stars of the stars whose brightest core pixel is under
+      saturation_limit. That limit is 16-bit ADU, so on a normalised image it
+      is taken as a fraction of 65535.
+    The median stamp's floor is noise around zero: values within 3 sigma of
+    that noise (measured on the stamp's outer ring) are set to zero so they
+    don't add a flat pedestal to the kernel.
+    """
+    img = np.asarray(image_array)
+    gray = img.mean(axis=2) if img.ndim == 3 else img
+    gray = np.ascontiguousarray(gray, dtype=np.float32)
+    H, W = gray.shape
 
-    valid_sources.sort(key=lambda s: s['peak'], reverse=True)
-    selected = valid_sources[:max_stars]
+    ladder = PSF_AUTO_LADDER if auto else (float(threshold_sigma),)
+    cat = detect_stars_waterfall(gray, sigma_ladder=ladder,
+                                 target_count=int(target_stars) if auto else 10**9,
+                                 min_area=int(min_area), quality_filter=True, strips=True)
+    if cat is None or cat["n"] == 0:
+        where = "down to 3σ" if auto else f"at {float(threshold_sigma):g}σ"
+        raise RuntimeError(f"No usable stars found {where}.")
+    mode = "Auto" if auto else "Manual"
+    found = (f"{mode}: {cat['n']} stars at σ={cat['sigma_stopped']:g} "
+             f"(kept {cat['n']}/{cat['total_at_stop']} at that threshold)")
 
-    w = stamp_half_width
-    ksize = 2*w + 1
-    psf_sum = np.zeros((ksize, ksize), dtype=np.float32)
-    count = 0
+    # Saturation: brightest pixel of the 3x3 core, over all channels.
+    xi = np.clip(np.rint(cat["x"]).astype(np.int64), 1, W - 2)
+    yi = np.clip(np.rint(cat["y"]).astype(np.int64), 1, H - 2)
+    peak = np.full(xi.shape, -np.inf, dtype=np.float32)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            v = img[yi + dy, xi + dx]
+            peak = np.maximum(peak, v.max(axis=1) if v.ndim == 2 else v)
+    normalised = float(np.nanmax(gray)) <= 1.0 + 1e-3
+    limit = float(saturation_limit) / 65535.0 if normalised else float(saturation_limit)
+    keep = peak < limit
+    if not np.any(keep):
+        raise RuntimeError(f"{found}, but every one reaches the saturation cutoff "
+                           f"({int(saturation_limit)} ADU). Raise the cutoff.")
 
-    H, W = data.shape[:2]
-    for src in selected:
-        xi = int(round(src['x'])); yi = int(round(src['y']))
-        y0, y1 = yi - w, yi + w + 1
-        x0, x1 = xi - w, xi + w + 1
-        if y0 < 0 or x0 < 0 or y1 > H or x1 > W:
-            continue
-        stamp = bkg_sub[y0:y1, x0:x1].astype(np.float32)
-        total_flux = float(np.sum(stamp))
-        if total_flux <= 0:
-            continue
-        psf_sum += (stamp / total_flux)
-        count += 1
-
-    if count == 0:
+    w = int(stamp_half_width)
+    stamp = median_star_stamp(gray, cat["x"][keep], cat["y"][keep], w, int(max_stars))
+    if stamp is None:
         raise RuntimeError("No valid postage stamps extracted (all were off-edge or zero).")
 
-    psf_kernel = (psf_sum / count).astype(np.float32)
-    total = float(psf_kernel.sum())
+    ring = np.ones(stamp.shape, dtype=bool)
+    ring[2:-2, 2:-2] = False
+    floor = stamp[ring]
+    noise = 1.4826 * float(np.median(np.abs(floor - np.median(floor))))
+    kernel = np.where(stamp > 3.0 * noise, stamp, 0.0).astype(np.float32)
+    total = float(kernel.sum())
     if total > 0:
-        psf_kernel /= total
+        kernel /= total
     else:
-        psf_kernel[:] = 0; psf_kernel[w, w] = 1.0
-    return psf_kernel
+        kernel[:] = 0; kernel[w, w] = 1.0
+
+    used = int(min(int(np.count_nonzero(keep)), int(max_stars)))
+    fwhm = float(np.median(2.3548 * cat["a"][keep]))
+    info = dict(n=int(cat["n"]), sigma_stopped=float(cat["sigma_stopped"]),
+                total_at_stop=int(cat["total_at_stop"]), saturated=int(np.count_nonzero(~keep)),
+                used=used, fwhm=fwhm)
+    sat_note = f", {info['saturated']} saturated left out" if info["saturated"] else ""
+    info["status"] = (f"{found}. PSF from {used} stars{sat_note}; "
+                      f"median FWHM {fwhm:.2f} px, kernel {2 * w + 1}×{2 * w + 1}.")
+    return kernel, info
+
+
+class _PSFEstimateJob(QThread):
+    """estimate_psf_from_image off the GUI thread. SEP holds the GIL while it
+    extracts, so detection runs in strips (strips=True) to let the GUI in
+    between them."""
+    done = _pyqtSignal(object)       # (kernel, info) or the Exception raised
+
+    def __init__(self, image: np.ndarray, params: dict):
+        super().__init__()           # no parent: thread_keeper owns it
+        self.image = image
+        self.params = dict(params)
+
+    def run(self):
+        try:
+            self.done.emit(estimate_psf_from_image(self.image, **self.params))
+        except Exception as e:
+            self.done.emit(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2223,17 +2428,23 @@ def make_elliptical_gaussian_psf(radius: float, kurtosis: float, aspect: float, 
     return (psf / total).astype(np.float32) if total != 0 else np.zeros_like(psf, dtype=np.float32)
 
 
-def _rl_tile_process_reg(tile_and_meta: Tuple[int, np.ndarray]) -> Tuple[int, np.ndarray]:
+def _rl_tile_process_reg(tile_and_meta: Tuple[int, np.ndarray], cancel=None) -> Tuple[int, np.ndarray]:
     (tile_index, padded_tile, psf, num_iter, clip_flag, pad, reg_type, y0_ext, y1_ext, L_ext) = tile_and_meta
     alpha_L2 = 0.01
     alpha_tv = 0.01
     f = np.clip(padded_tile.astype(np.float32), 1e-8, None)
     psf_flipped = psf[::-1, ::-1]
+    # fftconvolve(..., mode="same") with each kernel transformed once per tile,
+    # not twice per iteration; same values.
+    blur = _same_convolver(f, psf)
+    blur_t = _same_convolver(f, psf_flipped)
 
     for _ in range(num_iter):
-        estimate_blurred = fftconvolve(f, psf, mode="same")
+        if cancel is not None and cancel():
+            break
+        estimate_blurred = blur(f)
         ratio = padded_tile / (estimate_blurred + 1e-8)
-        correction = fftconvolve(ratio, psf_flipped, mode="same")
+        correction = blur_t(ratio)
         f = f * correction
         if reg_type == "Tikhonov (L2)":
             f = f - alpha_L2 * laplace(f)
@@ -2241,6 +2452,8 @@ def _rl_tile_process_reg(tile_and_meta: Tuple[int, np.ndarray]) -> Tuple[int, np
             f = denoise_tv_chambolle(f, weight=alpha_tv, channel_axis=None).astype(np.float32)
         f = np.clip(f, 0.0, 1.0)
 
+    if cancel is not None and cancel():
+        return (tile_index, None)   # canceled: the caller raises, skip the de-ring
     if clip_flag:
         f = denoise_bilateral(f, sigma_color=0.08, sigma_spatial=1).astype(np.float32)
 
@@ -2251,7 +2464,7 @@ def _rl_tile_process_reg(tile_and_meta: Tuple[int, np.ndarray]) -> Tuple[int, np
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-def van_cittert_deconv(image: np.ndarray, iterations: int, relaxation: float) -> np.ndarray:
+def van_cittert_deconv(image: np.ndarray, iterations: int, relaxation: float, cancel=None) -> np.ndarray:
     sigma = 3.0
     size = int(np.ceil(6 * sigma)); size = size + 1 if size % 2 == 0 else size
     xs = np.linspace(-size//2, size//2, size)
@@ -2259,9 +2472,13 @@ def van_cittert_deconv(image: np.ndarray, iterations: int, relaxation: float) ->
     psf = np.outer(kernel_1d, kernel_1d).astype(np.float32)
 
     f = image.copy().astype(np.float32)
+    image32 = image.astype(np.float32)     # loop-invariant; was converted every iteration
+    blur = _same_convolver(f, psf)         # == fftconvolve(f, psf, mode="same"), PSF transformed once
     for _ in range(iterations):
-        conv = fftconvolve(f, psf, mode="same")
-        f = f + relaxation * (image.astype(np.float32) - conv)
+        if cancel is not None and cancel():
+            raise _Canceled()
+        conv = blur(f)
+        f = f + relaxation * (image32 - conv)
     return np.clip(f, 0.0, 1.0)
 
 
@@ -2323,11 +2540,12 @@ def larson_sekanina(image: np.ndarray, center: Tuple[float, float], radial_step:
     x2 = x0 + r2 * np.cos(theta2)
     y2 = y0 + r2 * np.sin(theta2)
 
-    J = _bilinear_interpolate_gray(gray, y2.ravel(), x2.ravel(), cval=0.0).reshape(H, W)
+    J = _bilinear_interpolate_gray_par(gray, y2.ravel(), x2.ravel(), cval=0.0).reshape(H, W)
 
     if operator == "Divide":
         eps = 1e-6
-        med = np.median(J) if np.median(J) > 0 else 1e-6
+        med_j = np.median(J)
+        med = med_j if med_j > 0 else 1e-6
         B = np.clip(gray * (med / (J + eps)), 0.0, 1.0)
     else:
         diff = gray - J
@@ -2336,6 +2554,683 @@ def larson_sekanina(image: np.ndarray, center: Tuple[float, float], radial_step:
         B = (B / maxv) if maxv > 0 else np.zeros_like(B)
 
     return B.astype(np.float32)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Preview building blocks
+#
+# The heavy steps split work that is independent per row band, FFT line or
+# colour channel across threads and reassemble it, so every output is
+# byte-for-byte what the original serial call gives. Where a helper leans on
+# library internals (fftconvolve's steps, skimage's bilateral kernel, per-line
+# FFTs, per-pixel colour conversion), a small self-test against the public call
+# runs once per process, and the helper uses the public call if it ever
+# differs. The heavy calls release the GIL, so the threads overlap and a
+# worker thread leaves the GUI responsive.
+# ─────────────────────────────────────────────────────────────────────────────
+_POOL_WORKERS = max(1, min(16, os.cpu_count() or 1))
+_SELF_TESTS: dict = {}
+
+# Classical Denoise settings each method reads (preview cache key).
+_DENOISE_PARAM_KEYS = {
+    "TV Chambolle": ("tv_weight", "tv_iter"),
+    "Non-Local Means": ("nlm_h", "nlm_patch", "nlm_dist"),
+    "Bilateral": ("bil_d", "bil_sigma_color", "bil_sigma_space"),
+    "Gaussian": ("gau_sigma",),
+    "Median": ("med_size",),
+    "Wavelet": ("wav_sigma", "wav_wavelet", "wav_mode"),
+}
+# Methods that are serial inside, so per-channel mode runs the channels in parallel.
+_CHANNEL_PARALLEL_DENOISE = ("TV Chambolle", "Non-Local Means", "Wavelet")
+
+
+def _row_bands(n: int, parts: int, halo: int = 0) -> list:
+    """Split range(n) into up to `parts` bands [(y0, y1, e0, e1)]; [e0, e1) is
+    [y0, y1) grown by `halo` and clamped to [0, n)."""
+    n = int(n)
+    parts = max(1, min(int(parts), n))
+    step = -(-n // parts)
+    return [(y0, min(n, y0 + step), max(0, y0 - halo), min(n, y0 + step + halo))
+            for y0 in range(0, n, step)]
+
+
+def _run_parallel(fn, items, workers: int | None = None) -> list:
+    """[fn(x) for x in items], on a thread pool when there is more than one."""
+    items = list(items)
+    if len(items) <= 1:
+        return [fn(x) for x in items]
+    with ThreadPoolExecutor(max_workers=min(len(items), workers or _POOL_WORKERS)) as ex:
+        return list(ex.map(fn, items))
+
+
+def _self_test(name: str, check) -> bool:
+    """check() once per process; True only if it returned True without raising."""
+    ok = _SELF_TESTS.get(name)
+    if ok is None:
+        try:
+            ok = bool(check())
+        except Exception:
+            ok = False
+        _SELF_TESTS[name] = ok
+    return ok
+
+
+def _same_bytes(a, b) -> bool:
+    a, b = np.asarray(a), np.asarray(b)
+    return a.dtype == b.dtype and a.shape == b.shape and a.tobytes() == b.tobytes()
+
+
+def _test_rng():
+    return np.random.default_rng(20261119)
+
+
+# ── FFT convolution with the kernel transformed once ─────────────────────────
+def _fft_same_geometry(s1, s2):
+    """FFT size and 'same'-mode crop origin fftconvolve uses for 2-D shapes s1, s2."""
+    shape = [int(s1[i]) + int(s2[i]) - 1 for i in range(2)]
+    fshape = [_sp_fft.next_fast_len(n, True) for n in shape]
+    start = [(shape[i] - int(s1[i])) // 2 for i in range(2)]
+    return fshape, start
+
+
+def _fft_conv_window(x, kernel_spec, fshape, y0, x0, h, w, out=None):
+    """Window [y0:y0+h, x0:x0+w] of the full linear convolution of x with the
+    kernel whose rfftn at fshape is kernel_spec (an array, or a Future of one,
+    awaited after x is transformed). The rfftn -> product -> irfftn sequence of
+    scipy.signal.fftconvolve, so the values are identical."""
+    sp = _sp_fft.rfftn(x, fshape, axes=[0, 1])
+    ks = kernel_spec.result() if hasattr(kernel_spec, "result") else kernel_spec
+    np.multiply(sp, ks, out=sp)
+    ret = _sp_fft.irfftn(sp, fshape, axes=[0, 1])
+    del sp
+    win = ret[y0:y0 + h, x0:x0 + w]
+    if out is None:
+        return win.copy()
+    out[...] = win
+    return out
+
+
+def _fft_same_usable(x_shape, x_dtype, kernel) -> bool:
+    """True when _fft_conv_window reproduces fftconvolve(x, kernel, mode='same'):
+    2-D float32 operands with no length-1 axis (scipy skips the FFT there)."""
+    if not (len(x_shape) == 2 and kernel.ndim == 2 and np.dtype(x_dtype) == np.float32
+            and kernel.dtype == np.float32 and min(x_shape) > 1 and min(kernel.shape) > 1):
+        return False
+
+    def check():
+        rng = _test_rng()
+        x = rng.random((61, 83), dtype=np.float32)
+        k = rng.random((9, 7), dtype=np.float32)
+        k /= k.sum()
+        fshape, start = _fft_same_geometry(x.shape, k.shape)
+        for kk in (k, k[::-1, ::-1]):
+            spec = _sp_fft.rfftn(kk, fshape, axes=[0, 1])
+            mine = _fft_conv_window(x, spec, fshape, start[0], start[1], x.shape[0], x.shape[1])
+            if not _same_bytes(mine, fftconvolve(x, kk, mode="same")):
+                return False
+        return True
+    return _self_test("fft_same", check)
+
+
+def _same_convolver(like: np.ndarray, kernel: np.ndarray):
+    """A function equal to fftconvolve(y, kernel, mode="same") for arrays y shaped
+    and typed like `like`, with the kernel transformed once instead of per call."""
+    if not _fft_same_usable(like.shape, like.dtype, kernel):
+        return lambda y: fftconvolve(y, kernel, mode="same")
+    fshape, start = _fft_same_geometry(like.shape, kernel.shape)
+    spec = _sp_fft.rfftn(kernel, fshape, axes=[0, 1])
+    shape, dtype = like.shape, like.dtype
+
+    def conv(y):
+        if y.shape != shape or y.dtype != dtype:
+            return fftconvolve(y, kernel, mode="same")
+        return _fft_conv_window(y, spec, fshape, start[0], start[1], shape[0], shape[1])
+    return conv
+
+
+def _convolve_image(image: np.ndarray, psf_kernel: np.ndarray) -> np.ndarray:
+    """
+    Convolve image with psf_kernel using reflect padding so we don't get
+    dark borders from zero-padding. Returns same HxW (and channels) as input.
+
+    The colour channels run in parallel and the PSF is transformed once, not
+    once per channel; the values are those of the per-channel fftconvolve loop.
+    """
+    if image is None or psf_kernel is None:
+        return image
+
+    img = image.astype(np.float32, copy=False)
+    if not (img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 3)):
+        # Unknown layout; just return a copy to be safe
+        return img.copy()
+    kh, kw = psf_kernel.shape
+    pad_y = kh // 2
+    pad_x = kw // 2
+    H, W = img.shape[:2]
+    out = np.empty(img.shape, dtype=np.float32)
+    src = [img] if img.ndim == 2 else [img[:, :, c] for c in range(3)]
+    dst = [out] if img.ndim == 2 else [out[:, :, c] for c in range(3)]
+
+    def _padded(c):
+        if pad_y or pad_x:
+            return np.pad(src[c], ((pad_y, pad_y), (pad_x, pad_x)), mode="reflect")
+        return src[c]
+
+    padded_shape = (H + 2 * pad_y, W + 2 * pad_x)
+    if _fft_same_usable(padded_shape, np.float32, psf_kernel):
+        fshape, start = _fft_same_geometry(padded_shape, psf_kernel.shape)
+        y0, x0 = start[0] + pad_y, start[1] + pad_x
+        with ThreadPoolExecutor(max_workers=len(src) + 1) as ex:
+            spec = ex.submit(_sp_fft.rfftn, psf_kernel, fshape, axes=[0, 1])
+
+            def _one(c):
+                _fft_conv_window(_padded(c), spec, fshape, y0, x0, H, W, out=dst[c])
+            for fut in [ex.submit(_one, c) for c in range(len(src))]:
+                fut.result()
+    else:
+        def _one(c):
+            conv_full = fftconvolve(_padded(c), psf_kernel, mode="same")
+            if pad_y or pad_x:
+                conv_full = conv_full[pad_y:-pad_y or None, pad_x:-pad_x or None]
+            dst[c][...] = conv_full
+        _run_parallel(_one, range(len(src)), workers=len(src))
+
+    # PSF is normalized, but clamp just in case of numeric noise
+    np.clip(out, 0.0, 1.0, out=out)
+    return out
+
+
+# ── Richardson-Lucy ──────────────────────────────────────────────────────────
+def _rl_deconvolve(image: np.ndarray, psf_kernel: np.ndarray, iterations: int,
+                   reg_type: str = "None (Plain R–L)", clip_flag: bool = True,
+                   progress=None, cancel=None) -> np.ndarray:
+    """Tiled Richardson-Lucy (ConvoDeconvoDialog._richardson_lucy_color).
+
+    progress(text) receives the status lines; cancel() returning True stops
+    the run between iterations and raises _Canceled.
+    """
+    report = progress if progress is not None else (lambda _text: None)
+    iters = int(round(iterations))
+    psf = psf_kernel.astype(np.float32)
+
+    def _deconv_2d_parallel(gray: np.ndarray) -> np.ndarray:
+        H, W = gray.shape
+        psf_h, psf_w = psf.shape
+        half_psf = max(psf_h, psf_w) // 2
+        extra = 15
+        pad = half_psf + extra
+        overlap = pad
+
+        n_cores = min((os.cpu_count() or 1), H)
+        tile_h = math.ceil(H / n_cores)
+        tile_ranges = []
+        for i in range(n_cores):
+            y0 = i * tile_h; y1 = min((i + 1) * tile_h, H)
+            if y0 >= H: break
+            tile_ranges.append((y0, y1))
+
+        accum_image = np.zeros((H, W), dtype=np.float32)
+        accum_weight = np.zeros((H, W), dtype=np.float32)
+
+        def _build_vertical_ramp(L: int, ov: int) -> np.ndarray:
+            w = np.ones(L, dtype=np.float32)
+            if ov <= 0: return w
+            if 2 * ov >= L:
+                for i in range(L):
+                    w[i] = 1.0 - abs((i - (L - 1) / 2) / ((L - 1) / 2))
+                return w
+            for i in range(ov):
+                w[i] = (i + 1) / float(ov)
+                w[L - 1 - i] = (i + 1) / float(ov)
+            return w
+
+        tile_inputs = []
+        for idx, (y0, y1) in enumerate(tile_ranges):
+            y0_ext = max(0, y0 - overlap); y1_ext = min(H, y1 + overlap)
+            core_tile = gray[y0_ext:y1_ext, :]
+            padded = np.pad(core_tile, ((pad, pad), (pad, pad)), mode="reflect")
+            L_ext = y1_ext - y0_ext
+            tile_inputs.append((idx, padded, psf, iters, clip_flag, pad, reg_type, y0_ext, y1_ext, L_ext))
+
+        results = [None] * len(tile_inputs)
+        max_workers = min(len(tile_inputs), os.cpu_count() or 1)
+        if max_workers < 1:
+            max_workers = 1
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for tile_index, deconv_ext in executor.map(lambda t: _rl_tile_process_reg(t, cancel), tile_inputs):
+                results[tile_index] = deconv_ext
+        if cancel is not None and cancel():
+            raise _Canceled()
+
+        for idx, (y0, y1) in enumerate(tile_ranges):
+            (_, _, _, _, _, _, _, y0_ext, y1_ext, L_ext) = tile_inputs[idx]
+            deconv_ext = results[idx]
+            w = _build_vertical_ramp(L_ext, overlap)[:, None]   # broadcasts across the row
+            accum_image[y0_ext:y1_ext, :] += deconv_ext * w
+            accum_weight[y0_ext:y1_ext, :] += w
+
+        final_deconv = np.zeros_like(accum_image, dtype=np.float32)
+        nz = accum_weight > 0
+        np.divide(accum_image, accum_weight, out=final_deconv, where=nz)
+        return final_deconv
+
+    if image.ndim == 2:
+        report(f"Running RL for {iters} iterations")
+        deconv = _deconv_2d_parallel(image.astype(np.float32, copy=False))
+        report("")
+        return np.clip(deconv, 0.0, 1.0)
+    elif image.ndim == 3 and image.shape[2] == 3:
+        outs = []
+        for c in range(3):
+            report(f"Running RL on ch {c+1} for {iters} iterations")
+            outs.append(np.clip(_deconv_2d_parallel(image[:, :, c].astype(np.float32)), 0.0, 1.0))
+        report("")
+        return np.stack(outs, axis=2)
+    else:
+        return image.copy()
+
+
+# ── Wiener ───────────────────────────────────────────────────────────────────
+def _fft2_lines_impl(a, inverse: bool, parts: int):
+    f = np.fft.ifft if inverse else np.fft.fft
+    H, W = a.shape
+    rows = _row_bands(H, parts)
+    pieces = _run_parallel(lambda b: f(a[b[0]:b[1]], axis=-1), rows, workers=parts)
+    tmp = np.empty((H, W), dtype=pieces[0].dtype)
+    for (y0, y1, _, _), piece in zip(rows, pieces):
+        tmp[y0:y1] = piece
+    del pieces
+    out = np.empty_like(tmp)
+
+    def _cols(b):
+        out[:, b[0]:b[1]] = f(tmp[:, b[0]:b[1]], axis=0)
+    _run_parallel(_cols, _row_bands(W, parts), workers=parts)
+    return out
+
+
+def _fft2_lines(a: np.ndarray, inverse: bool = False) -> np.ndarray:
+    """numpy fft2 / ifft2 of a 2-D array with its 1-D line transforms (rows, then
+    columns, fft2's own order) spread over threads. Every line goes through the
+    same 1-D transform as inside fft2, so the result is identical."""
+    def check():
+        x = _test_rng().random((67, 131), dtype=np.float32)
+        X = fft2(x)
+        return (_same_bytes(_fft2_lines_impl(x, False, 5), X)
+                and _same_bytes(_fft2_lines_impl(X, True, 7), ifft2(X)))
+    if a.ndim != 2 or min(a.shape) < 2 * _POOL_WORKERS or not _self_test("fft2_lines", check):
+        return ifft2(a) if inverse else fft2(a)
+    return _fft2_lines_impl(a, inverse, _POOL_WORKERS)
+
+
+def _bilateral_bands_impl(image, sigma_color, sigma_spatial, parts):
+    # skimage.restoration.denoise_bilateral (channel_axis=None, defaults
+    # bins=10000, mode='constant', cval=0), run on row bands with a window-radius
+    # halo. The global terms (min, max, LUTs) come from the whole image.
+    from skimage.restoration._denoise import _compute_color_lut, _compute_spatial_lut
+    from skimage.restoration._denoise_cy import _denoise_bilateral
+    from skimage.util import img_as_float
+    bins, mode, cval = 10000, "constant", 0
+    win_size = max(5, 2 * int(math.ceil(3 * sigma_spatial)) + 1)
+    min_value = image.min()
+    max_value = image.max()
+    if min_value == max_value:
+        return image
+    im = np.ascontiguousarray(np.atleast_3d(img_as_float(image)))
+    sigma_color = sigma_color or im.std()
+    color_lut = _compute_color_lut(bins, sigma_color, max_value, dtype=im.dtype)
+    range_lut = _compute_spatial_lut(win_size, sigma_spatial, dtype=im.dtype)
+    if min_value < 0:
+        im = im - min_value
+        max_value -= min_value
+    out = np.empty(im.shape, dtype=im.dtype)
+
+    def _band(b):
+        y0, y1, e0, e1 = b
+        sub = np.ascontiguousarray(im[e0:e1])
+        res = np.empty(sub.shape, dtype=sub.dtype)
+        _denoise_bilateral(sub, max_value, win_size, sigma_color, sigma_spatial, bins, mode, cval,
+                           color_lut, range_lut, np.empty(im.shape[2], dtype=im.dtype), res)
+        out[y0:y1] = res[y0 - e0:y1 - e0]
+    _run_parallel(_band, _row_bands(im.shape[0], parts, win_size // 2), workers=parts)
+    out = np.squeeze(out)
+    if min_value < 0:
+        out += min_value
+    return out
+
+
+def _bilateral_bands(image: np.ndarray, sigma_color: float, sigma_spatial: float) -> np.ndarray:
+    """denoise_bilateral(image, sigma_color=..., sigma_spatial=...) of a 2-D image in
+    row bands across threads; identical output (the kernel is per pixel)."""
+    def check():
+        x = _test_rng().random((53, 71), dtype=np.float32)
+        y = x - np.float32(0.4)
+        return all(_same_bytes(_bilateral_bands_impl(a, 0.08, 1, n),
+                               denoise_bilateral(a, sigma_color=0.08, sigma_spatial=1))
+                   for a, n in ((x, 4), (y, 5)))
+    if (image.ndim != 2 or image.shape[0] < 4 * _POOL_WORKERS
+            or not _self_test("bilateral_bands", check)):
+        return denoise_bilateral(image, sigma_color=sigma_color, sigma_spatial=sigma_spatial)
+    return _bilateral_bands_impl(image, sigma_color, sigma_spatial, _POOL_WORKERS)
+
+
+def _wiener_deconvolve(image: np.ndarray, small_psf: np.ndarray, nsr: float,
+                       reg_type: str, do_dering: bool, cancel=None) -> np.ndarray:
+    """Wiener deconvolution (ConvoDeconvoDialog._wiener_deconv_with_kernel).
+
+    The filter depends only on the image size, so it is built once and shared
+    by the colour channels; FFT lines and de-ring bands run in parallel. Same
+    values as building it per channel with numpy's fft2.
+    """
+    def _check_cancel():
+        if cancel is not None and cancel():
+            raise _Canceled()
+
+    def _filter(H, W):
+        psf_h, psf_w = small_psf.shape
+        Hpsf = np.zeros((H, W), dtype=np.float32)
+        cy, cx = H // 2, W // 2
+        y0 = cy - psf_h // 2; x0 = cx - psf_w // 2
+        Hpsf[y0:y0+psf_h, x0:x0+psf_w] = small_psf
+        H_f = _fft2_lines(ifftshift(Hpsf)); H_f_conj = np.conj(H_f); mag2 = np.abs(H_f) ** 2
+        K = nsr * nsr if reg_type == "Tikhonov" else nsr
+        return H_f_conj / (mag2 + K)
+
+    def _deconv_gray(im2d: np.ndarray, Wf: np.ndarray, do_dering_flag: bool) -> np.ndarray:
+        X = _fft2_lines(im2d)
+        if X.dtype == Wf.dtype:
+            np.multiply(Wf, X, out=X)          # Wf * fft2(im2d), in place
+        else:
+            X = Wf * X
+        _check_cancel()
+        deconv = np.real(_fft2_lines(X, inverse=True)).astype(np.float32)
+        del X
+        _check_cancel()
+        if do_dering_flag:
+            deconv = _bilateral_bands(deconv, sigma_color=0.08, sigma_spatial=1)
+        return deconv.clip(0.0, 1.0)
+
+    if image.ndim == 2:
+        return _deconv_gray(image.astype(np.float32), _filter(*image.shape), do_dering)
+    elif image.ndim == 3 and image.shape[2] == 3:
+        Wf = _filter(*image.shape[:2])
+        return np.stack([_deconv_gray(image[:, :, c].astype(np.float32), Wf, do_dering)
+                         for c in range(3)], axis=2)
+    else:
+        return image.copy()
+
+
+# ── per-pixel / local helpers ────────────────────────────────────────────────
+def _rows_map_impl(fn, a, parts):
+    bands = _row_bands(a.shape[0], parts)
+    pieces = _run_parallel(lambda b: fn(a[b[0]:b[1]]), bands, workers=parts)
+    out = np.empty((a.shape[0],) + pieces[0].shape[1:], dtype=pieces[0].dtype)
+    for (y0, y1, _, _), piece in zip(bands, pieces):
+        out[y0:y1] = piece
+    return out
+
+
+def _rgb2lab_rows(rgb: np.ndarray) -> np.ndarray:
+    """skimage rgb2lab in row bands across threads (per pixel, so identical)."""
+    def check():
+        x = _test_rng().random((37, 29, 3), dtype=np.float32)
+        return _same_bytes(_rows_map_impl(rgb2lab, x, 4), rgb2lab(x))
+    if rgb.ndim != 3 or rgb.shape[0] < 4 * _POOL_WORKERS or not _self_test("rgb2lab_rows", check):
+        return rgb2lab(rgb)
+    return _rows_map_impl(rgb2lab, rgb, _POOL_WORKERS)
+
+
+def _lab2rgb_rows(lab: np.ndarray) -> np.ndarray:
+    """skimage lab2rgb in row bands across threads (per pixel, so identical; an
+    out-of-gamut warning comes once per band rather than once)."""
+    def check():
+        x = rgb2lab(_test_rng().random((37, 29, 3), dtype=np.float32))
+        return _same_bytes(_rows_map_impl(lab2rgb, x, 4), lab2rgb(x))
+    if lab.ndim != 3 or lab.shape[0] < 4 * _POOL_WORKERS or not _self_test("lab2rgb_rows", check):
+        return lab2rgb(lab)
+    return _rows_map_impl(lab2rgb, lab, _POOL_WORKERS)
+
+
+def _bilinear_interpolate_gray_par(gray: np.ndarray, y_coords: np.ndarray, x_coords: np.ndarray,
+                                   cval: float = 0.0) -> np.ndarray:
+    """_bilinear_interpolate_gray over chunks of the coordinate list in parallel
+    (elementwise arithmetic and gathers only, so identical)."""
+    n = int(y_coords.size)
+    if n < (1 << 16):
+        return _bilinear_interpolate_gray(gray, y_coords, x_coords, cval=cval)
+    out = np.empty(n, dtype=np.float32)
+
+    def _chunk(b):
+        out[b[0]:b[1]] = _bilinear_interpolate_gray(gray, y_coords[b[0]:b[1]], x_coords[b[0]:b[1]], cval=cval)
+    _run_parallel(_chunk, _row_bands(n, _POOL_WORKERS))
+    return out
+
+
+def _local_filter_bands_impl(fn, a, halo, parts):
+    bands = _row_bands(a.shape[0], parts, halo)
+
+    def _band(b):
+        y0, y1, e0, e1 = b
+        return fn(a[e0:e1])[y0 - e0:y1 - e0]
+    pieces = _run_parallel(_band, bands, workers=parts)
+    out = np.empty(a.shape, dtype=pieces[0].dtype)
+    for (y0, y1, _, _), piece in zip(bands, pieces):
+        out[y0:y1] = piece
+    return out
+
+
+def _local_filter_bands(fn, a: np.ndarray, halo: int, kind: str) -> np.ndarray:
+    """fn(a) for a 2-D local filter ('reflect' borders) whose output rows depend
+    only on input rows within `halo`, in row bands across threads; identical."""
+    parts = min(_POOL_WORKERS, a.shape[0] // max(64, 4 * halo)) if a.ndim == 2 else 0
+
+    def check():
+        x = _test_rng().random((97, 53), dtype=np.float32)
+        return _same_bytes(_local_filter_bands_impl(fn, x, halo, 6), fn(x))
+    if parts < 2 or not _self_test("bands_" + kind, check):
+        return fn(a)
+    return _local_filter_bands_impl(fn, a, halo, parts)
+
+
+# ── Classical Denoise ────────────────────────────────────────────────────────
+def _denoise_channel(algo: str, ch: np.ndarray, p: dict) -> np.ndarray:
+    """
+    Run the selected algorithm on a single 2-D float32 [0,1] channel.
+    Returns float32 [0,1]. p: ConvoDeconvoDialog._denoise_params().
+    """
+    ch = np.asarray(ch, dtype=np.float32)
+
+    if algo == "TV Chambolle":
+        return denoise_tv_chambolle(
+            ch, weight=p["tv_weight"], max_num_iter=p["tv_iter"], channel_axis=None
+        ).astype(np.float32)
+
+    elif algo == "Non-Local Means":
+        h_val      = p["nlm_h"]
+        patch_size = p["nlm_patch"]
+        patch_dist = p["nlm_dist"]
+        # Ensure odd
+        if patch_size % 2 == 0:
+            patch_size += 1
+        if patch_dist % 2 == 0:
+            patch_dist += 1
+        sigma_est = float(np.mean(estimate_sigma(ch, channel_axis=None)))
+        return denoise_nl_means(
+            ch,
+            h=h_val,
+            fast_mode=True,
+            patch_size=patch_size,
+            patch_distance=patch_dist,
+            sigma=sigma_est,
+            channel_axis=None,
+        ).astype(np.float32)
+
+    elif algo == "Bilateral":
+        d           = p["bil_d"]
+        sigma_color = p["bil_sigma_color"]
+        sigma_space = p["bil_sigma_space"]
+        # cv2 bilateral works on 8-bit; convert, filter, convert back
+        ch8 = np.clip(ch * 255.0, 0, 255).astype(np.uint8)
+        filtered = cv2.bilateralFilter(ch8, d, sigma_color, sigma_space)
+        return (filtered.astype(np.float32) / 255.0)
+
+    elif algo == "Gaussian":
+        sigma = p["gau_sigma"]
+        # Kernel radius int(4*sigma + 0.5) (scipy's truncate=4.0), +1 for margin.
+        g = _local_filter_bands(lambda a: gaussian_filter(a, sigma=sigma), ch,
+                                int(4.0 * sigma + 0.5) + 1, "gaussian")
+        return np.clip(g.astype(np.float32), 0.0, 1.0)
+
+    elif algo == "Median":
+        size = p["med_size"]
+        if size % 2 == 0:
+            size += 1   # enforce odd
+        m = _local_filter_bands(lambda a: median_filter(a, size=size), ch, size // 2 + 1, "median")
+        return np.clip(m.astype(np.float32), 0.0, 1.0)
+
+    elif algo == "Wavelet":
+        sigma_val = p["wav_sigma"]
+        wavelet   = p["wav_wavelet"]
+        mode      = p["wav_mode"]
+        # sigma=None triggers BayesShrink auto-estimate
+        sigma_arg = None if sigma_val < 1e-6 else sigma_val
+        return np.clip(
+            denoise_wavelet(
+                ch,
+                sigma=sigma_arg,
+                wavelet=wavelet,
+                mode=mode,
+                method="BayesShrink",
+                channel_axis=None,
+            ).astype(np.float32),
+            0.0, 1.0,
+        )
+
+    else:
+        return ch.copy()
+
+
+def _classical_denoise(img: np.ndarray, p: dict) -> np.ndarray:
+    """
+    The selected classical denoiser (ConvoDeconvoDialog._apply_classical_denoise);
+    L*-only or per channel for colour images. Returns float32 [0,1].
+    """
+    algo = p["algo"]
+    lum_only = p["lum_only"]
+    is_color = (img.ndim == 3 and img.shape[2] == 3)
+
+    img_f = np.asarray(img, dtype=np.float32)
+
+    # ── L*-only mode: extract L, denoise it, put back ────────
+    if lum_only and is_color:
+        lab = _rgb2lab_rows(img_f)
+        L_norm = (lab[:, :, 0] / 100.0).astype(np.float32)
+        L_denoised = _denoise_channel(algo, L_norm, p)
+        lab[:, :, 0] = np.clip(L_denoised * 100.0, 0.0, 100.0)
+        return np.clip(_lab2rgb_rows(lab).astype(np.float32), 0.0, 1.0)
+
+    # ── Per-channel mode ────────────────────────────────────
+    if is_color:
+        workers = 3 if algo in _CHANNEL_PARALLEL_DENOISE else 1
+        channels = _run_parallel(lambda c: _denoise_channel(algo, img_f[:, :, c], p),
+                                 range(3), workers=workers)
+        return np.clip(np.stack(channels, axis=2), 0.0, 1.0)
+
+    # ── Mono ─────────────────────────────────────────────────
+    mono = img_f.reshape(img_f.shape[0], img_f.shape[1])
+    return np.clip(_denoise_channel(algo, mono, p), 0.0, 1.0)
+
+
+# ── mask + display (worker side) ─────────────────────────────────────────────
+def _mask_float2d(data) -> np.ndarray:
+    """A mask layer's data as a 2-D float32 mask in [0..1] (RGB(A) -> gray,
+    0..255 -> 0..1). Always a new array; the layer's own data is not touched
+    (the old in-place /= 255 rescaled a float32 doc mask)."""
+    m = np.asarray(data)
+    # If RGB(A) mask, convert to gray
+    if m.ndim == 3:
+        if cv2 is not None:
+            m = cv2.cvtColor(m, cv2.COLOR_BGR2GRAY)
+        else:
+            m = m.mean(axis=2)
+
+    m = m.astype(np.float32, copy=False)
+    if m.max() > 1.0:
+        m = m / 255.0
+    return np.clip(m, 0.0, 1.0)
+
+
+def _mask_or_none(data):
+    if data is None:
+        return None
+    try:
+        return _mask_float2d(data)
+    except Exception:
+        return None
+
+
+def _apply_mask_blend(processed: np.ndarray, orig: np.ndarray, mask2d) -> np.ndarray:
+    """The dialog's masked blend: clip(processed*m + orig*(1-m)) with the active
+    mask (nearest-resized to the result), or the result itself with no mask."""
+    if mask2d is None:
+        return processed
+    H, W = processed.shape[:2]
+    m = mask2d
+    if m.shape != (H, W):
+        m = cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST).astype(np.float32, copy=False)
+    m = np.clip(m.astype(np.float32, copy=False), 0.0, 1.0)
+    if processed.ndim == 3:
+        m = m[:, :, None]   # broadcasts: the values of repeating it per channel, without the copy
+    return np.clip(processed * m + orig * (1.0 - m), 0.0, 1.0)
+
+
+def _qimage_from_array(array: np.ndarray):
+    """(QImage, buffer): 8-bit display image, mono as Grayscale8, colour as RGB888.
+    The QImage points into the buffer, so keep both until QPixmap.fromImage has
+    copied it. QImage is reentrant, so this runs on a worker (QPixmap may not)."""
+    arr = np.asarray(array)
+    if arr.ndim == 3 and arr.shape[2] == 1:
+        arr = arr[:, :, 0]
+    elif arr.ndim == 3 and arr.shape[2] > 3:
+        arr = arr[:, :, :3]
+    if arr.dtype in (np.float32, np.float64):
+        arr8 = (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
+    elif arr.dtype == np.uint16:
+        arr8 = (np.clip(arr, 0, 65535) // 257).astype(np.uint8)
+    elif arr.dtype == np.uint8:
+        arr8 = arr
+    else:
+        mn, mx = arr.min(), arr.max()
+        arr8 = ((arr - mn) / (mx - mn) * 255).astype(np.uint8) if mx > mn else np.zeros_like(arr, dtype=np.uint8)
+    arr8 = np.ascontiguousarray(arr8)
+
+    h, w = arr8.shape[:2]
+    if arr8.ndim == 2:
+        qimg = QImage(arr8.data, w, h, w, QImage.Format.Format_Grayscale8)
+    else:
+        qimg = QImage(arr8.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+    return qimg, arr8
+
+
+def _display_images(final: np.ndarray, orig, d: dict) -> dict:
+    """Off-thread half of _refresh_display for a new result: the shared display
+    stretch (measured on the original, as _display_stretch does) and the 8-bit
+    images of the result and, when the cached one is stale, of the original."""
+    params = None
+    shown = final
+    if d["auto"]:
+        params = d["params"]
+        if params is None:
+            params = display_stretch_params(orig if orig is not None else final,
+                                            target_median=d["tm"], linked=d["linked"])
+        shown = apply_display_stretch(final, params)
+    after = _qimage_from_array(shown)
+    del shown
+    before = None
+    if d["need_before"] and orig is not None and orig.shape[:2] == final.shape[:2]:
+        before = _qimage_from_array(apply_display_stretch(orig, params) if params is not None else orig)
+    out = dict(d)
+    out.update(params=params, after=after, before=before, orig=orig, shown=final)
+    return out
 
 
 # Optional helper to open like SFCC:

@@ -87,16 +87,49 @@ from PyQt6.QtGui import (
 from .doc_manager import ImageDocument  # add this import
 from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
+
+# ---------------------------- Display helpers ----------------------------
+
+def _float_to_u8(arr: np.ndarray, offset: float | None = None) -> np.ndarray | None:
+    """The 8-bit preview of a float image: (clip(float32(arr [+ offset]), 0, 1) * 255)
+    truncated, with one temporary instead of four. None for shapes the preview
+    cannot show (anything but (H,W), (H,W,1), (H,W,3))."""
+    a = np.asarray(arr)
+    if not (a.ndim == 2 or (a.ndim == 3 and a.shape[2] in (1, 3))):
+        return None
+    if offset is not None:
+        t = np.asarray(a + offset, dtype=np.float32)    # a new array: ours to modify
+        np.clip(t, 0, 1, out=t)
+    else:
+        t = np.clip(np.asarray(a, dtype=np.float32), 0, 1)
+    np.multiply(t, 255, out=t)
+    u8 = t.astype(np.uint8)
+    return u8[:, :, 0] if u8.ndim == 3 and u8.shape[2] == 1 else u8
+
+
+def _qimage_from_u8(u8: np.ndarray) -> QImage:
+    """8-bit (H,W) or (H,W,3) -> QImage owning its pixels, already in the 32-bit
+    format QPixmap.fromImage keeps as is. Mono goes in as Grayscale8: the same
+    pixels as the stacked RGB. Safe off the GUI thread."""
+    u8 = np.ascontiguousarray(u8)
+    h, w = u8.shape[:2]
+    fmt = QImage.Format.Format_Grayscale8 if u8.ndim == 2 else QImage.Format.Format_RGB888
+    return QImage(u8.data, w, h, int(u8.strides[0]), fmt).convertToFormat(QImage.Format.Format_RGB32)
 
 # ---------------------------- Threads ----------------------------
 
 class FrequencySeperationThread(QThread):
     separation_done = pyqtSignal(np.ndarray, np.ndarray)
+    # dict: lf, hf, the source image object, and the LF/HF preview QImages
+    # (built here so the GUI thread only wraps them in pixmaps)
+    split_ready = pyqtSignal(object)
     error_signal = pyqtSignal(str)
 
     def __init__(self, image: np.ndarray, method='Gaussian', radius=10.0, tolerance=50,
                  use_cuda=True, parent=None):
         super().__init__(parent)
+        self._src = image
         self.image = image.astype(np.float32, copy=False)
         self.method = method
         self.radius = float(radius)
@@ -111,7 +144,21 @@ class FrequencySeperationThread(QThread):
                 low_rgb, high_rgb = self._run_cuda()
             else:
                 low_rgb, high_rgb = self._run_cpu()
-            self.separation_done.emit(low_rgb.astype(np.float32), high_rgb.astype(np.float32))
+            # both are new arrays (never views of the source): no copy needed
+            lf = np.asarray(low_rgb, dtype=np.float32)
+            hf = np.asarray(high_rgb, dtype=np.float32)
+            res = {"lf": lf, "hf": hf, "image": self._src}
+            try:
+                u8 = _float_to_u8(lf)
+                if u8 is not None:
+                    res["qlf"] = _qimage_from_u8(u8)
+                u8 = _float_to_u8(hf, 0.5)          # HF is shown around 0.5
+                if u8 is not None:
+                    res["qhf"] = _qimage_from_u8(u8)
+            except Exception:
+                pass                                # the tab builds them itself then
+            self.split_ready.emit(res)
+            self.separation_done.emit(lf, hf)
         except Exception as e:
             self.error_signal.emit(str(e))
 
@@ -592,6 +639,7 @@ class FrequencySeperationTab(QWidget):
         self.use_gpu = _CUDA_AVAILABLE
 
         self.proc_thread: FrequencySeperationThread | None = None
+        self._sep_pending = False   # Apply split pressed while one was running
         self.hf_thread: HFEnhancementThread | None = None
         self._source_doc = None  # Track the source document separately
         self._cuda_warmed_up = False
@@ -1429,21 +1477,46 @@ class FrequencySeperationTab(QWidget):
 
         self._show_spinner(True)
 
-        if self.proc_thread and self.proc_thread.isRunning():
-            self.proc_thread.quit(); self.proc_thread.wait()
+        # One split at a time. Pressed again while one runs: that one lands and
+        # is shown, then it re-runs with the settings of the moment (it used to
+        # block the GUI in wait() until the first finished).
+        if thread_running(self.proc_thread):
+            self._sep_pending = True
+            return
+        self._start_split()
 
-        self.proc_thread = FrequencySeperationThread(
+    def _start_split(self):
+        if self.image is None:
+            return
+        self._show_spinner(True)
+        thr = FrequencySeperationThread(
             image=self.image, method=self.method, radius=self.radius, tolerance=self.tolerance,
             use_cuda=self.use_gpu
         )
-        self.proc_thread.separation_done.connect(self._on_sep_done)
-        self.proc_thread.error_signal.connect(self._on_sep_error)
-        self.proc_thread.start()
+        thr.split_ready.connect(self._on_split_ready)
+        thr.error_signal.connect(self._on_sep_error)
+        thr.finished.connect(self._on_split_finished)
+        self.proc_thread = thr
+        start_owned_thread(thr)   # no parent; held until done, so closing mid-split is safe
 
-    def _on_sep_done(self, lf: np.ndarray, hf: np.ndarray):
+    def _on_split_ready(self, res: dict):
+        if getattr(self, "_memory_released", False):
+            return
+        if res.get("image") is not self.image:
+            return          # split of an image that is no longer loaded; its re-run follows
+        self._on_sep_done(res["lf"], res["hf"], res.get("qlf"), res.get("qhf"))
+
+    def _on_split_finished(self):
+        if self._sep_pending and not getattr(self, "_memory_released", False):
+            self._sep_pending = False
+            self._start_split()
+
+    def _on_sep_done(self, lf: np.ndarray, hf: np.ndarray, qlf: QImage | None = None,
+                     qhf: QImage | None = None):
         self._show_spinner(False)
-        self.low_freq_image = lf.astype(np.float32)
-        self.high_freq_image = hf.astype(np.float32)
+        # the worker's own new arrays: no copy
+        self.low_freq_image = np.asarray(lf, dtype=np.float32)
+        self.high_freq_image = np.asarray(hf, dtype=np.float32)
         # Invalidate all caches (base + scaled)
         self._lf_dirty = True
         self._hf_dirty = True
@@ -1453,6 +1526,14 @@ class FrequencySeperationTab(QWidget):
         self._lf_scaled_cache = None
         self._hf_scaled_cache = None
         self._invalidate_combined_cache()
+        # base pixmaps from the worker-built preview images (same pixels as
+        # _numpy_to_qpix would make here, without ~1 s on the GUI thread)
+        if qlf is not None:
+            self._lf_pixmap_cache = QPixmap.fromImage(qlf)
+            self._lf_dirty = False
+        if qhf is not None:
+            self._hf_pixmap_cache = QPixmap.fromImage(qhf)
+            self._hf_dirty = False
         self._update_previews()
 
     def _on_sep_error(self, msg: str):
@@ -1479,7 +1560,7 @@ class FrequencySeperationTab(QWidget):
 
         # Normal async path
         self._show_spinner(True)
-        if self.hf_thread and self.hf_thread.isRunning():
+        if thread_running(self.hf_thread):
             self.hf_thread.quit(); self.hf_thread.wait()
 
         self.hf_thread = HFEnhancementThread(
@@ -1495,7 +1576,7 @@ class FrequencySeperationTab(QWidget):
         )
         self.hf_thread.enhancement_done.connect(self._on_hf_done)
         self.hf_thread.error_signal.connect(self._on_hf_error)
-        self.hf_thread.start()
+        start_owned_thread(self.hf_thread)   # no parent; held until done
 
     def _apply_hf_sync(self):
         """Run HF enhancements synchronously on main thread (used for first CUDA denoise)."""
@@ -1583,8 +1664,8 @@ class FrequencySeperationTab(QWidget):
 
     def _on_hf_done(self, new_hf: np.ndarray):
         self._show_spinner(False)
-        # Ensure the array is valid and contiguous
-        self.high_freq_image = np.ascontiguousarray(new_hf.astype(np.float32))
+        # Ensure the array is valid and contiguous (the worker's own new array: no copy)
+        self.high_freq_image = np.ascontiguousarray(new_hf, dtype=np.float32)
         # Invalidate HF and combined caches (base + scaled)
         self._hf_dirty = True
         self._hf_pixmap_cache = None
@@ -1727,41 +1808,21 @@ class FrequencySeperationTab(QWidget):
             if self._spinner: self._spinner.stop()
 
     # --------------- preview rendering ---------------
-    def _numpy_to_qpix(self, arr: np.ndarray) -> QPixmap:
+    def _numpy_to_qpix(self, arr: np.ndarray, offset: float | None = None) -> QPixmap:
         """
         Convert numpy array to QPixmap.
         Args:
             arr: Input array (float32, [0-1] or signed for HF)
+            offset: added before clipping (HF is shown as hf + 0.5)
         """
         if arr is None:
             return QPixmap()
-
-        # Make a copy to avoid issues with non-contiguous or GPU memory
-        arr = np.array(arr, dtype=np.float32, copy=True)
-
-        # Clip to valid range and convert to uint8
-        clipped = np.clip(arr, 0, 1)
-
-        if clipped.ndim == 2:
-            # Mono: stack to RGB
-            u8 = (clipped * 255).astype(np.uint8)
-            u8 = np.stack([u8, u8, u8], axis=-1)
-        elif clipped.ndim == 3 and clipped.shape[2] == 3:
-            # RGB
-            u8 = (clipped * 255).astype(np.uint8)
-        elif clipped.ndim == 3 and clipped.shape[2] == 1:
-            # Single channel 3D -> squeeze and stack
-            u8 = (clipped[:, :, 0] * 255).astype(np.uint8)
-            u8 = np.stack([u8, u8, u8], axis=-1)
-        else:
+        # clip to [0, 1] and truncate to 8 bits; mono stays one channel
+        # (Grayscale8 shows the same pixels the stacked RGB did)
+        u8 = _float_to_u8(arr, offset)
+        if u8 is None:
             return QPixmap()
-
-        # Ensure contiguous memory layout
-        u8 = np.ascontiguousarray(u8)
-
-        h, w = u8.shape[:2]
-        qimg = QImage(u8.data, w, h, w * 3, QImage.Format.Format_RGB888)
-        return QPixmap.fromImage(qimg.copy())
+        return QPixmap.fromImage(_qimage_from_u8(u8))
 
     def _get_base_pixmap(self, which: str) -> QPixmap | None:
         """Get or create cached base pixmap for LF, HF, or Combined."""
@@ -1778,8 +1839,7 @@ class FrequencySeperationTab(QWidget):
                 return None
             if self._hf_dirty or self._hf_pixmap_cache is None:
                 # HF needs +0.5 offset for visualization
-                disp = self.high_freq_image + 0.5
-                self._hf_pixmap_cache = self._numpy_to_qpix(disp)
+                self._hf_pixmap_cache = self._numpy_to_qpix(self.high_freq_image, offset=0.5)
                 self._hf_dirty = False
             return self._hf_pixmap_cache
 
@@ -2199,10 +2259,13 @@ class FrequencySeperationTab(QWidget):
         if m is None or m.size == 0:
             return None, None, None
 
-        m = m.astype(np.float32, copy=False)
+        # Test the SOURCE dtype (after the float cast the integer branch could
+        # never fire), and rescale a copy: astype(copy=False) handed back the
+        # document's own float32 mask, which `m /= mx` then divided in place.
         if m.dtype.kind in "ui":
-            m /= float(np.iinfo(m.dtype).max)
+            m = m.astype(np.float32) / float(np.iinfo(m.dtype).max)
         else:
+            m = m.astype(np.float32)
             mx = float(m.max()) if m.size else 1.0
             if mx > 1.0:
                 m /= mx
@@ -2256,7 +2319,7 @@ class FrequencySeperationTab(QWidget):
             return processed, None, None, False
 
         import numpy as np
-        out = np.asarray(processed, dtype=np.float32, copy=False)
+        out = np.asarray(processed, dtype=np.float32)   # no copy= kwarg: numpy 1.x
 
         doc = self._doc_for_mask()
         src = getattr(doc, "image", None)

@@ -38,15 +38,19 @@ except Exception:
 
 def _as_qimage_rgb8(float01: np.ndarray) -> QImage:
     f = np.asarray(float01, dtype=np.float32)
+    if f.ndim == 3 and f.shape[2] == 1:
+        f = f[..., 0]
 
-    # Ensure 3-channel RGB for preview
-    if f.ndim == 2:
-        f = np.stack([f]*3, axis=-1)
-    elif f.ndim == 3 and f.shape[2] == 1:
-        f = np.repeat(f, 3, axis=2)
-
-    # [0,1] -> uint8 and force C-contiguous
+    # [0,1] -> uint8 and force C-contiguous. Mono is converted first and its
+    # bytes replicated to RGB (same bytes as stacking the floats, which built
+    # a 3x float copy of a 26 MP frame: 0.66 s on the GUI thread).
     buf8 = (np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8, copy=False)
+    if buf8.ndim == 2:
+        try:   # same bytes as np.repeat, which holds the GIL ~0.4 s on 26 MP
+            import cv2
+            buf8 = cv2.cvtColor(np.ascontiguousarray(buf8), cv2.COLOR_GRAY2RGB)
+        except Exception:
+            buf8 = np.repeat(buf8[..., None], 3, axis=2)
     buf8 = np.ascontiguousarray(buf8)
     h, w, _ = buf8.shape
     bpl = int(buf8.strides[0])
@@ -76,28 +80,33 @@ def _saturation_boost(rgb01: np.ndarray, amount: float) -> np.ndarray:
 # ---- background thread ----------------------------------------------------
 
 class _StarStretchWorker(QThread):
-    preview_ready = pyqtSignal(object)  # np.ndarray float32 0..1
+    # (np.ndarray float32 0..1, QImage of it or None). The QImage is built
+    # here when no mask will be blended in: converting a full frame to 8-bit
+    # on the GUI thread froze it 0.4-0.8 s per preview. QImage (not QPixmap)
+    # may be built off the GUI thread.
+    preview_ready = pyqtSignal(object, object)
 
-    def __init__(self, image: np.ndarray, stretch_factor: float, sat_amount: float, do_scnr: bool):
+    def __init__(self, image: np.ndarray, stretch_factor: float, sat_amount: float, do_scnr: bool,
+                 make_qimage: bool = False):
         super().__init__()
         self.image = image
         self.stretch_factor = float(stretch_factor)  # this is the "amount" for your pixel math
         self.sat_amount = float(sat_amount)
         self.do_scnr = bool(do_scnr)
+        self.make_qimage = bool(make_qimage)
 
     def run(self):
         imgf = _to_float01(self.image)
         if imgf is None:
             return
 
-        # If grayscale, make it 3-channel to keep the kernels happy, then restore shape
-        orig_ndim = imgf.ndim
+        # Grayscale goes through the (H, W, C) kernel as one channel and is
+        # collapsed back afterwards. Saturation and SCNR are RGB-only.
         need_collapse = False
         if imgf.ndim == 2:
-            imgf = np.stack([imgf]*3, axis=-1)
+            imgf = imgf[..., None]
             need_collapse = True
         elif imgf.ndim == 3 and imgf.shape[2] == 1:
-            imgf = np.repeat(imgf, 3, axis=2)
             need_collapse = True
 
         # --- Star Stretch: your Numba pixel math ---
@@ -116,7 +125,9 @@ class _StarStretchWorker(QThread):
         if need_collapse:
             out = out[..., 0]
 
-        self.preview_ready.emit(out.astype(np.float32, copy=False))
+        out = out.astype(np.float32, copy=False)
+        qimg = _as_qimage_rgb8(_to_float01(out)) if self.make_qimage else None
+        self.preview_ready.emit(out, qimg)
 
 # ---- dialog ---------------------------------------------------------------
 
@@ -422,13 +433,14 @@ class StarStretchDialog(QDialog):
             image=img,
             stretch_factor=self.sld_st.value()/100.0,
             sat_amount=self.sld_sat.value()/100.0,
-            do_scnr=self.chk_scnr.isChecked()
+            do_scnr=self.chk_scnr.isChecked(),
+            make_qimage=(self._active_mask_layer()[0] is None),
         )
         self._thr.preview_ready.connect(self._on_preview_ready)
         self._thr.finished.connect(self._on_worker_finished)
         self._thr.start()
 
-    def _on_preview_ready(self, out: np.ndarray):
+    def _on_preview_ready(self, out: np.ndarray, qimg=None):
         out_masked = self._blend_with_mask(out)
         self._preview = out_masked
 
@@ -438,7 +450,12 @@ class StarStretchDialog(QDialog):
         except Exception:
             self._preview_stale = False
 
-        self._update_preview_pix(out_masked)
+        if qimg is not None and out_masked is out:
+            # the worker already rendered exactly this array
+            self._pix = QPixmap.fromImage(qimg)
+            self._apply_zoom()
+        else:
+            self._update_preview_pix(out_masked)
 
         mw = self._find_main_window()
         if mw and hasattr(mw, "_log"):

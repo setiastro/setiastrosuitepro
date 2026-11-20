@@ -2515,6 +2515,9 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
         want_secondary = True; secondary_flag = "--stars-output"
     elif fam == "deep-gradient" and bool(preset.get("studio_dg_make_gradient", False)):
         want_secondary = True; secondary_flag = "--gradient-output"
+    elif fam == "gui" and bool(preset.get("studio_ax_make_stars", True)):
+        # The editor takes no --stars-output; the worker finds its layer.
+        want_secondary = True
 
     dlg = _ProcDialog(main, title="SyQon Studio Progress")
     dlg.append_text(f"Starting SyQon Studio ({mid})…\n")
@@ -2552,10 +2555,12 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
                 sec = np.asarray(secondary, dtype=np.float32)
                 if sec.ndim == 2:
                     sec = np.stack([sec] * 3, axis=-1)
-                if fam == "axiom":
-                    suffix, source = "_stars", "Stars-Only (SyQon Axiom)"
-                else:
+                if fam == "deep-gradient":
                     suffix, source = "_gradient", "Gradient (SyQon Deep Gradient)"
+                elif info.get("secondary_source") == "unscreen":
+                    suffix, source = "_stars", "Stars-Only (SyQon Axiom, unscreen)"
+                else:
+                    suffix, source = "_stars", "Stars-Only (SyQon Axiom)"
                 sec_push = sec.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else sec
                 _push_as_new_doc(main, doc, sec_push, title_suffix=suffix, source=source)
             except Exception:

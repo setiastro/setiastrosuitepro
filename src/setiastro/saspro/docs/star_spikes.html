@@ -59,7 +59,7 @@ p { margin: 6px 0; }
 <p>SEP (Source Extractor as Python) finds stars to spike:</p>
 <ul>
 <li><b>Flux Min</b> — minimum integrated star flux. Below this, no spike is drawn. Raise this to spike only the brightest stars (which is usually what looks best).</li>
-<li><b>Detection Threshold (σ)</b> — SEP sigma threshold above the measured background noise. Default 5.0. Raise for noisy images or dense fields.</li>
+<li><b>Detection Threshold (σ)</b> — SEP sigma threshold above the measured background noise. Default 5.0. Raise for noisy images or dense fields. On a very dense or nebulous frame, where more than 200,000 pixels are above this threshold, detection uses the lowest of σ 200, 100, 50, 25, 12 and 7 that stays under that budget, and the status line shows the σ it used. SEP's time grows steeply with the pixels above threshold: σ 5 on a deep Ha master took minutes.</li>
 </ul>
 
 <div class="warn">
@@ -145,7 +145,7 @@ Diffraction Spikes was developed by Franklin Marek as part of <a href="https://s
 <h3>9.5. Star detection with SEP</h3>
 <p>Detection uses SEP's background estimator and extractor against a <b>luminance proxy</b> computed from an un-stretched version of the image. The un-stretch applies the midtones transfer function (next section) with m = 0.95 to approximate the original linear data:</p>
 <div class="matheq">L = 0.2126\, R + 0.7152\, G + 0.0722\, B</div>
-<p>This is the Rec. 709 luminance weighting. SEP runs on L with the user-configured <b>Detection Threshold (σ)</b> above <code>bkg.globalrms</code>. Detected objects are filtered by flux and shape:</p>
+<p>This is the Rec. 709 luminance weighting. SEP runs on L with the user-configured <b>Detection Threshold (σ)</b> above <code>bkg.globalrms</code> (on a very dense field, the lowest higher σ that keeps the pixels above threshold within budget; see <b>Detection Threshold</b> above). Detected objects are filtered by flux and shape:</p>
 <ul>
 <li>Flux ≥ <code>flux_min</code> (user control)</li>
 <li>max(a, b) ≥ 1.0 (where a, b are the SEP semi-axes) — rejects single-pixel detections that are usually noise</li>

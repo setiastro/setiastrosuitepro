@@ -22,9 +22,30 @@ from setiastro.saspro.legacy.image_manager import load_image as legacy_load_imag
 from setiastro.saspro.legacy.numba_utils import applySCNR_numba, adjust_saturation_numba
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread
 
 # Optional: your stretch helpers (only used if you’d like to pre-stretch inputs)
 # from imageops.stretch import stretch_mono_image, stretch_color_image
+
+
+class _NBCombineJob(QThread):
+    """Preview Combine off the GUI thread: fn(**kwargs) -> dict through
+    `ready` ({"error": text} if it raised). No parent: started with
+    thread_keeper.start_owned_thread, so the window may close mid-run."""
+    ready = pyqtSignal(object)
+
+    def __init__(self, fn, kwargs):
+        super().__init__(None)
+        self._fn = fn
+        self._kwargs = kwargs
+
+    def run(self):
+        try:
+            out = self._fn(**self._kwargs)
+        except Exception as e:
+            out = {"error": str(e)}
+        self._kwargs = None
+        self.ready.emit(out)
 
 
 class NBtoRGBStars(QWidget):
@@ -70,6 +91,7 @@ class NBtoRGBStars(QWidget):
 
         # output
         self.final: np.ndarray | None = None
+        self._combine_thread = None      # Preview Combine worker
 
         # preview pixmap/zoom state
         self._base_pm: QPixmap | None = None
@@ -453,36 +475,58 @@ class NBtoRGBStars(QWidget):
             return
 
         self._spinner_on("Combining…")
+        thr = _NBCombineJob(self._combine_job, dict(
+            ha=self.ha, oiii=self.oiii, sii=self.sii, osc=self.osc,
+            ratio=self.sld_ratio.value() / 100.0,
+            star_stretch=self.chk_star_stretch.isChecked(),
+            stretch_k=self.sld_stretch.value() / 100.0,
+            sat_factor=self.sld_sat.value() / 100.0))
+        thr.ready.connect(self._on_combine_ready)
+        self._combine_thread = thr
+        start_owned_thread(thr)
+
+    def _on_combine_ready(self, res: dict):
+        self._combine_thread = None
+        if getattr(self, "_memory_released", False):
+            return                       # closed while it ran
         try:
-            ratio = self.sld_ratio.value() / 100.0
-            stretch_enabled = self.chk_star_stretch.isChecked()
-            stretch_factor = self.sld_stretch.value() / 100.0
-            sat_factor = self.sld_sat.value() / 100.0
-
-            # 1) combine (no SCNR here)
-            rgb = self._combine_nb_rgb(ratio, stretch_enabled, stretch_factor)
-
-            # 2) ensure float32 & contiguous for numba
-            rgb = np.ascontiguousarray(rgb.astype(np.float32))
-
-            # 3) SCNR (numba)
-            rgb = applySCNR_numba(rgb)
-
-            # 4) Saturation (numba)
-            if abs(sat_factor - 1.0) > 1e-3:
-                rgb = adjust_saturation_numba(rgb, sat_factor)
-
-            self.final = np.clip(rgb, 0.0, 1.0)
-
-            self._set_preview_image(self._to_qimage(self.final))
+            if "error" in res:
+                QMessageBox.critical(self, "Combine Error", res["error"])
+                return
+            self.final = res["final"]
+            self._set_preview_image(res["qimg"])
             self.status.setText("Preview updated.")
-        except Exception as e:
-            QMessageBox.critical(self, "Combine Error", str(e))
         finally:
             self._spinner_off()
 
+    @classmethod
+    def _combine_job(cls, ha, oiii, sii, osc, ratio, star_stretch, stretch_k, sat_factor):
+        """Worker: the whole Preview Combine on the captured inputs. Returns
+        the final image (what Push sends) and its preview QImage."""
+        # 1) combine (no SCNR here)
+        rgb = cls._combine_arrays(ha, oiii, sii, osc, ratio, star_stretch, stretch_k)
+
+        # 2) ensure float32 & contiguous for numba (no copy when it already is)
+        rgb = np.ascontiguousarray(rgb, dtype=np.float32)
+
+        # 3) SCNR (numba)
+        rgb = applySCNR_numba(rgb)
+
+        # 4) Saturation (numba)
+        if abs(sat_factor - 1.0) > 1e-3:
+            rgb = adjust_saturation_numba(rgb, sat_factor)
+
+        # rgb is the kernel's fresh output: clip it in place
+        final = np.clip(rgb, 0.0, 1.0, out=rgb)
+        return {"final": final, "qimg": cls._to_qimage(final)}
 
     def _combine_nb_rgb(self, ratio: float, star_stretch: bool, stretch_k: float) -> np.ndarray:
+        return self._combine_arrays(self.ha, self.oiii, self.sii, self.osc,
+                                    ratio, star_stretch, stretch_k)
+
+    @staticmethod
+    def _combine_arrays(ha_in, oiii_in, sii_in, osc, ratio: float, star_stretch: bool,
+                        stretch_k: float) -> np.ndarray:
         """
         Combine to RGB:
         - If OSC present: use channels from OSC, optionally blend Ha/SII/OO into them.
@@ -490,47 +534,51 @@ class NBtoRGBStars(QWidget):
         Shapes must match.
         """
         # Ensure shapes
-        shapes = [x.shape[:2] for x in (self.ha, self.oiii, self.sii) if x is not None]
-        if self.osc is not None:
-            shapes.append(self.osc.shape[:2])
+        shapes = [x.shape[:2] for x in (ha_in, oiii_in, sii_in) if x is not None]
+        if osc is not None:
+            shapes.append(osc.shape[:2])
         if shapes and len(set(shapes)) != 1:
             raise ValueError(f"Channel sizes differ: {set(shapes)}")
 
-        if self.osc is not None:
-            if self.osc.ndim == 2:
-                r = self.osc; g = self.osc; b = self.osc
-            elif self.osc.ndim == 3 and self.osc.shape[2] >= 3:
-                r = self.osc[...,0]; g = self.osc[...,1]; b = self.osc[...,2]
+        if osc is not None:
+            if osc.ndim == 2:
+                r = osc; g = osc; b = osc
+            elif osc.ndim == 3 and osc.shape[2] >= 3:
+                r = osc[...,0]; g = osc[...,1]; b = osc[...,2]
             else:
                  # fallback for unexpected shapes (e.g. 3D but 1-channel)
-                 r = self.osc.squeeze(); g = r; b = r
+                 r = osc.squeeze(); g = r; b = r
 
-            sii = self.sii if self.sii is not None else r
-            ha  = self.ha  if self.ha  is not None else r
-            oiii= self.oiii if self.oiii is not None else b
+            sii = sii_in if sii_in is not None else r
+            ha  = ha_in  if ha_in  is not None else r
+            oiii= oiii_in if oiii_in is not None else b
 
             r_out = 0.5*r + 0.5*sii
             g_out = ratio*ha + (1.0 - ratio)*g
             b_out = oiii
         else:
-            if self.ha is None or self.oiii is None:
+            if ha_in is None or oiii_in is None:
                 raise ValueError("Need Ha and OIII if no OSC image is provided.")
-            ha = self.ha
-            sii = self.sii if self.sii is not None else ha
-            oiii = self.oiii
+            ha = ha_in
+            sii = sii_in if sii_in is not None else ha
+            oiii = oiii_in
             r_out = 0.5*ha + 0.5*sii
             g_out = ratio*ha + (1.0 - ratio)*oiii
             b_out = oiii
 
-        rgb = np.stack([r_out, g_out, b_out], axis=2).astype(np.float32)
-        rgb = np.clip(rgb, 0, 1)
+        # In place from here on: the same float32 operations, fewer full-size copies.
+        rgb = np.stack([r_out, g_out, b_out], axis=2).astype(np.float32, copy=False)
+        np.clip(rgb, 0, 1, out=rgb)
 
         if star_stretch:
             # Simple non-linear boost; bounded and monotonic
             # ((3^k)*x) / ((3^k - 1)*x + 1)
             t = 3.0 ** float(stretch_k)
-            rgb = (t*rgb) / ((t - 1.0)*rgb + 1.0)
-            rgb = np.clip(rgb, 0, 1)
+            den = (t - 1.0)*rgb
+            den += 1.0
+            rgb *= t
+            rgb /= den
+            np.clip(rgb, 0, 1, out=rgb)
 
         return rgb
 

@@ -1249,6 +1249,9 @@ class HunterPipelineThread(QThread):
         super().__init__(parent)
         self._params = params
         self._cancel = threading.Event()
+        # Set once a worker process dies; every later pass of this run then
+        # uses threads. See _run_pool.
+        self._pool_broken = False
 
     def request_cancel(self):
         self._cancel.set()
@@ -1283,7 +1286,17 @@ class HunterPipelineThread(QThread):
         tuple containing numpy arrays, so using it as a dict key blew up
         with "unhashable type: 'numpy.ndarray'" and masked the real
         failure. Use the item's path (its first element) instead.
+
+        A dead worker must not cost the items queued behind it, either.
+        Reported 2026-11-18: a 19-frame load logged "worker crashed: A
+        process in the process pool was terminated abruptly..." for all 19
+        frames, then stopped on "Failed to load reference image". The items a
+        BrokenProcessPool took down are re-run here on threads -- the same
+        worker function, so the same result -- and the rest of the run skips
+        worker processes, as the stacking suite does when its pool breaks.
         """
+        from concurrent.futures.process import BrokenProcessPool
+
         def _err_result(it, msg):
             tag = it[0] if isinstance(it, (tuple, list)) and len(it) else it
             return (tag,) + (None,) * (n_fields - 2) + (msg,)
@@ -1291,21 +1304,50 @@ class HunterPipelineThread(QThread):
         total = len(items)
         done = 0
         self._emit(done, total, f"{label}: starting ({total} tasks, {workers} workers)")
-        with _make_executor(workers) as ex:
-            futs = {ex.submit(worker_fn, it): it for it in items}
-            for fut in as_completed(futs):
-                if self.cancelled:
-                    for f in futs:
-                        f.cancel()
-                    self._emit(done, total, f"{label}: cancelled")
-                    return
-                try:
-                    res = fut.result()
-                except Exception as e:
-                    res = _err_result(futs[fut], f"worker crashed: {e}")
-                done += 1
-                self._emit(done, total, f"{label}: {done}/{total}")
-                yield res
+        todo = list(items)
+        while todo:
+            on_threads = self._pool_broken
+            ex = (ThreadPoolExecutor(max_workers=workers) if on_threads
+                  else _make_executor(workers))
+            retry, broken = [], None
+            with ex:
+                futs = {}
+                for it in todo:
+                    try:
+                        futs[ex.submit(worker_fn, it)] = it
+                    except BrokenProcessPool as e:
+                        broken = e
+                        retry.append(it)
+                for fut in as_completed(futs):
+                    if self.cancelled:
+                        for f in futs:
+                            f.cancel()
+                        self._emit(done, total, f"{label}: cancelled")
+                        return
+                    try:
+                        res = fut.result()
+                    except BrokenProcessPool as e:
+                        broken = e
+                        retry.append(futs[fut])
+                        continue
+                    except Exception as e:
+                        res = _err_result(futs[fut], f"worker crashed: {e}")
+                    done += 1
+                    self._emit(done, total, f"{label}: {done}/{total}")
+                    yield res
+            if not retry:
+                return
+            if on_threads:             # a thread pool cannot break; never loop
+                for it in retry:
+                    done += 1
+                    yield _err_result(it, f"worker crashed: {broken}")
+                return
+            self._pool_broken = True
+            self.log.emit(
+                f"⚠ {label}: a worker process died ({broken}). Re-running the "
+                f"{len(retry)} unfinished item(s) on threads in this process; "
+                f"the rest of this run does not use worker processes.")
+            todo = retry
 
     # ---- the pipeline -----------------------------------------------------
 
@@ -1339,6 +1381,18 @@ class HunterPipelineThread(QThread):
 
             all_paths = [ref_path] + search_paths
             n_all = len(all_paths)
+
+            # Worker preflight, shared with the stacking suite and cached for
+            # the session: one probe process imports the scientific stack.
+            # When spawned workers can't (e.g. they pick up a different numpy
+            # than this process and numba refuses it), _make_executor gets
+            # threads for every pass below instead of a pool whose workers
+            # all die on import.
+            try:
+                from setiastro.saspro.worker_env import check_process_pools
+                check_process_pools(log_fn=self.log.emit)
+            except Exception:
+                pass
 
             # ── Stage 1: load + optional bin (parallel across the pool)
             # Pack (path, bin_factor) into a tuple so the worker is a plain

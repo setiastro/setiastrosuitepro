@@ -2,14 +2,16 @@
 from __future__ import annotations
 import numpy as np
 import math
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QSizePolicy, QWidget, QApplication,
+import threading
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QSizePolicy, QWidget,
                              QFormLayout, QGroupBox, QDoubleSpinBox, QSpinBox, 
                              QMessageBox, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem)
 
 from PyQt6.QtGui import QPixmap, QImage, QPainter
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread
 # deps
 try:
     import sep
@@ -39,9 +41,46 @@ class PreviewView(QGraphicsView):
         self.setRenderHints(self.renderHints() | QPainter.RenderHint.SmoothPixmapTransform)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
 
+class _SpikesJob(QThread):
+    """One step of a Generate (detect or render) off the GUI thread.
+
+    No parent, started with thread_keeper.start_owned_thread, so the dialog
+    may close mid-run. fn gets plain data only (no widgets) plus
+    report(text) and cancelled(); its dict comes back through `result`.
+    """
+    result = pyqtSignal(object)
+    progress = pyqtSignal(str)
+
+    def __init__(self, fn, kwargs, cancel_evt):
+        super().__init__(None)
+        self._fn = fn
+        self._kwargs = kwargs
+        self._cancel_evt = cancel_evt
+
+    def cancel(self):
+        self._cancel_evt.set()
+
+    def run(self):
+        try:
+            out = self._fn(report=self.progress.emit,
+                           cancelled=self._cancel_evt.is_set, **self._kwargs)
+        except Exception as e:
+            out = {"error": f"{type(e).__name__}: {e}"}
+        self._kwargs = None
+        self.result.emit(out)
+
+
 class StarSpikesDialogPro(QDialog):
     WARN_LIMIT = 1000
     MAX_AUTO_RETRIES = 2
+    # Detection threshold budget (see _detect_stars). SEP's time grows with
+    # the number of pixels over the threshold, faster than linearly, and
+    # sep.extract holds the GIL for the whole call, so the app is frozen for
+    # all of it. Measured 2026-11-19: 26 MP stretched Ha master, 93k px over
+    # sigma 50 -> 1.0 s, 212k over 25 -> 3.7 s, 1.28M over 5 -> 90-110 s;
+    # 22 MP OSC, 102k over 5 (stretched) -> 0.5 s, 199k over 5 (linear) -> 2.1 s.
+    DETECT_BUDGET_PX = 200_000
+    DETECT_LADDER = (200.0, 100.0, 50.0, 25.0, 12.0, 7.0)
 
     def __init__(self, parent=None, doc_manager=None,
                  initial_doc=None,
@@ -75,8 +114,12 @@ class StarSpikesDialogPro(QDialog):
         self._img_src = None       # float32, 2D or 3D, [0..1]
         self._img_src_doc = None   # which doc _img_src was read from
         self._result_doc = None    # which doc final_image was computed from
-        self._busy = False         # inside _run_impl (which pumps the event loop)
+        self._busy = False         # a Generate run is in flight (worker threads)
         self._pending_close = False
+        self._rerun_pending = False  # Generate clicked mid-run: run again after
+        self._run_ctx = None       # per-run state handed between the run's steps
+        self._cancel_evt = None    # set on close: the worker stops between steps
+        self._job = None
 
         # defaults (aligned to your SASv2 tool)
         self.advanced = {
@@ -339,9 +382,11 @@ class StarSpikesDialogPro(QDialog):
 
     def closeEvent(self, ev):
         if self._busy:
-            # Mid-run: the close arrived through processEvents(). Hide now,
-            # close for real once _run unwinds.
+            # Mid-run (the work is on a worker thread). Hide now, close for
+            # real once the run unwinds; the worker stops at its next step.
             self._pending_close = True
+            if self._cancel_evt is not None:
+                self._cancel_evt.set()
             try:
                 self.hide()
             except Exception:
@@ -438,25 +483,27 @@ class StarSpikesDialogPro(QDialog):
 
     # ---------- core ----------
     def _run(self):
-        """Guarded wrapper around the real work.
-
-        _run_impl calls processEvents() several times (and opens a modal
-        warning for dense fields), so the user can close the dialog
-        mid-run. WA_DeleteOnClose then deletes the widgets out from under
-        the remaining code. Defer the close until the run unwinds.
+        """Generate. The work runs on worker threads (_SpikesJob): detect,
+        then (after the "too many stars" question, if it comes up) render.
+        Only SEP's own calls hold the GIL, and _detect_stars keeps each
+        short. A click mid-run is queued: once the run lands it runs again
+        with the settings as they are then. A close mid-run hides the
+        window and closes it for real when the run unwinds.
         """
         if self._busy:
+            self._rerun_pending = True
+            self.status.setText("Working… will run again with the current settings.")
             return
         self._busy = True
         try:
-            self._run_impl()
-        finally:
-            self._busy = False
-            if self._pending_close:
-                self._pending_close = False
-                self.close()
+            started = self._start_run()
+        except Exception:
+            self._finish_run()
+            raise
+        if not started:
+            self._finish_run()
 
-    def _run_impl(self):
+    def _start_run(self) -> bool:
         # Resolve on every run so the dialog follows view switches instead of
         # being frozen to whatever was active when it opened.
         if self._follow_active:
@@ -468,46 +515,109 @@ class StarSpikesDialogPro(QDialog):
             self._load_active_image()
         if self._img_src is None:
             QMessageBox.information(self, "Diffraction Spikes", "No active image.")
-            return
-
-        # Capture the target locally: processEvents() below can deliver a
-        # subWindowActivated mid-run, and the mask lookup and Apply that follow
-        # must both refer to the image we actually processed.
-        run_doc = self.doc
+            return False
 
         # deps check
         if sep is None:
             QMessageBox.critical(self, "Missing Dependency", "python-sep is required for star detection.")
-            return
+            return False
         if gaussian_filter is None or ndi is None:
             QMessageBox.critical(self, "Missing Dependency", "scipy.ndimage is required.")
-            return
+            return False
 
-        self.status.setText("Detecting stars…")
-        QApplication.processEvents()
-        img = self._img_src
-        # un-stretch via midtones(0.95) for detection
-        if img.ndim == 3:
-            lin = img.copy()
-            for c in range(3):
-                lin[..., c] = self._midtones_m(lin[..., c], 0.95)
-            base = 0.2126*lin[...,0] + 0.7152*lin[...,1] + 0.0722*lin[...,2]
-        else:
-            lin = self._midtones_m(img, 0.95)
-            base = lin
-
-        # initial detection
+        # Capture the target for the whole run: a view switch mid-run must not
+        # move the mask lookup or the Apply that follow onto another image.
         thresh = float(self.detect_thresh.value())
-        stars = self._detect_stars(base,
-                                   threshold=thresh,
-                                   flux_min=self.flux_min.value(),
-                                   size_min=1.0)
+        self._run_ctx = {"doc": self.doc, "img": self._img_src, "thresh": thresh,
+                         "flux_min": float(self.flux_min.value()), "tries": 0}
+        self.status.setText("Detecting stars…")
+        self._launch(self._detect_job, self._on_detected, img=self._img_src,
+                     thresh=thresh, flux_min=self._run_ctx["flux_min"])
+        return True
+
+    def _launch(self, fn, slot, **kwargs):
+        self._cancel_evt = threading.Event()
+        job = _SpikesJob(fn, kwargs, self._cancel_evt)
+        job.result.connect(slot)
+        job.progress.connect(self.status.setText)
+        self._job = job
+        start_owned_thread(job)
+
+    def _finish_run(self):
+        self._busy = False
+        self._run_ctx = None
+        if self._pending_close:
+            self._pending_close = False
+            self.close()
+            return
+        if self._rerun_pending:
+            self._rerun_pending = False
+            self._run()
+
+    def _run_dropped(self, res) -> bool:
+        """True (and the run is finished) when this step's result must be
+        dropped: the run was cancelled, or the dialog is closing."""
+        if self._run_ctx is None or res.get("cancelled") or self._pending_close:
+            self._finish_run()
+            return True
+        return False
+
+    @classmethod
+    def _detect_job(cls, img, thresh, flux_min, report, cancelled,
+                    lin=None, base=None, prep=None):
+        """Worker: un-stretch, background, SEP. lin/base/prep from an earlier
+        pass of the same run are reused on a re-detect."""
+        if lin is None:
+            # un-stretch via midtones(0.95) for detection
+            if img.ndim == 3:
+                lin = img.copy()
+                for c in range(3):
+                    lin[..., c] = cls._midtones_m(lin[..., c], 0.95)
+                base = 0.2126*lin[...,0] + 0.7152*lin[...,1] + 0.0722*lin[...,2]
+            else:
+                lin = cls._midtones_m(img, 0.95)
+                base = lin
+        if cancelled():
+            return {"cancelled": True}
+        if prep is None:
+            prep = cls._detect_prep(base)
+        if cancelled():
+            return {"cancelled": True}
+        out = {"lin": lin, "base": base, "prep": prep}
+        try:
+            out["stars"], out["sigma"] = cls._detect_stars(
+                base, threshold=thresh, flux_min=flux_min, size_min=1.0, prep=prep)
+        except Exception as e:
+            out["stars"], out["sigma"], out["detect_error"] = [], thresh, str(e)
+        return out
+
+    def _on_detected(self, res: dict):
+        if self._run_dropped(res):
+            return
+        if "error" in res:
+            QMessageBox.critical(self, "Diffraction Spikes", f"Star detection failed:\n{res['error']}")
+            self._finish_run()
+            return
+        ctx = self._run_ctx
+        ctx.update(lin=res["lin"], base=res["base"], prep=res["prep"], sigma=float(res["sigma"]))
+        err = res.get("detect_error")
+        if err:
+            if "internal pixel buffer full" in err:
+                QMessageBox.warning(None, "Star Detection Failed",
+                                    "Star detection failed: internal pixel buffer full.\n"
+                                    "Increase detection threshold or minimum flux.")
+            else:
+                QMessageBox.critical(None, "Star Detection Failed", err)
+        stars = res["stars"]
+        thresh = ctx["thresh"]
 
         # interactive guardrail for dense fields
-        tries = 0
-        while len(stars) > self.WARN_LIMIT and tries < self.MAX_AUTO_RETRIES:
-            suggested = min(50.0, max(thresh + 1.0,
-                                      thresh * (len(stars) / float(self.WARN_LIMIT))**0.5))
+        if len(stars) > self.WARN_LIMIT and ctx["tries"] < self.MAX_AUTO_RETRIES:
+            # From the sigma SEP actually ran at: on a field too dense for the
+            # requested one, raising only the request would land on the same rung.
+            ref = max(thresh, ctx["sigma"])
+            suggested = min(50.0, max(ref + 1.0,
+                                      ref * (len(stars) / float(self.WARN_LIMIT))**0.5))
             msg = QMessageBox(self)
             msg.setWindowTitle("Too Many Stars Detected")
             msg.setIcon(QMessageBox.Icon.Warning)
@@ -518,70 +628,91 @@ class StarSpikesDialogPro(QDialog):
             cancel_btn= msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
             msg.setDefaultButton(raise_btn)
             msg.exec()
+            if self._pending_close:          # closed while the question was up
+                self._finish_run()
+                return
 
             clicked = msg.clickedButton()
             if clicked is raise_btn:
-                thresh = suggested
+                ctx["thresh"] = thresh = suggested
+                ctx["tries"] += 1
                 self.detect_thresh.setValue(thresh)  # reflect in UI
                 self.status.setText(f"Re-detecting stars at σ={thresh:.2f}…")
-                QApplication.processEvents()
-                stars = self._detect_stars(base,
-                                           threshold=thresh,
-                                           flux_min=self.flux_min.value(),
-                                           size_min=1.0)
-                tries += 1
-                continue
+                self._launch(self._detect_job, self._on_detected, img=ctx["img"],
+                             thresh=thresh, flux_min=ctx["flux_min"],
+                             lin=ctx["lin"], base=ctx["base"], prep=ctx["prep"])
+                return
             elif clicked is cont_btn:
-                break
-            else:  # cancel
+                pass
+            else:  # cancel (cancel_btn, or the box was closed)
                 self.status.setText("Cancelled.")
+                self._finish_run()
                 return
 
         if len(stars) == 0:
             self.status.setText("No stars found.")
             QMessageBox.information(self, "Diffraction Spikes", "No stars found above flux_min.")
+            self._finish_run()
             return
+        self._start_render(stars)
 
+    def _start_render(self, stars):
+        ctx = self._run_ctx
+        ctx["n_stars"] = len(stars)
         self.status.setText(f"Building pupil/PSFs… ({len(stars)} stars)")
-        QApplication.processEvents()
-        if self.pupil_jwst.isChecked():
-            if cv2 is None or not self.jwstpupil_path:
-                QMessageBox.critical(self, "Missing JWST Pupil",
-                                     "OpenCV not available or JWST pupil image path missing.")
-                return
-            pupil = self._load_pupil_from_png(self.jwstpupil_path, size=1024, rotation=self.rotation.value())
+        jwst = self.pupil_jwst.isChecked()
+        if jwst and (cv2 is None or not self.jwstpupil_path):
+            QMessageBox.critical(self, "Missing JWST Pupil",
+                                 "OpenCV not available or JWST pupil image path missing.")
+            self._finish_run()
+            return
+        p = {"jwst": jwst, "jwst_path": self.jwstpupil_path,
+             "radius": self.radius.value(), "obstruction": self.obstruction.value(),
+             "vane_width": self.vane_width.value(), "num_vanes": self.num_vanes.value(),
+             "rotation": self.rotation.value(), "blur_sigma": self.blur_sigma.value(),
+             "color_boost": self.color_boost.value(), "flux_min": self.flux_min.value(),
+             **{k: self.advanced[k] for k in ("flux_max", "bscale_min", "bscale_max",
+                                               "shrink_min", "shrink_max")}}
+        self._launch(self._render_job, self._on_rendered, img=ctx["img"], lin=ctx["lin"],
+                     stars=stars, p=p, mask=self._active_mask_array(ctx["doc"]))
+
+    @classmethod
+    def _render_job(cls, img, lin, stars, p, mask, report, cancelled):
+        """Worker: PSFs, spike synthesis, re-stretch, mask, preview bytes."""
+        if p["jwst"]:
+            pupil = cls._load_pupil_from_png(p["jwst_path"], size=1024, rotation=p["rotation"])
         else:
-            pupil = self._make_pupil(size=1024,
-                                     radius=self.radius.value(),
-                                     obstruction=self.obstruction.value(),
-                                     vane_width=self.vane_width.value(),
-                                     num_vanes=self.num_vanes.value(),
-                                     rotation=self.rotation.value())
+            pupil = cls._make_pupil(size=1024,
+                                    radius=p["radius"],
+                                    obstruction=p["obstruction"],
+                                    vane_width=p["vane_width"],
+                                    num_vanes=p["num_vanes"],
+                                    rotation=p["rotation"])
 
-        psf_r = self._simulate_psf(pupil, wavelength_scale=1.15, blur_sigma=self.blur_sigma.value())
-        psf_g = self._simulate_psf(pupil, wavelength_scale=1.00, blur_sigma=self.blur_sigma.value())
-        psf_b = self._simulate_psf(pupil, wavelength_scale=0.85, blur_sigma=self.blur_sigma.value())
+        psf_r = cls._simulate_psf(pupil, wavelength_scale=1.15, blur_sigma=p["blur_sigma"])
+        psf_g = cls._simulate_psf(pupil, wavelength_scale=1.00, blur_sigma=p["blur_sigma"])
+        psf_b = cls._simulate_psf(pupil, wavelength_scale=0.85, blur_sigma=p["blur_sigma"])
+        if cancelled():
+            return {"cancelled": True}
 
-        self.status.setText("Synthesizing spikes…")
-        QApplication.processEvents()
+        report("Synthesizing spikes…")
         H, W = img.shape[:2]
         canvas = np.zeros((H, W, 3), dtype=np.float32)
 
-        flux_max   = self.advanced["flux_max"]
-        bscale_min = self.advanced["bscale_min"]
-        bscale_max = self.advanced["bscale_max"]
-        shrink_min = self.advanced["shrink_min"]
-        shrink_max = self.advanced["shrink_max"]
-        color_boost = self.color_boost.value()
+        flux_min   = p["flux_min"]
+        flux_max   = p["flux_max"]
+        bscale_min = p["bscale_min"]
+        bscale_max = p["bscale_max"]
+        shrink_min = p["shrink_min"]
+        shrink_max = p["shrink_max"]
+        color_boost = p["color_boost"]
 
         # NOTE: do *not* `import cv2` here.  A function-body import binds the
-        # name as a local for the whole of _run_impl, which shadows the
-        # module-level cv2 and makes the `if cv2 is None` check in the JWST
-        # branch above raise UnboundLocalError.  Use the module-level symbol,
-        # which is already None-guarded at the top of this file.
+        # name as a local for the whole function, which shadows the
+        # module-level cv2 (None-guarded at the top of this file).
         _HAS_CV2 = cv2 is not None
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor
         def star_runner(x, y, flux, a, b):
             brightness = np.clip(np.log1p(flux)/8.0, 0.1, 3.0)
             tile_size  = int(256 + brightness*20)
@@ -594,16 +725,16 @@ class StarSpikesDialogPro(QDialog):
                 return None
 
             # Measure star color
-            r_ratio, g_ratio, b_ratio = self._measure_star_color(img, x, y, sampling_radius=3)
-            
+            r_ratio, g_ratio, b_ratio = cls._measure_star_color(img, x, y, sampling_radius=3)
+
             # Extract PSF tiles
-            tile_r = self._extract_center_tile(psf_r, tile_size) * brightness * r_ratio * color_boost
-            tile_g = self._extract_center_tile(psf_g, tile_size) * brightness * g_ratio * color_boost
-            tile_b = self._extract_center_tile(psf_b, tile_size) * brightness * b_ratio * color_boost
+            tile_r = cls._extract_center_tile(psf_r, tile_size) * brightness * r_ratio * color_boost
+            tile_g = cls._extract_center_tile(psf_g, tile_size) * brightness * g_ratio * color_boost
+            tile_b = cls._extract_center_tile(psf_b, tile_size) * brightness * b_ratio * color_boost
 
             # Boost/Shrink
-            b_scale, s_factor = self._boost_shrink_from_flux(flux, self.flux_min.value(), flux_max,
-                                                             bscale_min, bscale_max, shrink_min, shrink_max)
+            b_scale, s_factor = cls._boost_shrink_from_flux(flux, flux_min, flux_max,
+                                                            bscale_min, bscale_max, shrink_min, shrink_max)
 
             # --- Fast Resize (Zoom) ---
             def _fast_zoom(arr, z):
@@ -622,33 +753,36 @@ class StarSpikesDialogPro(QDialog):
 
             # --- Return Patch Data (y, x, patch) ---
             new_h, new_w = final_r.shape
-            
+
             # Coords of the *patch top-left* relative to the image
             # The star is at (x,y), and the patch center is approx (new_w//2, new_h//2)
             # We want to center the patch on the star.
             py0 = y - (new_h // 2)
             px0 = x - (new_w // 2)
-            
+
             # Combine channels
             patch = np.dstack((final_r, final_g, final_b)).astype(np.float32)
             return (int(py0), int(px0), patch)
 
         with ThreadPoolExecutor() as ex:
             futs = [ex.submit(star_runner, *s) for s in stars]
-            for f in as_completed(futs):
+            # Added in star order, not completion order: float addition is not
+            # associative where patches overlap, so completion order made the
+            # canvas differ in the last bits from one run to the next.
+            for f in futs:
                 res = f.result()
                 if res is None:
                     continue
-                
+
                 py0, px0, patch = res
                 ph, pw, _ = patch.shape
-                
+
                 # Calculate intersection with canvas
                 y_start = max(0, py0)
                 y_end   = min(H, py0 + ph)
                 x_start = max(0, px0)
                 x_end   = min(W, px0 + pw)
-                
+
                 # If no overlap, skip
                 if y_start >= y_end or x_start >= x_end:
                     continue
@@ -661,9 +795,10 @@ class StarSpikesDialogPro(QDialog):
 
                 # Add to canvas
                 canvas[y_start:y_end, x_start:x_end] += patch[patch_y_start:patch_y_end, patch_x_start:patch_x_end]
+        if cancelled():
+            return {"cancelled": True}
 
-        self.status.setText("Compositing…")
-        QApplication.processEvents()
+        report("Compositing…")
         if lin.ndim == 3:
             spiked_lin = np.clip(lin + canvas, 0, 1)
         else:
@@ -674,12 +809,12 @@ class StarSpikesDialogPro(QDialog):
         if spiked_lin.ndim == 3:
             spiked_final = np.empty_like(spiked_lin)
             for c in range(3):
-                spiked_final[..., c] = self._midtones_m(spiked_lin[..., c], 0.05)
+                spiked_final[..., c] = cls._midtones_m(spiked_lin[..., c], 0.05)
         else:
-            spiked_final = self._midtones_m(spiked_lin, 0.05)
+            spiked_final = cls._midtones_m(spiked_lin, 0.05)
 
         # ---- apply mask AFTER full processing ----
-        m = self._active_mask_array(run_doc)
+        m = mask
         if m is not None:
             if spiked_final.ndim == 3 and m.ndim == 2:
                 m = m[..., None]
@@ -689,11 +824,29 @@ class StarSpikesDialogPro(QDialog):
         else:
             final = spiked_final
 
-        self.final_image = final
+        arr8 = np.clip(final, 0, 1)
+        arr8 = (arr8 * 255.0).astype(np.uint8)
+        return {"final": final, "u8": arr8}
+
+    def _on_rendered(self, res: dict):
+        if self._run_dropped(res):
+            return
+        if "error" in res:
+            QMessageBox.critical(self, "Diffraction Spikes", f"Failed to generate spikes:\n{res['error']}")
+            self._finish_run()
+            return
+        ctx = self._run_ctx
+        run_doc = ctx["doc"]
+        self.final_image = res["final"]
         self._result_doc = run_doc
-        self._update_preview(final)
+        self._update_preview(res["u8"])
         self.btn_apply.setEnabled(True)
-        self.status.setText(f"Done — {self._doc_label(run_doc)}.")
+        note = ""
+        if ctx["sigma"] != ctx["thresh"]:
+            note = (f" {ctx['n_stars']} stars, detected at σ={ctx['sigma']:g}: this field has too "
+                    f"much faint signal over σ={ctx['thresh']:g} to detect it quickly.")
+        self.status.setText(f"Done — {self._doc_label(run_doc)}.{note}")
+        self._finish_run()
 
     def _apply_to_doc(self):
         if self.final_image is None:
@@ -731,9 +884,8 @@ class StarSpikesDialogPro(QDialog):
         # keep dialog open so user can tweak more if desired
 
     # ---------- helpers ----------
-    def _update_preview(self, arr):
-        arr8 = np.clip(arr, 0, 1)
-        arr8 = (arr8 * 255.0).astype(np.uint8)
+    def _update_preview(self, arr8):
+        """Show the uint8 preview the render worker made from final_image."""
         if arr8.ndim == 2:
             h, w = arr8.shape
             qimg = QImage(arr8.data, w, h, w, QImage.Format.Format_Grayscale8)
@@ -767,20 +919,24 @@ class StarSpikesDialogPro(QDialog):
     # ----- math from SASv2, adapted -----
     @staticmethod
     def _midtones_m(x, m):
+        # The formula over the whole array, then the three special values.
+        # Same float32 operations element by element as gathering the
+        # "other" pixels first, so byte-identical, at half the passes.
+        # (x==0, x==1 and |x-m|<eps are disjoint for m in (1e-7, 1-1e-7).)
         x = np.clip(x, 0.0, 1.0).astype(np.float32)
-        out = np.zeros_like(x, dtype=np.float32)
-        mask0 = (x == 0); out[mask0] = 0.0
-        mask1 = (x == 1); out[mask1] = 1.0
-        eps = 1e-7
-        maskm = (np.abs(x - m) < eps); out[maskm] = 0.5
-        mask_oth = ~(mask0 | mask1 | maskm)
-        xm = x[mask_oth]
-        num = (m - 1.0)*xm
-        den = (2.0*m - 1.0)*xm - m
-        out[mask_oth] = np.clip(num/(den+1e-12),0,1)
+        den = (2.0*m - 1.0) * x
+        den -= m
+        den += 1e-12
+        out = (m - 1.0) * x
+        out /= den
+        np.clip(out, 0, 1, out=out)
+        out[x == 0] = 0.0
+        out[x == 1] = 1.0
+        out[np.abs(x - m) < 1e-7] = 0.5
         return out
 
-    def _make_pupil(self, size=512, radius=100, obstruction=0.3, vane_width=2, num_vanes=4, rotation=0):
+    @staticmethod
+    def _make_pupil(size=512, radius=100, obstruction=0.3, vane_width=2, num_vanes=4, rotation=0):
         y, x = np.indices((size, size)) - size // 2
         r = np.sqrt(x**2 + y**2)
         pupil = (r <= radius).astype(np.float32)
@@ -793,7 +949,8 @@ class StarSpikesDialogPro(QDialog):
                 pupil[vane] = 0.0
         return pupil
 
-    def _load_pupil_from_png(self, filepath, size=1024, rotation=0.0):
+    @staticmethod
+    def _load_pupil_from_png(filepath, size=1024, rotation=0.0):
         img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
         if img is None:
             raise ValueError(f"Failed to load image from {filepath}")
@@ -807,7 +964,8 @@ class StarSpikesDialogPro(QDialog):
                                  borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         return img
 
-    def _simulate_psf(self, pupil, wavelength_scale=1.0, blur_sigma=1.0):
+    @staticmethod
+    def _simulate_psf(pupil, wavelength_scale=1.0, blur_sigma=1.0):
         # Module-level cv2 (None when OpenCV is unavailable).  Keep this a
         # plain lookup -- a function-body import would shadow it as a local.
         has_cv2 = cv2 is not None
@@ -868,27 +1026,48 @@ class StarSpikesDialogPro(QDialog):
         return cropped
 
     @staticmethod
-    def _detect_stars(image, threshold=5.0, flux_min=30.0, size_min=1.0):
+    def _detect_prep(image):
+        """Background-subtracted detection image and its global RMS."""
         data = image.astype(np.float32)
         bkg = sep.Background(data)
         data_sub = data - bkg.back()
-        err_val = bkg.globalrms
-        try:
-            objects = sep.extract(data_sub, threshold, err=err_val)
-        except Exception as e:
-            if "internal pixel buffer full" in str(e):
-                QMessageBox.warning(None, "Star Detection Failed",
-                                    "Star detection failed: internal pixel buffer full.\n"
-                                    "Increase detection threshold or minimum flux.")
-            else:
-                QMessageBox.critical(None, "Star Detection Failed", str(e))
-            return []
+        return data_sub, bkg.globalrms
+
+    @classmethod
+    def _affordable_sigma(cls, data_sub, err, threshold):
+        """threshold when at most DETECT_BUDGET_PX pixels lie over it; else the
+        lowest DETECT_LADDER rung above it that is (the top rung if none is)."""
+        def over(s):
+            return int(np.count_nonzero(data_sub > s * err))
+        if over(threshold) <= cls.DETECT_BUDGET_PX:
+            return threshold
+        rungs = [s for s in cls.DETECT_LADDER if s > threshold]   # descending
+        for s in reversed(rungs):
+            if over(s) <= cls.DETECT_BUDGET_PX:
+                return s
+        return rungs[0] if rungs else threshold
+
+    @classmethod
+    def _detect_stars(cls, image, threshold=5.0, flux_min=30.0, size_min=1.0, prep=None):
+        """Stars to spike, [(x, y, flux, a, b), ...], and the sigma SEP ran at.
+        Raises when SEP fails. Runs on the worker thread: no Qt here.
+
+        At the requested threshold whenever it is affordable: exactly the
+        old single sep.extract call. A field with more than
+        DETECT_BUDGET_PX pixels over it is detected at the lowest affordable
+        DETECT_LADDER rung instead (seconds, not minutes): what that drops
+        is faint signal, mostly nebula fragments, and fluxes are measured
+        inside a tighter isophote, so they come out somewhat lower.
+        """
+        data_sub, err_val = prep if prep is not None else cls._detect_prep(image)
+        sigma = cls._affordable_sigma(data_sub, err_val, threshold)
+        objects = sep.extract(data_sub, sigma, err=err_val)
         stars = []
         for obj in objects:
             flux = obj['flux']; a = obj['a']; b = obj['b']
             if flux >= flux_min and max(a,b) >= size_min:
                 stars.append((int(obj['x']), int(obj['y']), float(flux), float(a), float(b)))
-        return stars
+        return stars, sigma
 
     # _shrink_and_boost removed (replaced by inline _fast_zoom for performance)
 

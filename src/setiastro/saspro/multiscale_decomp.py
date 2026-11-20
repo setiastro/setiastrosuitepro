@@ -3,9 +3,10 @@ from __future__ import annotations
 import numpy as np
 import cv2
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from PyQt6.QtCore import Qt, QTimer, QRect, QRectF, QSettings, QByteArray
+from dataclasses import dataclass, replace
+from PyQt6.QtCore import Qt, QTimer, QRect, QRectF, QSettings, QByteArray, QThread, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap, QPen, QColor, QIcon, QMovie
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QFormLayout,
@@ -15,6 +16,8 @@ from PyQt6.QtWidgets import (
     QProgressDialog, QApplication
 )
 from contextlib import contextmanager
+from functools import partial
+from setiastro.saspro.thread_keeper import start_owned_thread
 from setiastro.saspro.resources import get_resources, multiscale_decomp_path
 from setiastro.saspro.widgets.before_after import (
     BeforeAfterCompare, display_stretch_params, apply_display_stretch,
@@ -107,6 +110,17 @@ class _ZoomPanView(QGraphicsView):
 # Core math (your backbone)
 # ─────────────────────────────────────────────
 
+_NOTED: set = set()
+
+
+def _note_once(msg: str) -> None:
+    """Print a fallback notice once per process, not once per blur call."""
+    if msg in _NOTED or len(_NOTED) > 64:
+        return
+    _NOTED.add(msg)
+    print(msg, flush=True)
+
+
 def _blur_gaussian(img: np.ndarray, sigma: float) -> np.ndarray:
     H, W = img.shape[:2]
     k_sz = int(max(3, 2 * round(3 * sigma) + 1)) | 1
@@ -122,7 +136,7 @@ def _blur_gaussian(img: np.ndarray, sigma: float) -> np.ndarray:
         result = _blur_gaussian_torch(img, sigma, k_sz)
         return result
     except Exception as e:
-        print(f"[BLUR] torch path failed ({e}), falling back to tiled", flush=True)
+        _note_once(f"[BLUR] torch path failed ({e}), falling back to tiled")
 
     # Torch unavailable — fall back to tiled scipy/cv2
     return _blur_gaussian_tiled(img, sigma, k_sz)
@@ -243,39 +257,231 @@ def _blur_gaussian_tiled(img: np.ndarray, sigma: float, k_sz: int) -> np.ndarray
 
     return out
 
-def multiscale_decompose(img01: np.ndarray, layers: int, base_sigma: float = 1.0):
-    img = img01.astype(np.float32, copy=False)
-    is_rgb = (img.ndim == 3 and img.shape[2] >= 3)
-    if not is_rgb:
-        return _decompose_channel(img, layers, base_sigma)
-    n_ch = img.shape[2]
-    channel_imgs = [img[:, :, ch] for ch in range(n_ch)]
-    with ThreadPoolExecutor(max_workers=min(n_ch, _N_WORKERS)) as ex:
-        results = list(ex.map(
-            lambda ch: _decompose_channel(channel_imgs[ch], layers, base_sigma),
-            range(n_ch)
-        ))
-    H, W = channel_imgs[0].shape
-    out_details = []
-    for k in range(layers):
-        arr = np.empty((H, W, n_ch), dtype=np.float32)
-        for ch in range(n_ch):
-            arr[:, :, ch] = results[ch][0][k]
-        out_details.append(arr)
-    residual = np.empty((H, W, n_ch), dtype=np.float32)
-    for ch in range(n_ch):
-        residual[:, :, ch] = results[ch][1]
-    return out_details, residual
+class _Cancelled(Exception):
+    """A superseded background job stopping between pyramid layers."""
 
-def _decompose_channel(img2d: np.ndarray, layers: int, base_sigma: float):
+
+def _check_cancel(cancelled):
+    if cancelled is not None and cancelled():
+        raise _Cancelled()
+
+
+def multiscale_decompose(img01: np.ndarray, layers: int, base_sigma: float = 1.0,
+                         cancelled=None):
+    return _decompose_pyramid(img01, layers, base_sigma, cancelled)
+
+
+def _decompose_channel(img2d: np.ndarray, layers: int, base_sigma: float,
+                       cancelled=None):
     """Serial pyramid for one channel — parallel blur within each layer."""
     c = img2d.astype(np.float32, copy=False)
     details = []
     for k in range(layers):
+        _check_cancel(cancelled)
         c_next = _blur_gaussian(c, base_sigma * (2 ** k))
         details.append(c - c_next)
         c = c_next
     return details, c
+
+
+def _decompose_pyramid(img01: np.ndarray, layers: int, base_sigma: float,
+                       cancelled=None):
+    """(details, residual) of the a-trous pyramid, colour as HWC.
+
+    Same values as running _decompose_channel on every plane (what this module
+    always did). With torch the running coarse image stays on the device from
+    one layer to the next instead of a host round trip per layer and plane;
+    without torch, or whenever the device path does not apply, it is that
+    per-plane path itself.
+    """
+    img = img01.astype(np.float32, copy=False)
+    layers = int(layers)
+    if img.ndim == 2:
+        planes = [img]
+    elif img.ndim == 3 and img.shape[2] >= 3:
+        planes = [img[:, :, ch] for ch in range(img.shape[2])]
+    else:
+        return _decompose_channel(img, layers, base_sigma, cancelled)
+    out = _decompose_planes_torch(img, planes, layers, base_sigma, cancelled)
+    if out is not None:
+        return out
+    return _decompose_planes_host(img, planes, layers, base_sigma, cancelled)
+
+
+def _decompose_planes_host(img, planes, layers, base_sigma, cancelled=None):
+    """_decompose_channel per plane (colour planes on threads), as HWC."""
+    if img.ndim == 2:
+        return _decompose_channel(img, layers, base_sigma, cancelled)
+    with ThreadPoolExecutor(max_workers=min(len(planes), _N_WORKERS)) as ex:
+        results = list(ex.map(
+            lambda p: _decompose_channel(p, layers, base_sigma, cancelled), planes))
+    details = []
+    for k in range(layers):
+        details.append(np.stack([r[0][k] for r in results], axis=2))
+        for r in results:
+            r[0][k] = None                  # each plane goes once it is interleaved
+    residual = np.stack([r[1] for r in results], axis=2)
+    return details, residual
+
+
+def _torch_for_blur():
+    """(torch, device) exactly as _blur_gaussian_torch picks them, or (None, None)."""
+    try:
+        import torch
+        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    except Exception:
+        return None, None
+    return torch, dev
+
+
+def _blur_plane_torch(torch, t, sigma: float, k_sz: int, device):
+    """One blur of a (1, 1, H, W) float32 tensor already on `device`.
+
+    The op sequence of _blur_gaussian_torch on a single plane (same kernel,
+    pads, convolution shapes and groups), so the values are the same; only
+    the host round trip around it is gone.
+    """
+    k1d = torch.tensor(
+        cv2.getGaussianKernel(k_sz, sigma).flatten(),
+        dtype=torch.float32
+    ).to(device)
+    pad = k_sz // 2
+    kh = k1d.view(1, 1, 1, k_sz).expand(1, 1, 1, k_sz).contiguous()
+    t = torch.nn.functional.pad(t, (pad, pad, 0, 0), mode='reflect')
+    t = torch.nn.functional.conv2d(t, kh, groups=1)
+    kv = k1d.view(1, 1, k_sz, 1).expand(1, 1, k_sz, 1).contiguous()
+    t = torch.nn.functional.pad(t, (0, 0, pad, pad), mode='reflect')
+    return torch.nn.functional.conv2d(t, kv, groups=1)
+
+
+def _vram_ok(torch, dev, plane_bytes: int, n_planes: int) -> bool:
+    """Room for the device-resident pyramid: running image, next level, one
+    layer's detail and the blur temporaries. Otherwise the per-call path (one
+    plane at a time) runs, as before."""
+    try:
+        free, _total = torch.cuda.mem_get_info(dev)
+        free += max(0, torch.cuda.memory_reserved(dev) - torch.cuda.memory_allocated(dev))
+    except Exception:
+        return True
+    return free > plane_bytes * (3 * n_planes + 4) * 1.15
+
+
+def _planes_to_device(torch, dev, hwc_img, planes):
+    H, W = planes[0].shape
+    if hwc_img is not None and hwc_img.ndim == 3:
+        whole = torch.from_numpy(np.ascontiguousarray(hwc_img)).to(dev)   # one upload
+        return [whole[:, :, ch].contiguous().view(1, 1, H, W)
+                for ch in range(whole.shape[2])]
+    return [torch.from_numpy(np.ascontiguousarray(p)).view(1, 1, H, W).to(dev)
+            for p in planes]
+
+
+def _pyramid_on_device(torch, dev, img, planes, sigmas, ks, cancelled):
+    H, W = planes[0].shape
+    hwc = img.ndim == 3
+    host = planes            # host planes while the running image is on the host
+    on_dev = None            # (1, 1, H, W) device tensors once it is on the device
+    details = []
+    for sigma, k_sz in zip(sigmas, ks):
+        _check_cancel(cancelled)
+        if sigma < 0.5:
+            # _blur_gaussian hands sigma < 0.5 to cv2: same call, on the host.
+            if host is None:
+                host = [p.view(H, W).cpu().numpy() for p in on_dev]
+                on_dev = None
+            nxt = [_blur_gaussian(p, sigma) for p in host]
+            det = [p - q for p, q in zip(host, nxt)]
+            details.append(np.stack(det, axis=2) if hwc else det[0])
+            host = nxt
+            continue
+        if on_dev is None:
+            on_dev = _planes_to_device(torch, dev, img if host is planes else None, host)
+            host = None
+        nxt = [_blur_plane_torch(torch, p, sigma, k_sz, dev) for p in on_dev]
+        if hwc:
+            # The colour interleave happens on the device: one download per layer.
+            d = torch.empty((H, W, len(nxt)), dtype=torch.float32, device=dev)
+            for ch, (p, q) in enumerate(zip(on_dev, nxt)):
+                d[:, :, ch] = (p - q).view(H, W)
+            details.append(d.cpu().numpy())
+            del d
+        else:
+            details.append((on_dev[0] - nxt[0]).view(H, W).cpu().numpy())
+        on_dev = nxt
+    if on_dev is None:
+        residual = np.stack(host, axis=2) if hwc else host[0]
+    elif hwc:
+        residual = torch.stack([p.view(H, W) for p in on_dev], dim=2).cpu().numpy()
+    else:
+        residual = on_dev[0].view(H, W).cpu().numpy()
+    return details, residual
+
+
+def _decompose_planes_torch(img, planes, layers, base_sigma, cancelled):
+    """Device-resident pyramid, or None to run the per-call path instead.
+
+    None whenever _blur_gaussian would not take the torch path for every
+    layer it could (small image, reflect pad wider than the image), when
+    torch is missing, or when the device runs out of room — the per-call
+    path then produces exactly what it always did.
+    """
+    H, W = planes[0].shape
+    if layers <= 0 or H * W < 256 * 256:
+        return None
+    sigmas = [base_sigma * (2 ** k) for k in range(layers)]
+    ks = [int(max(3, 2 * round(3 * s) + 1)) | 1 for s in sigmas]
+    if any(s >= 0.5 and (k // 2) >= min(H, W) for s, k in zip(sigmas, ks)):
+        return None
+    torch, dev = _torch_for_blur()
+    if torch is None:
+        return None
+    if dev.type == "cuda" and not _vram_ok(torch, dev, H * W * 4, len(planes)):
+        return None
+    try:
+        return _pyramid_on_device(torch, dev, img, planes, sigmas, ks, cancelled)
+    except _Cancelled:
+        raise
+    except Exception as e:
+        _note_once(f"[MSD] device pyramid unavailable ({type(e).__name__}: {e}); "
+                   f"using the per-call path")
+        if dev.type == "cuda":
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+        return None
+
+
+def _full_decomposition(work: np.ndarray, layers: int, base_sigma: float,
+                        cancelled=None):
+    """The dialog's whole-image pyramid: (details, residual, layer noise).
+
+    Noise is measured on channel 0 of a colour layer and on the whole plane
+    for mono, as the dialog always has.
+    """
+    img = work.astype(np.float32, copy=False)
+    details, residual = _decompose_pyramid(img, layers, base_sigma, cancelled)
+    # Finite input gives finite layers (normalised blurs of [0, 1] data and
+    # their differences), which lets _robust_sigma sample without copying.
+    finite = bool(np.isfinite(img).all())
+
+    def _sigma_for_layer(w):
+        if not w.size:
+            return 1e-6
+        if w.ndim == 3:
+            return _robust_sigma(w[:, :, 0], assume_finite=finite)
+        return _robust_sigma(w, assume_finite=finite)
+
+    noise = [_sigma_for_layer(w) for w in details]
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()     # hand the pyramid's VRAM back
+        except Exception:
+            pass
+    return details, residual, noise
+
 
 def multiscale_reconstruct(details, residual):
     out = residual.astype(np.float32, copy=True)
@@ -301,6 +507,11 @@ def detail_only_vis(out_raw, tuned, gain: float = 4.0):
     for w in tuned:
         if w is not None and w.any():
             n += 1
+    return _detail_vis_n(out_raw, n, gain)
+
+
+def _detail_vis_n(out_raw, n: int, gain: float = 4.0):
+    """detail_only_vis given the number of contributing layers."""
     n = max(1, n)
     d = out_raw.astype(np.float32, copy=False) / float(n)
     return np.clip(0.5 + d * float(gain), 0.0, 1.0).astype(np.float32, copy=False)
@@ -363,19 +574,32 @@ def apply_layer_ops(
         w2 = w2 * bias_gain
     return w2
 
-def _robust_sigma(arr: np.ndarray) -> float:
-    a = np.asarray(arr, dtype=np.float32).ravel()
-    # Remove non-finite values
-    a = a[np.isfinite(a)]
-    if a.size == 0:
-        return 1e-6
-
-    # For large arrays, use a grid subsample instead of random.choice
-    # Grid subsample is O(1) index math vs O(N) random permutation
+def _robust_sigma(arr: np.ndarray, assume_finite: bool = False) -> float:
     MAX_SAMPLES = 100_000
-    if a.size > MAX_SAMPLES:
-        step = a.size // MAX_SAMPLES
-        a = a[::step]
+    a0 = np.asarray(arr, dtype=np.float32)
+    if assume_finite and a0.size > MAX_SAMPLES:
+        # The same grid sample as below, gathered straight from the layer:
+        # with nothing non-finite to drop, element i of the filtered ravel is
+        # element i of the ravel, so the full-size ravel/isfinite/compress
+        # copies are not needed.
+        step = a0.size // MAX_SAMPLES
+        idx = np.arange(0, a0.size, step)
+        if a0.flags.c_contiguous:
+            a = a0.reshape(-1)[idx]
+        else:
+            a = a0[np.unravel_index(idx, a0.shape)]
+    else:
+        a = a0.ravel()
+        # Remove non-finite values
+        a = a[np.isfinite(a)]
+        if a.size == 0:
+            return 1e-6
+
+        # For large arrays, use a grid subsample instead of random.choice
+        # Grid subsample is O(1) index math vs O(N) random permutation
+        if a.size > MAX_SAMPLES:
+            step = a.size // MAX_SAMPLES
+            a = a[::step]
 
     med = np.median(a)
     mad = np.median(np.abs(a - med))
@@ -398,6 +622,468 @@ class LayerCfg:
     thr: float = 0.0              # soft threshold in detail domain
     amount: float = 0.0           # 0..1 blend toward thresholded
     denoise: float = 0.0          # 0..1 additional noise reduction
+
+
+# ─────────────────────────────────────────────
+# Row-block evaluation and background jobs
+# ─────────────────────────────────────────────
+
+# Elementwise float32 work is cut into row blocks of about this many values:
+# the whole op chain then runs in cache and on several cores. Every op is
+# elementwise, so the result is bit-identical to the whole-array evaluation.
+_BLOCK_ELEMS = 1 << 17
+_N_BLOCK_WORKERS = max(2, min(8, os.cpu_count() or 4))
+
+
+def _row_spans(shape) -> list:
+    rows = int(shape[0]) if len(shape) else 0
+    per_row = 1
+    for s in shape[1:]:
+        per_row *= int(s)
+    step = max(1, _BLOCK_ELEMS // max(1, per_row))
+    return [(r, min(rows, r + step)) for r in range(0, rows, step)]
+
+
+def _run_spans(fn, spans) -> list:
+    if len(spans) <= 1:
+        return [fn(sp) for sp in spans]
+    with ThreadPoolExecutor(max_workers=min(_N_BLOCK_WORKERS, len(spans))) as ex:
+        return list(ex.map(fn, spans))
+
+
+def _rep3(a: np.ndarray) -> np.ndarray:
+    """np.repeat(a[:, :, None], 3, axis=2) for a 2-D a, in row blocks: np.repeat
+    holds the GIL for its whole run (~0.3 s at 26 MP), which froze the GUI
+    even with the work on a thread. Same values."""
+    out = np.empty(a.shape[:2] + (3,), dtype=a.dtype)
+
+    def one(sp):
+        r0, r1 = sp
+        out[r0:r1] = a[r0:r1, :, None]
+
+    _run_spans(one, _row_spans(out.shape))
+    return out
+
+
+def _to_u8(img: np.ndarray) -> np.ndarray:
+    """np.clip(img * 255.0, 0, 255).astype(np.uint8), in row blocks."""
+    a = np.asarray(img)
+    out = np.empty(a.shape, dtype=np.uint8)
+
+    def one(sp):
+        r0, r1 = sp
+        out[r0:r1] = np.clip(a[r0:r1] * 255.0, 0, 255).astype(np.uint8)
+
+    _run_spans(one, _row_spans(a.shape))
+    return out
+
+
+def _rgb01_to_qimage(img: np.ndarray) -> QImage:
+    """The dialog's float [0, 1] -> 8-bit RGB display conversion, ending at a
+    detached QImage, so it can run off the GUI thread (a QPixmap cannot).
+    Same pixels, already in RGB32: QPixmap.fromImage would otherwise convert
+    RGB888 on the GUI thread (~90 ms for 22 MP)."""
+    arr = _to_u8(img)
+    h, w = arr.shape[:2]
+    if arr.ndim == 2:
+        arr = _rep3(arr)
+    arr = np.ascontiguousarray(arr)
+    q = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+    return q.convertToFormat(QImage.Format.Format_RGB32)
+
+
+def _base_qimage(img: np.ndarray, cancelled=None) -> QImage:
+    return _rgb01_to_qimage(img)
+
+
+def _ops_noop(cfg: LayerCfg, mode: str) -> bool:
+    """apply_layer_ops would hand the layer back untouched."""
+    gain_off = abs(cfg.bias_gain - 1.0) <= 1e-6
+    if (mode or "").strip().lower().startswith("linear"):
+        return gain_off
+    return gain_off and not (cfg.denoise > 0.0) and not (cfg.thr > 0.0)
+
+
+def _tune_one(w, cfg: LayerCfg, sigma, i: int, mode: str, pass_index: bool):
+    """One layer through apply_layer_ops exactly as the dialog calls it.
+    pass_index=False reproduces Send/Split, which never passed layer_index."""
+    if not cfg.enabled:
+        return np.zeros_like(w)
+    if pass_index:
+        return apply_layer_ops(w, cfg.bias_gain, cfg.thr, cfg.amount, cfg.denoise,
+                               sigma, layer_index=i, mode=mode)
+    return apply_layer_ops(w, cfg.bias_gain, cfg.thr, cfg.amount, cfg.denoise,
+                           sigma, mode=mode)
+
+
+def _blockable(w, cfg: LayerCfg, sigma, mode: str) -> bool:
+    """Row blocks give the whole-layer result unless apply_layer_ops has to
+    measure sigma itself (that is a whole-layer statistic)."""
+    if w.ndim == 0 or w.shape[0] < 2:
+        return False
+    if sigma is not None or not cfg.enabled:
+        return True
+    if (mode or "").strip().lower().startswith("linear"):
+        return True
+    return not (cfg.denoise > 0.0) and not (cfg.thr > 0.0)
+
+
+def _tune_layer(w, cfg: LayerCfg, sigma, i: int, mode: str, pass_index: bool = True):
+    """_tune_one for a whole layer, in row blocks on threads."""
+    if not cfg.enabled:
+        return np.zeros_like(w)
+    if _ops_noop(cfg, mode) or not _blockable(w, cfg, sigma, mode):
+        return _tune_one(w, cfg, sigma, i, mode, pass_index)
+    out = np.empty(w.shape, dtype=np.float32)
+
+    def one(sp):
+        r0, r1 = sp
+        out[r0:r1] = _tune_one(w[r0:r1], cfg, sigma, i, mode, pass_index)
+
+    _run_spans(one, _row_spans(w.shape))
+    return out
+
+
+def _tuned_reconstruct(details, residual, cfgs, layer_noise, mode: str,
+                       residual_enabled: bool, *, pass_index: bool = True,
+                       clip01: bool = False):
+    """multiscale_reconstruct(tuned, residual or zeros) — optionally clipped
+    to [0, 1] — plus which tuned layers are non-zero (detail_only_vis's count),
+    without holding the tuned layers: row blocks on threads.
+
+    Bit-identical to tuning whole layers and summing them: every step is
+    elementwise float32, the sum keeps the same order (residual, then layer
+    0, 1, ...), and each layer keeps the sigma measured on the whole layer.
+    """
+    n = len(details)
+    sig = [layer_noise[i] if layer_noise and i < len(layer_noise) else None
+           for i in range(n)]
+    if not all(_blockable(details[i], cfgs[i], sig[i], mode) for i in range(n)):
+        tuned = [_tune_one(details[i], cfgs[i], sig[i], i, mode, pass_index)
+                 for i in range(n)]
+        res = residual if residual_enabled else np.zeros_like(residual)
+        out = multiscale_reconstruct(tuned, res)
+        flags = [bool(t is not None and t.any()) for t in tuned]
+        if clip01:
+            out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+        return out, flags
+
+    out = np.empty(residual.shape, dtype=np.float32)
+
+    def one(sp):
+        r0, r1 = sp
+        r = residual[r0:r1]
+        o = (r if residual_enabled else np.zeros_like(r)).astype(np.float32, copy=True)
+        hit = []
+        for i in range(n):
+            t = _tune_one(details[i][r0:r1], cfgs[i], sig[i], i, mode, pass_index)
+            o += t
+            hit.append(bool(t.any()))
+        if clip01:
+            o = np.clip(o, 0.0, 1.0)
+        out[r0:r1] = o
+        return hit
+
+    hits = _run_spans(one, _row_spans(residual.shape))
+    flags = [any(h[i] for h in hits) for i in range(n)]
+    return out, flags
+
+
+def _blend_masked(base: np.ndarray, out: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Standard SASpro mask blend: base * (1 - m) + out * m (see
+    MultiscaleDecompDialog._blend_with_mask)."""
+    if out.ndim == 3:
+        # (H, W, 1) and (H, W, 3) both need an extra axis for broadcast.
+        m = mask[..., None]
+    else:
+        m = mask
+    result = (base.astype(np.float32) * (1.0 - m)
+              + out.astype(np.float32) * m)
+    if not np.isfinite(result).all():
+        return out
+    return result.astype(np.float32)
+
+
+def _restore_and_mask(out: np.ndarray, s: dict) -> np.ndarray:
+    """Back to the document's shape, then the active-mask blend (Apply and
+    Send to New Document)."""
+    if s["orig_mono"]:
+        if out.ndim == 3:
+            out2d = out[:, :, 0]
+        else:
+            out2d = out
+        if len(s["orig_shape"]) == 2:
+            out_final = out2d.astype(np.float32, copy=False)
+        else:
+            out_final = out2d[:, :, None].astype(np.float32, copy=False)
+    else:
+        if out.ndim == 2:
+            out_final = np.repeat(out[:, :, None], 3, axis=2).astype(np.float32, copy=False)
+        else:
+            out_final = out[:, :, :3].astype(np.float32, copy=False)
+
+    # Base is the image captured at dialog open — the exact source the
+    # decomposition was computed from.
+    mask2d = s["mask"]
+    if mask2d is not None:
+        base_src = s["orig_for_mask"].astype(np.float32, copy=False)
+        if out_final.ndim == 2:
+            base_match = base_src[..., 0]
+        elif out_final.ndim == 3 and out_final.shape[2] == 1:
+            base_match = base_src[..., 0:1]
+        else:
+            base_match = base_src
+        out_final = _blend_masked(base_match, out_final, mask2d)
+    return out_final
+
+
+def _split_outputs(s: dict):
+    """Split Layers to Documents: ([(title, image) per detail layer], (title, residual))."""
+    details, residual, noise = s["details"], s["residual"], s["noise"]
+    orig_mono, orig_shape = s["orig_mono"], s["orig_shape"]
+    mask2d = s["mask"]
+    entries = []
+    for i, w in enumerate(details):
+        sigma = noise[i] if noise is not None and i < len(noise) else None
+        d = _tune_layer(w, s["cfgs"][i], sigma, i, s["mode"], pass_index=False)
+        d = d.astype(np.float32, copy=False)
+        vis = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
+        del d
+        if orig_mono:
+            # multiscale_decompose returns 2D detail layers for mono input.
+            mono = vis[..., 0] if vis.ndim == 3 else vis
+            if len(orig_shape) == 3 and orig_shape[2] == 1:
+                out_final = mono[:, :, None].astype(np.float32, copy=False)
+            else:
+                out_final = mono.astype(np.float32, copy=False)
+        else:
+            out_final = vis
+        # Outside the mask: flat 0.5 grey, the "zero detail" baseline.
+        if mask2d is not None:
+            neutral = np.full_like(out_final, 0.5, dtype=np.float32)
+            out_final = _blend_masked(neutral, out_final, mask2d)
+        entries.append((f"Multiscale Detail Layer {i+1}", out_final))
+
+    res = residual.astype(np.float32, copy=False)
+    res_img = np.clip(res, 0.0, 1.0)
+    if orig_mono:
+        mono = res_img[..., 0] if res_img.ndim == 3 else res_img
+        if len(orig_shape) == 3 and orig_shape[2] == 1:
+            res_final = mono[:, :, None].astype(np.float32, copy=False)
+        else:
+            res_final = mono.astype(np.float32, copy=False)
+    else:
+        res_final = res_img
+    # Outside the mask the ORIGINAL image, so detail_1 + ... + residual still
+    # recombines to the source there.
+    if mask2d is not None:
+        base_src = s["orig_for_mask"].astype(np.float32, copy=False)
+        if res_final.ndim == 2:
+            base_match = base_src[..., 0]
+        elif res_final.ndim == 3 and res_final.shape[2] == 1:
+            base_match = base_src[..., 0:1]
+        else:
+            base_match = base_src
+        res_final = _blend_masked(base_match, res_final, mask2d)
+    return entries, ("Multiscale Residual Layer", res_final)
+
+
+def _action_compute(s: dict, cancelled=None):
+    """The numbers behind Apply / Send to New Document / Split Layers."""
+    kind = s["kind"]
+    if kind == "split":
+        return _split_outputs(s)
+    # Apply passes layer_index (denoise grows with the layer); Send never did.
+    by_index = (kind == "apply")
+    if s["residual_enabled"]:
+        out, _ = _tuned_reconstruct(s["details"], s["residual"], s["cfgs"], s["noise"],
+                                    s["mode"], True, pass_index=by_index, clip01=True)
+    else:
+        out_raw, flags = _tuned_reconstruct(s["details"], s["residual"], s["cfgs"],
+                                            s["noise"], s["mode"], False,
+                                            pass_index=by_index)
+        out = _detail_vis_n(out_raw, sum(flags))
+    return _restore_and_mask(out, s)
+
+
+def _preview_stretch_params(s: dict):
+    p = s.get("stretch")
+    if p is None:
+        p = display_stretch_params(s["work"], target_median=0.25, linked=False,
+                                   blackpoint_sigma=3.0, ignore_zeros=True)
+        s["stretch"] = p
+        s["stretch_new"] = True
+    return p
+
+
+def _stretch_for_preview(img: np.ndarray, s: dict) -> np.ndarray:
+    """MultiscaleDecompDialog._apply_preview_stretch on a snapshot."""
+    if img.ndim == 2:
+        img3 = _rep3(img)
+    else:
+        img3 = img
+    if not s["autostretch"]:
+        return img3
+    try:
+        return apply_display_stretch(img3, _preview_stretch_params(s))
+    except Exception:
+        return img3
+
+
+def _roi_preview_image(s: dict, cancelled=None):
+    """Fast ROI preview of the visible area: (float RGB crop, rect) or (None, None)."""
+    vis = s.get("vis")
+    if vis is None:
+        return None, None
+    x0, y0, x1, y1 = vis
+    H, W = s["image_shape"][:2]
+
+    MAX = 1400
+    w = x1 - x0
+    h = y1 - y0
+    if w > MAX:
+        cx = (x0 + x1) // 2
+        x0 = max(0, cx - MAX // 2)
+        x1 = min(W, x0 + MAX)
+    if h > MAX:
+        cy = (y0 + y1) // 2
+        y0 = max(0, cy - MAX // 2)
+        y1 = min(H, y0 + MAX)
+
+    layers = s["layers"]
+    base_sigma = s["base_sigma"]
+    if layers <= 0:
+        return None, None
+
+    sigma_max = base_sigma * (2 ** (layers - 1))
+    pad = int(np.ceil(3.0 * sigma_max)) + 2
+    px0 = max(0, x0 - pad)
+    py0 = max(0, y0 - pad)
+    px1 = min(W, x1 + pad)
+    py1 = min(H, y1 + pad)
+
+    crop = s["work"][py0:py1, px0:px1].astype(np.float32, copy=False)
+    details, residual = multiscale_decompose(crop, layers=layers, base_sigma=base_sigma,
+                                             cancelled=cancelled)
+    finite = bool(np.isfinite(crop).all())
+    layer_noise = [_robust_sigma(d, assume_finite=finite) if d.size else 1e-6
+                   for d in details]
+
+    cx0 = x0 - px0
+    cy0 = y0 - py0
+    sel = s["sel"]
+    if sel is not None and sel not in ("final", "residual"):
+        # Detail layer — skip stretch, mid-gray viz
+        i = int(sel)
+        t = _tune_layer(details[i], s["cfgs"][i], layer_noise[i], i, s["mode"])
+        vis_img = np.clip(0.5 + (t * 4.0), 0.0, 1.0).astype(np.float32, copy=False)
+        if vis_img.ndim == 2:
+            vis_img = _rep3(vis_img)
+        return vis_img[cy0:cy0 + (y1 - y0), cx0:cx0 + (x1 - x0)], (x0, y0, x1, y1)
+
+    if sel == "residual":
+        out = np.clip(residual, 0.0, 1.0).astype(np.float32, copy=False)
+        out = _stretch_for_preview(out, s)
+    elif not s["residual_enabled"]:
+        # Mid-grey visualisation, already display-scaled: not stretched,
+        # same as the full-frame path.
+        out_raw, flags = _tuned_reconstruct(details, residual, s["cfgs"], layer_noise,
+                                            s["mode"], False)
+        out = _detail_vis_n(out_raw, sum(flags))
+        if out.ndim == 2:
+            out = _rep3(out)
+    else:
+        out, _ = _tuned_reconstruct(details, residual, s["cfgs"], layer_noise,
+                                    s["mode"], True, clip01=True)
+        out = _stretch_for_preview(out, s)
+
+    cx1 = cx0 + (x1 - x0)
+    cy1 = cy0 + (y1 - y0)
+    return out[cy0:cy1, cx0:cx1], (x0, y0, x1, y1)
+
+
+def _full_preview_image(s: dict) -> np.ndarray:
+    """Full-frame preview (Fast ROI off) from the cached whole-image pyramid."""
+    details, residual, noise = s["details"], s["residual"], s["noise"]
+    sel = s["sel"]
+    if sel is not None and sel not in ("final", "residual"):
+        # Detail layer view — skip stretch, mid-gray viz is already scaled
+        i = int(sel)
+        sigma = noise[i] if noise and i < len(noise) else None
+        t = _tune_layer(details[i], s["cfgs"][i], sigma, i, s["mode"])
+        vis = np.clip(0.5 + (t * 4.0), 0.0, 1.0).astype(np.float32, copy=False)
+        if vis.ndim == 2:
+            vis = _rep3(vis)
+        return vis
+    if sel == "residual":
+        return _stretch_for_preview(np.clip(residual, 0, 1), s)
+    if not s["residual_enabled"]:
+        out_raw, flags = _tuned_reconstruct(details, residual, s["cfgs"], noise,
+                                            s["mode"], False)
+        vis = _detail_vis_n(out_raw, sum(flags))
+        if vis.ndim == 2:
+            vis = _rep3(vis)
+        return vis
+    # Autostretch applies here — on the linear reconstruct
+    out, _ = _tuned_reconstruct(details, residual, s["cfgs"], noise, s["mode"], True,
+                                clip01=True)
+    return _stretch_for_preview(out, s)
+
+
+def _preview_job(s: dict, cancelled=None) -> dict:
+    """Everything a preview needs, ending at QImages for the GUI thread."""
+    out = {"kind": s["kind"], "qimage": None, "rect": None,
+           "before": None, "before_key": s["autostretch"], "stretch": None}
+    if s["kind"] == "roi":
+        img, rect = _roi_preview_image(s, cancelled)
+        if img is not None:
+            out["qimage"] = _rgb01_to_qimage(img)
+            out["rect"] = rect
+    else:
+        out["qimage"] = _rgb01_to_qimage(_full_preview_image(s))
+    if s["need_before"]:
+        # The comparison's "before": the source through the same display stretch.
+        out["before"] = _rgb01_to_qimage(_stretch_for_preview(s["image"], s))
+    if s.get("stretch_new"):
+        out["stretch"] = s["stretch"]
+    return out
+
+
+class _MSDJob(QThread):
+    """One unit of Multiscale work off the GUI thread.
+
+    Parentless and started with thread_keeper.start_owned_thread, so the
+    dialog can close (and be deleted) mid-run. Results leave through `result`
+    (None when cancelled), never through a shadowed `finished`.
+    """
+    result = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, fn, key=None):
+        super().__init__(None)
+        self._fn = fn
+        self.key = key
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def _cancelled(self) -> bool:
+        return self._cancel or self.isInterruptionRequested()
+
+    def run(self):
+        fn, self._fn = self._fn, None
+        try:
+            out = fn(self._cancelled)
+        except _Cancelled:
+            out = None
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.failed.emit(f"{type(e).__name__}: {e}")
+            return
+        self.result.emit(out)
+
 
 
 # ─────────────────────────────────────────────
@@ -426,6 +1112,19 @@ class MultiscaleDecompDialog(QDialog):
         self._layer_noise = None  # list[float] per detail layer
         self._cached_coarse = None
         self._cached_img_id = None
+        # Background work (_MSDJob): at most one job of each kind at a time.
+        self._closing = False
+        self._base_job = None        # source -> base/before pixmap at open
+        self._decomp_job = None      # whole-image pyramid (Apply, full-frame preview)
+        self._preview_job = None     # ROI or full-frame preview
+        self._action_job = None      # Apply / Send / Split numbers
+        self._decomp_waiters = []
+        self._decomp_failed_key = None
+        self._preview_again = False
+        self._full_wait = False
+        self._action_kind = None
+        self._action_prog = None
+        self._action_cursor = False
         self._doc = doc
         base = getattr(doc, "image", None)
         if base is None:
@@ -444,20 +1143,22 @@ class MultiscaleDecompDialog(QDialog):
         self._orig_shape = img.shape
         self._orig_mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
 
-        # Keep a mono working image for computation, 3ch only for display
+        # Keep a mono working image for computation, 3ch only for display.
+        # `img` is private (np.clip made it) and nothing here writes into these
+        # arrays, so they share it rather than holding four copies.
         if img.ndim == 2:
-            self._image_work = img.copy()          # (H, W) — used for decomp
-            img3 = np.repeat(img[:, :, None], 3, axis=2)
+            self._image_work = img                 # (H, W) — used for decomp
+            img3 = _rep3(img)
         elif img.ndim == 3 and img.shape[2] == 1:
-            self._image_work = img[:, :, 0].copy() # (H, W)
-            img3 = np.repeat(img, 3, axis=2)
+            self._image_work = np.ascontiguousarray(img[:, :, 0]) # (H, W)
+            img3 = _rep3(self._image_work)
         else:
-            self._image_work = img[:, :, :3].copy() # RGB stays as-is
+            self._image_work = np.ascontiguousarray(img[:, :, :3]) # RGB stays as-is
             img3 = img[:, :, :3]
 
-        self._image = img3.copy()      # 3ch for display only
-        self._orig_for_mask = img3.copy()
-        self._preview_img = img3.copy()
+        self._image = img3             # 3ch for display only
+        self._orig_for_mask = img3
+        self._preview_img = img3
 
         # decomposition cache
         self._cached_layers = None
@@ -474,6 +1175,13 @@ class MultiscaleDecompDialog(QDialog):
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._rebuild_preview)
 
+        # Whole-image pyramid for Apply, rebuilt in the background once a
+        # layers/sigma change has settled.
+        self._prefetch_timer = QTimer(self)
+        self._prefetch_timer.setSingleShot(True)
+        self._prefetch_timer.setInterval(700)
+        self._prefetch_timer.timeout.connect(self._prefetch_decomp)
+
         # One display stretch for before, after and every ROI crop (lazy).
         self._disp_stretch = None
         self._pm_before_key = None
@@ -486,30 +1194,16 @@ class MultiscaleDecompDialog(QDialog):
 
         # Headless preset apply drives seed_from_preset()+_commit_to_doc() itself,
         # both of which recompute the pyramid on demand — so skip the interactive
-        # init compute, the modal progress dialog, and the initial preview/fit.
+        # init compute and the initial preview/fit.
         if not self._headless:
-            # ───── NEW: initialization busy dialog ─────
-            prog = QProgressDialog("Initializing multiscale decomposition…", "", 0, 0, self)
-            prog.setWindowTitle("Multiscale Decomposition")
-            prog.setWindowModality(Qt.WindowModality.ApplicationModal)
-            prog.setCancelButton(None)          # no cancel button, just a busy indicator
-            prog.setMinimumDuration(0)          # show immediately
-            prog.show()
-            QApplication.processEvents()
-
-            # heavy work (MADs, blurs, etc.)
-            import time
-            _t = time.perf_counter()
-            self._recompute_decomp(force=True)
-            print(f"[DECOMP] total _recompute_decomp: {(time.perf_counter()-_t)*1000:.1f}ms", flush=True)
-
-            _t = time.perf_counter()
-            self._rebuild_preview()
-            print(f"[PREVIEW] _rebuild_preview: {(time.perf_counter()-_t)*1000:.1f}ms", flush=True)
-
-            prog.close()
-            # ─────────────── END NEW ───────────────
-
+            # Layers table, preview combo and editor for the opening layer count
+            # (this used to happen at the end of the synchronous pyramid build).
+            self._sync_cfgs_and_ui()
+            # The dialog opens at once. The source goes up as the base image —
+            # with the opening settings the reconstruction is the source — and
+            # the whole-image pyramid Apply needs is built off the GUI thread.
+            self._start_base_job()
+            self._request_decomp(None)
             QTimer.singleShot(0, self._fit_view)
 
 
@@ -1012,16 +1706,7 @@ class MultiscaleDecompDialog(QDialog):
         channels. Base and out must share the same shape; the caller
         is responsible for shape reconciliation.
         """
-        if out.ndim == 3:
-            # (H, W, 1) and (H, W, 3) both need an extra axis for broadcast.
-            m = mask[..., None]
-        else:
-            m = mask
-        result = (base.astype(np.float32) * (1.0 - m)
-                  + out.astype(np.float32) * m)
-        if not np.isfinite(result).all():
-            return out
-        return result.astype(np.float32)
+        return _blend_masked(base, out, mask)
 
     # ---------- Preview plumbing ----------
     def _spinner_on(self):
@@ -1098,118 +1783,185 @@ class MultiscaleDecompDialog(QDialog):
         except Exception:
             pass
 
+    def _decomp_key(self):
+        return (int(self.spin_layers.value()), float(self.spin_sigma.value()), id(self._image))
+
+    def _decomp_ready(self) -> bool:
+        return (self._cached_layers is not None and self._cached_residual is not None
+                and self._cached_key == self._decomp_key())
+
+    def _store_decomp(self, key, details, residual, noise):
+        self._cached_layers = details
+        self._cached_residual = residual
+        self._layer_noise = noise
+        self._cached_key = key
+        # Never consumed: the shrink path that read it could not be reached
+        # (a layer change always rebuilds), and summing it cost ~1.5 s.
+        self._cached_coarse = None
+
     def _recompute_decomp(self, force: bool = False):
-        # at the top of _recompute_decomp, after the force/cache check:
-        import time
-        _t_decomp_start = time.perf_counter()        
+        """Whole-image pyramid on the calling thread (headless Apply). The
+        interactive dialog builds it off the GUI thread: _request_decomp()."""
         layers = int(self.spin_layers.value())
         base_sigma = float(self.spin_sigma.value())
-        img_id = id(self._image)
-        key = (base_sigma, img_id)
-
-        if force or self._cached_key != key or self._cached_layers is None or self._cached_coarse is None:
-            self.layers = layers
-            self.base_sigma = base_sigma
-            img = getattr(self, '_image_work', self._image).astype(np.float32, copy=False)
-            is_rgb = (img.ndim == 3 and img.shape[2] >= 3)
-
-            if is_rgb:
-                n_ch = img.shape[2]
-                channel_imgs = [img[:, :, ch] for ch in range(n_ch)]
-                with ThreadPoolExecutor(max_workers=min(n_ch, _N_WORKERS)) as ex:
-                    results = list(ex.map(
-                        lambda ch: _decompose_channel(channel_imgs[ch], layers, base_sigma),
-                        range(n_ch)
-                    ))
-                H, W = channel_imgs[0].shape
-                details_list, coarse_list = [], []
-                for k in range(layers):
-                    d = np.empty((H, W, n_ch), dtype=np.float32)
-                    c = np.empty((H, W, n_ch), dtype=np.float32)
-                    for ch in range(n_ch):
-                        d[:, :, ch] = results[ch][0][k]
-                        # coarse[k] = sum of details[k+1:] + residual
-                        c_ch = results[ch][1].copy()
-                        for j in range(k + 1, layers):
-                            c_ch += results[ch][0][j]
-                        c[:, :, ch] = c_ch
-                    details_list.append(d)
-                    coarse_list.append(c)
-                residual = np.empty((H, W, n_ch), dtype=np.float32)
-                for ch in range(n_ch):
-                    residual[:, :, ch] = results[ch][1]
-            else:
-                details_list, coarse_list = [], []
-                c = img
-                for k in range(layers):
-                    _t = time.perf_counter()
-                    c_next = _blur_gaussian(c, base_sigma * (2 ** k))
-                    details_list.append(c - c_next)
-                    coarse_list.append(c_next)
-                    c = c_next
-                residual = c
-
-            self._cached_layers = details_list
-            self._cached_coarse = coarse_list
-            self._cached_residual = residual
-            self._cached_key = key
-
-            # For display-expanded mono (HWC where all 3 channels are identical),
-            # only compute sigma on one channel — all three are the same data.
-            def _sigma_for_layer(w):
-                if not w.size:
-                    return 1e-6
-                if w.ndim == 3:
-                    return _robust_sigma(w[:, :, 0])  # all channels identical for mono
-                return _robust_sigma(w)
-
-            self._layer_noise = [_sigma_for_layer(w) for w in self._cached_layers]
-
-            self._sync_cfgs_and_ui()
-
-            return
-
-        old_layers = len(self._cached_layers)
         self.layers = layers
         self.base_sigma = base_sigma
-
-        if layers == old_layers:
-            self._sync_cfgs_and_ui()
-            return
-
-        if layers < old_layers:
-            self._cached_layers = self._cached_layers[:layers]
-            self._cached_coarse = self._cached_coarse[:layers]
-            self._layer_noise   = self._layer_noise[:layers]
-            self._cached_residual = (
-                self._cached_coarse[layers - 1] if layers > 0
-                else self._image.astype(np.float32, copy=False)
-            )
-            self._sync_cfgs_and_ui()
-            return
-
-        # Grow
-        c = self._cached_residual
-        is_rgb = (c.ndim == 3 and c.shape[2] >= 3)
-        for k in range(old_layers, layers):
-            sigma = base_sigma * (2 ** k)
-            if is_rgb:
-                n_ch = c.shape[2]
-                with ThreadPoolExecutor(max_workers=min(n_ch, _N_WORKERS)) as ex:
-                    blurred = list(ex.map(
-                        lambda ch: _blur_gaussian(c[:, :, ch], sigma),
-                        range(n_ch)
-                    ))
-                c_next = np.stack(blurred, axis=2).astype(np.float32, copy=False)
-            else:
-                c_next = _blur_gaussian(c, sigma)
-            w = c - c_next
-            self._cached_layers.append(w)
-            self._cached_coarse.append(c_next)
-            self._layer_noise.append(_robust_sigma(w) if w.size else 1e-6)
-            c = c_next
-        self._cached_residual = c
+        if force or not self._decomp_ready():
+            details, residual, noise = _full_decomposition(self._image_work, layers, base_sigma)
+            self._store_decomp(self._decomp_key(), details, residual, noise)
         self._sync_cfgs_and_ui()
+
+    # ---------- background work ----------
+    def _start_job(self, attr: str, fn, on_result, on_failed, key=None):
+        job = _MSDJob(fn, key)
+        job.result.connect(on_result)
+        job.failed.connect(on_failed)
+        setattr(self, attr, job)
+        start_owned_thread(job)
+        self._update_busy()
+        return job
+
+    def _update_busy(self):
+        if getattr(self, "_closing", False):
+            return
+        jobs = (self._base_job, self._decomp_job, self._preview_job, self._action_job)
+        if self._full_wait or any(j is not None for j in jobs):
+            self._spinner_on()
+        else:
+            self._spinner_off()
+        # The overlay only while the view itself is waiting (no image yet, or a
+        # full-frame preview); ROI previews and the background pyramid just spin.
+        if self._base_job is not None or self._full_wait:
+            if not self._busy_show_timer.isActive() and not self.busy_label.isVisible():
+                self._busy_show_timer.start(120)
+        else:
+            self._busy_show_timer.stop()
+            self.busy_label.hide()
+
+    def _stop_jobs(self):
+        """Closing: stop listening to background work and cancel what can be.
+        A running job ends on its own thread; thread_keeper holds it until then."""
+        self._closing = True
+        for name in ("_prefetch_timer", "_preview_timer", "_busy_show_timer"):
+            tm = getattr(self, name, None)
+            if tm is not None:
+                try:
+                    tm.stop()
+                except RuntimeError:
+                    pass
+        for attr in ("_base_job", "_decomp_job", "_preview_job", "_action_job"):
+            job = getattr(self, attr, None)
+            setattr(self, attr, None)
+            if job is None:
+                continue
+            for sig in (job.result, job.failed):
+                try:
+                    sig.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+            job.cancel()
+        self._decomp_waiters = []
+        self._action_kind = None
+        self._close_action_progress()
+        self._spinner_off()
+
+    def _start_base_job(self):
+        self._start_job("_base_job", partial(_base_qimage, self._image),
+                        self._on_base_result, self._on_base_failed)
+
+    def _on_base_result(self, qimg):
+        self._base_job = None
+        if self._closing:
+            return
+        if qimg is not None:
+            self._show_base(QPixmap.fromImage(qimg))
+        self._update_busy()
+
+    def _on_base_failed(self, msg: str):
+        self._base_job = None
+        if self._closing:
+            return
+        print(f"[MSD] base image failed off-thread ({msg}); building it here", flush=True)
+        try:
+            self._show_base(self._np_to_qpix(self._image))
+        except Exception:
+            pass
+        self._update_busy()
+
+    def _show_base(self, pm: QPixmap):
+        # With the opening settings (every layer on at gain 1, no threshold,
+        # residual on) the reconstruction is the source, so the source is the
+        # opening base image. A full-frame preview that landed first is newer.
+        if self.pix_base.pixmap().isNull():
+            self.pix_base.setPixmap(pm)
+            self.pix_base.setOffset(0, 0)
+        if self._pm_before_key is None:
+            # Opening "before": the source without autostretch — this image.
+            self._pm_before_key = False
+            self._cmp.set_before(pm)
+        H, W = self._image.shape[:2]
+        self._cmp.set_image_size(W, H)
+        self._fit_view()            # also schedules the first ROI preview
+
+    def _request_decomp(self, then=None):
+        """Have the whole-image pyramid for the current layers/sigma, building
+        it off the GUI thread. then() runs on the GUI thread once it is there,
+        or once building it failed (then() checks _decomp_ready())."""
+        if self._closing:
+            return
+        if self._decomp_ready():
+            if then is not None:
+                then()
+            return
+        if then is not None and then not in self._decomp_waiters:
+            self._decomp_waiters.append(then)
+        key = self._decomp_key()
+        job = self._decomp_job
+        if job is not None:
+            if job.key != key:
+                job.cancel()        # superseded; its end starts the current one
+            return
+        self._start_job("_decomp_job",
+                        partial(_full_decomposition, self._image_work, key[0], key[1]),
+                        self._on_decomp_result, self._on_decomp_failed, key=key)
+
+    def _prefetch_decomp(self):
+        """Build the pyramid in the background, so Apply finds it ready."""
+        if self._closing or self._headless:
+            return
+        if self._decomp_failed_key == self._decomp_key():
+            return
+        self._request_decomp(None)
+
+    def _on_decomp_result(self, payload):
+        job, self._decomp_job = self._decomp_job, None
+        if self._closing:
+            return
+        if payload is not None and job is not None and job.key == self._decomp_key():
+            details, residual, noise = payload
+            self._store_decomp(job.key, details, residual, noise)
+        self._after_decomp(failed=False)
+
+    def _on_decomp_failed(self, msg: str):
+        job, self._decomp_job = self._decomp_job, None
+        if self._closing:
+            return
+        print(f"[MSD] decomposition failed: {msg}", flush=True)
+        if job is not None:
+            self._decomp_failed_key = job.key
+        self._after_decomp(failed=True)
+
+    def _after_decomp(self, failed: bool):
+        if self._decomp_ready() or failed:
+            waiters, self._decomp_waiters = self._decomp_waiters, []
+            for fn in waiters:
+                if not self._closing:
+                    fn()
+        elif self._decomp_waiters:
+            self._request_decomp(None)      # settings moved on: build the current one
+        else:
+            self._prefetch_timer.start()
+        self._update_busy()
 
     def _sync_cfgs_and_ui(self):
         # ensure cfg list matches layer count (your existing logic, just moved)
@@ -1269,158 +2021,122 @@ class MultiscaleDecompDialog(QDialog):
         return tuned, residual
 
     def _rebuild_preview(self):
+        """Preview-timer slot: compute the preview off the GUI thread. A change
+        that arrives while one is running queues exactly one re-run with the
+        settings current at that point."""
         if getattr(self, "_closing", False):
             return
-        self._spinner_on()
-        QTimer.singleShot(0, self._rebuild_preview_impl)
-
-
-    def _rebuild_preview_impl(self):
-            if getattr(self, "_closing", False):
+        if self._base_job is not None:
+            return                  # the base image's arrival fits and previews
+        if self._preview_job is not None:
+            self._preview_again = True
+            return
+        s = self._preview_snapshot()
+        if s is None:
+            self._full_wait = False
+            self._update_busy()
+            return
+        if s["kind"] == "full":
+            if not self._decomp_ready():
+                if self._decomp_failed_key == self._decomp_key():
+                    self._full_wait = False
+                    self._update_busy()
+                    return
+                self._full_wait = True
+                self._request_decomp(self._rebuild_preview)
+                self._update_busy()
                 return
+            s["details"] = self._cached_layers
+            s["residual"] = self._cached_residual
+            s["noise"] = self._layer_noise
+        self._full_wait = (s["kind"] == "full")
+        self._start_job("_preview_job", partial(_preview_job, s),
+                        self._on_preview_result, self._on_preview_failed)
 
-            try:
-                roi_ok = (
-                    getattr(self, "cb_fast_roi_preview", None) is not None
-                    and self.cb_fast_roi_preview.isChecked()
-                    and not self.pix_base.pixmap().isNull()
-                )
+    def _preview_snapshot(self, kind: str | None = None):
+        """Everything a preview reads from the widgets, read here on the GUI thread."""
+        if kind is None:
+            roi_ok = (
+                getattr(self, "cb_fast_roi_preview", None) is not None
+                and self.cb_fast_roi_preview.isChecked()
+                and not self.pix_base.pixmap().isNull()
+            )
+            kind = "roi" if roi_ok else "full"
+        autostretch = bool(self.cb_autostretch.isChecked())
+        s = {
+            "kind": kind,
+            "work": getattr(self, '_image_work', self._image),
+            "image": self._image,
+            "image_shape": self._image.shape,
+            "layers": int(self.spin_layers.value()),
+            "base_sigma": float(self.spin_sigma.value()),
+            "cfgs": [replace(c) for c in self.cfgs],
+            "mode": self.combo_mode.currentText(),
+            "residual_enabled": bool(self.residual_enabled),
+            "sel": self.combo_preview.currentData(),
+            "autostretch": autostretch,
+            "stretch": self._disp_stretch,
+            "need_before": self._pm_before_key != autostretch,
+        }
+        if kind == "roi":
+            s["vis"] = self._visible_image_rect()
+            if s["vis"] is None:
+                return None
+        return s
 
-                if roi_ok:
-                    roi_img, roi_rect = self._compute_preview_roi()
-                    if roi_img is None:
-                        return
-                    self._refresh_pix_roi(roi_img, roi_rect)
-                    return
-
-                # Full-frame preview
-                tuned, residual = self._build_tuned_layers()
-                if tuned is None or residual is None:
-                    return
-
-                res = residual if self.residual_enabled else np.zeros_like(residual)
-                out_raw = multiscale_reconstruct(tuned, res)
-                out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
-
-                sel = self.combo_preview.currentData()
-                if sel is None or sel == "final":
-                    if not self.residual_enabled:
-                        vis = detail_only_vis(out_raw, tuned)
-                        if vis.ndim == 2:
-                            vis = np.repeat(vis[:, :, None], 3, axis=2)
-                        self._preview_img = vis
-                    else:
-                        # Autostretch applies here — on the linear reconstruct
-                        self._preview_img = self._apply_preview_stretch(out)
-                elif sel == "residual":
-                    r = np.clip(residual, 0, 1)
-                    self._preview_img = self._apply_preview_stretch(r)
+    def _on_preview_result(self, out):
+        self._preview_job = None
+        if self._closing:
+            return
+        if out is not None:
+            if out.get("stretch") is not None and self._disp_stretch is None:
+                self._disp_stretch = out["stretch"]
+            if out.get("before") is not None:
+                self._pm_before_key = out["before_key"]
+                self._cmp.set_before(QPixmap.fromImage(out["before"]))
+            qimg = out.get("qimage")
+            if qimg is not None:
+                pm = QPixmap.fromImage(qimg)
+                if out["kind"] == "roi":
+                    x0, y0 = out["rect"][:2]
+                    self.pix_roi.setPixmap(pm)
+                    self.pix_roi.setOffset(x0, y0)
                 else:
-                    # Detail layer view — skip stretch, mid-gray viz is already scaled
-                    w = tuned[int(sel)]
-                    vis = np.clip(0.5 + (w * 4.0), 0.0, 1.0).astype(np.float32, copy=False)
-                    if vis.ndim == 2:
-                        vis = np.repeat(vis[:, :, None], 3, axis=2)
-                    self._preview_img = vis
+                    self.pix_base.setPixmap(pm)
+                    self.pix_base.setOffset(0, 0)
+                    # Clear the ROI overlay on a full refresh
+                    self.pix_roi.setPixmap(QPixmap())
+                    self.pix_roi.setOffset(0, 0)
+                # Keep scene bounds as full image, not ROI
+                H, W = self._image.shape[:2]
+                self._cmp.set_image_size(W, H)
+        self._preview_done()
 
-                self._refresh_pix()
+    def _on_preview_failed(self, msg: str):
+        self._preview_job = None
+        if self._closing:
+            return
+        print(f"[MSD] preview failed: {msg}", flush=True)
+        self._preview_done()
 
-            finally:
-                self._spinner_off()
-
+    def _preview_done(self):
+        self._full_wait = False
+        if self._preview_again:
+            self._preview_again = False
+            self._rebuild_preview()
+        self._update_busy()
 
     def _compute_preview_roi(self):
-        vis = self._visible_image_rect()
-        if vis is None:
+        """Fast ROI preview of the visible area on the calling thread: (float
+        RGB crop, rect). The dialog runs the same computation off the GUI
+        thread (_rebuild_preview)."""
+        s = self._preview_snapshot(kind="roi")
+        if s is None:
             return None, None
-
-        x0, y0, x1, y1 = vis
-
-        MAX = 1400
-        w = x1 - x0
-        h = y1 - y0
-        if w > MAX:
-            cx = (x0 + x1) // 2
-            x0 = max(0, cx - MAX // 2)
-            x1 = min(self._image.shape[1], x0 + MAX)
-        if h > MAX:
-            cy = (y0 + y1) // 2
-            y0 = max(0, cy - MAX // 2)
-            y1 = min(self._image.shape[0], y0 + MAX)
-
-        layers = int(self.spin_layers.value())
-        base_sigma = float(self.spin_sigma.value())
-        if layers <= 0:
-            return None, None
-
-        sigma_max = base_sigma * (2 ** (layers - 1))
-        pad = int(np.ceil(3.0 * sigma_max)) + 2
-
-        H, W = self._image.shape[:2]
-        px0 = max(0, x0 - pad)
-        py0 = max(0, y0 - pad)
-        px1 = min(W, x1 + pad)
-        py1 = min(H, y1 + pad)
-
-        work = getattr(self, '_image_work', self._image)
-        crop = work[py0:py1, px0:px1].astype(np.float32, copy=False)
-
-        details, residual = multiscale_decompose(crop, layers=layers, base_sigma=base_sigma)
-        layer_noise = [_robust_sigma(w) if w.size else 1e-6 for w in details]
-
-        mode = self.combo_mode.currentText()
-
-        def do_one(i_w):
-            i, w = i_w
-            cfg = self.cfgs[i]
-            if not cfg.enabled:
-                return i, np.zeros_like(w)
-            return i, apply_layer_ops(
-                w, cfg.bias_gain, cfg.thr, cfg.amount, cfg.denoise,
-                layer_noise[i], layer_index=i, mode=mode
-            )
-
-        tuned = [None] * len(details)
-        max_workers = min(os.cpu_count() or 4, len(details) or 1)
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            for i, out in ex.map(do_one, enumerate(details)):
-                tuned[i] = out
-
-        res = residual if self.residual_enabled else np.zeros_like(residual)
-        out_raw = multiscale_reconstruct(tuned, res)
-
-        sel = self.combo_preview.currentData()
-
-        if sel is not None and sel not in ("final", "residual"):
-            # Detail layer — skip stretch, mid-gray viz
-            w = tuned[int(sel)]
-            vis = np.clip(0.5 + (w * 4.0), 0.0, 1.0).astype(np.float32, copy=False)
-            if vis.ndim == 2:
-                vis = np.repeat(vis[:, :, None], 3, axis=2)
-            cx0 = x0 - px0
-            cy0 = y0 - py0
-            return vis[cy0:cy0+(y1-y0), cx0:cx0+(x1-x0)], (x0, y0, x1, y1)
-
-        if sel == "residual":
-            out = np.clip(residual, 0.0, 1.0).astype(np.float32, copy=False)
-            out = self._apply_preview_stretch(out)
-        elif not self.residual_enabled:
-            # Mid-grey visualisation, already display-scaled: not stretched,
-            # same as the full-frame path.
-            out = detail_only_vis(out_raw, tuned)
-            if out.ndim == 2:
-                out = np.repeat(out[:, :, None], 3, axis=2)
-        else:
-            out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
-            out = self._apply_preview_stretch(out)
-
-        cx0 = x0 - px0
-        cy0 = y0 - py0
-        cx1 = cx0 + (x1 - x0)
-        cy1 = cy0 + (y1 - y0)
-
-        roi = out[cy0:cy1, cx0:cx1]
-        return roi, (x0, y0, x1, y1)
+        roi, rect = _roi_preview_image(s)
+        if s.get("stretch_new") and self._disp_stretch is None:
+            self._disp_stretch = s["stretch"]
+        return roi, rect
 
 
     def _update_param_widgets_for_mode(self):
@@ -1496,12 +2212,7 @@ class MultiscaleDecompDialog(QDialog):
         self._cmp.set_before(self._np_to_qpix(self._apply_preview_stretch(self._image)))
 
     def _np_to_qpix(self, img: np.ndarray) -> QPixmap:
-        arr = np.ascontiguousarray(np.clip(img * 255.0, 0, 255).astype(np.uint8))
-        h, w = arr.shape[:2]
-        if arr.ndim == 2:
-            arr = np.repeat(arr[:, :, None], 3, axis=2)
-        qimg = QImage(arr.data, w, h, 3*w, QImage.Format.Format_RGB888)
-        return QPixmap.fromImage(qimg)
+        return QPixmap.fromImage(_rgb01_to_qimage(img))
 
     def _refresh_pix(self):
         pm = self._np_to_qpix(self._preview_img)
@@ -1520,11 +2231,19 @@ class MultiscaleDecompDialog(QDialog):
         return bool(getattr(self, "cb_fast_roi_preview", None)) and self.cb_fast_roi_preview.isChecked()
 
     def _invalidate_full_decomp_cache(self):
+        if self._cached_layers is not None and self._cached_key == self._decomp_key():
+            return              # same layers/sigma: the pyramid still holds
         self._cached_layers = None
         self._cached_coarse = None
         self._cached_residual = None
         self._cached_key = None
         self._layer_noise = None
+        self._decomp_failed_key = None
+        job = self._decomp_job
+        if job is not None and job.key != self._decomp_key():
+            job.cancel()
+        if not self._headless and not getattr(self, "_closing", False):
+            self._prefetch_timer.start()
 
 
     def _fit_view(self):
@@ -1786,14 +2505,10 @@ class MultiscaleDecompDialog(QDialog):
         # Ensure cfgs length matches new layer count and table/combos update
         self._sync_cfgs_and_ui()
 
-        if self._fast_preview_enabled():
-            # Do NOT recompute full pyramid here; ROI preview will compute on-demand
-            self._invalidate_full_decomp_cache()
-            self._schedule_roi_preview()
-            return
-
-        # Old behavior for non-ROI mode
-        self._recompute_decomp(force=True)
+        # The whole-image pyramid for the new count is built off the GUI thread:
+        # by the full-frame preview when Fast ROI is off, else in the background
+        # for Apply. The ROI preview computes its own.
+        self._invalidate_full_decomp_cache()
         self._schedule_preview()
 
 
@@ -1803,12 +2518,7 @@ class MultiscaleDecompDialog(QDialog):
         # Update table scale column text (it uses self.base_sigma)
         self._sync_cfgs_and_ui()
 
-        if self._fast_preview_enabled():
-            self._invalidate_full_decomp_cache()
-            self._schedule_roi_preview()
-            return
-
-        self._recompute_decomp(force=True)
+        self._invalidate_full_decomp_cache()
         self._schedule_preview()
 
     def _refresh_preview_combo(self):
@@ -1854,14 +2564,7 @@ class MultiscaleDecompDialog(QDialog):
         """
         img_rgb01 is float32 RGB [0..1]
         """
-        arr = np.ascontiguousarray(np.clip(img_rgb01 * 255.0, 0, 255).astype(np.uint8))
-        h, w = arr.shape[:2]
-        if arr.ndim == 2:
-            arr = np.repeat(arr[:, :, None], 3, axis=2)
-
-        bytes_per_line = arr.strides[0]
-        qimg = QImage(arr.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-        return QPixmap.fromImage(qimg.copy())  # copy to detach from numpy buffer
+        return QPixmap.fromImage(_rgb01_to_qimage(img_rgb01))
 
     def _refresh_pix_roi(self, roi_img01: np.ndarray, roi_rect: tuple[int,int,int,int]):
         x0, y0, x1, y1 = roi_rect
@@ -1934,181 +2637,180 @@ class MultiscaleDecompDialog(QDialog):
         if not self._headless:
             try: self._save_window_state()
             except Exception: pass
+            self._start_action("apply", "Applying multiscale result to document…")
+            return
+        # Headless preset apply: the caller disposes of the dialog right after,
+        # so the work happens here.
         with self._busy_popup("Applying multiscale result to document…"):
-            tuned, residual = self._build_tuned_layers()
-            if tuned is None or residual is None:
+            self._recompute_decomp(force=False)
+            if self._cached_layers is None or self._cached_residual is None:
                 return
+            self._finish_commit(_action_compute(self._action_snapshot("apply")))
 
-            res = residual if self.residual_enabled else np.zeros_like(residual)
-            out_raw = multiscale_reconstruct(tuned, res)
+    def _finish_commit(self, out_final: np.ndarray):
+        mid = self._active_mask_id()
+        meta = {
+            "step_name": "Multiscale Decomposition",
+            "command_id": "multiscale_decomp",
+            "preset": dict(self._multiscale_params()),
+            "masked": bool(mid),
+            "mask_id": mid,
+            "mask_blend": "m*out+(1-m)*src",
+        }
 
-            if not self.residual_enabled:
-                out = detail_only_vis(out_raw, tuned)
+        try:
+            if hasattr(self._doc, "apply_edit"):
+                self._doc.apply_edit(out_final, meta, step_name="Multiscale Decomposition")
+            elif hasattr(self._doc, "set_image"):
+                self._doc.set_image(out_final, step_name="Multiscale Decomposition")
             else:
-                out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
+                self._doc.image = out_final
+        except Exception as e:
+            QMessageBox.critical(self, "Multiscale Decomposition", f"Failed to write to document:\n{e}")
+            return
 
-            # Restore to original document shape
-            if self._orig_mono:
-                if out.ndim == 3:
-                    out2d = out[:, :, 0]
-                else:
-                    out2d = out
-                if len(self._orig_shape) == 2:
-                    out_final = out2d.astype(np.float32, copy=False)
-                else:
-                    out_final = out2d[:, :, None].astype(np.float32, copy=False)
-            else:
-                if out.ndim == 2:
-                    out_final = np.repeat(out[:, :, None], 3, axis=2).astype(np.float32, copy=False)
-                else:
-                    out_final = out[:, :, :3].astype(np.float32, copy=False)
-
-            # Blend with active mask before applying. The new
-            # _blend_with_mask handles both mono and 3-channel outputs
-            # natively, so no mono→3ch→back-to-mono gymnastics here.
-            # Base comes from the image we captured at dialog open —
-            # that's the exact source the decomposition was computed
-            # from, which is what we want for a correct composite.
-            mask2d = self._active_mask_array()
-            if mask2d is not None:
-                base_src = self._orig_for_mask.astype(np.float32, copy=False)
-                if out_final.ndim == 2:
-                    base_match = base_src[..., 0]
-                elif out_final.ndim == 3 and out_final.shape[2] == 1:
-                    base_match = base_src[..., 0:1]
-                else:
-                    base_match = base_src
-                out_final = self._blend_with_mask(
-                    base_match, out_final, mask2d
-                )
-
-            mid = self._active_mask_id()
-            meta = {
-                "step_name": "Multiscale Decomposition",
-                "command_id": "multiscale_decomp",
-                "preset": dict(self._multiscale_params()),
-                "masked": bool(mid),
-                "mask_id": mid,
-                "mask_blend": "m*out+(1-m)*src",
-            }
-
+        if hasattr(self.parent(), "_refresh_active_view"):
             try:
-                if hasattr(self._doc, "apply_edit"):
-                    self._doc.apply_edit(out_final, meta, step_name="Multiscale Decomposition")
-                elif hasattr(self._doc, "set_image"):
-                    self._doc.set_image(out_final, step_name="Multiscale Decomposition")
-                else:
-                    self._doc.image = out_final
-            except Exception as e:
-                QMessageBox.critical(self, "Multiscale Decomposition", f"Failed to write to document:\n{e}")
-                return
-
-            if hasattr(self.parent(), "_refresh_active_view"):
-                try:
-                    self.parent()._refresh_active_view()
-                except Exception:
-                    pass
-
-            # 🔁 Record as last headless-style command for Replay (best-effort;
-            # supports both spellings used across the suite).
-            try:
-                mw = self.parent()
-                preset = self._multiscale_params()
-                for attr in ("_remember_last_headless_command",
-                             "remember_last_headless_command"):
-                    fn = getattr(mw, attr, None)
-                    if callable(fn):
-                        try:
-                            fn("multiscale_decomp", preset,
-                               description="Multiscale Decomposition")
-                        except TypeError:
-                            fn(command_id="multiscale_decomp", preset=preset,
-                               description="Multiscale Decomposition")
-                        break
+                self.parent()._refresh_active_view()
             except Exception:
                 pass
 
-            self.accept()
+        # 🔁 Record as last headless-style command for Replay (best-effort;
+        # supports both spellings used across the suite).
+        try:
+            mw = self.parent()
+            preset = self._multiscale_params()
+            for attr in ("_remember_last_headless_command",
+                         "remember_last_headless_command"):
+                fn = getattr(mw, attr, None)
+                if callable(fn):
+                    try:
+                        fn("multiscale_decomp", preset,
+                           description="Multiscale Decomposition")
+                    except TypeError:
+                        fn(command_id="multiscale_decomp", preset=preset,
+                           description="Multiscale Decomposition")
+                    break
+        except Exception:
+            pass
 
+        self.accept()
+
+    def _action_snapshot(self, kind: str) -> dict:
+        """What Apply / Send / Split read from the dialog, read on the GUI thread.
+        The active mask is the one on the SOURCE document (Send and Split honour
+        it too); its base is the image captured at dialog open."""
+        return {
+            "kind": kind,
+            "details": self._cached_layers,
+            "residual": self._cached_residual,
+            "noise": self._layer_noise,
+            "cfgs": [replace(c) for c in self.cfgs],
+            "mode": self.combo_mode.currentText(),
+            "residual_enabled": bool(self.residual_enabled),
+            "orig_mono": self._orig_mono,
+            "orig_shape": self._orig_shape,
+            "mask": self._active_mask_array(),
+            "orig_for_mask": self._orig_for_mask,
+        }
+
+    def _start_action(self, kind: str, text: str):
+        """Apply / Send / Split: the numbers are computed off the GUI thread
+        behind a busy dialog that keeps animating; documents are written here."""
+        if getattr(self, "_closing", False) or self._action_kind is not None:
+            return
+        if kind in ("send", "split") and self._get_doc_manager() is None:
+            msg = ("No DocManager available to create a new document." if kind == "send"
+                   else "No DocManager available to create new documents.")
+            QMessageBox.warning(self, "Multiscale Decomposition", msg)
+            return
+        self._action_kind = kind
+        self._open_action_progress(text)
+        self._request_decomp(self._start_action_job)
+
+    def _open_action_progress(self, text: str):
+        dlg = QProgressDialog(text, "", 0, 0, self)
+        dlg.setWindowTitle("Multiscale Decomposition")
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setCancelButton(None)
+        dlg.setMinimumDuration(0)
+        dlg.show()
+        self._action_prog = dlg
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        self._action_cursor = True
+
+    def _close_action_progress(self):
+        dlg, self._action_prog = getattr(self, "_action_prog", None), None
+        if dlg is not None:
+            try:
+                dlg.close()
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
+        if getattr(self, "_action_cursor", False):
+            self._action_cursor = False
+            QApplication.restoreOverrideCursor()
+
+    def _end_action(self):
+        self._action_kind = None
+        self._close_action_progress()
+        self._update_busy()
+
+    def _start_action_job(self):
+        kind = self._action_kind
+        if kind is None or getattr(self, "_closing", False):
+            return
+        if not self._decomp_ready():
+            if self._decomp_failed_key == self._decomp_key():
+                self._end_action()
+                QMessageBox.critical(self, "Multiscale Decomposition",
+                                     "Could not compute the multiscale decomposition.")
+            else:
+                self._request_decomp(self._start_action_job)
+            return
+        self._start_job("_action_job", partial(_action_compute, self._action_snapshot(kind)),
+                        self._on_action_result, self._on_action_failed)
+
+    def _on_action_result(self, out):
+        self._action_job = None
+        kind = self._action_kind
+        if self._closing or kind is None:
+            return
+        try:
+            if out is not None:
+                if kind == "apply":
+                    self._finish_commit(out)
+                elif kind == "send":
+                    self._finish_send(out)
+                elif kind == "split":
+                    self._finish_split(out)
+        finally:
+            self._end_action()
+
+    def _on_action_failed(self, msg: str):
+        self._action_job = None
+        if self._closing:
+            return
+        self._end_action()
+        QMessageBox.critical(self, "Multiscale Decomposition",
+                             f"Failed to compute the multiscale result:\n{msg}")
 
     def _send_detail_to_new_doc(self):
-        with self._busy_popup("Creating new document from multiscale result…"):
-            self._recompute_decomp(force=False)
- 
-            details = self._cached_layers
-            residual = self._cached_residual
-            if details is None or residual is None:
-                return
- 
-            dm = self._get_doc_manager()
-            if dm is None:
-                QMessageBox.warning(self, "Multiscale Decomposition",
-                                    "No DocManager available to create a new document.")
-                return
- 
-            mode = self.combo_mode.currentText()
-            tuned = []
-            for i, w in enumerate(details):
-                cfg = self.cfgs[i]
-                if not cfg.enabled:
-                    tuned.append(np.zeros_like(w))
-                else:
-                    sigma = (self._layer_noise[i]
-                             if self._layer_noise is not None and i < len(self._layer_noise)
-                             else None)
-                    tuned.append(apply_layer_ops(w, cfg.bias_gain, cfg.thr, cfg.amount,
-                                                 cfg.denoise, sigma, mode=mode))
- 
-            res = residual if self.residual_enabled else np.zeros_like(residual)
-            out_raw = multiscale_reconstruct(tuned, res)
- 
-            if not self.residual_enabled:
-                out = detail_only_vis(out_raw, tuned)
-            else:
-                out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
- 
-            # Restore to original document shape
-            if self._orig_mono:
-                if out.ndim == 3:
-                    out2d = out[:, :, 0]
-                else:
-                    out2d = out
-                if len(self._orig_shape) == 2:
-                    out_final = out2d.astype(np.float32, copy=False)
-                else:
-                    out_final = out2d[:, :, None].astype(np.float32, copy=False)
-            else:
-                if out.ndim == 2:
-                    out_final = np.repeat(out[:, :, None], 3, axis=2).astype(np.float32, copy=False)
-                else:
-                    out_final = out[:, :, :3].astype(np.float32, copy=False)
+        self._start_action("send", "Creating new document from multiscale result…")
 
-            # Respect the active mask on the SOURCE document, just as
-            # _commit_to_doc does. Without this, "Send to New Document"
-            # silently discards the mask and produces a fully processed
-            # image even when the user scoped the operation to a region.
-            # Base = the original source we captured at dialog open —
-            # the same source the decomposition was computed from.
-            mask2d = self._active_mask_array()
-            if mask2d is not None:
-                base_src = self._orig_for_mask.astype(np.float32, copy=False)
-                if out_final.ndim == 2:
-                    base_match = base_src[..., 0]
-                elif out_final.ndim == 3 and out_final.shape[2] == 1:
-                    base_match = base_src[..., 0:1]
-                else:
-                    base_match = base_src
-                out_final = self._blend_with_mask(
-                    base_match, out_final, mask2d
-                )
-
-            title = "Multiscale Result"
-            meta = self._build_new_doc_metadata(title, out_final)
-            try:
-                dm.create_document(out_final, metadata=meta, name=title)
-            except Exception as e:
-                QMessageBox.critical(self, "Multiscale Decomposition",
-                                     f"Failed to create new document:\n{e}")
+    def _finish_send(self, out_final: np.ndarray):
+        dm = self._get_doc_manager()
+        if dm is None:
+            QMessageBox.warning(self, "Multiscale Decomposition",
+                                "No DocManager available to create a new document.")
+            return
+        title = "Multiscale Result"
+        meta = self._build_new_doc_metadata(title, out_final)
+        try:
+            dm.create_document(out_final, metadata=meta, name=title)
+        except Exception as e:
+            QMessageBox.critical(self, "Multiscale Decomposition",
+                                 f"Failed to create new document:\n{e}")
 
     def _split_layers_to_docs(self):
         """
@@ -2118,144 +2820,43 @@ class MultiscaleDecompDialog(QDialog):
               vis = 0.5 + layer*4.0
         - Residual layer is just the residual itself (0..1 clipped).
         """
-        with self._busy_popup("Splitting layers into documents…") as prog:    
-            self._recompute_decomp(force=False)
+        self._start_action("split", "Splitting layers into documents…")
 
-            details = self._cached_layers
-            residual = self._cached_residual
-            if details is None or residual is None:
-                return
+    def _finish_split(self, result):
+        entries, (r_title, res_final) = result
+        dm = self._get_doc_manager()
+        if dm is None:
+            QMessageBox.warning(
+                self,
+                "Multiscale Decomposition",
+                "No DocManager available to create new documents."
+            )
+            return
 
-            dm = self._get_doc_manager()
-            if dm is None:
-                QMessageBox.warning(
-                    self,
-                    "Multiscale Decomposition",
-                    "No DocManager available to create new documents."
-                )
-                return
-
-            mode = self.combo_mode.currentText()
-            # Build tuned layers just like everywhere else
-            tuned = []
-            for i, w in enumerate(details):
-                cfg = self.cfgs[i]
-                if not cfg.enabled:
-                    tuned.append(np.zeros_like(w))
-                else:
-                    sigma = None
-                    if self._layer_noise is not None and i < len(self._layer_noise):
-                        sigma = self._layer_noise[i]
-                    tuned.append(
-                        apply_layer_ops(
-                            w,
-                            cfg.bias_gain,
-                            cfg.thr,
-                            cfg.amount,
-                            cfg.denoise,
-                            sigma,
-                            mode=mode,
-                        )
-                    )
-
-            # Fetch the mask once outside the loop — the same mask applies
-            # to every detail layer and the residual.
-            mask2d = self._active_mask_array()
-
-            # ---- 1) Detail layers ------------------------------------------
-            for i, layer in enumerate(tuned):
-                d = layer.astype(np.float32, copy=False)
-                vis = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
-
-                if self._orig_mono:
-                    # multiscale_decompose returns 2D detail layers for mono
-                    # input and 3D for RGB — check before indexing a channel
-                    # (vis[..., 0] on a 2D array picks column 0, not channel
-                    # 0, giving a 1D result).
-                    if vis.ndim == 3:
-                        mono = vis[..., 0]
-                    else:
-                        mono = vis
-                    if len(self._orig_shape) == 3 and self._orig_shape[2] == 1:
-                        out_final = mono[:, :, None].astype(np.float32, copy=False)
-                    else:
-                        out_final = mono.astype(np.float32, copy=False)
-                else:
-                    out_final = vis
-
-                # Respect the active mask: show the detail only where the
-                # mask allows; everywhere else is flat 0.5 gray (the "zero
-                # detail" baseline that the 0.5 + d*4.0 visualization
-                # already uses for a null detail layer).
-                if mask2d is not None:
-                    neutral = np.full_like(out_final, 0.5, dtype=np.float32)
-                    out_final = self._blend_with_mask(
-                        neutral, out_final, mask2d
-                    )
-
-                title = f"Multiscale Detail Layer {i+1}"
-                meta = self._build_new_doc_metadata(title, out_final)
-
-                try:
-                    dm.create_document(out_final, metadata=meta, name=title)
-                except Exception as e:
-                    QMessageBox.critical(
-                        self,
-                        "Multiscale Decomposition",
-                        f"Failed to create document for layer {i+1}:\n{e}"
-                    )
-                    # Don’t bail entirely on first error if you’d rather continue;
-                    # right now we stop on first hard failure.
-                    return
-
-            # ---- 2) Residual layer -----------------------------------------
+        # ---- 1) Detail layers ------------------------------------------
+        for i, (title, out_final) in enumerate(entries):
+            meta = self._build_new_doc_metadata(title, out_final)
             try:
-                res = residual.astype(np.float32, copy=False)
-                res_img = np.clip(res, 0.0, 1.0)
-
-                if self._orig_mono:
-                    # Same ndim guard as the detail loop: multiscale_decompose
-                    # returns a 2D residual for mono input.
-                    if res_img.ndim == 3:
-                        mono = res_img[..., 0]
-                    else:
-                        mono = res_img
-                    if len(self._orig_shape) == 3 and self._orig_shape[2] == 1:
-                        res_final = mono[:, :, None].astype(np.float32, copy=False)
-                    else:
-                        res_final = mono.astype(np.float32, copy=False)
-                else:
-                    res_final = res_img
-
-                # Respect the active mask: show the residual where the
-                # mask allows; outside the mask, use the ORIGINAL image
-                # (not neutral gray). This preserves the reconstruction
-                # identity — if the user re-combines these split documents
-                # as (detail_1 + ... + detail_N + residual), they get the
-                # original image outside the mask back, because the detail
-                # layers already contribute zero (mid-gray) there.
-                if mask2d is not None:
-                    base_src = self._orig_for_mask.astype(np.float32, copy=False)
-                    if res_final.ndim == 2:
-                        base_match = base_src[..., 0]
-                    elif res_final.ndim == 3 and res_final.shape[2] == 1:
-                        base_match = base_src[..., 0:1]
-                    else:
-                        base_match = base_src
-                    res_final = self._blend_with_mask(
-                        base_match, res_final, mask2d
-                    )
-
-                r_title = "Multiscale Residual Layer"
-                r_meta = self._build_new_doc_metadata(r_title, res_final)
-
-                dm.create_document(res_final, metadata=r_meta, name=r_title)
+                dm.create_document(out_final, metadata=meta, name=title)
             except Exception as e:
                 QMessageBox.critical(
                     self,
                     "Multiscale Decomposition",
-                    f"Failed to create residual-layer document:\n{e}"
+                    f"Failed to create document for layer {i+1}:\n{e}"
                 )
+                # right now we stop on first hard failure.
+                return
+
+        # ---- 2) Residual layer -----------------------------------------
+        try:
+            r_meta = self._build_new_doc_metadata(r_title, res_final)
+            dm.create_document(res_final, metadata=r_meta, name=r_title)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Multiscale Decomposition",
+                f"Failed to create residual-layer document:\n{e}"
+            )
 
 
 
@@ -2355,8 +2956,13 @@ class MultiscaleDecompDialog(QDialog):
             self._fit_view()
         QTimer.singleShot(0, _after)
 
+    def done(self, r):
+        # accept()/reject() end here without a closeEvent (Qt >= 6.3).
+        self._stop_jobs()
+        super().done(r)
+
     def closeEvent(self, ev):
-        self._closing = True
+        self._stop_jobs()
         try:
             self._save_window_state()
         except Exception:

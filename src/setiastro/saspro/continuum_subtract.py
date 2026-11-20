@@ -2674,7 +2674,12 @@ class ContinuumProcessingThread(QThread):
         y = y.reshape(-1).astype(np.float32)
         N = min(x.size, 100_000)
         if x.size > N:
-            idx = np.random.choice(x.size, N, replace=False)
+            # np.random.choice(replace=False) permutes every index of the frame
+            # (1.6 s per call on 22 MP, three calls per filter). Generator.choice
+            # draws the same uniform sample in milliseconds; seeding it from the
+            # global RNG keeps CLI runs (np.random.seed per step) repeatable.
+            rng = np.random.default_rng(np.random.randint(0, 2**31 - 1))
+            idx = rng.choice(x.size, N, replace=False)
             x = x[idx]; y = y[idx]
         # Reject samples saturated in EITHER axis — a star clipped at 1.0 in
         # both input and output gives a (1,1) point that falsely anchors the
@@ -2734,7 +2739,11 @@ class ContinuumProcessingThread(QThread):
         ped = np.zeros(3, dtype=np.float32)
         if ref is not None:
             self.background_reference = np.median(ref.reshape(-1, 3), axis=0)
-            chan_meds = np.median(rgb, axis=(0, 1))
+            # per channel: same values as np.median(rgb, axis=(0, 1)), which
+            # transposes the whole frame first (~2 s on 22 MP)
+            chan_meds = np.array([np.median(np.array(rgb[..., c], order="C", copy=True),
+                                            overwrite_input=True)
+                                  for c in range(rgb.shape[2])])
             ped = np.maximum(0.0, chan_meds - self.background_reference)
             r_ref = float(self.background_reference[0])
             for ch in (1, 2):

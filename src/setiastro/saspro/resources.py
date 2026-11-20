@@ -539,6 +539,7 @@ _LEGACY_ICON_MAP = {
     'selectivelum_path': 'selectiveluma.png',
     'rgbalign_path': 'rgbalign.png',
     'background_path': 'background.png',
+    'background_galaxy_path': 'background_galaxy.png',   # the pre-1.24.7 default
     'script_icon_path': 'script.png',
     'planetprojection_path': '3dplanet.png',
     'finderchart_path': 'finderchart.png',
@@ -562,6 +563,11 @@ def __getattr__(name: str):
     if name == 'background_startup_path':
         return _resource_path('Background_startup.jpg')
 
+    if name == 'sample_image_path':
+        # First Steps sample: a 16-bit linear TIFF. Not an icon, so not via
+        # get_icon_path, which appends ".png" to anything that isn't one.
+        return _resource_path(os.path.join('images', 'sample_image.tif'))
+
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 def __dir__():
@@ -569,7 +575,7 @@ def __dir__():
         list(globals().keys())
         + list(_LEGACY_ICON_MAP.keys())
         + list(_LEGACY_DATA_MAP.keys())
-        + ['background_startup_path', 'resource_monitor_qml']
+        + ['background_startup_path', 'sample_image_path', 'resource_monitor_qml']
     )
 
 

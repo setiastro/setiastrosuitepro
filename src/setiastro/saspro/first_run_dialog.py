@@ -105,6 +105,12 @@ def maybe_show_first_run_dialog(main_window) -> None:
         return
     dlg = FirstRunDialog(main_window)
     dlg.exec()
+    # Then the First Steps tour (a new install only; see first_steps_tour.py).
+    try:
+        from setiastro.saspro.first_steps_tour import maybe_start_first_steps_tour
+        maybe_start_first_steps_tour(main_window)
+    except Exception as e:
+        print(f"[first-steps] tour failed to start: {e}")
 
 def maybe_show_tip_of_day(main_window) -> None:
     """Show a rotating tip bar at the bottom of the main window, once per session."""
@@ -132,6 +138,14 @@ def _show_tip_bar(main_window) -> None:
     if getattr(main_window, "_update_dialog_shown", False):
         QTimer.singleShot(2000, lambda: _show_tip_bar(main_window))
         return
+
+    # One thing at a time: no tip while the First Steps tour is on screen.
+    try:
+        from setiastro.saspro.first_steps_tour import tour_is_showing
+        if tour_is_showing(main_window):
+            return
+    except Exception:
+        pass
 
     # Pick a tip not seen recently
     seen = list(s.value("tips/recently_seen", [], type=list) or [])

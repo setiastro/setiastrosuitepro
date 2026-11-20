@@ -4,7 +4,7 @@ import os
 import numpy as np
 
 # Qt
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSettings, QByteArray
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSettings, QByteArray, QThread
 from PyQt6.QtGui import QImage, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 from setiastro.saspro.legacy.image_manager import load_image
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 
 try:
     import cv2
@@ -254,6 +255,105 @@ def _active_mask_array_from_doc(doc) -> np.ndarray | None:
         return None
 
 
+def _resize_mask_nearest(m: np.ndarray, h: int, w: int) -> np.ndarray:
+    if m.shape != (h, w):
+        if cv2 is not None:
+            m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+        else:
+            yi = (np.linspace(0, m.shape[0]-1, h)).astype(np.int32)
+            xi = (np.linspace(0, m.shape[1]-1, w)).astype(np.int32)
+            m = m[yi][:, xi]
+    return m
+
+
+def _blend_add_stars(starless: np.ndarray, stars_only: np.ndarray, mode: str, r: float,
+                     m: np.ndarray | None) -> np.ndarray:
+    """Starless + stars-only (RGB, [0,1], same shape) by Screen or Add at
+    ratio r; where the (H,W) mask m is given, only it gets the stars."""
+    if mode == "Screen":
+        base = starless + stars_only - (starless * stars_only)
+    else:
+        base = starless + stars_only
+
+    blended = (1.0 - r) * starless + r * base
+    blended = np.clip(blended, 0.0, 1.0)
+
+    if m is not None:
+        m3 = m[:, :, None]   # broadcast: the same values as repeating it 3x
+        # only replace where mask==1; keep original starless elsewhere
+        blended = np.clip(starless * (1.0 - m3) + blended * m3, 0.0, 1.0).astype(np.float32, copy=False)
+    return blended
+
+
+# Every control change restarts this timer; the preview is built once the
+# controls have been still that long, on a worker, one at a time.
+_PREVIEW_DEBOUNCE_MS = 120
+
+
+class _AddStarsJob(QThread):
+    """Runs fn(**kwargs) off the GUI thread; its dict comes back through
+    `ready` ({"error": text} if it raised). No parent: started with
+    thread_keeper.start_owned_thread, so the dialog may close mid-run."""
+    ready = pyqtSignal(object)
+
+    def __init__(self, fn, kwargs):
+        super().__init__(None)
+        self._fn = fn
+        self._kwargs = kwargs
+
+    def run(self):
+        try:
+            out = self._fn(**self._kwargs)
+        except Exception as e:
+            out = {"error": str(e)}
+        self._kwargs = None
+        self.ready.emit(out)
+
+
+def _proxy_rgb(img: np.ndarray, w: int, h: int) -> np.ndarray:
+    """img (RGB [0,1]) at (w, h): INTER_AREA when shrinking. Preview only."""
+    if img.shape[1] == w and img.shape[0] == h:
+        return img
+    if cv2 is not None:
+        return cv2.resize(np.ascontiguousarray(img), (w, h), interpolation=cv2.INTER_AREA)
+    yi = np.linspace(0, img.shape[0] - 1, h).astype(np.int32)
+    xi = np.linspace(0, img.shape[1] - 1, w).astype(np.int32)
+    return img[yi][:, xi]
+
+
+def _add_stars_preview_job(starless, stars_only, ps, pt, w, h, scale, mode, r, mask):
+    """The preview: the Apply blend on proxies at the displayed size (w, h),
+    i.e. full size x scale (full size when scale >= 1, then scaled up as
+    before). Returns the proxies (for reuse), the blend and the QImage."""
+    if ps is None:
+        ps = _proxy_rgb(starless, w, h)
+    if pt is None:
+        pt = _proxy_rgb(stars_only, w, h)
+    m = None
+    if mask is not None:
+        if mask.shape != (h, w) and cv2 is not None:
+            m = cv2.resize(np.ascontiguousarray(mask), (w, h), interpolation=cv2.INTER_AREA)
+        else:
+            m = _resize_mask_nearest(mask, h, w)
+    out = _blend_add_stars(ps, pt, mode, r, m)
+    u8 = (np.clip(out, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+    q = QImage(u8.data, w, h, u8.strides[0], QImage.Format.Format_RGB888).copy()
+    if scale > 1.0:
+        q = q.scaled(max(1, round(w*scale)), max(1, round(h*scale)), Qt.AspectRatioMode.KeepAspectRatio,
+                     Qt.TransformationMode.SmoothTransformation)
+    return {"starless": starless, "stars_only": stars_only, "ps": ps, "pt": pt,
+            "w": w, "h": h, "scale": scale, "out": out, "qimg": q}
+
+
+def _add_stars_full_job(starless, stars_only, mode, r, mask):
+    """Apply's full-resolution blend (the old preview math, off the GUI thread)."""
+    m = None
+    if mask is not None:
+        h, w = starless.shape[:2]
+        m = _resize_mask_nearest(mask, h, w)
+    return {"result": _blend_add_stars(starless, stars_only, mode, r, m)}
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Dialog
 # ──────────────────────────────────────────────────────────────────────────────
@@ -278,8 +378,18 @@ class AddStarsDialog(QDialog):
         self.main = main
         self.starless = None
         self.stars_only = None
-        self.blended_image = None
+        self.blended_image = None   # last preview blend, at display size (_pix_scale)
         self.scale_factor = 1.0
+        self._pix = None
+        self._pix_scale = None
+        self._pv_timer = QTimer(self)    # debounce: restarted on every change
+        self._pv_timer.setSingleShot(True)
+        self._pv_timer.timeout.connect(self._launch_preview)
+        self._pv_thread = None
+        self._pv_pending = False         # a change arrived while a preview ran
+        self._proxies = {}               # (id(img), w, h) -> (img, proxy)
+        self._apply_thread = None
+        self._apply_target = None
         self._fit_once = False
         self._settings = QSettings()
         self._persist_prefix = "add_stars"
@@ -369,6 +479,7 @@ class AddStarsDialog(QDialog):
         brow.addWidget(self.btn_help)
         brow.addStretch(1)
         btn_apply = QPushButton(self.tr("Apply")); btn_apply.clicked.connect(self._apply)
+        self.btn_apply = btn_apply
         btn_cancel= QPushButton(self.tr("Cancel")); btn_cancel.clicked.connect(self.reject)
         brow.addWidget(btn_apply); brow.addWidget(btn_cancel)
         layout.addLayout(brow)
@@ -489,7 +600,17 @@ class AddStarsDialog(QDialog):
         a = np.clip(a, 0.0, 1.0)
         return a
 
+    def _blend_inputs(self):
+        """(mode, ratio, raw mask of the destination doc or None) for a blend."""
+        mode = self.cmb_blend.currentText()
+        r = self.slider_ratio.value() / 100.0
+        # mask from the *destination* doc (selected Starless View)
+        tgt = self._target_doc_for_mask()
+        m = _active_mask_array_from_doc(tgt) if tgt is not None else None
+        return mode, r, m
+
     def _blend_images(self) -> np.ndarray | None:
+        """Full-resolution blend on the calling thread (Apply runs the same on a worker)."""
         if self.starless is None or self.stars_only is None:
             return None
 
@@ -498,58 +619,75 @@ class AddStarsDialog(QDialog):
             QMessageBox.critical(self, "Size Mismatch", "Starless and Stars-Only views are different sizes.")
             return None
 
-        mode = self.cmb_blend.currentText()
-        r = self.slider_ratio.value() / 100.0
-
-        if mode == "Screen":
-            base = self.starless + self.stars_only - (self.starless * self.stars_only)
-        else:
-            base = self.starless + self.stars_only
-
-        blended = (1.0 - r) * self.starless + r * base
-        blended = np.clip(blended, 0.0, 1.0)
-
-        # mask from the *destination* doc (selected Starless View)
-        tgt = self._target_doc_for_mask()
-        if tgt is not None:
-            m = _active_mask_array_from_doc(tgt)
-            if m is not None:
-                h, w = blended.shape[:2]
-                if m.shape != (h, w):
-                    if cv2 is not None:
-                        m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
-                    else:
-                        yi = (np.linspace(0, m.shape[0]-1, h)).astype(np.int32)
-                        xi = (np.linspace(0, m.shape[1]-1, w)).astype(np.int32)
-                        m = m[yi][:, xi]
-                m3 = np.repeat(m[:, :, None], 3, axis=2)
-                # only replace where mask==1; keep original starless elsewhere
-                blended = np.clip(self.starless * (1.0 - m3) + blended * m3, 0.0, 1.0).astype(np.float32, copy=False)
-
-        return blended
+        mode, r, m = self._blend_inputs()
+        return _add_stars_full_job(self.starless, self.stars_only, mode, r, m)["result"]
 
     # Preview ------------------------------------------------------------------
     def update_preview(self):
-        out = self._blend_images()
-        self.blended_image = out
-        if out is None:
+        """Debounced: the preview is rebuilt once the controls have been
+        still for _PREVIEW_DEBOUNCE_MS (_launch_preview)."""
+        self._pv_timer.start(_PREVIEW_DEBOUNCE_MS)
+
+    def _proxy_for(self, img, w, h):
+        hit = self._proxies.get((id(img), w, h))
+        return hit[1] if hit is not None and hit[0] is img else None
+
+    def _launch_preview(self):
+        """Build the preview on a worker, one at a time, at the displayed
+        size; a change made while one runs re-runs it when it lands."""
+        self._pv_timer.stop()
+        if thread_running(self._pv_thread):
+            self._pv_pending = True
+            return
+        if self.starless is None or self.stars_only is None:
+            self.blended_image = None
+            self._pix = None
             self.preview_label.clear()
             return
+        # same size?
+        if self.starless.shape != self.stars_only.shape:
+            self.blended_image = None
+            self._pix = None
+            self.preview_label.clear()
+            QMessageBox.critical(self, "Size Mismatch", "Starless and Stars-Only views are different sizes.")
+            return
+        H, W = self.starless.shape[:2]
+        scale = float(self.scale_factor)
+        s = min(1.0, scale)
+        w, h = max(1, round(W*s)), max(1, round(H*s))
+        mode, r, m = self._blend_inputs()
+        thr = _AddStarsJob(_add_stars_preview_job, dict(
+            starless=self.starless, stars_only=self.stars_only,
+            ps=self._proxy_for(self.starless, w, h), pt=self._proxy_for(self.stars_only, w, h),
+            w=w, h=h, scale=scale, mode=mode, r=r, mask=m))
+        thr.ready.connect(self._on_preview_ready)
+        thr.finished.connect(self._on_preview_finished)
+        self._pv_thread = thr
+        start_owned_thread(thr)
 
-        pix = self._to_pixmap(out)
+    def _on_preview_ready(self, res: dict):
+        if "error" in res:
+            self.preview_label.setText(f"Preview failed: {res['error']}")
+            return
+        if res["starless"] is not self.starless or res["stars_only"] is not self.stars_only:
+            return                       # a source changed meanwhile; its own preview follows
+        w, h = res["w"], res["h"]
+        self._proxies = {(id(res["starless"]), w, h): (res["starless"], res["ps"]),
+                         (id(res["stars_only"]), w, h): (res["stars_only"], res["pt"])}
+        self.blended_image = res["out"]
+        self._pix = QPixmap.fromImage(res["qimg"])
+        self._pix_scale = res["scale"]
         # keep scroll position
         hs = self.scroll_area.horizontalScrollBar().value()
         vs = self.scroll_area.verticalScrollBar().value()
-
-        scaled = pix.scaled(
-            pix.size() * self.scale_factor,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.preview_label.setPixmap(scaled)
-        self.preview_label.adjustSize()
+        self._refresh_scaled()
         self.scroll_area.horizontalScrollBar().setValue(hs)
         self.scroll_area.verticalScrollBar().setValue(vs)
+
+    def _on_preview_finished(self):
+        if self._pv_pending:
+            self._pv_pending = False
+            self._launch_preview()
 
     def _to_pixmap(self, img: np.ndarray) -> QPixmap:
         im = np.clip(img, 0.0, 1.0)
@@ -583,27 +721,30 @@ class AddStarsDialog(QDialog):
         QTimer.singleShot(0, self._do_fit)
 
     def _do_fit(self):
-        if self.blended_image is None:
+        if self.blended_image is None or self.starless is None:
             return
-        pix = self._to_pixmap(self.blended_image)
+        H, W = self.starless.shape[:2]
         vsz = self.scroll_area.viewport().size()
-        if pix.isNull() or pix.width() == 0 or pix.height() == 0:
+        if W == 0 or H == 0:
             return
-        sw = vsz.width() / pix.width()
-        sh = vsz.height() / pix.height()
+        sw = vsz.width() / W
+        sh = vsz.height() / H
         self.scale_factor = min(sw, sh)
-        self.update_preview()
+        self._refresh_scaled()
 
     def _refresh_scaled(self):
-        if self.blended_image is None:
+        if self._pix is None or self.starless is None:
             return
-        pix = self._to_pixmap(self.blended_image)
-        scaled = pix.scaled(
-            pix.size() * self.scale_factor,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self.preview_label.setPixmap(scaled)
+        if self._pix_scale == self.scale_factor:
+            self.preview_label.setPixmap(self._pix)
+        else:
+            # Rescale what is on screen at once, and rebuild it at this zoom.
+            H, W = self.starless.shape[:2]
+            self.preview_label.setPixmap(self._pix.scaled(
+                max(1, round(W*self.scale_factor)), max(1, round(H*self.scale_factor)),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.FastTransformation))
+            self.update_preview()
         self.preview_label.adjustSize()
 
     # Apply --------------------------------------------------------------------
@@ -612,7 +753,10 @@ class AddStarsDialog(QDialog):
         Applies the blended image to the selected *Starless View* (or, if the starless
         source is "Load from File", falls back to the active doc).
         """
-        if self.blended_image is None:
+        if thread_running(self._apply_thread):
+            return
+        if (self.starless is None or self.stars_only is None
+                or self.starless.shape != self.stars_only.shape):
             QMessageBox.warning(self, "No Blend", "No blended image to apply.")
             return
 
@@ -640,11 +784,34 @@ class AddStarsDialog(QDialog):
                                 "Pick a starless view to overwrite (or activate a destination window).")
             return
 
+        mode, r, m = self._blend_inputs()
+        thr = _AddStarsJob(_add_stars_full_job, dict(
+            starless=self.starless, stars_only=self.stars_only, mode=mode, r=r, mask=m))
+        self._apply_target = target_doc
+        thr.ready.connect(self._on_apply_ready)
+        self._apply_thread = thr
+        self.btn_apply.setEnabled(False)
+        start_owned_thread(thr)
+
+    def _on_apply_ready(self, res: dict):
+        self._apply_thread = None
+        target_doc, self._apply_target = self._apply_target, None
+        self.btn_apply.setEnabled(True)
+        if "error" in res:
+            QMessageBox.critical(self, "Add Stars", f"Failed to blend:\n{res['error']}")
+            return
         # Emit (target_doc, blended_image)
-        self.stars_added.emit(target_doc, self.blended_image.astype(np.float32, copy=False))
+        self.stars_added.emit(target_doc, res["result"].astype(np.float32, copy=False))
         # Close UI after apply
         self.accept()   # or: self.close()
-        return
+
+    def done(self, r):
+        # Cancel/Esc while Apply computes: hide now; the dialog closes once
+        # the result is emitted.
+        if thread_running(self._apply_thread):
+            self.hide()
+            return
+        super().done(r)
 
     # Ensure initial fit once shown
     def showEvent(self, ev):
@@ -734,6 +901,12 @@ class AddStarsDialog(QDialog):
         QTimer.singleShot(0, self.update_preview)
 
     def closeEvent(self, ev):
+        if thread_running(self._apply_thread):
+            # Apply still computing: it closes the dialog once it has emitted.
+            self.hide()
+            ev.ignore()
+            return
+        self._pv_timer.stop()
         try:
             self._save_ui_state()
         except Exception:

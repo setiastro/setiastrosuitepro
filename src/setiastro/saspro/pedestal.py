@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import numpy as np
 
-from PyQt6.QtCore import Qt, QEvent, QPointF, QSettings, QTimer
+from PyQt6.QtCore import Qt, QEvent, QPointF, QSettings, QTimer, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDoubleSpinBox,
     QCheckBox, QPushButton, QScrollArea, QMessageBox, QWidget, QFrame
@@ -14,6 +14,7 @@ from PyQt6.QtGui import QPixmap, QImage, QIcon
 from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
 from setiastro.saspro.shortcuts import PresetDragHandle
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 
 # Icon is optional; fall back gracefully if resources doesn't expose one yet.
 try:
@@ -128,12 +129,17 @@ def _remove_pedestal_array(a: np.ndarray) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────────
 def _as_qimage_rgb8(float01: np.ndarray) -> QImage:
     f = np.asarray(float01, dtype=np.float32)
-    if f.ndim == 2:
-        f = np.stack([f] * 3, axis=-1)
-    elif f.ndim == 3 and f.shape[2] == 1:
-        f = np.repeat(f, 3, axis=2)
+    if f.ndim == 3 and f.shape[2] == 1:
+        f = f[..., 0]
 
+    # mono: 8-bit first, then replicate the bytes (same bytes as stacking floats)
     buf8 = (np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8, copy=False)
+    if buf8.ndim == 2:
+        try:   # same bytes as np.repeat, which holds the GIL ~0.4 s on 26 MP
+            import cv2
+            buf8 = cv2.cvtColor(np.ascontiguousarray(buf8), cv2.COLOR_GRAY2RGB)
+        except Exception:
+            buf8 = np.repeat(buf8[..., None], 3, axis=2)
     buf8 = np.ascontiguousarray(buf8)
     h, w, _ = buf8.shape
     bpl = int(buf8.strides[0])
@@ -146,6 +152,91 @@ def _as_qimage_rgb8(float01: np.ndarray) -> QImage:
         data = buf8.tobytes()
         qimg = QImage(data, w, h, bpl, QImage.Format.Format_RGB888)
         return qimg.copy()
+
+
+def _display_stretch(img: np.ndarray) -> np.ndarray:
+    """Preview-only screen stretch for linear data. no_black_clip=True so
+    the pedestal's effect on the floor stays visible. Never mutates the
+    data that gets applied."""
+    a = np.asarray(img, dtype=np.float32)
+    try:
+        from setiastro.saspro.imageops.stretch import (
+            stretch_mono_image, stretch_color_image,
+        )
+    except Exception:
+        return a
+    try:
+        if a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1):
+            return stretch_mono_image(a.squeeze(), _DISPLAY_TARGET_MEDIAN,
+                                      no_black_clip=True)
+        return stretch_color_image(a, _DISPLAY_TARGET_MEDIAN, linked=True,
+                                   no_black_clip=True)
+    except Exception:
+        return a
+
+
+def _resample_mask(mask: np.ndarray, out_hw: tuple[int, int]) -> np.ndarray:
+    mh, mw = mask.shape[:2]
+    th, tw = out_hw
+    if (mh, mw) == (th, tw):
+        return mask
+    yi = np.linspace(0, mh - 1, th).astype(np.int32)
+    xi = np.linspace(0, mw - 1, tw).astype(np.int32)
+    return mask[yi][:, xi]
+
+
+def _blend_mask(processed: np.ndarray, src_image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """m*out + (1-m)*src with the active mask (float01, any size)."""
+    src = _to_float01(src_image)
+    out = processed.astype(np.float32, copy=False)
+
+    th, tw = out.shape[:2]
+    m = _resample_mask(mask, (th, tw))
+    if out.ndim == 3 and out.shape[2] == 3:
+        m = m[..., None]
+
+    if src.ndim == 2 and out.ndim == 3 and out.shape[2] == 3:
+        src = np.stack([src] * 3, axis=-1)
+    elif src.ndim == 3 and src.shape[2] == 3 and out.ndim == 2:
+        src = src[..., 0]
+
+    return (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
+
+
+class _PedestalPreviewWorker(QThread):
+    """One preview off the GUI thread: subtract, mask blend, display stretch
+    and the 8-bit image. On a 22 MP RGB frame that is ~2-2.5 s, all of which
+    used to run on the GUI thread on every control change. A QImage, unlike a
+    QPixmap, may be built here."""
+    ready = pyqtSignal(object)    # dict, see run()
+
+    def __init__(self, doc, src, params: dict, mask, autostretch: bool):
+        super().__init__()        # no parent: thread_keeper owns it
+        self.doc = doc
+        self.src = src
+        self.params = dict(params)
+        self.mask = mask
+        self.autostretch = bool(autostretch)
+
+    def run(self):
+        res = {"doc": self.doc, "params": self.params}
+        try:
+            src = self.src
+            out, vals, clipped = remove_pedestal_array(
+                src,
+                mode=self.params["mode"],
+                pct=float(self.params["percentile"]),
+                per_channel=bool(self.params["per_channel"]),
+            )
+            if self.mask is not None:
+                out = _blend_mask(out, src, self.mask)
+            disp = _display_stretch(out) if self.autostretch else out
+            res.update(out=out, vals=vals, clipped=clipped,
+                       total=(int(src.shape[0] * src.shape[1]) if src.ndim >= 2 else int(src.size)),
+                       qimg=_as_qimage_rgb8(_to_float01(disp)))
+        except Exception as e:
+            res["error"] = str(e)
+        self.ready.emit(res)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -172,6 +263,17 @@ class RemovePedestalDialog(QDialog):
         self._main = parent
         self.doc = document
         self._preview: np.ndarray | None = None
+        self._preview_params: dict | None = None   # settings _preview was computed with
+        self._preview_doc = None
+        self._preview_vals: list[float] | None = None
+        self._pv_thread = None
+        self._pv_pending = False
+        # One debounce for every control: a burst of changes (holding a spin
+        # arrow, typing 0.25) is one recompute, not one per keystroke.
+        self._pv_timer = QTimer(self)
+        self._pv_timer.setSingleShot(True)
+        self._pv_timer.setInterval(150)
+        self._pv_timer.timeout.connect(self._start_preview_job)
         self._headless = False
         try:
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -316,12 +418,12 @@ class RemovePedestalDialog(QDialog):
         main.addLayout(right, 1)
 
         # signals
-        self.btn_preview.clicked.connect(self._recompute_preview)
+        self.btn_preview.clicked.connect(self._start_preview_job)
         self.btn_apply.clicked.connect(self._apply_to_doc)
 
-        # initial state
+        # initial state (the first worker preview replaces this text)
         self._sync_pct_enabled()
-        self._update_preview_pix(self.doc.image if self.doc else None)
+        self.label.setText(self.tr("Computing preview…"))
         self._schedule_preview()
 
     # --- mode label helper -------------------------------------------------
@@ -345,7 +447,6 @@ class RemovePedestalDialog(QDialog):
             return
         self.doc = doc
         self._preview = None
-        self._update_preview_pix(self.doc.image)
         self._schedule_preview()
 
     # --- UI change handlers ------------------------------------------------
@@ -361,7 +462,52 @@ class RemovePedestalDialog(QDialog):
     # --- preview / processing ---------------------------------------------
     def _schedule_preview(self):
         """Coalesce rapid control changes into a single recompute."""
-        QTimer.singleShot(0, self._recompute_preview)
+        self._pv_timer.start()
+
+    def _start_preview_job(self):
+        """Preview on a worker; one at a time. A change made while one runs
+        re-runs it with the latest settings when it lands."""
+        self._pv_timer.stop()
+        if self.doc is None or getattr(self.doc, "image", None) is None:
+            return
+        if thread_running(self._pv_thread):
+            self._pv_pending = True
+            return
+        if self._current_mode() == "percentile":
+            idx = self.cmb_mode.currentIndex()
+            self.cmb_mode.setItemText(idx, self._mode_label("percentile"))
+        mask, _mid, _name = self._active_mask_layer()
+        thr = _PedestalPreviewWorker(
+            self.doc, np.asarray(self.doc.image), self._pedestal_params(), mask,
+            bool(self.chk_autostretch.isChecked()),
+        )
+        thr.ready.connect(self._on_preview_ready)
+        thr.finished.connect(self._on_preview_finished)
+        self._pv_thread = thr
+        start_owned_thread(thr)
+
+    def _on_preview_ready(self, res: dict):
+        if res.get("doc") is not self.doc:
+            return                       # the active document changed meanwhile
+        if "error" in res:
+            self.lbl_vals.setText(f"Subtracting: (error: {res['error']})")
+            return
+        self._preview = res["out"]
+        self._preview_params = res["params"]
+        self._preview_doc = res["doc"]
+        self._preview_vals = list(res["vals"])
+        self._update_readout(res["vals"], res["clipped"], res["total"])
+        first = self._pix is None
+        self._pix = QPixmap.fromImage(res["qimg"])
+        if first:
+            self._fit()
+        else:
+            self._apply_zoom()
+
+    def _on_preview_finished(self):
+        if self._pv_pending:
+            self._pv_pending = False
+            self._pv_timer.start()
 
     def _recompute_preview(self):
         if self.doc is None or getattr(self.doc, "image", None) is None:
@@ -386,6 +532,9 @@ class RemovePedestalDialog(QDialog):
         total = int(src.shape[0] * src.shape[1]) if src.ndim >= 2 else int(src.size)
         out = self._blend_with_mask(out)
         self._preview = out
+        self._preview_params = self._pedestal_params()
+        self._preview_doc = self.doc
+        self._preview_vals = list(vals)
         self._update_readout(vals, clipped, total)
         self._update_preview_pix(out)
 
@@ -409,7 +558,11 @@ class RemovePedestalDialog(QDialog):
                 self._save_window_geometry()
             except Exception:
                 pass
-        if self._preview is None:
+        # The preview is what gets applied; recompute it here if it is missing
+        # or was made with other settings / for another document (a worker
+        # preview may still be in flight).
+        if (self._preview is None or self._preview_params != self._pedestal_params()
+                or self._preview_doc is not self.doc):
             self._recompute_preview()
         if self._preview is None:
             QMessageBox.information(self, "No image", "Open an image first.")
@@ -461,12 +614,18 @@ class RemovePedestalDialog(QDialog):
     def _finish_apply(self):
         try:
             _marr, mid, mname = self._active_mask_layer()
-            vals = compute_pedestal(
-                np.asarray(self.doc.image),
-                mode=self._current_mode(),
-                pct=float(self.spin_pct.value()),
-                per_channel=self.chk_per_channel.isChecked(),
-            )
+            if self._preview_vals is not None:
+                # what the preview subtracted (same settings, see _apply_to_doc);
+                # compute_pedestal reports one value in global mode
+                vals = (list(self._preview_vals) if self.chk_per_channel.isChecked()
+                        else list(self._preview_vals[:1]))
+            else:
+                vals = compute_pedestal(
+                    np.asarray(self.doc.image),
+                    mode=self._current_mode(),
+                    pct=float(self.spin_pct.value()),
+                    per_channel=self.chk_per_channel.isChecked(),
+                )
             meta = {
                 "step_name": "Pedestal Removal",
                 "command_id": "pedestal",
@@ -515,29 +674,10 @@ class RemovePedestalDialog(QDialog):
 
     # --- preview rendering -------------------------------------------------
     def _autostretch_for_display(self, img: np.ndarray) -> np.ndarray:
-        """Preview-only screen stretch for linear data. no_black_clip=True so
-        the pedestal's effect on the floor stays visible. Never mutates the
-        data that gets applied."""
-        a = np.asarray(img, dtype=np.float32)
-        try:
-            from setiastro.saspro.imageops.stretch import (
-                stretch_mono_image, stretch_color_image,
-            )
-        except Exception:
-            return a
-        try:
-            if a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1):
-                return stretch_mono_image(a.squeeze(), _DISPLAY_TARGET_MEDIAN,
-                                          no_black_clip=True)
-            return stretch_color_image(a, _DISPLAY_TARGET_MEDIAN, linked=True,
-                                       no_black_clip=True)
-        except Exception:
-            return a
+        return _display_stretch(img)
 
     def _on_autostretch_toggled(self, *_):
-        base = self._preview if self._preview is not None else (
-            self.doc.image if self.doc else None)
-        self._update_preview_pix(base)
+        self._schedule_preview()        # the display stretch runs on the worker
 
     def _update_preview_pix(self, img: np.ndarray | None):
         if img is None:
@@ -689,32 +829,13 @@ class RemovePedestalDialog(QDialog):
         return m, mid, getattr(layer, "name", "Mask")
 
     def _resample_mask_if_needed(self, mask: np.ndarray, out_hw: tuple[int, int]) -> np.ndarray:
-        mh, mw = mask.shape[:2]
-        th, tw = out_hw
-        if (mh, mw) == (th, tw):
-            return mask
-        yi = np.linspace(0, mh - 1, th).astype(np.int32)
-        xi = np.linspace(0, mw - 1, tw).astype(np.int32)
-        return mask[yi][:, xi]
+        return _resample_mask(mask, out_hw)
 
     def _blend_with_mask(self, processed: np.ndarray) -> np.ndarray:
         mask, _mid, _name = self._active_mask_layer()
         if mask is None:
             return processed
-        src = _to_float01(self.doc.image)
-        out = processed.astype(np.float32, copy=False)
-
-        th, tw = out.shape[:2]
-        m = self._resample_mask_if_needed(mask, (th, tw))
-        if out.ndim == 3 and out.shape[2] == 3:
-            m = m[..., None]
-
-        if src.ndim == 2 and out.ndim == 3 and out.shape[2] == 3:
-            src = np.stack([src] * 3, axis=-1)
-        elif src.ndim == 3 and src.shape[2] == 3 and out.ndim == 2:
-            src = src[..., 0]
-
-        return (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
+        return _blend_mask(processed, self.doc.image, mask)
 
     # --- lifecycle / geometry ---------------------------------------------
     def closeEvent(self, ev):

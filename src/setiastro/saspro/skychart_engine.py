@@ -202,6 +202,37 @@ _ONGC_KIND = {
     "*Ass": K_ASSOC,
 }
 
+# Nebula sizes SASpro supplies where OpenNGC's is not the nebula's own. NGC.csv stays
+# verbatim; these apply at load, and only while the OpenNGC row still holds the value
+# they replace (with no minor axis), so an upstream correction wins. Nearly all are
+# clusters with nebulosity whose one OpenNGC size is the embedded star cluster's (an
+# MWSC radius): NGC 6334, a 40' nebula, was an 8.4' object. Source per entry: Lynds'
+# LBN dimensions where OpenNGC cross-identifies the object, else SASpro's own
+# celestial_catalog.csv (only rows it types as a nebula, and only when larger). Lynds
+# pieces over 2 deg are whole complexes and never used (LBN 977, 240'x180', for NGC
+# 1980). Where LBN and OpenNGC agree (NGC 1999 2', NGC 7822 20'x4'...) OpenNGC stands.
+# name: (OpenNGC MajAx replaced, None = no size, MajAx', MinAx', source)
+_DSO_SIZE_FIXES = {
+    "IC1275": (None, 10, 10, "SASpro catalog"),
+    "IC2944": (7.20, 75, 75, "SASpro catalog"),   # lam Cen Nebula
+    "IC2948": (6.00, 60, 60, "SASpro catalog"),
+    "NGC1624": (3.00, 5, 5, "LBN"),
+    "NGC1977": (10.20, 20, 20, "SASpro catalog"),   # the Running Man Nebula
+    "NGC1980": (9.30, 14, 14, "SASpro catalog"),   # Lower Sword
+    "NGC2068": (4.50, 8, 8, "SASpro catalog"),
+    "NGC2175": (5.40, 40, 30, "LBN"),
+    "NGC2264": (11.40, 60, 60, "SASpro catalog"),   # Christmas Tree Cluster
+    "NGC2467": (4.20, 8, 7, "LBN"),
+    "NGC2579": (3.30, 10, 10, "SASpro catalog"),
+    "NGC3324": (4.80, 16, 16, "SASpro catalog"),
+    "NGC3603": (3.30, 12, 12, "SASpro catalog"),
+    "NGC6334": (8.40, 40, 40, "SASpro catalog"),
+    "NGC6357": (3.90, 50, 50, "SASpro catalog"),   # the War and Peace Nebula
+    "NGC6618": (12.60, 40, 30, "LBN"),   # Checkmark Nebula
+    "NGC6823": (6.00, 40, 30, "LBN"),
+    "NGC7129": (2.10, 8, 8, "SASpro catalog"),
+}
+
 
 def _f(s, default=float("nan")):
     try:
@@ -293,6 +324,11 @@ class ChartData:
                     if mag != mag:
                         mag = _f(r["B-Mag"])
                     maj, mnr = _f(r["MajAx"]), _f(r["MinAx"])
+                    fix = _DSO_SIZE_FIXES.get(nm)
+                    if fix is not None and mnr != mnr and (
+                            (fix[0] is None and maj != maj)
+                            or (fix[0] is not None and maj == maj and abs(maj - fix[0]) < 0.005)):
+                        maj, mnr = float(fix[1]), float(fix[2])
                     if mnr != mnr:
                         mnr = maj
                     alias = [key.upper()]
@@ -2716,6 +2752,16 @@ class ChartRenderer:
                 painter.fillPath(pth, QBrush(fc))
             painter.restore()
 
+        def shade_levels(lv, color, clip):
+            """Inner brightness levels of the outlined nebulae, shaded one step darker
+            per level and never stroked. Without this the outlines only joined the
+            family fill, so inside a large H-alpha region (NGC 6334 in the Scorpius
+            complex, where the whole chart is above the contour) their shape vanished."""
+            if not lv or clip.isEmpty():
+                return
+            for k in sorted(lv):
+                shade([self._rings_path(lv[k])], color, 20, clip)
+
         def outline(path, color, alpha, width, dashed=False):
             if path.isEmpty():
                 return
@@ -2743,10 +2789,12 @@ class ChartRenderer:
             self.kinds_drawn.add(K_NEB)
             clip_out = frame.subtracted(e_out_union) if not e_out_union.isEmpty() else frame
             shade([e_total], e_fill, 45, frame)
+            shade_levels(rings.get(K_NEB, {}), e_fill, e_total)
             outline(e_total, e_stroke, 150, 0.12 * gs)
         if not r_total.isEmpty():
             self.kinds_drawn.add(K_RFN)
             shade([r_total], r_fill, 45, frame)
+            shade_levels(rings.get(K_RFN, {}), r_fill, r_total)
             outline(r_total, r_stroke, 150, 0.12 * gs)
 
     # ---- grid ----------------------------------------------------------------
@@ -3434,6 +3482,30 @@ class ChartRenderer:
             else:
                 b = a
             o["sa"], o["sb"], o["ang"] = a, b, ang
+        # A mapped nebula takes its shape from the map, unless the map region around it
+        # is larger than the object, so the map's edge is not its edge: NGC 6334 in the
+        # Scorpius HII complex, where the whole chart is above the contour and the
+        # object showed as a bare label. Then its catalog ellipse is drawn as well.
+        # Only where the map stays above its level all along the visible part of the
+        # ellipse, and only at true size (never a minimum-size marker).
+        fx0, fy0, fx1, fy1 = self.frame
+        t = np.linspace(0.0, 2.0 * math.pi, 48, endpoint=False)
+        for o in out:
+            if (not o["mapped"] or o["layer"] not in ("Messier", "NGC", "IC", "Other")
+                    or o["a"] < rmin):
+                continue
+            is_dark = o["kind"] == K_DARK
+            look = self.dust_lookup if is_dark else self.ha_lookup
+            if look is None:
+                continue
+            level = NEB_DUST_LEVEL if is_dark else NEB_HA_LEVEL
+            c, sn = math.cos(math.radians(o["ang"])), math.sin(math.radians(o["ang"]))
+            ex, ey = o["sa"] * np.cos(t), o["sb"] * np.sin(t)
+            px, py = o["x"] + ex * c - ey * sn, o["y"] + ex * sn + ey * c   # as _symbol's QTransform
+            vis = (px >= fx0) & (px <= fx1) & (py >= fy0) & (py <= fy1)
+            if int(vis.sum()) >= 4 and all(look(float(u), float(v)) >= level
+                                           for u, v in zip(px[vis], py[vis])):
+                o["map_hides_edge"] = True
         return out
 
     _LAYER_PRIO = {"Messier": 0, "NGC": 1, "IC": 2, "Other": 3, "Sharpless": 4, "LBN": 5,
@@ -3471,9 +3543,12 @@ class ChartRenderer:
             kl.append(o["layer"])
         return kept
 
-    def _symbol(self, painter, kind, x, y, a, b, ang, gs, clip=True):
-        """Draw one DSO symbol with semi-axes a, b (mm) rotated by ang (deg)."""
+    def _symbol(self, painter, kind, x, y, a, b, ang, gs, clip=True, ghost=False):
+        """Draw one DSO symbol with semi-axes a, b (mm) rotated by ang (deg). ghost: a
+        dashed, unfilled ellipse only (a catalog size over a nebula the map already fills)."""
         lt, stroke, fill = dso_style(self.p, kind)
+        if ghost:
+            lt, fill = "Dash", None
         w = 0.20 * gs
         pen = QPen(stroke, w)
         pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
@@ -3496,7 +3571,7 @@ class ChartRenderer:
                 fc.setAlpha(min(fc.alpha(), 40))
             painter.fillPath(shape, QBrush(fc))
         painter.strokePath(shape, pen)
-        if clipped:
+        if clipped or ghost:
             return
         solid = QPen(stroke, w)
         solid.setCapStyle(Qt.PenCapStyle.FlatCap)
@@ -3522,12 +3597,13 @@ class ChartRenderer:
     def _draw_dsos(self, painter, dsos, gs):
         # large objects first so that small ones remain visible on top
         for o in sorted(dsos, key=lambda o: -o["sa"]):
-            if o["outlined"] or o.get("mapped"):
+            if o["outlined"] or (o.get("mapped") and not o.get("map_hides_edge")):
                 self.kinds_drawn.add(K_NEB if o["kind"] == K_CLNEB else o["kind"])
                 continue                 # its real shape is already on the chart
             if not self.p.marks(self._CAT_LAYER.get(o["layer"], "ngc")):
                 continue
-            self._symbol(painter, o["kind"], o["x"], o["y"], o["sa"], o["sb"], o["ang"], gs)
+            self._symbol(painter, o["kind"], o["x"], o["y"], o["sa"], o["sb"], o["ang"], gs,
+                         ghost=bool(o.get("map_hides_edge")))
             self.kinds_drawn.add(o["kind"])
 
     # ---- labels ---------------------------------------------------------------

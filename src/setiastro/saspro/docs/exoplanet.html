@@ -104,9 +104,28 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
   <li><b>Airmass</b> from <code>AIRMASS</code> directly, or computed from altitude keys (<code>OBJCTALT</code>, <code>ALT</code>, <code>ALTITUDE</code>, <code>EL</code>) via X = 1/sin(h). Defaults to 1.0 if nothing is found.</li>
 </ul>
 
+<h3>How frames are loaded</h3>
+
+<ul>
+  <li><b>In parallel.</b> Frames are read, binned, checked for saturation and (without a GPU) star-detected in worker processes, one per core. SEP holds Python's GIL, so the old thread pool ran detection one frame at a time.</li>
+  <li><b>Software binning.</b> Frames are averaged in b×b blocks as they load. <b>Auto</b> measures the stars on the first frame: 1×1 when they are under 3 px FWHM, otherwise the largest of 2–4 that keeps the binned FWHM at least 2.5 px. Raw colour mosaics always bin by an even factor. Binning does <i>not</i> raise photometric signal-to-noise — an aperture sums the same photons and read noise either way — but it divides memory and time by b² and costs nothing while stars stay a few pixels wide.</li>
+  <li><b>Off the heap.</b> The binned frames go to a temporary file that every process maps, so a large set no longer has to fit in RAM. The file is created sparse — space is taken only as frames are written — and deleted when the window closes.</li>
+  <li><b>Startup work overlaps the file dialog.</b> Starting the worker processes and the GPU takes 10–20 s the first time in a session. It begins when you click Load, while you pick the files, instead of freezing the window afterwards.</li>
+  <li><b>GPU star detection.</b> With a CUDA, DirectML or MPS device, per-frame star catalogues (tracking and frame quality) come from the GPU detector as each frame arrives. SEP still measures the reference frame for the star list and the FWHM.</li>
+</ul>
+
+<div class="tip">
+<b>Which frames to load.</b> <b>Calibrated (dark + flat), unregistered frames are best</b>: the tool tracks the field itself, so nothing needs to be resampled. Measured on 412 real NGC660 frames (7 nights, Newtonian, ASI294MM):
+<ul>
+  <li><b>Calibrated</b> and <b>calibrated + normalised + registered</b> frames gave the same comparison-star scatter, 5.8–5.9 ppt. A per-frame normalisation scale cancels in the differential ratio, and resampling costs little in a ~1.5×FWHM aperture.</li>
+  <li><b>Raw frames</b> (no flat) were clearly worse: 14 ppt, with 80–190 ppt steps across a meridian flip, because every star moves across ~20% vignetting when the field turns.</li>
+</ul>
+The status line notes when raw or registered frames are loaded.
+</div>
+
 <h2>3. Calibration (Raw mode)</h2>
 
-<p>In Raw mode, two buttons let you load Master Dark and Master Flat files. Status labels flip from ❌ to ✅ when a master is successfully loaded. The dark and flat shapes must be compatible (after binning); mismatches surface as a warning and refuse the load. Both masters are themselves 2× 2 binned on load so they align with the (binned) light frames.</p>
+<p>In Raw mode, two buttons let you load Master Dark and Master Flat files. Status labels flip from ❌ to ✅ when a master is successfully loaded. The dark and flat shapes must be compatible; mismatches surface as a warning and refuse the load. The masters are kept unbinned and binned to the frames' software bin when calibration runs.</p>
 
 <p><b>Calibrate &amp; Align Subs</b> runs the full raw-to-aligned conversion on every loaded frame:</p>
 
@@ -127,9 +146,20 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 <b>Photometry</b>
 <br>• <b>SEP detection σ</b> (default 5.0) — threshold for star detection. Lower → more stars (including faint). Higher → only bright, well-detected sources.
 <br>• <b>Border fraction</b> (default 0.10) — fraction of each frame edge to exclude from detection. Stars within this border are dropped to avoid PSF truncation at frame edges and aperture-at-edge artifacts.
+<br>• <b>Aperture radius</b> (default Auto) — every star is measured at eight radii (0.75–3 × the median FWHM). Auto uses the radius that minimises the comparison stars' mutual scatter; or pin a multiple of the FWHM. The transit fit re-optimises the radius for its own target.
+<br>• <b>Recentre apertures</b> (default on) — apertures always follow the field from frame to frame; with this on, stars bright enough for a reliable centroid are also individually recentred.
+<br>• <b>Camera gain (e-/ADU)</b> (default Auto from EGAIN) — electrons per ADU at the gain setting you imaged with, read off the camera maker's gain chart (ZWO unity gain = 1.0); not the gain setting itself. It sets the stars' own shot noise in the error bars. It applies to calibrated float frames too, which are taken at SASpro's 0–1 = 0–65535 ADU scale. LCO/BANZAI frames (float, BUNIT = electron) are recognised automatically.
+<br>• <b>Camera ADC</b> (default Auto) — gain charts and EGAIN count the ADC's own steps, but a 12-bit ADC is written into a 16-bit file ×16 (14-bit: ×4), so the gain is divided by that factor. Auto reads it from raw 16-bit frames, where a 12-bit camera writes only multiples of 16. Calibrated or registered float frames can't show it, so set it by hand for those. Example: the ASI294MM is 12-bit unbinned (unlocked mode) and 14-bit at bin 2; on the NGC660 frames (unity gain, EGAIN 0.99) the sky noise measures ~0.06 e⁻ per file ADU, which is 0.99 ÷ 16. With the gain wrong, the error bars come out too small, and the per-frame noise measured from the comparison stars (§18.5b) and the fit's χ² scaling make up for it.
+<br>• <b>Software binning</b> (default Auto) — see §2.
+<br>• <b>Use the GPU for star detection</b> (default on) — see §2.
 <br><br>
 <b>Ensemble Normalization</b>
-<br>• <b>Comparison stars (k)</b> (default 10) — number of nearest-flux companion stars used to build each target's ensemble reference. Smaller k = more targeted comparison; larger k = more robust to individual noisy comparisons.
+<br>• <b>Max comparison stars</b> (default 10) — size of the weighted comparison ensemble. Candidates are the brightest unsaturated stars; each is weighted by its measured stability, variables are rejected, and the best k are kept.
+<br><br>
+<b>Screening</b>
+<br>• <b>Flag only stars that stand out from the field</b> (default on) — see §9.
+<br>• <b>Field outlier threshold</b> (default 5σ) — how many robust σ above stars of similar brightness a star's statistic must be.
+<br>• <b>Flag night-to-night variability (long-period variables)</b> (default off) — see §7.
 <br><br>
 <b>Analysis (period search)</b>
 <br>• <b>LS samples / peak</b> (default 10) — Lomb-Scargle frequency grid density.
@@ -146,17 +176,21 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 <p>Progress updates stream in real-time. The pipeline:</p>
 
 <ol>
-  <li>Pass 1: SEP detection on every frame in parallel (80% of CPU cores). Measures star count, mean background, FWHM, and ellipticity per frame.</li>
+  <li>Pass 1: SEP detection on every frame in parallel (80% of CPU cores), with no-data (0.0) pixels masked. Records star count, FWHM and background per frame.</li>
   <li>Picks the best reference frame by quality metric (highest star count / FWHM / background).</li>
   <li>Plate-solves the reference frame to establish WCS. If a WCS already exists in the header, you're asked whether to use it or re-solve. XISF files always get re-solved because the embedded WCS is PixInsight's TPS approximation and can be off by 10-30" at frame corners.</li>
   <li>Filters the reference-frame SEP catalog to the interior (dropping stars within the border fraction).</li>
-  <li>Pass 2: aperture + annulus photometry on every star across every frame, with per-star adaptive apertures based on each star's own FWHM in the reference.</li>
-  <li>Ensemble normalization — each star's light curve is divided by the median flux of its k nearest-flux companions.</li>
-  <li>Detrending (if configured) and 2σ outlier flagging.</li>
-  <li>Drops stars with fewer than 75% good frames.</li>
-  <li>For OSC color inputs, runs a supplementary per-channel R/G/B photometry pass.</li>
-  <li>Populates the star list and opens the overlay dialog.</li>
+  <li><b>Tracking</b>: an affine transform from the reference to every frame, matched on the star catalogs. The apertures follow the stars; frames are never resampled for photometry. Drift, small rotation and a 180° meridian flip are all handled; a frame that can't be matched is rejected and reported.</li>
+  <li>Pass 2: aperture photometry of every star on every frame at eight radii, with a sigma-clipped annulus <i>median</i> sky and per-measurement flags for saturation, frame edge / no-data borders and bad sky.</li>
+  <li>Weighted comparison ensemble with automatic rejection of variable comparison stars; frames where the comparison light collapses (cloud) are rejected; isolated outliers (cosmic rays, satellites) flagged.</li>
+  <li>Stars unusable in more than half the frames (off the edge, in no-data borders) are dropped. Saturated stars are kept and tagged so a saturated target is reported rather than silently missing.</li>
+  <li>For OSC color inputs, a per-channel R/G/B pass at the same tracked positions.</li>
+  <li>Detrending and screening of every light curve (§8, §9), then the star list and overlay.</li>
 </ol>
+
+<div class="tip">
+<b>LCO and other observatory data.</b> Rice-compressed <code>.fits.fz</code> files (BANZAI output) load directly. Times are mid-exposure from DATE-OBS/MJD-OBS + EXPTIME/2; the site comes from LATITUDE/LONGITUD/HEIGHT (or SITELAT/SITELONG and the other common spellings); SATURATE/MAXLIN mark saturated stars. Frames do not need to be pre-aligned.
+</div>
 
 <h2>6. The reference overlay</h2>
 
@@ -170,41 +204,105 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 
 <h2>7. The star list and light curve plot</h2>
 
-<p>Each detected star appears in the left-column list showing its index, x,y pixel position, median relative flux, and the reference-frame FWHM. Click one or more entries (Ctrl-click to multi-select) and the right-side plot updates with the selected light curves in distinct colors.</p>
+<p>Each detected star appears in the left-column list showing its index, x,y pixel position and its robust scatter σ in ppt. Tags: <b>[COMP]</b> — in the comparison ensemble; <b>[SAT n%]</b> — saturated in n% of frames; <b>[DIP …]</b> / <b>[VAR]</b> — flagged by the screening (§9). Click one or more entries (Ctrl-click to multi-select) and the right-side plot updates with the selected light curves in distinct colors. Drag the divider between the list and the plot to give either one more room; the split is remembered. A star named by Identify Star or Find Star (§10, §11) shows its name after its number.</p>
 
 <p>The plot shows:</p>
 <ul>
-  <li><b>Raw points</b> (translucent, flux-colored dots) — the per-frame relative-flux measurements, with flagged frames omitted.</li>
-  <li><b>Moving average line</b> (dashed, matching color) — a 5-frame boxcar average, giving a smoothed view of the trend.</li>
+  <li><b>Points</b> — the per-frame differential flux, detrended as selected.</li>
+  <li><b>Bins</b> (5, 10, 15 or 30 minutes, or off; 5-frame bins without timestamps) — inverse-variance weighted means with their propagated error, scaled up when the points in a bin scatter more than their error bars allow.</li>
+  <li>For a single selected star: rejected measurements as red <b>×</b> (saturated, edge, bad frame, outlier), and the best detected dip shaded when the star is flagged. The title carries σ and the best dip's depth, significance and duration.</li>
 </ul>
 
-<p>The x-axis shows hours since first observation when timestamps are available, or frame index when they aren't. Segments separated by gaps larger than one hour are plotted as separate connected regions, preventing fake "transit" shapes from being drawn across nightly gaps.</p>
+<p>The x-axis shows hours since the first frame (mid-exposure UTC) when timestamps are available, or frame index when they aren't.</p>
+
+<h3>Graphical and Scientific plot styles</h3>
+
+<p>The <b>Plot</b> selector above the chart switches between two views of the same data:</p>
+<ul>
+  <li><b>Graphical</b> — the interactive dark plot, built for browsing many stars quickly.</li>
+  <li><b>Scientific</b> — a publication-style figure: white background, inward ticks on all four sides, serif type, every point with its ±1σ error bar, and binned points with error bars on top. The time axis is BJD<sub>TDB</sub> at mid-exposure when the field is plate-solved (JD<sub>UTC</sub> otherwise), with a whole-day offset in the label. With all nights shown (up to six), each night gets its own panel on a broken axis with a shared flux scale; longer campaigns use one continuous axis. <b>Y</b> switches between relative flux and differential magnitude (−2.5 log<sub>10</sub> of the relative flux, brighter up). Several selected stars are stacked with vertical offsets listed in the legend instead of drawn on top of each other. The toolbar zooms and pans.</li>
+</ul>
+
+<p><b>Save Plot…</b> saves what is shown: the Scientific figure as a 300 dpi PNG, a PDF or an SVG (the vector formats keep text and axes sharp; the many unbinned points are rasterised to keep the file small), the Graphical plot as a PNG screenshot. The choice of style and bin width is remembered and shared with Fit Transit.</p>
+
+<h3>What the error bars mean</h3>
+
+<p>Each point's error bar combines two terms:</p>
+<ul>
+  <li><b>The CCD equation</b> — photon noise of the target and the comparison ensemble, sky and read noise (§18.5). This needs the camera gain (§4); without it only the sky term is known.</li>
+  <li><b>Per-frame noise measured from the comparison stars</b> — scintillation, thin cloud, seeing-driven aperture losses, flat-field errors as the field drifts. The CCD equation knows nothing about these, but the comparison stars show them frame by frame: in a frame where they scatter more than their own photon noise allows, every star in that frame gets the extra noise (§18.5b). A passing cloud or the high-airmass end of the night therefore shows larger error bars exactly where the data are worse.</li>
+</ul>
+<p>Slow, correlated systematics are not part of a point's error bar; the transit fit handles them with the red-noise factor β (§18.9b).</p>
+
+<h2>7b. Data sets spanning several nights</h2>
+
+<p>Frames are grouped into <b>observing nights</b>: local noon to local noon from the site longitude in the headers (or, without one, split at gaps longer than 6 h), and separately per telescope, since an LCO sequence can hand off between sites with no daytime gap. When there is more than one night a <b>Night</b> selector appears next to Detrend:</p>
+
+<ul>
+  <li><b>All nights</b> (default) — every night on one axis with the daytime gaps collapsed; dashed lines and dates mark each new night, and no line is drawn across a gap.</li>
+  <li><b>A single night</b> — that night alone, hours since its first frame. The list's σ and flags, the overlay highlights and the status line all switch to that night.</li>
+</ul>
+
+<p>Detrending is fitted over all nights at once and removes only what happens <i>within</i> each night (one airmass coefficient shared by every night, or per-night time terms); each night's level is fitted but never divided out, so a long-period variable's change from night to night survives. The screening gives each night its own level, so the step between two nights is never mistaken for a dip, and, with <b>Settings → Screening → Flag night-to-night variability</b> on, flags <b>VAR night-to-night</b> when a star's night levels vary well beyond the comparison stars' own night-to-night scatter. That test is for long-period variables (Miras, semiregulars) and is off by default: a transit happens within one night, and a flat-field residual that changes from night to night trips it too. On the NGC660 data 6 of the 18 stars along one edge of the frame were flagged that way, against 7 of the other 297. Variables flagged on any night stay out of the comparison and check stars. Analyze Star uses every night (each normalised to its own median for the BLS search); Fit Transit fits one night — it opens on the selected night, or on the night that covers the predicted transit once the planet is looked up.</p>
+
+<h3>Meridian flips</h3>
+
+<p>After a meridian flip the field is turned 180° on the sensor, so every star lands on a different part of it, and any flat-field or vignetting error turns into a per-star step in brightness. On the NGC660 data that step was 8–20 ppt with a flat and 80–190 ppt without one. Each frame's pier side is read from, in order:</p>
+<ol>
+  <li>a <code>PIERSIDE</code> keyword;</li>
+  <li>Sequence Generator Pro's <code>FLIPPED</code> keyword, when it changes within the set;</li>
+  <li>the registration matrix SASpro writes into frames it registered;</li>
+  <li>the tracked 180° rotation of the field.</li>
+</ol>
+<p>Registered frames all face the same way, so tracking alone can't see the flip in them. Every (night, pier side) segment then gets its own level in the detrending, the dip search and the outlier test. The step is divided out, and each night's level is kept. A dip box must leave enough baseline in every segment it touches, so a box can't swallow a short segment and pass its level off as a dip. Fit Transit fits a flux step for the far pier side (<b>fs</b>) when the night contains a flip, which is AstroImageJ's meridian-flip offset. The status line says when a flip was found and how.</p>
 
 <h2>8. Detrending</h2>
 
-<p>The <b>Detrend</b> combo in the top-right offers three options:</p>
+<p>The <b>Detrend</b> combo in the top-right offers four options. Changing it re-screens every star immediately.</p>
 
 <ul>
-  <li><b>No Detrend</b> — raw relative-flux curves.</li>
-  <li><b>Linear</b> — divide each curve by its best-fit line. Removes slow systematic trends from airmass change, mild transparency drift, or focus changes across the night.</li>
-  <li><b>Quadratic</b> (default) — divide each curve by its best-fit parabola. Captures the typical "frown" from early-rising + late-setting airmass trajectories across a long observing session.</li>
+  <li><b>No Detrend</b> — differential flux as measured.</li>
+  <li><b>Linear</b> — slow drifts across the night.</li>
+  <li><b>Quadratic</b> — curvature as well. Can absorb part of a transit that sits mid-night; prefer Airmass or Linear when hunting transits.</li>
+  <li><b>Airmass</b> (default) — a term in airmass, the physical shape of residual differential extinction (EXOTIC's systematics model). Falls back to Linear when the frames carry no airmass information.</li>
 </ul>
 
-<p>Detrending happens on each star's light curve independently, after ensemble normalization. The curves are then re-centered to unit median so comparisons across stars remain apples-to-apples.</p>
+<p>Trends are fitted in <i>time</i> with iterative 3σ clipping and divided out; a trend that would go non-positive or swing by more than 2× is refused rather than applied. The detection statistics in §9 don't use the divided curve at all — the dip search fits the same baseline jointly with the dip.</p>
 
-<h2>9. Dip detection — threshold and coherence</h2>
+<h2>9. Dip and variability detection</h2>
 
-<p>Transit detection in the main view works via two sliders working together:</p>
+<p>Every star's light curve is screened for two kinds of signal, and flagged when it clears both controls:</p>
 
 <div class="keys">
-<b>Dip threshold (ppt)</b> — minimum peak deviation of the 5-frame moving average from 1.0, in parts per thousand. 20 ppt = 2% dip. Set lower to catch shallower candidates; higher to filter noise-driven false positives.
-<br><b>Temporal SNR min</b> (default 2.0) — the <i>coherence</i> check: the peak dip must be at least N × the MAD of residuals between the raw points and the moving average. A noisy curve where the MA randomly wanders doesn't pass; a real coherent dip does. Set to 0 to disable.
+<b>Min depth / amplitude (ppt)</b> (default 5) — a <b>DIP</b> must be at least this deep; a <b>VAR</b> star's 10-minute-binned curve must span at least this much (5–95% range). Hot Jupiters are typically 5–25 ppt deep.
+<br><b>Min significance (σ)</b> (default 7) — DIP: signal-to-noise of the best box-shaped dip, fitted jointly with the detrend baseline, against white noise <i>plus</i> the red noise measured at the dip's own duration. VAR: significance of smooth variability from the von Neumann ratio.
 </div>
 
-<p>Stars that pass both thresholds get highlighted yellow in both the list and the overlay. The status bar reports the count. The design catches real transits while filtering the noise-driven false positives that would otherwise swamp any amateur-sized dataset.</p>
+<p><b>Relative to the field</b> (on by default; Settings → Screening). Each star's dip significance, von Neumann statistic and amplitude are also compared with stars of similar brightness: the median and robust spread (1.4826 × MAD) of the same statistic among stars within ±0.5 mag, widened to at least 30 stars. A star is flagged only if it stands that many σ above them (default 5). DIP needs the dip significance to stand out; VAR needs both the von Neumann statistic and the amplitude to. This is the survey practice of Sokolovsky et al. (2017, the VaST study). Systematics shared by the whole field — seeing-dependent aperture loss, flat-field error, a meridian flip, thin cloud — raise every star's statistics together. A fixed cut then flags everything, which happened on real data before this: 281 of 321 stars flagged. The DIP entry shows how far above the field the star stands ("field +9σ").</p>
+
+<p><b>One night at a time.</b> With several nights loaded, the dip search runs on each night alone, with that night's own baseline and red noise, and All nights shows the best night's dip. A transit happens within one night, and one search across every night let the noisiest night's red noise set the bar for all of them. On NGC660 that turned a 40 ppt, 17.8σ dip into a diluted 2-hour box of 22 ppt at 6.6σ, so All nights and the single-night view showed different boxes.</p>
+
+<p><b>Aperture test.</b> Every dip candidate is re-measured at the largest aperture (3 × FWHM) against the same comparison stars. A real eclipse dims the whole star, so its depth is the same in any aperture. Light smeared out of the aperture by a change in the star's image — the telescope settling after a meridian flip, a focus shift, coma toward a corner — makes a "dip" that fades as the aperture grows. A dip whose depth at the large aperture is under half its depth at the photometry aperture, by more than 3σ, is withdrawn; the list shows it as <b>dip ✗ PSF</b> with both depths (hover over the entry for the explanation), and the plot title says so. A brighter neighbour inside the large aperture also dilutes a dip, so check blends by eye.</p>
+
+<div class="tip"><b>What this caught on NGC660.</b> A 12th-magnitude star in a corner of the frame showed a clean 40 ppt, 25-minute dip that started on the first frame after a meridian flip. Its depth was 417 ppt at r = 3.7 px, 76 ppt at the 7.4 px photometry aperture and 7 ppt at 14.7 px, and its peak brightness fell by 45% while its total flux fell by 7%: the telescope settling after the flip, not a planet. The EW eclipsing binary in the same field measured 189, 188 and 185 ppt at the same radii. Two more stars along the same edge showed the same post-flip dip on three nights, and a star on the opposite edge did it just before each flip. All of them are withdrawn; on the 485 registered frames that leaves 4 flagged stars, three of them catalogued variables.</div>
+
+<p>Stars usable in fewer than half the frames (saturated or off the edge most of the time) are not judged. A flagged star with a neighbour at least a quarter as bright within two aperture radii is tagged <b>blend?</b>: the apertures share light, and the share changes with seeing, which is a common source of false variability.</p>
+
+<p>Flagged stars are highlighted yellow in the list and the overlay, with the dip depth and significance in the list entry; the status bar reports the counts.</p>
 
 <div class="tip">
-<b>Why coherence matters.</b> A naive "any 2% dip is a candidate" filter will fire on every noisy comparison star in your field — stars where the raw scatter is 1-2% per frame will produce 5-frame-averaged "dips" of similar magnitude just from random fluctuations. The coherence check requires the MA excursion to be larger than the MAD of the individual-point residuals: real transits have smooth, coherent, non-random dip shapes; noise doesn't.
+<b>Checked against known variables.</b> On 412 NGC660 frames over 7 nights (Newtonian, ASI294MM), 13 of 315 stars were flagged on calibrated frames and 16 of 270 on calibrated + normalised + registered frames. Before these changes it was 281 of 321. Matched against VSX on a plate-solved WCS:
+<ul>
+  <li>Both strong catalogued variables in the star list were flagged in both runs, each as DIP and VAR: an RRab (0.64 mag) and an EW eclipsing binary (0.23 mag).</li>
+  <li>So were the two 0.03 mag Gaia rotators that rise above the noise.</li>
+  <li>A saturated 8.8 mag δ Scuti was correctly kept out.</li>
+  <li>Five other 0.02–0.04 mag Gaia variables sit at the noise level and were not flagged.</li>
+  <li>Most of the remaining flags were night-to-night candidates on faint stars, many clustered along one edge of the frame. That is why the night-to-night test is now opt-in; with it off, the calibrated run flags 5 stars: the RRab, the EW, the 15.65 mag rotator, and two uncatalogued within-night dips.</li>
+</ul>
+</div>
+
+<div class="tip">
+<b>Why red noise matters.</b> Ground-based light curves wander on hour timescales (transparency, seeing, guiding). Judged against white noise alone, that wander produces "dips" at high nominal significance on stars that are perfectly constant. Charging every candidate dip with the correlated noise measured at its own duration (Pont et al. 2006) is what keeps the default 7σ meaningful. On simulated 4-hour, 2-minute-cadence curves with 2 ppt white plus correlated noise, about 0.7% of constant stars exceed 7σ, while 2-hour dips of 5 ppt or more are recovered every time.
 </div>
 
 <h2>10. Identify Star — SIMBAD / VSX lookup</h2>
@@ -219,15 +317,21 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 
 <p>Angular offset is subtracted from the score as a tiebreaker. If the best SIMBAD match still isn't flagged as variable, a VSX cone search within the same radius looks for a variable-star designation to upgrade to. The result dialog shows the ID, otype, V magnitude, and offset, with a one-click button to open the full SIMBAD page in your browser.</p>
 
+<p><b>The name sticks.</b> Once a star is identified, its name replaces "Star #N" in the plot titles and legends, the list, the Analyze Star window and Fit Transit, with the list number kept in brackets: <i>CSS_J014208.2+135125 (#82)</i>. A match only names the star when it lies within 5″ of it; the lookup prefers a variable anywhere within 15″, and that can be a neighbour. The Gaia DR3 fallback names it when the Gaia source is within 3″. Find Star (§11) names the star it selects with the name you typed. Names last until the next Load &amp; Measure, which numbers the stars afresh.</p>
+
 <h2>11. Find Star by name</h2>
 
 <p>The reverse operation: enter any SIMBAD-resolvable name (e.g. "V336 Aps", "HD 12345", "TYC 9256-617-1", "Gaia DR3 ...") and the tool resolves the name to RA/Dec, projects back through the WCS to detector pixel coordinates, and selects the nearest detected star in the list.</p>
 
 <p>The matching tolerance adapts to the data: it's the maximum of 2× the median FWHM in detector pixels, 10 arcseconds converted to detector pixels using the WCS plate scale, and a 6-pixel floor. If no star is within tolerance, you get a specific diagnostic — "resolves to pixel (X,Y) but closest detected star is N pixels away" — so you know whether SEP dropped the star (faint, border, saturated) or the target isn't in frame at all.</p>
 
+<div class="tip">
+<b>When CDS is down.</b> Every lookup fails over across mirrors through SASpro's shared CDS health check (the same one WIMI, SFCC and the Magnitude tool use). Find Star tries SIMBAD on each mirror, then Sesame name resolution on cds.unistra.fr and the VizieR mirrors. Identify Star tries SIMBAD, then SIMBAD's TAP endpoints directly, then VSX. If none of them names the star, it reports the nearest Gaia DR3 source — from the local Gaia library the plate solver uses (offline, instant), else from Gaia DR3 on the VizieR mirrors — with its G magnitude and offset, and says whether SIMBAD was unreachable or simply has no entry. Most field stars are not in SIMBAD at all, and the Gaia offset also confirms the plate solution put the star in the right place. VSX, APASS, UCAC4 and the limb-darkening tables come from whichever VizieR mirror is answering (Strasbourg, CfA, IDIA, …), and a mirror that answers a catalog lookup with no rows is passed over for one that has them. For the AAVSO check star, the nearest UCAC4 star (with its APASS V) stands in when SIMBAD can't name one. Settings → CDS / SIMBAD → <b>Test now</b> shows which mirrors are answering.
+</div>
+
 <h2>12. Show Ensemble Members</h2>
 
-<p>Each star's light curve is normalized against its k nearest-flux comparison stars (default k=10, configurable in Settings). <b>Show Ensemble Members</b> highlights those comparisons in the list in light blue, letting you see which stars are being used as reference for your target. Useful for diagnosing noisy curves — if the "comparisons" are a mix of variable stars and the target itself, the normalization will drag the target toward whatever those are doing.</p>
+<p>All stars are normalised against one weighted comparison ensemble (§18.6) — the stars tagged <b>[COMP]</b>. <b>Show Ensemble Members</b> highlights them in light blue. A comparison star's own light curve is computed against the ensemble <i>without</i> itself, so a comparison can never cancel its own variability. Stars rejected from the ensemble as variable or noisy are counted in the status line.</p>
 
 <h2>13. Analyze Star — the period search</h2>
 
@@ -243,13 +347,44 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 
 <p>The window title summarizes the result: <code>Analysis: Star #42  |  P = 1.4237 d  |  SDE = 8.3</code>. A detail line underneath shows duration (hours), depth (ppt), SDE, alias penalty, and number of per-night dips detected.</p>
 
+<p><b>Several nights.</b> The BLS period grid has to get finer as the data span grows: its step is the shortest trial duration divided by the span squared. That's about 3,500 trial periods for one night, but 28 million for seven nights spread over 27 days, which would take more than a day to compute. Analyze scans at most 100,000 periods, then re-scans each of the strongest peaks at the full resolution. The scan runs on all CPU cores, and a long one shows its progress with a Cancel button. On the 7-night NGC660 data it takes about 17 s. The W UMa binary CSS_J014208.2+135125 (VSX period 0.31167 d) comes out at 0.15583 d, half its period. That is the expected BLS result for an eclipsing binary with two nearly equal eclipses per orbit.</p>
+
 <div class="tip">
 <b>Reading the SDE.</b> Signal Detection Efficiency: how many sigma above the noise floor the BLS peak sits, after whitening. SDE > 7 is a strong candidate; 5-7 is marginal (worth phase-folding to inspect); below 5 is noise-dominated. The reported SDE already has the alias penalty subtracted — alias-contaminated peaks near 0.5, 1.0, 2.0, or 3.0 days get downweighted so true planetary signals win over nightly-cadence artifacts.
 </div>
 
+<h2>13b. Fit Transit — EXOTIC-style transit timing</h2>
+
+<p>Select the host star, click <b>Fit Transit…</b>. This is the workflow of NASA JPL's Exoplanet Watch pipeline EXOTIC, implemented independently inside SASpro:</p>
+
+<ol>
+  <li><b>Priors.</b> If the frames are plate-solved, known planets at the star's position are looked up automatically in the NASA Exoplanet Archive; or type a planet/host name and <b>Look up</b>. Period, reference Tc, Rp/R*, a/R*, inclination and eccentricity are filled in with their uncertainties, along with the predicted mid-transit time for this night. Everything stays editable.</li>
+  <li><b>Limb darkening.</b> Quadratic coefficients from Claret &amp; Bloemen (2011) for the star's Teff / log g / [Fe/H] and the filter (read from the FILTER keyword; LCO names like <code>rp</code> are recognised). Clear and broadband exoplanet filters map to the nearest standard band, marked approximate.</li>
+  <li><b>Selection.</b> Every aperture radius × a family of comparison sets (the weighted ensemble, its best-n subsets, and each of the best single comparisons) is fitted by least squares, and the combination with the lowest residual scatter wins — EXOTIC's selection metric.</li>
+  <li><b>Fit.</b> Transit × systematics, with Tc, Rp/R* and (by default) inclination free. Systematics default to EXOTIC's airmass term a1·exp(a2·X); linear/quadratic time trends are available. Outliers are clipped against their neighbours. Posteriors come from an affine-invariant ensemble MCMC; the photometric errors are first scaled by √χ²<sub>red</sub> (only ever inflated) and by the red-noise factor β.</li>
+  <li><b>Results.</b> Tc in BJD_TDB with its uncertainty, O–C against the ephemeris, Rp/R*, depth, impact parameter, T14, airmass coefficients, residual RMS per point and per 10 minutes, β, and which aperture and comparison set were used.</li>
+</ol>
+
+<div class="keys">
+<b>Exports</b>
+<br>• <b>AAVSO Report…</b> — AAVSO Exoplanet Database format (the layout EXOTIC submits: #PRIORS / #RESULTS lines with their JSON forms, DIFF / ERR / airmass / detrend columns, BJD_TDB).
+<br>• <b>CSV…</b> — time, flux, error, airmass, model, transit, systematics, detrended flux, residual, used/clipped.
+<br>• <b>Save Plot…</b> — Graphical: PNG screenshots of the light-curve and residual panels. Scientific: one publication figure — detrended flux with error bars, binned points and the transit model, residuals in ppt underneath, Rp/R*, Tc, O–C and the scatter printed on the plot — as a 300 dpi PNG, PDF or SVG.
+</div>
+
+<p>The <b>Plot</b> selector above the chart switches the dialog between the Graphical and Scientific styles (§7). The point errors in the fit carry the same per-frame noise measured from the comparison stars, re-measured for each aperture tried; the summary reports its median.</p>
+
+<div class="tip">
+<b>Times.</b> Every timestamp is mid-exposure (DATE-OBS + EXPTIME/2, or DATE-AVG when present) converted to BJD_TDB for the target with the observatory site from the header. Without a site the geocentre is used (at most 21 ms error). Without plate-solved coordinates the times stay JD_UTC and the window says so — timing databases require BJD_TDB.
+</div>
+
+<div class="workflow">
+<b>No known planet?</b> <b>Unknown planet: start from detected dip</b> seeds Tc, depth and duration from the screening's best dip, sets a nominal 3-day period and frees a/R*. Only Tc, depth and duration are meaningful in that mode.
+</div>
+
 <h2>14. Export CSV / FITS</h2>
 
-<p>Standard data export of every star's light curve across every frame. The file format follows the dialog's suffix: <code>.csv</code> gets Pandas-formatted CSV with one row per frame, columns for MJD then STAR_i / FLAG_i / STAR_i_RA / STAR_i_DEC per detected star. <code>.fits</code> gets a proper multi-HDU FITS with a LIGHTCURVE table (MJD + per-star flux + flag columns) and a STARS table (index, x, y, RA, Dec per star), plus original-header metadata (OBJECT, TELESCOP, DATE-OBS, EXPTIME, FILTER) and pipeline parameters (SEP threshold, border fraction, reference frame index, median FWHM).</p>
+<p>Standard data export of every star's light curve across every frame. The file format follows the dialog's suffix: <code>.csv</code> gets Pandas-formatted CSV with one row per frame, columns for MJD (mid-exposure UTC), AIRMASS and TRANSPARENCY (the comparison ensemble's relative throughput — clouds show up here), then STAR_i / STAR_i_ERR / FLAG_i / STAR_i_RA / STAR_i_DEC per detected star. FLAG is a bit mask: 1 edge / no-data, 2 saturated, 4 rejected frame, 8 outlier, 16 invalid flux, 32 bad sky. <code>.fits</code> gets a proper multi-HDU FITS with a LIGHTCURVE table (MJD + per-star flux + flag columns) and a STARS table (index, x, y, RA, Dec per star), plus original-header metadata (OBJECT, TELESCOP, DATE-OBS, EXPTIME, FILTER) and pipeline parameters (SEP threshold, border fraction, reference frame index, median FWHM).</p>
 
 <h2>15. Export → AAVSO — the real deliverable</h2>
 
@@ -263,12 +398,14 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
   <li>Select one target star in the list.</li>
   <li>Target name auto-resolved via SIMBAD/VSX (editable).</li>
   <li>AAVSO observer code (persisted across sessions).</li>
-  <li>Submission format (Variable-Star Photometry or Exoplanet Report).</li>
+  <li>Submission format. <b>Exoplanet Report</b> opens the Transit Fit window (§13b) — the exoplanet report is written from a fit.</li>
   <li>Check star auto-identified from the target's ensemble members (first with a known SIMBAD V magnitude). Fallback to manual entry if auto-ID fails.</li>
   <li>Filter code chosen from the full AAVSO band list (Johnson-Cousins, DSLR, unfiltered CCD, Sloan, Near-IR, narrowband).</li>
 </ol>
 
 <h3>Multi-band export (OSC color data)</h3>
+
+<p>Measurements the photometry rejected (saturated, edge, rejected frames, outliers) are excluded from the zero point and the reported rows.</p>
 
 <p>When OSC per-channel photometry is available, you're offered a one-click option to export all three channels interleaved in a single AAVSO Extended file: TB (Blue), TG (Green standardized to V), TR (Red). This is the biggest workflow win for DSLR / OSC observers: one upload, three bands, standardized against catalog B / V / R magnitudes.</p>
 
@@ -295,15 +432,15 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 <h2>17. Workflow recipes</h2>
 
 <div class="workflow">
-<b>Variable-star monitoring across a session.</b> A session's worth of frames of a known-variable target. Mode: Aligned (frames already through Stacking). Load, Measure &amp; Photometry → the target star shows up in the list → select it → the light curve plots → set Dip threshold to 20 ppt (if looking for subtle variations) or 50 ppt (bright variables), coherence 2.0 → run Analyze Star to get LS period → compare to AAVSO VSX historical data → Export AAVSO to contribute your night's data.
+<b>Variable-star monitoring across a session.</b> A session's worth of frames of a known-variable target. Mode: Aligned (frames already through Stacking). Load, Measure &amp; Photometry → the target star shows up in the list → select it → the light curve plots → the VAR flag and the list's σ show at a glance whether it varied → run Analyze Star to get LS period → compare to AAVSO VSX historical data → Export AAVSO to contribute your night's data.
 </div>
 
 <div class="workflow">
-<b>TESS candidate follow-up.</b> A known TESS Object of Interest (TOI) with a predicted transit tonight. Image through the predicted window. Run through the full pipeline → Find Star by TOI name to select it → look at the light curve directly for the predicted dip. If seen: Export AAVSO with the Exoplanet Report format for submission. If not seen: a null result is still useful; export anyway with your limiting-magnitude notes. Query TESScut after your observation for cross-validation.
+<b>TESS candidate follow-up.</b> A known TESS Object of Interest (TOI) with a predicted transit tonight. Image through the predicted window. Run through the full pipeline → Find Star by TOI name to select it → <b>Fit Transit…</b> — the archive lookup fills the ephemeris and shows the predicted Tc → Run Fit → <b>AAVSO Report…</b>. A null or shallow result is still useful: report it with your notes. Query TESScut after your observation for cross-validation.
 </div>
 
 <div class="workflow">
-<b>Blind survey for new variables.</b> A deep stack of ordinary field frames. Load, Measure &amp; Photometry → crank Dip threshold down to 15-20 ppt to catch marginal candidates → coherence 2.5+ to reject noise → every yellow-highlighted star gets a sanity-check Analyze → the real variables show clean LS peaks and coherent phase folds; the false positives show nothing in LS and messy phase diagrams → Identify Star on each real detection → cross-check against VSX for existing designation → report any genuinely new ones via AAVSO.
+<b>Blind survey for new variables.</b> A deep stack of ordinary field frames. Load, Measure &amp; Photometry → lower Min depth to 3-5 ppt and keep significance near 7σ (drop toward 5σ only if you are prepared to vet more false positives) → every yellow-highlighted star gets a sanity-check Analyze → the real variables show clean LS peaks and coherent phase folds; the false positives show nothing in LS and messy phase diagrams → Identify Star on each real detection → cross-check against VSX for existing designation → report any genuinely new ones via AAVSO.
 </div>
 
 <div class="workflow">
@@ -322,9 +459,9 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 <p>Every frame is run through SEP (Barbary 2016, port of SExtractor by Bertin &amp; Arnouts 1996) in parallel across a thread pool sized to 80% of available CPU cores. Per frame:</p>
 
 <ol>
-  <li>Sigma-clipped background estimation via <code>sigma_clipped_stats</code> on the gray plane.</li>
-  <li>Background subtraction, then SEP background map and RMS map computation.</li>
-  <li>Source extraction with the user's σ threshold (default 5.0), minarea 16, deblending threshold 32.</li>
+  <li>No-data (0.0) and non-finite pixels masked.</li>
+  <li>SEP background map and global RMS computed on the masked frame.</li>
+  <li>Source extraction with the user's σ threshold (default 5.0), minarea 9, deblending threshold 32; catalog sorted brightest first.</li>
   <li>Per-source FWHM via FWHM = 2.3548 · √(a·b) from SEP's semi-axis measurements:</li>
 </ol>
 
@@ -334,7 +471,7 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 
 <div class="matheq">e = \sqrt{1 - (b/a)^2}</div>
 
-<p>Per-frame stats recorded: star count, mean background, median FWHM, median ellipticity.</p>
+<p>Per-frame stats recorded: star count, mean level, and the median FWHM of the brighter half of the unflagged detections.</p>
 
 <h3>18.2 Reference frame selection</h3>
 
@@ -342,7 +479,7 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 
 <div class="matheq">Q_i = \frac{N_{\mathrm{stars}}}{\mathrm{FWHM} \cdot \langle I \rangle}</div>
 
-<p>which rewards frames with many detections, small PSFs, and low background. The frame with highest Q becomes the detection template for the rest of the pipeline — its SEP catalog defines which stars get photometered, its WCS gets plate-solved, and all other frames compute photometry at the positions found here.</p>
+<p>which rewards frames with many detections, small PSFs, and low background. The frame with highest Q becomes the detection template for the rest of the pipeline — its SEP catalog defines which stars get photometered, its WCS gets plate-solved, and its star positions are carried onto every other frame by the tracking transform (§18.4).</p>
 
 <h3>18.3 Plate-solving integration</h3>
 
@@ -351,92 +488,79 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 <ul>
   <li><b>Existing WCS in header, non-XISF, not forcing</b> → user asked whether to use the header WCS (fast) or re-solve (fresh). Default is "yes, use it".</li>
   <li><b>XISF source</b> → always re-solve. The XISF format embeds a TPS (thin-plate spline) WCS approximation computed by PixInsight that can be off by 10-30 arcseconds at frame corners — too imprecise for star-matching tolerances. SIP and CD/CDELT headers are stripped from the seed, keeping only CRVAL / OBJCTRA / OBJCTDEC / FOCALLEN / XPIXSZ as hints.</li>
+  <li><b>Header WCS synthesised from the mount pointing</b> (SASpro's <code>SASWCSSY</code> marker, or a reference point identical to the mount's RA/DEC with no solver keywords) → plate-solved without asking. Such a WCS is arcminutes off: on the NGC660 frames it put stars ~190" from their catalogue positions, which names the wrong star in VSX/SIMBAD and pulls the wrong comparison magnitudes. If the solve fails it is still used, with a warning, because it is good enough for BJD and airmass.</li>
   <li><b>Force blind solve</b> enabled or no existing WCS → straight plate solve from scratch.</li>
 </ul>
 
-<p>The <code>_wcs_bin_factor</code> is tracked throughout: header WCS is full-resolution (so bin_factor = 2 when applied to our binned coordinates), solver WCS is already in binned coordinates (so bin_factor = 1). Every pixel-to-sky conversion downstream respects this.</p>
+<p>The <code>_wcs_bin_factor</code> is tracked throughout: a header WCS is full-resolution (so bin_factor = the software bin when applied to our binned coordinates), solver WCS is already in binned coordinates (so bin_factor = 1). Every pixel-to-sky conversion downstream respects this.</p>
 
-<h3>18.4 Adaptive aperture photometry</h3>
+<h3>18.4 Tracking</h3>
 
-<p>Per-star aperture radii adapt to each star's actual FWHM in the reference frame rather than using a global constant. The three radii:</p>
+<p>For every frame, an affine transform from reference to frame pixels is estimated from the two SEP catalogs (brightest 60 stars): every reference–frame star pair votes for an offset, the densest offset bin wins, stars are matched within 1.5 × FWHM, and an affine is fitted to the matches by least squares with 3σ clipping. If the vote fails, the same is tried with a 180° rotation (meridian flip), then astroalign on the catalogs. A frame that can't be matched is rejected for every star.</p>
 
-<div class="matheq">r_{\mathrm{ap}} = \max(2.5,\; 1.5 \cdot \mathrm{FWHM})</div>
-<div class="matheq">r_{\mathrm{in}} = \max(r_{\mathrm{ap}} + 1,\; 3 \cdot \mathrm{FWHM})</div>
-<div class="matheq">r_{\mathrm{out}} = \max(r_{\mathrm{in}} + 2,\; 5 \cdot \mathrm{FWHM})</div>
+<p>Bright stars (centroid SNR ≥ 15) are additionally recentred with an iterative flux-weighted centroid inside 1.2 × FWHM, accepted only if it stays within 1 FWHM of the prediction. Fainter stars use the transform's prediction, which — fitted on dozens of stars — is better than their own noisy centroid.</p>
 
-<p>r<sub>ap</sub> at 1.5·FWHM captures ~95% of a Gaussian PSF — close to the SNR-optimal aperture (which sits around 1.4·FWHM for a Gaussian + flat sky). r<sub>in</sub> at 3·FWHM puts the inner annulus edge well beyond the PSF wings. r<sub>out</sub> at 5·FWHM gives enough annulus pixels for a stable median sky estimate.</p>
+<p><i>Before this, every frame was measured at the reference positions. Any drift walked stars out of their apertures at different times, which is how a light curve ends up swinging between zero and several times its median.</i></p>
 
-<p>Per-star FWHM is clamped to [0.5× median, 3× median] to prevent any single bad detection from producing wildly out-of-range apertures.</p>
+<h3>18.5 Apertures, sky and errors</h3>
 
-<h3>18.5 Annulus sky subtraction with error propagation</h3>
+<p>Radii r<sub>k</sub> = m<sub>k</sub> · FWHM with m ∈ {0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3} (EXOTIC searches 1.5–6 Gaussian σ, the same range), minimum 1.5 px, fixed across frames. The annulus starts 2 px (or 0.5 FWHM) beyond the largest aperture and is at least 5 px wide.</p>
 
-<p>For each (star, frame) pair:</p>
+<p>Sky is the median of the annulus pixels after iterative 3σ clipping (stars and cosmic rays in the annulus are clipped out); no-data pixels never enter it. The aperture sum uses exact pixel overlap (SEP, subpix = 0):</p>
 
-<ol>
-  <li><code>sep.sum_circle</code> gives the aperture flux F<sub>ap</sub> and uncertainty σ<sub>ap</sub>.</li>
-  <li><code>sep.sum_circann</code> gives the annulus flux F<sub>ann</sub> and uncertainty σ<sub>ann</sub>.</li>
-  <li>Compute sky-per-pixel from the annulus (median behavior via SEP's robust mode).</li>
-  <li>Subtract the implied sky total from the aperture:</li>
-</ol>
+<div class="matheq">F = \sum_{\mathrm{ap}} I - A\,\tilde{s}, \qquad \sigma_F^2 = \frac{F}{g} + A\,\sigma_s^2\left(1 + \frac{A}{n_s}\right)</div>
 
-<div class="matheq">F_{\mathrm{net}} = F_{\mathrm{ap}} - \frac{F_{\mathrm{ann}}}{A_{\mathrm{ann}}} \cdot A_{\mathrm{ap}}</div>
+<p>with A the aperture area, s̃ and σ<sub>s</sub> the sky median and robust scatter, n<sub>s</sub> the number of sky pixels and g the gain in electrons per data unit (§4).</p>
 
-<p>Propagate the uncertainties in quadrature with the aperture-area ratio:</p>
+<p><b>Saturation.</b> Saturated pixels are located on the unbinned frame, since binning averages a clipped core away. A measurement whose aperture contains one is flagged, and a star saturated in any frame can't be a comparison star. The level comes from <code>MAXLIN</code> / <code>SATURATE</code>, or from a plateau of pixels sharing the frame maximum (raw data). Calibrated, normalised or registered frames have neither: a clipped core sits at (full well − dark) / flat, which varies across the field with the flat. For those, the flat-topped star cores themselves are found: several pixels within 0.3% of a core's maximum, which an unsaturated PSF can't produce. The level is set 10% under the lowest of them, because CMOS response is already non-linear there. Before this, flat-fielded frames reported no saturation at all. On NGC660 every comparison star was then saturated, and almost every star in the field was flagged variable.</p>
 
-<div class="matheq">\sigma_F = \sqrt{\sigma_{\mathrm{ap}}^2 + \left(\frac{A_{\mathrm{ap}}}{A_{\mathrm{ann}}}\right)^2 \sigma_{\mathrm{ann}}^2}</div>
+<h3>18.5b Per-frame noise from the comparison stars</h3>
 
-<p>If annulus extraction fails (star near edge, insufficient annulus pixels), the pipeline falls back to the global-background-subtracted aperture flux rather than failing the measurement outright.</p>
+<p>Model: in frame j every star carries an extra fractional variance s<sub>j</sub><sup>2</sup> beyond the CCD equation, independent from star to star. A transparency change common to the whole field cancels in the differential and never appears. For each comparison star's leave-one-out curve r, the second difference d<sub>j</sub> = r<sub>j</sub> − (r<sub>j−1</sub> + r<sub>j+1</sub>)/2 removes slow trends (colour-dependent extinction, a slowly varying comparison) and has variance</p>
 
-<h3>18.6 Ensemble normalization</h3>
+<div class="matheq">\mathrm{Var}(d_j) = V_{\mathrm{ccd}} + 1.5\, s_j^2 (1 + q), \qquad q = \frac{\sum w_k^2}{(\sum w_k)^2}</div>
 
-<p>For each target star T, find its k nearest-flux companions (default k=10) based on median flux:</p>
+<p>over the other comparison stars (their averaged excess). s<sub>j</sub><sup>2</sup> ≥ 0 is solved so that the median of d<sup>2</sup>/Var(d) over the comparison stars in a 5-frame window equals the median of a χ²<sub>1</sub> variable (0.455). Because it is a median, one variable comparison star or one cosmic ray can't set it. Windows never cross from one night into the next. A star's relative-flux error then becomes</p>
 
-<div class="matheq">F_{\mathrm{ens}}(t) = \mathrm{median}_i\{F_i(t)\}, \quad i \in \mathcal{N}_k(T)</div>
+<div class="matheq">\sigma^2 = \sigma_{\mathrm{ccd}}^2 + f^2 s_j^2 (1 + q)</div>
 
-<p>Then divide:</p>
+<p>— its own excess plus the weighted ensemble's. The AAVSO magnitude errors add the same term (×2 in the single-comparison fallback). Binned points use the inverse-variance weighted mean, with error 1/√Σw scaled by √χ²<sub>red</sub> of the bin when that exceeds 1.</p>
 
-<div class="matheq">f_T(t) = \frac{F_T(t)}{F_{\mathrm{ens}}(t)}</div>
+<p>Synthetic check (simulated data only): a field with photon noise plus per-star scintillation that grows with airmass and a cloudy stretch, gain known. Normalised residuals of constant stars came out at std 0.97–1.15 in clear, cloudy and high-airmass stretches with these errors, against 1.3–2.5 with the CCD equation alone. With the gain unknown (no Poisson term), they improved from 10–24 to 1.2–1.5. The remaining excess is brightness-dependent noise that a single fractional term can't fully represent, and the transit fit's χ² scaling absorbs it.</p>
 
-<p>Error propagation per frame:</p>
+<h3>18.6 Weighted comparison ensemble</h3>
 
-<div class="matheq">\sigma_{f_T} = f_T \sqrt{\left(\frac{\sigma_T}{F_T}\right)^2 + \left(\frac{\sigma_{\mathrm{ens}}}{F_{\mathrm{ens}}}\right)^2}</div>
+<p>Candidates are the brightest stars that are never saturated and usable in ≥ 90% of frames. Each comparison j is normalised to its own median, f<sub>j</sub>, and weighted by the inverse variance of its scatter against the ensemble of the <i>other</i> comparisons (Broeg, Fernández &amp; Neuhäuser 2005):</p>
 
-<p>Finally the whole curve is renormalized to unit median so curves across stars are directly comparable. This is the standard differential-photometry workflow — any multiplicative systematic that affects target and ensemble members similarly (airmass, transparency, mild clouds, focus) cancels in the ratio, leaving astrophysical variability.</p>
+<div class="matheq">A(t) = \frac{\sum_j w_j f_j(t)}{\sum_j w_j}, \qquad w_j = \sigma_j^{-2}, \quad \sigma_j = \sigma_{\mathrm{rob}}\!\left[\frac{f_j}{A_{-j}}\right]</div>
+
+<p>Comparisons whose scatter is far in excess of their photometric error (variables, blends, stars on a bad column) are rejected and the weights recomputed until the set settles; the best k are kept. Every star's differential flux is f(t)/A(t), with A<sub>−i</sub> (leave-one-out) for comparison stars. Frames where A(t) &lt; 0.25 (heavy cloud) or most comparisons are unusable are rejected.</p>
 
 <h3>18.7 Detrending</h3>
 
-<p>Linear or quadratic polynomial fit per curve to the time-indexed flux (after ensemble normalization), then divide out:</p>
+<p>Least-squares fit of the chosen baseline (constant, linear or quadratic in time, or linear in airmass) with iterative 3σ clipping, divided out, re-normalised to unit median. Refused if the trend would leave [0.5, 2] over the data.</p>
 
-<div class="eq">curve_detrended = curve / polyfit_trend(curve)</div>
+<h3>18.8 Measurement flags</h3>
 
-<p>The fit respects per-point validity (finite + positive). After detrending, each curve is re-centered to unit median.</p>
+<p>Each (star, frame) carries a bit mask: edge / no-data in the aperture (1), saturated pixel within the largest aperture (2) — located on the <i>unbinned</i> frame from MAXLIN/SATURATE or a clipped-ADC plateau, since binning averages a clipped core away — rejected frame (4), isolated outlier (8), invalid flux (16), bad sky (32). Outliers are points more than 5σ from the median of their two neighbours on each side: a linear ramp such as ingress has zero residual against that median, so steep eclipse branches are never clipped.</p>
 
-<h3>18.8 Outlier flagging and star rejection</h3>
+<h3>18.9 Detection statistics</h3>
 
-<p>Per-curve 2σ-MAD outlier flagging:</p>
+<p><b>Box search.</b> For trial durations D from 0.5 to 5 h and centres across the night, the model y = B·c + δ·box is solved by least squares (B = the detrend baseline), all trials at once from cumulative sums. The best box per duration is re-scored with red noise measured on the residuals of that model (box included, so a real dip does not inflate its own noise):</p>
 
-<div class="matheq">\sigma_{\mathrm{rob}} = 1.4826 \cdot \mathrm{MAD}</div>
-<div class="matheq">|f_i - \mathrm{median}| > 2 \sigma_{\mathrm{rob}}</div>
+<div class="matheq">\mathrm{SNR} = \frac{-\delta}{\sqrt{\sigma_w^2\,(G^{-1})_{\delta\delta} + \sigma_r^2(D)}}, \qquad \sigma_r^2(D) = \max\!\left(0,\; \sigma_{\mathrm{bin}}^2(D) - \frac{\sigma_w^2}{N_D}\right)</div>
 
-<p>Flagged points are excluded from downstream plots and period search but kept in the data arrays. Stars with fewer than 75% unflagged frames are dropped entirely from the list — too noisy to be useful.</p>
+<p>σ<sub>w</sub> is the point-to-point (white) noise and σ<sub>bin</sub>(D) the RMS of the residuals averaged in bins of length D (Pont, Zucker &amp; Queloz 2006).</p>
 
-<p>After dropping, the ensemble_map is remapped from pre-filter to post-filter indices so every downstream reference to "star #N" still points at the right curve.</p>
+<p><b>Variability.</b> The von Neumann ratio η = δ²/s² of the baseline residuals is ≈ 2 for white noise and falls toward 0 for smooth variability; its significance is z = (2 − η)·√N / 2.</p>
 
-<h3>18.9 Moving average dip detection</h3>
+<h3>18.9b Transit model and fit</h3>
 
-<p>A 5-frame boxcar moving average smooths the curve:</p>
+<p>The model is a quadratic limb-darkened star occulted by an opaque disc, I(μ) = 1 − u<sub>1</sub>(1 − μ) − u<sub>2</sub>(1 − μ)², integrated over the occulted arcs with end-clustered Gauss–Legendre quadrature (exact to 4·10<sup>−13</sup> for a uniform disc; agrees with brute-force 2-D integration to the grid's resolution). Circular or eccentric orbits (Kepler's equation solved per point); the model is averaged over the exposure when an exposure is a significant fraction of ingress. Systematics multiply the transit:</p>
 
-<div class="matheq">\mathrm{MA}(t) = \frac{1}{w} \sum_{k=-w/2}^{w/2} f(t+k)</div>
+<div class="matheq">F(t) = T(t)\; c_0\, e^{a_2 (X - X_0)}\,(1 + c_1\tau + c_2\tau^2)</div>
 
-<p>The peak excursion from unit median (converted to parts per thousand):</p>
-
-<div class="matheq">\mathrm{peak}_{\mathrm{ppt}} = 1000 \cdot \max_t |1 - \mathrm{MA}(t)|</div>
-
-<p>Must exceed the user's dip threshold. Then the coherence check:</p>
-
-<div class="matheq">\mathrm{SNR}_{\mathrm{temp}} = \frac{\mathrm{peak}_{\mathrm{ppt}}}{1000 \cdot 1.4826 \cdot \mathrm{MAD}(f - \mathrm{MA})}</div>
-
-<p>Must exceed the Temporal SNR min. Only stars passing both get flagged. The temporal SNR requirement is what makes dip detection useful on real amateur data where per-point scatter is often comparable to the dip magnitudes you're hunting.</p>
+<p>reported in EXOTIC's convention a<sub>1</sub> = c<sub>0</sub>e<sup>−a<sub>2</sub>X<sub>0</sub></sup>. Starting point: a Tc grid scan, then bounded least squares. Priors: Tc uniform within max(10σ<sub>pred</sub>, ½T<sub>14</sub>, 1 h) of the prediction; Rp/R* uniform; inclination within ±5° (Gaussian if the archive gives an error); a/R* fixed or Gaussian; b &lt; 1 + Rp/R*. Errors are scaled by √χ²<sub>red</sub> (never down) and by the time-averaging red-noise factor β (Winn et al. 2008, bins of 10–30 min), then the posterior is sampled with the Goodman &amp; Weare (2010) affine-invariant ensemble sampler; medians and 16/84th percentiles are reported.</p>
 
 <h3>18.10 Lomb-Scargle periodogram</h3>
 
@@ -458,7 +582,7 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 <div class="matheq">d \in [d_{\min}\, p_{\min},\; d_{\max}\, p_{\min}]</div>
 
 <ol start="3">
-  <li>BLS with SNR objective, 10× oversampling, min_n_transit = 2.</li>
+  <li>BLS with SNR objective, 10× oversampling, on a grid uniform in frequency with step d<sub>min</sub> / T<sub>span</sub>², capped at 100,000 periods (see §13, "Several nights").</li>
   <li>Whiten the raw power spectrum by subtracting a running median:</li>
 </ol>
 
@@ -468,7 +592,7 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 
 <ol start="5">
   <li>Find the top 12 local maxima in the whitened spectrum. Peaks within 1% of each other in period are merged (same signal at different grid points).</li>
-  <li>For each candidate peak, do a local refinement BLS on a dense grid ±20% around that peak, picking the best SNR point.</li>
+  <li>For each candidate peak, do a local refinement BLS on a dense grid ±20% around that peak, picking the best SNR point. When the cap applied, the refinement covers ±1.5 coarse steps around the peak at the full resolution, measured against the coarse spectrum's background so the SDEs stay comparable.</li>
   <li>Compute SDE for each refined candidate:</li>
 </ol>
 
@@ -508,7 +632,7 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 
 <h3>18.14 Multi-band R/G/B photometry (OSC inputs)</h3>
 
-<p>For color inputs, a secondary photometry pass runs the same aperture math (fixed global aperture from median FWHM, no per-star adaptation needed for color consistency) on each R, G, B channel separately. The result is a 3D array <code>raw_flux_rgb</code> shaped (3, n_stars, n_frames) with corresponding errors. Both are set to None when the input is mono, and the AAVSO exporter falls through to single-band mode.</p>
+<p>For color inputs, a secondary photometry pass runs the same measurement (tracked per-frame positions, the chosen aperture radius, clipped annulus sky, flags) on each R, G, B channel separately; flagged measurements are left empty. A "color" set whose three channels are identical is mono stored as RGB and is treated as mono. The result is a 3D array <code>raw_flux_rgb</code> shaped (3, n_stars, n_frames) with corresponding errors. Both are set to None when the input is mono, and the AAVSO exporter falls through to single-band mode.</p>
 
 <h3>18.15 AAVSO calibration — ensemble zero point</h3>
 
@@ -565,7 +689,7 @@ OGLE, GSC, PPM, SAO, WDS, WISE</div>
 <p>Both SEP detection (pass 1) and aperture photometry (pass 2) run in parallel across a thread pool sized to 80% of available CPU cores. SEP itself is single-threaded internally so this gives real linear speedup. Per-frame tasks are completely independent (no shared state), so there's no lock contention. On an 8-core machine, a 200-frame session processes in roughly the time it takes one frame × 32 — a 6× speedup over serial execution.</p>
 
 <div class="credit">
-<b>Credits.</b> SASpro Exoplanet Transit Detector — the two-pass detection + adaptive-aperture photometry pipeline, the k-nearest-flux ensemble normalization with error propagation, the moving-average + coherence dip filter, the three-tier AAVSO calibration cascade (ensemble ZP → single-comparison → check-star fallback) with per-tier NOTES annotation, the Sloan r' → R proxy flag for honesty on OSC multi-band exports, the SIMBAD/VSX scoring system that prefers variable-star designations over generic Gaia IDs, the XISF plate-solve re-solve policy, and the BLS whitening + multi-peak scanning + alias penalty workflow — are original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. The night-dip event detection, phase-fold binning, and BLS multi-peak merging patterns derive from Kyle Lynch's "exoplanet_ground_telescope_script" (BEEP collaboration), ported and extended for the SASpro integration. Standard components credited: SEP (Barbary 2016, Python port of Source Extractor by Bertin &amp; Arnouts 1996); astropy for WCS, Time, Lomb-Scargle, BoxLeastSquares, and SkyCoord; astroquery for SIMBAD and VSX queries; Lightkurve + MAST Tesscut for the TESS cross-reference path; APASS DR9 and UCAC4 catalogs via VizieR; and the AAVSO Extended Format specification. The Lynch, Anderson, Chaton, Fritz, Thill, Marek, Traub <i>"Detection of a Long-Period Gas-Giant Candidate With Citizen Scientists"</i> paper documenting TIC 358943696.01 (P = 13.5627 d, R<sub>p</sub> = 1.82 R<sub>Jup</sub>) is where SASpro contributes on the amateur-detection side through the Backyard Eclipsing Exoplanet Project (BEEP); the publication-grade fits in that paper are done in dedicated professional astronomy tools.
+<b>Credits.</b> SASpro Exoplanet Transit Detector — the three-tier AAVSO calibration cascade (ensemble ZP → single-comparison → check-star fallback) with per-tier NOTES annotation, the Sloan r' → R proxy flag for honesty on OSC multi-band exports, the SIMBAD/VSX scoring system that prefers variable-star designations over generic Gaia IDs, the XISF plate-solve re-solve policy, and the BLS whitening + multi-peak scanning + alias penalty workflow — are original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. The time-series pipeline follows published methods: weighted comparison ensembles with variable rejection (Broeg, Fernández &amp; Neuhäuser 2005), pink-noise detection statistics (Pont, Zucker &amp; Queloz 2006), the time-averaging red-noise factor (Winn et al. 2008), the affine-invariant ensemble sampler (Goodman &amp; Weare 2010), quadratic limb-darkening coefficients from Claret &amp; Bloemen (2011, VizieR J/A+A/529/A75), the Kasten &amp; Young (1989) airmass formula, planet parameters from the NASA Exoplanet Archive, and the transit-fit workflow and AAVSO Exoplanet Database report layout of EXOTIC (NASA JPL Exoplanet Watch) — reimplemented independently, no EXOTIC code is used. The night-dip event detection, phase-fold binning, and BLS multi-peak merging patterns derive from Kyle Lynch's "exoplanet_ground_telescope_script" (BEEP collaboration), ported and extended for the SASpro integration. Standard components credited: SEP (Barbary 2016, Python port of Source Extractor by Bertin &amp; Arnouts 1996); astropy for WCS, Time, Lomb-Scargle, BoxLeastSquares, and SkyCoord; astroquery for SIMBAD and VSX queries; Lightkurve + MAST Tesscut for the TESS cross-reference path; APASS DR9 and UCAC4 catalogs via VizieR; and the AAVSO Extended Format specification. The Lynch, Anderson, Chaton, Fritz, Thill, Marek, Traub <i>"Detection of a Long-Period Gas-Giant Candidate With Citizen Scientists"</i> paper documenting TIC 358943696.01 (P = 13.5627 d, R<sub>p</sub> = 1.82 R<sub>Jup</sub>) is where SASpro contributes on the amateur-detection side through the Backyard Eclipsing Exoplanet Project (BEEP); the publication-grade fits in that paper are done in dedicated professional astronomy tools.
 </div>
 
 </body>

@@ -77,7 +77,10 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavToolbar
 from matplotlib.figure import Figure
 
-from setiastro.saspro.autostretch import autostretch, autostretch_with_lut, apply_autostretch_lut
+from setiastro.saspro.autostretch import (
+    autostretch, autostretch_with_lut, apply_autostretch_lut,
+    autostretch_lut, apply_autostretch_lut_u8, array_max, parallel_map,
+)
 from .layers import BLEND_MODES, ImageLayer, composite_stack, _resize_like
 from setiastro.saspro.help_support import make_help_button
 
@@ -636,6 +639,90 @@ class _LoupeWindow(QWidget):
         p.drawRect(0, 0, self.width() - 1, self.height() - 1)
 
         p.end()
+
+@dataclass
+class _TileState:
+    """Everything a canvas tile is rasterized from, captured on the GUI thread
+    by ImageSubWindow._tile_state() so _tile_buf8() can run anywhere."""
+    src: Any                 # the display source object (identity)
+    a: Any                   # its 2-D / 3-D ndarray view
+    is_mono: bool
+    lut: Any                 # stretch LUT(s), or None when not stretching
+    linked: bool
+    hdr: Optional[float]     # _render()'s HDR normalisation, or None
+    mask_key: Any            # active mask's data object (identity), or None
+    mask: Any                # its 2-D view, unconverted, or None
+    mask_invert: bool
+    mask_alpha: float
+
+    def same_inputs(self, o) -> bool:
+        return (self.src is o.src and self.lut is o.lut and self.linked == o.linked
+                and self.hdr == o.hdr and self.mask_key is o.mask_key
+                and self.mask_invert == o.mask_invert
+                and self.mask_alpha == o.mask_alpha)
+
+
+def _tile_buf8(st, sx, sy, sw, sh, out_w=None, out_h=None):
+    """uint8 RGB (h, w, 3) of the canvas tile (sx, sy, sw, sh): crop -> float
+    -> HDR scale -> area-resize to (out_w, out_h) -> LUT -> mask tint.
+    numpy/cv2 only (no Qt, no view state), so tiles can be rasterized on
+    worker threads."""
+    a = st.a
+    H, W = int(a.shape[0]), int(a.shape[1])
+    sx = max(0, int(sx)); sy = max(0, int(sy))
+    sw = max(1, min(int(sw), W - sx)); sh = max(1, min(int(sh), H - sy))
+    sx2 = sx + sw; sy2 = sy + sh
+    crop = a[sy:sy2, sx:sx2]
+
+    vis = crop.astype(np.float32, copy=False)
+    if np.issubdtype(a.dtype, np.integer):
+        info = np.iinfo(a.dtype)
+        vis = crop.astype(np.float32) / float(max(1, info.max))
+
+    if st.hdr is not None:
+        vis = vis / st.hdr          # as _render(): normalise, then resize
+
+    if out_w is not None and out_h is not None:
+        ow = max(1, int(out_w)); oh = max(1, int(out_h))
+        if ow < sw or oh < sh:
+            vis = resize_for_display(vis, ow, oh)
+
+    buf8 = None
+    if st.lut is not None:
+        try:
+            buf8 = apply_autostretch_lut_u8(vis, st.lut, linked=st.linked)
+        except Exception:
+            buf8 = None
+    if buf8 is None:
+        buf8 = to_uint8_rgb(vis)
+
+    # Mask overlay over the same source crop (parity with _render()). Only
+    # the crop is converted: _active_mask_array() made a float32, clipped
+    # copy of the WHOLE mask for every tile (and the inversion another).
+    if st.mask is not None:
+        try:
+            mc = np.clip(st.mask[sy:sy2, sx:sx2].astype(np.float32, copy=False), 0.0, 1.0)
+            if st.mask_invert:
+                mc = 1.0 - mc
+        except Exception:
+            mc = None
+        if mc is not None:
+            th, tw = buf8.shape[:2]
+            sh2, sw2 = mc.shape[:2]
+            if sh2 > 0 and sw2 > 0:
+                if (sh2, sw2) != (th, tw):
+                    yi = np.linspace(0, sh2 - 1, th).astype(np.int32)
+                    xi = np.linspace(0, sw2 - 1, tw).astype(np.int32)
+                    mc = mc[yi][:, xi]
+                ov = mc.astype(np.float32, copy=False) * st.mask_alpha
+                bf = buf8.astype(np.float32, copy=False)
+                bf[..., 0] = np.clip(bf[..., 0] + (255.0 - bf[..., 0]) * ov, 0.0, 255.0)
+                buf8 = bf.astype(np.uint8, copy=False)
+
+    if buf8.dtype != np.uint8:
+        buf8 = buf8.astype(np.uint8)
+    return ensure_contiguous(buf8)
+
 
 class ImageSubWindow(QWidget):
     aboutToClose = pyqtSignal(object)
@@ -3588,16 +3675,18 @@ class ImageSubWindow(QWidget):
         elif not np.issubdtype(arr.dtype, np.floating):
             vis_src = arr.astype(np.float32, copy=False)
 
-        small = resize_for_display(vis_src, out_w, out_h)
-
         if self.autostretch_enabled:
             arr_f = vis_src.astype(np.float32, copy=False)
-            mx = float(arr_f.max()) if arr_f.size else 1.0
+            mx = array_max(arr_f) if arr_f.size else 1.0
             # Screen stretch only. Linear data above 1 (HDR composition) must
             # still reach the LUT, which clips its input to [0, 1].
             if np.isfinite(mx) and mx > 1.0:
                 arr_f = arr_f / mx
                 small = resize_for_display(arr_f, out_w, out_h)
+                self._remember_stretch_hdr(base_img, mx)
+            else:
+                small = resize_for_display(vis_src, out_w, out_h)
+                self._remember_stretch_hdr(None, None)
 
             cache_key = (
                 bool(is_mono),
@@ -3616,7 +3705,7 @@ class ImageSubWindow(QWidget):
                 n = int(arr_f.shape[0]) * int(arr_f.shape[1])
                 s = max(1, int(np.sqrt(n / 65536.0))) if n > 65536 else 1
                 sample = np.ascontiguousarray(arr_f[::s, ::s])
-                _stretched, lut_cache = autostretch_with_lut(
+                lut_cache = autostretch_lut(
                     sample,
                     target_median=self.autostretch_target,
                     sigma=self.autostretch_sigma,
@@ -3626,18 +3715,20 @@ class ImageSubWindow(QWidget):
                 )
                 self._autostretch_lut_cache = lut_cache
                 self._autostretch_cache_key = cache_key
-            vis = apply_autostretch_lut(
+            # ---------------------------------------
+            # 4) Stretch straight to 8-bit RGB for QImage (display size only);
+            #    same bytes as to_uint8_rgb(apply_autostretch_lut(...))
+            # ---------------------------------------
+            buf8 = apply_autostretch_lut_u8(
                 small.astype(np.float32, copy=False),
                 self._autostretch_lut_cache,
                 linked=(not is_mono and self._autostretch_linked),
             )
         else:
-            vis = small
-
-        # ---------------------------------------
-        # 4) Convert to 8-bit RGB for QImage (display size only)
-        # ---------------------------------------
-        buf8 = to_uint8_rgb(vis)
+            # ---------------------------------------
+            # 4) Convert to 8-bit RGB for QImage (display size only)
+            # ---------------------------------------
+            buf8 = to_uint8_rgb(resize_for_display(vis_src, out_w, out_h))
 
         # ---------------------------------------
         # 5) Optional mask overlay (baked into buf8)
@@ -3699,6 +3790,9 @@ class ImageSubWindow(QWidget):
         self._pm_src = QPixmap.fromImage(self._qimg_src)
         if isinstance(self.label, ViewportImageCanvas):
             self.label.invalidate()   # LUT/data changed -> drop cached tiles + proxy
+            # every visible tile is about to be re-requested: batch them
+            self._tile_prefetch = None
+            self._tile_prefetch_armed = True
         # Truthful: this is the scale that the built pixmap actually represents.
         # Equals `scale` when the 8192 cap did NOT engage; below `scale` when it
         # did. Downstream (_present_scaled, _zoom_settle_needs_rebuild) rely on
@@ -3722,6 +3816,27 @@ class ImageSubWindow(QWidget):
 
         rebuild = False  # done
 
+
+    def _remember_stretch_hdr(self, src, mx):
+        """Record that _render() divided `src` by `mx` (data above 1.0) before
+        building and applying the stretch LUT, so the tile and viewport-crop
+        rasterizers can do the same."""
+        try:
+            self._stretch_hdr = (weakref.ref(src), float(mx)) if src is not None else None
+        except TypeError:
+            self._stretch_hdr = None
+
+    def _stretch_hdr_scale(self, src):
+        """mx if _render() normalised `src` by it before stretching, else None.
+
+        Without this the tiles applied the LUT of src/mx to the raw src, so on
+        HDR data (max > 1) everything above 1.0 clipped to white while the
+        overview proxy under them showed the intended stretch."""
+        st = getattr(self, "_stretch_hdr", None)
+        if st is None:
+            return None
+        ref, mx = st
+        return mx if ref() is src else None
 
     def _current_display_source(self):
         """The array currently on display: preview ROI array, display override,
@@ -3804,25 +3919,33 @@ class ImageSubWindow(QWidget):
         elif not np.issubdtype(a.dtype, np.floating):
             vis_src = a.astype(np.float32, copy=False)
 
-        small = resize_for_display(
-            vis_src, out_w, out_h,
-            src_x=sx, src_y=sy, src_w=crop_w, src_h=crop_h,
-        )
-
         lut = getattr(self, "_autostretch_lut_cache", None)
+        hdr = (self._stretch_hdr_scale(arr)
+               if getattr(self, "autostretch_enabled", False) and lut is not None else None)
+        if hdr is not None:
+            # as _render(): normalise first, then resize (crop only)
+            small = resize_for_display(
+                vis_src[sy:sy2, sx:sx2].astype(np.float32, copy=False) / hdr,
+                out_w, out_h,
+            )
+        else:
+            small = resize_for_display(
+                vis_src, out_w, out_h,
+                src_x=sx, src_y=sy, src_w=crop_w, src_h=crop_h,
+            )
+
+        buf8 = None
         if getattr(self, "autostretch_enabled", False) and lut is not None:
             try:
-                vis = apply_autostretch_lut(
+                buf8 = apply_autostretch_lut_u8(
                     small.astype(np.float32, copy=False),
                     lut,
                     linked=(not is_mono and getattr(self, "_autostretch_linked", False)),
                 )
             except Exception:
-                vis = small
-        else:
-            vis = small
-
-        buf8 = to_uint8_rgb(vis)
+                buf8 = None
+        if buf8 is None:
+            buf8 = to_uint8_rgb(small)
 
         # Mask overlay, baked over the same source crop (parity with _render()).
         if getattr(self, "show_mask_overlay", False):
@@ -3858,7 +3981,9 @@ class ImageSubWindow(QWidget):
         except Exception:
             return None
         try:
-            qimg = tag_qimage_with_working_color_space(qimg)
+            # the view's QSettings: the tagger would build two per tile
+            qimg = tag_qimage_with_working_color_space(
+                qimg, getattr(self, "_settings", None))
         except Exception:
             pass
         return qimg, ox, oy
@@ -3870,6 +3995,62 @@ class ImageSubWindow(QWidget):
         down to that size FIRST, exactly as _rasterize_widget_rect does, so the
         LUT and uint8 conversion run on the small result, not the full crop.
         Returns a QImage (or None)."""
+        st = self._tile_state()
+        if st is None:
+            return None
+        key = (int(sx), int(sy), int(sw), int(sh),
+               None if out_w is None else int(out_w),
+               None if out_h is None else int(out_h))
+        buf8 = self._prefetched_tile(st, key)
+        if buf8 is None and getattr(self, "_tile_prefetch_armed", False):
+            # first tile after a rebuild: the canvas is about to ask for every
+            # visible tile, so rasterize them all at once
+            self._tile_prefetch_armed = False
+            self._prefetch_visible_tiles(st)
+            buf8 = self._prefetched_tile(st, key)
+        if buf8 is None:
+            buf8 = _tile_buf8(st, sx, sy, sw, sh, out_w, out_h)
+        h, w = int(buf8.shape[0]), int(buf8.shape[1])
+        try:
+            qimg = QImage(buf8.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
+            if qimg.isNull():
+                return None
+        except Exception:
+            return None
+        try:
+            # the view's QSettings: the tagger would build two per tile
+            qimg = tag_qimage_with_working_color_space(
+                qimg, getattr(self, "_settings", None))
+        except Exception:
+            pass
+        return qimg
+
+    def _active_mask_source(self):
+        """(data object, 2-D view) of the active mask, unconverted, or
+        (None, None): _active_mask_array() without its whole-frame float32
+        copy and clip, so a tile converts only its own crop."""
+        doc = getattr(self, "document", None)
+        if not doc:
+            return None, None
+        mid = getattr(doc, "active_mask_id", None)
+        if not mid:
+            return None, None
+        masks = getattr(doc, "masks", {}) or {}
+        layer = masks.get(mid)
+        if layer is None:
+            return None, None
+        data = getattr(layer, "data", None)
+        if data is None:
+            return None, None
+        a = np.asarray(data)
+        if a.ndim == 3 and a.shape[2] == 1:
+            a = a[..., 0]
+        if a.ndim != 2:
+            return None, None
+        return data, a
+
+    def _tile_state(self):
+        """_TileState of what is on display now (None if nothing to draw)."""
         arr = self._current_display_source()
         if arr is None:
             return None
@@ -3879,72 +4060,110 @@ class ImageSubWindow(QWidget):
         if a.ndim not in (2, 3):
             return None
         is_mono = (a.ndim == 2)
-        H, W = int(a.shape[0]), int(a.shape[1])
-        sx = max(0, int(sx)); sy = max(0, int(sy))
-        sw = max(1, min(int(sw), W - sx)); sh = max(1, min(int(sh), H - sy))
-        sx2 = sx + sw; sy2 = sy + sh
-        crop = a[sy:sy2, sx:sx2]
-
-        vis = crop.astype(np.float32, copy=False)
-        if np.issubdtype(a.dtype, np.integer):
-            info = np.iinfo(a.dtype)
-            vis = crop.astype(np.float32) / float(max(1, info.max))
-
-        if out_w is not None and out_h is not None:
-            ow = max(1, int(out_w)); oh = max(1, int(out_h))
-            if ow < sw or oh < sh:
-                vis = resize_for_display(vis, ow, oh)
-
         lut = getattr(self, "_autostretch_lut_cache", None)
-        if getattr(self, "autostretch_enabled", False) and lut is not None:
-            try:
-                vis = apply_autostretch_lut(
-                    vis, lut,
-                    linked=(not is_mono and getattr(self, "_autostretch_linked", False)),
-                )
-            except Exception:
-                pass
-
-        buf8 = to_uint8_rgb(vis)
-
-        # Mask overlay over the same source crop (parity with _render()).
+        stretch = bool(getattr(self, "autostretch_enabled", False)) and lut is not None
+        mkey = mview = None
         if getattr(self, "show_mask_overlay", False):
             try:
-                m = self._active_mask_array()
+                mkey, mview = self._active_mask_source()
             except Exception:
-                m = None
-            if m is not None:
-                m = np.asarray(m)
-                if getattr(self, "_mask_overlay_invert", True):
-                    m = 1.0 - m
-                mc = m[sy:sy2, sx:sx2]
-                th, tw = buf8.shape[:2]
-                sh2, sw2 = mc.shape[:2]
-                if sh2 > 0 and sw2 > 0:
-                    if (sh2, sw2) != (th, tw):
-                        yi = np.linspace(0, sh2 - 1, th).astype(np.int32)
-                        xi = np.linspace(0, sw2 - 1, tw).astype(np.int32)
-                        mc = mc[yi][:, xi]
-                    ov = mc.astype(np.float32, copy=False) * float(getattr(self, "_mask_overlay_alpha", 0.35))
-                    bf = buf8.astype(np.float32, copy=False)
-                    bf[..., 0] = np.clip(bf[..., 0] + (255.0 - bf[..., 0]) * ov, 0.0, 255.0)
-                    buf8 = bf.astype(np.uint8, copy=False)
+                mkey = mview = None
+        return _TileState(
+            src=arr, a=a, is_mono=is_mono,
+            lut=lut if stretch else None,
+            linked=bool(not is_mono and getattr(self, "_autostretch_linked", False)),
+            hdr=self._stretch_hdr_scale(arr) if stretch else None,
+            mask_key=mkey, mask=mview,
+            mask_invert=bool(getattr(self, "_mask_overlay_invert", True)),
+            mask_alpha=float(getattr(self, "_mask_overlay_alpha", 0.35)),
+        )
 
-        if buf8.dtype != np.uint8:
-            buf8 = buf8.astype(np.uint8)
-        buf8 = ensure_contiguous(buf8)
-        h, w = int(buf8.shape[0]), int(buf8.shape[1])
-        try:
-            qimg = QImage(buf8.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
-            if qimg.isNull():
-                return None
-        except Exception:
+    def _prefetched_tile(self, st, key):
+        """A batch-rasterized tile for exactly these inputs, else None. The
+        batch is dropped on any input change and after two seconds."""
+        pf = getattr(self, "_tile_prefetch", None)
+        if pf is None:
             return None
+        st0, t0, tiles = pf
+        if (time.monotonic() - t0) > 2.0 or not st0.same_inputs(st):
+            self._tile_prefetch = None
+            return None
+        buf8 = tiles.pop(key, None)
+        if not tiles:
+            self._tile_prefetch = None
+        return buf8
+
+    def _drop_stale_tile_prefetch(self):
+        pf = getattr(self, "_tile_prefetch", None)
+        if pf is not None and (time.monotonic() - pf[1]) > 2.0:
+            self._tile_prefetch = None
+
+    def _prefetch_visible_tiles(self, st):
+        """Rasterize every tile in the canvas's visible region side by side
+        on worker threads (numpy and cv2 release the GIL). A rebuild used to
+        rasterize them one after another inside paintEvent -- ~100 tiles for a
+        22 MP frame at fit. Same tile set, keys and pixels the canvas asks
+        for; anything it asks for that is not here is rasterized as before."""
+        self._tile_prefetch = None
+        lbl = getattr(self, "label", None)
+        if not isinstance(lbl, TiledImageCanvas):
+            return
         try:
-            qimg = tag_qimage_with_working_color_space(qimg)
+            from setiastro.saspro.imageops.tiled_canvas import (
+                TILE_DIM, mip_level_for_scale, visible_tile_range,
+                tile_source_rect, level_tile_out_size,
+            )
+            vr = lbl.visibleRegion().boundingRect()
         except Exception:
-            pass
-        return qimg
+            return
+        if vr.isEmpty():
+            return
+        scale = float(getattr(self, "scale", 1.0) or 1.0)
+        src_h, src_w = int(st.a.shape[0]), int(st.a.shape[1])
+        level = mip_level_for_scale(scale, TILE_DIM, src_w, src_h)
+        dim = TILE_DIM << level
+        rng = visible_tile_range(vr.x(), vr.y(), vr.width(), vr.height(),
+                                 scale, dim, src_w, src_h)
+        if rng is None:
+            return
+        tx0, ty0, tx1, ty1 = rng
+        jobs = []
+        for ty in range(ty0, ty1 + 1):
+            for tx in range(tx0, tx1 + 1):
+                rect = tile_source_rect(tx, ty, dim, src_w, src_h)
+                if rect is None:
+                    continue
+                if level <= 0:
+                    jobs.append(tuple(rect) + (None, None))
+                else:
+                    jobs.append(tuple(rect) + tuple(level_tile_out_size(rect[2], rect[3], level)))
+        if len(jobs) < 4:
+            return
+
+        def _one(job):
+            try:
+                return _tile_buf8(st, *job)
+            except Exception:
+                return None
+
+        # the pool owns the cores for this phase (cv2 would fan each tiny
+        # resize out over all of them again)
+        try:
+            import cv2
+            cv2_threads = cv2.getNumThreads()
+            cv2.setNumThreads(1)
+        except Exception:
+            cv2 = None
+        try:
+            bufs = parallel_map(_one, jobs)
+        finally:
+            if cv2 is not None:
+                cv2.setNumThreads(cv2_threads)
+        tiles = {j: b for j, b in zip(jobs, bufs) if b is not None}
+        if tiles:
+            self._tile_prefetch = (st, time.monotonic(), tiles)
+            # release whatever the canvas does not ask for
+            QTimer.singleShot(2500, self._drop_stale_tile_prefetch)
 
     def _present_scaled(self, interactive: bool):
         """
@@ -4076,7 +4295,7 @@ class ImageSubWindow(QWidget):
         else:
             arr_f = a.astype(np.float32, copy=False)
 
-        mx = float(arr_f.max()) if arr_f.size else 1.0
+        mx = array_max(arr_f) if arr_f.size else 1.0
         # Screen stretch only. Linear data above 1 (HDR composition) must
         # still reach the LUT, which clips its input to [0, 1].
         if np.isfinite(mx) and mx > 1.0:

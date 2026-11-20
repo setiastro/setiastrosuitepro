@@ -816,11 +816,15 @@ class ProjectReader:
             sid = entry.get("id") or uuid.uuid4().hex
             label = entry.get("label") or cid
             x = int(entry.get("x", 10)); y = int(entry.get("y", 10))
+            # exact: the project's own layout. Nudged here, the chip kept the
+            # nudged spot as its remembered placement and the move below did
+            # not survive the next resize or save.
             w = self.sc.add_shortcut(
                     cid,
                     QPoint(x, y),
                     label=label,
                     shortcut_id=sid,
+                    exact=True,
                 )
             # move exact
             try:

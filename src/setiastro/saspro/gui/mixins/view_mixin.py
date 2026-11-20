@@ -525,9 +525,11 @@ class ViewMixin:
             return
         view = sw.widget()
         if hasattr(view, "set_no_black_clip"):
+            # re-stretches the view itself when the stretch is on; the kick
+            # below only rendered the same frame a second time
             view.set_no_black_clip(bool(checked))
         # Kick a stretch recalculation if autostretch is active
-        if getattr(view, "autostretch_enabled", False):
+        elif getattr(view, "autostretch_enabled", False):
             if hasattr(view, "_refresh_autostretch"):
                 view._refresh_autostretch()
             elif hasattr(view, "set_autostretch"):

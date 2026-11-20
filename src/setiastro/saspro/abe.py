@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 
 # ---------------------------------------------------------------------------
@@ -27,7 +29,8 @@ try:
 except Exception:  # pragma: no cover
     cv2 = None
 
-from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QSettings, QByteArray, QObject
+from PyQt6.QtCore import (Qt, QSize, QEvent, QPointF, QTimer, QSettings, QByteArray, QObject,
+                          QThread, pyqtSignal)
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
@@ -45,6 +48,7 @@ from .autostretch import autostretch as hard_autostretch
 from setiastro.saspro.color_space_manager import tag_qimage_with_working_color_space
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.abe_multiscale_gradient import multiscale_gradient_correct
+from setiastro.saspro.thread_keeper import start_owned_thread
 # =============================================================================
 #                         Headless ABE Core (poly + RBF)
 # =============================================================================
@@ -58,6 +62,106 @@ def _downsample_area(img: np.ndarray, scale: int) -> np.ndarray:
     return cv2.resize(img, (max(1, w // scale), max(1, h // scale)), interpolation=cv2.INTER_AREA)
 
 
+# ---------------------------------------------------------------------------
+# Speed helpers. Each one returns exactly (bit for bit) what the plain numpy
+# expression it stands in for returns; they only skip redundant work. ABE's
+# output must not move when these change -- verify with np.array_equal.
+# ---------------------------------------------------------------------------
+_MEDIAN_FAST_MIN = 1 << 20      # below ~1M elements np.median is already quick
+_MEDIAN_CHUNK = 1 << 22         # elements per counting task (16 MB of float32)
+
+
+def _abe_threads(n_tasks: int) -> int:
+    return max(1, min(int(n_tasks), 8, os.cpu_count() or 1))
+
+
+def _median_exact(a):
+    """
+    np.median(a) for a large float array, or for a list of arrays taken as one
+    concatenated sample -- the same value, several times faster.
+
+    The median depends only on the multiset of values, so any exact selection
+    finds the same middle element(s); they are then averaged by the very np.mean
+    call np.median makes. A strided sample brackets the middle ranks, one
+    threaded counting pass checks the bracket, and only the bracketed ~1% of the
+    data is partitioned. Small or non-float input, NaNs, and a missed bracket
+    all fall back to np.median itself.
+    """
+    parts = [np.asarray(p) for p in a] if isinstance(a, (list, tuple)) else [np.asarray(a)]
+
+    def _fallback():
+        if len(parts) == 1:
+            return np.median(parts[0])
+        return np.median(np.concatenate([p.reshape(-1) for p in parts]))
+
+    dt = parts[0].dtype
+    n = int(sum(p.size for p in parts))
+    if (n < _MEDIAN_FAST_MIN or dt not in (np.float32, np.float64)
+            or any(p.dtype != dt for p in parts)):
+        return _fallback()
+    flats = [p.reshape(-1) for p in parts]
+    if n % 2 == 0:
+        k_lo, k_hi = n // 2 - 1, n // 2
+    else:
+        k_lo = k_hi = (n - 1) // 2
+
+    step = max(1, n // 262144)
+    samp = np.sort(np.concatenate([f[::step] for f in flats]))
+    m = samp.size
+    tasks = [(f, s) for f in flats for s in range(0, f.size, _MEDIAN_CHUNK)]
+
+    for widen in (1, 8):
+        r = (k_lo + 0.5) * m / n
+        margin = widen * (6.0 * np.sqrt(m * 0.25) + 32.0)
+        lo = samp[int(max(0, np.floor(r - margin)))]
+        hi = samp[int(min(m - 1, np.ceil(r + margin)))]
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            break
+
+        def _count(task, lo=lo, hi=hi):
+            f, s = task
+            ch = f[s:s + _MEDIAN_CHUNK]
+            below = ch < lo
+            above = ch > hi
+            keep = ~(below | above)
+            return int(np.count_nonzero(below)), int(np.count_nonzero(above)), ch[keep]
+
+        nt = _abe_threads(len(tasks))
+        if nt > 1:
+            with ThreadPoolExecutor(nt) as ex:
+                res = list(ex.map(_count, tasks))
+        else:
+            res = [_count(t) for t in tasks]
+        c_lo = sum(r_[0] for r_ in res)
+        c_hi = sum(r_[1] for r_ in res)
+        mid = np.concatenate([r_[2] for r_ in res])
+        if c_lo + c_hi + mid.size != n or np.isnan(mid).any():
+            break                               # NaNs present -> np.median
+        if c_lo <= k_lo and k_hi < c_lo + mid.size:
+            mid.partition(sorted({k_lo - c_lo, k_hi - c_lo}))
+            if k_hi != k_lo:
+                pair = np.array([mid[k_lo - c_lo], mid[k_hi - c_lo]], dtype=dt)
+            else:
+                pair = np.array([mid[k_lo - c_lo]], dtype=dt)
+            return np.mean(pair, axis=0)
+    return _fallback()
+
+
+def _channel_planes(img: np.ndarray, n: int = 3) -> list:
+    """Contiguous float32 copies of the first n channels of an HWC image."""
+    if cv2 is not None and img.ndim == 3 and img.shape[2] == n == 3 and img.dtype == np.float32:
+        return [np.ascontiguousarray(p) for p in cv2.split(img)]
+    return [np.array(img[..., c], dtype=np.float32) for c in range(n)]
+
+
+def _stack_planes(planes: list) -> np.ndarray:
+    """np.stack(planes, axis=-1) -- cv2.merge is the same copy, ~2x faster."""
+    if (cv2 is not None and len(planes) == 3
+            and all(p.dtype == np.float32 and p.ndim == 2 for p in planes)):
+        return cv2.merge(list(planes))
+    return np.stack(planes, axis=-1)
+
+
 def _upscale_bg(bg_small: np.ndarray, out_shape: tuple[int, int]) -> np.ndarray:
     oh, ow = out_shape
     if cv2 is None:
@@ -68,10 +172,11 @@ def _upscale_bg(bg_small: np.ndarray, out_shape: tuple[int, int]) -> np.ndarray:
         return np.stack([bg_small[..., c][ys][:, xs] for c in range(bg_small.shape[2])], axis=-1)
     if bg_small.ndim == 2:
         return cv2.resize(bg_small, (ow, oh), interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
-    return np.stack(
-        [cv2.resize(bg_small[..., c], (ow, oh), interpolation=cv2.INTER_LANCZOS4) for c in range(bg_small.shape[2])],
-        axis=-1
-    ).astype(np.float32)
+    # Per-channel resize exactly as before; only the stacking changed (no
+    # second full-size .astype copy).
+    planes = [cv2.resize(bg_small[..., c], (ow, oh), interpolation=cv2.INTER_LANCZOS4)
+              .astype(np.float32, copy=False) for c in range(bg_small.shape[2])]
+    return _stack_planes(planes)
 
 
 def _fit_poly_on_small(small: np.ndarray, points: np.ndarray, degree: int, patch_size: int = 15) -> np.ndarray:
@@ -275,6 +380,126 @@ def _gradient_descent_to_dim_spot(
     return cx, cy
 
 
+def _patch_p25_scores(lum: np.ndarray, positions, half: int, memo: dict) -> None:
+    """
+    memo[(x, y)] = float(np.percentile(lum[patch at (x, y)], 25.0)) for every
+    position -- the patch_score of _gradient_descent_to_dim_spot.
+
+    Full-size (2*half+1)^2 patches go through ONE np.percentile call along
+    axis 1; per row that is the same partition and the same interpolation as
+    the single call, so every value is identical. Edge-clipped patches have
+    their own sizes and are scored one at a time, as before.
+    """
+    H, W = lum.shape
+    p = 2 * half + 1
+    full = []
+    for px, py in positions:
+        x0, x1 = max(0, px - half), min(W, px + half + 1)
+        y0, y1 = max(0, py - half), min(H, py + half + 1)
+        if x1 - x0 == p and y1 - y0 == p:
+            full.append((px, py))
+        else:
+            memo[(px, py)] = float(np.percentile(lum[y0:y1, x0:x1], 25.0))
+    if not full:
+        return
+    xs0 = np.fromiter((q[0] - half for q in full), dtype=np.intp, count=len(full))
+    ys0 = np.fromiter((q[1] - half for q in full), dtype=np.intp, count=len(full))
+    win = np.lib.stride_tricks.sliding_window_view(lum, (p, p))
+    patches = win[ys0, xs0].reshape(len(full), p * p)
+    vals = np.percentile(patches, 25.0, axis=1, overwrite_input=True)
+    for q, v in zip(full, vals.tolist()):
+        memo[q] = float(v)
+
+
+def _descend_seeds_lockstep(
+    lum: np.ndarray,
+    seeds,
+    patch_size: int = 15,
+    exclusion_mask: np.ndarray | None = None,
+    max_offset: int | None = None,
+    max_iter: int = 60,
+) -> list[tuple[int, int]]:
+    """
+    _gradient_descent_to_dim_spot for many seeds at once, with identical
+    results: the same two passes, the same neighbour order and the same strict
+    `<` tie-break per seed. Only the work is shared -- every patch score is
+    computed once (a position's score never changes), and each iteration's new
+    scores for all moving seeds are batched into one np.percentile call.
+    """
+    H, W = lum.shape
+    half = patch_size // 2
+
+    def _mask_ok(px: int, py: int) -> bool:
+        if exclusion_mask is None:
+            return True
+        return bool(exclusion_mask[py, px])
+
+    state = []          # [cx, cy, sx0, sy0] per seed
+    start_live = []
+    for i, (x, y) in enumerate(seeds):
+        sx0, sy0 = int(np.clip(x, 0, W - 1)), int(np.clip(y, 0, H - 1))
+        state.append([sx0, sy0, sx0, sy0])
+        # Seed inside the drawn exclusion -> returned unchanged (the
+        # caller's allowed() check drops it), exactly as the single descent.
+        if _mask_ok(sx0, sy0):
+            start_live.append(i)
+
+    coarse_step = max(2, patch_size // 3)
+    coarse_iters = min(15, max(1, max_iter // 2))
+    fine_iters = max(5, max_iter - coarse_iters)
+    memo: dict = {}
+
+    for step, iters in ((coarse_step, coarse_iters), (1, fine_iters)):
+        live = list(start_live)
+        for _ in range(iters):
+            if not live:
+                break
+            cands = {}
+            need = []
+            need_set = set()
+            for i in live:
+                cx, cy, sx0, sy0 = state[i]
+                lst = [(cx, cy)]
+                for dy in (-step, 0, step):
+                    for dx in (-step, 0, step):
+                        if dx == 0 and dy == 0:
+                            continue
+                        nx = cx + dx
+                        ny = cy + dy
+                        if not (0 <= nx < W and 0 <= ny < H):
+                            continue
+                        if max_offset is not None and (abs(nx - sx0) > max_offset
+                                                       or abs(ny - sy0) > max_offset):
+                            continue
+                        if not _mask_ok(nx, ny):
+                            continue
+                        lst.append((nx, ny))
+                cands[i] = lst
+                for q in lst:
+                    if q not in memo and q not in need_set:
+                        need_set.add(q)
+                        need.append(q)
+            if need:
+                _patch_p25_scores(lum, need, half, memo)
+            moved = []
+            for i in live:
+                lst = cands[i]
+                best = lst[0]
+                best_val = memo[best]
+                for q in lst[1:]:
+                    val = memo[q]
+                    if val < best_val:
+                        best_val = val
+                        best = q
+                if best == lst[0]:
+                    continue        # converged for this pass
+                state[i][0], state[i][1] = best
+                moved.append(i)
+            live = moved
+
+    return [(s[0], s[1]) for s in state]
+
+
 def _generate_sample_points(image, num_points=100, exclusion_mask=None, patch_size=15, rng=None):
     """
     Build a well-tiled set of background sample points for the polynomial
@@ -369,6 +594,7 @@ def _generate_sample_points(image, num_points=100, exclusion_mask=None, patch_si
     seen: set[tuple[int, int]] = set()
     pts: list[tuple[int, int]] = []
 
+    seeds: list[tuple[int, int]] = []
     for sy in ys:
         for sx in xs:
             # Find a valid seed near this cell centre. For cells wholly
@@ -382,31 +608,33 @@ def _generate_sample_points(image, num_points=100, exclusion_mask=None, patch_si
                     break
             if seed is None:
                 continue   # cell fully inside the exclusion mask
+            seeds.append(seed)
 
-            # Star-robust, exclusion-aware, cell-bounded descent. The
-            # exclusion mask is passed through so a seed near a mask edge
-            # slides AROUND the excluded region, not into it; the
-            # max_offset cap keeps the seed inside its grid cell so the
-            # tiling isn't collapsed by a strong background gradient.
-            nx_, ny_ = _gradient_descent_to_dim_spot(
-                image, seed[0], seed[1],
-                patch_size=patch_size,
-                exclusion_mask=exclusion_mask,
-                max_offset=cell_offset,
-                _lum_cache=lum,
-            )
+    # Star-robust, exclusion-aware, cell-bounded descent of every seed. The
+    # exclusion mask is passed through so a seed near a mask edge slides
+    # AROUND the excluded region, not into it; the max_offset cap keeps the
+    # seed inside its grid cell so the tiling isn't collapsed by a strong
+    # background gradient. Same walk as _gradient_descent_to_dim_spot, run
+    # for all seeds in lockstep so the patch scores are batched.
+    ends = _descend_seeds_lockstep(
+        lum, seeds,
+        patch_size=patch_size,
+        exclusion_mask=exclusion_mask,
+        max_offset=cell_offset,
+    )
 
-            # Belt-and-suspenders: the descent should never return an
-            # excluded pixel, but if a future refactor regresses that or
-            # the seed itself started inside the mask, drop the point.
-            if not allowed(nx_, ny_):
-                continue
+    for nx_, ny_ in ends:
+        # Belt-and-suspenders: the descent should never return an
+        # excluded pixel, but if a future refactor regresses that or
+        # the seed itself started inside the mask, drop the point.
+        if not allowed(nx_, ny_):
+            continue
 
-            key = (int(nx_), int(ny_))
-            if key in seen:
-                continue
-            seen.add(key)
-            pts.append(key)
+        key = (int(nx_), int(ny_))
+        if key in seen:
+            continue
+        seen.add(key)
+        pts.append(key)
 
     if len(pts) == 0:
         # Fallback: coarse exclusion-respecting grid. Keeps the function
@@ -472,7 +700,8 @@ def _fit_rbf_on_small(small: np.ndarray, points: np.ndarray, smooth: float = 0.1
 
     if small_rbf.ndim == 3 and small_rbf.shape[2] == 3:
         bg_r = np.zeros((H_r, W_r, 3), dtype=np.float32)
-        for c in range(3):
+
+        def _fit_channel(c):
             z = np.array(
                 [_median_patch(small_rbf[..., c], x, y) for x, y in zip(xs, ys)],
                 dtype=np.float32
@@ -483,7 +712,22 @@ def _fit_rbf_on_small(small: np.ndarray, points: np.ndarray, smooth: float = 0.1
                 smoothing=float(smooth) * len(z),  # RBFInterpolator smoothing scales with N
                 epsilon=1.0
             )
-            bg_r[..., c] = interp(query_coords).reshape(H_r, W_r).astype(np.float32)
+            return interp(query_coords).reshape(H_r, W_r).astype(np.float32)
+
+        # The channels are independent fits; scipy's evaluation kernel releases
+        # the GIL, so three threads run them together. Each channel is the very
+        # same call as before, so the result is unchanged. A mono image comes
+        # in stacked three times: identical channels give identical fits, so
+        # one fit is copied.
+        if (np.array_equal(small_rbf[..., 0], small_rbf[..., 1])
+                and np.array_equal(small_rbf[..., 0], small_rbf[..., 2])):
+            plane = _fit_channel(0)
+            for c in range(3):
+                bg_r[..., c] = plane
+        else:
+            with ThreadPoolExecutor(_abe_threads(3)) as ex:
+                for c, plane in enumerate(ex.map(_fit_channel, range(3))):
+                    bg_r[..., c] = plane
         return _upscale_bg(bg_r, (H, W)) if rbf_scale > 1 else bg_r
     else:
         z = np.array(
@@ -499,31 +743,67 @@ def _fit_rbf_on_small(small: np.ndarray, points: np.ndarray, smooth: float = 0.1
         bg_r = interp(query_coords).reshape(H_r, W_r).astype(np.float32)
         return _upscale_bg(bg_r, (H, W)) if rbf_scale > 1 else bg_r
 
-def _legacy_stretch_unlinked(image: np.ndarray):
+def _stretch_plane(p: np.ndarray, target_median: float):
+    """One channel of the legacy unlinked stretch, in place on a contiguous
+    float32 plane (the per-channel body of the original loop, verbatim)."""
+    m0 = float(np.min(p))
+    p -= m0
+    med = float(_median_exact(p))
+    if med != 0.0:
+        num = (med - 1.0) * target_median * p
+        den = (med * (target_median + p - 1.0) - target_median * p)
+        den = np.where(den == 0.0, 1e-6, den)
+        np.divide(num, den, out=p)
+    return p, m0, med
+
+
+def _unstretch_plane(p: np.ndarray, m0: float, orig_med: float) -> np.ndarray:
+    """One channel of the legacy unstretch, in place on a contiguous plane."""
+    ch_med = float(_median_exact(p))
+    orig_med = float(orig_med)
+    if ch_med != 0.0 and orig_med != 0.0:
+        num = (ch_med - 1.0) * orig_med * p
+        den = (ch_med * (orig_med + p - 1.0) - orig_med * p)
+        den = np.where(den == 0.0, 1e-6, den)
+        np.divide(num, den, out=p)
+    p += float(m0)
+    return p
+
+
+def _legacy_stretch_unlinked(image: np.ndarray, _channels_identical: bool = False):
+    """
+    Unlinked midtone stretch used for background FITTING only.
+
+    Each channel is processed as a contiguous plane (strided per-channel
+    arithmetic on an HWC array was most of the cost), the three channels in
+    parallel threads. `_channels_identical` lets abe_run say "this is a mono
+    image stacked three times": channel 0 is then computed once and copied,
+    which is exactly what three identical computations would give.
+    """
     was_single = False
     img = image
     if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
         was_single = True
-        img = np.stack([img[..., 0] if img.ndim == 3 else img] * 3, axis=-1)
-
-    img = img.astype(np.float32, copy=True)
+        img = img[..., 0] if img.ndim == 3 else img
+        planes = [np.array(img, dtype=np.float32, copy=True)]
+    elif _channels_identical:
+        planes = [np.array(img[..., 0], dtype=np.float32, copy=True)]
+    else:
+        planes = _channel_planes(img, 3)
     target_median = 0.25
 
-    ch_mins: list[float] = []
-    ch_meds: list[float] = []
-    out = img.copy()
+    if len(planes) == 1:
+        results = [_stretch_plane(planes[0], target_median)] * 3
+    else:
+        with ThreadPoolExecutor(_abe_threads(3)) as ex:
+            results = list(ex.map(lambda p: _stretch_plane(p, target_median), planes))
 
-    for c in range(3):
-        m0 = float(np.min(out[..., c]))
-        ch_mins.append(m0)
-        out[..., c] -= m0
-        med = float(np.median(out[..., c]))
-        ch_meds.append(med)
-        if med != 0.0:
-            num = (med - 1.0) * target_median * out[..., c]
-            den = (med * (target_median + out[..., c] - 1.0) - target_median * out[..., c])
-            den = np.where(den == 0.0, 1e-6, den)
-            out[..., c] = num / den
+    ch_mins: list[float] = [r[1] for r in results]
+    ch_meds: list[float] = [r[2] for r in results]
+    out = _stack_planes([r[0] for r in results])
+    if img.ndim == 3 and img.shape[2] > 3:
+        # Extra channels (never used by abe_run) pass through as before.
+        out = np.concatenate([out, img[..., 3:].astype(np.float32)], axis=-1)
 
     # *** NO np.clip here — bright stars legitimately exceed 1.0 in stretch domain ***
     return out, {"mins": ch_mins, "meds": ch_meds, "was_single": was_single}
@@ -531,36 +811,51 @@ def _legacy_stretch_unlinked(image: np.ndarray):
 
 def _legacy_unstretch_unlinked(image: np.ndarray, state: dict):
     mins = state["mins"]; meds = state["meds"]; was_single = state["was_single"]
-    img = image.astype(np.float32, copy=True)
+    img = np.asarray(image)
 
-    if img.ndim == 2:
-        img = np.stack([img] * 3, axis=-1)
-    if img.ndim == 3 and img.shape[2] == 1:
-        img = np.repeat(img, 3, axis=2)
+    if was_single:
+        # Only channel 0 is returned; the other two were never used.
+        base = img if img.ndim == 2 else img[..., 0]
+        return _unstretch_plane(np.array(base, dtype=np.float32, copy=True), mins[0], meds[0])
 
-    for c in range(3):
-        ch_med = float(np.median(img[..., c]))
-        orig_med = float(meds[c])
-        if ch_med != 0.0 and orig_med != 0.0:
-            num = (ch_med - 1.0) * orig_med * img[..., c]
-            den = (ch_med * (orig_med + img[..., c] - 1.0) - orig_med * img[..., c])
-            den = np.where(den == 0.0, 1e-6, den)
-            img[..., c] = num / den
-        img[..., c] += float(mins[c])
+    # Contiguous float32 planes; a 2-D / single-channel input stands for
+    # three identical channels.
+    if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
+        base = img if img.ndim == 2 else img[..., 0]
+        planes = [np.array(base, dtype=np.float32, copy=True) for _ in range(3)]
+    else:
+        planes = _channel_planes(img, 3)
+
+    if (mins[0] == mins[1] == mins[2] and meds[0] == meds[1] == meds[2]
+            and np.array_equal(planes[0], planes[1]) and np.array_equal(planes[0], planes[2])):
+        # Mono stacked x3: identical inputs give identical outputs -> once.
+        p0 = _unstretch_plane(planes[0], mins[0], meds[0])
+        planes = [p0, p0, p0]
+    else:
+        with ThreadPoolExecutor(_abe_threads(3)) as ex:
+            planes = list(ex.map(lambda c: _unstretch_plane(planes[c], mins[c], meds[c]), range(3)))
+    out = _stack_planes(planes)
+    if img.ndim == 3 and img.shape[2] > 3:
+        out = np.concatenate([out, img[..., 3:].astype(np.float32)], axis=-1)
 
     # *** NO np.clip here — let abe_run do the single final rescale ***
-    if was_single:
-        return img[..., 0]
-    return img
+    return out
 
-def _anchor_median_linear_rescale(img: np.ndarray, pivot: float, eps: float = 1e-8) -> np.ndarray:
+def _anchor_median_linear_rescale(img: np.ndarray, pivot: float, eps: float = 1e-8,
+                                  *, _inplace: bool = False) -> np.ndarray:
     """
     Clip-free range normalization anchored at the median (pivot).
     Step 1: lift negatives (shift so min == 0, pivot adjusts accordingly).
     Step 2: compress ceiling if max > 1.0, keeping pivot fixed.
     No hard clipping — all data is preserved via linear mapping.
+
+    `_inplace=True` (abe_run's own scratch arrays) works on `img` itself when
+    it is already float32, skipping two full-size copies; values are identical.
     """
-    out = np.asarray(img, dtype=np.float32).copy()
+    if _inplace and isinstance(img, np.ndarray) and img.dtype == np.float32:
+        out = img
+    else:
+        out = np.asarray(img, dtype=np.float32).copy()
 
     # Step 1: lift negatives
     mn = float(np.nanmin(out))
@@ -576,7 +871,11 @@ def _anchor_median_linear_rescale(img: np.ndarray, pivot: float, eps: float = 1e
     p = float(pivot) if np.isfinite(pivot) else 0.0
     denom = max(mx - p, eps)
     a = (1.0 - p) / denom
-    out = p + (out - p) * a
+    # out = p + (out - p) * a, without two full-size temporaries (operand
+    # order kept, so even NaN payloads match the expression above)
+    np.subtract(out, p, out=out)
+    np.multiply(out, a, out=out)
+    np.add(p, out, out=out)
 
     return out.astype(np.float32, copy=False)
 
@@ -661,8 +960,16 @@ def abe_run(
     img_src = np.asarray(image).astype(np.float32, copy=False)
     mono = (img_src.ndim == 2) or (img_src.ndim == 3 and img_src.shape[2] == 1)
 
-    finite_mask = np.isfinite(img_src)
-    work_scale = float(np.max(img_src[finite_mask])) if np.any(finite_mask) else 1.0
+    # Max over the finite pixels. A finite np.max means no NaN and no +inf,
+    # and -inf cannot be the max, so it IS the max over the finite pixels --
+    # no full-size mask and boolean copy needed in the usual all-finite case.
+    _mx = np.max(img_src) if img_src.size else np.float32(np.nan)
+    if np.isfinite(_mx):
+        work_scale = float(_mx)
+    else:
+        finite_mask = np.isfinite(img_src)
+        work_scale = float(np.max(img_src[finite_mask])) if np.any(finite_mask) else 1.0
+        del finite_mask
     if not np.isfinite(work_scale) or work_scale <= 0.0:
         work_scale = 1.0
 
@@ -698,9 +1005,10 @@ def abe_run(
     stretch_state = None
     img_rgb_stretched = img_rgb
     if legacy_prestretch:
-        img_rgb_stretched, stretch_state = _legacy_stretch_unlinked(img_rgb)
+        img_rgb_stretched, stretch_state = _legacy_stretch_unlinked(
+            img_rgb, _channels_identical=(mono and img_rgb is not img_src_work))
 
-    orig_med = float(np.median(img_rgb_stretched))
+    orig_med = float(_median_exact(img_rgb_stretched))
 
     if progress_cb: progress_cb("Downsampling image…")
     small = _downsample_area(img_rgb_stretched, downsample)
@@ -749,9 +1057,10 @@ def abe_run(
         # RBF refines on the poly-subtracted stretched image
         if degree > 0:
             after_poly_stretched = img_rgb_stretched - bg_poly_stretched
-            med_after = float(np.median(after_poly_stretched))
-            after_poly_stretched = after_poly_stretched + (orig_med - med_after)
-            after_poly_stretched = _anchor_median_linear_rescale(after_poly_stretched, orig_med)
+            med_after = float(_median_exact(after_poly_stretched))
+            after_poly_stretched += (orig_med - med_after)
+            after_poly_stretched = _anchor_median_linear_rescale(
+                after_poly_stretched, orig_med, _inplace=True)
         else:
             after_poly_stretched = img_rgb_stretched.copy()
 
@@ -791,7 +1100,8 @@ def abe_run(
         bg_rbf_stretched = _upscale_bg(bg_rbf_small, img_rgb_stretched.shape[:2])
 
         # Total background in stretched space
-        total_bg_stretched = (bg_poly_stretched + bg_rbf_stretched).astype(np.float32)
+        total_bg_stretched = (bg_poly_stretched + bg_rbf_stretched).astype(np.float32, copy=False)
+        del bg_rbf_stretched, after_poly_stretched
     else:
         total_bg_stretched = bg_poly_stretched.astype(np.float32)
 
@@ -807,40 +1117,46 @@ def abe_run(
     else:
         total_bg_linear = total_bg_stretched
 
+    del img_rgb_stretched, bg_poly_stretched
     if progress_cb: progress_cb("Applying background correction in linear space…")
+    # median(img_rgb) was computed twice (three times in divide mode); it is
+    # one value, so compute it once.
+    img_rgb_med = float(_median_exact(img_rgb))
     if correction_mode == "divide":
         # Normalize background to 1.0 at its median so division is stable
-        bg_med = float(np.median(total_bg_linear))
+        bg_med = float(_median_exact(total_bg_linear))
         bg_med = bg_med if bg_med > 1e-8 else 1e-8
         bg_norm = total_bg_linear / bg_med
         bg_norm = np.where(bg_norm < 1e-8, 1e-8, bg_norm)
         corrected = img_rgb / bg_norm
+        del bg_norm
         # Re-center to original median
-        orig_linear_med = float(np.median(img_rgb))
-        corr_med = float(np.median(corrected))
+        orig_linear_med = img_rgb_med
+        corr_med = float(_median_exact(corrected))
         if corr_med > 1e-8:
-            corrected = corrected * (orig_linear_med / corr_med)
+            corrected *= (orig_linear_med / corr_med)
     else:
         corrected = img_rgb - total_bg_linear
-        orig_linear_med = float(np.median(img_rgb))
-        corr_med = float(np.median(corrected))
-        corrected = corrected + (orig_linear_med - corr_med)
+        orig_linear_med = img_rgb_med
+        corr_med = float(_median_exact(corrected))
+        corrected += (orig_linear_med - corr_med)
 
-    corrected = _anchor_median_linear_rescale(corrected, float(np.median(img_rgb)))
+    corrected = _anchor_median_linear_rescale(corrected, img_rgb_med, _inplace=True)
     corrected = corrected.astype(np.float32, copy=False)
     total_bg_linear = total_bg_linear.astype(np.float32, copy=False)
 
     # Restore original input scale
     if work_scale > 1.0:
-        corrected = corrected * work_scale
+        corrected *= work_scale
         total_bg_linear = total_bg_linear * work_scale
 
-    # Squeeze mono back to 2D
+    # Squeeze mono back to 2D (a contiguous copy, so the 3-channel buffer
+    # is not kept alive behind a strided view)
     if mono:
         if corrected.ndim == 3:
-            corrected = corrected[..., 0]
+            corrected = np.ascontiguousarray(corrected[..., 0])
         if total_bg_linear.ndim == 3:
-            total_bg_linear = total_bg_linear[..., 0]
+            total_bg_linear = np.ascontiguousarray(total_bg_linear[..., 0])
 
     if progress_cb: progress_cb("Ready")
     if return_background:
@@ -897,6 +1213,516 @@ def _scale_points_to_small(points: np.ndarray, src_hw: tuple[int, int], small_hw
 def _asfloat32(x: np.ndarray) -> np.ndarray:
     a = np.asarray(x)                  # zero-copy view when possible
     return a if a.dtype == np.float32 else a.astype(np.float32, copy=False)
+
+
+# -----------------------------------------------------------------------------
+# Dialog work that runs on a worker thread. Everything here reads a snapshot
+# taken on the GUI thread (no widget access), so Preview / Apply / the preview
+# stretch never block the window. Results are identical to the old
+# synchronous code -- the same calls in the same order.
+# -----------------------------------------------------------------------------
+
+def _source_float(src) -> np.ndarray | None:
+    """ABEDialog._get_source_float on a captured image array."""
+    src = np.asarray(src)
+    if src is None or src.size == 0:
+        return None
+    if np.issubdtype(src.dtype, np.integer):
+        scale = float(np.iinfo(src.dtype).max)
+        return src.astype(np.float32) / scale
+    # float path: preserve full range; abe_run() will normalize internally if needed
+    return src.astype(np.float32, copy=False)
+
+
+def _resample_mask_nn(mask: np.ndarray, out_hw: tuple[int, int]) -> np.ndarray:
+    """Nearest-neighbor resize via integer indexing."""
+    mh, mw = mask.shape[:2]
+    th, tw = out_hw
+    if (mh, mw) == (th, tw):
+        return mask
+    yi = np.linspace(0, mh - 1, th).astype(np.int32)
+    xi = np.linspace(0, mw - 1, tw).astype(np.int32)
+    return mask[yi][:, xi]
+
+
+def _blend_mask_float(processed: np.ndarray, src: np.ndarray, mask) -> np.ndarray:
+    """
+    m*out + (1-m)*src in float [0..1], mono or RGB (ABEDialog's mask blend,
+    with the active mask captured up front). mask=None -> processed unchanged.
+    """
+    if mask is None:
+        return processed
+
+    out = processed.astype(np.float32, copy=False)
+    src = src.astype(np.float32, copy=False)
+
+    # match HxW
+    m = _resample_mask_nn(mask, out.shape[:2])
+
+    # channel reconcile
+    if out.ndim == 2 and src.ndim == 3:
+        out = out[..., None]
+    if src.ndim == 2 and out.ndim == 3:
+        src = src[..., None]
+
+    if out.ndim == 3 and out.shape[2] == 3 and m.ndim == 2:
+        m = m[..., None]
+
+    blended = (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
+    # squeeze back to mono if we expanded
+    if blended.ndim == 3 and blended.shape[2] == 1:
+        blended = blended[..., 0]
+    return np.clip(blended, 0.0, 1.0)
+
+
+def _prescale_qimage(qimg: QImage, scale):
+    """((sw, sh), scaled QImage) exactly as ABEDialog._update_preview_scaled
+    would make it at `scale`, or None. Done on the worker so the GUI thread
+    only turns it into a QPixmap."""
+    if scale is None or qimg is None or qimg.isNull():
+        return None
+    sw = max(1, int(qimg.width() * scale))
+    sh = max(1, int(qimg.height() * scale))
+    scaled = qimg.scaled(sw, sh, Qt.AspectRatioMode.KeepAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+    return None if scaled.isNull() else ((sw, sh), scaled)
+
+
+def _render_display_u8(src: np.ndarray, stretch: bool):
+    """
+    Float preview -> (uint8 backing buffer, tagged QImage). QImage is
+    reentrant, so this runs on the worker; only the QPixmap is made on the GUI
+    thread. Same autostretch call as before. Values are clipped to [0, 1]
+    before the 8-bit cast, so out-of-range pixels no longer wrap around.
+    """
+    if stretch:
+        disp = hard_autostretch(src, target_median=0.5, sigma=2,
+                                linked=False, use_24bit=True)
+        disp = np.asarray(disp, dtype=np.float32)
+    else:
+        disp = src
+
+    if disp.ndim == 2 or (disp.ndim == 3 and disp.shape[2] == 1):
+        mono = disp if disp.ndim == 2 else disp[..., 0]
+        buf = np.ascontiguousarray((np.clip(mono, 0.0, 1.0) * 255.0).astype(np.uint8))
+        h, w = buf.shape
+        qimg = QImage(buf.data, w, h, w, QImage.Format.Format_Grayscale8)
+    else:
+        buf = np.ascontiguousarray((np.clip(disp, 0.0, 1.0) * 255.0).astype(np.uint8))
+        h, w, _ = buf.shape
+        qimg = QImage(buf.data, w, h, buf.strides[0], QImage.Format.Format_RGB888)
+    qimg = tag_qimage_with_working_color_space(qimg)
+    return buf, qimg
+
+
+def _abe_dialog_compute(imgf: np.ndarray, job: dict, progress=None, status=None,
+                        log=None, cancelled=None):
+    """
+    The dialog's background run: abe_run plus the optional multiscale stage.
+    This is the former ABEDialog._run_abe body; the only changes are that the
+    settings come from `job` (a GUI-thread snapshot), debug/log lines go to
+    `log(kind, msg)`, and the structure / MAD maps are returned instead of
+    being stored on the dialog.
+
+    progress -- status line that may raise to cancel (a checkpoint)
+    status   -- status line that never raises (used inside DarkStar callbacks)
+
+    Returns (corrected, bg, structure_map, mad_mask).
+    """
+    def _dbg(msg):
+        if log is not None and job.get("dbg", False):
+            log("dbg", msg)
+
+    def _log(msg):
+        if log is not None:
+            log("log", msg)
+
+    if status is None:
+        status = progress
+
+    excl_mask = job.get("excl")
+    structure_map = None
+    mad_mask = None
+    if job.get("dbg", False):
+        if excl_mask is None:
+            _dbg("_run_abe: excl_mask=None (polynomial + multiscale will "
+                 "run on the WHOLE frame, no protected zones).")
+        else:
+            _dbg(f"_run_abe: excl_mask received, shape={np.asarray(excl_mask).shape}, "
+                 f"dtype={np.asarray(excl_mask).dtype}, "
+                 f"excluded(False)={int((~np.asarray(excl_mask, dtype=bool)).sum())} px.")
+
+    p = job["abe"]
+    seed = int(p["seed"])
+    rng = np.random.default_rng(seed if seed >= 0 else None)
+
+    corrected, bg = abe_run(
+        imgf,
+        degree=p["degree"],
+        num_samples=p["num_samples"],
+        downsample=p["downsample"],
+        patch_size=p["patch_size"],
+        use_rbf=p["use_rbf"],
+        rbf_smooth=p["rbf_smooth"],
+        exclusion_mask=excl_mask,
+        return_background=True,
+        progress_cb=progress,
+        manual_points=p["manual_points"],
+        correction_mode=p["correction_mode"],
+        rng=rng,
+    )
+
+    # --- Stage 2: optional multiscale multiplicative-gradient refinement ---
+    # Runs AFTER the normal (additive/smooth) background removal. Removes
+    # stars first for a clean estimate, extracts the selected scale band as
+    # a multiplicative gradient, and divides it out. Applied to the already-
+    # corrected image so both stages compose.
+    ms = job.get("ms")
+    if ms is not None and corrected is not None:
+        try:
+            band_lo = int(ms["band_lo"])
+            band_hi = int(ms["band_hi"])
+            if band_hi < band_lo:
+                band_lo, band_hi = band_hi, band_lo
+            layers = max(band_hi + 1, 9)
+            strength = float(ms["strength_pct"]) / 100.0
+
+            # Signal-protection parameters. The "Disable signal protection"
+            # escape hatch overrides the UI values with the equivalent of
+            # "no mask at all" (k=inf, no dilation, no blur). This is the
+            # right fix for halo-dominated frames where even k=20 still
+            #sasprotects — and dilates+blurs — the bright halos, keeping them
+            # out of the gradient estimate so the stage can't remove them.
+            if bool(ms["disable_protect"]):
+                protect_k = float("inf")
+                protect_grow = 0
+                sig_blur = 0.0
+            else:
+                protect_k = float(ms["protect_k"])   # MAD units
+                protect_grow = int(ms["protect_grow"])
+                sig_blur = float(ms["sigblur"])
+
+            grad_smooth = float(ms["smooth"])
+            excl_feather_frac = float(ms["feather_pct"]) / 100.0  # % -> fraction; 0 => off
+            include_residual = bool(ms["residual"])
+            use_darkstar = bool(ms["darkstar"])
+            # Refine mode: "rgb" (default) estimates per channel so a
+            # colour-selective gradient (bright-blue halo) is actually
+            # visible to the band model; "luma" collapses to the pre-fix
+            # single-plane estimate for narrowband or achromatic-defect
+            # cases where per-channel would amplify noise.
+            channels_mode = ms["channels"]
+
+            # The protection mask is built on the STAR-INCLUSIVE image
+            # (post-ADBE, pre-star-removal) so stars, star-removal residuals,
+            # and real signal are all protected regardless of how well
+            # DarkStar worked. The gradient BAND is still estimated on the
+            # starless copy below. Snapshot the star-inclusive image now,
+            # before DarkStar replaces estimate_from.
+            mask_from = corrected
+
+            # Estimate on a starless copy when DarkStar is available/enabled.
+            estimate_from = corrected
+            if use_darkstar:
+                if progress: progress("Multiscale: removing stars (DarkStar)…")
+                try:
+                    from setiastro.saspro.remove_stars import darkstar_starless_from_array
+                except Exception as e:
+                    import traceback
+                    msg = f"Multiscale: DarkStar import FAILED: {e}"
+                    if status: status(msg)
+                    _log(msg + "\n" + traceback.format_exc())
+                    darkstar_starless_from_array = None
+
+                if darkstar_starless_from_array is not None:
+                    try:
+                        est_in = np.clip(np.asarray(corrected, dtype=np.float32), 0.0, 1.0)
+
+                        def _ds_status(msg):
+                            if status:
+                                try: status(f"Multiscale/DarkStar: {msg}")
+                                except Exception: pass
+                            try: _log(f"[Multiscale/DarkStar] {msg}")
+                            except Exception: pass
+
+                        def _ds_prog(done, total, stage=""):
+                            if status:
+                                try: status(f"Multiscale/DarkStar: {stage} {done}/{total}")
+                                except Exception: pass
+                            # False asks DarkStar to stop (dialog closed / re-run).
+                            return not (cancelled is not None and cancelled())
+
+                        starless, _stars, _mono = darkstar_starless_from_array(
+                            est_in,
+                            use_gpu=True,
+                            progress_cb=_ds_prog,
+                            status_cb=_ds_status,
+                        )
+                        if starless is not None:
+                            estimate_from = starless
+                            if status: status("Multiscale: DarkStar starless ready.")
+                            _log("[Multiscale] DarkStar star removal succeeded; "
+                                 "estimating gradient on starless image.")
+                        else:
+                            if status: status("Multiscale: DarkStar returned None; "
+                                              "estimating on corrected image.")
+                    except Exception as e:
+                        import traceback
+                        msg = f"Multiscale: DarkStar run FAILED: {e}"
+                        if status: status(msg)
+                        _log(msg + "\n" + traceback.format_exc())
+
+            # Exclusion polygons protect their region at APPLY time only:
+            # the gradient runs everywhere, but these pixels are composited
+            # straight from the original. ABE excl_mask is True=sample /
+            # False=excluded, so the keep-original region is ~excl_mask.
+            protect_blend = None
+            if excl_mask is not None:
+                try:
+                    protect_blend = (~np.asarray(excl_mask, dtype=bool)).astype(np.float32)
+                    kept = int(protect_blend.sum())
+                    if not protect_blend.any():
+                        _dbg("_run_abe/multiscale: protect_blend from excl_mask "
+                             "is ALL ZERO (nothing to keep) → setting None.")
+                        protect_blend = None
+                    else:
+                        _dbg(f"_run_abe/multiscale: protect_blend built — "
+                             f"shape={protect_blend.shape}, keep-original px={kept} "
+                             f"({100.0*kept/protect_blend.size:.2f}%).")
+                except Exception as e:
+                    _dbg(f"_run_abe/multiscale: protect_blend build FAILED ({e}) → None.")
+                    protect_blend = None
+            else:
+                _dbg("_run_abe/multiscale: excl_mask is None → "
+                     "protect_blend=None (galaxy will NOT be protected in refinement).")
+
+            # Capture the multiplicative STRUCTURE map too when the user
+            # asked for a structure document (troubleshooting output).
+            want_structure = bool(job.get("want_structure", False))
+            want_debug = bool(DEBUG)
+
+            _pre = corrected
+            _dbg(f"_run_abe/multiscale: CALLING multiscale_gradient_correct — "
+                 f"protect_blend_mask={'None' if protect_blend is None else f'{int(np.asarray(protect_blend).sum())} keep px'}, "
+                 f"feather_frac={excl_feather_frac:.3f}, channels={channels_mode}, "
+                 f"band={band_lo}-{band_hi}, protect_k={protect_k}.")
+            _ms_result = multiscale_gradient_correct(
+                corrected,
+                estimate_from=estimate_from,
+                mask_from=mask_from,
+                layers=layers,
+                base_sigma=1.0,
+                band_lo=band_lo,
+                band_hi=band_hi,
+                include_residual=include_residual,
+                strength=strength,
+                protect_k=protect_k,
+                #sasprotect_grow was previously hard-coded to 6; it's now
+                # a UI control (see sp_ms_grow). Lower values are the
+                # main lever for halo-dominated frames: the former 6-px
+                # dilation grew every red blob 6 px past where k alone
+                # caught it, so raising k didn't shrink the protected
+                # footprint anywhere near as much as users expected.
+                protect_grow=protect_grow,
+                protect_blur_px=sig_blur,
+                protect_blend_mask=protect_blend,
+                gradient_smooth_px=grad_smooth,
+                protect_feather_frac=excl_feather_frac,
+                channels=channels_mode,
+                return_extras=want_structure,
+                return_debug=want_debug,
+                progress_cb=(lambda m: progress(f"Multiscale: {m}") if progress else None),
+            )
+
+            # Unpack per the (return_extras, return_debug) return shapes:
+            #   extras & debug -> (corr, grad, feather, mad)
+            #   extras only     -> (corr, grad, feather)
+            #   debug only      -> (corr, mad)
+            #   neither         ->  corr
+            _grad_map = None; _feather_m = None
+            if want_structure and want_debug:
+                corrected, _grad_map, _feather_m, _mad = _ms_result
+                mad_mask = _mad
+            elif want_structure:
+                corrected, _grad_map, _feather_m = _ms_result
+            elif want_debug:
+                corrected, _mad = _ms_result
+                mad_mask = _mad
+            else:
+                corrected = _ms_result
+
+            if want_structure:
+                try:
+                    gm = np.asarray(_grad_map, dtype=np.float32)
+                    # Paint the median of the structure map inside the
+                    # exclusion (feathered), exactly like a mask blend:
+                    #   struct = (1-m)*struct + m*median(struct)
+                    # so the protected region shows flat "nothingness"
+                    # instead of the raw galaxy structure — making it
+                    # visually obvious it was NOT corrected.
+                    if _feather_m is not None:
+                        m = np.asarray(_feather_m, dtype=np.float32)
+                        if m.ndim == 3:
+                            m = m[..., 0]
+                        if m.shape[:2] != gm.shape[:2]:
+                            yi = np.linspace(0, m.shape[0]-1, gm.shape[0]).astype(np.int32)
+                            xi = np.linspace(0, m.shape[1]-1, gm.shape[1]).astype(np.int32)
+                            m = m[yi][:, xi]
+                        m = np.clip(m, 0.0, 1.0)
+                        # 3D grad map (per-channel RGB correction) needs
+                        # per-plane painting: each channel has its own
+                        # median (a strong blue-halo correction has a very
+                        # different median in B than in R/G), and the 2D
+                        # feather mask would otherwise fail to broadcast
+                        # against (H, W, 3).
+                        if gm.ndim == 3:
+                            for c in range(gm.shape[2]):
+                                g_med_c = (float(np.median(gm[..., c]))
+                                           if gm[..., c].size else 1.0)
+                                gm[..., c] = (gm[..., c] * (1.0 - m)
+                                              + g_med_c * m)
+                        else:
+                            g_med = float(np.median(gm)) if gm.size else 1.0
+                            gm = gm * (1.0 - m) + g_med * m
+                    structure_map = gm.astype(np.float32, copy=False)
+                except Exception:
+                    structure_map = None
+            # sanity: how much did the stage actually change the image?
+            try:
+                _diff = float(np.mean(np.abs(corrected.astype(np.float32) - _pre.astype(np.float32))))
+                _log(
+                    f"[Multiscale] stage applied: band={band_lo}-{band_hi}, "
+                    f"strength={strength:.2f}, protect_k={protect_k:.1f}, "
+                    f"residual={include_residual}, "
+                    f"mean|Δ|={_diff:.6g} "
+                    f"(estimate={'starless' if estimate_from is not _pre else 'corrected'})"
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            import traceback
+            msg = f"Multiscale refinement FAILED: {e}"
+            if status: status(msg + " — using base ABE result.")
+            _log(msg + "\n" + traceback.format_exc())
+
+    return corrected, bg, structure_map, mad_mask
+
+
+def _abe_dialog_job(job: dict, progress, status, log, cancelled) -> dict:
+    """One worker-thread job: 'display' (stretch the preview), 'preview' or 'apply'."""
+    kind = job["kind"]
+    if kind == "display":
+        src = job["src"]
+        if job.get("clip_source"):
+            # First render of a document: the old _populate_initial_preview.
+            src = np.clip(_asfloat32(_source_float(src)), 0.0, 1.0)
+        buf, qimg = _render_display_u8(src, job["stretch"])
+        return {"kind": kind, "job": job, "src": src, "buf": buf, "qimg": qimg,
+                "pre": _prescale_qimage(qimg, job.get("view_scale"))}
+
+    imgf = _source_float(job["src"])
+    res = {"kind": kind, "job": job, "corrected": None, "bg": None,
+           "structure": None, "mad": None}
+    if imgf is None:
+        return res
+    cached = job.get("cached")
+    if cached is not None:
+        # Apply right after a Preview with the same settings on the same image:
+        # that preview IS this result (the run is deterministic).
+        corrected, bg, structure_map, mad_mask = cached
+        status("Using the preview result…")
+    else:
+        corrected, bg, structure_map, mad_mask = _abe_dialog_compute(
+            imgf, job, progress, status, log, cancelled)
+    res.update(corrected=corrected, bg=bg, structure=structure_map, mad=mad_mask)
+    if corrected is None:
+        return res
+
+    if kind == "preview":
+        show = bg if job["preview_bg"] else corrected
+        # If previewing the corrected image, honor the active mask
+        if not job["preview_bg"]:
+            show = _blend_mask_float(show, imgf, job["mask"])
+        progress("Rendering preview…")
+        res["show"] = show
+        res["buf"], res["qimg"] = _render_display_u8(show, job["stretch"])
+        res["pre"] = _prescale_qimage(res["qimg"], job.get("view_scale"))
+    else:
+        out = corrected
+        src_img = np.asarray(job["src"])
+        if out.ndim == 3 and out.shape[2] == 3 and (src_img.ndim == 2 or (src_img.ndim == 3 and src_img.shape[2] == 1)):
+            out = out[..., 0]
+        out_masked = _blend_mask_float(out, imgf, job["mask"])
+        if cached is not None and np.may_share_memory(out_masked, corrected):
+            # The document gets its own array, not the dialog's preview buffer.
+            out_masked = out_masked.copy()
+        res["out_masked"] = out_masked
+    return res
+
+
+class _ABECancelled(BaseException):
+    """Raised at a job checkpoint once the dialog cancelled the job.
+
+    BaseException on purpose: the ABE code has `except Exception` fallbacks
+    (multiscale, DarkStar) that must not swallow a cancel."""
+
+
+class _ABEJobThread(QThread):
+    """
+    Runs one dialog job off the GUI thread. No parent; started through
+    thread_keeper.start_owned_thread so the dialog can close mid-run without
+    a running QThread ever being destroyed. Does not shadow QThread.finished.
+    """
+    progress = pyqtSignal(str)
+    log = pyqtSignal(str, str)
+    result = pyqtSignal(object)
+    failed = pyqtSignal(int, str, str)
+    ended = pyqtSignal(int)         # always the last thing run() does
+
+    def __init__(self, job: dict, seq: int = 0):
+        super().__init__(None)
+        self._job = job
+        self._cancel = False
+        # Lets the dialog ignore a late signal from a job it already replaced:
+        # a thread reports isRunning() False before its queued signals land.
+        self.seq = int(seq)
+
+    def cancel(self) -> None:
+        self._cancel = True
+        try:
+            self.requestInterruption()
+        except RuntimeError:
+            pass
+
+    def is_cancelled(self) -> bool:
+        return self._cancel
+
+    def _checkpoint(self, msg) -> None:
+        if self._cancel:
+            raise _ABECancelled()
+        self.progress.emit(str(msg))
+
+    def _status(self, msg) -> None:
+        if not self._cancel:
+            self.progress.emit(str(msg))
+
+    def run(self) -> None:
+        job, self._job = self._job, None
+        try:
+            try:
+                res = _abe_dialog_job(job, self._checkpoint, self._status,
+                                      self.log.emit, self.is_cancelled)
+            except _ABECancelled:
+                return
+            except Exception as e:
+                import traceback
+                self.failed.emit(self.seq, str(e), traceback.format_exc())
+                return
+            if not self._cancel:
+                res["seq"] = self.seq
+                self.result.emit(res)
+        finally:
+            self.ended.emit(self.seq)
 
 
 class _ProtectPreviewDialog(QDialog):
@@ -1228,6 +2054,22 @@ class ABEDialog(QDialog):
         self._EXCL_DEBUG = False
         self._panning = False
         self._pan_last = None
+
+        # Background jobs (see _ABEJobThread). Preview / Apply run one at a
+        # time; a request made while one runs is queued, never dropped.
+        self._job_thr = None            # running preview/apply thread
+        self._job_kind = None           # "preview" | "apply"
+        self._job_seq = 0               # seq of the current preview/apply job
+        self._disp_seq = 0              # seq of the current display job
+        self._thr_seq = 0
+        self._pending_preview = False   # Preview clicked during a run
+        self._pending_apply = None      # Apply snapshot waiting for a run
+        self._abe_cache = None          # last preview result (Apply reuses it)
+        self._disp_thr = None           # running preview-stretch thread
+        self._disp_pending = False      # stretch requested while one ran
+        self._src_gen = 0               # bumps whenever the preview source changes
+        self._initial_src = None        # document image awaiting its first render
+        self._fitted_once = False
         self._preview_source_f01 = None 
 
         # ---------------- Controls ----------------
@@ -2381,7 +3223,10 @@ class ABEDialog(QDialog):
             if sip.isdeleted(lbl):
                 return
             lbl.setText(text)
-            QApplication.processEvents()
+            # Paint just the label. The old processEvents() here re-entered
+            # the event loop from inside a running slot; the heavy work is on
+            # worker threads now, so there is nothing left to pump for.
+            lbl.repaint()
         except RuntimeError:
             pass
 
@@ -2454,7 +3299,13 @@ class ABEDialog(QDialog):
         self._drawing_poly = None
         self._manual_points.clear()
         self._preview_source_f01 = None
+        # A result for the previous document is of no use any more.
+        self._abe_cache = None
+        self._pending_preview = False
+        if self._job_kind == "preview" and self._job_thr is not None:
+            self._job_thr.cancel()
         self._populate_initial_preview()
+        self._request_display()
 
     # ----- data helpers -----
     def _get_source_float(self) -> np.ndarray | None:
@@ -2471,296 +3322,363 @@ class ABEDialog(QDialog):
 
     # ----- preview/applier -----
     def _run_abe(self, excl_mask: np.ndarray | None, progress=None):
+        """
+        Synchronous run on the current settings (scripts / tests). The dialog
+        itself runs this work on a worker thread: see _snapshot_job and
+        _abe_dialog_compute, which hold the former body of this method.
+        """
         # Cleared each run; set only when multiscale + structure-doc are on.
         self._last_structure_map = None
         self._last_mad_mask = None
-        if excl_mask is None:
-            self._dbg("_run_abe: excl_mask=None (polynomial + multiscale will "
-                      "run on the WHOLE frame, no protected zones).")
-        else:
-            self._dbg(f"_run_abe: excl_mask received, shape={np.asarray(excl_mask).shape}, "
-                      f"dtype={np.asarray(excl_mask).dtype}, "
-                      f"excluded(False)={int((~np.asarray(excl_mask, dtype=bool)).sum())} px.")
-        imgf = self._get_source_float()
+        job = self._snapshot_job("preview", excl=excl_mask)
+        imgf = _source_float(job["src"]) if job is not None else None
         if imgf is None:
             return None, None
-
-        deg   = int(self.sp_degree.value())
-        npts  = int(self.sp_samples.value())
-        dwn   = int(self.sp_down.value())
-        patch = int(self.sp_patch.value())
-        use_rbf = bool(self.chk_use_rbf.isChecked())
-        rbf_smooth = float(self.sp_rbf.value()) * 0.01
-
-        seed = int(self.sp_seed.value())
-        rng = np.random.default_rng(seed if seed >= 0 else None)
-
-        manual_pts = self._manual_points_array() if self._manual_mode() else None
-        correction_mode = "divide" if self.radio_divide.isChecked() else "subtract"
-
-        corrected, bg = abe_run(
-            imgf,
-            degree=deg,
-            num_samples=npts,
-            downsample=dwn,
-            patch_size=patch,
-            use_rbf=use_rbf,
-            rbf_smooth=rbf_smooth,
-            exclusion_mask=excl_mask,
-            return_background=True,
-            progress_cb=progress,
-            manual_points=manual_pts,
-            correction_mode=correction_mode,
-            rng=rng,
-        )
-
-        # --- Stage 2: optional multiscale multiplicative-gradient refinement ---
-        # Runs AFTER the normal (additive/smooth) background removal. Removes
-        # stars first for a clean estimate, extracts the selected scale band as
-        # a multiplicative gradient, and divides it out. Applied to the already-
-        # corrected image so both stages compose.
-        if getattr(self, "chk_ms_enable", None) is not None and self.chk_ms_enable.isChecked() \
-                and corrected is not None:
-            try:
-                band_lo = int(self.sp_ms_band_lo.value())
-                band_hi = int(self.sp_ms_band_hi.value())
-                if band_hi < band_lo:
-                    band_lo, band_hi = band_hi, band_lo
-                layers = max(band_hi + 1, 9)
-                strength = float(self.sp_ms_strength.value()) / 100.0
-
-                # Signal-protection parameters. The "Disable signal protection"
-                # escape hatch overrides the UI values with the equivalent of
-                # "no mask at all" (k=inf, no dilation, no blur). This is the
-                # right fix for halo-dominated frames where even k=20 still
-                #sasprotects — and dilates+blurs — the bright halos, keeping them
-                # out of the gradient estimate so the stage can't remove them.
-                if bool(self.chk_ms_disable_protect.isChecked()):
-                    protect_k = float("inf")
-                    protect_grow = 0
-                    sig_blur = 0.0
-                else:
-                    protect_k = float(self.sp_ms_protect.value())   # MAD units
-                    protect_grow = int(self.sp_ms_grow.value())
-                    sig_blur = float(self.sp_ms_sigblur.value())
-
-                grad_smooth = float(self.sp_ms_smooth.value())
-                excl_feather_frac = float(self.sp_ms_feather.value()) / 100.0  # % -> fraction; 0 => off
-                include_residual = bool(self.chk_ms_residual.isChecked())
-                use_darkstar = bool(self.chk_ms_darkstar.isChecked())
-                # Refine mode: "rgb" (default) estimates per channel so a
-                # colour-selective gradient (bright-blue halo) is actually
-                # visible to the band model; "luma" collapses to the pre-fix
-                # single-plane estimate for narrowband or achromatic-defect
-                # cases where per-channel would amplify noise.
-                channels_mode = ("luma" if self.radio_ms_luma.isChecked()
-                                 else "rgb")
-
-                # The protection mask is built on the STAR-INCLUSIVE image
-                # (post-ADBE, pre-star-removal) so stars, star-removal residuals,
-                # and real signal are all protected regardless of how well
-                # DarkStar worked. The gradient BAND is still estimated on the
-                # starless copy below. Snapshot the star-inclusive image now,
-                # before DarkStar replaces estimate_from.
-                mask_from = corrected
-
-                # Estimate on a starless copy when DarkStar is available/enabled.
-                estimate_from = corrected
-                if use_darkstar:
-                    if progress: progress("Multiscale: removing stars (DarkStar)…")
-                    try:
-                        from setiastro.saspro.remove_stars import darkstar_starless_from_array
-                    except Exception as e:
-                        import traceback
-                        msg = f"Multiscale: DarkStar import FAILED: {e}"
-                        if progress: progress(msg)
-                        mw = self.parent()
-                        if mw is not None and hasattr(mw, "_log"):
-                            mw._log(msg + "\n" + traceback.format_exc())
-                        darkstar_starless_from_array = None
-
-                    if darkstar_starless_from_array is not None:
-                        try:
-                            est_in = np.clip(np.asarray(corrected, dtype=np.float32), 0.0, 1.0)
-                            _mw = self.parent()
-                            def _ds_status(msg, _mw=_mw):
-                                if progress:
-                                    try: progress(f"Multiscale/DarkStar: {msg}")
-                                    except Exception: pass
-                                if _mw is not None and hasattr(_mw, "_log"):
-                                    try: _mw._log(f"[Multiscale/DarkStar] {msg}")
-                                    except Exception: pass
-                            def _ds_prog(done, total, stage="", _p=progress):
-                                if _p:
-                                    try: _p(f"Multiscale/DarkStar: {stage} {done}/{total}")
-                                    except Exception: pass
-                                return True
-
-                            starless, _stars, _mono = darkstar_starless_from_array(
-                                est_in,
-                                use_gpu=True,
-                                progress_cb=_ds_prog,
-                                status_cb=_ds_status,
-                            )
-                            if starless is not None:
-                                estimate_from = starless
-                                if progress: progress("Multiscale: DarkStar starless ready.")
-                                mw = self.parent()
-                                if mw is not None and hasattr(mw, "_log"):
-                                    mw._log("[Multiscale] DarkStar star removal succeeded; "
-                                            "estimating gradient on starless image.")
-                            else:
-                                if progress: progress("Multiscale: DarkStar returned None; "
-                                                      "estimating on corrected image.")
-                        except Exception as e:
-                            import traceback
-                            msg = f"Multiscale: DarkStar run FAILED: {e}"
-                            if progress: progress(msg)
-                            mw = self.parent()
-                            if mw is not None and hasattr(mw, "_log"):
-                                mw._log(msg + "\n" + traceback.format_exc())
-
-                # Exclusion polygons protect their region at APPLY time only:
-                # the gradient runs everywhere, but these pixels are composited
-                # straight from the original. ABE excl_mask is True=sample /
-                # False=excluded, so the keep-original region is ~excl_mask.
-                protect_blend = None
-                if excl_mask is not None:
-                    try:
-                        protect_blend = (~np.asarray(excl_mask, dtype=bool)).astype(np.float32)
-                        kept = int(protect_blend.sum())
-                        if not protect_blend.any():
-                            self._dbg("_run_abe/multiscale: protect_blend from excl_mask "
-                                      "is ALL ZERO (nothing to keep) → setting None.")
-                            protect_blend = None
-                        else:
-                            self._dbg(f"_run_abe/multiscale: protect_blend built — "
-                                      f"shape={protect_blend.shape}, keep-original px={kept} "
-                                      f"({100.0*kept/protect_blend.size:.2f}%).")
-                    except Exception as e:
-                        self._dbg(f"_run_abe/multiscale: protect_blend build FAILED ({e}) → None.")
-                        protect_blend = None
-                else:
-                    self._dbg("_run_abe/multiscale: excl_mask is None → "
-                              "protect_blend=None (galaxy will NOT be protected in refinement).")
-
-                # Capture the multiplicative STRUCTURE map too when the user
-                # asked for a structure document (troubleshooting output).
-                want_structure = bool(getattr(self, "chk_make_structure_doc", None)
-                                      and self.chk_make_structure_doc.isChecked())
-                want_debug = bool(DEBUG)
-                self._last_structure_map = None
-                self._last_mad_mask = None     # raw median+k*MAD mask (debug)
-
-                _pre = corrected
-                self._dbg(f"_run_abe/multiscale: CALLING multiscale_gradient_correct — "
-                          f"protect_blend_mask={'None' if protect_blend is None else f'{int(np.asarray(protect_blend).sum())} keep px'}, "
-                          f"feather_frac={excl_feather_frac:.3f}, channels={channels_mode}, "
-                          f"band={band_lo}-{band_hi}, protect_k={protect_k}.")
-                _ms_result = multiscale_gradient_correct(
-                    corrected,
-                    estimate_from=estimate_from,
-                    mask_from=mask_from,
-                    layers=layers,
-                    base_sigma=1.0,
-                    band_lo=band_lo,
-                    band_hi=band_hi,
-                    include_residual=include_residual,
-                    strength=strength,
-                    protect_k=protect_k,
-                    #sasprotect_grow was previously hard-coded to 6; it's now
-                    # a UI control (see sp_ms_grow). Lower values are the
-                    # main lever for halo-dominated frames: the former 6-px
-                    # dilation grew every red blob 6 px past where k alone
-                    # caught it, so raising k didn't shrink the protected
-                    # footprint anywhere near as much as users expected.
-                    protect_grow=protect_grow,
-                    protect_blur_px=sig_blur,
-                    protect_blend_mask=protect_blend,
-                    gradient_smooth_px=grad_smooth,
-                    protect_feather_frac=excl_feather_frac,
-                    channels=channels_mode,
-                    return_extras=want_structure,
-                    return_debug=want_debug,
-                    progress_cb=(lambda m: progress(f"Multiscale: {m}") if progress else None),
-                )
-
-                # Unpack per the (return_extras, return_debug) return shapes:
-                #   extras & debug -> (corr, grad, feather, mad)
-                #   extras only     -> (corr, grad, feather)
-                #   debug only      -> (corr, mad)
-                #   neither         ->  corr
-                _grad_map = None; _feather_m = None
-                if want_structure and want_debug:
-                    corrected, _grad_map, _feather_m, _mad = _ms_result
-                    self._last_mad_mask = _mad
-                elif want_structure:
-                    corrected, _grad_map, _feather_m = _ms_result
-                elif want_debug:
-                    corrected, _mad = _ms_result
-                    self._last_mad_mask = _mad
-                else:
-                    corrected = _ms_result
-
-                if want_structure:
-                    try:
-                        gm = np.asarray(_grad_map, dtype=np.float32)
-                        # Paint the median of the structure map inside the
-                        # exclusion (feathered), exactly like a mask blend:
-                        #   struct = (1-m)*struct + m*median(struct)
-                        # so the protected region shows flat "nothingness"
-                        # instead of the raw galaxy structure — making it
-                        # visually obvious it was NOT corrected.
-                        if _feather_m is not None:
-                            m = np.asarray(_feather_m, dtype=np.float32)
-                            if m.ndim == 3:
-                                m = m[..., 0]
-                            if m.shape[:2] != gm.shape[:2]:
-                                yi = np.linspace(0, m.shape[0]-1, gm.shape[0]).astype(np.int32)
-                                xi = np.linspace(0, m.shape[1]-1, gm.shape[1]).astype(np.int32)
-                                m = m[yi][:, xi]
-                            m = np.clip(m, 0.0, 1.0)
-                            # 3D grad map (per-channel RGB correction) needs
-                            # per-plane painting: each channel has its own
-                            # median (a strong blue-halo correction has a very
-                            # different median in B than in R/G), and the 2D
-                            # feather mask would otherwise fail to broadcast
-                            # against (H, W, 3).
-                            if gm.ndim == 3:
-                                for c in range(gm.shape[2]):
-                                    g_med_c = (float(np.median(gm[..., c]))
-                                               if gm[..., c].size else 1.0)
-                                    gm[..., c] = (gm[..., c] * (1.0 - m)
-                                                  + g_med_c * m)
-                            else:
-                                g_med = float(np.median(gm)) if gm.size else 1.0
-                                gm = gm * (1.0 - m) + g_med * m
-                        self._last_structure_map = gm.astype(np.float32, copy=False)
-                    except Exception:
-                        self._last_structure_map = None
-                # sanity: how much did the stage actually change the image?
-                try:
-                    _diff = float(np.mean(np.abs(corrected.astype(np.float32) - _pre.astype(np.float32))))
-                    _mw = self.parent()
-                    if _mw is not None and hasattr(_mw, "_log"):
-                        _mw._log(
-                            f"[Multiscale] stage applied: band={band_lo}-{band_hi}, "
-                            f"strength={strength:.2f}, protect_k={protect_k:.1f}, "
-                            f"residual={include_residual}, "
-                            f"mean|Δ|={_diff:.6g} "
-                            f"(estimate={'starless' if estimate_from is not _pre else 'corrected'})"
-                        )
-                except Exception:
-                    pass
-            except Exception as e:
-                import traceback
-                msg = f"Multiscale refinement FAILED: {e}"
-                if progress: progress(msg + " — using base ABE result.")
-                mw = self.parent()
-                if mw is not None and hasattr(mw, "_log"):
-                    mw._log(msg + "\n" + traceback.format_exc())
-
+        corrected, bg, self._last_structure_map, self._last_mad_mask = _abe_dialog_compute(
+            imgf, job, progress, progress, self._on_job_log)
         return corrected, bg
+
+    # ----- background jobs: snapshot -> worker thread -> result slots -----
+    def _snapshot_job(self, kind: str, excl="build") -> dict | None:
+        """Everything a preview/apply run needs, read from the widgets now."""
+        # A preset's manual points normally land with the first render; if the
+        # user runs before that render arrives, seed them now so the run uses them.
+        if getattr(self, "_pending_manual_points", None) is not None:
+            pts = self._pending_manual_points
+            self._pending_manual_points = None
+            self.seed_manual_points(pts)
+        if isinstance(excl, str):
+            self._set_status("Building exclusion mask…")
+            excl = self._build_exclusion_mask()
+        img = getattr(self.doc, "image", None) if self.doc is not None else None
+        if img is None or np.asarray(img).size == 0:
+            return None
+        abe = {
+            "degree": int(self.sp_degree.value()),
+            "num_samples": int(self.sp_samples.value()),
+            "downsample": int(self.sp_down.value()),
+            "patch_size": int(self.sp_patch.value()),
+            "use_rbf": bool(self.chk_use_rbf.isChecked()),
+            "rbf_smooth": float(self.sp_rbf.value()) * 0.01,
+            "seed": int(self.sp_seed.value()),
+            "manual_points": self._manual_points_array() if self._manual_mode() else None,
+            "correction_mode": "divide" if self.radio_divide.isChecked() else "subtract",
+        }
+        ms = None
+        if getattr(self, "chk_ms_enable", None) is not None and self.chk_ms_enable.isChecked():
+            ms = {
+                "band_lo": int(self.sp_ms_band_lo.value()),
+                "band_hi": int(self.sp_ms_band_hi.value()),
+                "strength_pct": float(self.sp_ms_strength.value()),
+                "disable_protect": bool(self.chk_ms_disable_protect.isChecked()),
+                "protect_k": float(self.sp_ms_protect.value()),
+                "protect_grow": int(self.sp_ms_grow.value()),
+                "sigblur": float(self.sp_ms_sigblur.value()),
+                "smooth": float(self.sp_ms_smooth.value()),
+                "feather_pct": float(self.sp_ms_feather.value()),
+                "residual": bool(self.chk_ms_residual.isChecked()),
+                "darkstar": bool(self.chk_ms_darkstar.isChecked()),
+                "channels": "luma" if self.radio_ms_luma.isChecked() else "rgb",
+            }
+        mask, mid, mname = self._active_mask_layer()
+        job = {
+            "kind": kind,
+            "doc": self.doc,
+            "src": img,
+            "excl": excl,
+            "abe": abe,
+            "ms": ms,
+            "want_structure": bool(getattr(self, "chk_make_structure_doc", None)
+                                   and self.chk_make_structure_doc.isChecked()),
+            "dbg": bool(getattr(self, "_EXCL_DEBUG", False)),
+            "mask": mask,
+            "mask_meta": (mid, mname),
+            "preview_bg": bool(self.chk_preview_bg.isChecked()),
+            "stretch": bool(getattr(self, "_autostretch_on", False)),
+            "view_scale": self._expected_view_scale(np.asarray(img).shape) if kind == "preview" else None,
+        }
+        if kind == "apply":
+            job["make_bg_doc"] = bool(self.chk_make_bg_doc.isChecked())
+            job["replay_params"] = self._apply_replay_params()
+        job["cached"] = self._cached_result_for(job)
+        return job
+
+    def _apply_replay_params(self) -> dict:
+        """The replay/metadata params dict of an Apply, read at click time."""
+        deg        = int(self.sp_degree.value())
+        npts       = int(self.sp_samples.value())
+        dwn        = int(self.sp_down.value())
+        patch      = int(self.sp_patch.value())
+        use_rbf    = bool(self.chk_use_rbf.isChecked())
+        rbf_smooth = float(self.sp_rbf.value()) * 0.01
+        make_bg_doc = bool(self.chk_make_bg_doc.isChecked())
+
+        params = {
+            "degree": deg, "samples": npts, "downsample": dwn,
+            "patch": patch, "rbf": use_rbf, "rbf_smooth": rbf_smooth,
+            "make_background_doc": make_bg_doc,
+            "sample_mode": self.cmb_sample_mode.currentText().lower(),
+            "manual_sample_count": len(self._manual_points),
+        }
+
+        # Multiscale refinement params (only when enabled, so existing
+        # presets stay byte-identical when the feature is off).
+        if getattr(self, "chk_ms_enable", None) is not None and self.chk_ms_enable.isChecked():
+            ms_params = {
+                "enabled": True,
+                "darkstar": bool(self.chk_ms_darkstar.isChecked()),
+                "band_lo": int(self.sp_ms_band_lo.value()),
+                "band_hi": int(self.sp_ms_band_hi.value()),
+                "include_residual": bool(self.chk_ms_residual.isChecked()),
+                "strength": float(self.sp_ms_strength.value()) / 100.0,
+                "protect_k": float(self.sp_ms_protect.value()),
+                "protect_grow": int(self.sp_ms_grow.value()),
+                "smooth_px": float(self.sp_ms_smooth.value()),
+                "feather_pct": float(self.sp_ms_feather.value()),
+                "sigblur_px": float(self.sp_ms_sigblur.value()),
+            }
+            if bool(self.chk_ms_disable_protect.isChecked()):
+                ms_params["disable_protect"] = True
+            if self.radio_ms_luma.isChecked():
+                ms_params["channels"] = "luma"
+            params["multiscale"] = ms_params
+        return params
+
+    def _cached_result_for(self, job: dict):
+        """The last preview's (corrected, bg, structure, mad) if `job` would
+        recompute exactly that: same document image object, same settings,
+        same exclusion mask. Otherwise None."""
+        c = getattr(self, "_abe_cache", None)
+        if c is None:
+            return None
+        try:
+            if c["doc"] is not job["doc"] or c["src"] is not job["src"]:
+                return None
+            if c["ms"] != job["ms"] or c["want_structure"] != job["want_structure"]:
+                return None
+            a, b = c["abe"], job["abe"]
+            for k in a:
+                if k == "manual_points":
+                    pa, pb = a[k], b[k]
+                    if (pa is None) != (pb is None):
+                        return None
+                    if pa is not None and not np.array_equal(pa, pb):
+                        return None
+                elif a[k] != b[k]:
+                    return None
+            ea, eb = c["excl"], job["excl"]
+            if (ea is None) != (eb is None):
+                return None
+            if ea is not None and (ea.shape != eb.shape or not np.array_equal(ea, eb)):
+                return None
+        except Exception:
+            return None
+        return (c["corrected"], c["bg"], c["structure"], c["mad"])
+
+    def _start_job_thread(self, job: dict, on_result, on_ended, on_failed) -> "_ABEJobThread":
+        self._thr_seq += 1
+        thr = _ABEJobThread(job, self._thr_seq)
+        thr.progress.connect(self._on_job_progress)
+        thr.log.connect(self._on_job_log)
+        thr.failed.connect(on_failed)
+        thr.result.connect(on_result)
+        thr.ended.connect(on_ended)
+        start_owned_thread(thr)
+        return thr
+
+    def _start_compute(self, kind: str, job: dict | None = None) -> None:
+        if job is None:
+            job = self._snapshot_job(kind)
+        if job is None:
+            QMessageBox.information(self, "No image", "No image is loaded in the active document.")
+            self._set_status("Ready")
+            return
+        self._dbg(f"_do_{kind}: excl mask is "
+                  f"{'None (NO exclusions)' if job['excl'] is None else 'present'}")
+        self._job_kind = kind
+        self._set_status("Running ABE preview…" if kind == "preview" else "Running ABE (apply)…")
+        self._job_thr = self._start_job_thread(
+            job, self._on_compute_result, self._on_compute_ended,
+            self._on_compute_failed)
+        self._job_seq = self._job_thr.seq
+        self._update_busy_ui()
+
+    def _update_busy_ui(self) -> None:
+        try:
+            applying = (self._job_kind == "apply") or (self._pending_apply is not None)
+            self.btn_apply.setEnabled(not applying)
+            self.btn_preview.setEnabled(not applying)
+        except RuntimeError:
+            pass
+
+    def _on_job_progress(self, msg: str) -> None:
+        if getattr(self, "_closing", False):
+            return
+        self._set_status(msg)
+
+    def _on_job_log(self, kind: str, msg: str) -> None:
+        if kind == "dbg":
+            self._dbg(msg)
+            return
+        mw = self.parent()
+        if mw is not None and hasattr(mw, "_log"):
+            try:
+                mw._log(msg)
+            except Exception:
+                pass
+
+    def _on_compute_failed(self, seq: int, msg: str, tb: str) -> None:
+        kind = self._job_kind
+        self._on_job_log("log", f"[ABE] {kind or 'run'} failed: {msg}\n{tb}")
+        if getattr(self, "_closing", False) or seq != self._job_seq:
+            return
+        self._pending_apply = None
+        try:
+            self._set_status("Error")
+            if kind == "apply":
+                QMessageBox.critical(self, "Apply failed", msg)
+            else:
+                QMessageBox.warning(self, "Preview failed", msg)
+        except RuntimeError:
+            pass
+
+    def _on_compute_result(self, res: dict) -> None:
+        if getattr(self, "_closing", False) or res.get("seq") != self._job_seq:
+            return
+        job = res["job"]
+        if res.get("corrected") is None:
+            self._pending_apply = None
+            QMessageBox.information(self, "No image", "No image is loaded in the active document.")
+            self._set_status("Ready")
+            return
+        if job["kind"] == "apply":
+            self._finish_apply(res)
+            return
+        if job["doc"] is not self.doc:
+            return          # the user switched documents during the run
+        self._last_structure_map = res["structure"]
+        self._last_mad_mask = res["mad"]
+        self._abe_cache = {
+            "doc": job["doc"], "src": job["src"], "abe": job["abe"], "ms": job["ms"],
+            "want_structure": job["want_structure"], "excl": job["excl"],
+            "corrected": res["corrected"], "bg": res["bg"],
+            "structure": res["structure"], "mad": res["mad"],
+        }
+        self._preview_source_f01 = res["show"]
+        self._src_gen += 1
+        self._initial_src = None
+        if job["stretch"] == bool(getattr(self, "_autostretch_on", False)):
+            self._install_display(res["buf"], res["qimg"], res.get("pre"))
+        else:
+            self._request_display()     # stretch was toggled during the run
+        if not self._pending_preview and self._pending_apply is None:
+            self._set_status("Ready")
+
+    def _on_compute_ended(self, seq: int) -> None:
+        if seq != self._job_seq:
+            return              # a job this dialog already replaced
+        self._job_thr = None
+        self._job_kind = None
+        if getattr(self, "_closing", False):
+            return
+        if self._pending_apply is not None:
+            job = self._pending_apply
+            self._pending_apply = None
+            # The preview that just landed may be exactly this Apply.
+            job["cached"] = self._cached_result_for(job)
+            self._start_compute("apply", job)
+        elif self._pending_preview:
+            self._pending_preview = False
+            self._start_compute("preview")
+        self._update_busy_ui()
+
+    # ----- preview display (stretch + 8-bit) on a worker -----
+    def _request_display(self) -> None:
+        """Re-render the preview with the current autostretch state, off the
+        GUI thread. While one render runs, the newest request waits for it."""
+        if getattr(self, "_closing", False):
+            return
+        if self._disp_thr is not None:
+            self._disp_pending = True
+            return
+        self._disp_pending = False
+        if self._preview_source_f01 is not None:
+            job = {"kind": "display", "src": self._preview_source_f01, "clip_source": False}
+        elif self._initial_src is not None:
+            job = {"kind": "display", "src": self._initial_src, "clip_source": True}
+        else:
+            return
+        job["stretch"] = bool(getattr(self, "_autostretch_on", False))
+        job["gen"] = self._src_gen
+        job["view_scale"] = self._expected_view_scale(np.asarray(job["src"]).shape)
+        self._disp_thr = self._start_job_thread(
+            job, self._on_display_result, self._on_display_ended,
+            self._on_display_failed)
+        self._disp_seq = self._disp_thr.seq
+
+    def _on_display_result(self, res: dict) -> None:
+        if getattr(self, "_closing", False) or res.get("seq") != self._disp_seq:
+            return
+        job = res["job"]
+        if job["gen"] != self._src_gen:
+            return                      # a newer preview replaced the source
+        if job.get("clip_source"):
+            self._preview_source_f01 = res["src"]
+            self._initial_src = None
+        if job["stretch"] != bool(getattr(self, "_autostretch_on", False)):
+            self._disp_pending = True   # toggled meanwhile: render again
+            return
+        self._install_display(res["buf"], res["qimg"], res.get("pre"))
+
+    def _on_display_failed(self, seq: int, msg: str, tb: str) -> None:
+        self._on_job_log("log", f"[ABE] preview render failed: {msg}\n{tb}")
+        if not getattr(self, "_closing", False) and seq == self._disp_seq:
+            self._set_status("Error")
+
+    def _on_display_ended(self, seq: int) -> None:
+        if seq != self._disp_seq:
+            return
+        self._disp_thr = None
+        if self._disp_pending and not getattr(self, "_closing", False):
+            self._request_display()
+
+    def _expected_view_scale(self, shape) -> float | None:
+        """The scale an image of `shape` will be shown at when it lands:
+        the fit scale for the first image, else the current zoom."""
+        try:
+            if self._fitted_once:
+                return float(self._preview_scale)
+            ih, iw = int(shape[0]), int(shape[1])
+            vp = self.preview_scroll.viewport()
+            vw, vh = max(1, vp.width()), max(1, vp.height())
+            if iw == 0 or ih == 0:
+                return None
+            return max(0.05, min(min(vw / iw, vh / ih), 8.0))
+        except Exception:
+            return None
+
+    def _install_display(self, buf: np.ndarray, qimg: QImage, pre=None) -> None:
+        """Show a rendered preview (GUI thread: only the QPixmap is made here).
+        `pre` is the worker's pre-scaled copy, used if the scale still matches."""
+        try:
+            if sip.isdeleted(self) or sip.isdeleted(self.preview_label):
+                return
+        except Exception:
+            return
+        self._last_preview = buf        # backing ndarray for QImage lifetime
+        self._preview_qimg = qimg
+        if not self._fitted_once:
+            # First image: fit to the viewport (this builds the pixmap), then
+            # seed preset manual points onto the real preview.
+            self._fitted_once = True
+            self.fit_to_preview(_prescaled=pre)
+            if self._pending_manual_points is not None:
+                pts = self._pending_manual_points
+                self._pending_manual_points = None
+                self.seed_manual_points(pts)
+            return
+        self._update_preview_scaled(_prescaled=pre)
+        self._redraw_overlay()
 
     def _abe_params(self) -> dict:
         """
@@ -2976,11 +3894,13 @@ class ABEDialog(QDialog):
                 self._set_status("Ready")
 
     def _populate_initial_preview(self):
-        """Don't render anything yet — just store the source. showEvent handles the rest."""
-        src = self._get_source_float()
-        if src is None:
+        """Don't render anything yet — just remember the source. showEvent
+        (or a document switch) renders it on a worker via _request_display."""
+        img = getattr(self.doc, "image", None) if self.doc is not None else None
+        if img is None or np.asarray(img).size == 0:
             return
-        self._preview_source_f01 = np.clip(_asfloat32(src), 0.0, 1.0)
+        self._initial_src = img
+        self._src_gen += 1
         # Leave _preview_qimg as None — placeholder shown in showEvent
 
 
@@ -3049,7 +3969,7 @@ class ABEDialog(QDialog):
     def _do_preview(self):
         try:
             from PyQt6 import sip
-            if sip.isdeleted(self):
+            if sip.isdeleted(self) or getattr(self, "_closing", False):
                 return
             # Commit any polygon the user just finished drawing but whose
             # mouse-release landed off the label (see
@@ -3058,34 +3978,25 @@ class ABEDialog(QDialog):
             self._dbg(f"_do_preview: ENTER — _polygons={len(self._polygons)}, "
                       f"sample_mode={self.cmb_sample_mode.currentText()}")
             self._commit_pending_polygon()
-            self._set_status("Building exclusion mask…")
-            excl = self._build_exclusion_mask()
-            self._dbg(f"_do_preview: excl mask is "
-                      f"{'None (NO exclusions)' if excl is None else f'present ({int((~excl).sum())} excluded px)'}")
-
-            self._set_status("Running ABE preview…")
-            corrected, bg = self._run_abe(excl, progress=self._set_status)
-            if corrected is None:
-                QMessageBox.information(self, "No image", "No image is loaded in the active document.")
-                self._set_status("Ready")
+            if self._job_kind == "apply" or self._pending_apply is not None:
+                return          # Apply is on its way; the dialog closes after it
+            if self._job_thr is not None:
+                # Settings changed mid-run: stop the running preview at its next
+                # checkpoint and run again on the settings as they are now.
+                self._pending_preview = True
+                if self._job_kind == "preview":
+                    self._job_thr.cancel()
+                self._set_status("Preview will restart with the current settings…")
                 return
-
-            show = bg if self.chk_preview_bg.isChecked() else corrected
-
-            # ✅ If previewing the corrected image, honor the active mask
-            if not self.chk_preview_bg.isChecked():
-                srcf = self._get_source_float()
-                show = self._blend_with_mask_float(show, srcf)
-
-            self._set_status("Rendering preview…")
-            self._set_preview_pixmap(show)
-            self._set_status("Ready")
+            self._start_compute("preview")
         except Exception as e:
             self._set_status("Error")
             QMessageBox.warning(self, "Preview failed", str(e))
 
     def _do_apply(self):
         try:
+            if getattr(self, "_closing", False):
+                return
             # Commit a finished-but-uncommitted polygon first (mouse-release
             # off the label), so Apply never silently runs on the whole frame
             # when the user clearly drew an exclusion. See
@@ -3093,67 +4004,41 @@ class ABEDialog(QDialog):
             self._dbg(f"_do_apply: ENTER — _polygons={len(self._polygons)}, "
                       f"sample_mode={self.cmb_sample_mode.currentText()}")
             self._commit_pending_polygon()
-            self._set_status("Building exclusion mask…")
-            excl = self._build_exclusion_mask()
-            self._dbg(f"_do_apply: excl mask is "
-                      f"{'None (NO exclusions)' if excl is None else f'present ({int((~excl).sum())} excluded px)'}")
-
-            self._set_status("Running ABE (apply)…")
-            corrected, bg = self._run_abe(excl, progress=self._set_status)
-            if corrected is None:
+            if self._job_kind == "apply" or self._pending_apply is not None:
+                return
+            job = self._snapshot_job("apply")
+            if job is None:
                 QMessageBox.information(self, "No image", "No image is loaded in the active document.")
                 self._set_status("Ready")
                 return
+            if self._job_thr is not None:
+                # A preview is running: Apply waits for it (and reuses it when
+                # the settings match), instead of being dropped.
+                self._pending_apply = job
+                self._pending_preview = False
+                self._set_status("Apply queued — waiting for the running preview…")
+                self._update_busy_ui()
+                return
+            self._start_compute("apply", job)
+        except Exception as e:
+            self._set_status("Error")
+            QMessageBox.critical(self, "Apply failed", str(e))
 
-            out = corrected
-            if out.ndim == 3 and out.shape[2] == 3 and (self.doc.image.ndim == 2 or (self.doc.image.ndim == 3 and self.doc.image.shape[2] == 1)):
-                out = out[..., 0]
-
-            srcf = self._get_source_float()
-            out_masked = self._blend_with_mask_float(out, srcf)
-
-            deg        = int(self.sp_degree.value())
-            npts       = int(self.sp_samples.value())
-            dwn        = int(self.sp_down.value())
-            patch      = int(self.sp_patch.value())
-            use_rbf    = bool(self.chk_use_rbf.isChecked())
-            rbf_smooth = float(self.sp_rbf.value()) * 0.01
-            make_bg_doc = bool(self.chk_make_bg_doc.isChecked())
+    def _finish_apply(self, res: dict):
+        """GUI-thread tail of Apply: commit the worker's result to the document."""
+        try:
+            job = res["job"]
+            doc = job["doc"]
+            bg = res["bg"]
+            out_masked = res["out_masked"]
+            params = job["replay_params"]
+            make_bg_doc = bool(job["make_bg_doc"])
 
             step_name = (
-                f"ABE (deg={deg}, samples={npts}, ds={dwn}, patch={patch}, "
-                f"rbf={'on' if use_rbf else 'off'}, s={rbf_smooth:.3f})"
+                f"ABE (deg={params['degree']}, samples={params['samples']}, "
+                f"ds={params['downsample']}, patch={params['patch']}, "
+                f"rbf={'on' if params['rbf'] else 'off'}, s={params['rbf_smooth']:.3f})"
             )
-
-            params = {
-                "degree": deg, "samples": npts, "downsample": dwn,
-                "patch": patch, "rbf": use_rbf, "rbf_smooth": rbf_smooth,
-                "make_background_doc": make_bg_doc,
-                "sample_mode": self.cmb_sample_mode.currentText().lower(),
-                "manual_sample_count": len(self._manual_points),
-            }
-
-            # Multiscale refinement params (only when enabled, so existing
-            # presets stay byte-identical when the feature is off).
-            if getattr(self, "chk_ms_enable", None) is not None and self.chk_ms_enable.isChecked():
-                ms_params = {
-                    "enabled": True,
-                    "darkstar": bool(self.chk_ms_darkstar.isChecked()),
-                    "band_lo": int(self.sp_ms_band_lo.value()),
-                    "band_hi": int(self.sp_ms_band_hi.value()),
-                    "include_residual": bool(self.chk_ms_residual.isChecked()),
-                    "strength": float(self.sp_ms_strength.value()) / 100.0,
-                    "protect_k": float(self.sp_ms_protect.value()),
-                    "protect_grow": int(self.sp_ms_grow.value()),
-                    "smooth_px": float(self.sp_ms_smooth.value()),
-                    "feather_pct": float(self.sp_ms_feather.value()),
-                    "sigblur_px": float(self.sp_ms_sigblur.value()),
-                }
-                if bool(self.chk_ms_disable_protect.isChecked()):
-                    ms_params["disable_protect"] = True
-                if self.radio_ms_luma.isChecked():
-                    ms_params["channels"] = "luma"
-                params["multiscale"] = ms_params
 
             # Remember for replay — do this before any close
             mw = self.parent()
@@ -3168,7 +4053,7 @@ class ABEDialog(QDialog):
             except Exception:
                 pass
 
-            _marr, mid, mname = self._active_mask_layer()
+            mid, mname = job["mask_meta"]
             meta = {
                 "step_name": "ABE",
                 "abe": dict(params),
@@ -3179,7 +4064,7 @@ class ABEDialog(QDialog):
             }
 
             self._set_status("Committing edit…")
-            self.doc.apply_edit(
+            doc.apply_edit(
                 out_masked.astype(np.float32, copy=False),
                 step_name=step_name,
                 metadata=meta,
@@ -3190,12 +4075,12 @@ class ABEDialog(QDialog):
                 self._set_status("Creating background document…")
                 dm = getattr(mw, "docman", None)
                 if dm is not None:
-                    base = os.path.splitext(self.doc.display_name())[0]
+                    base = os.path.splitext(doc.display_name())[0]
                     bg_meta = {
                         "bit_depth": "32-bit floating point",
                         "is_mono": (bg.ndim == 2),
                         "source": "ABE background",
-                        "original_header": self.doc.metadata.get("original_header"),
+                        "original_header": doc.metadata.get("original_header"),
                     }
                     doc_bg = dm.open_array(bg.astype(np.float32, copy=False), metadata=bg_meta, title=f"{base}_ABE_BG")
                     if hasattr(mw, "_spawn_subwindow_for"):
@@ -3204,14 +4089,12 @@ class ABEDialog(QDialog):
             # Multiscale STRUCTURE document — the multiplicative gradient map the
             # multiscale stage divided out (mote/reflection/filter-edge only).
             # Separate from the full poly/RBF background above; for troubleshooting.
-            struct = getattr(self, "_last_structure_map", None)
-            if (getattr(self, "chk_make_structure_doc", None)
-                    and self.chk_make_structure_doc.isChecked()
-                    and struct is not None):
+            struct = res["structure"]
+            if job["want_structure"] and struct is not None:
                 self._set_status("Creating multiscale structure document…")
                 dm = getattr(mw, "docman", None)
                 if dm is not None:
-                    base = os.path.splitext(self.doc.display_name())[0]
+                    base = os.path.splitext(doc.display_name())[0]
                     # The structure map is a MULTIPLICATIVE gradient with median
                     # ~1.0, so ~half its values exceed 1.0 (and a strong defect
                     # spikes well past it). Dumped as-is, everything above 1.0
@@ -3237,7 +4120,7 @@ class ABEDialog(QDialog):
                         "is_mono": (s_view.ndim == 2),
                         "source": "ABE multiscale structure (gradient map, "
                                   "normalized to max and offset for display)",
-                        "original_header": self.doc.metadata.get("original_header"),
+                        "original_header": doc.metadata.get("original_header"),
                     }
                     doc_s = dm.open_array(s_view,
                                           metadata=s_meta, title=f"{base}_ABE_Structure")
@@ -3247,19 +4130,19 @@ class ABEDialog(QDialog):
             # DEBUG: push the raw median+k*MAD signal-protection mask so you can
             # eyeball what the threshold caught. Controlled by the module-level
             # DEBUG flag; only present when the multiscale stage ran.
-            mad = getattr(self, "_last_mad_mask", None)
+            mad = res["mad"]
             if DEBUG and mad is not None:
                 self._set_status("Creating DEBUG MAD mask document…")
                 dm = getattr(mw, "docman", None)
                 if dm is not None:
-                    base = os.path.splitext(self.doc.display_name())[0]
+                    base = os.path.splitext(doc.display_name())[0]
                     mad_view = np.clip(np.nan_to_num(np.asarray(mad, dtype=np.float32)),
                                        0.0, 1.0).astype(np.float32, copy=False)
                     mad_meta = {
                         "bit_depth": "32-bit floating point",
                         "is_mono": (mad_view.ndim == 2),
                         "source": "ABE DEBUG median+k*MAD signal-protection mask",
-                        "original_header": self.doc.metadata.get("original_header"),
+                        "original_header": doc.metadata.get("original_header"),
                     }
                     doc_mad = dm.open_array(mad_view, metadata=mad_meta,
                                             title=f"{base}_ABE_DEBUG_MADmask")
@@ -3299,9 +4182,19 @@ class ABEDialog(QDialog):
                     QMessageBox.critical(self, "Apply failed", str(e))
             except Exception:
                 pass
-            
+
     def closeEvent(self, ev):
         self._closing = True
+        # Stop background jobs. thread_keeper owns the threads, so this window
+        # may go away while one is still unwinding; its result is dropped.
+        self._pending_apply = None
+        self._pending_preview = False
+        for _thr in (getattr(self, "_job_thr", None), getattr(self, "_disp_thr", None)):
+            if _thr is not None:
+                try:
+                    _thr.cancel()
+                except RuntimeError:
+                    pass
         # Release any mouse grab still held from an in-progress polygon drag
         # so it can't outlive the dialog (Qt usually auto-releases on hide,
         # but be explicit).
@@ -3347,6 +4240,8 @@ class ABEDialog(QDialog):
         self._preview_qimg = None
         self._overlay = None
         self._base_pixmap = None
+        self._abe_cache = None
+        self._initial_src = None
         self.doc = None
         self._main = None
         try:
@@ -3546,42 +4441,18 @@ class ABEDialog(QDialog):
             self.preview_label.clear(); self._overlay = None; self._preview_source_f01 = None
             return
 
-        # keep the float source for autostretch toggling (no re-normalization)
+        # keep the float source for autostretch toggling (no re-normalization).
+        # Synchronous; the dialog's own Preview renders on a worker instead.
         a = _asfloat32(arr)
         self._preview_source_f01 = a  # ← no np.clip here
-
-        # show autostretched or raw; mtf_style_autostretch() already clips its result
-        src_to_show = (hard_autostretch(self._preview_source_f01, target_median=0.5, sigma=2,
-                                        linked=False, use_24bit=True)
-                    if getattr(self, "_autostretch_on", False) else self._preview_source_f01)
-
-        if src_to_show.ndim == 2 or (src_to_show.ndim == 3 and src_to_show.shape[2] == 1):
-            # MONO path — match Crop: use Grayscale8 QImage; keep 3-ch backing for rebuild
-            mono = src_to_show if src_to_show.ndim == 2 else src_to_show[..., 0]
-            buf8_mono = (mono * 255.0).astype(np.uint8)               # ← no np.clip here
-            buf8_mono = np.ascontiguousarray(buf8_mono)
-            h, w = buf8_mono.shape
-
-            # for the toggle/rebuild code which expects 3-ch bytes
-            self._last_preview = np.ascontiguousarray(np.stack([buf8_mono]*3, axis=-1))
-
-            qimg = QImage(buf8_mono.data, w, h, w, QImage.Format.Format_Grayscale8)
-        else:
-            # RGB path
-            buf8 = (src_to_show * 255.0).astype(np.uint8)             # ← no np.clip here
-            buf8 = np.ascontiguousarray(buf8)
-            h, w, _ = buf8.shape
-            self._last_preview = buf8
-            qimg = QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
-
-        qimg = tag_qimage_with_working_color_space(qimg)
-        self._preview_qimg = qimg
-        self._update_preview_scaled()
-        self._redraw_overlay()
+        self._src_gen += 1
+        self._initial_src = None
+        buf, qimg = _render_display_u8(a, bool(getattr(self, "_autostretch_on", False)))
+        self._install_display(buf, qimg)
 
 
 
-    def _update_preview_scaled(self):
+    def _update_preview_scaled(self, *, _prescaled=None):
         try:
             if sip.isdeleted(self) or sip.isdeleted(self.preview_label):
                 return
@@ -3595,11 +4466,14 @@ class ABEDialog(QDialog):
         sw = max(1, int(self._preview_qimg.width()  * self._preview_scale))
         sh = max(1, int(self._preview_qimg.height() * self._preview_scale))
 
-        scaled = self._preview_qimg.scaled(
-            sw, sh,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
+        if _prescaled is not None and _prescaled[0] == (sw, sh):
+            scaled = _prescaled[1]      # same scaled() call, done on the worker
+        else:
+            scaled = self._preview_qimg.scaled(
+                sw, sh,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
 
         if scaled.isNull():
             return
@@ -3928,7 +4802,7 @@ class ABEDialog(QDialog):
         vp = self.preview_scroll.viewport()
         self._zoom_at(0.8, vp.rect().center())
 
-    def fit_to_preview(self) -> None:
+    def fit_to_preview(self, *, _prescaled=None) -> None:
         """Set scale so the image fits inside the viewport (keeps aspect)."""
         if self._preview_qimg is None:
             return
@@ -3939,7 +4813,7 @@ class ABEDialog(QDialog):
             return
         scale = min(vw / iw, vh / ih)
         self._preview_scale = max(0.05, min(scale, 8.0))
-        self._update_preview_scaled()
+        self._update_preview_scaled(_prescaled=_prescaled)
         self._redraw_overlay()
 
         # center after fit
@@ -4089,89 +4963,23 @@ class ABEDialog(QDialog):
         mask, _mid, _mname = self._active_mask_layer()
         if mask is None:
             return processed
-
-        out = processed.astype(np.float32, copy=False)
         if src is None:
             src = self._get_source_float()
-        else:
-            src = src.astype(np.float32, copy=False)
-
-        # match HxW
-        m = self._resample_mask_if_needed(mask, out.shape[:2])
-
-        # channel reconcile
-        if out.ndim == 2 and src.ndim == 3:
-            out = out[..., None]
-        if src.ndim == 2 and out.ndim == 3:
-            src = src[..., None]
-
-        if out.ndim == 3 and out.shape[2] == 3 and m.ndim == 2:
-            m = m[..., None]
-
-        blended = (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
-        # squeeze back to mono if we expanded
-        if blended.ndim == 3 and blended.shape[2] == 1:
-            blended = blended[..., 0]
-        return np.clip(blended, 0.0, 1.0)
+        return _blend_mask_float(processed, src, mask)
 
     def autostretch_preview(self, checked: bool | None = None) -> None:
         """
         Toggle preview autostretch on/off and rebuild the viewport from the
-        underlying float preview source every time.
+        underlying float preview source (rendered on a worker thread).
         """
-        if self._preview_source_f01 is None:
+        if self._preview_source_f01 is None and self._initial_src is None:
             return
 
         current = bool(getattr(self, "_autostretch_on", False))
         new_state = (not current) if checked is None else bool(checked)
         self._autostretch_on = new_state
 
-        src = self._preview_source_f01
-
-        if new_state:
-            disp = hard_autostretch(
-                src,
-                target_median=0.5,
-                sigma=2,
-                linked=False,
-                use_24bit=True
-            )
-        else:
-            disp = src
-
-        disp = np.asarray(disp, dtype=np.float32)
-
-        if disp.ndim == 2 or (disp.ndim == 3 and disp.shape[2] == 1):
-            mono = disp if disp.ndim == 2 else disp[..., 0]
-            buf8_mono = (np.clip(mono, 0.0, 1.0) * 255.0).astype(np.uint8)
-            buf8_mono = np.ascontiguousarray(buf8_mono)
-
-            # keep 3-channel backing array for consistency with other preview code
-            self._last_preview = np.ascontiguousarray(np.stack([buf8_mono] * 3, axis=-1))
-
-            h, w = buf8_mono.shape
-            self._preview_qimg = QImage(
-                buf8_mono.data,
-                w, h,
-                w,
-                QImage.Format.Format_Grayscale8
-            )
-        else:
-            buf8 = (np.clip(disp, 0.0, 1.0) * 255.0).astype(np.uint8)
-            buf8 = np.ascontiguousarray(buf8)
-            self._last_preview = buf8
-
-            h, w, _ = buf8.shape
-            self._preview_qimg = QImage(
-                buf8.data,
-                w, h,
-                buf8.strides[0],
-                QImage.Format.Format_RGB888
-            )
-
-        self._preview_qimg = tag_qimage_with_working_color_space(self._preview_qimg)
-        self._update_preview_scaled()
-        self._redraw_overlay()
+        self._request_display()
 
         if hasattr(self, "btn_autostr"):
             self.btn_autostr.setChecked(new_state)
@@ -4214,21 +5022,10 @@ class ABEDialog(QDialog):
                 # 2) Show placeholder so user sees something while we compute
                 self._show_placeholder()
 
-                # 3) Render with stretch if enabled — this is the expensive step
-                #    but now it happens with correct viewport size and after show
-                self._render_preview_from_source(
-                    stretch=bool(getattr(self, "_autostretch_on", False))
-                )
-
-                # 4) Fit to the now-correct viewport
-                self.fit_to_preview()
-
-                # 5) Seed preset manual points LAST — base pixmap now exists,
-                #    so the yellow sample squares composite onto a real preview.
-                if self._pending_manual_points is not None:
-                    pts = self._pending_manual_points
-                    self._pending_manual_points = None
-                    self.seed_manual_points(pts)
+                # 3) Render (stretch + 8-bit) on a worker thread. When it lands,
+                #    _install_display fits it to the now-correct viewport and
+                #    seeds any preset manual points LAST, onto the real preview.
+                self._request_display()
 
             QTimer.singleShot(0, _after_show)
             return

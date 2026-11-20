@@ -19,6 +19,7 @@ from setiastro.saspro.imageops.stretch import (
     _compute_blackpoint_sigma_per_channel,
 )
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.luminancerecombine import LUMA_PROFILES
@@ -47,6 +48,86 @@ class _StretchWorker(QObject):
             self.finished.emit(out, "")
         except Exception as e:
             self.finished.emit(None, str(e))
+
+
+def _source_float(src) -> np.ndarray | None:
+    """float32 [0,1]-ish copy of a document image (the dialog's source)."""
+    src = np.asarray(src)
+    if src is None or src.size == 0:
+        return None
+    if np.issubdtype(src.dtype, np.integer):
+        scale = 65535.0 if src.dtype.itemsize >= 2 else 255.0
+        return (src.astype(np.float32) / scale).clip(0, 1)
+    f = src.astype(np.float32)
+    mx = float(f.max()) if f.size else 1.0
+    if mx > 5.0:
+        f = f / mx
+    return f
+
+
+def _clip_stats_numbers(imgf, sig, no_black_clip, luma_only, linked, mask):
+    """The numbers behind the clip-stats label: (bp, bp3, clipped, total, masked)."""
+    bp = None
+    bp3 = None
+    if imgf.ndim == 2 or (imgf.ndim == 3 and imgf.shape[2] == 1):
+        mono = imgf.squeeze().astype(np.float32, copy=False)
+        if no_black_clip:
+            bp = float(mono.min())
+        else:
+            bp, _ = _compute_blackpoint_sigma(mono, sig)
+        clipped = (mono <= bp)
+    else:
+        rgb = imgf.astype(np.float32, copy=False)
+        if luma_only or linked:
+            L = 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
+            if no_black_clip:
+                bp = float(L.min())
+            else:
+                bp, _ = _compute_blackpoint_sigma(L, sig)
+            clipped = (L <= bp)
+        else:
+            if no_black_clip:
+                bp3 = np.array(
+                    [float(rgb[..., 0].min()), float(rgb[..., 1].min()), float(rgb[..., 2].min())],
+                    dtype=np.float32
+                )
+            else:
+                bp3 = _compute_blackpoint_sigma_per_channel(rgb, sig).astype(np.float32, copy=False)
+            clipped = np.any(rgb <= bp3.reshape((1, 1, 3)), axis=2)
+
+    masked = None
+    if mask is not None:
+        affected = (mask > 0.01)
+        masked = (int(np.count_nonzero(clipped & affected)), int(np.count_nonzero(affected)))
+    return bp, bp3, int(np.count_nonzero(clipped)), int(clipped.size), masked
+
+
+class _ClipStatsJob(QThread):
+    """Clip stats off the GUI thread: on a 22 MP frame the per-channel black
+    points and the clipped-pixel mask froze the dialog ~1.5 s at open and on
+    every black-point change."""
+    done = pyqtSignal(object)   # (snapshot, numbers) or (snapshot, None) for no image
+
+    def __init__(self, src, snap: dict, mask):
+        super().__init__()      # no parent: thread_keeper owns it
+        self.src = src
+        self.snap = dict(snap)
+        self.mask = mask
+
+    def run(self):
+        try:
+            imgf = _source_float(self.src)
+            if imgf is None or imgf.size == 0:
+                self.done.emit((self.snap, None))
+                return
+            sn = self.snap
+            self.snap["ndim"] = imgf.ndim
+            self.snap["nch"] = imgf.shape[2] if imgf.ndim == 3 else 1
+            nums = _clip_stats_numbers(imgf, sn["sig"], sn["no_black_clip"], sn["luma_only"],
+                                       sn["linked"], self.mask)
+            self.done.emit((self.snap, nums))
+        except Exception as e:
+            self.done.emit((self.snap, e))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -567,6 +648,7 @@ class StatisticalStretchDialog(QDialog):
         # Rebuild _schedule_clip_stats now that timer exists
         def _schedule_clip_stats():
             if getattr(self, "_job_running", False):
+                self._clip_pending = True     # run when the job finishes
                 return
             if sip.isdeleted(self):
                 return
@@ -896,6 +978,9 @@ class StatisticalStretchDialog(QDialog):
         if not self.chk_auto_refresh.isChecked():
             return
         if getattr(self, "_job_running", False):
+            # Sliders stay live while a preview runs. Dropping this change left
+            # the preview showing the settings from before the drag ended.
+            self._preview_pending = True
             return
         self._full_timer.start()
 
@@ -1106,18 +1191,7 @@ class StatisticalStretchDialog(QDialog):
         return jd if jd is not None else self.doc
 
     def _get_source_float(self) -> np.ndarray | None:
-        src = np.asarray(self._target_doc().image)
-        if src is None or src.size == 0:
-            return None
-        if np.issubdtype(src.dtype, np.integer):
-            scale = 65535.0 if src.dtype.itemsize >= 2 else 255.0
-            return (src.astype(np.float32) / scale).clip(0, 1)
-        else:
-            f = src.astype(np.float32)
-            mx = float(f.max()) if f.size else 1.0
-            if mx > 5.0:
-                f = f / mx
-            return f
+        return _source_float(self._target_doc().image)
 
     # ── Stretch ───────────────────────────────────────────────────────────────
 
@@ -1212,63 +1286,61 @@ class StatisticalStretchDialog(QDialog):
         return self.tr("Unlinked (any channel ≤ bp)")
 
     def _do_clip_stats(self):
-        imgf = self._get_source_float()
-        if imgf is None or imgf.size == 0:
+        doc = self._target_doc()
+        src = getattr(doc, "image", None) if doc is not None else None
+        if src is None or np.asarray(src).size == 0:
             self.lbl_clipstats.setText(self.tr("No image loaded."))
             return
+        if thread_running(getattr(self, "_clip_thread", None)):
+            self._clip_job_pending = True          # re-run with the latest settings
+            return
+        snap = dict(
+            sig=float(self.sld_bp.value()) / 100.0,
+            no_black_clip=bool(self.chk_no_black_clip.isChecked()),
+            luma_only=bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked()),
+            linked=bool(getattr(self, "chk_linked", None) and self.chk_linked.isChecked()),
+        )
+        thr = _ClipStatsJob(np.asarray(src), snap, self._active_mask_array())
+        thr.done.connect(self._on_clip_stats_done)
+        thr.finished.connect(self._on_clip_stats_finished)
+        self._clip_thread = thr
+        start_owned_thread(thr)
 
-        sig = float(self.sld_bp.value()) / 100.0
-        no_black_clip = bool(self.chk_no_black_clip.isChecked())
-        luma_only = bool(getattr(self, "chk_luma_only", None) and self.chk_luma_only.isChecked())
-        linked = bool(getattr(self, "chk_linked", None) and self.chk_linked.isChecked())
+    def _on_clip_stats_finished(self):
+        if getattr(self, "_clip_job_pending", False):
+            self._clip_job_pending = False
+            self._do_clip_stats()
 
-        bp = None
-        bp3 = None
-        clipped = None
-
-        if imgf.ndim == 2 or (imgf.ndim == 3 and imgf.shape[2] == 1):
-            mono = imgf.squeeze().astype(np.float32, copy=False)
-            if no_black_clip:
-                bp = float(mono.min())
-            else:
-                bp, _ = _compute_blackpoint_sigma(mono, sig)
-            clipped = (mono <= bp)
-        else:
-            rgb = imgf.astype(np.float32, copy=False)
-            if luma_only or linked:
-                L = 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
-                if no_black_clip:
-                    bp = float(L.min())
-                else:
-                    bp, _ = _compute_blackpoint_sigma(L, sig)
-                clipped = (L <= bp)
-            else:
-                if no_black_clip:
-                    bp3 = np.array(
-                        [float(rgb[..., 0].min()), float(rgb[..., 1].min()), float(rgb[..., 2].min())],
-                        dtype=np.float32
-                    )
-                else:
-                    bp3 = _compute_blackpoint_sigma_per_channel(rgb, sig).astype(np.float32, copy=False)
-                clipped = np.any(rgb <= bp3.reshape((1, 1, 3)), axis=2)
-
-        clipped_count = int(np.count_nonzero(clipped))
-        total = int(clipped.size)
+    def _on_clip_stats_done(self, res):
+        snap, nums = res
+        if nums is None:
+            self.lbl_clipstats.setText(self.tr("No image loaded."))
+            return
+        if isinstance(nums, Exception):
+            self.lbl_clipstats.setText(self.tr(f"Clip stats failed: {nums}"))
+            return
+        bp, bp3, clipped_count, total, masked = nums
+        no_black_clip, luma_only, linked = snap["no_black_clip"], snap["luma_only"], snap["linked"]
+        is_mono = snap["ndim"] == 2 or (snap["ndim"] == 3 and snap["nch"] == 1)
         pct = 100.0 * clipped_count / max(1, total)
 
         masked_note = ""
-        m = self._active_mask_array()
-        if m is not None:
-            affected = (m > 0.01)
-            aff_total = int(np.count_nonzero(affected))
-            aff_clip = int(np.count_nonzero(clipped & affected))
+        if masked is not None:
+            aff_clip, aff_total = masked
             aff_pct = 100.0 * aff_clip / max(1, aff_total)
             masked_note = self.tr(f" | masked area: {aff_clip:,}/{aff_total:,} ({aff_pct:.4f}%)")
 
-        mode_lbl = self._clip_mode_label(imgf)
+        if is_mono:
+            mode_lbl = self.tr("Mono")
+        elif luma_only:
+            mode_lbl = self.tr("Luma-only (L ≤ bp)")
+        elif linked:
+            mode_lbl = self.tr("Linked (L ≤ bp)")
+        else:
+            mode_lbl = self.tr("Unlinked (any channel ≤ bp)")
 
         if no_black_clip:
-            if imgf.ndim == 2 or (imgf.ndim == 3 and imgf.shape[2] == 1):
+            if is_mono:
                 bp_text = self.tr(f"min={float(bp):.6f}")
             else:
                 if luma_only or linked:
@@ -1283,7 +1355,7 @@ class StatisticalStretchDialog(QDialog):
             )
             return
 
-        if (imgf.ndim == 3 and imgf.shape[2] == 3) and not (luma_only or linked):
+        if (snap["ndim"] == 3 and snap["nch"] == 3) and not (luma_only or linked):
             bp_disp = self.tr(f"R={float(bp3[0]):.6f}, G={float(bp3[1]):.6f}, B={float(bp3[2]):.6f}")
         else:
             bp_disp = self.tr(f"{float(bp):.6f}")
@@ -1469,12 +1541,10 @@ class StatisticalStretchDialog(QDialog):
             self.preview_label.clear()
             return
 
-        if vis.ndim == 2:
-            vis3 = np.stack([vis] * 3, axis=-1)
-        elif vis.ndim == 3 and vis.shape[2] == 1:
-            vis3 = np.repeat(vis, 3, axis=2)
-        else:
-            vis3 = vis
+        # Mono is converted to 8-bit first and its bytes replicated to RGB:
+        # same bytes as stacking the floats, without a 3x float copy of the
+        # frame on the GUI thread.
+        vis3 = vis[..., 0] if (vis.ndim == 3 and vis.shape[2] == 1) else vis
 
         if vis3.dtype == np.uint8:
             buf8 = vis3
@@ -1482,6 +1552,12 @@ class StatisticalStretchDialog(QDialog):
             buf8 = (vis3.astype(np.float32) / 65535.0 * 255.0).clip(0, 255).astype(np.uint8)
         else:
             buf8 = (np.clip(vis3, 0.0, 1.0) * 255.0).astype(np.uint8)
+        if buf8.ndim == 2:
+            try:   # same bytes as np.repeat, which holds the GIL ~0.4 s on 26 MP
+                import cv2
+                buf8 = cv2.cvtColor(np.ascontiguousarray(buf8), cv2.COLOR_GRAY2RGB)
+            except Exception:
+                buf8 = np.repeat(buf8[..., None], 3, axis=2)
 
         buf8 = np.ascontiguousarray(buf8)
         h, w, _ = buf8.shape
@@ -1586,6 +1662,11 @@ class StatisticalStretchDialog(QDialog):
         self._hide_busy()
         self._set_controls_enabled(True)
         self._job_running = False
+        rerun_preview = (bool(getattr(self, "_preview_pending", False))
+                         and getattr(self, "_job_mode", "") == "preview")
+        rerun_clip = bool(getattr(self, "_clip_pending", False))
+        self._preview_pending = False
+        self._clip_pending = False
 
         try:
             if err:
@@ -1608,6 +1689,13 @@ class StatisticalStretchDialog(QDialog):
         finally:
             # Release the pin so later interactive edits use the live document.
             self._job_doc = None
+            # Changes made while the job ran (queued above, never dropped).
+            if (not sip.isdeleted(self) and self.isVisible()
+                    and not getattr(self, "_pending_close", False)):
+                if rerun_clip:
+                    self._schedule_clip_stats()
+                if rerun_preview and self.chk_auto_refresh.isChecked():
+                    self._full_timer.start()
 
     def closeEvent(self, ev):
         if getattr(self, "_job_running", False):

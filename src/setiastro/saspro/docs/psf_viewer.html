@@ -222,6 +222,8 @@
 
 <p>Rationale: on a rich field, SEP at σ=3 can produce 50000+ detections (Frank's example: 53105 sources at σ=15 on one image). Fitting shape moments to that many detections wastes seconds on sources that will fail the quality filter anyway. Starting at σ=100 and only descending until a stable statistic is in hand gives the same median numbers in a fraction of the time. On sparse fields where σ=3 is needed to find anything, the ladder reaches the bottom naturally and the tool uses what it got.</p>
 
+<p>SEP holds Python's lock for the whole of an extraction, which freezes the window even from a background thread: one extraction on a rich 26 MP master is ~6 s at σ=100 and minutes at σ=15. On a dense star field, a level is therefore extracted in horizontal strips (the same catalogue, faster there, and the window gets a turn between strips). Elsewhere one extraction is quicker, so it stays one extraction; on nebulosity, objects taller than a strip make strips slower without shortening the freeze. The Convolution/Deconvolution PSF Estimator uses this same detector.</p>
+
 <h3>6.6 Median star stamp assembly</h3>
 
 <p>When the widget is in pixel mode, the displayed stamp is a median stack of up to 500 real-image cutouts around detected stars. The process:</p>
@@ -262,7 +264,7 @@
 
 <h3>6.8 Threaded extraction</h3>
 
-<p>Star detection runs in a background QThread (<code>_PSFWorker</code>). The GUI thread shows a semi-transparent "Processing… extracting stars / PSFs" overlay on top of the histogram while the worker runs, and the status line updates when results arrive. A 500 ms debounce timer on the σ slider ensures that scrubbing the slider doesn't fire off a worker on every pixel of motion; the extraction only starts once the slider has been idle for half a second. The worker is cleanly stopped and replaced if a second extraction request comes in before the first completed.</p>
+<p>Star detection runs in a background QThread (<code>_PSFWorker</code>). The GUI thread shows a semi-transparent "Processing… extracting stars / PSFs" overlay on top of the histogram while the worker runs, and the status line updates when results arrive. A 500 ms debounce timer on the σ slider ensures that scrubbing the slider doesn't fire off a worker on every pixel of motion; the extraction only starts once the slider has been idle for half a second. One extraction runs at a time: a request that arrives while one is running (the slider, Auto, or the image changing) re-runs it with the latest settings as soon as it finishes, and only that latest result is shown. Closing the viewer mid-extraction is safe; the extraction finishes in the background and its result is dropped.</p>
 
 <div class="credit">
 <b>Credits.</b> PSF Viewer — the two-mode star widget (synthetic + real-pixel median stamp), the Auto/Manual threshold dual mode, the histogram+stats+shape triple-view layout, and the SASpro-canonical visual conventions — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to the community: SEP (Source Extractor in Python) by Barbary (2016) for source detection and the a / b / θ second-moment measurements; the Gaussian FWHM = 2√(2 ln 2) · σ conversion is standard statistics; the HFR ≈ 2·σ convention follows the astro-imaging community (PHD2, SharpCap, SGP, N.I.N.A.); the waterfall detection algorithm lives in <code>psf_utils.py</code> as a shared utility used by multiple SASpro tools.

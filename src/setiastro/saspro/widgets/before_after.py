@@ -50,7 +50,9 @@ def display_stretch_params(ref, target_median: float = 0.25, linked: bool = True
     ignore_zeros leaves 0.0 (no-data) pixels out of the statistics, as the main
     view's autostretch does.
     """
-    from setiastro.saspro.imageops.stretch import _compute_blackpoint_sigma
+    from setiastro.saspro.imageops.stretch import (
+        _compute_blackpoint_sigma, _robust_sigma_lower_half_fast,
+    )
 
     def _measure(x):
         v = np.asarray(x, dtype=np.float32)
@@ -59,6 +61,26 @@ def display_stretch_params(ref, target_median: float = 0.25, linked: bool = True
             if nz.size:
                 v = nz
         bp, med = _compute_blackpoint_sigma(v, float(blackpoint_sigma))
+        return float(bp), float(med)
+
+    def _measure_channel(c):
+        # _measure(a[..., c]) on a private C-contiguous copy of the channel:
+        # the strided view made every reduction gather, and the copy is ours,
+        # so the median may partition it in place -- taken LAST, after the
+        # noise sample and the min, which read it in element order. Same
+        # steps as _compute_blackpoint_sigma, so the same numbers.
+        v = np.array(a[..., c], dtype=np.float32, order="C", copy=True)
+        if ignore_zeros:
+            nz = v[v > 0.0]
+            if nz.size:
+                v = nz
+        sig = float(blackpoint_sigma)
+        noise = _robust_sigma_lower_half_fast(v)
+        mn = float(v.min())
+        med = float(np.median(v, overwrite_input=True))
+        bp = med - sig * noise
+        bp = max(mn, bp)
+        bp = min(bp, 0.99)
         return float(bp), float(med)
 
     a = np.asarray(ref, dtype=np.float32)
@@ -70,7 +92,11 @@ def display_stretch_params(ref, target_median: float = 0.25, linked: bool = True
     a = a[..., :3]
     if linked:
         return ("linked",) + _measure(a) + (t,)
-    per = [_measure(a[..., c]) for c in range(a.shape[2])]
+    # Channels are independent and the median's partition releases the GIL,
+    # so measure them side by side.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, a.shape[2])) as ex:
+        per = list(ex.map(_measure_channel, range(a.shape[2])))
     bp3 = np.array([p[0] for p in per], dtype=np.float32)
     med3 = np.array([p[1] for p in per], dtype=np.float32)
     return ("unlinked", bp3, med3, t)

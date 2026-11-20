@@ -1,10 +1,13 @@
 #saspro/perfect_palette_picker.py
 from __future__ import annotations
 import os
+import sys
+import traceback
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PIL import Image
 import cv2
-from PyQt6.QtCore import Qt, QSize, QEvent, QTimer, QPoint, pyqtSignal, QSettings, QByteArray
+from PyQt6.QtCore import Qt, QSize, QEvent, QTimer, QPoint, pyqtSignal, QSettings, QByteArray, QThread
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
     QFileDialog, QInputDialog, QMessageBox, QGridLayout, QCheckBox, QSizePolicy, QDialog,
@@ -20,11 +23,497 @@ from setiastro.saspro.legacy.image_manager import load_image as legacy_load_imag
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread
+
+
+# ---------------------------------------------------------------------------
+# Off-GUI-thread machinery.
+#
+# Create Palettes, palette clicks, the balancing dialog's preview and Push run
+# in worker QThreads (_PPPJob). Everything a worker touches is plain numpy /
+# cv2 / QImage -- no QPixmap, no widgets. The row-chunked passes below use only
+# operations that are exact per element (copy, clip, min/max, nan_to_num,
+# multiply/divide by one scalar, float->uint8 cast), so splitting rows across
+# threads gives the same bytes as the old whole-array calls. The formula
+# palettes (Realistic, Foraxx, Dynamic Inverse) are purely per-pixel too: each
+# pixel goes through the same element-wise numpy operations (those exact ops
+# plus the Foraxx gate's element-wise power) whether a call covers the whole
+# frame or a band of rows, so _ppp_map bands them across threads as well.
+# ---------------------------------------------------------------------------
+_PPP_POOL = None
+_PPP_CHUNK = 1 << 20          # elements per row chunk
+
+
+def _ppp_pool() -> ThreadPoolExecutor:
+    global _PPP_POOL
+    if _PPP_POOL is None:
+        _PPP_POOL = ThreadPoolExecutor(max_workers=max(2, min(8, os.cpu_count() or 4)),
+                                       thread_name_prefix="ppp")
+    return _PPP_POOL
+
+
+def _ppp_rows(fn, rows: int, row_elems: int) -> list:
+    """Run fn(i, j) over row spans [i, j) covering 0..rows, in parallel; results in order."""
+    per = max(1, _PPP_CHUNK // max(1, int(row_elems)))
+    spans = [(i, min(rows, i + per)) for i in range(0, rows, per)]
+    if len(spans) <= 1:
+        return [fn(i, j) for i, j in spans]
+    return list(_ppp_pool().map(lambda s: fn(s[0], s[1]), spans))
+
+
+class _PPPJob(QThread):
+    """Runs fn(*args) off the GUI thread and emits ("ok", value) or ("err", message) on
+    `result` (deliberately not named `finished`). Start it with start_owned_thread()."""
+    result = pyqtSignal(object)
+
+    def __init__(self, fn, *args):
+        super().__init__(None)
+        self._fn = fn
+        self._args = args
+
+    def run(self):
+        fn, args = self._fn, self._args
+        self._fn = self._args = None
+        try:
+            out = ("ok", fn(*args))
+        except Exception as e:
+            traceback.print_exc()
+            out = ("err", f"{type(e).__name__}: {e}")
+        del fn, args
+        self.result.emit(out)
+
+
+def _ppp_resize_to(arr, size):
+    """Resize np array to (w,h). Keeps dtype/scale. Uses INTER_AREA for downsizing."""
+    if arr is None:
+        return None
+    w, h = size
+    if arr.ndim == 2:
+        src_h, src_w = arr.shape
+    else:
+        src_h, src_w = arr.shape[:2]
+    if (src_w, src_h) == (w, h):
+        return arr
+    if cv2 is None:
+        # ultra-simple fallback: nearest; OK for thumbs if OpenCV isn't present
+        if arr.ndim == 2:
+            return np.array(Image.fromarray((arr*255).astype(np.uint8)).resize((w, h))).astype(np.float32) / 255.0
+        return np.array(Image.fromarray((arr*255).astype(np.uint8)).resize((w, h))).astype(np.float32) / 255.0
+    interp = cv2.INTER_AREA if (w < src_w or h < src_h) else cv2.INTER_LINEAR
+    if arr.ndim == 2:
+        return cv2.resize(arr, (w, h), interpolation=interp)
+    return cv2.resize(arr, (w, h), interpolation=interp)
+
+
+def _ppp_u8(arr) -> np.ndarray:
+    """(np.clip(arr, 0, 1) * 255).astype(np.uint8), row-chunked across threads. Same bytes."""
+    a = np.asarray(arr)
+    if a.ndim < 2 or a.size == 0:
+        return (np.clip(a, 0, 1) * 255).astype(np.uint8)
+    u = np.empty(a.shape, np.uint8)
+
+    def _job(i, j):
+        t = np.clip(a[i:j], 0, 1)
+        np.multiply(t, 255, out=t)
+        u[i:j] = t
+    _ppp_rows(_job, a.shape[0], a[0].size)
+    return u
+
+
+def _ppp_to_qimage(arr) -> QImage:
+    """Float [0..1] mono/RGB -> QImage (Grayscale8 / RGB888)."""
+    a = np.asarray(arr)
+    if a.ndim == 2:
+        u = _ppp_u8(a); h, w = u.shape
+        return QImage(u.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+    if a.ndim == 3 and a.shape[2] == 3:
+        u = _ppp_u8(a); h, w, _ = u.shape
+        return QImage(u.data, w, h, w*3, QImage.Format.Format_RGB888).copy()
+    raise ValueError(f"Unexpected image shape: {a.shape}")
+
+
+class _PPPDisplay:
+    """An RGB32 QImage for an HxWx3 [0..1] float image, filled chunk by chunk with exactly the
+    pixels _ppp_to_qimage gives (RGB32 = RGB888 plus an opaque alpha byte). Built in a worker:
+    QPixmap.fromImage of an RGB32 image is a plain copy on the GUI thread, and zoom scaling of
+    the pixmap takes Qt's fast path. view is None when unavailable (callers fall back)."""
+
+    def __init__(self, h: int, w: int):
+        self.qimg = None
+        self.view = None
+        if sys.byteorder != "little" or h <= 0 or w <= 0:
+            return
+        q = QImage(w, h, QImage.Format.Format_RGB32)
+        if q.isNull() or q.bytesPerLine() != w * 4:
+            return
+        ptr = q.bits()
+        ptr.setsize(q.sizeInBytes())
+        self.view = np.frombuffer(ptr, np.uint8).reshape(h, w, 4)
+        self.qimg = q
+
+    def put(self, i, j, blk):
+        t = np.clip(blk, 0, 1)
+        np.multiply(t, 255, out=t)
+        v = self.view[i:j]
+        v[..., 2::-1] = t          # R,G,B -> bytes 2,1,0 of 0xffRRGGBB (little-endian)
+        v[..., 3] = 255
+
+
+def _ppp_display_qimage(rgb) -> QImage:
+    """Display QImage of a [0..1] image (RGB32 when possible): the same pixels as _ppp_to_qimage."""
+    a = np.asarray(rgb)
+    if a.ndim == 3 and a.shape[2] == 3:
+        d = _PPPDisplay(a.shape[0], a.shape[1])
+        if d.view is not None:
+            _ppp_rows(lambda i, j: d.put(i, j, a[i:j]), a.shape[0], a.shape[1] * 3)
+            return d.qimg
+    return _ppp_to_qimage(a)
+
+
+def _ppp_present_count(ha, oo, si, o1, o2) -> int:
+    """How many of Ha / OIII / SII the inputs provide once OSC is synthesized."""
+    return int(ha is not None or o1 is not None) \
+        + int(oo is not None or o1 is not None or o2 is not None) \
+        + int(si is not None or o2 is not None)
+
+
+def _ppp_synth(ha, oo, si, o1, o2):
+    """OSC synthesis: OSC1 R~Ha, mean(G,B)~OIII; OSC2 R~SII, mean(G,B)~OIII."""
+    if o1 is not None:  # OSC1: R≈Ha, mean(G,B)≈OIII
+        h1 = o1[..., 0]
+        g1b1 = o1[..., 1:3].mean(axis=2)
+        ha = h1 if ha is None else 0.5*ha + 0.5*h1
+        oo = g1b1 if oo is None else 0.5*oo + 0.5*g1b1
+
+    if o2 is not None:  # OSC2: R≈SII, mean(G,B)≈OIII
+        s2 = o2[..., 0]
+        g2b2 = o2[..., 1:3].mean(axis=2)
+        si = s2 if si is None else 0.5*si + 0.5*s2
+        oo = g2b2 if oo is None else 0.5*oo + 0.5*g2b2
+    return ha, oo, si
+
+
+def _ppp_synth_shapes(ha, oo, si, o1, o2):
+    """The 2-D shapes _ppp_synth would give for Ha / OIII / SII, without computing it."""
+    def s(x):
+        return None if x is None else tuple(x.shape[:2])
+    sh_ha = s(ha) if ha is not None else s(o1)
+    sh_oo = s(oo) if oo is not None else (s(o1) if o1 is not None else s(o2))
+    sh_si = s(si) if si is not None else s(o2)
+    return sh_ha, sh_oo, sh_si
+
+
+def _ppp_match_sizes(ha, oo, si):
+    """Full size: resize mismatched channels to the reference (prefer Ha, then OIII, then SII).
+    Only reached once the user agreed (PerfectPalettePicker._confirm_channel_sizes)."""
+    shapes = [x.shape[:2] for x in (ha, oo, si) if x is not None]
+    if len(shapes) and len(set(shapes)) > 1:
+        ref = ha if ha is not None else (oo if oo is not None else si)
+        ref_h, ref_w = ref.shape[:2]
+        ha = _ppp_resize_to(ha, (ref_w, ref_h)) if ha is not None else None
+        oo = _ppp_resize_to(oo, (ref_w, ref_h)) if oo is not None else None
+        si = _ppp_resize_to(si, (ref_w, ref_h)) if si is not None else None
+    return ha, oo, si
+
+
+def _ppp_thumb_channels(ha, oo, si, o1, o2, box_w, box_h):
+    """Thumbnail Ha / OIII / SII: the same recipe as before (OSC synthesis, then size-match to
+    the OIII -> Ha -> SII reference), but on inputs first shrunk to about twice the thumbnail
+    box instead of to 50%. The 18 palettes then map ~0.1 MP each instead of a quarter frame;
+    each result is scaled down to the button size either way. Thumbnails only."""
+    srcs = [x for x in (ha, oo, si, o1, o2) if x is not None]
+    if srcs:
+        big_h = max(x.shape[0] for x in srcs)
+        big_w = max(x.shape[1] for x in srcs)
+        s = min(0.5, 2.0 * box_w / max(1, big_w), 2.0 * box_h / max(1, big_h))
+
+        def _shrink(x):
+            if x is None:
+                return None
+            h, w = x.shape[:2]
+            return _ppp_resize_to(x, (max(1, int(w * s)), max(1, int(h * s))))
+        ha, oo, si, o1, o2 = (_shrink(x) for x in (ha, oo, si, o1, o2))
+
+    ha, oo, si = _ppp_synth(ha, oo, si, o1, o2)
+
+    ref = oo if oo is not None else (ha if ha is not None else si)
+    if ref is not None:
+        ref_h, ref_w = ref.shape[:2]
+        ha = _ppp_resize_to(ha, (ref_w, ref_h)) if ha is not None else None
+        oo = _ppp_resize_to(oo, (ref_w, ref_h)) if oo is not None else None
+        si = _ppp_resize_to(si, (ref_w, ref_h)) if si is not None else None
+    return ha, oo, si
+
+
+def _ppp_thumbs_job(mapper, names, picks, box_w, box_h):
+    """Create Palettes, off the GUI thread: {palette name: QImage, or None if unbuildable}."""
+    ha, oo, si = _ppp_thumb_channels(*picks, box_w, box_h)
+    out = {}
+    for name in names:
+        r, g, b = mapper(name, ha, oo, si)
+        if any(ch is None for ch in (r, g, b)):
+            out[name] = None
+            continue
+        r = np.clip(np.nan_to_num(r), 0, 1)
+        g = np.clip(np.nan_to_num(g), 0, 1)
+        b = np.clip(np.nan_to_num(b), 0, 1)
+        rgb = np.stack([r, g, b], axis=2).astype(np.float32)
+        out[name] = _ppp_to_qimage(rgb)
+    return out
+
+
+def _ppp_finish_rgb(r, g, b):
+    """The palette preview: clip(nan_to_num(ch), 0, 1) per channel, stacked, divided by the
+    max -- in two threaded passes with no full-frame temporaries -- plus its display QImage.
+    Returns (final, in_range, qimage).
+
+    in_range: every channel was already finite and inside [0, 1], so the nan_to_num/clip were
+    no-ops. final is then bit-identical to the balancing dialog's image when it is accepted
+    untouched (that divides the same channels by the same max and clips afterwards, a no-op).
+    """
+    chans = (r, g, b)
+    if not all(isinstance(c, np.ndarray) and c.ndim == 2 and c.shape == np.shape(r) and c.size
+               for c in chans):
+        r = np.clip(np.nan_to_num(r), 0, 1)
+        g = np.clip(np.nan_to_num(g), 0, 1)
+        b = np.clip(np.nan_to_num(b), 0, 1)
+        rgb = np.stack([r, g, b], axis=2).astype(np.float32)
+        mx = float(rgb.max()) or 1.0
+        rgb = (rgb / mx).astype(np.float32)
+        return rgb, False, _ppp_display_qimage(rgb)
+
+    H, W = r.shape
+    distinct = []
+    for c in chans:
+        if not any(c is d for d in distinct):
+            distinct.append(c)
+    rgb = np.empty((H, W, 3), np.float32)
+
+    def _clip(i, j):
+        ok = True
+        for d in distinct:
+            blk = d[i:j]
+            if not (blk.min() >= 0 and blk.max() <= 1):      # NaN fails both
+                ok = False
+        out = rgb[i:j]
+        for k, c in enumerate(chans):
+            np.clip(c[i:j], 0, 1, out=out[..., k])
+        return ok, out.max()
+    parts = _ppp_rows(_clip, H, W * 3)
+    in_range = all(ok for ok, _ in parts)
+    if in_range:
+        mx = float(np.max([m for _, m in parts]))
+    else:
+        def _fix(i, j):
+            blk = rgb[i:j]
+            np.nan_to_num(blk, copy=False)
+            return blk.max()
+        mx = float(np.max(_ppp_rows(_fix, H, W * 3)))
+    mx = mx or 1.0
+    disp = _PPPDisplay(H, W)
+
+    def _norm(i, j):
+        blk = rgb[i:j]
+        np.divide(blk, mx, out=blk)
+        if disp.view is not None:
+            disp.put(i, j, blk)
+    _ppp_rows(_norm, H, W * 3)
+    return rgb, in_range, (disp.qimg if disp.view is not None else _ppp_to_qimage(rgb))
+
+
+_PPP_FORMULAS = ("Realistic1", "Realistic2", "Foraxx", "Dynamic Inverse")
+
+
+def _ppp_map(mapper, pal, ha, oo, si):
+    """mapper(pal, ha, oo, si). Big frames of the formula palettes are mapped in bands of rows
+    across threads (their math has no cross-pixel step, so the bytes are the same); the
+    channel-shuffle palettes just return references and stay a single call."""
+    srcs = [x for x in (ha, oo, si) if x is not None]
+    if (pal not in _PPP_FORMULAS or len(srcs) < 2
+            or not all(isinstance(x, np.ndarray) and x.ndim == 2 and x.shape == srcs[0].shape
+                       for x in srcs)
+            or srcs[0].size < 4 * _PPP_CHUNK):
+        return mapper(pal, ha, oo, si)
+    H, W = srcs[0].shape
+    per = max(1, (2 * _PPP_CHUNK) // W)
+
+    def _band(i, j):
+        return mapper(pal, *(None if x is None else x[i:j] for x in (ha, oo, si)))
+    first = _band(0, per)
+    if not all(isinstance(c, np.ndarray) and c.shape == (per, W) for c in first):
+        return mapper(pal, ha, oo, si)
+    outs = [np.empty((H, W), c.dtype) for c in first]
+    for o, c in zip(outs, first):
+        o[:per] = c
+
+    def _job(span):
+        i, j = span
+        for o, c in zip(outs, _band(i, j)):
+            o[i:j] = c
+    list(_ppp_pool().map(_job, [(i, min(H, i + per)) for i in range(per, H, per)]))
+    return tuple(outs)
+
+
+def _ppp_gen_job(mapper, pal, picks):
+    """Palette click, off the GUI thread: prepared channels -> palette -> preview image."""
+    ha, oo, si = _ppp_match_sizes(*_ppp_synth(*picks))
+    if sum(x is not None for x in (ha, oo, si)) < 2:
+        return None
+    r, g, b = _ppp_map(mapper, pal, ha, oo, si)
+    if any(ch is None for ch in (r, g, b)):
+        return "unbuildable"
+    return _ppp_finish_rgb(r, g, b)
+
+
+def _ppp_scaled(x, f):
+    """x * f (the balancing sliders), row-threaded for big 2-D arrays. Same bytes."""
+    if x is None:
+        return None
+    if not (isinstance(x, np.ndarray) and x.ndim == 2 and x.size >= _PPP_CHUNK):
+        return x * f
+    out = np.empty(x.shape, (x[:1, :1] * f).dtype)
+    _ppp_rows(lambda i, j: np.multiply(x[i:j], f, out=out[i:j]), x.shape[0], x.shape[1])
+    return out
+
+
+def _ppp_balance_compose(mapper, pal, ha_src, oiii_src, sii_src, factors, base_shape,
+                         want_qimage=False):
+    """The balancing dialog's image for intensity factors (fh, fo, fs): scale the sources, map
+    the palette, fit to the base size, assemble, divide by the max, clip to [0, 1].
+    Returns img, or (img, display QImage) when want_qimage."""
+    fh, fo, fs = factors
+    ha = _ppp_scaled(ha_src, fh)
+    oo = _ppp_scaled(oiii_src, fo)
+    si = _ppp_scaled(sii_src, fs)
+
+    r, g, b = _ppp_map(mapper, pal, ha, oo, si)
+
+    # --- make sure channels match the base palette size ---
+    H, W = base_shape[:2]
+
+    def fit(ch):
+        if ch is None: return None
+        if ch.shape[:2] != (H, W):
+            return _ppp_resize_to(ch, (W, H))
+        return ch
+    r, g, b = fit(r), fit(g), fit(b)
+    chans = (r, g, b)
+
+    disp = None
+    if (tuple(base_shape) == (H, W, 3) and H > 0 and W > 0
+            and all(c is None or (isinstance(c, np.ndarray) and c.shape == (H, W)) for c in chans)):
+        img = np.empty((H, W, 3), np.float32)
+
+        def _fill(i, j):
+            blk = img[i:j]
+            for k, c in enumerate(chans):
+                if c is None:
+                    blk[..., k] = 0
+                else:
+                    blk[..., k] = c[i:j]
+            return blk.max()
+        m = float(np.max(_ppp_rows(_fill, H, W * 3))) or 1.0
+        if want_qimage:
+            disp = _PPPDisplay(H, W)
+
+        def _norm(i, j):
+            blk = img[i:j]
+            np.divide(blk, m, out=blk)
+            np.clip(blk, 0.0, 1.0, out=blk)
+            if disp is not None and disp.view is not None:
+                disp.put(i, j, blk)
+        _ppp_rows(_norm, H, W * 3)
+    else:
+        img = np.zeros(base_shape, dtype=np.float32)
+        if r is not None: img[...,0] = r
+        if g is not None: img[...,1] = g
+        if b is not None: img[...,2] = b
+        m = float(img.max()) or 1.0
+        img = np.clip(img/m, 0.0, 1.0)
+
+    if not want_qimage:
+        return img
+    if disp is not None and disp.view is not None:
+        return img, disp.qimg
+    return img, _ppp_display_qimage(img)
+
+
+def _ppp_channel_medians(ha, oo, si) -> dict:
+    """{name: median} for channels that look like linear data.
+    Values that aren't plausibly linear (median >= 0.5 or <= 1e-6) are dropped."""
+    out = {}
+    for name, ch in (("Ha", ha), ("OIII", oo), ("SII", si)):
+        if ch is None:
+            continue
+        m = float(np.median(ch))
+        if 1e-6 < m < 0.5:
+            out[name] = m
+    return out
+
+
+def _ppp_target_median(meds: dict, mode: str):
+    """Resolve the target-median dropdown text to one value (Max when a named channel is missing)."""
+    if not meds:
+        return None
+    if mode.startswith("Max"):
+        return max(meds.values())
+    if mode.startswith("Min"):
+        return min(meds.values())
+    if mode == "Mean":
+        vals = list(meds.values())
+        return float(sum(vals) / len(vals))
+    if mode.startswith("Median"):
+        return float(np.median(list(meds.values())))
+    # Named channel — fall back to Max if that channel isn't loaded
+    if mode in meds:
+        return meds[mode]
+    return max(meds.values())
+
+
+def _ppp_output_linear(rgb, mode, raws):
+    """Output linear without the widgets: invert the pre-build stretch with a LINKED no-black-clip
+    statistical stretch to the chosen raw channel median. Returns (image, (kind, value, mode))
+    with kind "ok" (value = target), "none" (no plausible median) or "err" (value = message)."""
+    tgt = _ppp_target_median(_ppp_channel_medians(*_ppp_synth(*raws)), mode)
+    if tgt is None:
+        return rgb, ("none", None, mode)
+    try:
+        inverted = stretch_color_image(
+            rgb.astype(np.float32, copy=False),
+            target_median=float(tgt),
+            linked=True,
+            no_black_clip=True,
+            normalize=False,
+        ).astype(np.float32, copy=False)
+        return inverted, ("ok", tgt, mode)
+    except Exception as e:
+        return rgb, ("err", str(e), mode)
+
+
+def _ppp_push_job(img, needs_copy, compose, olin):
+    """Push, off the GUI thread. compose = (mapper, palette, picks, base_shape) builds the
+    dialog's untouched image first. Returns (final, output image, preview QImage or None,
+    output-linear info or None, final_is_copy)."""
+    qimg = None
+    if compose is not None:
+        mapper, pal, picks, base_shape = compose
+        ha, oo, si = _ppp_match_sizes(*_ppp_synth(*picks))
+        img, qimg = _ppp_balance_compose(mapper, pal, ha, oo, si, (1.0, 1.0, 1.0), base_shape, True)
+    out, info = img, None
+    if olin is not None:
+        out, info = _ppp_output_linear(img, *olin)
+    copied = False
+    if needs_copy and out is img:
+        img = out = img.copy()
+        copied = True
+    return img, out, qimg, info, copied
+
 
 class PaletteAdjustDialog(QDialog):
     adjusted_image = pyqtSignal(np.ndarray)
 
-    def __init__(self, base_rgb, palette_name, ha_src, oiii_src, sii_src, owner):
+    def __init__(self, base_rgb, palette_name, ha_src, oiii_src, sii_src, owner,
+                 orig_pixmap=None, base_is_untouched=False):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSlider
         from PyQt6.QtCore import QTimer, Qt, QPoint, QEvent
         super().__init__(owner)
@@ -37,7 +526,8 @@ class PaletteAdjustDialog(QDialog):
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
-        self.base_rgb     = base_rgb.astype(np.float32)
+        # Read-only here (its shape, and the untouched result), so no full-frame copy.
+        self.base_rgb     = base_rgb.astype(np.float32, copy=False)
         self.palette_name = palette_name
         self.ha_src       = ha_src
         self.oiii_src     = oiii_src
@@ -48,15 +538,31 @@ class PaletteAdjustDialog(QDialog):
         self.oiii_factor = 1.0
         self.sii_factor = 1.0
 
-        self._debounce = QTimer(self); self._debounce.setInterval(300); self._debounce.setSingleShot(True)
+        self._debounce = QTimer(self); self._debounce.setInterval(150); self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(self._update_preview)
 
         self.zoom_factor = 1.0
         self._dragging = False
         self._last_pos = QPoint()
 
-        # Original palette pixmap for A/B compare (checkbox off).
-        self._orig_pixmap = QPixmap.fromImage(self.owner._to_qimage(self.base_rgb))
+        # Preview / accept images are built off the GUI thread (_PPPJob). A slider change while
+        # one is building is queued: the latest factors are built when it lands.
+        self._thr = None
+        self._thr_factors = None
+        self._want_rerun = False
+        self._accept_pending = False
+        self._result = None           # (factors, float image) of the last finished build
+        self._closed = False
+        # The picker checked that base_rgb is bit-identical to the all-100% image.
+        self._base_is_untouched = bool(base_is_untouched)
+        self.accepted_pixmap = None   # display pixmap of the image emitted on Accept
+
+        # Original palette pixmap for A/B compare (checkbox off). The picker hands over its
+        # own preview pixmap of this very image (same pixels) instead of converting it again.
+        if orig_pixmap is not None and not orig_pixmap.isNull():
+            self._orig_pixmap = orig_pixmap
+        else:
+            self._orig_pixmap = QPixmap.fromImage(_ppp_display_qimage(self.base_rgb))
         self._adj_pixmap = None
 
         vlayout = QVBoxLayout(self)
@@ -116,8 +622,15 @@ class PaletteAdjustDialog(QDialog):
         discard = QPushButton("Discard",self); discard.clicked.connect(self.reject)
         btns.addWidget(accept); btns.addWidget(reset); btns.addWidget(discard)
         vlayout.addLayout(btns)
+        self._btn_accept = accept
+        self._btn_reset = reset
 
-        self._update_preview()
+        # Untouched, the adjusted image is base_rgb itself when the picker vouched for it, so
+        # the original pixmap is shown as-is; otherwise it is built off the GUI thread.
+        if self._base_is_untouched:
+            self._rescale_pixmap()
+        else:
+            self._update_preview()
 
     def _on_slider_change(self, _):
         self.ha_factor   = self._ha_slider.value()/100.0
@@ -133,33 +646,72 @@ class PaletteAdjustDialog(QDialog):
             return self._adj_pixmap if self._adj_pixmap is not None else self._orig_pixmap
         return self._orig_pixmap
 
+    def _factors(self):
+        return (self.ha_factor, self.oiii_factor, self.sii_factor)
+
     def _update_preview(self):
-        ha = (self.ha_src   * self.ha_factor)   if self.ha_src   is not None else None
-        oo = (self.oiii_src * self.oiii_factor) if self.oiii_src is not None else None
-        si = (self.sii_src  * self.sii_factor)  if self.sii_src  is not None else None
+        """Show the adjusted palette for the current slider factors. Built off the GUI thread;
+        a change while a build runs is queued and the latest factors are built when it lands."""
+        if self._closed:
+            return
+        if self._thr is not None:
+            self._want_rerun = True
+            return
+        f = self._factors()
+        if self._result is not None and self._result[0] == f:
+            return
+        if self._base_is_untouched and f == (1.0, 1.0, 1.0):
+            # all sliders back at 100%: that image is base_rgb, already on screen as the original
+            self._result = None
+            self._adj_pixmap = None
+            self._rescale_pixmap()
+            return
+        self._start_build(f)
 
-        r,g,b = self.owner._map_channels_or_special(self.palette_name, ha, oo, si)
+    def _start_build(self, f):
+        owner = self.owner
+        if owner is None or self._closed:
+            return
+        thr = _PPPJob(_ppp_balance_compose, owner._map_channels_or_special, self.palette_name,
+                      self.ha_src, self.oiii_src, self.sii_src, f, self.base_rgb.shape, True)
+        thr.result.connect(self._on_built)
+        self._thr = thr
+        self._thr_factors = f
+        self._want_rerun = False
+        self._result = None          # superseded; don't hold two full frames during the build
+        start_owned_thread(thr)
 
-        # --- make sure channels match the base palette size ---
-        H, W = self.base_rgb.shape[:2]
-        def fit(ch):
-            if ch is None: return None
-            if ch.shape[:2] != (H, W):
-                return self.owner._resize_to(ch, (W, H))
-            return ch
-        r, g, b = fit(r), fit(g), fit(b)
-        # ------------------------------------------------------
-
-        img = np.zeros_like(self.base_rgb, dtype=np.float32)
-        if r is not None: img[...,0] = r
-        if g is not None: img[...,1] = g
-        if b is not None: img[...,2] = b
-        m = float(img.max()) or 1.0
-        img = np.clip(img/m, 0.0, 1.0)
-
-        qimg = self.owner._to_qimage(img)
+    def _on_built(self, out):
+        f = self._thr_factors
+        self._thr = None
+        if self._closed:
+            return
+        kind, val = out
+        if kind == "err":
+            if self._accept_pending:
+                self._accept_pending = False
+                self._set_controls_enabled(True)
+            QMessageBox.warning(self, "Adjust Palette", f"Could not build the adjusted palette:\n{val}")
+            return
+        img, qimg = val
+        self._result = (f, img)
         self._adj_pixmap = QPixmap.fromImage(qimg)
+        cur = self._factors()
+        if self._accept_pending:
+            if f == cur:
+                self._finish_accept(img, self._adj_pixmap)
+            else:
+                self._start_build(cur)
+            return
         self._rescale_pixmap()
+        if self._want_rerun:
+            self._want_rerun = False
+            self._update_preview()
+
+    def _set_controls_enabled(self, on: bool):
+        for w in (self._ha_slider, self._oiii_slider, self._sii_slider,
+                  self._btn_accept, self._btn_reset):
+            w.setEnabled(on)
 
     def _rescale_pixmap(self):
         pm = self._active_pixmap()
@@ -194,31 +746,35 @@ class PaletteAdjustDialog(QDialog):
         self._on_slider_change(None)
 
     def _on_accept(self):
-        ha = (self.ha_src   * self.ha_factor)   if self.ha_src   is not None else None
-        oo = (self.oiii_src * self.oiii_factor) if self.oiii_src is not None else None
-        si = (self.sii_src  * self.sii_factor)  if self.sii_src  is not None else None
+        if self._closed or self._accept_pending:
+            return
+        self._debounce.stop()
+        f = self._factors()
+        if self._base_is_untouched and f == (1.0, 1.0, 1.0):
+            self._finish_accept(self.base_rgb, self._orig_pixmap)
+            return
+        if self._result is not None and self._result[0] == f:
+            self._finish_accept(self._result[1], self._adj_pixmap)
+            return
+        # The image for these factors isn't built yet: build it, then accept. Sliders are
+        # locked meanwhile; Discard still works.
+        self._accept_pending = True
+        self._set_controls_enabled(False)
+        if self._thr is None:
+            self._start_build(f)
 
-        r,g,b = self.owner._map_channels_or_special(self.palette_name, ha, oo, si)
-
-        # match base size
-        H, W = self.base_rgb.shape[:2]
-        def fit(ch):
-            if ch is None: return None
-            if ch.shape[:2] != (H, W):
-                return self.owner._resize_to(ch, (W, H))
-            return ch
-        r, g, b = fit(r), fit(g), fit(b)
-
-        final = np.zeros_like(self.base_rgb, dtype=np.float32)
-        if r is not None: final[...,0] = r
-        if g is not None: final[...,1] = g
-        if b is not None: final[...,2] = b
-
-        m = float(final.max()) or 1.0
-        final = np.clip(final/m, 0.0, 1.0)
-
-        self.adjusted_image.emit(final)
+    def _finish_accept(self, img, pm):
+        self._accept_pending = False
+        self.accepted_pixmap = pm
+        self.adjusted_image.emit(img)
         self.accept()
+
+    def done(self, r):
+        # Accept / Discard / Esc: drop late build results and the cached image.
+        self._closed = True
+        self._debounce.stop()
+        self._result = None
+        super().done(r)
 
     def eventFilter(self, obj, evt):
         if obj is self.preview_label:
@@ -238,6 +794,8 @@ class PaletteAdjustDialog(QDialog):
 
     def closeEvent(self, e):
         # Drop full-size float32 buffers + pixmaps as soon as the dialog closes.
+        self._closed = True
+        self._result = None
         self.base_rgb = None
         self.ha_src = self.oiii_src = self.sii_src = None
         self.owner = None
@@ -320,6 +878,21 @@ class PerfectPalettePicker(QWidget):
         self._max_zoom = 6.0
         self._panning = False
         self._pan_last: QPoint | None = None
+
+        # Off-GUI-thread jobs (_PPPJob) and the FIFO of clicks that arrive while one runs.
+        self._gen_thread = None      # palette click
+        self._gen_req = None
+        self._push_thread = None     # push
+        self._push_req = None
+        self._thumbs_thread = None   # Create Palettes
+        self._thumbs_pending = False
+        self._thumbs_serial = 0
+        self._queue: list[tuple] = []
+        self._inputs_rev = 0         # bumped whenever the loaded/stretched inputs change
+        self._clear_serial = 0       # bumped by Clear / teardown: older results are stale
+        self._final_key = None       # set while self.final == the dialog's untouched image
+        self._final_shared = False   # self.final was handed to a document
+        self._base_pm_src = None     # the array _base_pm shows
 
         self._build_ui()
 
@@ -443,6 +1016,18 @@ class PerfectPalettePicker(QWidget):
         self.btn_push.clicked.connect(self._push_final)
         left.addWidget(self.btn_push)
 
+        self.chk_balance_on_push = QCheckBox("Open balancing preview when pushing")
+        self.chk_balance_on_push.setChecked(True)
+        self.chk_balance_on_push.setToolTip(
+            "Checked: Push Final opens the Adjust Palette Intensities dialog\n"
+            "(Ha / OIII / SII intensity sliders) before creating the new view.\n"
+            "Unchecked: Push Final creates the new view straight away with the palette\n"
+            "as previewed \u2014 the same image as opening the dialog and clicking\n"
+            "Accept without touching a slider."
+        )
+        self.chk_balance_on_push.toggled.connect(self._on_balance_on_push_toggled)
+        left.addWidget(self.chk_balance_on_push)
+
         self.btn_gallery = QPushButton("Show Palette Gallery")
         self.btn_gallery.setCheckable(True)
         self.btn_gallery.setChecked(True)
@@ -534,24 +1119,14 @@ class PerfectPalettePicker(QWidget):
 
     def _resize_to(self, arr: np.ndarray | None, size: tuple[int, int]) -> np.ndarray | None:
         """Resize np array to (w,h). Keeps dtype/scale. Uses INTER_AREA for downsizing."""
-        if arr is None:
-            return None
-        w, h = size
-        if arr.ndim == 2:
-            src_h, src_w = arr.shape
-        else:
-            src_h, src_w = arr.shape[:2]
-        if (src_w, src_h) == (w, h):
-            return arr
-        if cv2 is None:
-            # ultra-simple fallback: nearest; OK for thumbs if OpenCV isn't present
-            if arr.ndim == 2:
-                return np.array(Image.fromarray((arr*255).astype(np.uint8)).resize((w, h))).astype(np.float32) / 255.0
-            return np.array(Image.fromarray((arr*255).astype(np.uint8)).resize((w, h))).astype(np.float32) / 255.0
-        interp = cv2.INTER_AREA if (w < src_w or h < src_h) else cv2.INTER_LINEAR
-        if arr.ndim == 2:
-            return cv2.resize(arr, (w, h), interpolation=interp)
-        return cv2.resize(arr, (w, h), interpolation=interp)
+        return _ppp_resize_to(arr, size)
+
+    def _on_balance_on_push_toggled(self, on: bool):
+        try:
+            self._settings.setValue(self._k("open_balance_on_push"), bool(on))
+            self._settings.sync()
+        except Exception:
+            pass
 
     def _save_ui_state(self):
         try:
@@ -562,6 +1137,8 @@ class PerfectPalettePicker(QWidget):
                 s.setValue(self._k("output_linear"), bool(self.chk_output_linear.isChecked()))
             if hasattr(self, "cmb_target_median"):
                 s.setValue(self._k("target_median_mode"), self.cmb_target_median.currentText())
+            if hasattr(self, "chk_balance_on_push"):
+                s.setValue(self._k("open_balance_on_push"), bool(self.chk_balance_on_push.isChecked()))
             if getattr(self, "_gallery", None) is not None:
                 s.setValue(self._k("gallery_geometry"), self._gallery.saveGeometry())
                 s.setValue(self._k("gallery_visible"), bool(self._gallery.isVisible()))
@@ -599,6 +1176,11 @@ class PerfectPalettePicker(QWidget):
                 self.cmb_target_median.setCurrentIndex(idx)
                 self.cmb_target_median.blockSignals(False)
             self.cmb_target_median.setEnabled(linear and self.chk_output_linear.isChecked())
+
+            balance = bool(s.value(self._k("open_balance_on_push"), True, type=bool))
+            self.chk_balance_on_push.blockSignals(True)
+            self.chk_balance_on_push.setChecked(balance)
+            self.chk_balance_on_push.blockSignals(False)
 
             gg = s.value(self._k("gallery_geometry"), None)
             if gg is not None and getattr(self, "_gallery", None) is not None:
@@ -836,7 +1418,11 @@ class PerfectPalettePicker(QWidget):
                 pass
             self._gallery = None
 
-        # Large numpy buffers
+        # Large numpy buffers (results of jobs still running are dropped on arrival)
+        self._queue = []
+        self._clear_serial += 1
+        self._final_key = None
+        self._base_pm_src = None
         self.ha = self.oiii = self.sii = self.osc1 = self.osc2 = None
         try:
             self._stretched.clear()
@@ -893,6 +1479,7 @@ class PerfectPalettePicker(QWidget):
     # ------------- build/caches -------------
     def _cache_stretch(self, which: str):
         """Compute and cache stretched version of a just-loaded input (if linear checked)."""
+        self._inputs_rev += 1
         arr = getattr(self, which.lower())
         if arr is None:
             self._stretched.pop(which, None); return
@@ -936,36 +1523,55 @@ class PerfectPalettePicker(QWidget):
     # ------------- thumbnails -------------
     def _create_palettes(self):
         """
-        Build the 12 palette thumbnails from a **center crop of the stretched inputs**
+        Build the palette thumbnails from the stretched inputs (off the GUI thread)
         and draw the palette name directly on each thumbnail. Names turn green when selected.
         """
-        ha, oo, si = self._prepared_channels(for_thumbs=True)
-        has_narrowband = sum(x is not None for x in (ha, oo, si))
-        if has_narrowband < 2:
+        picks = self._picked_inputs()
+        if _ppp_present_count(*picks) < 2:
             QMessageBox.warning(self, "Need Channels",
                 "Load any two of Ha / OIII / SII, or one OSC image.")
+            return
+        if self._thumbs_thread is not None:
+            self._thumbs_pending = True      # rebuilt from the current inputs when it lands
+            return
+        thr = _PPPJob(_ppp_thumbs_job, self._map_channels_or_special, list(self.PALETTES), picks,
+                      self.thumb_size.width(), self.thumb_size.height())
+        thr.result.connect(self._on_thumbs_built)
+        self._thumbs_thread = thr
+        self._thumbs_serial = self._clear_serial
+        self.status.setText("Creating palette previews\u2026")
+        start_owned_thread(thr)
+
+    def _on_thumbs_built(self, out):
+        self._thumbs_thread = None
+        if getattr(self, "_memory_released", False):
+            return
+        if self._thumbs_pending:
+            self._thumbs_pending = False
+            self._create_palettes()
+            return
+        if self._thumbs_serial != self._clear_serial:
+            return      # channels were cleared meanwhile
+        kind, val = out
+        if kind == "err":
+            self.status.setText(f"Could not create palette previews: {val}")
             return
 
         built = 0
         for name in self.PALETTES:
-            r, g, b = self._map_channels_or_special(name, ha, oo, si)
-            if any(ch is None for ch in (r, g, b)):
+            qimg = val.get(name)
+            if qimg is None:
                 self._thumb_base_pm.pop(name, None)
                 self._thumb_buttons[name].setIcon(QIcon())
                 continue
 
-            r = np.clip(np.nan_to_num(r), 0, 1)
-            g = np.clip(np.nan_to_num(g), 0, 1)
-            b = np.clip(np.nan_to_num(b), 0, 1)
-            rgb = np.stack([r, g, b], axis=2).astype(np.float32)
-
             # scale the thumbnail to EXACTLY the button icon size first
-            pm = QPixmap.fromImage(self._to_qimage(rgb)).scaled(
+            pm = QPixmap.fromImage(qimg).scaled(
                 self.thumb_size, Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
             )
             self._thumb_base_pm[name] = pm
-            self._render_thumb(name) 
+            self._render_thumb(name)
             built += 1
 
         self.status.setText(f"Created {built} palette previews.")
@@ -975,8 +1581,82 @@ class PerfectPalettePicker(QWidget):
         self._selected_name = name
         for n in self.PALETTES:
             self._render_thumb(n)
+        if self._busy():
+            self._enqueue(("gen", name))     # built after the running job, in click order
+            return
         self.current_palette = name
         self._generate_for_palette(name)
+
+    # ------------- job queue -------------
+    def _busy(self) -> bool:
+        return self._gen_thread is not None or self._push_thread is not None
+
+    def _enqueue(self, item):
+        # consecutive palette clicks collapse to the latest one
+        if item[0] == "gen" and self._queue and self._queue[-1][0] == "gen":
+            self._queue[-1] = item
+        else:
+            self._queue.append(item)
+
+    def _drain_queue(self):
+        """Run clicks queued during a palette build / push, in order, once nothing runs."""
+        while self._queue and not self._busy():
+            if getattr(self, "_memory_released", False):
+                self._queue = []
+                return
+            kind, arg = self._queue.pop(0)
+            if kind == "gen":
+                self.current_palette = arg
+                self._generate_for_palette(arg)
+            elif kind == "push":
+                self._push_final()
+            elif kind == "clear":
+                self._clear_channels()
+
+    def _picked_inputs(self):
+        """(Ha, OIII, SII, OSC1, OSC2) as palette inputs: the stretched cache when Linear is on."""
+        lin = self.chk_linear.isChecked()
+
+        def pick(name):
+            if lin and (name in self._stretched):
+                return self._stretched[name]
+            return getattr(self, name.lower())
+        return tuple(pick(n) for n in ("Ha", "OIII", "SII", "OSC1", "OSC2"))
+
+    def _palette_key(self, pal, picks):
+        """Same key => same prepared channels and palette (inputs untouched in between)."""
+        return (self._inputs_rev, bool(self.chk_linear.isChecked()),
+                tuple(id(x) for x in picks), pal)
+
+    def _confirm_channel_sizes(self, picks) -> bool:
+        """Ask once per session before warping channels of different sizes to match."""
+        sh_ha, sh_oo, sh_si = _ppp_synth_shapes(*picks)
+        shapes = [x for x in (sh_ha, sh_oo, sh_si) if x is not None]
+        if not (len(shapes) and len(set(shapes)) > 1) or self._dim_mismatch_accepted:
+            return True
+        ref_name = "Ha" if sh_ha is not None else ("OIII" if sh_oo is not None else "SII")
+        ref_h, ref_w = sh_ha or sh_oo or sh_si
+        msg = (
+            "The loaded channels have different image dimensions.\n\n"
+            f"\u2022 Ha:   {sh_ha}\n"
+            f"\u2022 OIII: {sh_oo}\n"
+            f"\u2022 SII:  {sh_si}\n\n"
+            f"SASpro can resize (warp) the channels to match the reference frame:\n"
+            f"\u2022 Reference: {ref_name}\n"
+            f"\u2022 Target size: ({ref_w} \u00d7 {ref_h})\n\n"
+            "Proceed and resize mismatched channels?"
+        )
+        ret = QMessageBox.question(
+            self,
+            "Channel Size Mismatch",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return False
+        self._dim_mismatch_accepted = True
+        return True
 
     # ------------- palette build helpers -------------
     def _center_crop(self, img: np.ndarray, side: int) -> np.ndarray:
@@ -998,121 +1678,63 @@ class PerfectPalettePicker(QWidget):
     def _prepared_channels(self, for_thumbs: bool = False):
         """
         Build Ha/OIII/SII bases from inputs. If 'Linear input' is checked,
-        **use stretched versions** (cached). Then optionally center-crop for thumbnails.
+        **use stretched versions** (cached). for_thumbs: thumbnail-sized channels
+        (see _ppp_thumb_channels).
         """
-        # choose raw vs stretched
-        def pick(name):
-            if self.chk_linear.isChecked() and (name in self._stretched):
-                return self._stretched[name]
-            return getattr(self, name.lower())
-
-        ha = pick("Ha")
-        oo = pick("OIII")
-        si = pick("SII")
-        o1 = pick("OSC1")
-        o2 = pick("OSC2")
-
-        # synthesize from stretched OSC first (stretch-before-crop)
-        if o1 is not None:  # OSC1: R≈Ha, mean(G,B)≈OIII
-            h1 = o1[..., 0]
-            g1b1 = o1[..., 1:3].mean(axis=2)
-            ha = h1 if ha is None else 0.5*ha + 0.5*h1
-            oo = g1b1 if oo is None else 0.5*oo + 0.5*g1b1
-
-        if o2 is not None:  # OSC2: R≈SII, mean(G,B)≈OIII
-            s2 = o2[..., 0]
-            g2b2 = o2[..., 1:3].mean(axis=2)
-            si = s2 if si is None else 0.5*si + 0.5*s2
-            oo = g2b2 if oo is None else 0.5*oo + 0.5*g2b2
-
-        # shapes must match for full-size
-        # shapes must match for full-size
-        shapes = [x.shape[:2] for x in (ha, oo, si) if x is not None]
-        if len(shapes) and len(set(shapes)) > 1 and not for_thumbs:
-            # pick a reference size (prefer Ha, then OIII, then SII)
-            ref = ha if ha is not None else (oo if oo is not None else si)
-            ref_name = "Ha" if ha is not None else ("OIII" if oo is not None else "SII")
-            ref_h, ref_w = ref.shape[:2]
-
-            # Only prompt once per session unless you want every time
-            if not self._dim_mismatch_accepted:
-                msg = (
-                    "The loaded channels have different image dimensions.\n\n"
-                    f"• Ha:   {None if ha is None else ha.shape}\n"
-                    f"• OIII: {None if oo is None else oo.shape}\n"
-                    f"• SII:  {None if si is None else si.shape}\n\n"
-                    f"SASpro can resize (warp) the channels to match the reference frame:\n"
-                    f"• Reference: {ref_name}\n"
-                    f"• Target size: ({ref_w} × {ref_h})\n\n"
-                    "Proceed and resize mismatched channels?"
-                )
-                ret = QMessageBox.question(
-                    self,
-                    "Channel Size Mismatch",
-                    msg,
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.Yes
-                )
-                if ret != QMessageBox.StandardButton.Yes:
-                    return None, None, None
-
-                self._dim_mismatch_accepted = True
-
-            # resize to reference
-            ha = self._resize_to(ha, (ref_w, ref_h)) if ha is not None else None
-            oo = self._resize_to(oo, (ref_w, ref_h)) if oo is not None else None
-            si = self._resize_to(si, (ref_w, ref_h)) if si is not None else None
-
-        # thumbnails: crop AFTER stretch/synth
+        picks = self._picked_inputs()
         if for_thumbs:
-            # choose a reference (prefer OIII, then Ha, then SII)
-            ref = oo if oo is not None else (ha if ha is not None else si)
-            if ref is not None:
-                ref_h, ref_w = ref.shape[:2]
-
-                # 1) first, size-match all channels to the reference full frame
-                ha = self._resize_to(ha, (ref_w, ref_h)) if ha is not None else None
-                oo = self._resize_to(oo, (ref_w, ref_h)) if oo is not None else None
-                si = self._resize_to(si, (ref_w, ref_h)) if si is not None else None
-
-                # 2) then, make a 50% view of the full rectangle
-                half_w = max(1, int(ref_w * 0.5))
-                half_h = max(1, int(ref_h * 0.5))
-                ha = self._resize_to(ha, (half_w, half_h)) if ha is not None else None
-                oo = self._resize_to(oo, (half_w, half_h)) if oo is not None else None
-                si = self._resize_to(si, (half_w, half_h)) if si is not None else None
-
-        return ha, oo, si
+            return _ppp_thumb_channels(*picks, self.thumb_size.width(), self.thumb_size.height())
+        if not self._confirm_channel_sizes(picks):
+            return None, None, None
+        return _ppp_match_sizes(*_ppp_synth(*picks))
 
     def _generate_for_palette(self, pal: str):
-        ha, oo, si = self._prepared_channels()
-        has_narrowband = sum(x is not None for x in (ha, oo, si))
-        if has_narrowband < 2:
+        if self._busy():
+            self._enqueue(("gen", pal))
             return
+        picks = self._picked_inputs()
+        if _ppp_present_count(*picks) < 2:
+            return
+        if not self._confirm_channel_sizes(picks):
+            return
+        thr = _PPPJob(_ppp_gen_job, self._map_channels_or_special, pal, picks)
+        thr.result.connect(self._on_final_built)
+        self._gen_thread = thr
+        self._gen_req = (pal, self._palette_key(pal, picks), self._clear_serial)
+        self.status.setText(f"Building {pal}\u2026")
+        start_owned_thread(thr)
 
-        r,g,b = self._map_channels_or_special(pal, ha, oo, si)
-        if any(ch is None for ch in (r,g,b)):
-            QMessageBox.critical(self, "Palette Error", f"Could not build palette {pal}."); return
+    def _on_final_built(self, out):
+        self._gen_thread = None
+        if getattr(self, "_memory_released", False):
+            return
+        pal, key, serial = self._gen_req
+        self._gen_req = None
+        if serial == self._clear_serial:
+            kind, val = out
+            if kind == "err":
+                QMessageBox.critical(self, "Palette Error", f"Could not build palette {pal}.\n\n{val}")
+            elif isinstance(val, str):
+                QMessageBox.critical(self, "Palette Error", f"Could not build palette {pal}.")
+            elif val is not None:
+                rgb, in_range, qimg = val
+                self.final = rgb
+                self._final_key = key if in_range else None
+                self._final_shared = False
+                # Fit only when there wasn't an existing preview yet
+                first = (self._base_pm is None)
+                self._set_preview_image(qimg, fit=first, preserve_view=True, src=rgb)
+                self.status.setText(f"Preview generated: {pal}")
+        self._drain_queue()
 
-        r = np.clip(np.nan_to_num(r), 0, 1)
-        g = np.clip(np.nan_to_num(g), 0, 1)
-        b = np.clip(np.nan_to_num(b), 0, 1)
-        rgb = np.stack([r,g,b], axis=2).astype(np.float32)
-
-        mx = float(rgb.max()) or 1.0
-        self.final = (rgb / mx).astype(np.float32)
-
-        # Fit only when there wasn't an existing preview yet
-        first = (self._base_pm is None)
-        self._set_preview_image(self._to_qimage(self.final), fit=first, preserve_view=True)
-        self.status.setText(f"Preview generated: {pal}")
-
-    def _set_preview_image(self, qimg: QImage, *, fit: bool = False, preserve_view: bool = True):
+    def _set_preview_image(self, qimg, *, fit: bool = False, preserve_view: bool = True, src=None):
+        """qimg: QImage or QPixmap. src: the array it shows (lets Push reuse the pixmap)."""
         state = None
         if preserve_view and (not fit) and (self._base_pm is not None):
             state = self._capture_view_state()
 
-        self._base_pm = QPixmap.fromImage(qimg)
+        self._base_pm = qimg if isinstance(qimg, QPixmap) else QPixmap.fromImage(qimg)
+        self._base_pm_src = src
 
         # If we’re fitting, ignore old zoom/pan.
         if fit or state is None:
@@ -1304,22 +1926,7 @@ class PerfectPalettePicker(QWidget):
         inputs. Used to recover the original linear channel medians so we can
         invert the pre-build stretch at push time.
         """
-        ha, oo, si = self.ha, self.oiii, self.sii
-        o1, o2 = self.osc1, self.osc2
-
-        if o1 is not None:  # OSC1: R≈Ha, mean(G,B)≈OIII
-            h1 = o1[..., 0]
-            g1b1 = o1[..., 1:3].mean(axis=2)
-            ha = h1 if ha is None else 0.5 * ha + 0.5 * h1
-            oo = g1b1 if oo is None else 0.5 * oo + 0.5 * g1b1
-
-        if o2 is not None:  # OSC2: R≈SII, mean(G,B)≈OIII
-            s2 = o2[..., 0]
-            g2b2 = o2[..., 1:3].mean(axis=2)
-            si = s2 if si is None else 0.5 * si + 0.5 * s2
-            oo = g2b2 if oo is None else 0.5 * oo + 0.5 * g2b2
-
-        return ha, oo, si
+        return _ppp_synth(self.ha, self.oiii, self.sii, self.osc1, self.osc2)
 
     def _channel_medians_raw(self):
         """
@@ -1327,15 +1934,7 @@ class PerfectPalettePicker(QWidget):
         Values that aren't plausibly linear (median >= 0.5 or <= 1e-6) are dropped
         — those were almost certainly pre-stretched and would produce a bad target.
         """
-        ha, oo, si = self._prepared_channels_raw()
-        out = {}
-        for name, ch in (("Ha", ha), ("OIII", oo), ("SII", si)):
-            if ch is None:
-                continue
-            m = float(np.median(ch))
-            if 1e-6 < m < 0.5:
-                out[name] = m
-        return out
+        return _ppp_channel_medians(*self._prepared_channels_raw())
 
     def _target_linear_median(self) -> float | None:
         """
@@ -1348,20 +1947,7 @@ class PerfectPalettePicker(QWidget):
 
         mode = self.cmb_target_median.currentText() if hasattr(self, "cmb_target_median") \
                else "Max (least stretched)"
-
-        if mode.startswith("Max"):
-            return max(meds.values())
-        if mode.startswith("Min"):
-            return min(meds.values())
-        if mode == "Mean":
-            vals = list(meds.values())
-            return float(sum(vals) / len(vals))
-        if mode.startswith("Median"):
-            return float(np.median(list(meds.values())))
-        # Named channel — fall back to Max if that channel isn't loaded
-        if mode in meds:
-            return meds[mode]
-        return max(meds.values())
+        return _ppp_target_median(meds, mode)
 
     def _apply_output_linear(self, rgb: np.ndarray) -> np.ndarray:
         """
@@ -1371,34 +1957,38 @@ class PerfectPalettePicker(QWidget):
         Foraxx and Dynamic Inverse — because we're inverting the common lift
         applied to all three channels before mixing.
         """
-        if not (self.chk_linear.isChecked() and self.chk_output_linear.isChecked()):
+        req = self._output_linear_request()
+        if req is None:
             return rgb
-        tgt = self._target_linear_median()
-        if tgt is None:
+        out, info = _ppp_output_linear(rgb, *req)
+        self._report_output_linear(info)
+        return out
+
+    def _output_linear_request(self):
+        """GUI-thread snapshot for _ppp_output_linear, or None when Output linear is off."""
+        if not (self.chk_linear.isChecked() and self.chk_output_linear.isChecked()):
+            return None
+        mode = self.cmb_target_median.currentText() if hasattr(self, "cmb_target_median") \
+               else "Max (least stretched)"
+        return mode, (self.ha, self.oiii, self.sii, self.osc1, self.osc2)
+
+    def _report_output_linear(self, info):
+        kind, val, mode = info
+        if kind == "none":
             self.status.setText(
                 "Output linear: no plausibly-linear channel medians found; "
                 "pushed stretched instead."
             )
-            return rgb
-        try:
-            inverted = stretch_color_image(
-                rgb.astype(np.float32, copy=False),
-                target_median=float(tgt),
-                linked=True,
-                no_black_clip=True,
-                normalize=False,
-            ).astype(np.float32, copy=False)
+        elif kind == "ok":
             self.status.setText(
-                f"Output linear: inverted stretch to target median {tgt:.4f} "
-                f"({self.cmb_target_median.currentText()})."
+                f"Output linear: inverted stretch to target median {val:.4f} "
+                f"({mode})."
             )
-            return inverted
-        except Exception as e:
+        else:
             QMessageBox.warning(
                 self, "Output Linear Failed",
-                f"Could not invert stretch:\n{e}\n\nPushing stretched image instead."
+                f"Could not invert stretch:\n{val}\n\nPushing stretched image instead."
             )
-            return rgb
 
     # ------------- push to new subwindow -------------
     def _get_doc_manager(self):
@@ -1417,8 +2007,36 @@ class PerfectPalettePicker(QWidget):
         return getattr(mw, "docman", None) or getattr(mw, "doc_manager", None)
 
     def _push_final(self):
+        if self._busy():
+            # A palette build or an earlier push is still running: push after it (queued).
+            self._enqueue(("push", None))
+            self.status.setText("Push queued \u2014 it runs when the current palette job finishes.")
+            return
         if self.final is None:
             QMessageBox.warning(self, "No Image", "Generate a palette first.")
+            return
+
+        pal = self.current_palette or "SHO"
+        picks = self._picked_inputs()
+        key = self._palette_key(pal, picks)
+        # self.final is bit-identical to what the balancing dialog returns when it is
+        # accepted untouched (checked when the palette was built, inputs unchanged since).
+        untouched = self._final_key is not None and self._final_key == key
+
+        if not self.chk_balance_on_push.isChecked():
+            # No balancing dialog: push exactly what accepting it untouched would push.
+            if untouched:
+                self._start_push(self.final, key=key)
+                return
+            if _ppp_present_count(*picks) < 2:
+                QMessageBox.warning(self, "Need Channels",
+                    "Load any two of Ha / OIII / SII, or one OSC image.")
+                return
+            if not self._confirm_channel_sizes(picks):
+                return
+            # Build the dialog's untouched image with the dialog's own function.
+            self._start_push(None, key=key,
+                             compose=(self._map_channels_or_special, pal, picks, self.final.shape))
             return
 
         # Use the SAME prepared channels the palette was built with
@@ -1431,11 +2049,13 @@ class PerfectPalettePicker(QWidget):
 
         dlg = PaletteAdjustDialog(
             base_rgb     = self.final,                           # fully formed palette
-            palette_name = self.current_palette or "SHO",
+            palette_name = pal,
             ha_src       = ha_prep,                              # prepared (stretched/OSC-synth)
             oiii_src     = oo_prep,
             sii_src      = si_prep,
-            owner        = self
+            owner        = self,
+            orig_pixmap  = self._base_pm if self._base_pm_src is self.final else None,
+            base_is_untouched = untouched,
         )
         adjusted = {"img": None}
         dlg.adjusted_image.connect(lambda img: adjusted.__setitem__("img", img))
@@ -1443,20 +2063,61 @@ class PerfectPalettePicker(QWidget):
 
         if adjusted["img"] is None:
             return  # user canceled
+        img = adjusted["img"]
+        # Untouched accept hands back self.final itself; anything else is a new image.
+        self._start_push(img, key=key if img is self.final else None,
+                         pm=getattr(dlg, "accepted_pixmap", None))
 
+    def _start_push(self, img, *, key, pm=None, compose=None):
+        """Finish a push: build/copy/invert off the GUI thread when needed, then open the view."""
+        olin = self._output_linear_request()
+        # two documents must never share one array
+        needs_copy = img is not None and img is self.final and self._final_shared
+        if compose is None and olin is None and not needs_copy:
+            self._finish_push(img, img, pm, None, key, False, False)
+            return
+        thr = _PPPJob(_ppp_push_job, img, needs_copy, compose, olin)
+        thr.result.connect(self._on_push_done)
+        self._push_thread = thr
+        self._push_req = (key, pm, olin is not None)
+        self.status.setText("Pushing palette to a new view\u2026")
+        start_owned_thread(thr)
+
+    def _on_push_done(self, res):
+        self._push_thread = None
+        if getattr(self, "_memory_released", False):
+            return
+        key, pm, olin_on = self._push_req
+        self._push_req = None
+        kind, val = res
+        if kind == "err":
+            QMessageBox.critical(self, "Error", f"Failed to open new view:\n{val}")
+        else:
+            final, out, qimg, info, copied = val
+            self._finish_push(final, out, pm if pm is not None else qimg, info, key, olin_on, copied)
+        self._drain_queue()
+
+    def _finish_push(self, final, output_img, preview, info, key, olin_on, copied):
         # Keep the stretched result as our on-screen "final" so the preview
         # stays visually meaningful; the linear invert (if requested) happens
         # only on the array we hand to the DocManager.
-        self.final = adjusted["img"]
-        self._set_preview_image(self._to_qimage(self.final))
+        if final is not self.final:
+            self.final = final
+            self._final_key = key
+            self._final_shared = False
+            if copied:
+                self._base_pm_src = final        # same pixels as the preview already shows
+            else:
+                self._set_preview_image(preview if preview is not None
+                                        else _ppp_display_qimage(final), src=final)
 
-        # Build the image that actually goes to the new document.
-        # If output-linear is on, this is the inverse-stretched array;
-        # otherwise it's the stretched final the user is looking at.
-        output_img = self._apply_output_linear(self.final)
+        # output_img is the inverse-stretched array when Output linear is on,
+        # otherwise the stretched final the user is looking at.
+        if info is not None:
+            self._report_output_linear(info)
 
         title = self.current_palette or "Palette"
-        if self.chk_linear.isChecked() and self.chk_output_linear.isChecked():
+        if olin_on:
             title = f"{title} (linear)"
 
         # ---- get DocManager the robust way ----
@@ -1493,7 +2154,9 @@ class PerfectPalettePicker(QWidget):
             # If DocManager or main window auto-spawns subwindows on new docs,
             # this is all we need. If not, you can optionally keep the
             # _spawn_subwindow_for hook here.
-            if self.chk_linear.isChecked() and self.chk_output_linear.isChecked():
+            if output_img is self.final:
+                self._final_shared = True
+            if olin_on:
                 self.status.setText("Opened final palette (linear) in a new view.")
             else:
                 self.status.setText("Opened final palette in a new view.")
@@ -1504,6 +2167,14 @@ class PerfectPalettePicker(QWidget):
 
     # ------------- utilities -------------
     def _clear_channels(self):
+        if self._busy():
+            self._enqueue(("clear", None))   # after the running palette job, in click order
+            return
+        self._inputs_rev += 1
+        self._clear_serial += 1
+        self._final_key = None
+        self._final_shared = False
+        self._base_pm_src = None
         self.ha = self.oiii = self.sii = self.osc1 = self.osc2 = None
         self._stretched.clear()
         self._dim_mismatch_accepted = False
@@ -1536,14 +2207,7 @@ class PerfectPalettePicker(QWidget):
         return img
 
     def _to_qimage(self, arr):
-        a = np.clip(arr, 0, 1)
-        if a.ndim == 2:
-            u = (a * 255).astype(np.uint8); h, w = u.shape
-            return QImage(u.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
-        if a.ndim == 3 and a.shape[2] == 3:
-            u = (a * 255).astype(np.uint8); h, w, _ = u.shape
-            return QImage(u.data, w, h, w*3, QImage.Format.Format_RGB888).copy()
-        raise ValueError(f"Unexpected image shape: {a.shape}")
+        return _ppp_to_qimage(arr)
 
     def _find_main_window(self):
         from PyQt6.QtWidgets import QMainWindow, QApplication

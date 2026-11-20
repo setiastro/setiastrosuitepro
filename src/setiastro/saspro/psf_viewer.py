@@ -16,11 +16,12 @@ from PyQt6.QtWidgets import (
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
-from PyQt6.QtCore import QThread, pyqtSignal, QObject
+from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import QWidget
 
-from .psf_utils import detect_stars_waterfall
+from .psf_utils import detect_stars_waterfall, median_star_stamp
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 
 # ---------------------------------------------------------------------------
 #sasprocessing overlay
@@ -367,9 +368,12 @@ class _StarWidget(QWidget):
 # ---------------------------------------------------------------------------
 # Background worker
 # ---------------------------------------------------------------------------
-class _PSFWorker(QObject):
-    finished = pyqtSignal(object, str)
-    failed   = pyqtSignal(str)
+class _PSFWorker(QThread):
+    # thread_keeper owns it (no parent), so closing the viewer or starting a
+    # new detection never destroys a running thread. The result signal is
+    # "done", not "finished": that is QThread's own signal.
+    done   = pyqtSignal(object, str)
+    failed = pyqtSignal(str)
 
     def __init__(self, image: np.ndarray, threshold_sigma: float,
                  auto_mode: bool = True, target_stars: int = 1000):
@@ -382,7 +386,7 @@ class _PSFWorker(QObject):
     def run(self):
         try:
             if self.image is None:
-                self.finished.emit(None, "Status: No image.")
+                self.done.emit(None, "Status: No image.")
                 return
 
             if self.image.ndim == 3:
@@ -399,9 +403,10 @@ class _PSFWorker(QObject):
                     sigma_ladder=(100.0, 50.0, 25.0, 12.0, 6.0, 3.0),
                     target_count=self.target_stars,
                     quality_filter=True,
+                    strips=True,                 # keep the GUI responsive
                 )
                 if cat is None or cat['n'] == 0:
-                    self.finished.emit(None, "Status: Extraction completed — 0 stars.")
+                    self.done.emit(None, "Status: Extraction completed — 0 stars.")
                     return
                 sig_used = cat['sigma_stopped']
                 raw_at   = cat['total_at_stop']
@@ -415,9 +420,10 @@ class _PSFWorker(QObject):
                     sigma_ladder=(self.threshold_sigma,),
                     target_count=10**9,          # never trigger early stop
                     quality_filter=True,
+                    strips=True,
                 )
                 if cat is None or cat['n'] == 0:
-                    self.finished.emit(None, f"Status: Extraction completed — 0 stars at σ={self.threshold_sigma:g}.")
+                    self.done.emit(None, f"Status: Extraction completed — 0 stars at σ={self.threshold_sigma:g}.")
                     return
                 raw_at = cat['total_at_stop']
                 status = (f"Status: Manual — {cat['n']} stars at σ={self.threshold_sigma:g} "
@@ -436,7 +442,7 @@ class _PSFWorker(QObject):
             tbl["b"]         = b_arr
             tbl["theta"]     = cat['theta']
 
-            self.finished.emit(tbl, status)
+            self.done.emit(tbl, status)
         except Exception as e:
             self.failed.emit(f"Extraction failed: {e}")
 
@@ -477,8 +483,9 @@ class PSFViewer(QDialog):
         self.threshold_timer.setInterval(500)
         self.threshold_timer.timeout.connect(self._applyThreshold)
 
-        self._psf_thread = None
-        self._psf_worker = None
+        self._psf_worker = None      # running _PSFWorker (thread_keeper owns it)
+        self._psf_pending = False    # settings changed while it ran: run again
+        self._closing = False
         self._doc_conn = False
         if hasattr(self.doc, "changed"):
             try:
@@ -690,42 +697,33 @@ class PSFViewer(QDialog):
             return
 
         self._show_processing("Processing… extracting stars / PSFs")
-        self._stop_psf_worker()
-
-        self._psf_thread = QThread(self)
-        self._psf_worker = _PSFWorker(
+        # One detection at a time. A change while one runs (threshold, Auto,
+        # the image) re-runs it with the latest settings when it ends. The
+        # old code waited 250 ms and then deleted the still-running thread,
+        # which Qt answers with qFatal (exit 0xC0000409).
+        if thread_running(self._psf_worker):
+            self._psf_pending = True
+            return
+        self._psf_pending = False
+        w = _PSFWorker(
             self.image,
             self.detection_threshold,
             auto_mode=self.auto_detect,
             target_stars=self._target_stars,
         )
-        self._psf_worker.moveToThread(self._psf_thread)
-        self._psf_thread.started.connect(self._psf_worker.run)
-        self._psf_worker.finished.connect(self._on_psf_done)
-        self._psf_worker.failed.connect(self._on_psf_fail)
-        self._psf_worker.finished.connect(lambda *_: self._stop_psf_worker(quit_only=False))
-        self._psf_worker.failed.connect(lambda *_:   self._stop_psf_worker(quit_only=False))
-        self._psf_thread.start()
+        w.done.connect(self._on_psf_done)
+        w.failed.connect(self._on_psf_fail)
+        w.finished.connect(self._on_psf_thread_finished)
+        self._psf_worker = w
+        start_owned_thread(w)
 
-    def _stop_psf_worker(self, quit_only: bool = False):
-        thr = getattr(self, "_psf_thread", None)
-        wkr = getattr(self, "_psf_worker", None)
-        if thr is None:
-            return
-        try: thr.quit()
-        except Exception: pass
-        try: thr.wait(250)
-        except Exception: pass
-        if not quit_only:
-            try:
-                if wkr is not None: wkr.deleteLater()
-            except Exception: pass
-            try: thr.deleteLater()
-            except Exception: pass
-            self._psf_worker = None
-            self._psf_thread = None
+    def _on_psf_thread_finished(self):
+        if self._psf_pending and not self._closing:
+            self._applyThreshold()
 
     def _on_psf_done(self, tbl, status: str):
+        if self._psf_pending or self._closing:
+            return                  # superseded: a newer detection follows
         self.star_list = tbl
         self.status_label.setText(status)
         self._hide_processing()
@@ -733,6 +731,8 @@ class PSFViewer(QDialog):
         self._update_star_widget()
 
     def _on_psf_fail(self, msg: str):
+        if self._psf_pending or self._closing:
+            return
         self.star_list = None
         self.status_label.setText(f"Status: {msg}")
         self._hide_processing()
@@ -783,43 +783,15 @@ class PSFViewer(QDialog):
         if img.ndim == 3:
             img = np.mean(img, axis=2)
         img = np.ascontiguousarray(img, dtype=np.float32)
-        H, W = img.shape
 
         # ~±2.5 FWHM on each side gives you core + wings without being huge.
         # Clamp so the stamp always shows something (very small FWHM) but never
         # dominates on wide seeing.
         half = int(np.clip(np.ceil(2.5 * max(fwhm, 1.0)), 5, 25))
 
-        xs = np.asarray(self.star_list["xcentroid"], dtype=float)
-        ys = np.asarray(self.star_list["ycentroid"], dtype=float)
-        if xs.size == 0:
-            return None
-
-        # Cap for speed — 500 stamps is plenty to nail a median.
-        if xs.size > max_stars:
-            idx = np.linspace(0, xs.size - 1, max_stars).astype(int)
-            xs = xs[idx]; ys = ys[idx]
-
-        stamps = []
-        side = 2 * half + 1
-        for xi, yi in zip(xs, ys):
-            cx = int(round(xi)); cy = int(round(yi))
-            x0 = cx - half; x1 = cx + half + 1
-            y0 = cy - half; y1 = cy + half + 1
-            if x0 < 0 or y0 < 0 or x1 > W or y1 > H:
-                continue
-            s = img[y0:y1, x0:x1]
-            # Background from the 1-pixel edge of the stamp
-            border = np.concatenate([s[0], s[-1], s[1:-1, 0], s[1:-1, -1]])
-            bg = float(np.median(border))
-            s  = s - bg
-            pk = float(s.max())
-            if pk > 0.0:
-                stamps.append(s / pk)
-
-        if not stamps:
-            return None
-        return np.median(np.stack(stamps, axis=0), axis=0).astype(np.float32)
+        # Shared with Convolution/Deconvolution's stellar PSF (psf_utils).
+        return median_star_stamp(img, self.star_list["xcentroid"],
+                                 self.star_list["ycentroid"], half, max_stars)
 
     def updateImage(self, new_image):
         self.image = np.asarray(new_image) if new_image is not None else None
@@ -988,25 +960,10 @@ class PSFViewer(QDialog):
         except Exception:
             pass
         self._doc_conn = False
-        try:
-            thr = getattr(self, "_psf_thread", None)
-            wkr = getattr(self, "_psf_worker", None)
-            if wkr is not None:
-                try: wkr.deleteLater()
-                except Exception: pass
-            if thr is not None:
-                try: thr.requestInterruption()
-                except Exception: pass
-                try: thr.quit()
-                except Exception: pass
-                try: thr.wait(250)
-                except Exception: pass
-                try: thr.deleteLater()
-                except Exception: pass
-        except Exception:
-            pass
-        self._psf_worker = None
-        self._psf_thread = None
+        # A running detection finishes on its own (thread_keeper holds it)
+        # and its result is dropped.
+        self._closing = True
+        self._psf_pending = False
 
     def closeEvent(self, e):
         self._cleanup()

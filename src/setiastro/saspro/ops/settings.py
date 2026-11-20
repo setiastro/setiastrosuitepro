@@ -331,6 +331,27 @@ class SettingsDialog(QDialog):
         w_bg_opacity = QWidget()
         w_bg_opacity.setLayout(row_bg_opacity)
 
+        # ---- Built-in background (shown when no custom image is set) ----
+        self.cb_builtin_bg = QComboBox()
+        self.cb_builtin_bg.addItem(self.tr("SetiAstro signature"), "signature")
+        self.cb_builtin_bg.addItem(self.tr("Galaxy (classic)"), "galaxy")
+        self.cb_builtin_bg.setToolTip(self.tr(
+            "The workspace background when no custom background image is set.\n"
+            "Choosing one here clears the custom image."))
+        self._initial_builtin_bg = "signature"
+
+        def _on_builtin_bg_changed(_idx):
+            key = self.cb_builtin_bg.currentData() or "signature"
+            p = self.parent()
+            if p is not None and hasattr(p, "_set_builtin_background"):
+                p._set_builtin_background(key)          # live; reverted on Cancel
+            else:
+                self.settings.setValue("ui/builtin_background", key)
+            if self.le_bg_path.text():
+                self._clear_background_clicked()        # make the choice visible
+
+        self.cb_builtin_bg.currentIndexChanged.connect(_on_builtin_bg_changed)
+
         # ---- Custom background: choose/clear preview ----
         self.le_bg_path = QLineEdit()
         self.le_bg_path.setReadOnly(True)
@@ -439,6 +460,7 @@ class SettingsDialog(QDialog):
         )        
         left_col.addRow(self.chk_smooth_zoom_settle)
         left_col.addRow(self.tr("Background Opacity:"), w_bg_opacity)
+        left_col.addRow(self.tr("Built-in Background:"), self.cb_builtin_bg)
         left_col.addRow(self.tr("Background Image:"), w_bg_image)
         self.sp_icon_size = QSpinBox()
         self.sp_icon_size.setRange(16, 64)
@@ -2063,6 +2085,13 @@ class SettingsDialog(QDialog):
         self.sp_loupe_patch.setValue(int(self.settings.value("loupe/patch", 17, type=int)))
         self.sp_loupe_font.setValue(int(self.settings.value("loupe/info_font_pt", 10, type=int)))
         
+        # Built-in background
+        self._initial_builtin_bg = self.settings.value("ui/builtin_background", "signature", type=str) or "signature"
+        bi = self.cb_builtin_bg.findData(self._initial_builtin_bg)
+        self.cb_builtin_bg.blockSignals(True)
+        self.cb_builtin_bg.setCurrentIndex(bi if bi >= 0 else 0)
+        self.cb_builtin_bg.blockSignals(False)
+
         # Custom background
         self._initial_bg_path = self.settings.value("ui/custom_background", "", type=str) or ""
         self.le_bg_path.setText(self._initial_bg_path)
@@ -2129,6 +2158,14 @@ class SettingsDialog(QDialog):
             # Ask parent to redraw with restored value
             parent = self.parent()
             if parent:
+                # restore the original built-in background
+                try:
+                    if hasattr(parent, "_set_builtin_background"):
+                        parent._set_builtin_background(self._initial_builtin_bg)
+                    else:
+                        self.settings.setValue("ui/builtin_background", self._initial_builtin_bg)
+                except Exception:
+                    pass
                 # restore original custom background (may be empty)
                 try:
                     # If there was an initial custom background, restore it; otherwise clear.

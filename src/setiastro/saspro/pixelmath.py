@@ -423,7 +423,15 @@ class _Evaluator:
 
     def _med(self, x):
         a = x.array if isinstance(x, PixelImage) else np.asarray(x)
-        v = np.median(a) if a.ndim == 2 else np.median(a, axis=(0, 1))
+        if a.ndim == 2:
+            v = np.median(a)
+        else:
+            # Per channel on a private contiguous copy: the same values as
+            # np.median(a, axis=(0, 1)), which builds a transposed copy of the
+            # frame first (2.0 s against 0.65 s on 22 MP RGB). Always a copy,
+            # so the partition can never reorder the image itself.
+            v = np.array([np.median(np.array(a[..., c], order="C", copy=True), overwrite_input=True)
+                          for c in range(a.shape[2])])
         return self._reduce_result(x, isinstance(x, PixelImage), v)
 
     def _mean(self, x):

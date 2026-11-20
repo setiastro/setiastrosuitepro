@@ -520,6 +520,12 @@ class AstroSuiteProMainWindow(
             _sup_suffix = supporter_title_suffix()
         except Exception:
             _sup_suffix = ""
+        try:
+            from setiastro.saspro.settings_sandbox import active as _sandbox_active
+            if _sandbox_active():
+                _sup_suffix += "  [first-run sandbox: settings are not saved]"
+        except Exception:
+            pass
         self.setWindowTitle(f"Seti Astro Suite Pro v{self._version}{_sup_suffix}")
         self.resize(1400, 900)
         self._ensure_network_manager()
@@ -533,7 +539,23 @@ class AstroSuiteProMainWindow(
         self._force_close_all = False
         self._is_restarting = False  # Flag to bypass exit confirmation on restart
         self.settings = QSettings()
-        
+        # No window layout was ever saved: a new install (or `--firstrun`).
+        # Decides the out-of-the-box theme and backdrop here and the panel
+        # layout at the end of __init__ (_apply_first_run_layout).
+        self._fresh_install = not (self.settings.contains(f"{self._mw_key()}/state")
+                                   or self.settings.contains("ui/main/state"))
+        if self._fresh_install:
+            # Written, not just defaulted, so Settings shows them and a user
+            # still on an implicit default is never changed by an update.
+            if not self.settings.contains("ui/theme"):
+                self.settings.setValue("ui/theme", "gray")    # not "follow the OS"
+            if not self.settings.contains("display/bg_opacity"):
+                self.settings.setValue("display/bg_opacity", 20)
+            if not self.settings.contains("display/no_black_clip"):
+                # Display-Stretch black point at the image minimum, not a
+                # sigma clip, so a first linear image isn't shown crushed.
+                self.settings.setValue("display/no_black_clip", True)
+
         # Optimization: Cache the settings dialog for instant opening
         self._settings_dlg_cache = None
         # Pre-load settings dialog after 2.5 seconds (background)
@@ -590,9 +612,9 @@ class AstroSuiteProMainWindow(
                 # In case of any odd error, just skip applying the custom background
                 self._custom_bg_path = ""
 
-        # Absolute path to the default background image and placeholders for custom bg
-        bg_path = background_path
-        self._bg_pixmap = QPixmap(bg_path)
+        # The built-in background (Settings > Built-in Background) and
+        # placeholders for a custom one, which wins when set.
+        self._bg_pixmap = QPixmap(self._builtin_background_path())
         self._custom_bg_path = getattr(self, "_custom_bg_path", "") or ""
         self._custom_bg_pixmap = QPixmap()  # original loaded custom pixmap (unscaled)
 
@@ -805,6 +827,8 @@ class AstroSuiteProMainWindow(
 
         self.status_log_dock.hide()
         self.restore_main_window_state()
+        if self._fresh_install:
+            self._apply_first_run_layout()
         # If docks were previously sent to secondary host, restore that now
         # Done here at end of __init__ so all docks are guaranteed constructed
         s = self.settings
@@ -815,6 +839,26 @@ class AstroSuiteProMainWindow(
 
     def _mw_key(self) -> str:
         return "main_window"
+
+    def _apply_first_run_layout(self):
+        """Out-of-the-box layout, used only when no window layout was ever
+        saved (a new install, or `--firstrun`).
+
+        Every panel starts closed, so a new user sees the toolbar and an
+        empty workspace instead of eight panels at once. The panels stay
+        where they were docked, and each keeps its button on the edge rail,
+        so one click brings any of them back. Saved with the window like any
+        layout change, so this applies exactly once.
+        """
+        for dock in self.findChildren(QDockWidget):
+            try:
+                dock.hide()
+            except RuntimeError:
+                pass
+        try:
+            self._refresh_all_rail_collapse_icons()
+        except Exception:
+            pass
 
     def _schedule_undo_redo_label_refresh(self):
         # Coalesce many triggers into one UI update
@@ -1397,33 +1441,11 @@ class AstroSuiteProMainWindow(
         if has_main_state:
             return
 
-        # Defer until after the window has a real geometry
-        def _place():
-            # OPTION A: float it centered on first run (recommended)
-            self.status_log_dock.setFloating(True)
-
-            g = self.frameGeometry()  # screen coords incl. frame
-            w = min(900, int(g.width() * 0.6))
-            h = min(320, int(g.height() * 0.3))
-            x = g.x() + (g.width() - w) // 2
-            y = g.y() + 60
-
-            self.status_log_dock.resize(w, h)
-            self.status_log_dock.move(x, y)
-            self.status_log_dock.show()
-            self.status_log_dock.raise_()
-
-            # Remember we've "introduced" it once
-            s.setValue(flag_key, True)
-            s.sync()
-
-            # Optional: immediately persist the whole layout so next launch restores it
-            try:
-                s.setValue("mainwindow/state", self.saveState())
-            except Exception:
-                pass
-
-        QTimer.singleShot(0, _place)
+        # This used to float the Stacking Log over the middle of the window on
+        # a new install. A new install now starts with every panel closed
+        # (_apply_first_run_layout), so the log stays docked and closed with
+        # the others; its button on the bottom rail opens it.
+        s.setValue(flag_key, True)
 
 
     def _open_user_scripts_github(self):
@@ -2350,6 +2372,29 @@ class AstroSuiteProMainWindow(
             self._apply_custom_background(path)
         except Exception as e:
             QMessageBox.warning(self, "Background error", f"Could not apply background: {e}")
+
+    # Built-in workspace backgrounds, by the key stored in "ui/builtin_background".
+    # "galaxy" is the pre-1.24.7 default, kept for anyone who wants it back.
+    BUILTIN_BACKGROUNDS = ("signature", "galaxy")
+
+    def _builtin_background_path(self, key: str | None = None) -> str:
+        if key is None:
+            key = self.settings.value("ui/builtin_background", "signature", type=str)
+        if key == "galaxy":
+            from setiastro.saspro import resources as _res
+            return _res.background_galaxy_path
+        return background_path
+
+    def _set_builtin_background(self, key: str):
+        """Switch the built-in background (shown when no custom image is set)."""
+        if key not in self.BUILTIN_BACKGROUNDS:
+            key = "signature"
+        self.settings.setValue("ui/builtin_background", key)
+        self._bg_pixmap = QPixmap(self._builtin_background_path(key))
+        try:
+            self.mdi.viewport().update()
+        except Exception:
+            pass
 
     def _clear_custom_background(self):
         """Clear any custom background (removes setting and restores default palette)."""
@@ -5357,6 +5402,10 @@ class AstroSuiteProMainWindow(
         self.settings.sync()
         dlg = FirstRunDialog(self)
         dlg.exec()
+
+    def _show_first_steps_tour(self):
+        from setiastro.saspro.first_steps_tour import start_first_steps_tour
+        start_first_steps_tour(self)
 
     def _toggle_tips(self):
         currently_disabled = self.settings.value("tips/disabled", False, type=bool)

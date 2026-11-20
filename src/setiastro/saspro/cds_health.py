@@ -1404,3 +1404,248 @@ def call_simbad(fn: Callable, *args,
     if last_exc is not None:
         status_cb(f"{label} failed: {last_exc} — continuing without SIMBAD.")
     return None
+
+
+
+# ── VizieR queries with mirror failover ──────────────────────────────────
+#
+# prepare_vizier() + note_vizier_failure() are the building blocks; these
+# wrap them into the loop every caller otherwise rewrites (WIMI's deep
+# search does it inline), and close two gaps a caller hits on its own:
+#
+#   * apply_vizier_server() points the module-level Vizier and conf at the
+#     mirror, but `Vizier(columns=..., ...)` builds a NEW instance that reads
+#     conf.server -- and conf only accepts astroquery's seven hard-coded
+#     hosts. On a mirror outside that list (vizier.idia.ac.za, which was the
+#     only mirror serving VSX/APASS/UCAC4 on 2026-11-19) a fresh instance
+#     silently goes back to Strasbourg. vizier_client() sets the instance.
+#   * note_vizier_failure() fails over on connection-class errors only. The
+#     Strasbourg outage presents as HTTP 404 from /viz-bin/votable -- the
+#     host answers, it just isn't serving -- so a caller passing that error
+#     through retried the same dead host.
+
+def vizier_client(host: str = "", **kwargs):
+    """
+    A new astroquery Vizier instance pointed at `host` (default: the mirror
+    prepare_vizier() last chose, else the preference/primary).
+
+    Raises RuntimeError when astroquery would still send the request
+    elsewhere -- decided by asking astroquery for the URL it will use.
+    """
+    from astroquery.vizier import Vizier as _Vizier
+    host = (host or "").strip()
+    if not host:
+        with _lock:
+            host = _state["vz_server"] or ""
+        host = host or vizier_server()
+    v = _Vizier(**kwargs)
+    for attr in ("VIZIER_SERVER", "server", "_server"):
+        try:
+            setattr(v, attr, host)
+        except Exception:                            # noqa: BLE001
+            pass
+    try:
+        url = str(v._server_to_url())
+    except Exception as e:                           # noqa: BLE001
+        raise RuntimeError(f"cannot read the Vizier URL: {e}") from e
+    if host not in url:
+        raise RuntimeError(f"Vizier instance points at {url}, not {host}")
+    return v
+
+
+def _is_http_status_error(exc: BaseException) -> bool:
+    """True for an HTTP 4xx/5xx answer (requests.HTTPError and kin)."""
+    resp = getattr(exc, "response", None)
+    code = getattr(resp, "status_code", None)
+    if code is None:
+        code = getattr(exc, "code", None)
+    try:
+        if code is not None and int(code) >= 400:
+            return True
+    except (TypeError, ValueError):
+        pass
+    text = f"{exc}".lower()
+    return (("client error" in text or "server error" in text)
+            and "for url" in text)
+
+
+def _vizier_result_empty(res) -> bool:
+    """True for None, an empty TableList, or a TableList/Table with no rows."""
+    try:
+        if res is None:
+            return True
+        if hasattr(res, "colnames"):                 # a single Table
+            return len(res) == 0
+        if len(res) == 0:                            # TableList
+            return True
+        return len(res[0]) == 0
+    except Exception:                                # noqa: BLE001
+        return False
+
+
+# (host, context) -> when that mirror answered `context` with no rows.
+# Mirrors are partial and occasionally quirky (on 2026-11-19 CfA returned
+# no rows for a UCAC4 cone with one particular column list and the star for
+# any other), so a mirror that came back empty for a lookup that should have
+# rows is tried last for that lookup for a while -- not marked dead, since
+# it is serving everything else.
+_vz_empty_for: dict = {}
+EMPTY_MEMORY = 1800.0
+
+
+def query_vizier(run: Callable[[str], object], *, context: str = "",
+                 attempts: int = 3, timeout: float = 30.0,
+                 require_rows: bool = False,
+                 status_cb: Optional[Callable[[str], None]] = None):
+    """
+    Run one VizieR request on a working mirror, failing over between them.
+
+    `run(host)` performs the request against `host` (build the client with
+    vizier_client(host, ...)) and returns its result. Returns
+    (result, host). Up to `attempts` mirrors are tried.
+
+      * Connection failures and HTTP errors (a 404 from /viz-bin/votable is
+        how the Strasbourg outage presents) move on to another mirror and
+        are recorded in the shared health state, so later lookups -- in any
+        tool -- start from a mirror that works.
+      * require_rows=True: an EMPTY answer also moves on, to another mirror
+        that passes the VizieR probe. Use it where an empty answer can only
+        mean the mirror (catalogue cones around a real field, model grids);
+        not where "nothing there" is a normal answer (VSX at a random star).
+        If every mirror tried comes back empty, the empty result is returned.
+
+    Raises the last error when no mirror served the request, or at once for
+    an error no mirror would fix (a malformed request).
+    """
+    first = prepare_vizier(status_cb=status_cb, timeout=timeout)
+    key = context or "vizier"
+    now = _now()
+    with _lock:
+        stale = [k for k, t in _vz_empty_for.items() if now - t > EMPTY_MEMORY]
+        for k in stale:
+            _vz_empty_for.pop(k, None)
+        empty_here = {h for (h, c) in _vz_empty_for if c == key}
+        bad = {h for h, t in _state["vz_bad"].items()
+               if (now - float(t)) < BREAKER_RESET}
+    order: list = []
+    for h in ([first] if first else []) + _vizier_order():
+        if h and h not in order:
+            order.append(h)
+    usable = [h for h in order if h == first or h not in bad]   # first just passed the race
+    order = ([h for h in usable if h not in empty_here]
+             + [h for h in usable if h in empty_here])
+
+    last: Optional[BaseException] = None
+    empty_result, empty_host = None, ""
+    tried = 0
+    for host in order:
+        if tried >= max(1, int(attempts)):
+            break
+        if host != first:
+            # Not the mirror prepare_vizier just raced: make sure it serves
+            # data before spending a query timeout on it (cached when good).
+            ok, _detail = _verify_vizier(host)
+            if not ok:
+                with _lock:
+                    _state["vz_bad"][host] = _now()
+                continue
+        tried += 1
+        try:
+            res = run(host)
+        except Exception as e:                       # noqa: BLE001
+            last = e
+            if not (is_connection_error(e) or _is_http_status_error(e)):
+                raise
+            if status_cb:
+                status_cb(f"VizieR mirror {host} failed — trying another…")
+            with _lock:
+                _state["vz_bad"][host] = _now()
+                _state["vz_verified_at"].pop(host, None)
+                is_current = (host == (_state["vz_server"] or ""))
+            if is_current:
+                # Re-race so the shared state (and every other tool) moves off it.
+                note_vizier_failure(e if is_connection_error(e)
+                                    else ConnectionError(f"{host}: {e}"),
+                                    context=context, status_cb=status_cb)
+            continue
+        if require_rows and _vizier_result_empty(res):
+            with _lock:
+                _vz_empty_for[(host, key)] = _now()
+            if empty_result is None:
+                empty_result, empty_host = res, host
+            if status_cb:
+                status_cb(f"{host} returned no rows for {key} — trying another mirror…")
+            continue
+        return res, host
+    if empty_result is not None:
+        return empty_result, empty_host
+    if last is not None:
+        raise last
+    raise ConnectionError(vizier_status_text())
+
+
+# ── Sesame name resolution with mirror failover ──────────────────────────
+#
+# Name -> coordinates does not need the SIMBAD TAP service. Sesame is its own
+# CDS service (it consults SIMBAD, NED and VizieR behind the scenes) and runs
+# on cds.unistra.fr -- a different host from simbad.cds.unistra.fr -- and on
+# the VizieR mirrors. On 2026-11-19, with both SIMBAD TAP mirrors down,
+# Sesame on cds.unistra.fr and vizier.idia.ac.za resolved HAT-P-32,
+# V336 Aps, TYC 9256-617-1 and TOI-1130 in 2-5 s each.
+
+SESAME_URLS: tuple[str, ...] = (
+    "https://cds.unistra.fr/cgi-bin/nph-sesame",
+    "https://vizier.cfa.harvard.edu/viz-bin/nph-sesame",
+    "https://vizier.idia.ac.za/viz-bin/nph-sesame",
+)
+
+
+def sesame_resolve(name: str, *, timeout: float = 10.0,
+                   status_cb: Optional[Callable[[str], None]] = None):
+    """
+    Resolve an object name to (ra_deg, dec_deg, url) via Sesame, racing the
+    mirrors. Returns None when no mirror resolved it; `sesame_resolve.last`
+    then says whether that was "not found" (a mirror answered) or "no mirror
+    answered".
+    """
+    q = urllib.parse.quote((name or "").strip())
+    sesame_resolve.last = ""
+    if not q:
+        return None
+    order: list = [SESAME_URLS[0]]
+    with _lock:
+        vz = _state["vz_server"] or ""
+    if vz:
+        order.append(f"https://{vz}/viz-bin/nph-sesame")   # known-alive host
+    for url in SESAME_URLS[1:]:
+        if url not in order:
+            order.append(url)
+    found: dict = {}
+    answered: list = []
+
+    def _check(base: str) -> Tuple[bool, str]:
+        code, body, err = _fetch_with_hard_deadline(f"{base}/-ox/SNV?{q}", timeout)
+        if err is not None or code is None:
+            return False, f"{base}: {type(err).__name__ if err else 'no response'}"
+        low = (body or "").lower()
+        if code >= 400 or "<html" in low:
+            return False, f"{base}: HTTP {code}"
+        answered.append(base)
+        try:
+            ra = float(body.split("<jradeg>", 1)[1].split("</jradeg>", 1)[0])
+            dec = float(body.split("<jdedeg>", 1)[1].split("</jdedeg>", 1)[0])
+        except (IndexError, ValueError):
+            return False, f"{base}: name not resolved"
+        found[base] = (ra, dec)
+        return True, f"{base}: resolved"
+
+    ok, url, _detail, details = _race_mirrors(order, _check, timeout,
+                                              status_cb=status_cb)
+    if ok and url in found:
+        return found[url][0], found[url][1], url
+    sesame_resolve.last = ("not found" if answered else
+                           "no Sesame mirror answered: " + " | ".join(details))
+    return None
+
+
+sesame_resolve.last = ""

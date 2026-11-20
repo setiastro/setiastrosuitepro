@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 
-from PyQt6.QtCore import Qt, QPoint, QRect, QEvent, QTimer, QSettings, QByteArray
+from PyQt6.QtCore import Qt, QPoint, QRect, QEvent, QTimer, QSettings, QByteArray, QThread, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QComboBox, QSlider,
@@ -23,6 +23,7 @@ from setiastro.saspro.widgets.image_utils import (
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.luminancerecombine import recombine_luminance_linear_scale as _recombine_luma_into_rgb
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 
 _LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
@@ -75,6 +76,174 @@ def _resize_mask_nearest(m: np.ndarray, shape_hw: tuple[int,int]) -> np.ndarray:
     xi = (np.linspace(0, m.shape[1]-1, w)).astype(np.int32)
     return m[yi][:, xi].astype(np.float32, copy=False)
 
+def _prep_mask01(m: np.ndarray, shape_hw: tuple[int,int], channels: int | None, invert_flag: bool):
+    """Mask resized to (H,W) (nearest), inverted if asked, clipped; repeated
+    to `channels` when that is > 1."""
+    m = _resize_mask_nearest(m, shape_hw)
+    if invert_flag:
+        m = 1.0 - m
+    m = np.clip(m, 0.0, 1.0)
+    if channels and channels > 1 and m.ndim == 2:
+        m = np.repeat(m[:, :, None], channels, axis=2)
+    return m
+
+
+# ---------- off-GUI-thread work ----------
+# Every control change restarts this timer; the preview is built once the
+# controls have been still that long, on a worker, one at a time.
+_PREVIEW_DEBOUNCE_MS = 120
+
+
+class _CombineJob(QThread):
+    """Runs fn(**kwargs) off the GUI thread; its dict comes back through
+    `ready` ({"error": text} if it raised). No parent: started with
+    thread_keeper.start_owned_thread, so the dialog may close mid-run."""
+    ready = pyqtSignal(object)
+
+    def __init__(self, fn, kwargs):
+        super().__init__(None)
+        self._fn = fn
+        self._kwargs = kwargs
+
+    def run(self):
+        try:
+            out = self._fn(**self._kwargs)
+        except Exception as e:
+            out = {"error": str(e)}
+        self._kwargs = None
+        self.ready.emit(out)
+
+
+def _proxy01(img: np.ndarray, w: int, h: int) -> np.ndarray:
+    """_to_float01(img) at (w, h): INTER_AREA when shrinking, the image itself
+    at full size. Preview only."""
+    f = _to_float01(img)
+    if f.shape[1] == w and f.shape[0] == h:
+        return f
+    if cv2 is not None:
+        out = cv2.resize(np.ascontiguousarray(f), (w, h), interpolation=cv2.INTER_AREA)
+        if f.ndim == 3 and out.ndim == 2:          # cv2 drops a single channel
+            out = out[..., None]
+        return out.astype(np.float32, copy=False)
+    yi = np.linspace(0, f.shape[0] - 1, h).astype(np.int32)
+    xi = np.linspace(0, f.shape[1] - 1, w).astype(np.int32)
+    return f[yi][:, xi]
+
+
+def _preview_mask(m, w: int, h: int, channels: int | None, invert_flag: bool):
+    """Display-scale counterpart of _prep_mask01 (area-averaged, broadcast)."""
+    if m.shape != (h, w):
+        if cv2 is not None:
+            m = cv2.resize(np.ascontiguousarray(m, dtype=np.float32), (w, h), interpolation=cv2.INTER_AREA)
+        else:
+            m = _resize_mask_nearest(m, (h, w))
+    if invert_flag:
+        m = 1.0 - m
+    m = np.clip(m, 0.0, 1.0)
+    if channels and channels > 1 and m.ndim == 2:
+        m = m[:, :, None]
+    return m
+
+
+# Modes that hinge on detail finer than the display (the difference of two
+# averages is not the average of the differences): their preview is blended
+# at full size and then reduced. Measured on a 22 MP pair at fit zoom: on
+# display-size proxies Subtract / Divide / Difference were off by a mean of
+# 3 / 13 / 7 grey levels; every other mode by 0.5, i.e. rounding.
+_FULL_SIZE_PREVIEW_MODES = ("Subtract", "Divide", "Difference")
+
+
+def _preview_work_size(mode: str, W: int, H: int, w: int, h: int) -> tuple[int, int]:
+    """Size the preview is blended at: full size for _FULL_SIZE_PREVIEW_MODES,
+    else the displayed size (w, h)."""
+    return (W, H) if mode in _FULL_SIZE_PREVIEW_MODES else (w, h)
+
+
+def _combine_preview_job(imgA, imgB, pa, pb, w, h, zoom, mode, alpha, luma,
+                         mask, invert, overlay, ov_opacity):
+    """The preview the dialog shows: the same steps as Apply, on float01
+    proxies of A and B at the displayed size (w, h), i.e. full size x zoom
+    (full size when zoom >= 1, then scaled up as before); for
+    _FULL_SIZE_PREVIEW_MODES at full size, reduced to (w, h) at the end.
+    Returns the proxies (for reuse) and the display QImage."""
+    cw, ch = _preview_work_size(mode, imgA.shape[1], imgA.shape[0], w, h)
+    if pa is None:
+        pa = _proxy01(imgA, cw, ch)
+    if pb is None:
+        pb = _proxy01(imgB, cw, ch)
+
+    if luma:
+        YA = _rgb_to_luma(pa)
+        YB = _rgb_to_luma(pb)
+        Ymix = _blend_dispatch(YA[...,None], YB[...,None], mode, alpha)[...,0]
+        m = None if mask is None else _preview_mask(mask, cw, ch, None, invert)
+        if m is not None:
+            Ymix = Ymix*m + YA*(1.0 - m)
+        blended = _recombine_luma_into_rgb(pa, Ymix)
+    else:
+        A3 = pa if pa.ndim == 3 else pa[..., None]
+        B3 = pb if pb.ndim == 3 else pb[..., None]
+        blended = _blend_dispatch(A3, B3, mode, alpha)
+        if imgA.ndim == 2:
+            blended = blended[...,0]
+        m = None if mask is None else _preview_mask(
+            mask, cw, ch, (blended.shape[2] if blended.ndim == 3 else 1), invert)
+        if m is not None:
+            blended = np.clip(blended*m + _to_float01(pa)*(1.0 - m), 0.0, 1.0)
+
+    if overlay and mask is not None:
+        m = _preview_mask(mask, cw, ch, (blended.shape[2] if blended.ndim == 3 else 1), invert)
+        blended = ImageCombineDialog._apply_overlay(_to_float01(blended), m, ov_opacity)
+
+    f = _to_float01(blended)
+    if f.ndim == 3 and f.shape[2] == 1:
+        f = f[..., 0]
+    if (cw, ch) != (w, h):
+        f = _proxy01(f, w, h)
+    buf = np.ascontiguousarray((f*255).astype(np.uint8))
+    if buf.ndim == 2:
+        q = QImage(buf.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+    else:
+        q = QImage(buf.data, w, h, 3*w, QImage.Format.Format_RGB888).copy()
+    if zoom > 1.0:
+        q = q.scaled(max(1, round(w*zoom)), max(1, round(h*zoom)), Qt.AspectRatioMode.KeepAspectRatio,
+                     Qt.TransformationMode.SmoothTransformation)
+    return {"imgA": imgA, "imgB": imgB, "pa": pa, "pb": pb, "pw": cw, "ph": ch,
+            "zoom": zoom, "qimg": q}
+
+
+def _combine_full_job(imgA, imgB, mode, alpha, luma, mask, invert):
+    """Apply's full-resolution result. Unchanged math, moved off the GUI thread."""
+    if luma:
+        YA = _rgb_to_luma(imgA); YB = _rgb_to_luma(imgB)
+        Ymix = _blend_dispatch(YA[...,None], YB[...,None], mode, alpha)[...,0]
+
+        m = None if mask is None else _prep_mask01(mask, shape_hw=Ymix.shape[:2], channels=None,
+                                                   invert_flag=invert)
+        if m is not None:
+            Ymix = Ymix*m + YA*(1.0 - m)
+
+        result = _recombine_luma_into_rgb(imgA, Ymix)
+        step = f"Luminance {mode}"
+    else:
+        A3 = imgA if imgA.ndim == 3 else imgA[..., None]
+        B3 = imgB if imgB.ndim == 3 else imgB[..., None]
+        result = _blend_dispatch(A3, B3, mode, alpha)
+        if imgA.ndim == 2: result = result[...,0]
+
+        m = None if mask is None else _prep_mask01(
+            mask, shape_hw=result.shape[:2],
+            channels=(result.shape[2] if result.ndim == 3 else 1),
+            invert_flag=invert
+        )
+        if m is not None:
+            result = np.clip(result*m + _to_float01(imgA)*(1.0 - m), 0.0, 1.0)
+        step = f"{mode} Combine"
+
+    result = _to_float01(result)
+    return {"result": result, "step": step}
+
+
 # ---------- dialog ----------
 class ImageCombineDialog(QDialog):
     """
@@ -99,7 +268,17 @@ class ImageCombineDialog(QDialog):
         self.zoom = 1.0
         self._pan_origin = None
         self._hstart = 0; self._vstart = 0
-        self._pix = None  # last preview QPixmap
+        self._pix = None  # last preview QPixmap, at display size (_pix_zoom)
+        self._pix_zoom = None
+        self._full_hw = None             # A's full (H, W): zoom and fit work in it
+        self._pv_timer = QTimer(self)    # debounce: restarted on every change
+        self._pv_timer.setSingleShot(True)
+        self._pv_timer.timeout.connect(self._launch_preview)
+        self._pv_thread = None
+        self._pv_pending = False         # a change arrived while a preview ran
+        self._proxies = {}               # (id(img), w, h) -> (img, float01 proxy)
+        self._apply_thread = None
+        self._close_after_apply = None   # close requested while Apply ran
         # --- persistence ---
         self._settings = QSettings()
         self._persist_prefix = "image_combine"
@@ -331,6 +510,13 @@ class ImageCombineDialog(QDialog):
         Return mask for the given doc resized to (H,W).
         If channels is 3 and mask is 2D, expand with np.repeat.
         """
+        m = self._mask_raw(doc)
+        if m is None:
+            return None
+        return _prep_mask01(m, shape_hw, channels, invert_flag)
+
+    def _mask_raw(self, doc):
+        """The doc's active mask (H,W) in [0,1], else the global applied mask, else None."""
         m = _active_mask_array_from_doc(doc)
         if m is None:
             # last-resort fallback to global mask manager (in case user applied a global mask)
@@ -347,18 +533,10 @@ class ImageCombineDialog(QDialog):
                         m = np.clip(mg, 0.0, 1.0)
                 except Exception:
                     m = None
-        if m is None:
-            return None
-
-        m = _resize_mask_nearest(m, shape_hw)
-        if invert_flag:
-            m = 1.0 - m
-        m = np.clip(m, 0.0, 1.0)
-        if channels and channels > 1 and m.ndim == 2:
-            m = np.repeat(m[:, :, None], channels, axis=2)
         return m
 
-    def _apply_overlay(self, img, mask, opacity):
+    @staticmethod
+    def _apply_overlay(img, mask, opacity):
         # show protected region (A) as red wash: vis = 1 - m
         vis = 1.0 - np.clip(mask, 0.0, 1.0)
         if img.ndim == 2:
@@ -371,6 +549,21 @@ class ImageCombineDialog(QDialog):
 
     # ---------- preview ----------
     def _update_preview(self, *_):
+        """Debounced: the preview is rebuilt once the controls have been
+        still for _PREVIEW_DEBOUNCE_MS (_launch_preview)."""
+        self._pv_timer.start(_PREVIEW_DEBOUNCE_MS)
+
+    def _proxy_for(self, img, w, h):
+        hit = self._proxies.get((id(img), w, h))
+        return hit[1] if hit is not None and hit[0] is img else None
+
+    def _launch_preview(self):
+        """Build the preview on a worker, one at a time, at the displayed
+        size; a change made while one runs re-runs it when it lands."""
+        self._pv_timer.stop()
+        if thread_running(self._pv_thread):
+            self._pv_pending = True
+            return
         A = self.cbA.currentData(); B = self.cbB.currentData()
         if not (A and B): return
         imgA = getattr(A, "image", None); imgB = getattr(B, "image", None)
@@ -378,65 +571,47 @@ class ImageCombineDialog(QDialog):
         if imgA.shape[:2] != imgB.shape[:2]:
             self.lbl.setText("Images must be the same size.")
             return
+        luma = self.chkLuma.isChecked()
+        if luma and (imgA.ndim != 3 or imgA.shape[2] != 3):
+            self.lbl.setText("Luminance mode requires RGB A."); return
 
-        alpha = self.slAlpha.value()/100.0
-        mode  = self.cbMode.currentText()
+        H, W = imgA.shape[:2]
+        self._full_hw = (H, W)
+        zoom = float(self.zoom)
+        s = min(1.0, zoom)
+        w, h = max(1, round(W*s)), max(1, round(H*s))
+        mode = self.cbMode.currentText()
+        cw, ch = _preview_work_size(mode, W, H, w, h)
+        thr = _CombineJob(_combine_preview_job, dict(
+            imgA=imgA, imgB=imgB, pa=self._proxy_for(imgA, cw, ch), pb=self._proxy_for(imgB, cw, ch),
+            w=w, h=h, zoom=zoom, mode=mode, alpha=self.slAlpha.value()/100.0,
+            luma=luma, mask=self._mask_raw(A), invert=self.chkInvert.isChecked(),
+            overlay=self.chkOverlay.isChecked(), ov_opacity=self.slOverlay.value()/100.0))
+        thr.ready.connect(self._on_preview_ready)
+        thr.finished.connect(self._on_preview_finished)
+        self._pv_thread = thr
+        start_owned_thread(thr)
 
-        try:
-            if self.chkLuma.isChecked():
-                if imgA.ndim != 3 or imgA.shape[2] != 3:
-                    self.lbl.setText("Luminance mode requires RGB A."); return
-                YA = _rgb_to_luma(imgA)
-                YB = _rgb_to_luma(imgB)
-                Ymix = _blend_dispatch(YA[...,None], YB[...,None], mode, alpha)[...,0]
+    def _on_preview_ready(self, res: dict):
+        if "error" in res:
+            self.lbl.setText(f"Error: {res['error']}")
+            return
+        w, h = res["pw"], res["ph"]
+        self._proxies = {(id(res["imgA"]), w, h): (res["imgA"], res["pa"]),
+                         (id(res["imgB"]), w, h): (res["imgB"], res["pb"])}
+        self._pix = QPixmap.fromImage(res["qimg"])
+        self._pix_zoom = res["zoom"]
+        self._apply_zoom()
 
-                # mask from destination doc (A)
-                m = self._mask01_for_doc(A, shape_hw=Ymix.shape[:2], channels=None,
-                                         invert_flag=self.chkInvert.isChecked())
-                if m is not None:
-                    Ymix = Ymix*m + YA*(1.0 - m)
-
-                blended = _recombine_luma_into_rgb(imgA, Ymix)
-
-            else:
-                A3 = imgA if imgA.ndim == 3 else imgA[..., None]
-                B3 = imgB if imgB.ndim == 3 else imgB[..., None]
-                blended = _blend_dispatch(A3, B3, mode, alpha)
-                if imgA.ndim == 2:
-                    blended = blended[...,0]
-
-                # mask from destination doc (A)
-                m = self._mask01_for_doc(
-                    A, shape_hw=blended.shape[:2],
-                    channels=(blended.shape[2] if blended.ndim == 3 else 1),
-                    invert_flag=self.chkInvert.isChecked()
-                )
-                if m is not None:
-                    blended = np.clip(blended*m + _to_float01(imgA)*(1.0 - m), 0.0, 1.0)
-
-            # optional red overlay
-            if self.chkOverlay.isChecked():
-                m = self._mask01_for_doc(
-                    A, shape_hw=blended.shape[:2],
-                    channels=(blended.shape[2] if blended.ndim == 3 else 1),
-                    invert_flag=self.chkInvert.isChecked()
-                )
-                if m is not None:
-                    blended = self._apply_overlay(_to_float01(blended), m, self.slOverlay.value()/100.0)
-
-            # to pixmap
-            f = _to_float01(blended); h, w = f.shape[:2]
-            if f.ndim == 2:
-                buf = (f*255).astype(np.uint8); q = QImage(buf.data, w, h, w, QImage.Format.Format_Grayscale8)
-            else:
-                buf = (f*255).astype(np.uint8); q = QImage(buf.data, w, h, 3*w, QImage.Format.Format_RGB888)
-            self._pix = QPixmap.fromImage(q)
-            self._apply_zoom()
-        except Exception as e:
-            self.lbl.setText(f"Error: {e}")
+    def _on_preview_finished(self):
+        if self._pv_pending:
+            self._pv_pending = False
+            self._launch_preview()
 
     # ---------- apply ----------
     def _commit(self):
+        if thread_running(self._apply_thread):
+            return
         A = self.cbA.currentData(); B = self.cbB.currentData()
         if not (A and B): return
         imgA = getattr(A, "image", None); imgB = getattr(B, "image", None)
@@ -444,37 +619,44 @@ class ImageCombineDialog(QDialog):
         if imgA.shape[:2] != imgB.shape[:2]:
             QMessageBox.warning(self, "Image Combine", "Image sizes must match."); return
 
-        alpha = self.slAlpha.value()/100.0
-        mode  = self.cbMode.currentText()
+        thr = _CombineJob(_combine_full_job, dict(
+            imgA=imgA, imgB=imgB, mode=self.cbMode.currentText(),
+            alpha=self.slAlpha.value()/100.0, luma=self.chkLuma.isChecked(),
+            mask=self._mask_raw(A), invert=self.chkInvert.isChecked()))
+        self._apply_target = A
+        thr.ready.connect(self._on_commit_ready)
+        self._apply_thread = thr
+        self.btnApply.setEnabled(False)
+        start_owned_thread(thr)
 
+    def _on_commit_ready(self, res: dict):
+        self._apply_thread = None
+        A, self._apply_target = self._apply_target, None
         try:
-            if self.chkLuma.isChecked():
-                YA = _rgb_to_luma(imgA); YB = _rgb_to_luma(imgB)
-                Ymix = _blend_dispatch(YA[...,None], YB[...,None], mode, alpha)[...,0]
+            self.btnApply.setEnabled(True)
+            self._write_commit(A, res)
+        finally:
+            code, self._close_after_apply = self._close_after_apply, None
+            if code is not None:
+                try:
+                    self._save_ui_state()
+                except Exception:
+                    pass
+                self.done(code)
 
-                m = self._mask01_for_doc(A, shape_hw=Ymix.shape[:2], channels=None,
-                                         invert_flag=self.chkInvert.isChecked())
-                if m is not None:
-                    Ymix = Ymix*m + YA*(1.0 - m)
+    def done(self, r):
+        # Close/Esc while Apply runs: hide now, close once its result is written.
+        if thread_running(self._apply_thread):
+            self._close_after_apply = r
+            self.hide()
+            return
+        super().done(r)
 
-                result = _recombine_luma_into_rgb(imgA, Ymix)
-                step = f"Luminance {mode}"
-            else:
-                A3 = imgA if imgA.ndim == 3 else imgA[..., None]
-                B3 = imgB if imgB.ndim == 3 else imgB[..., None]
-                result = _blend_dispatch(A3, B3, mode, alpha)
-                if imgA.ndim == 2: result = result[...,0]
-
-                m = self._mask01_for_doc(
-                    A, shape_hw=result.shape[:2],
-                    channels=(result.shape[2] if result.ndim == 3 else 1),
-                    invert_flag=self.chkInvert.isChecked()
-                )
-                if m is not None:
-                    result = np.clip(result*m + _to_float01(imgA)*(1.0 - m), 0.0, 1.0)
-                step = f"{mode} Combine"
-
-            result = _to_float01(result)
+    def _write_commit(self, A, res: dict):
+        try:
+            if "error" in res:
+                raise RuntimeError(res["error"])
+            result, step = res["result"], res["step"]
 
             # Replace A (overwrite active view) or create new?
             replace = True
@@ -506,16 +688,22 @@ class ImageCombineDialog(QDialog):
     # ---------- zoom/pan ----------
     def _apply_zoom(self):
         if self._pix is None: return
-        scaled = self._pix.scaled(self._pix.size()*self.zoom, Qt.AspectRatioMode.KeepAspectRatio,
-                                  Qt.TransformationMode.SmoothTransformation)
-        self.lbl.setPixmap(scaled)
+        if self._pix_zoom == self.zoom:
+            self.lbl.setPixmap(self._pix)
+            return
+        # Rescale what is on screen at once, and rebuild it at this zoom.
+        H, W = self._full_hw
+        self.lbl.setPixmap(self._pix.scaled(max(1, round(W*self.zoom)), max(1, round(H*self.zoom)),
+                                            Qt.AspectRatioMode.KeepAspectRatio,
+                                            Qt.TransformationMode.FastTransformation))
+        self._update_preview()
 
     def _zoom_in(self):  self.zoom *= 1.25; self._apply_zoom()
     def _zoom_out(self): self.zoom /= 1.25; self._apply_zoom()
     def _fit(self):
         if self._pix is None: return
-        area = self.scroll.viewport().size(); pix = self._pix.size()
-        sx = area.width()/max(1,pix.width()); sy = area.height()/max(1,pix.height())
+        area = self.scroll.viewport().size(); H, W = self._full_hw
+        sx = area.width()/max(1,W); sy = area.height()/max(1,H)
         self.zoom = min(sx, sy, 1.0); self._apply_zoom()
 
     def eventFilter(self, src, ev):
@@ -552,6 +740,13 @@ class ImageCombineDialog(QDialog):
 
 
     def closeEvent(self, ev):
+        if thread_running(self._apply_thread):
+            # Apply still computing: close once its result is written.
+            self._close_after_apply = QDialog.DialogCode.Rejected
+            self.hide()
+            ev.ignore()
+            return
+        self._pv_timer.stop()
         try:
             self._save_ui_state()
         except Exception:
