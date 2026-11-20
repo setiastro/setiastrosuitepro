@@ -4,11 +4,12 @@ Menu management mixin for AstroSuiteProMainWindow.
 """
 from __future__ import annotations
 import os
+import sys
 from typing import TYPE_CHECKING
 
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QMenu, QToolButton, QWidgetAction
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 from setiastro.saspro.gui import menu_spec
 
@@ -96,6 +97,9 @@ class MenuMixin:
 
     def _init_menubar(self):
         mb = self.menuBar()
+        # AppKit supplies Help's search field for the native menu bar. Keep
+        # this policy here so installing Command Search cannot override it.
+        mb.setNativeMenuBar(sys.platform == "darwin")
 
         # File
         m_file = mb.addMenu(self.tr("&File"))
@@ -279,18 +283,24 @@ class MenuMixin:
         m_view.addAction(self.act_return_panels_to_main)
         m_view.addSeparator()
 
-        # a button that shows current group & opens a drop-down
-        self._link_btn = QToolButton(self)
-        self._link_btn.setDefaultAction(self.act_link_group)  # text/checked state mirrors the action
-        self._link_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        # Native menus need ordinary actions for keyboard navigation and Help
+        # search. Keep the embedded split button on other platforms.
+        self._link_btn = None
+        if sys.platform != "darwin":
+            self._link_btn = QToolButton(self)
+            self._link_btn.setDefaultAction(self.act_link_group)
+            self._link_btn.setPopupMode(
+                QToolButton.ToolButtonPopupMode.MenuButtonPopup
+            )
 
-        link_menu = QMenu(self._link_btn)
+        link_menu = QMenu(self.tr("Link Group"), m_view)
         a_none = link_menu.addAction(self.tr("None"))
         a_A = link_menu.addAction(self.tr("Group A"))
         a_B = link_menu.addAction(self.tr("Group B"))
         a_C = link_menu.addAction(self.tr("Group C"))
         a_D = link_menu.addAction(self.tr("Group D"))
-        self._link_btn.setMenu(link_menu)
+        if self._link_btn is not None:
+            self._link_btn.setMenu(link_menu)
 
         a_none.setCheckable(True)
         a_A.setCheckable(True)
@@ -315,22 +325,30 @@ class MenuMixin:
         a_C.triggered.connect(lambda: self._set_group_for_active("C"))
         a_D.triggered.connect(lambda: self._set_group_for_active("D"))
 
-        # wrap it so it can live inside the menu
-        wa = QWidgetAction(self)
-        wa.setDefaultWidget(self._link_btn)
-        m_view.addAction(wa)
-        # ── Link group keyboard shortcuts ─────────────────────────────────────
-        for _key, _group in (("N", None), ("A", "A"), ("B", "B"), ("C", "C"), ("D", "D")):
+        if sys.platform == "darwin":
+            m_view.addAction(self.act_link_group)
+            m_view.addMenu(link_menu)
+        else:
+            wa = QWidgetAction(self)
+            wa.setDefaultWidget(self._link_btn)
+            m_view.addAction(wa)
+        # Link group keyboard shortcuts
+        for _key, _group in (
+            ("N", None), ("A", "A"), ("B", "B"), ("C", "C"), ("D", "D"),
+        ):
             _act = QAction(
-                self.tr("Link: None") if _group is None else self.tr(f"Link: Group {_group}"),
+                self.tr("Link: None") if _group is None
+                else self.tr(f"Link: Group {_group}"),
                 self
             )
-            _act.setShortcut(QKeySequence(f"Ctrl+Alt+{_key if _group else 'N'}"))
+            _act.setShortcut(QKeySequence(
+                f"Ctrl+Alt+{_key if _group else 'N'}"
+            ))
             _act.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
             _act.triggered.connect(
                 lambda checked=False, g=_group: self._set_group_for_active(g)
             )
-            # Add to the view menu so they're discoverable, but visually separate
+            # Keep these discoverable and visually separate in the View menu.
             m_view.addAction(_act)
 
         m_view.addSeparator()
@@ -343,18 +361,32 @@ class MenuMixin:
         m_workflow.addAction(self.act_mini_workflows)
 
         m_settings = mb.addMenu(self.tr("&Settings"))
-        m_settings.addAction(self.tr("Preferences..."), self._open_settings)
+        preferences = m_settings.addAction(
+            self.tr("Preferences..."), self._open_settings,
+        )
+        preferences.setMenuRole(QAction.MenuRole.PreferencesRole)
         m_settings.addSeparator()
         m_settings.addAction(self.tr("Benchmark..."), self._open_benchmark)
         m_settings.addSeparator()
         m_settings.addAction(self.act_gaia_database)
 
-        m_about = mb.addMenu(self.tr("&About"))
-        m_about.addAction(self.act_docs)  
+        # AppKit recognizes Help by its standard menu title and adds the
+        # system search field, including menu-location highlighting.
+        m_about = mb.addMenu(
+            self.tr("&Help") if sys.platform == "darwin" else self.tr("&About")
+        )
+        from setiastro.saspro.gui.command_palette import palette_action
+        m_about.addAction(palette_action(self, self._show_command_palette))
         m_about.addSeparator()
-        m_about.addAction(self.tr("About..."), self._about)
-        m_about.addAction(self.tr("Generate Diagnostics Report..."), self._show_diagnostics_report)
-        m_about.addAction(self.act_file_associations) 
+        m_about.addAction(self.act_docs)
+        m_about.addSeparator()
+        about = m_about.addAction(self.tr("About..."), self._about)
+        about.setMenuRole(QAction.MenuRole.AboutRole)
+        m_about.addAction(
+            self.tr("Generate Diagnostics Report..."),
+            self._show_diagnostics_report,
+        )
+        m_about.addAction(self.act_file_associations)
         m_about.addAction(self.act_check_updates)
         m_about.addSeparator()
         m_about.addAction(self.act_welcome)
@@ -365,11 +397,27 @@ class MenuMixin:
         m_about.addAction(self.tr("Statistics..."), self._show_statistics)
         m_about.addSeparator()
         m_about.addAction(self.act_bored)
+        if sys.platform == "darwin":
+            self._help_menu = m_about
+            m_about.aboutToShow.connect(self._register_native_help_menu)
+            # Wait until Qt has attached the native menus. Registration
+            # bypasses AppKit's title/localization heuristics.
+            QTimer.singleShot(0, self._register_native_help_menu)
         # Connect tool stats
-        self._hook_tool_stats([m_fn, m_tools, mCosmic, m_geom, m_star, m_masks, m_header, m_scripts])
+        self._hook_tool_stats([
+            m_fn, m_tools, mCosmic, m_geom, m_star, m_masks,
+            m_header, m_scripts,
+        ])
 
         # initialize enabled state + names
         self.update_undo_redo_action_labels()
+
+    def _register_native_help_menu(self):
+        if sys.platform == "darwin":
+            from setiastro.saspro.gui.macos_help import register_help_menu
+            menu = getattr(self, "_help_menu", None)
+            if menu is not None:
+                register_help_menu(menu.title().replace("&", ""))
 
     def _init_tools_menu(self):
         tools = self.menuBar().addMenu("Tools")

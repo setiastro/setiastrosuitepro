@@ -9509,7 +9509,6 @@ class AstroSuiteProMainWindow(
 
         # Clean up any old placement (corner widget / toolbar / dock)
         mb = self.menuBar()
-        mb.setNativeMenuBar(False)
         old = mb.cornerWidget(Qt.Corner.TopRightCorner)
         if old:
             old.deleteLater()
@@ -9623,29 +9622,30 @@ class AstroSuiteProMainWindow(
 
 
     def _build_command_model(self):
+        from setiastro.saspro.gui.command_search import command_item
+
         self._cmd_model.clear()
         self._cmd_model.setColumnCount(1)
 
         actions = self._collect_all_qactions()
         actions.sort(key=lambda a: self._strip_menu_text(a.text()).lower())
 
+        items = []
         for act in actions:
             title = self._strip_menu_text(act.text())
             if not title:
                 continue
-            item = QStandardItem(act.icon(), title)
-            item.setEditable(False)
-            item.setData(act, _ROLE_ACTION)
-            self._cmd_model.appendRow(item)
+            # Full tool names often live in status tips (e.g. ADBE). The
+            # palette searches these without importing or opening tool dialogs.
+            items.append(command_item(act, title, _ROLE_ACTION))
+        self._cmd_model.invisibleRootItem().appendRows(items)
 
         self._cmd_completer.setCompletionColumn(0)
         self._cmd_completer.popup().setModelColumn(0)
 
     def _run_selected_completion(self, index: QModelIndex):
-        if index.isValid():
-            act = index.data(_ROLE_ACTION)
-            if isinstance(act, QAction) and act.isEnabled():
-                act.trigger()
+        from setiastro.saspro.gui.command_search import run_command
+        run_command(index, _ROLE_ACTION)
 
     def _trigger_first_visible_completion(self):
         """Run exact edit-text match, else highlighted popup row, else first filter hit."""
@@ -9683,6 +9683,10 @@ class AstroSuiteProMainWindow(
             edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
             edit.selectAll()
             return
+        self._show_command_palette()
+
+    def _show_command_palette(self):
+        """Toggle the popup even when the Command Search dock is visible."""
         pal = getattr(self, "_cmd_palette", None)
         if pal is None:
             from setiastro.saspro.gui.command_palette import CommandPalette
@@ -9691,6 +9695,9 @@ class AstroSuiteProMainWindow(
         if pal.isVisible():
             pal.hide()
         else:
+            # Menus, enabled actions and script commands can change while
+            # the popup is closed. Rebuild only when opening it.
+            self._build_command_model()
             pal.popup_centered()
 
     # --- Actions ----------------------------------------
@@ -10885,9 +10892,15 @@ class AstroSuiteProMainWindow(
 
     def changeEvent(self, event):
         super().changeEvent(event)
-        # 1. Existing logic for dock sync (re-instated from showEvent logic if needed, but usually changeEvent is enough)
-        # (The snippet viewed previously showed showEvent firing a oneshot to call changeEvent)
-        
+        if (
+            sys.platform == "darwin"
+            and event.type() == QEvent.Type.ActivationChange
+            and self.isActiveWindow()
+        ):
+            # Cocoa attaches this window's native menu bar on activation.
+            QTimer.singleShot(0, self._register_native_help_menu)
+        # Dock sync uses showEvent to schedule changeEvent when needed.
+
         # 2. Resource Monitor Sync — it's a docked panel now, so pause its
         # polling while the window is minimized and resume when restored,
         # instead of showing/hiding a floating overlay.

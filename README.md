@@ -418,6 +418,21 @@ pip install -e .
 python setiastrosuitepro.py
 ```
 
+### Finding Commands
+
+On macOS, use the native **Help** menu search to reveal a command's location
+in the menus. **Command-/** on macOS or **Ctrl-/** on Windows/Linux opens a
+command palette. It is also available under **Help → Search Commands…** on
+macOS or **About → Search Commands…** on Windows/Linux. Press Enter to run
+the selected command, or Escape / the same shortcut to close the palette.
+Ctrl plus numeric-keypad division is also supported on Windows/Linux.
+
+The palette searches command names and their existing descriptions, with exact
+names ranked above approximate matches. For example, ADBE can be found by
+`automatic`, `automatic background`, or the typo `automtic`. Ctrl+Shift+P
+continues to focus Command Search, or opens the palette when that dock is hidden
+(use Command+Shift+P on macOS).
+
 ## Dependency Management
 
 This project uses [Poetry](https://python-poetry.org/) as its authoritative dependency management tool. The `pyproject.toml` file defines all runtime and development dependencies. The `requirements.txt` file is a derived artifact generated from `pyproject.toml` to ensure compatibility with standard `pip`-based workflows.
