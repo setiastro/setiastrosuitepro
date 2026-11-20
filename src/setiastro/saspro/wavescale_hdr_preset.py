@@ -119,13 +119,16 @@ def _clear_wavescale_flags(main, settings):
         except Exception: setattr(main, name, False)
 
 
-def apply_wavescale_hdr_to_doc(doc, preset: dict | None = None) -> None:
+def apply_wavescale_hdr_to_doc(doc, preset: dict | None = None, mask_out: list | None = None) -> None:
     """
     WaveScale HDR straight onto `doc`, with no dialog, thread or event loop:
     the steps the dialog takes in headless mode (_start_preview -> HDRWorker
     -> _on_finished -> _apply_to_doc), with its slider clamps and 0.01
     quantisation. Raises on failure where the dialog would show a box. Used
     by the command-line tool, which has no one to dismiss a box.
+
+    mask_out: a list to receive the mask the blend used (2-D float32, the
+    dialog's "HDR Mask" window at full size), appended once the edit is applied.
     """
     import numpy as np
     from .wavescale_hdr import compute_wavescale_hdr, _B3
@@ -164,3 +167,5 @@ def apply_wavescale_hdr_to_doc(doc, preset: dict | None = None) -> None:
                                  "preset": {"n_scales": ns, "compression_factor": comp,
                                             "mask_gamma": mg}},
                   step_name="WaveScale HDR")
+    if mask_out is not None:
+        mask_out.append(np.asarray(mask, dtype=np.float32))
