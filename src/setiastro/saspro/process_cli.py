@@ -46,6 +46,9 @@ BIT_DEPTHS = {
     "32f": "32-bit floating point",
 }
 
+# Formats that hold 32-bit float, which a --save-mask file is always written as.
+MASK_EXTS = {".fits", ".fit", ".fts", ".xisf", ".tif", ".tiff"}
+
 
 # ── Tool table ──────────────────────────────────────────────────────────────
 
@@ -76,6 +79,7 @@ class Tool:
     aliases: list[str] = field(default_factory=list)
     notes: str = ""
     examples: list[str] = field(default_factory=list)   # set in _EXAMPLES below
+    mask: str = ""        # what --save-mask writes; empty: the tool has no mask
 
 
 TOOLS: dict[str, Tool] = {}
@@ -268,13 +272,16 @@ class _RunContext:
     Stands in for the main window. Tools that take one use it for a parent
     widget, a log line, or the DocManager; documents a tool creates (ABE's
     background model, say) are collected so they can be written too.
+    `masks` collects the mask a tool blended with, when --save-mask asked for
+    it (None otherwise, so a full-size mask is not kept for nothing).
     """
     _dm = None
 
-    def __init__(self, doc, quiet: bool = False):
+    def __init__(self, doc, quiet: bool = False, want_masks: bool = False):
         self.doc = doc
         self.quiet = quiet
         self.extra_docs: list = []
+        self.masks: list | None = [] if want_masks else None
         self.warnings: list[str] = []
         self.main = _make_main_stub(self)
 
@@ -455,9 +462,19 @@ def _normalise_steps(raw) -> list[tuple[Tool, dict]]:
     return out
 
 
+def _save_mask(mask, path: Path) -> None:
+    """A --save-mask file: the mask as computed, 32-bit float mono, written by
+    the same saver as the output."""
+    import numpy as np
+    path.parent.mkdir(parents=True, exist_ok=True)
+    m = np.ascontiguousarray(mask, dtype=np.float32)
+    doc = _document_class()(m, {"is_mono": True, "bit_depth": "32-bit floating point"})
+    _save_document(doc, str(path), "32-bit floating point")
+
+
 def _process_file(src: Path, dst: Path, steps: list[tuple[Tool, dict]],
                   bit_depth: str | None, quiet: bool, extra_dir: Path | None,
-                  seed: int = 0) -> dict:
+                  seed: int = 0, mask_path: Path | None = None) -> dict:
     import numpy as np
     rec: dict = {"input": str(src), "output": str(dst), "ok": False,
                  "steps": [{"command_id": t.id, "preset": p} for t, p in steps]}
@@ -469,7 +486,7 @@ def _process_file(src: Path, dst: Path, steps: list[tuple[Tool, dict]],
         rec["io_error"] = True
         return rec
     rec["shape"] = list(doc.image.shape)
-    ctx = _RunContext(doc, quiet=quiet)
+    ctx = _RunContext(doc, quiet=quiet, want_masks=mask_path is not None)
     try:
         for tool, preset in steps:
             t1 = time.time()
@@ -494,6 +511,17 @@ def _process_file(src: Path, dst: Path, steps: list[tuple[Tool, dict]],
         rec["error"] = f"could not write {dst}: {e}"
         rec["io_error"] = True
         return rec
+    if mask_path is not None:
+        try:
+            if not ctx.masks:
+                raise RuntimeError("the tool returned no mask")
+            _save_mask(ctx.masks[-1], mask_path)
+            ctx.masks = None
+            rec["mask_output"] = str(mask_path)
+        except Exception as e:
+            rec["error"] = f"could not write the mask {mask_path}: {e}"
+            rec["io_error"] = True
+            return rec
     extras = []
     try:
         src_name = str(doc.display_name() or "")
@@ -522,7 +550,7 @@ def _process_file(src: Path, dst: Path, steps: list[tuple[Tool, dict]],
 
 # ── Command line ────────────────────────────────────────────────────────────
 
-def _common_options(ap: argparse.ArgumentParser, with_preset: bool = True):
+def _common_options(ap: argparse.ArgumentParser, with_preset: bool = True, mask: str = ""):
     io = ap.add_argument_group("input and output")
     io.add_argument("-i", "--input", required=True, metavar="PATH",
                     help="Image to process, or a folder with --batch.")
@@ -538,6 +566,12 @@ def _common_options(ap: argparse.ArgumentParser, with_preset: bool = True):
     io.add_argument("--bit-depth", choices=list(BIT_DEPTHS), metavar="DEPTH",
                     help="Output sample format: 8, 16, 32u or 32f. Default: 32f wherever "
                          "the format holds it (FITS, XISF, TIFF); 8 for PNG and JPEG.")
+    if mask:
+        io.add_argument("--save-mask", nargs="?", const="", default=None, metavar="PATH",
+                        help=f"Also write {mask}, from the same run, as a 32-bit float mono "
+                             "image. PATH names the file (.tif, .fits or .xisf); with --batch it "
+                             "is a folder. Without PATH the mask goes beside the output as "
+                             "NAME_mask, in the output's format (TIFF when that is PNG or JPEG).")
     io.add_argument("--overwrite", action="store_true",
                     help="Replace output files that already exist.")
     io.add_argument("--seed", type=int, default=0, metavar="N",
@@ -598,7 +632,7 @@ def _tool_parser(tool: Tool) -> argparse.ArgumentParser:
             dtxt = ("true" if d else "false") if isinstance(d, bool) else d
             kw["help"] = f"{p.help}{rng} Default: {dtxt}. [{p.key}]"
             g.add_argument(p.option, **kw)
-    _common_options(ap)
+    _common_options(ap, mask=tool.mask)
     return ap
 
 
@@ -626,18 +660,52 @@ def _jobs(src: Path, dst: Path, batch: bool, fmt: str | None) -> list[tuple[Path
     return [(src, dst)]
 
 
+def _mask_path(out: Path, opt: str, batch: bool) -> Path:
+    """Where --save-mask [opt] writes the mask that goes with the output `out`."""
+    if opt and not batch:
+        p = Path(opt)
+        if p.suffix.lower() not in MASK_EXTS:
+            raise ValueError(f"--save-mask: the mask is 32-bit float; name it .tif, .fits or "
+                             f".xisf, not {p.name!r}")
+        return p
+    folder = Path(opt) if opt else out.parent
+    if folder.exists() and not folder.is_dir():
+        raise ValueError(f"--save-mask with --batch needs a folder, got the file {folder}")
+    ext = out.suffix if out.suffix.lower() in MASK_EXTS else ".tif"
+    return folder / f"{out.stem}_mask{ext}"
+
+
 def _run_jobs(args, steps: list[tuple[Tool, dict]]) -> int:
     src, dst = Path(args.input), Path(args.output)
     if not src.exists():
         print(f"ERROR: input does not exist: {src}", file=sys.stderr)
         return 2
+    save_mask = getattr(args, "save_mask", None)
     try:
         jobs = _jobs(src, dst, args.batch, args.format)
+        masks = ([_mask_path(o, save_mask, args.batch) for _, o in jobs]
+                 if save_mask is not None else [None] * len(jobs))
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
+    if save_mask is not None:
+        taken = set()
+        for i, o in jobs:
+            for f in (i, o):
+                try:
+                    taken.add(f.resolve())
+                except Exception:
+                    pass
+        for m in masks:
+            try:
+                clash = m.resolve() in taken
+            except Exception:
+                clash = False
+            if clash:
+                print(f"ERROR: --save-mask would write over an input or output: {m}", file=sys.stderr)
+                return 2
     if not args.overwrite:
-        exists = [str(o) for _, o in jobs if o.exists()]
+        exists = [str(o) for _, o in jobs if o.exists()] + [str(m) for m in masks if m and m.exists()]
         if exists:
             print("ERROR: output already exists (pass --overwrite to replace): "
                   + ", ".join(exists[:5]) + (" ..." if len(exists) > 5 else ""), file=sys.stderr)
@@ -671,16 +739,20 @@ def _run_jobs(args, steps: list[tuple[Tool, dict]]) -> int:
     # (utf-8 with replace: a tool printing a sigma must never raise mid-run.)
     chatter = open(os.devnull, "w", encoding="utf-8", errors="replace") if quiet else sys.stderr
     results, failed, io_failed = [], 0, 0
-    for path, out in jobs:
+    for (path, out), mask_path in zip(jobs, masks):
         if not quiet:
             print(f"=> {path.name}", file=sys.stderr, flush=True)
         with contextlib.redirect_stdout(chatter):
-            rec = _process_file(path, out, steps, bit_depth, quiet, None, seed=args.seed)
+            rec = _process_file(path, out, steps, bit_depth, quiet, None, seed=args.seed,
+                                mask_path=mask_path)
         results.append(rec)
         if rec["ok"]:
             if not quiet:
                 print(f"   saved {rec['output']} ({rec['bit_depth']}, {rec['seconds']}s)",
                       file=sys.stderr, flush=True)
+                if rec.get("mask_output"):
+                    print(f"   saved {rec['mask_output']} (mask, 32-bit floating point)",
+                          file=sys.stderr, flush=True)
                 for x in rec.get("extra_outputs", []):
                     print(f"   saved {x}", file=sys.stderr, flush=True)
         else:
@@ -740,6 +812,14 @@ def _options_overview(width: int = 78) -> str:
     return "\n".join(lines)
 
 
+def _mask_tools_line() -> str:
+    names = sorted(t.name for t in TOOLS.values() if t.mask)
+    if not names:
+        return ""
+    return (f"  {' and '.join(names)} also take --save-mask:\n"
+            "  the mask they blended with, written from the same run as its own image.\n")
+
+
 def usage() -> str:
     return f"""usage: setiastrosuitepro process TOOL -i IN -o OUT [options]
        setiastrosuitepro process TOOL -i INDIR -o OUTDIR --batch [options]
@@ -760,7 +840,7 @@ OPTIONS EVERY TOOL TAKES
 {_options_overview()}
 
   Each tool's own options: setiastrosuitepro process TOOL --help
-
+{_mask_tools_line()}
 PRESETS
   Every tool option has a preset key (shown in brackets in the tool's help),
   the same key the app's shortcuts store. A preset can be given whole with
@@ -1236,7 +1316,7 @@ def _run_wavescale_hdr(doc, p, ctx):
     # The app's own runner drives the dialog through a thread and a modal
     # loop; this is the same computation with neither.
     from setiastro.saspro.wavescale_hdr_preset import apply_wavescale_hdr_to_doc
-    apply_wavescale_hdr_to_doc(doc, p)
+    apply_wavescale_hdr_to_doc(doc, p, mask_out=ctx.masks)
 
 
 _register(Tool(
@@ -1247,12 +1327,13 @@ _register(Tool(
         Param("compression_factor", "float", 1.5, "Coarse-scale compression.", min=0.1, max=5.0),
         Param("mask_gamma", "float", 5.0, "Gamma on the luminance mask; higher confines the effect to the "
               "brightest areas.", min=0.1, max=10.0),
-    ], aliases=["hdr", "wavescalehdr"]))
+    ], aliases=["hdr", "wavescalehdr"],
+    mask="the luminance mask the HDR blend used (the app's HDR Mask window)"))
 
 
 def _run_wavescale_de(doc, p, ctx):
     from setiastro.saspro.wavescalede_preset import run_wavescalede_via_preset
-    run_wavescalede_via_preset(ctx.main, p, target_doc=doc)
+    run_wavescalede_via_preset(ctx.main, p, target_doc=doc, mask_out=ctx.masks)
 
 
 _register(Tool(
@@ -1263,7 +1344,9 @@ _register(Tool(
         Param("boost_factor", "float", 5.0, "Dark-structure boost.", min=0.1, max=10.0),
         Param("mask_gamma", "float", 1.0, "Gamma on the darkness mask.", min=0.1, max=10.0),
         Param("iterations", "int", 2, "Enhancement passes.", min=1, max=10),
-    ], aliases=["dark_enhance", "wavescale_de", "wavescalede", "dse", "wavescaledarkenhance"]))
+    ], aliases=["dark_enhance", "wavescale_de", "wavescalede", "dse", "wavescaledarkenhance"],
+    mask="the darkness mask the enhancement used (the app's mask window; with several "
+         "iterations, the last pass's)"))
 
 
 def _run_texture_clarity(doc, p, ctx):
@@ -1385,9 +1468,11 @@ _EXAMPLES = {
     ],
     "wavescale_hdr": [
         _P + "wavescale_hdr -i in.tif -o out.tif --n-scales 6 --compression-factor 2",
+        _P + "wavescale_hdr -i in.tif -o out.tif --save-mask --json      (mask: out_mask.tif)",
     ],
     "wavescale_dark_enhance": [
         _P + "wavescale_dark_enhance -i in.tif -o out.tif --boost-factor 4 --iterations 2",
+        _P + "wavescale_dark_enhance -i in.fits -o out.fits --save-mask dark_mask.tif",
     ],
     "texture_clarity": [
         _P + "texture_clarity -i in.tif -o out.tif --texture 0.3 --clarity 0.25",

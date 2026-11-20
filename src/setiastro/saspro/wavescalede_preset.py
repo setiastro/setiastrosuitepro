@@ -56,7 +56,13 @@ class WaveScaleDSEPresetDialog(QDialog):
 # ─────────────────────────────────────────────────────────────────────────────
 # Headless runner (exactly like UI: compute → blend by active mask → apply)
 # ─────────────────────────────────────────────────────────────────────────────
-def run_wavescalede_via_preset(main, preset: dict | None = None, target_doc=None):
+def run_wavescalede_via_preset(main, preset: dict | None = None, target_doc=None,
+                               mask_out: list | None = None):
+    """
+    mask_out: a list to receive the darkness mask the enhancement used (2-D
+    float32, the dialog's mask window at full size; with several iterations,
+    the last pass's), appended once the edit is applied.
+    """
     import numpy as np
     from PyQt6.QtWidgets import QMessageBox
 
@@ -176,6 +182,8 @@ def run_wavescalede_via_preset(main, preset: dict | None = None, target_doc=None
         from PyQt6.QtCore import QCoreApplication
         QMessageBox.critical(main, QCoreApplication.translate("WaveScaleDSEPresetDialog", "WaveScale Dark Enhancer"), QCoreApplication.translate("WaveScaleDSEPresetDialog", "Failed to write to document:\n{0}").format(e))
         return
+    if mask_out is not None:
+        mask_out.append(np.asarray(_mask_used, dtype=np.float32))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
