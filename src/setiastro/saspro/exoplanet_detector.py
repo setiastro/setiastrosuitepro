@@ -4673,6 +4673,322 @@ class ExoPlanetWindow(QDialog):
         return SimpleNamespace(**{k: _cat(k) for k in
                                   ("period", "power", "duration", "transit_time", "depth")})
 
+    def _fold_transit_model(self, idx, period, t0, duration, depth):
+        """
+        The transit model for Analyze's phase fold -- the shape EXOTIC and Fit
+        Transit fit -- in place of the BLS box.  The box (instant ingress and
+        egress, flat floor) is how BLS finds the period; it isn't a shape.
+        At the BLS period:
+
+          1. The systematics (shared airmass term, per-night levels and time
+             terms, pier-side step) are refitted from the raw ratio with the
+             in-transit frames masked, so the baseline can't eat part of the
+             dip.  EXOTIC fits them jointly with the transit on one night;
+             masking is the multi-night equivalent.  See prepare() for a
+             night or pier side with no out-of-transit frames.
+          2. Every night is normalised to its out-of-transit median.
+          3. A quadratic limb-darkened transit, averaged over the exposure,
+             is fitted by least squares: Tc, Rp/R*, a/R*, inc and the level
+             free; period fixed; limb darkening at the Fit Transit defaults;
+             4-sigma neighbour clip and refit.
+          Then 1-3 again with the mask set from the fitted duration.
+
+        Returns a dict for the plot and the summary, or None when there is
+        nothing to fit or the fit found no transit.
+        """
+        rel = getattr(self, "rel_flux_raw", None)
+        times = getattr(self, "times", None)
+        if rel is None or times is None or not (0 <= int(idx) < rel.shape[0]):
+            return None
+        P, dur = float(period), float(duration)
+        if not (np.isfinite(P) and P > 0 and np.isfinite(dur) and dur > 0 and np.isfinite(t0)):
+            return None
+        jd = np.asarray(times.utc.jd, dtype=np.float64)
+        n_f = rel.shape[1]
+        if jd.size != n_f:
+            return None
+        y_raw = np.asarray(rel[idx], dtype=np.float64)
+        e_src = getattr(self, "rel_err_raw", None)
+        e_raw = (np.asarray(e_src[idx], dtype=np.float64)
+                 if e_src is not None and np.shape(e_src) == np.shape(rel) else np.full(n_f, np.nan))
+        ok = ((np.asarray(self.flags[idx]) == 0) & np.isfinite(y_raw) & (y_raw > 0)
+              & np.isfinite(jd))
+        if np.count_nonzero(ok) < 20:
+            return None
+
+        def fold_d(t, tc):          # days from the nearest mid-transit
+            return ((np.asarray(t, dtype=np.float64) - tc) / P + 0.5) % 1.0 * P - 0.5 * P
+
+        # reference epoch in the middle of the data
+        t_mid = 0.5 * (jd[ok].min() + jd[ok].max())
+        tc_ref = float(t0) + round((t_mid - float(t0)) / P) * P
+
+        X = (np.asarray(self.airmasses, dtype=np.float64)
+             if len(getattr(self, "airmasses", None) or []) == n_f else None)
+        S = getattr(self, "session_idx", None)
+        S = np.asarray(S) if S is not None and len(S) == n_f else None
+        side = self._side_array(n_f)
+        side_b = (np.asarray(side) != 0).astype(np.int64) if side is not None else None
+        nights = S if S is not None else np.zeros(n_f, dtype=np.int64)
+        mode = getattr(self, "detrend_mode", "airmass") or "none"
+        t_rel = jd - jd[ok].min()
+
+        def prepare(in_tr):
+            """
+            Steps 1-2 for one transit mask: (use, y, e, notes).  A baseline
+            level is only ever fitted from out-of-transit frames.  A night
+            without any gets left out -- fitting its level to transit frames
+            erased a whole 48 ppt eclipse in testing.  A pier-side segment
+            without any (the flip inside the transit) takes the night's other
+            side and the flip step measured on the nights that have both.
+            """
+            oot = ok & ~in_tr
+            use = ok.copy()
+            notes = []
+            for k in np.unique(nights[ok]):
+                m = ok & (nights == k)
+                if np.count_nonzero(oot & m) < 5:
+                    use &= ~m
+                    notes.append(("night", int(k), int(np.count_nonzero(m))))
+            y_adj, e_adj, side_fit = y_raw.copy(), e_raw.copy(), side
+            if side is not None and np.any(use):
+                seg = xphot.segment_labels(S, side, n_f)
+                orphan = np.zeros(n_f, bool)
+                for lab in np.unique(seg[use]):
+                    k = use & (seg == lab)
+                    if np.count_nonzero(oot & k) < 5:
+                        orphan |= k
+                collapse = [int(k) for k in np.unique(nights[orphan])
+                            if np.unique(side_b[use & (nights == k)]).size > 1]
+                if np.any(orphan):
+                    step = float("nan")
+                    if collapse:
+                        y0 = y_raw / xphot.robust_trend(t_rel, y_raw, oot & use, mode, X, S, None)
+                        ratios = []
+                        for k in np.unique(nights[use]):
+                            if k in collapse:
+                                continue
+                            m = oot & use & (nights == k)
+                            a = y0[m & (side_b == 0)]
+                            b_ = y0[m & (side_b == 1)]
+                            if a.size >= 5 and b_.size >= 5:
+                                ratios.append(float(np.median(b_) / np.median(a)))
+                        if ratios:
+                            step = float(np.median(ratios))
+                    if np.isfinite(step) and step > 0:
+                        side_fit = side_b.copy()
+                        for k in collapse:
+                            m = nights == k
+                            s1 = m & (side_b == 1)
+                            y_adj[s1] /= step
+                            e_adj[s1] /= step
+                            side_fit[m] = 0
+                        notes.append(("step", len(collapse), step))
+                    else:
+                        use &= ~orphan
+                        notes.append(("orphan", 0, int(np.count_nonzero(orphan))))
+            trend = xphot.robust_trend(t_rel, y_adj, oot & use, mode, X, S, side_fit)
+            y = y_adj / trend
+            e = e_adj / trend
+            for k in np.unique(nights[use]):
+                m = use & (nights == k)
+                base = m & oot
+                if np.count_nonzero(base) < 5:
+                    use &= ~m
+                    continue
+                lev = float(np.median(y[base]))
+                if np.isfinite(lev) and lev > 0:
+                    y[m] /= lev
+                    e[m] /= lev
+            use &= np.isfinite(y) & (y > 0)
+            return use, y, e, notes
+
+        exp = getattr(self, "_frame_exptime", None)
+        exp_s = (float(np.nanmedian(exp)) if exp is not None and np.any(np.isfinite(exp))
+                 else float(getattr(self, "exposure_time", 0.0) or 0.0))
+
+        def fit(t, y, e, tc_c, half, seed):
+            """Step 3: least squares, 4-sigma clip, refit.  (f, th, cov, resid, keep)"""
+            if seed is None:
+                dep = float(depth) if np.isfinite(depth) and depth > 0 else 0.01
+                rp0 = float(np.clip(math.sqrt(dep), 0.02, 0.6))
+                ars0 = xfit.ars_from_duration(P, min(dur, 0.45 * P), rp0, b=0.3)
+                if not np.isfinite(ars0):
+                    ars0 = 3.0
+                ars0 = float(np.clip(ars0, max(1.6, 1.05 + rp0), 150.0))
+                inc0 = 89.0
+            else:
+                rp0, ars0, inc0 = seed
+            pr = xfit.TransitPriors(name=self._star_label(idx), per=P, tc_ref=tc_c,
+                                    rp=rp0, ars=ars0, inc=inc0)
+            opt = xfit.FitOptions(systematics="none", free_inc=True, free_ars=True,
+                                  exptime_s=exp_s, use_beta=False,
+                                  tc_window=(tc_c - half, tc_c + half))
+            f = xfit.TransitFitter(t, y, e, None, pr, opt, nq=24)
+            f.lo[f.ix["inc"]] = 60.0     # unknown candidate: let the impact parameter roam
+            th0 = f.initial_theta(f.tc_grid_start(n=160) if seed is None else tc_c)
+            th, cov = f.fit_lsq(th0)
+            resid = f.y - f.model(th)
+            keep = xfit._clip_mask(f.t, resid, 4.0)
+            if np.count_nonzero(keep) < 0.8 * keep.size:
+                keep = np.isfinite(resid)
+            elif np.any(~keep):
+                th, cov = f.fit_lsq(th, mask=keep)
+                resid = f.y - f.model(th)
+            return f, th, cov, resid, keep
+
+        # Two passes: the transit mask from the BLS box, then from the fitted
+        # duration (a box shorter than the transit leaves its wings in the
+        # "baseline").
+        in_tr = np.abs(fold_d(jd, tc_ref)) < 0.75 * dur
+        tc_c, half, seed = tc_ref, float(min(0.25 * P, max(dur, 0.02 * P))), None
+        for _pass in range(2):
+            use, y_all, e_all, notes = prepare(in_tr)
+            if np.count_nonzero(use) < 20:
+                return None
+            order = np.argsort(jd[use])
+            t, y, e = jd[use][order], y_all[use][order], e_all[use][order]
+            bad_e = ~(np.isfinite(e) & (e > 0))
+            if np.all(bad_e):
+                e = np.full_like(y, max(xfit.robust_std(np.diff(y)) / math.sqrt(2.0), 1e-5))
+            elif np.any(bad_e):
+                e[bad_e] = float(np.median(e[~bad_e]))
+            f, th, cov, resid, keep = fit(t, y, e, tc_c, half, seed)
+            g = lambda n: float(th[f.ix[n]]) if n in f.ix else float(f.fixed[n])
+            tc, rp, ars, inc, c0 = g("tc"), g("rp"), g("ars"), g("inc"), g("c0")
+            b = float(xfit.impact_parameter(ars, inc))
+            if not (np.isfinite(rp) and rp > 0.003 and np.isfinite(b) and b < 1.0 + rp
+                    and c0 > 0):
+                print(f"[Analyze] transit model found no transit at P = {P:.5f} d "
+                      f"(Rp/R* {rp:.4f}, b {b:.2f}); the fold shows the box only")
+                return None
+            t14 = float(xfit.transit_duration(P, rp, ars, inc))
+            if _pass or not (np.isfinite(t14) and t14 > 0):
+                break
+            new_tr = np.abs(fold_d(jd, tc)) < 0.5 * t14 + max(0.25 * t14, 10.0 / 1440.0)
+            if np.array_equal(new_tr, in_tr):
+                break
+            in_tr = new_tr
+            tc_c, half, seed = tc, float(min(0.25 * P, max(0.5 * t14, 0.01 * P))), (rp, ars, inc)
+        u1, u2 = float(f.fixed["u1"]), float(f.fixed["u2"])
+        n_nights = int(np.unique(nights[use]).size)
+        n_left_out = int(np.count_nonzero(ok & ~use))
+        step_note = next((nt for nt in notes if nt[0] == "step"), None)
+        depth_model = 1.0 - float(xfit.transit_model(np.array([tc]), tc, P, rp, ars, inc,
+                                                     u1, u2)[0])
+        n_k = int(np.count_nonzero(keep))
+        chi2 = float(np.sum((resid[keep] / e[keep]) ** 2))
+        chi2_red = chi2 / max(1, n_k - len(f.names))
+        w = 1.0 / e[keep] ** 2
+        ybar = float(np.sum(w * y[keep]) / np.sum(w))
+        chi2_flat = float(np.sum(((y[keep] - ybar) / e[keep]) ** 2))
+        # model vs a flat line, with the errors scaled up to the residual scatter
+        snr = math.sqrt(max(0.0, chi2_flat - chi2) / max(1.0, chi2_red))
+        sig = lambda n: (math.sqrt(max(0.0, float(cov[f.ix[n], f.ix[n]])) * max(1.0, chi2_red))
+                         if cov is not None and n in f.ix else float("nan"))
+        rms10 = xfit.binned_rms(t[keep], resid[keep] / c0, 10.0 / 1440.0)[0]
+        steps = np.diff(t)
+        steps = steps[(steps > 0) & (steps < 0.1)]
+        cad = float(np.median(steps)) * 1440.0 if steps.size else float("nan")
+
+        # model across the whole orbit, dense through the transit
+        wide = max(t14 if np.isfinite(t14) else 0.0, dur)
+        xd = np.unique(np.concatenate([np.linspace(-0.5 * P, 0.5 * P, 1500),
+                                       np.linspace(-min(1.5 * wide, 0.5 * P),
+                                                   min(1.5 * wide, 0.5 * P), 1500)]))
+        mf = xfit.transit_model(tc + xd, tc, P, rp, ars, inc, u1, u2,
+                                exptime_d=f.exp_d, n_sub=f.n_sub)
+
+        # The separate transits the fold is built from.  The smooth model makes
+        # a single event look as convincing as ten, but one event says nothing
+        # about the period.
+        h14 = 0.5 * (t14 if np.isfinite(t14) else dur)
+        intr = keep & (np.abs(fold_d(t, tc)) <= h14)
+        ep = np.round((t - tc) / P).astype(np.int64)
+        events = []
+        for e_ in np.unique(ep[intr]):
+            n_e = int(np.count_nonzero(intr & (ep == e_)))
+            if n_e >= 3:
+                events.append((int(e_), float(tc + e_ * P), n_e))
+
+        # Odd/even depths (the Kepler vetting test).  An eclipsing binary
+        # found at half its period puts its primary and secondary eclipses on
+        # alternate epochs, and they rarely have the same depth.  The fitted
+        # shape is kept and only its depth is refitted, transit by transit --
+        # linear, so partial transits count.  Errors: sqrt(chi2_red) x the
+        # red-noise beta on the transit's own timescale (a depth averages over
+        # the whole transit, so 10-30 min bins understate it), then x the
+        # Birge ratio of the transits about their own parity's mean, so the
+        # errors are as large as transits of the SAME parity actually
+        # scatter.  Without that, one equal-depth binary in a synthetic test
+        # came out 3.7 sigma "unequal".
+        odd = np.mod(ep, 2) != 0
+        odd_even = None
+        n_odd = sum(1 for e_, _tc, _n in events if e_ % 2 != 0)
+        n_even = len(events) - n_odd
+        if n_odd and n_even:
+            dip = 1.0 - xfit.transit_model(t, tc, P, rp, ars, inc, u1, u2,
+                                           exptime_d=f.exp_d, n_sub=f.n_sub)
+            yy, ee = y / c0, e / c0
+            in_dip = keep & (dip > 0.05 * float(np.max(dip)))
+
+            def wscale(sel):
+                m = sel & in_dip
+                wv = 1.0 / ee[m] ** 2
+                return float(np.sum(wv * (1.0 - yy[m]) * dip[m]) / max(np.sum(wv * dip[m] ** 2),
+                                                                       1e-30))
+
+            # Noise measured with each parity at its own depth, so the
+            # difference being tested doesn't count as noise.
+            r2 = yy - (1.0 - np.where(odd, wscale(odd), wscale(~odd)) * dip)
+            chi2_red2 = float(np.sum((r2[keep] / ee[keep]) ** 2)) / max(1, n_k - len(f.names) - 1)
+            t14_min = t14 * 1440.0 if np.isfinite(t14) else 60.0
+            beta, _ = xfit.red_noise_beta(
+                t[keep], r2[keep],
+                bin_minutes=sorted({max(5.0, round(t14_min * q)) for q in (0.25, 0.5, 0.75, 1.0)}))
+            e_scale = math.sqrt(max(1.0, chi2_red2)) * max(1.0, beta)
+            per_ev = []
+            for e_, _tc, _n in events:
+                m = in_dip & (ep == e_)
+                if np.count_nonzero(m) < 3:
+                    continue
+                wv = 1.0 / ee[m] ** 2
+                swss = float(np.sum(wv * dip[m] ** 2))
+                per_ev.append((e_ % 2 != 0, float(np.sum(wv * (1.0 - yy[m]) * dip[m]) / swss),
+                               e_scale / math.sqrt(swss)))
+            par = {}
+            for p_odd in (True, False):
+                a = np.array([v for o_, v, _s in per_ev if o_ == p_odd])
+                s = np.array([s_ for o_, _v, s_ in per_ev if o_ == p_odd])
+                if a.size:
+                    wv = 1.0 / s ** 2
+                    par[p_odd] = (float(np.sum(wv * a) / np.sum(wv)),
+                                  float(1.0 / math.sqrt(np.sum(wv))), a, s)
+            if len(par) == 2:
+                chi_w = sum(float(np.sum(((a - m_) / s) ** 2)) for m_, _s, a, s in par.values())
+                dof = len(per_ev) - 2
+                birge = math.sqrt(max(1.0, chi_w / dof)) if dof >= 1 else 1.0
+                (a_o, s_o, _, _), (a_e, s_e, _, _) = par[True], par[False]
+                s_o, s_e = s_o * birge, s_e * birge
+                odd_even = {"a_odd": a_o, "a_even": a_e,
+                            "odd_ppt": a_o * depth_model * 1e3, "odd_err": s_o * depth_model * 1e3,
+                            "even_ppt": a_e * depth_model * 1e3, "even_err": s_e * depth_model * 1e3,
+                            "n_odd": int(par[True][2].size), "n_even": int(par[False][2].size),
+                            "beta": float(beta), "birge": float(birge),
+                            "sigma": abs(a_o - a_e) / max(math.hypot(s_o, s_e), 1e-12)}
+        return {
+            "t": t, "events": events, "n_in": int(np.count_nonzero(intr)),
+            "odd": odd, "odd_even": odd_even, "notes": notes, "n_left_out": n_left_out,
+            "x_h": fold_d(t, tc) * 24.0, "y": y / c0, "e": e / c0, "used": keep,
+            "resid_ppt": resid / c0 * 1e3, "model_x_h": xd * 24.0, "model_y": mf,
+            "tc": tc, "tc_err": sig("tc"), "rp": rp, "rp_err": sig("rp"), "ars": ars,
+            "inc": inc, "b": b, "u1": u1, "u2": u2, "t14_h": t14 * 24.0,
+            "depth_ppt": depth_model * 1e3, "rms_ppt": float(np.std(resid[keep] / c0)) * 1e3,
+            "rms10_ppt": rms10 * 1e3, "snr": snr, "chi2_red": chi2_red, "n_sub": int(f.n_sub),
+            "exp_s": exp_s, "cadence_min": cad, "n_nights": n_nights,
+            "n_clipped": int(keep.size - n_k),
+        }
+
     def on_analyze(self):
         sels = self.star_list.selectedItems()
         if len(sels) != 1:
@@ -4934,23 +5250,53 @@ class ExoPlanetWindow(QDialog):
 
         self.status_label.setText(prev_status)
 
-        # ── 5. Phase fold [-0.5, 0.5] ────────────────────────────────────────
-        phase = _phase_centered(t_clean, best_period_d, best_t0_jd)
+        # ── 5. Phase fold ────────────────────────────────────────────────────
+        # Shown in hours from mid-transit with the limb-darkened transit model
+        # and its residuals (_fold_transit_model); the BLS box stays as a
+        # dashed reference.  Without a model (no fit, or the fit found no
+        # transit) the fold shows the BLS input and the box, as before.
+        fold = None
+        if np.isfinite(best_period_d) and np.isfinite(best_t0_jd):
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                fold = self._fold_transit_model(idx, best_period_d, best_t0_jd,
+                                                best_duration_d, best_depth_frac)
+            except Exception as e:
+                print(f"[Analyze] transit model on the fold failed: {e}")
+                fold = None
+            finally:
+                QApplication.restoreOverrideCursor()
+        depth_plot = float(best_depth_frac) if np.isfinite(best_depth_frac) else 0.0
+        P_h = best_period_d * 24.0
+        tc_plot = fold["tc"] if fold else best_t0_jd
 
-        # BLS box model on sorted phase
-        ord_ph = np.argsort(phase)
-        phase_s = phase[ord_ph]
-        flux_s  = y_clean[ord_ph]
+        def fold_h(t):
+            return ((np.asarray(t, dtype=np.float64) - tc_plot) / best_period_d + 0.5) % 1.0 \
+                * P_h - 0.5 * P_h
 
-        transit_half = min(0.45, max(0.01, 0.5 * best_duration_d / best_period_d))
-        depth_plot   = float(best_depth_frac) if np.isfinite(best_depth_frac) else 0.0
-        model_phase = np.linspace(-0.5, 0.5, 500)
-        model_flux  = np.where(np.abs(model_phase) <= transit_half,
-                            1.0 - depth_plot, 1.0)
+        if fold:
+            fx, fy, fe, fused = fold["x_h"], fold["y"], fold["e"], fold["used"]
+        else:
+            fx, fy, fe = fold_h(t_clean), y_clean, None
+            fused = np.ones(fx.size, bool)
+        # BLS box, centred where BLS put it
+        box_c = float(fold_h(best_t0_jd)) if np.isfinite(best_t0_jd) else 0.0
+        box_hw = min(0.45 * best_period_d, 0.5 * best_duration_d) * 24.0
+        box_x = np.array([-0.5 * P_h, box_c - box_hw, box_c - box_hw,
+                          box_c + box_hw, box_c + box_hw, 0.5 * P_h])
+        box_y = np.array([1.0, 1.0, 1.0 - depth_plot, 1.0 - depth_plot, 1.0, 1.0])
 
-        # Binned phase curve
-        bin_width = max(0.005, transit_half / 3.0)
-        bx, by, be = _make_binned_curve(phase, y_clean, bin_width)
+        # Bins: 10 minutes, finer for a short transit (5 bins across it, but
+        # never under two exposures)
+        t14_min = (fold["t14_h"] if fold else best_duration_d * 24.0) * 60.0
+        steps = np.diff(np.sort(t_clean))
+        steps = steps[(steps > 0) & (steps < 0.1)]
+        cad_min = float(np.median(steps)) * 1440.0 if steps.size else 2.0
+        bin_min = 10.0
+        if np.isfinite(t14_min) and t14_min < 50.0:
+            bin_min = max(t14_min / 5.0, 2.0 * cad_min)
+        bx, by, be = xphot.bin_curve(fx[fused], fy[fused], bin_min / 60.0,
+                                     e=(fe[fused] if fe is not None else None))
 
         # Dip event detection for the summary
         dip_events = _estimate_night_dip_events(t_jd_good, f_good)
@@ -4966,16 +5312,113 @@ class ExoPlanetWindow(QDialog):
         n_dips   = len(dip_events)
         alias_pen = _alias_penalty(best_period_d)
         summary = (
-            f"Period: {best_period_d:.5f} d   "
-            f"Duration: {dur_hr:.2f} h   "
-            f"Depth: {depth_ppt:.2f} ppt   "
+            f"BLS — Period: {best_period_d:.5f} d   "
+            f"Box duration: {dur_hr:.2f} h   "
+            f"Box depth: {depth_ppt:.2f} ppt   "
             f"SDE: {best_sde:.1f}   "
             f"Alias penalty: {alias_pen:.2f}   "
             f"Night dips detected: {n_dips}"
         )
+        warn = []
+        if fold:
+            def pm(v, s, fmt):
+                if not np.isfinite(s):
+                    return f"{v:{fmt}}"
+                return f"{v:{fmt}}" + (f" ± {s:{fmt}}" if s <= 3.0 * abs(v) else " (unconstrained)")
+
+            # Which nights the transits come from, and the aperture test on each:
+            # a dip that fades in a bigger aperture is a PSF change, and a
+            # transit model fitted to it looks every bit as convincing.
+            S_all = getattr(self, "session_idx", None)
+            jd_frames = np.asarray(self.times.utc.jd, dtype=np.float64)
+            jd0 = getattr(self, "_frame_jd_utc", None)
+            jd0 = float(jd0[0]) if jd0 is not None and len(jd0) else None
+            ev_dates = []
+            for _e, tc_e, _n in fold["events"]:
+                date = ""
+                if S_all is not None and len(S_all) == jd_frames.size and self.sessions:
+                    s = int(np.asarray(S_all)[int(np.argmin(np.abs(jd_frames - tc_e)))])
+                    if 0 <= s < len(self.sessions):
+                        date = self.sessions[s].get("date") or ""
+                ev_dates.append(date or f"JD {tc_e:.2f}")
+                if jd0 is not None:
+                    try:
+                        ap = self._dip_aperture_test(idx, {"dip_t": tc_e - jd0,
+                                                           "dip_dur_h": fold["t14_h"]})
+                    except Exception:
+                        ap = None
+                    if ap is not None and ap[0]:
+                        warn.append(f"The {ev_dates[-1]} transit fades in a bigger aperture "
+                                    f"({ap[1]:.0f} → {ap[2]:.0f} ppt at r = {ap[3]:.1f} → "
+                                    f"{ap[4]:.1f} px): a PSF change, not an eclipse.")
+            n_ev = len(fold["events"])
+            if n_ev == 0:
+                warn.insert(0, "No night covers the transit itself.")
+            oe = fold.get("odd_even")
+            if oe is not None and oe["sigma"] > 3.0:
+                warn.append(f"Odd and even transits differ by {oe['sigma']:.1f}σ "
+                            f"({oe['odd_ppt']:.0f} vs {oe['even_ppt']:.0f} ppt).  Either they "
+                            "are an eclipsing binary's primary and secondary eclipses (true "
+                            f"period 2 × P = {2.0 * best_period_d:.5f} d), or the period is "
+                            "wrong and one set isn't a transit at all.")
+            summary += (
+                f"\nTransit model (limb-darkened, u1 {fold['u1']:.3f}, u2 {fold['u2']:.3f} fixed) — "
+                f"Rp/R* {pm(fold['rp'], fold['rp_err'], '.4f')}   "
+                f"depth {fold['depth_ppt']:.2f} ppt   T14 {fold['t14_h']:.2f} h   "
+                f"b {fold['b']:.2f}   a/R* {fold['ars']:.1f}   "
+                f"Tc {pm(fold['tc'], fold['tc_err'], '.5f')} JD_UTC   "
+                f"model vs flat line {fold['snr']:.1f}σ   "
+                f"residual RMS {fold['rms_ppt']:.2f} ppt/point"
+                + (f", {fold['rms10_ppt']:.2f} ppt per 10 min"
+                   if np.isfinite(fold['rms10_ppt']) else ""))
+            if n_ev == 1:
+                # The usual case: one dip, then the hunt for the next one.
+                summary += (f"\nSingle transit, {ev_dates[0]} ({fold['n_in']} points in transit): "
+                            "Tc, depth and T14 above are its measurement.  One transit doesn't "
+                            f"fix the period: {best_period_d:.5f} d is just a period the other "
+                            "nights don't rule out, and the next transit may be weeks or months "
+                            "away.")
+            else:
+                summary += (f"\nIn transit: {fold['n_in']} points from {n_ev} transits"
+                            + (f" ({', '.join(ev_dates)})" if ev_dates else ""))
+            for nt in fold.get("notes", []):
+                if nt[0] == "night":
+                    s = nt[1]
+                    date = (self.sessions[s].get("date") if 0 <= s < len(self.sessions or [])
+                            else "") or f"night {s + 1}"
+                    summary += (f"\n{date} left out ({nt[2]} frames): every frame is inside the "
+                                "transit, so the night has no baseline.")
+                elif nt[0] == "orphan":
+                    summary += (f"\n{nt[2]} frames left out: the meridian flip falls inside the "
+                                "transit, and no other night has both pier sides to measure the "
+                                "flip step from.")
+                elif nt[0] == "step":
+                    summary += (f"\nFlip inside the transit on {nt[1]} night"
+                                + ("s" if nt[1] != 1 else "")
+                                + f": the far pier side is set by the flip step from the other "
+                                  f"nights ({(nt[2] - 1.0) * 1e3:+.1f} ppt).")
+            if oe is not None:
+                summary += (f"\nOdd/even transits: {oe['odd_ppt']:.1f} ± {oe['odd_err']:.1f} vs "
+                            f"{oe['even_ppt']:.1f} ± {oe['even_err']:.1f} ppt "
+                            f"({oe['n_odd']} odd, {oe['n_even']} even, red-noise β "
+                            f"{oe['beta']:.2f}) — {oe['sigma']:.1f}σ apart")
+            if fold["rp"] >= 0.3 or fold["b"] >= 0.9:
+                warn.append("Deep or V-shaped: typical of an eclipsing binary.  An EW's two "
+                            "eclipses fold onto one at half the period — check the light curve "
+                            "at 2 × P.")
+        else:
+            summary += "\nNo transit model: the fold shows the BLS box only."
         lbl = QLabel(summary)
+        lbl.setWordWrap(True)
+        lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lbl.setStyleSheet("font-size: 11px; color: #aaddff; padding: 4px;")
         layout.addWidget(lbl)
+        if warn:
+            wl = QLabel("\n".join(warn))
+            wl.setWordWrap(True)
+            wl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            wl.setStyleSheet("font-size: 11px; color: #ffb070; padding: 0px 4px 4px 4px;")
+            layout.addWidget(wl)
 
         tabs = __import__("PyQt6.QtWidgets", fromlist=["QTabWidget"]).QTabWidget()
         layout.addWidget(tabs)
@@ -5001,43 +5444,114 @@ class ExoPlanetWindow(QDialog):
         tabs.addTab(pg_bls, "BLS Periodogram")
 
         # ── Tab 3: Phase fold ─────────────────────────────────────────────────
-        pg_fold = pg.PlotWidget(title=f"Phase-Folded  P = {best_period_d:.4f} d")
-
-        # Raw points (grey, small)
-        pg_fold.plot(
-            phase, y_clean,
-            pen=None, symbol="o",
-            symbolBrush=pg.mkBrush(180, 180, 180, 80),
-            symbolSize=4,
-            name="Raw",
-        )
-
-        # Binned points with error bars (blue)
+        # Same look as Fit Transit: detrended points, binned means with their
+        # errors, the transit model, residuals underneath on a linked axis.
+        n_nt = fold["n_nights"] if fold else 0
+        pg_fold = pg.PlotWidget(
+            title=f"{self._star_label(idx)} — folded at P = {best_period_d:.5f} d"
+                  + (f" ({n_nt} nights)" if n_nt > 1 else "")
+                  + (" — detrended, transit masked" if fold else ""))
+        pg_fold.addLegend(offset=(10, 10))
+        pg_fold.plot(fx[fused], fy[fused], pen=None, symbol="o", symbolSize=4,
+                     symbolBrush=pg.mkBrush(150, 190, 255, 130), symbolPen=None,
+                     name="detrended" if fold else "BLS input")
+        if np.any(~fused):
+            pg_fold.plot(fx[~fused], fy[~fused], pen=None, symbol="x", symbolSize=8,
+                         symbolPen=pg.mkPen((255, 80, 80)), name="clipped")
         if bx.size > 0:
-            err = pg.ErrorBarItem(
-                x=bx, y=by, height=2 * be,
-                pen=pg.mkPen("b", width=1.5),
-            )
-            pg_fold.addItem(err)
-            pg_fold.plot(
-                bx, by,
-                pen=None, symbol="o",
-                symbolBrush=pg.mkBrush(80, 160, 255, 220),
-                symbolSize=7,
-                name="Binned",
-            )
-
-        # Box model (red)
-        pg_fold.plot(
-            model_phase, model_flux,
-            pen=pg.mkPen("r", width=2),
-            name="Box model",
-        )
-        pg_fold.addLine(y=1.0, pen=pg.mkPen("w", style=Qt.PenStyle.DashLine, width=1))
-        pg_fold.setLabel("bottom", "Phase")
-        pg_fold.setLabel("left", "Relative Flux")
+            pg_fold.addItem(pg.ErrorBarItem(x=bx, y=by, height=2 * be,
+                                            pen=pg.mkPen((255, 210, 80), width=1)))
+            pg_fold.plot(bx, by, pen=None, symbol="o", symbolSize=7,
+                         symbolBrush=pg.mkBrush(255, 210, 80), symbolPen=None,
+                         name=f"{bin_min:.0f}-min bins" if bin_min >= 10 else f"{bin_min:.1f}-min bins")
+        pg_fold.plot(box_x, box_y,
+                     pen=pg.mkPen((200, 200, 200), width=1, style=Qt.PenStyle.DashLine),
+                     name="BLS box")
+        if fold:
+            pg_fold.plot(fold["model_x_h"], fold["model_y"],
+                         pen=pg.mkPen((255, 90, 90), width=2), name="transit model")
+        pg_fold.setLabel("bottom", "Hours from mid-transit")
+        pg_fold.setLabel("left", "Relative flux")
         pg_fold.showGrid(True, True, alpha=0.3)
-        tabs.addTab(pg_fold, "Phase Fold")
+        # Open on the transit; the whole orbit is one zoom-out (or the A button) away.
+        span_h = max((fold["t14_h"] if fold else 0.0), best_duration_d * 24.0, 0.5)
+        x_half = min(0.5 * P_h, 2.5 * span_h)
+        pg_fold.setXRange(-x_half, x_half, padding=0.02)
+        vis = fused & (np.abs(fx) <= x_half) & np.isfinite(fy)
+        if np.count_nonzero(vis) >= 5:
+            lo, hi = np.percentile(fy[vis], [0.5, 99.5])
+            if fold:
+                lo = min(lo, float(np.min(fold["model_y"])))
+            pad = 0.08 * max(hi - lo, 1e-4)
+            pg_fold.setYRange(lo - pad, hi + pad, padding=0)
+
+        fold_page = QSplitter(Qt.Orientation.Vertical)
+        fold_page.setChildrenCollapsible(False)
+        fold_page.addWidget(pg_fold)
+        if fold:
+            pg_res = pg.PlotWidget(title="Residuals")
+            pg_res.showGrid(True, True, alpha=0.3)
+            pg_res.setLabel("left", "ppt")
+            pg_res.setLabel("bottom", "Hours from mid-transit")
+            pg_res.setXLink(pg_fold)
+            r = fold["resid_ppt"]
+            pg_res.plot(fx[fused], r[fused], pen=None, symbol="o", symbolSize=4,
+                        symbolBrush=pg.mkBrush(150, 190, 255, 130), symbolPen=None)
+            rb_x, rb_y, _rb_e = xphot.bin_curve(fx[fused], r[fused], bin_min / 60.0,
+                                                e=fe[fused] * 1e3)
+            if rb_x.size:
+                pg_res.plot(rb_x, rb_y, pen=None, symbol="o", symbolSize=6,
+                            symbolBrush=pg.mkBrush(255, 210, 80), symbolPen=None)
+            pg_res.addLine(y=0.0, pen=pg.mkPen((200, 200, 200), style=Qt.PenStyle.DashLine))
+            rv = fused & (np.abs(fx) <= x_half) & np.isfinite(r)
+            if np.count_nonzero(rv) >= 5:
+                rlo, rhi = np.percentile(r[rv], [0.5, 99.5])
+                rpad = 0.1 * max(rhi - rlo, 1e-3)
+                pg_res.setYRange(rlo - rpad, rhi + rpad, padding=0)
+            fold_page.addWidget(pg_res)
+            fold_page.setStretchFactor(0, 3)
+            fold_page.setStretchFactor(1, 1)
+            fold_page.setSizes([450, 170])
+        tabs.addTab(fold_page, "Phase Fold")
+
+        # ── Tab 3b: Odd / Even ────────────────────────────────────────────────
+        # The two halves side by side on shared axes: each with the transit
+        # model scaled to its own depth (red) and the joint model (dashed).
+        oe = fold.get("odd_even") if fold else None
+        if oe is not None:
+            oe_page = QWidget()
+            oe_lay = QHBoxLayout(oe_page)
+            oe_lay.setContentsMargins(0, 0, 0, 0)
+            y_view = pg_fold.viewRange()[1]
+            panels = []
+            for name, sel, a, d, s, n in (
+                    ("Odd", fold["odd"], oe["a_odd"], oe["odd_ppt"], oe["odd_err"], oe["n_odd"]),
+                    ("Even", ~fold["odd"], oe["a_even"], oe["even_ppt"], oe["even_err"],
+                     oe["n_even"])):
+                pw = pg.PlotWidget(title=f"{name} transits ({n}): {d:.1f} ± {s:.1f} ppt")
+                m = sel & fused
+                pw.plot(fx[m], fy[m], pen=None, symbol="o", symbolSize=4,
+                        symbolBrush=pg.mkBrush(150, 190, 255, 130), symbolPen=None)
+                tb, yb, eb = xphot.bin_curve(fx[m], fy[m], bin_min / 60.0, e=fe[m])
+                if tb.size:
+                    pw.addItem(pg.ErrorBarItem(x=tb, y=yb, height=2 * eb,
+                                               pen=pg.mkPen((255, 210, 80), width=1)))
+                    pw.plot(tb, yb, pen=None, symbol="o", symbolSize=7,
+                            symbolBrush=pg.mkBrush(255, 210, 80), symbolPen=None)
+                pw.plot(fold["model_x_h"], fold["model_y"],
+                        pen=pg.mkPen((200, 200, 200), width=1, style=Qt.PenStyle.DashLine))
+                pw.plot(fold["model_x_h"], 1.0 - a * (1.0 - fold["model_y"]),
+                        pen=pg.mkPen((255, 90, 90), width=2))
+                pw.setLabel("bottom", "Hours from mid-transit")
+                pw.setLabel("left", "Relative flux")
+                pw.showGrid(True, True, alpha=0.3)
+                pw.setXRange(-x_half, x_half, padding=0.02)
+                pw.setYRange(y_view[0], y_view[1], padding=0)
+                oe_lay.addWidget(pw)
+                panels.append(pw)
+            panels[1].setXLink(panels[0])
+            panels[1].setYLink(panels[0])
+            tabs.addTab(oe_page, "Odd / Even")
 
         # ── Tab 4: Raw light curve ────────────────────────────────────────────
         pg_lc = pg.PlotWidget(title="Raw Light Curve")
@@ -5071,7 +5585,7 @@ class ExoPlanetWindow(QDialog):
         pg_lc.showGrid(True, True, alpha=0.3)
         tabs.addTab(pg_lc, "Light Curve")
 
-        dlg.resize(1000, 640)
+        dlg.resize(1000, 700)
         dlg.exec()
 
     # ---- shared SIMBAD/VSX name resolver ------------------------------

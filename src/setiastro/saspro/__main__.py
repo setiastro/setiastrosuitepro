@@ -130,6 +130,17 @@ def entry(argv: list[str] | None = None) -> int:
     import multiprocessing as _mp
     _mp.freeze_support()
 
+    # Frozen build: keep the bundle's DLL directory, Qt plugin path and
+    # PyInstaller bookkeeping out of every program SAS Pro launches (StarNet,
+    # GraXpert, SyQon Studio, the runtime-venv Python, ...). No-op from pip or
+    # source. Placed after freeze_support() so workers never reach it, and
+    # before the CLI/GUI split so both are covered.
+    try:
+        from setiastro.saspro import subprocess_isolation
+        subprocess_isolation.install()
+    except Exception:
+        pass
+
     argv = list(sys.argv[1:] if argv is None else argv)
 
     if argv and argv[0].lower() in CLI_SUBCOMMANDS:

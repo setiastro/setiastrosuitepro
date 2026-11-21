@@ -32,7 +32,7 @@ import math
 import re
 import warnings
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional, Sequence
 
 import numpy as np
@@ -266,31 +266,60 @@ def observatory_site(hdr):
     return None
 
 
+def first_paragraph(e) -> str:
+    """An exception's first paragraph on one line (astropy wraps its messages)."""
+    s = str(e).strip()
+    return " ".join(s.split("\n\n")[0].split()) if s else type(e).__name__
+
+
 def _iers_offline():
-    """Context that keeps astropy from downloading IERS tables mid-fit."""
+    """
+    Context that keeps astropy from downloading IERS tables mid-fit, and lets
+    it use the bundled table's predictions however old they are.
+
+    With auto_download off astropy reads its bundled IERS-A table, and it
+    refuses that table's predictions once they are more than auto_max_age
+    (30) days old.  Without auto_max_age=None every install stopped
+    converting to BJD_TDB a month after its astropy-iers-data was built:
+    the 1.24.7 dev venv's table (2025-12-08) failed for all later data.
+    The IERS quantities used here (UT1-UTC and polar motion, for the site's
+    position) move BJD by microseconds even when the table is years stale.
+    """
     st = ExitStack()
     try:
         from astropy.utils import iers
-        st.enter_context(iers.conf.set_temp("auto_download", False))
-        if hasattr(iers.conf, "iers_degraded_accuracy"):
-            st.enter_context(iers.conf.set_temp("iers_degraded_accuracy", "warn"))
     except Exception:
-        pass
+        return st
+    for key, val in (("auto_download", False), ("auto_max_age", None),
+                     ("iers_degraded_accuracy", "warn")):
+        if hasattr(iers.conf, key):
+            try:
+                st.enter_context(iers.conf.set_temp(key, val))
+            except Exception:
+                pass
     return st
 
 
-def bjd_tdb(jd_utc, ra_deg: float, dec_deg: float, site=None):
+def bjd_tdb(jd_utc, ra_deg: float, dec_deg: float, site=None, info: Optional[dict] = None):
     """
     BJD_TDB for each JD_UTC, for a target at (ra, dec).
 
     `site` is (lat, lon_east, height_m[, ...]) or None for the geocentre.
     Ignoring the site costs at most R_earth/c = 21 ms, so a missing site
     degrades gracefully.  Runs with IERS auto-download off: the only IERS
-    quantity involved here (UT1-UTC, for the site's position) moves the
-    answer by microseconds, and a GUI tool must not stall on a network fetch.
+    quantities involved here (UT1-UTC and polar motion, for the site's
+    position) move the answer by microseconds, and a GUI tool must not
+    stall on a network fetch.
+
+    If astropy's path through the IERS tables fails anyway, the geocentre
+    is used, computed without any IERS table (Earth's barycentric position
+    from ERFA's built-in ephemeris).  `info`, if a dict, then gets
+    "geocentric_fallback" = the reason.
     """
-    from astropy.time import Time
-    from astropy.coordinates import SkyCoord, EarthLocation
+    from astropy.time import Time, TimeDelta
+    from astropy.coordinates import (SkyCoord, EarthLocation, get_body_barycentric,
+                                     UnitSphericalRepresentation)
+    from astropy import constants as const
     import astropy.units as u
 
     jd = np.asarray(jd_utc, dtype=np.float64)
@@ -305,8 +334,16 @@ def bjd_tdb(jd_utc, ra_deg: float, dec_deg: float, site=None):
     with _iers_offline(), warnings.catch_warnings():
         warnings.simplefilter("ignore")
         t = Time(jd, format="jd", scale="utc", location=loc)
-        ltt = t.light_travel_time(target, kind="barycentric",
-                                  ephemeris="builtin")
+        try:
+            ltt = t.light_travel_time(target, kind="barycentric",
+                                      ephemeris="builtin")
+        except Exception as e:
+            earth = get_body_barycentric("earth", t, ephemeris="builtin")
+            n_hat = target.represent_as(UnitSphericalRepresentation).to_cartesian()
+            ltt = TimeDelta((earth.dot(n_hat) / const.c).to_value(u.s),
+                            format="sec", scale="tdb")
+            if isinstance(info, dict):
+                info["geocentric_fallback"] = first_paragraph(e)
         out = t.tdb + ltt
         return np.asarray(out.jd1, np.float64) + np.asarray(out.jd2, np.float64)
 
@@ -717,11 +754,19 @@ SYSTEMATICS = {
 }
 
 SYSTEMATICS_LABELS = {
+    # "auto" is resolved by select_systematics() before any TransitFitter
+    # sees it; it has no entry in SYSTEMATICS.
+    "auto":           "Auto (lowest BIC)",
     "airmass":        "Airmass  a1·exp(a2·X)   (EXOTIC)",
     "airmass_linear": "Airmass + linear time",
     "linear":         "Linear in time",
     "quadratic":      "Quadratic in time",
     "none":           "None (normalisation only)",
+}
+
+SYSTEMATICS_SHORT = {
+    "airmass": "airmass", "airmass_linear": "airmass+linear", "linear": "linear",
+    "quadratic": "quadratic", "none": "none",
 }
 
 PARAM_LABELS = {
@@ -1198,6 +1243,86 @@ def fit_quick(t, y, yerr, airmass, priors: TransitPriors, options: FitOptions, s
     return score, th, f
 
 
+def select_systematics(t, y, yerr, airmass, priors: TransitPriors, options: FitOptions,
+                       side=None) -> dict:
+    """
+    The systematics model for "auto": lowest BIC = chi^2 + k ln n, the
+    criterion AstroImageJ uses for its detrend parameters.
+
+    Each candidate is a least-squares transit fit on the same points (an
+    outlier under any model is left out of all of them), so the chi^2
+    values compare.  The errors are scaled first so the most flexible model
+    has chi^2_red = 1 (never scaled down): with red noise the photometric
+    errors are too small and every extra term would look significant.
+    Within dBIC 2 of the best, the model with the fewest terms wins -- a
+    term has to earn its place.  Time trends need out-of-transit baseline
+    on both sides of the transit; with one side only, a slope trades
+    against the depth, so they are not offered.
+
+    Returns {"key", "rows", "err_scale", "n"}; each row has key, k, dbic
+    (nan when not offered), chosen, note.
+    """
+    t = np.asarray(t, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    e = np.asarray(yerr, dtype=np.float64)
+    order = ("none", "airmass", "linear", "airmass_linear", "quadratic")
+    fits, rows, seen = [], [], {}
+    for key in order:
+        f = TransitFitter(t, y, e, airmass, priors, replace(options, systematics=key),
+                          nq=24, side=side)
+        sig = tuple(f.names)
+        if sig in seen:
+            # No airmass range: the airmass term is dropped, so this is a
+            # model already in the list.
+            rows.append({"key": key, "k": len(sig), "dbic": float("nan"), "chosen": False,
+                         "note": "no airmass change"})
+            continue
+        seen[sig] = key
+        fits.append({"key": key, "f": f, "k": len(sig)})
+    tc0 = fits[0]["f"].tc_grid_start(n=96)   # systematics start at zero: same for all
+    for c in fits:
+        c["th"], _ = c["f"].fit_lsq(c["f"].initial_theta(tc0))
+
+    keep = np.isfinite(y) & np.isfinite(e) & (e > 0)
+    clip = float(options.clip_sigma or 0.0)
+    if clip > 0:
+        k2 = keep.copy()
+        for c in fits:
+            k2 &= _clip_mask(t, y - c["f"].model(c["th"]), clip)
+        if np.count_nonzero(k2) >= 0.8 * np.count_nonzero(keep):
+            keep = k2
+    m = int(np.count_nonzero(keep))
+    for c in fits:
+        c["th"], _ = c["f"].fit_lsq(c["th"], mask=keep)
+        r = (y - c["f"].model(c["th"]))[keep] / e[keep]
+        c["chi2"] = float(np.sum(r * r))
+
+    flex = max(fits, key=lambda c: (c["k"], -c["chi2"]))
+    s2 = max(1.0, flex["chi2"] / max(1, m - flex["k"]))
+
+    ref = next((c for c in fits if c["key"] == "airmass"), fits[0])
+    tr, _ = ref["f"].components(ref["th"])
+    tc = float(ref["th"][ref["f"].ix["tc"]])
+    oot = keep & (np.asarray(tr) >= 1.0 - 1e-9)
+    need = max(5, int(0.1 * m))
+    two_sided = (np.count_nonzero(oot & (t < tc)) >= need
+                 and np.count_nonzero(oot & (t > tc)) >= need)
+
+    for c in fits:
+        c["ok"] = two_sided or "c1" not in c["f"].ix
+        c["bic"] = c["chi2"] / s2 + c["k"] * math.log(max(m, 2))
+    elig = [c for c in fits if c["ok"]]
+    bmin = min(c["bic"] for c in elig)
+    pick = min((c for c in elig if c["bic"] - bmin <= 2.0), key=lambda c: (c["k"], c["bic"]))
+    for c in fits:
+        rows.append({"key": c["key"], "k": c["k"],
+                     "dbic": float(c["bic"] - bmin) if c["ok"] else float("nan"),
+                     "chosen": c is pick,
+                     "note": "" if c["ok"] else "needs baseline on both sides"})
+    rows.sort(key=lambda r: order.index(r["key"]))
+    return {"key": pick["key"], "rows": rows, "err_scale": math.sqrt(s2), "n": m}
+
+
 def fit_transit(t, y, yerr, airmass, priors: TransitPriors,
                 options: FitOptions,
                 progress: Optional[Callable[[int, str], None]] = None,
@@ -1259,6 +1384,13 @@ def fit_transit(t, y, yerr, airmass, priors: TransitPriors,
     if not (np.isfinite(priors.ars) and priors.ars > 1.0):
         res.message = "a/R* is required."
         return res
+
+    sys_auto = None
+    if options.systematics == "auto":
+        say(1, "Choosing the systematics model…")
+        sys_auto = select_systematics(t, y, e, X, priors, options, side=Ps)
+        options = replace(options, systematics=sys_auto["key"])
+        res.options = options
 
     say(2, "Scanning Tc…")
     f = TransitFitter(t, y, e, X, priors, options, nq=24, side=Ps)
@@ -1423,6 +1555,7 @@ def fit_transit(t, y, yerr, airmass, priors: TransitPriors,
         "rms_ppt": rms * 1e3, "rms10_ppt": rms10 * 1e3, "pts_per_10min": n10,
         "cadence_min": cad, "acceptance": float(acc), "walkers": W, "steps": nsteps,
         "norm_median": med, "X0": fe.X0, "t_mid": fe.t_mid, "n_sub": fe.n_sub,
+        "sys_auto": sys_auto,
     }
     if acc < 0.1:
         res.notes.append(f"Low MCMC acceptance ({acc:.2f}); posteriors may be under-sampled.")

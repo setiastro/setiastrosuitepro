@@ -341,11 +341,23 @@ The status line notes when raw or registered frames are loaded.
 <tr><th>Tab</th><th>Shows</th></tr>
 <tr><td><b>Lomb-Scargle</b></td><td>LS periodogram covering frequencies from 1/T<sub>span</sub> to the Nyquist limit. Peak marked in yellow. Best for continuous variability (sine-like signals, pulsators).</td></tr>
 <tr><td><b>BLS Periodogram</b></td><td>Box Least Squares periodogram, whitened (running-median background subtracted) and plotted on a per-period axis. Best peak marked in red. Best for sharp transit-shaped dips.</td></tr>
-<tr><td><b>Phase Fold</b></td><td>Light curve folded at the best BLS period, phase from –0.5 to +0.5. Raw points in grey, binned points with error bars in blue, box-model prediction in red.</td></tr>
+<tr><td><b>Phase Fold</b></td><td>The light curve folded at the best BLS period, in hours from mid-transit, laid out like Fit Transit: detrended points, binned means with error bars (yellow), the limb-darkened transit model (red), the BLS box (dashed) and the residuals underneath. It opens on the transit; zoom out, or click the A button, for the whole orbit.</td></tr>
+<tr><td><b>Odd / Even</b></td><td>Shown when the fold has transits at both odd and even epochs. The odd and even transits are plotted side by side on shared axes, each with the model scaled to its own depth (red) and the joint model (dashed).</td></tr>
 <tr><td><b>Light Curve</b></td><td>Raw calibrated curve with predicted transit centers marked by vertical dashed lines at integer multiples of the found period from t₀.</td></tr>
 </table>
 
-<p>The window title summarizes the result: <code>Analysis: Star #42  |  P = 1.4237 d  |  SDE = 8.3</code>. A detail line underneath shows duration (hours), depth (ppt), SDE, alias penalty, and number of per-night dips detected.</p>
+<p>The window title summarizes the result: <code>Analysis: Star #42  |  P = 1.4237 d  |  SDE = 8.3</code>. Underneath, the first line is the BLS result: box duration (hours), box depth (ppt), SDE, alias penalty, and number of per-night dips detected. The second line is the transit model fitted to the fold: Rp/R*, depth with limb darkening, T14, impact parameter b, a/R*, Tc, how far the model stands above a flat line (σ) and the residual scatter. The third line counts the points inside the transit and the separate transits they come from. Further lines appear when they apply: the odd/even depths, nights left out of the fit, and the flip-step correction.</p>
+
+<p><b>A single transit.</b> This is the usual case: one dip, then the hunt for the next one weeks, months or years later. Analyze reports it as a result. Tc, depth and T14 are the measurement. The period is not: with one transit, the BLS period is just one of the periods the other nights don't rule out, so the summary says so.</p>
+
+<p><b>Box versus transit model.</b> BLS fits a box: the flux drops instantly, stays flat and comes straight back up. That is how it finds the period quickly, but it isn't the shape of a transit. On the fold, Analyze fits the transit model Fit Transit and EXOTIC use, at the BLS period. The planet's disc takes time to cross the edge of the star, so ingress and egress are slopes; limb darkening rounds the floor; and the model is averaged over each exposure. Before the fit, the systematics (airmass, per-night levels, the pier-side step) are refitted with the transit frames masked, so the baseline can't absorb part of the dip, and every night is set to its out-of-transit median. Limb darkening is fixed at u1 0.465, u2 0.257. For a published transit time use Fit Transit, which also runs the MCMC; the fold is for judging the candidate.</p>
+
+<p><b>Warnings (orange).</b> Analyze warns about three things:</p>
+<ul>
+  <li><b>Odd and even transits differ</b> by more than 3σ: alternating depths. That is the signature of an eclipsing binary found at half its period, whose primary and secondary eclipses fall on alternate epochs. It can also mean the period is wrong and one set of "transits" isn't a dip at all. The test needs at least one transit of each parity.</li>
+  <li><b>The aperture test fails</b> (§9): each transit is checked, and one that fades in a bigger aperture is a PSF change. On NGC660 the post-flip dip of #20 folds into a smooth, 18σ "transit" at 0.265 d, from one night. Its depth falls from 62 to −2 ppt between the 7.4 and 14.7 px apertures.</li>
+  <li><b>Deep or V-shaped</b> (Rp/R* ≥ 0.3 or b ≥ 0.9): this is typical of an eclipsing binary. Look at 2 × P, since a W UMa's two eclipses fold onto one.</li>
+</ul>
 
 <p><b>Several nights.</b> The BLS period grid has to get finer as the data span grows: its step is the shortest trial duration divided by the span squared. That's about 3,500 trial periods for one night, but 28 million for seven nights spread over 27 days, which would take more than a day to compute. Analyze scans at most 100,000 periods, then re-scans each of the strongest peaks at the full resolution. The scan runs on all CPU cores, and a long one shows its progress with a Cancel button. On the 7-night NGC660 data it takes about 17 s. The W UMa binary CSS_J014208.2+135125 (VSX period 0.31167 d) comes out at 0.15583 d, half its period. That is the expected BLS result for an eclipsing binary with two nearly equal eclipses per orbit.</p>
 
@@ -361,7 +373,7 @@ The status line notes when raw or registered frames are loaded.
   <li><b>Priors.</b> If the frames are plate-solved, known planets at the star's position are looked up automatically in the NASA Exoplanet Archive; or type a planet/host name and <b>Look up</b>. Period, reference Tc, Rp/R*, a/R*, inclination and eccentricity are filled in with their uncertainties, along with the predicted mid-transit time for this night. Everything stays editable.</li>
   <li><b>Limb darkening.</b> Quadratic coefficients from Claret &amp; Bloemen (2011) for the star's Teff / log g / [Fe/H] and the filter (read from the FILTER keyword; LCO names like <code>rp</code> are recognised). Clear and broadband exoplanet filters map to the nearest standard band, marked approximate.</li>
   <li><b>Selection.</b> Every aperture radius × a family of comparison sets (the weighted ensemble, its best-n subsets, and each of the best single comparisons) is fitted by least squares, and the combination with the lowest residual scatter wins — EXOTIC's selection metric.</li>
-  <li><b>Fit.</b> Transit × systematics, with Tc, Rp/R* and (by default) inclination free. Systematics default to EXOTIC's airmass term a1·exp(a2·X); linear/quadratic time trends are available. Outliers are clipped against their neighbours. Posteriors come from an affine-invariant ensemble MCMC; the photometric errors are first scaled by √χ²<sub>red</sub> (only ever inflated) and by the red-noise factor β.</li>
+  <li><b>Fit.</b> Transit × systematics, with Tc, Rp/R* and (by default) inclination free. Systematics default to <b>Auto</b>: every model (none, EXOTIC's airmass term a1·exp(a2·X), linear or quadratic in time, airmass + linear) is fitted, and the lowest BIC wins (§18.9b). Any model can also be picked by hand. Airmass alone can't follow a steady drift through the night: when the run is centred on the meridian, airmass is U-shaped in time. Outliers are clipped against their neighbours. Posteriors come from an affine-invariant ensemble MCMC; the photometric errors are first scaled by √χ²<sub>red</sub> (only ever inflated) and by the red-noise factor β.</li>
   <li><b>Results.</b> Tc in BJD_TDB with its uncertainty, O–C against the ephemeris, Rp/R*, depth, impact parameter, T14, airmass coefficients, residual RMS per point and per 10 minutes, β, and which aperture and comparison set were used.</li>
 </ol>
 
@@ -375,7 +387,7 @@ The status line notes when raw or registered frames are loaded.
 <p>The <b>Plot</b> selector above the chart switches the dialog between the Graphical and Scientific styles (§7). The point errors in the fit carry the same per-frame noise measured from the comparison stars, re-measured for each aperture tried; the summary reports its median.</p>
 
 <div class="tip">
-<b>Times.</b> Every timestamp is mid-exposure (DATE-OBS + EXPTIME/2, or DATE-AVG when present) converted to BJD_TDB for the target with the observatory site from the header. Without a site the geocentre is used (at most 21 ms error). Without plate-solved coordinates the times stay JD_UTC and the window says so — timing databases require BJD_TDB.
+<b>Times.</b> Every timestamp is mid-exposure (DATE-OBS + EXPTIME/2, or DATE-AVG when present) converted to BJD_TDB for the target with the observatory site from the header. Without a site the geocentre is used (at most 21 ms error). No download is needed: astropy's bundled Earth-rotation table is used however old it is, which moves BJD by microseconds. (Up to 1.24.7 the conversion failed for any data taken more than a month after the installed astropy's table was built; such fits were in JD_UTC, and their O–C was off by up to 9.5 min.) If the site correction fails for any other reason, the geocentre is used and the window says so. Without coordinates — no plate solve and no planet lookup — the times stay JD_UTC and the window says so; timing databases require BJD_TDB.
 </div>
 
 <div class="workflow">
@@ -562,6 +574,14 @@ The status line notes when raw or registered frames are loaded.
 
 <p>reported in EXOTIC's convention a<sub>1</sub> = c<sub>0</sub>e<sup>−a<sub>2</sub>X<sub>0</sub></sup>. Starting point: a Tc grid scan, then bounded least squares. Priors: Tc uniform within max(10σ<sub>pred</sub>, ½T<sub>14</sub>, 1 h) of the prediction; Rp/R* uniform; inclination within ±5° (Gaussian if the archive gives an error); a/R* fixed or Gaussian; b &lt; 1 + Rp/R*. Errors are scaled by √χ²<sub>red</sub> (never down) and by the time-averaging red-noise factor β (Winn et al. 2008, bins of 10–30 min), then the posterior is sampled with the Goodman &amp; Weare (2010) affine-invariant ensemble sampler; medians and 16/84th percentiles are reported.</p>
 
+<p><b>Automatic systematics.</b> Before the full fit, each systematics model (none, airmass, linear, airmass + linear, quadratic) gets a least-squares transit fit on the same points. A point that is an outlier under any model is left out of all of them, so the χ² values compare. The model is chosen by</p>
+
+<div class="matheq">\mathrm{BIC} = \chi^2/s^2 + k \ln n</div>
+
+<p>the criterion AstroImageJ uses for its detrend parameters. k is the number of free parameters, and s² scales the errors so the most flexible model has χ²<sub>red</sub> = 1 (never scaled down). With red noise the photometric errors are too small, and every extra term would otherwise look significant. Within ΔBIC 2 of the lowest, the model with the fewest terms wins: a term has to earn its place. Time trends are only offered when there's out-of-transit baseline on both sides of the transit (at least max(5, 10% of the points) each). With baseline on one side only, a slope trades against the depth. The summary lists every model's ΔBIC and marks the winner. If the winner isn't airmass, the AAVSO report's notes name the model; DETREND_2 is the fitted systematics in every case.</p>
+
+<p>Synthetic check (simulated only), on a night shaped like a WASP-12 b observation: −4 to +5 h around the transit, 4-min cadence, 2.2 ppt noise, meridian-centred airmass, 20 noise draws per case. A flat baseline chose none 20/20 times; an airmass extinction term chose airmass 20/20; a 4 ppt linear drift chose linear 20/20. On that drifting night the airmass-only fit put Tc 1.4 min early on average, with 58% of the true Tc values inside its 1σ errors. Auto put it 0.1 min early, with 92% inside 1σ (12 draws). Runs ending mid-transit never got a time trend.</p>
+
 <h3>18.10 Lomb-Scargle periodogram</h3>
 
 <p>Frequency grid from 1/baseline to Nyquist:</p>
@@ -620,7 +640,36 @@ The status line notes when raw or registered frames are loaded.
 
 <div class="matheq">\phi = \left(\frac{t - t_0}{P} + 0.5\right) \,\mathrm{mod}\, 1 - 0.5</div>
 
-<p>Raw folded points are plotted as grey dots. A sigma-clipped binned curve (adaptive bin width ≈ transit_duration/3) overlays with error bars from MAD-based SEM. A box-model prediction (constant flux outside transit duration, constant depth inside) overlays in red for visual comparison. The transit duration half-phase determines the box width.</p>
+<p>The plot is in hours from mid-transit, φ·P·24, with the fitted Tc as the epoch. The data come from the raw target/ensemble ratio:</p>
+<ol>
+  <li>Frames within 0.75 × the box duration of a predicted mid-transit are masked. The within-night systematics (§18.7) are then refitted on the remaining frames. A baseline level is only ever fitted from out-of-transit frames; fitting a level to transit frames erased a 48 ppt eclipse in testing. So:
+    <ul>
+      <li>A night with fewer than 5 out-of-transit frames has no baseline and is left out.</li>
+      <li>When the meridian flip falls inside the transit, one pier side can be left with fewer than 5 out-of-transit frames. That night is treated as one segment, and its far-side frames are divided by the flip step. The step is the median ratio between the two sides, measured on the nights that have at least 5 out-of-transit frames on each side.</li>
+      <li>If no night gives a flip step, that side's frames are left out.</li>
+    </ul>
+    The summary lists what was left out or corrected.</li>
+  <li>Each night is divided by the median of its out-of-transit frames.</li>
+  <li>A quadratic limb-darkened transit (§18.9b), averaged over the exposure, is fitted by bounded least squares, starting from a Tc grid scan. Tc, Rp/R*, a/R*, inclination (60–90°) and a level are free; P is fixed at the BLS period and u1, u2 at the Fit Transit defaults. A 4σ neighbour-median clip is followed by a refit. The errors quoted are from the least-squares covariance, scaled by √χ²<sub>red</sub> when the scatter exceeds the photometric errors.</li>
+  <li>Steps 1–3 are repeated once, with the mask set to ±(T14/2 + max(T14/4, 10 min)) from the fit. A box shorter than the transit otherwise leaves the ingress and egress in the "baseline".</li>
+  <li>The model's significance is √(Δχ²/χ²<sub>red</sub>), where Δχ² is the χ² of a flat line minus that of the model.</li>
+</ol>
+
+<p><b>Odd/even test</b> (the Kepler vetting test). Every transit epoch with at least 3 points in transit counts. The fitted shape s(t) = 1 − T(t) is kept, and only a depth scale is fitted, separately for each transit. This is linear least squares, a = Σw(1−y)s / Σws², so partial transits count.</p>
+<ul>
+  <li><b>Errors:</b> each transit's error is multiplied by √χ²<sub>red</sub> and by the red-noise β (§18.9). Both are measured on residuals with each parity at its own depth, so the difference being tested doesn't count as noise. β uses bins of ¼ to 1 × T14, because a depth averages over the whole transit and 10–30 min bins understate its error.</li>
+  <li><b>Combining:</b> odd and even transits are each combined into a weighted mean. Both errors are then multiplied by the Birge ratio √(χ²/dof) of the transits about their own parity's mean, with dof = transits − 2. So the errors are as large as transits of the same parity actually scatter.</li>
+  <li><b>Warning:</b> |a<sub>odd</sub> − a<sub>even</sub>| above 3σ is flagged.</li>
+</ul>
+
+<p>Synthetic check, injected into three quiet NGC660 stars on the real timestamps, folded at half the binary's period:</p>
+<ul>
+  <li><b>48 / 30 ppt binary:</b> flagged at 4.4–10σ on all three stars.</li>
+  <li><b>48 / 44 ppt binary:</b> 3.2σ on the quietest star, 1.4–2.4σ on the others.</li>
+  <li><b>Equal 48 / 48 ppt binary:</b> 0.4–1.7σ, never flagged.</li>
+  <li><b>13 ppt planet:</b> 0.3–2.2σ, never flagged.</li>
+</ul>
+<p>Bins are 10 minutes. For a transit shorter than 50 minutes they shrink to T14/5, but never below two exposures. Each bin is the inverse-variance mean with its propagated error, inflated when the bin scatters more than its errors (the Fit Transit binning). The BLS box is drawn dashed, centred where BLS put it. If the fit finds no transit (b ≥ 1 + Rp/R*, or Rp/R* &lt; 0.003), the fold shows the BLS input and the box only, and says so.</p>
 
 <h3>18.13 Night dip event detection</h3>
 

@@ -52,6 +52,7 @@ _DOC_TITLES: dict[str, str] = {
     "white_balance": "White Balance",
     "sfcc": "Spectral Flux Color Calibration (SFCC)",
     "sssc": "Spectrophotometric Standard Star Calibration (SSSC)",
+    "curve_manager": "Filter / Sensor Curve Manager",
     "remove_green": "Remove Green (SCNR)",
     "convo": "Convolution / Deconvolution",
     "luminance_recombine": "Recombine Luminance",

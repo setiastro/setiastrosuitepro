@@ -860,7 +860,10 @@ class SaspViewer(QMainWindow):
         self.setWindowTitle(self.tr("SASP Viewer (Pickles + RGB Responses)"))
 
         self.base_hdul   = fits.open(sasp_data_path,   mode="readonly", memmap=False)
-        self.custom_hdul = fits.open(user_custom_path, mode="readonly", memmap=False)
+        # Read the user curve file into memory and close it: the Curve Manager
+        # swaps that file on save, which Windows refuses while a handle is open.
+        with fits.open(user_custom_path, mode="readonly", memmap=False) as _c:
+            self.custom_hdul = fits.HDUList([h.copy() for h in _c])
 
         self.pickles_templates = []
         self.filter_list       = []
@@ -1213,6 +1216,17 @@ class SFCCDialog(QDialog):
         self.star_combo.currentIndexChanged.connect(self.save_star_setting)
         self.finished.connect(lambda *_: self._cleanup())
 
+        # Curve Manager writes -> refresh the filter / sensor combos live.
+        # (Not in _cleanup: closing the SASP Viewer calls _cleanup too.)
+        self._curve_lib_conn = None
+        try:
+            from setiastro.saspro.spectral_curves import curve_library_signals
+            curve_library_signals().changed.connect(self.refresh_filter_sensor_lists)
+            self._curve_lib_conn = True
+        except Exception as e:
+            print(f"[SPCC] curve library hook unavailable: {e}")
+        self.finished.connect(lambda *_: self._disconnect_curve_library())
+
         self.grad_method = "poly3"
         self.grad_method_combo.currentTextChanged.connect(lambda m: setattr(self, "grad_method", m))
 
@@ -1387,10 +1401,11 @@ class SFCCDialog(QDialog):
         # Reflect initial state on the spin box
         self.sep_thr_spin.setEnabled(not self.auto_sigma_chk.isChecked())
         row4.addStretch()
-        self.add_curve_btn = QPushButton(self.tr("Add Custom Filter/Sensor Curve…"))
-        self.add_curve_btn.clicked.connect(self.add_custom_curve); row4.addWidget(self.add_curve_btn)
-        self.remove_curve_btn = QPushButton(self.tr("Remove Filter/Sensor Curve…"))
-        self.remove_curve_btn.clicked.connect(self.remove_custom_curve); row4.addWidget(self.remove_curve_btn)
+        self.curve_mgr_btn = QPushButton(self.tr("Filter / Sensor Curves…"))
+        self.curve_mgr_btn.setToolTip(self.tr(
+            "Open the Curve Manager: add, label, edit, share or delete filter and sensor curves\n"
+            "(paste data, import a CSV, digitize a chart image, or generate a bandpass)."))
+        self.curve_mgr_btn.clicked.connect(self.open_curve_manager); row4.addWidget(self.curve_mgr_btn)
         row4.addStretch()
         self.btn_help = make_help_button("sfcc", self)
         row4.addWidget(self.btn_help)
@@ -1554,180 +1569,25 @@ class SFCCDialog(QDialog):
         return bool(self._gaia_enabled())
 
 
-    def interpolate_bad_points(self, wl, tr):
-        tr = tr.copy()
-        bad = (tr < 0.0) | (tr > 1.0)
-        good = ~bad
-        if not np.any(bad): return tr, np.array([], dtype=int)
-        if np.sum(good) < 2: raise RuntimeError("Not enough valid points to interpolate anomalies.")
-        tr_corr = tr.copy()
-        tr_corr[bad] = np.interp(wl[bad], wl[good], tr[good])
-        return tr_corr, np.where(bad)[0]
+    def open_curve_manager(self):
+        """Filter / Sensor Curve Manager (spectral_curves.py) — replaces the old
+        CSV import, ginput digitizer and remove-curve prompts. Opens with the
+        current optical chain selected so it is plotted straight away."""
+        from setiastro.saspro.spectral_curves import open_curve_manager
+        chain = [cb.currentText() for cb in (
+            self.r_filter_combo, self.g_filter_combo, self.b_filter_combo,
+            self.sens_combo, self.lp_filter_combo, self.lp_filter_combo2)]
+        open_curve_manager(parent=self.main_win or self,
+                           sasp_data_path=self.sasp_data_path, select=chain)
 
-    def smooth_curve(self, tr, window_size=5):
-        return medfilt(tr, kernel_size=window_size)
-
-    def get_calibration_points(self, rgb_img: np.ndarray):
-        print("\nClick three calibration points: BL (λmin,0), BR (λmax,0), TL (λmin,1)")
-        fig, ax = plt.subplots(figsize=(8, 5)); ax.imshow(rgb_img); ax.set_title(self.tr("Click 3 points, then close"))
-        pts = plt.ginput(3, timeout=-1); plt.close(fig)
-        if len(pts) != 3: raise RuntimeError(self.tr("Need exactly three clicks for calibration."))
-        return pts[0], pts[1], pts[2]
-
-    def build_transforms(self, px_bl, py_bl, px_br, py_br, px_tl, py_tl, λ_min, λ_max, resp_min, resp_max):
-        nm_per_px = (λ_max - λ_min) / (px_br - px_bl)
-        resp_per_px = (resp_max - resp_min) / (py_bl - py_tl)
-        def px_to_λ(px):  return λ_min + (px - px_bl) * nm_per_px
-        def py_to_resp(py): return resp_max - (py - py_tl) * resp_per_px
-        return px_to_λ, py_to_resp
-
-    def extract_curve(self, gray_img, λ_mapper, resp_mapper, λ_min, λ_max, threshold=50):
-        H, W = gray_img.shape
-        data = []
-        for px in range(W):
-            col = gray_img[:, px]
-            py_min = int(np.argmin(col)); val_min = int(col[py_min])
-            if val_min < threshold:
-                lam = λ_mapper(px)
-                if λ_min <= lam <= λ_max:
-                    data.append((lam, resp_mapper(py_min)))
-        if not data:
-            raise RuntimeError("No dark pixels found; raise threshold or adjust clicks.")
-        df = (pd.DataFrame(data, columns=["wavelength_nm", "response"])
-                .sort_values("wavelength_nm").reset_index(drop=True))
-        df = df[(df["wavelength_nm"] >= λ_min) & (df["wavelength_nm"] <= λ_max)].copy()
-        if df["wavelength_nm"].iloc[0] > λ_min:
-            df = pd.concat([pd.DataFrame([[λ_min, 0.0]], columns=["wavelength_nm", "response"]), df], ignore_index=True)
-        if df["wavelength_nm"].iloc[-1] < λ_max:
-            df = pd.concat([df, pd.DataFrame([[λ_max, 0.0]], columns=["wavelength_nm", "response"])], ignore_index=True)
-        return df.sort_values("wavelength_nm").reset_index(drop=True)
-
-    def _query_name_channel(self):
-        name_str, ok1 = QInputDialog.getText(self, self.tr("Curve Name"), self.tr("Enter curve name (EXTNAME):"))
-        if not (ok1 and name_str.strip()): return False, None, None
-        extname = name_str.strip().upper().replace(" ", "_")
-        ch_str, ok2 = QInputDialog.getText(self, self.tr("Channel"), self.tr("Enter channel (R,G,B or Q for sensor):"))
-        if not (ok2 and ch_str.strip()): return False, None, None
-        return True, extname, ch_str.strip().upper()
-
-    def _append_curve_hdu(self, wl_ang, tr_final, extname, ctype, origin):
-        col_wl = fits.Column(name="WAVELENGTH", format="E", unit="Angstrom", array=wl_ang.astype(np.float32))
-        col_tr = fits.Column(name="THROUGHPUT", format="E", unit="REL",      array=tr_final.astype(np.float32))
-        new_hdu = fits.BinTableHDU.from_columns([col_wl, col_tr])
-        new_hdu.header["EXTNAME"] = extname
-        new_hdu.header["CTYPE"]   = ctype
-        new_hdu.header["ORIGIN"]  = origin
-        with fits.open(self.user_custom_path, mode="update", memmap=False) as hdul:
-            hdul.append(new_hdu); hdul.flush()
-
-    def add_custom_curve(self):
-        msg = QMessageBox(self); msg.setWindowTitle(self.tr("Add Custom Curve")); msg.setText(self.tr("Choose how to add the curve:"))
-        csv_btn = msg.addButton(self.tr("Import CSV"), QMessageBox.ButtonRole.AcceptRole)
-        img_btn = msg.addButton(self.tr("Digitize Image"), QMessageBox.ButtonRole.AcceptRole)
-        cancel_btn = msg.addButton(QMessageBox.StandardButton.Cancel)
-        msg.exec()
-        if msg.clickedButton() == csv_btn: self._import_curve_from_csv()
-        elif msg.clickedButton() == img_btn: self._digitize_curve_from_image()
-
-    def _import_curve_from_csv(self):
-        csv_path, _ = QFileDialog.getOpenFileName(self, self.tr("Select 2-column CSV (λ_nm, response)"), "", "CSV Files (*.csv);;All Files (*)")
-        if not csv_path: return
-        try:
-            df = (pd.read_csv(csv_path, comment="#", header=None).iloc[:, :2].dropna())
-            df.columns = ["wavelength_nm","response"]
-            wl_nm = df["wavelength_nm"].astype(float).to_numpy(); tp = df["response"].astype(float).to_numpy()
-        except ValueError:
+    def _disconnect_curve_library(self):
+        if getattr(self, "_curve_lib_conn", None):
             try:
-                df = (pd.read_csv(csv_path, comment="#", header=0).iloc[:, :2].dropna())
-                df.columns = ["wavelength_nm","response"]
-                wl_nm = df["wavelength_nm"].astype(float).to_numpy(); tp = df["response"].astype(float).to_numpy()
-            except Exception as e2:
-                QMessageBox.critical(self, self.tr("CSV Error"), self.tr("Could not read CSV:\n{0}").format(e2)); return
-        except Exception as e:
-            QMessageBox.critical(self, self.tr("CSV Error"), self.tr("Could not read CSV:\n{0}").format(e)); return
-
-        ok, extname_base, channel_val = self._query_name_channel()
-        if not ok: return
-        wl_ang = (wl_nm * 10.0).astype(np.float32); tr_final = tp.astype(np.float32)
-        self._append_curve_hdu(wl_ang, tr_final, extname_base, "SENSOR" if channel_val=="Q" else "FILTER", f"CSV:{os.path.basename(csv_path)}")
-        self._reload_hdu_lists(); self.refresh_filter_sensor_lists()
-        QMessageBox.information(self, self.tr("Done"), self.tr("CSV curve '{0}' added.").format(extname_base))
-
-    def _digitize_curve_from_image(self):
-        img_path_str, _ = QFileDialog.getOpenFileName(self, self.tr("Select Curve Image to Digitize"), "", "Images (*.png *.jpg *.jpeg *.bmp);;All Files (*)")
-        if not img_path_str: return
-        img_filename = os.path.basename(img_path_str)
-        try:
-            bgr = cv2.imread(img_path_str)
-            if bgr is None: raise RuntimeError(f"cv2.imread returned None for '{img_path_str}'")
-            rgb_img = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB); gray_img = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        except Exception as e:
-            QMessageBox.critical(self, self.tr("Error"), self.tr("Could not load image:\n{0}").format(e)); return
-
-        try:
-            (px_bl, py_bl), (px_br, py_br), (px_tl, py_tl) = self.get_calibration_points(rgb_img)
-        except Exception as e:
-            QMessageBox.critical(self, self.tr("Digitization Error"), str(e)); return
-
-        λ_min_str, ok1 = QInputDialog.getText(self, self.tr("λ_min"), self.tr("Enter λ_min (in nm):"))
-        λ_max_str, ok2 = QInputDialog.getText(self, self.tr("λ_max"), self.tr("Enter λ_max (in nm):"))
-        if not (ok1 and ok2 and λ_min_str.strip() and λ_max_str.strip()): return
-        try:
-            λ_min = float(λ_min_str); λ_max = float(λ_max_str)
-        except ValueError:
-            QMessageBox.critical(self, self.tr("Input Error"), self.tr("λ_min and λ_max must be numbers.")); return
-
-        ok, extname_base, channel_val = self._query_name_channel()
-        if not ok: return
-
-        px_to_λ, py_to_resp = self.build_transforms(px_bl, py_bl, px_br, py_br, px_tl, py_tl, λ_min, λ_max, 0.0, 1.0)
-        try:
-            df_curve = self.extract_curve(gray_img, px_to_λ, py_to_resp, λ_min, λ_max, threshold=50)
-        except Exception as e:
-            QMessageBox.critical(self, self.tr("Extraction Error"), str(e)); return
-
-        df_curve["wl_int"] = df_curve["wavelength_nm"].round().astype(int)
-        grp = (df_curve.groupby("wl_int")["response"].median().reset_index().sort_values("wl_int"))
-        wl = grp["wl_int"].to_numpy(dtype=int); tr = grp["response"].to_numpy(dtype=float)
-
-        try:
-            tr_corr, _ = self.interpolate_bad_points(wl, tr)
-        except Exception as e:
-            QMessageBox.critical(self, self.tr("Interpolation Error"), str(e)); return
-
-        tr_smoothed = self.smooth_curve(tr_corr, window_size=5)
-        wl_ang = (wl.astype(float) * 10.0).astype(np.float32); tr_final = tr_smoothed.astype(np.float32)
-        self._append_curve_hdu(wl_ang, tr_final, extname_base, "SENSOR" if channel_val=="Q" else "FILTER", f"UserDefined:{img_filename}")
-        self._reload_hdu_lists(); self.refresh_filter_sensor_lists()
-        QMessageBox.information(self, self.tr("Done"), self.tr("Added curve '{0}'.").format(extname_base))
-
-    def remove_custom_curve(self):
-        all_curves = self.filter_list + self.sensor_list
-        if not all_curves:
-            QMessageBox.information(self, self.tr("Remove Curve"), self.tr("No custom curves to remove.")); return
-        curve, ok = QInputDialog.getItem(self, self.tr("Remove Curve"), self.tr("Select a FILTER or SENSOR curve to delete:"), all_curves, 0, False)
-        if not ok or not curve: return
-        reply = QMessageBox.question(self, self.tr("Confirm Deletion"), self.tr("Delete '{0}'?").format(curve), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply != QMessageBox.StandardButton.Yes: return
-
-        temp_path = self.user_custom_path + ".tmp"
-        try:
-            with fits.open(self.user_custom_path, memmap=False) as old_hdul:
-                new_hdus = []
-                for hdu in old_hdul:
-                    if hdu is old_hdul[0]:
-                        new_hdus.append(hdu.copy())
-                    else:
-                        if hdu.header.get("EXTNAME") != curve:
-                            new_hdus.append(hdu.copy())
-            fits.HDUList(new_hdus).writeto(temp_path, overwrite=True)
-            os.replace(temp_path, self.user_custom_path)
-        except Exception as e:
-            if os.path.exists(temp_path): os.remove(temp_path)
-            QMessageBox.critical(self, "Write Error", f"Could not remove curve:\n{e}"); return
-
-        self._reload_hdu_lists(); self.refresh_filter_sensor_lists()
-        QMessageBox.information(self, self.tr("Removed"), self.tr("Deleted curve '{0}'.").format(curve))
+                from setiastro.saspro.spectral_curves import curve_library_signals
+                curve_library_signals().changed.disconnect(self.refresh_filter_sensor_lists)
+            except Exception:
+                pass
+            self._curve_lib_conn = None
 
     def refresh_filter_sensor_lists(self):
         self._reload_hdu_lists()
@@ -4328,6 +4188,7 @@ class SFCCDialog(QDialog):
 
     def closeEvent(self, event):
         self._cleanup()
+        self._disconnect_curve_library()
         event.accept()
         super().closeEvent(event)
 

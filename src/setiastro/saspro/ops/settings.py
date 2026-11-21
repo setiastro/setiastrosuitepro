@@ -1631,7 +1631,11 @@ class SettingsDialog(QDialog):
     def _run_capture(self, cmd: list[str]) -> tuple[int, str]:
         """Run a command and return (returncode, combined_output)."""
         try:
-            r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            # Only used to probe candidate Pythons: a stray PYTHONHOME would
+            # make every one of them fail and read as "not installed".
+            from setiastro.saspro.runtime_torch import _clean_subprocess_env
+            r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               env=_clean_subprocess_env())
             return r.returncode, (r.stdout or "")
         except Exception as e:
             return 999, str(e)

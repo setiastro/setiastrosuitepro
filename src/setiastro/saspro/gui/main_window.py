@@ -3281,6 +3281,13 @@ class AstroSuiteProMainWindow(
             pass
         self.SFCC_window.show()
 
+    def _open_curve_manager(self):
+        from setiastro.saspro.spectral_curves import open_curve_manager
+        if not os.path.exists(sasp_data_path):
+            QMessageBox.critical(self, "Missing Resource", f"SASP Data file not found:\n{sasp_data_path}")
+            return
+        open_curve_manager(parent=self, sasp_data_path=sasp_data_path)
+
     def SSSC_show(self):
         from setiastro.saspro.sssc_loader import SSSCSplash, SSSCLoader
         from setiastro.saspro.doc_manager import DocManager

@@ -9,7 +9,7 @@ from typing import Callable, Optional
 from setiastro.saspro.runtime_torch import (
     import_torch, add_runtime_to_sys_path,
     _user_runtime_dir, _venv_paths, _SUPPORTED_PY_MINORS,
-    mps_is_usable, directml_probe_ok,
+    mps_is_usable, directml_probe_ok, _clean_subprocess_env,
 )
 
 LogCB = Callable[[str], None]
@@ -156,12 +156,14 @@ def ensure_torch_installed(
                 r = subprocess.run(
                     [str(vpy), "-m", "pip", "show", "torch-directml"],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    env=_clean_subprocess_env(),
                 )
                 if r.returncode == 0 and r.stdout:
                     log_cb("Non-DML path selected -> uninstalling torch-directml.")
                     subprocess.run(
                         [str(vpy), "-m", "pip", "uninstall", "-y", "torch-directml"],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                        env=_clean_subprocess_env(),
                     )
             except Exception:
                 pass
@@ -206,6 +208,7 @@ def ensure_torch_installed(
                 r = subprocess.run(
                     [str(vpy), "-m", "pip", "install", "--prefer-binary", "torch-directml"],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    env=_clean_subprocess_env(),
                 )
                 if r.returncode == 0:
                     if directml_probe_ok(log_cb, force=True):   # re-probe after install
