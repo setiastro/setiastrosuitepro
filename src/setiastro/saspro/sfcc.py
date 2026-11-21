@@ -1971,8 +1971,10 @@ class SFCCDialog(QDialog):
                 simbad_to_gaia: Dict[str, int] = {}
                 if main_ids_needed and cds_health.simbad_available(
                         status_cb=lambda m: _sfcc_status(self, m)):
-                    s = Simbad()
                     try:
+                        # Not Simbad(): a new instance starts on Strasbourg
+                        # whichever mirror the probe just picked.
+                        s = cds_health.simbad_client()
                         s.add_votable_fields("ids")
                     except Exception as e:
                         cds_health.note_failure(e, context="add_votable_fields/ids")
@@ -2738,13 +2740,15 @@ class SFCCDialog(QDialog):
                             f"SIMBAD ids lookup for {len(needs_simbad_ids)} unmatched stars…")
                         QApplication.processEvents()
 
-                        s_obj = Simbad()
                         try:
+                            s_obj = cds_health.simbad_client()
                             s_obj.add_votable_fields("ids")
                         except Exception as e:
                             cds_health.note_failure(e, context="add_votable_fields/ids")
+                            s_obj = None        # without "ids" no batch can match
                         main_ids = ([st["main_id"] for st in needs_simbad_ids]
-                                    if cds_health.simbad_available() else [])
+                                    if s_obj is not None and cds_health.simbad_available()
+                                    else [])
                         BATCH = 200
                         _ids_budget = cds_health.Budget(30.0)
                         simbad_to_gaia: dict[str, int] = {}

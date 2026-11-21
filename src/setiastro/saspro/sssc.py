@@ -2754,7 +2754,7 @@ class SSSCDialog(QDialog):
         # SIMBAD is optional enrichment — Gaia XP is the primary source, so a
         # CDS outage must cost seconds, not the ~15 unbounded network calls
         # this block used to make. prepare_simbad() probes with a hard 4 s
-        # deadline, fails over to the Harvard mirror, and bounds the timeout
+        # deadline, fails over to the Harvard / IDIA mirrors, and bounds the timeout
         # BEFORE add_votable_fields (which hits the network on astroquery
         # >= 0.4.8).
         self._simbad_budget = cds_health.Budget()

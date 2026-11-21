@@ -585,10 +585,24 @@ class NBtoRGBStars(QWidget):
 
     # ---------- preview helpers + zoom/pan ----------
     def _set_preview_image(self, qimg: QImage):
-        self._base_pm = QPixmap.fromImage(qimg)
-        self._zoom = 1.0
+        new_pm = QPixmap.fromImage(qimg)
+        old_pm = self._base_pm
+        self._base_pm = new_pm
+
+        # First preview, or the inputs changed size: fit the whole image (as PPP does).
+        if old_pm is None or old_pm.size() != new_pm.size():
+            self._fit_to_preview()
+            return
+
+        # Re-combine of the same inputs (slider changes): keep the user's zoom and pan.
+        # Same zoom on a same-size image gives the same scroll range, so the
+        # scrollbar positions carry over as they are.
+        hbar = self.scroll.horizontalScrollBar()
+        vbar = self.scroll.verticalScrollBar()
+        h, v = hbar.value(), vbar.value()
         self._update_preview_pixmap()
-        QTimer.singleShot(0, self._center_scrollbars)
+        hbar.setValue(h)
+        vbar.setValue(v)
 
     def _update_preview_pixmap(self):
         if self._base_pm is None: return

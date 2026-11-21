@@ -244,15 +244,19 @@ def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg
             continue
 
         try:
-            if simbad_conf is not None:
-                try:
-                    simbad_conf.server = server
-                    # Clear the cached TAP client so the new server actually
-                    # takes effect (astroquery caches the TapPlus endpoint
-                    # on first use and won't rebind otherwise).
-                    _reset_simbad_tap_cache()
-                except Exception:
-                    pass
+            # Not `simbad_conf.server = server`: conf.server only takes
+            # astroquery's two built-in hosts, so a third mirror raised, was
+            # swallowed, and the query went to the previous host while this
+            # loop reported trying the new one. apply_server registers the
+            # mirror and says whether the module-level Simbad now uses it.
+            if not cds_health.apply_server(server):
+                last_err = RuntimeError(
+                    f"{host}: astroquery could not be pointed at this mirror")
+                continue
+            # Clear the cached TAP client so the new server actually
+            # takes effect (astroquery caches the TapPlus endpoint
+            # on first use and won't rebind otherwise).
+            _reset_simbad_tap_cache()
 
             Simbad.ROW_LIMIT = int(row_limit)
             _configure_fields()
@@ -358,15 +362,19 @@ def _simbad_query_direct(center_ra_deg: float, center_dec_deg: float, radius_deg
             continue
 
         try:
-            if simbad_conf is not None:
-                try:
-                    simbad_conf.server = server
-                    # Clear the cached TAP client so the new server actually
-                    # takes effect (astroquery caches the TapPlus endpoint
-                    # on first use and won't rebind otherwise).
-                    _reset_simbad_tap_cache()
-                except Exception:
-                    pass
+            # Not `simbad_conf.server = server`: conf.server only takes
+            # astroquery's two built-in hosts, so a third mirror raised, was
+            # swallowed, and the query went to the previous host while this
+            # loop reported trying the new one. apply_server registers the
+            # mirror and says whether the module-level Simbad now uses it.
+            if not cds_health.apply_server(server):
+                last_err = RuntimeError(
+                    f"{host}: astroquery could not be pointed at this mirror")
+                continue
+            # Clear the cached TAP client so the new server actually
+            # takes effect (astroquery caches the TapPlus endpoint
+            # on first use and won't rebind otherwise).
+            _reset_simbad_tap_cache()
 
             Simbad.ROW_LIMIT = int(row_limit)
             _configure_fields()
@@ -4128,28 +4136,30 @@ class MagnitudeToolDialog(QDialog):
         center = SkyCoord(sky[0,0]*u.deg, sky[0,1]*u.deg)
         radius = center.separation(SkyCoord(sky[1:,0]*u.deg, sky[1:,1]*u.deg)).max() * 1.05
 
-        Vizier.ROW_LIMIT = 20000
-
-        # Ask for several likely “red” columns; VizieR will ignore unknown ones
-        Vizier.columns = ["RAJ2000", "DEJ2000", "Bmag", "Vmag", "r'mag", "rmag", "Rmag"]
-
-        # Bound it. This call had no timeout at all, so a degraded CDS made
-        # the APASS augmentation hang on the GUI thread even after the
-        # SIMBAD legs had correctly given up. Both spellings, since the
-        # attribute was renamed across astroquery versions.
-        for _setter in (
-            lambda: setattr(Vizier, "TIMEOUT", 30),
-            lambda: setattr(Vizier, "timeout", 30),
-        ):
-            try:
-                _setter()
-            except Exception:
-                pass
-
         self.lbl_info.setText("Querying APASS (VizieR)…")
         QApplication.processEvents()
 
-        result = Vizier.query_region(center, radius=radius, catalog="II/336/apass9")
+        # Its own client, on whichever VizieR mirror is answering, failing
+        # over between them. This used to set ROW_LIMIT, columns and the
+        # timeout on astroquery's SHARED module-level Vizier and query
+        # through it: that went to Strasbourg during an outage, and WIMI's
+        # deep search (which queries through the same object) then came back
+        # with only these columns. The 30 s bound is the one the old code
+        # set -- without it a degraded CDS hung this on the GUI thread.
+        # Several likely "red" columns are asked for; VizieR ignores unknown
+        # ones.
+        def _run(host):
+            v = cds_health.vizier_client(
+                host,
+                columns=["RAJ2000", "DEJ2000", "Bmag", "Vmag",
+                         "r'mag", "rmag", "Rmag"],
+                row_limit=20000, timeout=30)
+            return v.query_region(center, radius=radius, catalog="II/336/apass9")
+
+        # An APASS cone over a real field always has stars, so an empty
+        # answer means the mirror -- try another one that has them.
+        result, _vz_host = cds_health.query_vizier(
+            _run, context="magnitude/apass9", timeout=30.0, require_rows=True)
         if not result:
             return []
 
@@ -4250,25 +4260,13 @@ class MagnitudeToolDialog(QDialog):
         radius = center_sky.separation(corners_sky).max() * 1.05
         radius_deg = float(radius.to_value(u.deg))
 
-        # ---- mirror list (use yours or keep static) ----
-        # unistra is the current primary; u-strasbg redirects to it; harvard is
-        # the independent US mirror. Order = try-first order.
-        # Only one working SIMBAD mirror for TAP queries at the moment:
-        #   - simbad.u-strasbg.fr  → permanent DNS failure (CDS retired the
-        #                            hostname; live SIMBAD is at
-        #                            simbad.cds.unistra.fr).
-        #   - simbad.harvard.edu   → responds on :443 but /simbad/sim-tap/
-        #                            capabilities returns a 500 with HTML
-        #                            garbage from vizier.cfa.harvard.edu.
-        #                            query_region always fails.
-        # Retries + backoff (see _do_simbad_query) cover transient blips on
-        # unistra.  Add mirrors back only after end-to-end probing them.
-        #
-        # Sourced from cds_health.MIRRORS so this list lives in exactly one
-        # place across SFCC, SSSC, WIMI, the exoplanet tool and here. The
-        # harvard-is-broken finding documented above is what pruned that
-        # tuple down to a single entry, so the two agree by construction
-        # rather than by someone remembering to edit both.
+        # ---- mirror list ----
+        # Sourced from cds_health.MIRRORS (Strasbourg, Harvard, IDIA -- see
+        # the measurements there) so the list lives in exactly one place
+        # across SFCC, SSSC, WIMI, the exoplanet tool and here. Each attempt
+        # starts on the mirror the health probe last found working (see
+        # _do_simbad_query), so a Strasbourg outage does not cost a failed
+        # query per attempt. Retries + backoff cover transient blips.
         servers = list(cds_health.MIRRORS)
         HARD_TIMEOUT_S = 15.0
         ROW_LIMIT = 10000
@@ -4316,7 +4314,8 @@ class MagnitudeToolDialog(QDialog):
                 try:
                     _payload = _simbad_query_direct(
                         center_ra, center_dec, radius_deg,
-                        servers,
+                        # the probe's pick first, then the rest in order
+                        list(dict.fromkeys((cds_health.current_server(), *servers))),
                         HARD_TIMEOUT_S,
                         ROW_LIMIT,
                     )

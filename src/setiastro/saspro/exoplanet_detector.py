@@ -203,25 +203,21 @@ def _apply_vizier_server(v, host: str) -> bool:
     """
     if not host:
         return False
-    try:
-        import astroquery.vizier as _aqv
+    # Never for an http-only mirror (NAOJ): astroquery accepts the name, and
+    # every fresh Vizier() would then try it over https and time out.
+    if host not in cds_health.VIZIER_HTTP_ONLY:
         try:
-            _aqv.conf.server = host
+            import astroquery.vizier as _aqv
+            try:
+                _aqv.conf.server = host
+            except Exception:
+                pass
         except Exception:
             pass
-    except Exception:
-        pass
-    for setter in (
-        lambda: setattr(v, "server", host),          # modern property
-        lambda: setattr(v, "_server", host),         # its backing field
-        lambda: setattr(v, "VIZIER_SERVER", host),   # legacy attribute
-    ):
-        try:
-            setter()
-        except Exception:
-            pass
+    # Sets server / _server / VIZIER_SERVER, plus the http:// scheme for the
+    # mirrors that serve nothing else, and checks the URL that results.
+    applied = cds_health.point_vizier(v, host)
     url = _vizier_effective_url(v)
-    applied = bool(url) and (host in url)
     if url and not applied:
         print(f"[DEBUG] VizieR mirror {host!r} did NOT take -- client will "
               f"query {url!r}")
@@ -1763,7 +1759,8 @@ class ExoPlanetWindow(QDialog):
 
         _pref, _pinned = cds_health.server_preference()
         self.cds_server_combo = QComboBox()
-        self.cds_server_combo.addItem("Automatic (Strasbourg, then Harvard)", "")
+        self.cds_server_combo.addItem(
+            "Automatic (Strasbourg, then Harvard, then IDIA)", "")
         for _host in cds_health.MIRRORS:
             self.cds_server_combo.addItem(_host, _host)
         _i = self.cds_server_combo.findData(_pref)
@@ -1771,13 +1768,14 @@ class ExoPlanetWindow(QDialog):
         self.cds_server_combo.setToolTip(
             "Which SIMBAD mirror to try first.\n\n"
             "Harvard (simbad.harvard.edu) is the US mirror \u2014 the same "
-            "machine the web UI calls simbad.cfa.harvard.edu, but that alias "
-            "is not a name astroquery accepts, so pick it from this list "
-            "rather than typing it."
+            "machine the web UI calls simbad.cfa.harvard.edu. IDIA "
+            "(simbad.idia.ac.za, South Africa) is an older copy: in November "
+            "2026 its newest record was from April 2026, against October at "
+            "Harvard, so it is tried last."
         )
         cds_form.addRow("SIMBAD mirror:", self.cds_server_combo)
 
-        self.cds_pin_cb = QCheckBox("Don't fall back to the other mirror")
+        self.cds_pin_cb = QCheckBox("Don't fall back to the other mirrors")
         self.cds_pin_cb.setChecked(_pinned)
         self.cds_pin_cb.setToolTip(
             "If your network reaches one mirror and not the other, failing "
@@ -5849,9 +5847,10 @@ class ExoPlanetWindow(QDialog):
         msg.addButton(QMessageBox.StandardButton.Ok)
         msg.exec()
         if msg.clickedButton() == sim_btn:
-            webbrowser.open("https://simbad.cds.unistra.fr/simbad/sim-coo?"
-                            f"Coord={ra:+.6f}{dec:+.6f}&CooFrame=ICRS&CooEpoch=2000"
-                            "&CooEqui=2000&Radius=15&Radius.unit=arcsec&submit=submit+query")
+            webbrowser.open(cds_health.simbad_web_url(
+                "sim-coo?"
+                f"Coord={ra:+.6f}{dec:+.6f}&CooFrame=ICRS&CooEpoch=2000"
+                "&CooEqui=2000&Radius=15&Radius.unit=arcsec&submit=submit+query"))
 
     # ---- UI: Identify Star (uses the shared resolver) -----------------
     def on_identify_star(self):
@@ -5880,7 +5879,7 @@ class ExoPlanetWindow(QDialog):
         off_str  = f"{offset:.2f}″" if np.isfinite(offset) else "n/a"
         tag      = " (VSX)" if hit["used_vsx"] else ""
 
-        simbad_url = "https://simbad.cds.unistra.fr/simbad/sim-id" f"?Ident={quote(main_id)}"
+        simbad_url = cds_health.simbad_web_url(f"sim-id?Ident={quote(main_id)}")
         msg = QMessageBox(self)
         msg.setWindowTitle("SIMBAD/VSX Lookup")
         msg.setText(

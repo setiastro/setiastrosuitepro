@@ -1515,11 +1515,13 @@ class ObjectDetailThread(QThread):
         info = {"name": self.name, "ra": self.ra_deg, "dec": self.dec_deg,
                 "simbad": None, "error": None}
         try:
-            from astroquery.simbad import Simbad
+            from setiastro.saspro import cds_health
             from astropy.coordinates import SkyCoord
             import astropy.units as u
 
-            s = Simbad()
+            # On whichever SIMBAD mirror is answering; a bare Simbad() goes
+            # to Strasbourg. Raises (-> info["error"]) when none is.
+            s = cds_health.simbad_client()
             s.reset_votable_fields()
             s.add_votable_fields("otype", "flux(V)", "flux(B)", "rvz_redshift",
                                  "rvz_radvel", "sptype", "dim")
@@ -1610,7 +1612,8 @@ class ObjectDetailThread(QThread):
             if tbl is None or len(tbl) == 0:
                 try:
                     from astroquery.utils.tap.core import TapPlus
-                    tap = TapPlus(url="https://simbad.cds.unistra.fr/simbad/sim-tap")
+                    # The mirror `s` is on, not a hard-coded Strasbourg.
+                    tap = TapPlus(url=f"https://{s.server}/simbad/sim-tap")
                     for variant in name_variants:
                         adql = f"""
                             SELECT b.main_id, b.ra, b.dec, b.otype, b.rvz_radvel,

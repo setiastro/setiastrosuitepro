@@ -664,9 +664,13 @@ def _configure_simbad_endpoint(server: str | None = None,
     import astroquery.simbad as _aqs
 
     host = server or cds_health.current_server()
+    # apply_server, not conf.server / Simbad.server directly: astroquery
+    # only knows two of the mirrors, and for the third (IDIA) both of those
+    # assignments raised -- swallowed here, so queries stayed on the dead
+    # host. apply_server registers it and reports whether it took.
+    if not cds_health.apply_server(host):
+        print(f"[WIMI] astroquery could not be pointed at SIMBAD {host}")
     for setter in (
-        lambda: setattr(_aqs.conf, "server", host),
-        lambda: setattr(Simbad, "server", host),
         lambda: setattr(_aqs.conf, "timeout", float(timeout)),
         lambda: setattr(Simbad, "timeout", float(timeout)),
         lambda: setattr(Simbad, "TIMEOUT", float(timeout)),
@@ -1024,7 +1028,7 @@ class CustomGraphicsView(QGraphicsView):
             if source == "Simbad" and object_name:
                 # Open Simbad URL with encoded object name
                 encoded_name = quote(object_name)
-                url = f"https://simbad.cds.unistra.fr/simbad/sim-basic?Ident={encoded_name}&submit=SIMBAD+search"
+                url = f"https://{cds_health.simbad_web_host()}/simbad/sim-basic?Ident={encoded_name}&submit=SIMBAD+search"
                 webbrowser.open(url)
             elif source == "GaiaLocal":
                 # Simbad has no reverse index on Gaia DR3 ids — sim-id 404s
@@ -1035,7 +1039,7 @@ class CustomGraphicsView(QGraphicsView):
                 if ra_f is None or dec_f is None:
                     return
                 url = (
-                    "https://simbad.cds.unistra.fr/simbad/sim-coo?"
+                    f"https://{cds_health.simbad_web_host()}/simbad/sim-coo?"
                     f"Coord={ra_f:+.6f}{dec_f:+.6f}"
                     "&CooFrame=ICRS&CooEpoch=2000&CooEqui=2000"
                     "&Radius=20&Radius.unit=arcsec"
@@ -1312,14 +1316,14 @@ class CustomGraphicsView(QGraphicsView):
         if source == "Simbad" and name:
             encoded_name = quote(name)
             webbrowser.open(
-                f"https://simbad.cds.unistra.fr/simbad/sim-basic?Ident={encoded_name}&submit=SIMBAD+search"
+                f"https://{cds_health.simbad_web_host()}/simbad/sim-basic?Ident={encoded_name}&submit=SIMBAD+search"
             )
         elif source == "GaiaLocal" and ra_f is not None:
             # Simbad has no reverse index on Gaia DR3 ids — sim-id 404s for
             # the fainter sources that motivated the local augment. A 20"
             # cone at the object's coords always lands on something useful.
             webbrowser.open(
-                "https://simbad.cds.unistra.fr/simbad/sim-coo?"
+                f"https://{cds_health.simbad_web_host()}/simbad/sim-coo?"
                 f"Coord={ra_f:+.6f}{dec_f:+.6f}"
                 "&CooFrame=ICRS&CooEpoch=2000&CooEqui=2000"
                 "&Radius=20&Radius.unit=arcsec"
@@ -6021,7 +6025,7 @@ class WIMIDialog(QDialog):
                 )
                 enc = urllib.parse.quote(name)
                 url = (
-                    "https://simbad.cds.unistra.fr/simbad/sim-basic?"
+                    f"https://{cds_health.simbad_web_host()}/simbad/sim-basic?"
                     f"Ident={enc}&submit=SIMBAD+search"
                 )
 
@@ -6497,7 +6501,7 @@ class WIMIDialog(QDialog):
             )
             enc = urllib.parse.quote(nm)
             urls.append(
-                f"https://simbad.cds.unistra.fr/simbad/sim-basic?Ident={enc}&submit=SIMBAD+search"
+                f"https://{cds_health.simbad_web_host()}/simbad/sim-basic?Ident={enc}&submit=SIMBAD+search"
             )
     
         # ── Marker sizes ─────────────────────────────────────────────────────
@@ -6649,7 +6653,7 @@ class WIMIDialog(QDialog):
             def _fmt_col(v):
                 return f"{v:+.3f}" if isinstance(v, (int, float)) else "—"
             rej_items = "".join(
-                f'<li><a href="https://simbad.cds.unistra.fr/simbad/sim-basic'
+                f'<li><a href="https://{cds_health.simbad_web_host()}/simbad/sim-basic'
                 f'?Ident={urllib.parse.quote(r["name"])}&submit=SIMBAD+search" '
                 f'style="color:#ff9a9a" target="_blank">{r["name"]}</a>'
                 f'<span style="color:#888;font-size:11px;">'
@@ -7408,7 +7412,7 @@ class WIMIDialog(QDialog):
         if s == "simbad" and object_name:
             encoded = quote(object_name)
             webbrowser.open(
-                f"https://simbad.cds.unistra.fr/simbad/sim-basic?"
+                f"https://{cds_health.simbad_web_host()}/simbad/sim-basic?"
                 f"Ident={encoded}&submit=SIMBAD+search"
             )
 
