@@ -147,11 +147,18 @@ overlays with optional outlines.</p>
       switches to a vector-path renderer that keeps the stroke crisp at
       any scale. Useful for making light-coloured text readable against a
       bright nebula, or dark text against a dark sky.</li>
+  <li><b>Line spacing</b> (30&ndash;300&nbsp;%, default 100&nbsp;%)
+      &mdash; distance between lines, as a percentage of the font's own
+      line spacing. Some fonts build in very tall line spacing, so two
+      lines look double-spaced even with no empty line between them:
+      Sans Serif Collection (whose letters look like Segoe UI), Javanese
+      Text and Gabriola are the common ones. Lower this to bring their
+      lines together, or switch back to Segoe UI.</li>
 </ul>
 <p>Changing any of these controls applies instantly to the current
-selection. Font, size, bold, italic, fill colour, outline colour, and
-outline width all persist to QSettings and come back the way you left
-them next session.</p>
+selection. Font, size, bold, italic, fill colour, outline colour,
+outline width and line spacing all persist to QSettings and come back
+the way you left them next session.</p>
 
 <h2>5. Technical Card</h2>
 <p>The Technical Card is a special overlay that auto-populates with FITS
@@ -359,8 +366,8 @@ positive margins.</p>
 <p>Nearly every control value is persisted to QSettings under the
 <code>signature_insert/</code> namespace and comes back next session:</p>
 <ul>
-  <li>Font family, size, bold, italic, outline width, last-picked fill
-      and outline colours.</li>
+  <li>Font family, size, bold, italic, outline width, line spacing,
+      last-picked fill and outline colours.</li>
   <li>Transform defaults: scale slider, opacity slider.</li>
   <li>Bounding box: enabled, thickness, style, colour.</li>
   <li>Snap margins (X and Y).</li>

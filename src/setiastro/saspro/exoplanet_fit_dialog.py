@@ -520,24 +520,34 @@ class TransitFitDialog(QDialog):
         jd = np.asarray(ctx["jd_utc"], dtype=np.float64)
         ra, dec, site = ctx.get("ra"), ctx.get("dec"), ctx.get("site")
         self._t_all, self._time_kind = jd, "JD_UTC"
-        note = ""
+        why = ("no target coordinates" if ra is None or dec is None
+               else "some frames have no timestamp")
+        info = {}
         if ra is not None and dec is not None and np.all(np.isfinite(jd)):
             try:
-                self._t_all = xfit.bjd_tdb(jd, ra, dec, site)
+                self._t_all = xfit.bjd_tdb(jd, ra, dec, site, info=info)
                 self._time_kind = "BJD_TDB"
             except Exception as e:
-                note = f" (BJD conversion failed: {e})"
+                why = f"the barycentric correction failed ({xfit.first_paragraph(e)})"
         self._apply_night()
         how = ctx.get("time_how", "")
-        site_txt = (f"site {site[0]:.4f}°, {site[1]:.4f}° from {site[3]}" if site
-                    else "no site in header — geocentric (≤21 ms)")
+        if info.get("geocentric_fallback"):
+            site_txt = ("geocentric (≤21 ms): the site correction failed "
+                        f"({info['geocentric_fallback']})")
+        elif site:
+            site_txt = f"site {site[0]:.4f}°, {site[1]:.4f}° from {site[3]}"
+        else:
+            site_txt = "no site in header — geocentric (≤21 ms)"
         if self._time_kind == "BJD_TDB":
             self.time_lbl.setText(f"Times: BJD_TDB at mid-exposure ({how}); {site_txt}.")
+            # A planet lookup can supply coordinates after a JD_UTC start.
+            self.time_lbl.setStyleSheet("")
         else:
+            fix = (" Plate-solve the frames or look the planet up to get them."
+                   if why == "no target coordinates" else "")
             self.time_lbl.setText(
-                "Times: JD_UTC mid-exposure — no target coordinates, so no barycentric "
-                f"correction{note}. AAVSO and timing databases require BJD_TDB; plate-solve "
-                "the frames first.")
+                f"Times: JD_UTC mid-exposure — {why}, so no barycentric correction. "
+                f"AAVSO and timing databases require BJD_TDB.{fix}")
             self.time_lbl.setStyleSheet("color: #ffb347;")
 
     # ------------------------------------------------------------- nights
@@ -1058,6 +1068,11 @@ class TransitFitDialog(QDialog):
             m, lo, hi = d["oc_min"]
             L.append(f"O–C       = {m:+.2f} ± {0.5 * (lo + hi):.2f} min   (epoch {d['epoch']}, "
                      f"predicted {d['tc_pred']:.5f} ± {d['oc_pred_sigma_min']:.2f} min)")
+            if self._time_kind != "BJD_TDB":
+                # BJD_TDB - JD_UTC runs from -7.2 to +9.5 min (light time
+                # +-8.3 min, plus TDB - UTC = 69.2 s).
+                L.append("            ⚠ JD_UTC times against a BJD_TDB ephemeris: "
+                         "this O–C can be off by up to 9.5 min")
         L.append(f"Rp/R*     = {pm('rp')}")
         dm, dl, dh = d["depth_rp2"]
         L.append(f"(Rp/R*)²  = {dm * 1e3:.2f} ± {0.5 * (dl + dh) * 1e3:.2f} ppt    "
@@ -1077,8 +1092,15 @@ class TransitFitDialog(QDialog):
             L.append(f"Flip step = {res.median['fs'] * 1e3:+.2f} ± "
                      f"{0.5 * (res.err_lo['fs'] + res.err_hi['fs']) * 1e3:.2f} ppt "
                      "(far pier side vs near; meridian flip inside the night)")
-        L.append(f"Airmass   a1 = {a1:.5f} ± {0.5 * (a1l + a1h):.5f}   "
-                 f"a2 = {a2:+.5f} ± {0.5 * (a2l + a2h):.5f}   (EXOTIC convention)")
+        if "am" in res.median:
+            L.append(f"Airmass   a1 = {a1:.5f} ± {0.5 * (a1l + a1h):.5f}   "
+                     f"a2 = {a2:+.5f} ± {0.5 * (a2l + a2h):.5f}   (EXOTIC convention)")
+        # tau is in days: c1 per day, c2 per day^2.
+        for name, scale, unit, lab in (("c1", 1e3 / 24.0, "ppt/h", "Slope"),
+                                       ("c2", 1e3 / 576.0, "ppt/h²", "Curvature")):
+            if name in res.median:
+                L.append(f"{lab:<9} = {res.median[name] * scale:+.3f} ± "
+                         f"{0.5 * (res.err_lo[name] + res.err_hi[name]) * scale:.3f} {unit}")
         L.append("")
         L.append(f"Residual RMS = {st['rms_ppt']:.2f} ppt/point ({st['cadence_min']:.2f} min cadence), "
                  f"{st['rms10_ppt']:.2f} ppt per 10 min")
@@ -1096,7 +1118,21 @@ class TransitFitDialog(QDialog):
                  f"→ stars {best['comps'][:12]}{' …' if len(best['comps']) > 12 else ''}")
         L.append(f"Selection: {len(out['scores'])} aperture/comparison combinations scored, "
                  f"best std/median = {best['score']:.5f}")
-        L.append(f"Systematics: {xfit.SYSTEMATICS_LABELS.get(res.options.systematics)}")
+        sys_lab = xfit.SYSTEMATICS_LABELS.get(res.options.systematics)
+        sa = st.get("sys_auto")
+        if sa:
+            L.append(f"Systematics: {sys_lab} — chosen automatically (lowest BIC; "
+                     "within ΔBIC 2 the model with fewer terms wins)")
+            parts = []
+            for r in sa["rows"]:
+                nm = xfit.SYSTEMATICS_SHORT.get(r["key"], r["key"])
+                if np.isfinite(r["dbic"]):
+                    parts.append(f"{nm} {r['dbic']:+.1f}" + (" ✓" if r["chosen"] else ""))
+                else:
+                    parts.append(f"{nm} ({r['note']})")
+            L.append("  ΔBIC: " + " · ".join(parts))
+        else:
+            L.append(f"Systematics: {sys_lab}")
         L.append(f"Limb darkening: u1={pr.u1:.4f}, u2={pr.u2:.4f} — {pr.ld_source}")
         L.append(f"Priors: {getattr(self, '_prior_source', 'manual')}")
         for n in res.notes:
@@ -1159,7 +1195,10 @@ class TransitFitDialog(QDialog):
             f"(inverse-variance weighted); aperture r={best['radius']:.2f} px on "
             f"{int(self.ctx.get('soft_bin', 2) or 2)}x{int(self.ctx.get('soft_bin', 2) or 2)} software-binned "
             f"frames; errors x{st['err_scale']:.2f} (chi2) x{st['beta_used']:.2f} (beta); "
-            f"quadratic LD u1={res.priors.u1:.3f} u2={res.priors.u2:.3f}")
+            f"quadratic LD u1={res.priors.u1:.3f} u2={res.priors.u2:.3f}"
+            + ("" if res.options.systematics == "airmass" else
+               f"; systematics model: {xfit.SYSTEMATICS_LABELS.get(res.options.systematics)} "
+               "(DETREND_2 is that model)"))
         notes, ok = QInputDialog.getMultiLineText(self, "AAVSO", "Notes:", notes_default)
         if not ok:
             return

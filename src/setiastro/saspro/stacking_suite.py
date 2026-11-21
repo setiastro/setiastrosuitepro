@@ -11030,9 +11030,6 @@ class StackingSuiteDialog(QDialog):
         self.hw_accel_cb.setToolTip(self.tr("Enable GPU/MPS via PyTorch when supported; falls back to CPU automatically."))
         self.hw_accel_cb.setChecked(self.settings.value("stacking/use_hardware_accel", True, type=bool))
         fl_perf.addRow(self.hw_accel_cb)
-        self.hw_accel_cb.toggled.connect(
-            lambda v: self.settings.setValue("stacking/use_hardware_accel", bool(v))
-        )
 
         # NEW: MFDeconv engine choice (radio buttons)
         eng_box = QGroupBox(self.tr("MFDeconv Engine"))
@@ -11394,20 +11391,8 @@ class StackingSuiteDialog(QDialog):
             self.vm_sigma.setValue(3.0)      # VarMap smooth σ
             self.vm_floor_log.setValue(-10)  # VarMap floor (log10)
 
-            # (Optional) preload QSettings so Cancel still reverts if user wants.
-            # If you prefer to save only on OK, you can omit this block.
-            s = self.settings
-            s.setValue("stacking/mfdeconv/seed_mode", "integrated")
-            s.setValue("stacking/mfdeconv/star_mask/thresh_sigma", 4.5)
-            s.setValue("stacking/mfdeconv/star_mask/grow_px", 6)
-            s.setValue("stacking/mfdeconv/star_mask/soft_sigma", 3.0)
-            s.setValue("stacking/mfdeconv/star_mask/max_radius_px", 36)
-            s.setValue("stacking/mfdeconv/star_mask/max_objs", 5000)
-            s.setValue("stacking/mfdeconv/star_mask/keep_floor", 0.015)
-            s.setValue("stacking/mfdeconv/star_mask/ellipse_scale", 1.12)
-            s.setValue("stacking/mfdeconv/varmap/sample_stride", 8)
-            s.setValue("stacking/mfdeconv/varmap/smooth_sigma", 3.0)
-            s.setValue("stacking/mfdeconv/varmap/floor", 10 ** (-10))  # store linear value if you persist floor linearly
+            # Widgets only. OK persists them (save_stacking_settings writes every
+            # key above from these widgets); Cancel must leave QSettings untouched.
 
         btn_mf_reset.clicked.connect(_reset_mfdeconv_defaults)
         fl_mf.addRow(btn_mf_reset)
@@ -11503,9 +11488,6 @@ class StackingSuiteDialog(QDialog):
         self.exposure_weighted_cb.setChecked(
             self.settings.value("stacking/exposure_weighted", True, type=bool)
         )
-        self.exposure_weighted_cb.toggled.connect(
-            lambda v: self.settings.setValue("stacking/exposure_weighted", bool(v))
-        )
         rej_layout.addWidget(self.exposure_weighted_cb)
 
         # Measurement cache. Every frame's quality measurement is a pure
@@ -11546,9 +11528,6 @@ class StackingSuiteDialog(QDialog):
         ))
         self.measure_cache_cb.setChecked(
             self.settings.value("stacking/measure_cache_enabled", True, type=bool)
-        )
-        self.measure_cache_cb.toggled.connect(
-            lambda v: self.settings.setValue("stacking/measure_cache_enabled", bool(v))
         )
         rej_layout.addWidget(self.measure_cache_cb)
 
@@ -12031,6 +12010,17 @@ class StackingSuiteDialog(QDialog):
             self.settings.setValue(
                 "stacking/reject_outliers_advanced",
                 bool(self.reject_outliers_advanced_cb.isChecked()),
+            )
+        # These two used to be written on toggle, so Cancel couldn't undo them.
+        if hasattr(self, "exposure_weighted_cb"):
+            self.settings.setValue(
+                "stacking/exposure_weighted",
+                bool(self.exposure_weighted_cb.isChecked()),
+            )
+        if hasattr(self, "measure_cache_cb"):
+            self.settings.setValue(
+                "stacking/measure_cache_enabled",
+                bool(self.measure_cache_cb.isChecked()),
             )
 
         self.settings.setValue("stacking/kappa",                self.kappa)

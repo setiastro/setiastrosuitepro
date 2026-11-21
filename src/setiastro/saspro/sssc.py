@@ -1771,6 +1771,15 @@ class SSSCDialog(QDialog):
         self.load_settings()
         self._restore_geometry()
         self.finished.connect(lambda *_: self._cleanup())
+
+        # Curve Manager writes -> refresh the filter combos live.
+        self._curve_lib_conn = None
+        try:
+            from setiastro.saspro.spectral_curves import curve_library_signals
+            curve_library_signals().changed.connect(self._on_curve_library_changed)
+            self._curve_lib_conn = True
+        except Exception as e:
+            print(f"[SSSC] curve library hook unavailable: {e}")
  
     # ── File prep ─────────────────────────────────────────────────────────────
  
@@ -1993,13 +2002,6 @@ class SSSCDialog(QDialog):
         self.sasp_btn.clicked.connect(self.open_sasp_viewer)
         row1.addWidget(self.sasp_btn)
 
-        self.add_curve_btn = QPushButton("Add Curve…")
-        self.add_curve_btn.setStyleSheet(UTIL_STYLE)
-        self.add_curve_btn.setToolTip(
-            "Import a custom filter or sensor curve from a 2-column CSV (λ_nm, response)")
-        self.add_curve_btn.clicked.connect(self.add_custom_curve)
-        row1.addWidget(self.add_curve_btn)
-
         # ── Docs cluster: About (what it is) + Help (full documentation) ──
         INFO_STYLE = (
             "QPushButton { background: #1a2f4a; color: #88bbee;"
@@ -2191,6 +2193,14 @@ class SSSCDialog(QDialog):
 
         row4.addWidget(vsep())
         row4.addWidget(adv_box)
+
+        self.curve_mgr_btn = QPushButton("Filter / Sensor Curves…")
+        self.curve_mgr_btn.setStyleSheet(UTIL_STYLE)
+        self.curve_mgr_btn.setToolTip(
+            "Open the Curve Manager: add, label, edit, share or delete filter and sensor curves\n"
+            "(paste data, import a CSV, digitize a chart image, or generate a bandpass).")
+        self.curve_mgr_btn.clicked.connect(self.open_curve_manager)
+        row4.addWidget(self.curve_mgr_btn)
         row4.addStretch()
  
         self.session_info_lbl = QLabel("")
@@ -2274,96 +2284,19 @@ class SSSCDialog(QDialog):
             QMessageBox.critical(self, "SASP Viewer",
                 f"Could not open SASP viewer:\n{e}")
 
-    def add_custom_curve(self):
-        """Import a 2-column CSV (λ_nm, response) as a FILTER or SENSOR curve
-        into usercustomcurves.fits, then refresh the filter combos."""
-        import pandas as pd
+    def open_curve_manager(self):
+        """Filter / Sensor Curve Manager (spectral_curves.py), opened with the
+        current filter chain selected so it is plotted straight away."""
+        from setiastro.saspro.spectral_curves import open_curve_manager
+        chain = [cb.currentText() for cb in (
+            self.r_filter_combo, self.g_filter_combo, self.b_filter_combo,
+            self.lp_filter_combo, self.lp_filter_combo2)]
+        open_curve_manager(parent=self.main_win or self,
+                           sasp_data_path=self.sasp_data_path, select=chain)
 
-        csv_path, _ = QFileDialog.getOpenFileName(
-            self, "Select 2-column CSV (λ_nm, response)", "",
-            "CSV Files (*.csv);;All Files (*)")
-        if not csv_path:
-            return
-
-        try:
-            df = pd.read_csv(csv_path, comment="#", header=None).iloc[:, :2].dropna()
-            df.columns = ["wavelength_nm", "response"]
-            wl_nm = df["wavelength_nm"].astype(float).to_numpy()
-            tp    = df["response"].astype(float).to_numpy()
-        except ValueError:
-            try:
-                df = pd.read_csv(csv_path, comment="#", header=0).iloc[:, :2].dropna()
-                df.columns = ["wavelength_nm", "response"]
-                wl_nm = df["wavelength_nm"].astype(float).to_numpy()
-                tp    = df["response"].astype(float).to_numpy()
-            except Exception as e2:
-                QMessageBox.critical(self, "CSV Error", f"Could not read CSV:\n{e2}")
-                return
-        except Exception as e:
-            QMessageBox.critical(self, "CSV Error", f"Could not read CSV:\n{e}")
-            return
-
-        if wl_nm.size < 2:
-            QMessageBox.critical(self, "CSV Error", "Need at least two data points.")
-            return
-
-        name, ok = QInputDialog.getText(
-            self, "Curve Name",
-            "EXTNAME for this curve (e.g. 'MyRed', 'IMX533'):")
-        if not ok or not name.strip():
-            return
-        name = name.strip()
-
-        kind, ok = QInputDialog.getItem(
-            self, "Curve Type", "Store as:", ["FILTER", "SENSOR"], 0, False)
-        if not ok:
-            return
-
-        # Duplicate check
-        try:
-            with fits.open(self.user_custom_path, memmap=False) as hd:
-                existing = [h.header.get("EXTNAME", "") for h in hd]
-        except Exception:
-            existing = []
-        if name in existing:
-            if QMessageBox.question(
-                    self, "Overwrite?",
-                    f"A curve named '{name}' already exists in your custom file.\n"
-                    f"Overwrite it?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
-                return
-
-        # Store wavelength in Angstrom (loader applies _ensure_angstrom either way)
-        wl_ang = (wl_nm * 10.0).astype(np.float32)
-        tr     = tp.astype(np.float32)
-
-        col_wl = fits.Column(name="WAVELENGTH", format="E", array=wl_ang)
-        col_tp = fits.Column(name="THROUGHPUT", format="E", array=tr)
-        new_hdu = fits.BinTableHDU.from_columns([col_wl, col_tp])
-        new_hdu.header["CTYPE"]   = kind
-        new_hdu.header["EXTNAME"] = name
-
-        try:
-            with fits.open(self.user_custom_path, mode="update", memmap=False) as hd:
-                # remove any existing HDU with this EXTNAME (overwrite path)
-                for i in range(len(hd) - 1, 0, -1):
-                    if hd[i].header.get("EXTNAME", "") == name:
-                        del hd[i]
-                hd.append(new_hdu)
-                hd.flush()
-        except Exception as e:
-            QMessageBox.critical(self, "Write Error",
-                f"Could not write curve to custom file:\n{e}")
-            return
-
+    def _on_curve_library_changed(self):
         self._reload_hdu_lists()
         self._refresh_filter_combos()
-
-        _sfcc_status(self, f"[SSSC] Added {kind} curve '{name}' from "
-                           f"{os.path.basename(csv_path)}")
-        QMessageBox.information(self, "Curve Added",
-            f"'{name}' added as a {kind} curve.")
 
     def load_settings(self):
         s = QSettings()
@@ -2821,7 +2754,7 @@ class SSSCDialog(QDialog):
         # SIMBAD is optional enrichment — Gaia XP is the primary source, so a
         # CDS outage must cost seconds, not the ~15 unbounded network calls
         # this block used to make. prepare_simbad() probes with a hard 4 s
-        # deadline, fails over to the Harvard mirror, and bounds the timeout
+        # deadline, fails over to the Harvard / IDIA mirrors, and bounds the timeout
         # BEFORE add_votable_fields (which hits the network on astroquery
         # >= 0.4.8).
         self._simbad_budget = cds_health.Budget()
@@ -3783,6 +3716,13 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
 
     def _cleanup(self):
         self._save_geometry()
+        if getattr(self, "_curve_lib_conn", None):
+            try:
+                from setiastro.saspro.spectral_curves import curve_library_signals
+                curve_library_signals().changed.disconnect(self._on_curve_library_changed)
+            except Exception:
+                pass
+            self._curve_lib_conn = None
         try:
             if self._session_cache is not None:
                 self._session_cache.close()

@@ -25,23 +25,39 @@ def _safe_text_kwargs() -> dict:
         enc = locale.getpreferredencoding(False) or "utf-8"
     return {"text": True, "encoding": enc, "errors": "replace"}
 
+# Python start-up variables that an interpreter we launch (the runtime venv's
+# python, or the system Python that builds it) must never inherit. A PYTHONHOME
+# left behind by some other project points that python.exe at a foreign
+# standard library, so it dies before printing anything. _venv_pyver() then
+# reads the silence as "base Python uninstalled", and _ensure_venv() deletes the
+# 2.5 GB runtime. `py -3.12` fails the same way, so the startup preflight
+# reports Python 3.12 missing on a machine that has it. The frozen app itself
+# was never exposed (PyInstaller starts its interpreter isolated); only these
+# children were. The encoding switches stay: they change how output is written,
+# not what runs.
+_PY_ENV_KEEP = frozenset({
+    "PYTHONIOENCODING", "PYTHONUTF8",
+    "PYTHONLEGACYWINDOWSFSENCODING", "PYTHONLEGACYWINDOWSSTDIO",
+})
+# pip settings that send an install somewhere other than the venv pip runs in.
+_PIP_ENV_DROP = frozenset({"PIP_TARGET", "PIP_PREFIX", "PIP_ROOT", "PIP_USER"})
+
+
 def _clean_subprocess_env() -> dict:
+    """Environment for every interpreter this module launches."""
     env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
-    env.pop("PYTHONHOME", None)
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        meipass = sys._MEIPASS
-        for var in ("LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"):
-            val = env.get(var, "")
-            if val:
-                cleaned = os.pathsep.join(
-                    p for p in val.split(os.pathsep)
-                    if meipass not in p
-                )
-                if cleaned:
-                    env[var] = cleaned
-                else:
-                    env.pop(var, None)
+    for k in list(env):
+        ku = k.upper()
+        if (ku.startswith("PYTHON") and ku not in _PY_ENV_KEEP) or ku in _PIP_ENV_DROP:
+            env.pop(k, None)
+    if getattr(sys, "frozen", False):
+        # Drop the bundle's own entries: _internal on PATH / LD_LIBRARY_PATH /
+        # DYLD_*, the Qt plugin path, the bundled certifi file, _PYI_*.
+        try:
+            from setiastro.saspro.subprocess_isolation import child_env
+            env = child_env(env)
+        except Exception:
+            pass
     return env
 
 def _rt_dbg(msg: str, status_cb=print):
@@ -77,6 +93,7 @@ def _venv_pyver(venv_python: Path) -> tuple[int, int] | None:
              "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
             stderr=subprocess.DEVNULL,
             timeout=30,
+            env=_clean_subprocess_env(),
             **_safe_text_kwargs(),
         ).strip()
         maj, min_ = out.split(".")
@@ -1122,7 +1139,8 @@ def _ensure_numpy(venv_python: Path, status_cb=print) -> None:
         )
         try:
             out = subprocess.check_output(
-                [str(venv_python), "-c", code], **_safe_text_kwargs(),
+                [str(venv_python), "-c", code],
+                env=_clean_subprocess_env(), **_safe_text_kwargs(),
             ).strip()
             data = json.loads(out) if out else {}
             return bool(data.get("present")), data.get("major"), data.get("version")
@@ -1201,7 +1219,8 @@ def _venv_paths(rt: Path):
 def _site_packages(venv_python: Path) -> Path:
     code = "import site, sys; print([p for p in site.getsitepackages() if 'site-packages' in p][-1])"
     out = subprocess.check_output(
-        [str(venv_python), "-c", code], **_safe_text_kwargs(),
+        [str(venv_python), "-c", code],
+        env=_clean_subprocess_env(), **_safe_text_kwargs(),
     ).strip()
     return Path(out)
 
@@ -1218,7 +1237,7 @@ def _ensure_venv(rt: Path, status_cb=print) -> Path:
             py_cmd = _find_system_python_cmd() if getattr(sys, "frozen", False) else [sys.executable]
             out = subprocess.check_output(
                 py_cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-                **_safe_text_kwargs(),
+                env=_clean_subprocess_env(), **_safe_text_kwargs(),
             ).strip()
             maj, min_ = map(int, out.split("."))
 
@@ -1417,7 +1436,8 @@ except Exception as e:
 """
     r = subprocess.run(
         [str(venv_python), "-c", code],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **_safe_text_kwargs(),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        env=_clean_subprocess_env(), **_safe_text_kwargs(),
     )
     out = (r.stdout or "").strip()
     last = out.splitlines()[-1] if out else ""
@@ -1450,7 +1470,8 @@ except Exception as e:
 """
     r = subprocess.run(
         [str(venv_python), "-c", code],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **_safe_text_kwargs(),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        env=_clean_subprocess_env(), **_safe_text_kwargs(),
     )
     out = (r.stdout or "").strip()
     last = out.splitlines()[-1] if out else ""
@@ -1831,7 +1852,8 @@ def _install_torch(
             )
             r = subprocess.run(
                 [str(venv_python), "-c", code],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **_safe_text_kwargs(),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                env=_clean_subprocess_env(), **_safe_text_kwargs(),
             )
             if r.returncode != 0 or "3" not in (r.stdout or ""):
                 status_cb((r.stdout or "")[-2000:])
@@ -1892,7 +1914,8 @@ def _venv_import_probe(venv_python: Path, modname: str) -> tuple[bool, str]:
     )
     r = subprocess.run(
         [str(venv_python), "-c", code],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **_safe_text_kwargs(),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        env=_clean_subprocess_env(), **_safe_text_kwargs(),
     )
     out = (r.stdout or "").strip()
 
@@ -1926,7 +1949,8 @@ def _write_torch_marker(marker: Path, status_cb=print, *, require_torchaudio: bo
     try:
         r = subprocess.run(
             [str(vp), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **_safe_text_kwargs(),
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=_clean_subprocess_env(), **_safe_text_kwargs(),
         )
         if r.returncode == 0:
             payload["python"] = (r.stdout or "").strip()
@@ -2225,8 +2249,7 @@ def import_torch(
                 and (req_ta == require_torchaudio)
             ):
                 status_cb("[RT] File cache hit; attempting zero-subprocess import.")
-                if site_s not in sys.path:
-                    sys.path.insert(0, site_s)
+                _put_runtime_site_on_path(site_s)
                 _demote_shadow_torch_paths(status_cb=status_cb)
                 _purge_bad_torch_from_sysmodules(status_cb=status_cb, rocm=prefer_rocm)
                 _register_dll_dirs_for_frozen(Path(site_s), vp, status_cb=status_cb)
@@ -2264,9 +2287,7 @@ def import_torch(
     try:
         if _marker_says_ready(marker, site, venv_ver, require_torchaudio=require_torchaudio):
             status_cb("[RT] Marker valid; attempting fast in-process import.")
-            sp = str(site)
-            if sp not in sys.path:
-                sys.path.insert(0, sp)
+            _put_runtime_site_on_path(str(site))
             _demote_shadow_torch_paths(status_cb=status_cb)
             _purge_bad_torch_from_sysmodules(status_cb=status_cb, rocm=prefer_rocm)
             _register_dll_dirs_for_frozen(site, vp, status_cb=status_cb) 
@@ -2334,9 +2355,7 @@ def import_torch(
         # the fast path.
         _fallback_detail: str | None = None
         try:
-            sp = str(site)
-            if sp not in sys.path:
-                sys.path.insert(0, sp)
+            _put_runtime_site_on_path(str(site))
             _demote_shadow_torch_paths(status_cb=status_cb)
             _purge_bad_torch_from_sysmodules(status_cb=status_cb, rocm=prefer_rocm)
             _register_dll_dirs_for_frozen(site, vp, status_cb=status_cb)
@@ -2461,9 +2480,7 @@ def import_torch(
 
     # Final in-process import (only reached when torch was already installed
     # before this call — not after a fresh install)
-    sp = str(site)
-    if sp not in sys.path:
-        sys.path.insert(0, sp)
+    _put_runtime_site_on_path(str(site))
     _demote_shadow_torch_paths(status_cb=status_cb)
     _purge_bad_torch_from_sysmodules(status_cb=status_cb, rocm=prefer_rocm)
     _register_dll_dirs_for_frozen(site, vp, status_cb=status_cb)
@@ -2556,7 +2573,8 @@ def _find_system_python_cmd_for_minor(minor: int) -> list[str] | None:
         try:
             r = subprocess.run(
                 cmd + ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **_safe_text_kwargs(),
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                env=_clean_subprocess_env(), **_safe_text_kwargs(),
             )
             return r.returncode == 0 and (r.stdout or "").strip() == f"3.{minor}"
         except Exception:
@@ -2667,7 +2685,7 @@ def _detected_python_versions() -> list[str]:
         try:
             r = subprocess.run(
                 ["py", "-0p"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                timeout=15, **_safe_text_kwargs(),
+                timeout=15, env=_clean_subprocess_env(), **_safe_text_kwargs(),
             )
             if r.returncode == 0:
                 for line in (r.stdout or "").splitlines():
@@ -2684,7 +2702,7 @@ def _detected_python_versions() -> list[str]:
         try:
             r = subprocess.run(
                 cmd + ["-c", code], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                timeout=15, **_safe_text_kwargs(),
+                timeout=15, env=_clean_subprocess_env(), **_safe_text_kwargs(),
             )
             if r.returncode == 0:
                 _add((r.stdout or "").strip())
@@ -2750,9 +2768,38 @@ def runtime_python_preflight(status_cb=None) -> dict | None:
         return None
 
 
+def _put_runtime_site_on_path(sp: str) -> None:
+    """Make the runtime venv's site-packages importable.
+
+    Frozen build: APPEND. The bundle is a fixed set of packages built and
+    tested together; the venv holds whatever pip resolved on the user's machine
+    the day torch went in. At sys.path[0] the venv won for every package both
+    carry that the app imports after startup -- PyInstaller's frozen importer
+    is a path hook on the _MEIPASS entry, so sys.path order decides. A plain
+    CUDA torch install already duplicates 12 bundled packages (Pillow,
+    packaging, setuptools, fsspec, sympy, ... at different versions), and
+    anything a user adds to the venv joins them: a full opencv-python there
+    would replace the bundle's headless cv2, Qt DLLs and all. The bundle never
+    holds torch (the spec excludes it), so torch and torchvision still resolve
+    from the venv, which now only fills gaps. numpy/numba/llvmlite are
+    unaffected either way: numba_bootstrap imports them before this runs.
+
+    Source / pip run: PREPEND, as before. There the "bundle" is the user's own
+    environment, which may carry its own (often CPU) torch that must not win
+    over the runtime's GPU build.
+    """
+    if getattr(sys, "frozen", False):
+        if sp not in sys.path:
+            sys.path.append(sp)
+    elif sp not in sys.path:
+        sys.path.insert(0, sp)
+
+
 # ── Spawned workers must import the parent's numpy ──────────────────────────
-# The runtime venv's site-packages goes to sys.path[0] so `import torch` finds
-# the wheel. By then the parent has already imported numpy (numba_bootstrap,
+# From source/pip the runtime venv's site-packages goes to sys.path[0] so
+# `import torch` finds the wheel. (A frozen build appends it instead -- see
+# _put_runtime_site_on_path -- and this guard then finds nothing to move.)
+# By then the parent has already imported numpy (numba_bootstrap,
 # first thing in gui_entry), so the parent keeps the numpy it ships with. A
 # spawned worker does not: multiprocessing hands it the parent's sys.path
 # before it imports anything (a frozen worker reaches freeze_support() in
@@ -2874,15 +2921,14 @@ def add_runtime_to_sys_path(status_cb=print) -> None:
         site = _site_packages(vpy)
         sp = str(site)
         if sp not in sys.path:
-            sys.path.insert(0, sp)
+            _put_runtime_site_on_path(sp)
             try:
                 status_cb(f"Added runtime site-packages to sys.path: {sp}")
             except Exception:
                 pass
         for c in (site, site.parent / "site-packages", site.parent / "dist-packages"):
-            sc = str(c)
-            if c.exists() and sc not in sys.path:
-                sys.path.insert(0, sc)
+            if c.exists():
+                _put_runtime_site_on_path(str(c))
         _demote_shadow_torch_paths(status_cb=status_cb)
         _register_dll_dirs_for_frozen(site, vpy, status_cb=status_cb)   # <-- add
     except Exception:

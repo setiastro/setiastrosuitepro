@@ -114,15 +114,15 @@ flat-unity curve. These are read from the shipped
 <code>sasp_data.fits</code> plus a per-user <code>usercustomcurves.fits</code>.
 Choices persist via <code>QSettings</code>.</p>
 <ul>
-  <li><b>Add Custom Filter/Sensor Curve&hellip;</b> &mdash; import a 2-column CSV
-      (<code>&lambda;_nm, response</code>) or digitize a scanned curve from an
-      image (click bottom-left, bottom-right, top-left on the plot axes, enter
-      <code>&lambda;_min</code> and <code>&lambda;_max</code>, SASpro extracts
-      the darkest-pixel-per-column trace, interpolates anomalies, median-smooths,
-      and writes it to the user FITS as a <code>FILTER</code> or
-      <code>SENSOR</code> extension).</li>
-  <li><b>Remove Filter/Sensor Curve&hellip;</b> &mdash; rewrites
-      <code>usercustomcurves.fits</code> without the chosen extension.</li>
+  <li><b>Filter / Sensor Curves&hellip;</b> &mdash; opens the
+      <a href="curve_manager.html" style="color:#88ffcc;">Curve Manager</a>, the one
+      place to add, label, edit, share and delete curves: paste columns straight
+      from a spreadsheet or web page, import a CSV/TXT, digitize a datasheet chart
+      (screenshot, scan or web graphic), or generate a narrowband / multi-band /
+      broadband filter from its CWL&nbsp;/&nbsp;FWHM&nbsp;/&nbsp;peak specs. It opens with
+      your current R/G/B, sensor and LP choices plotted, and anything you save
+      shows up in these lists immediately. (It replaces the old
+      <i>Add Custom</i> / <i>Remove</i> buttons.)</li>
 </ul>
 
 <h3>The SASP Viewer &mdash; see your optical chain against any star</h3>

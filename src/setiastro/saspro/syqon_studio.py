@@ -524,6 +524,42 @@ def _unscreen_star_layer(original: np.ndarray, starless: np.ndarray) -> np.ndarr
     return np.ascontiguousarray(stars, dtype=np.float32)
 
 
+def studio_input_headers(doc):
+    """
+    (header, wcs_header) for the temp FITS SASpro hands to Studio: the
+    document's full current header plus its plate solution, picked the way
+    Save As picks them (DocManager.save_document) so Studio sees what a saved
+    FITS would carry. Studio reads that header: the WCS drives DeepGradient's
+    survey reference and colour correction, and --domain auto reads the
+    container metadata. Copies, so the worker never shares the document's
+    live headers. Either may be None.
+    """
+    from astropy.io import fits as _fits
+    meta = getattr(doc, "metadata", None) or {}
+
+    def _as_header(v):
+        if isinstance(v, _fits.Header):
+            return v.copy()
+        if isinstance(v, dict):
+            try:
+                return _fits.Header(v)
+            except Exception:
+                return None
+        return None
+
+    # original_header first: it is the canonical CURRENT header (solver,
+    # header editors and WCS Update write it); fits_header is as loaded.
+    header = None
+    if isinstance(meta.get("original_header"), _fits.Header):
+        header = meta["original_header"].copy()
+    else:
+        for key in ("fits_header", "original_header", "header"):
+            header = _as_header(meta.get(key))
+            if header is not None:
+                break
+    return header, _as_header(meta.get("wcs_header"))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Worker thread
 # ─────────────────────────────────────────────────────────────────────────────
@@ -535,10 +571,15 @@ class _SyQonStudioCLIThread(QThread):
     result = pyqtSignal(object, object, dict, str)
 
     def __init__(self, *, input_image, exe, model_id, argv_opts: dict,
-                 want_secondary: bool, secondary_flag: str | None, parent=None):
+                 want_secondary: bool, secondary_flag: str | None,
+                 header=None, wcs_header=None, parent=None):
         super().__init__(parent)
         # The document's pixels exactly as stored: (H, W) mono or (H, W, 3).
         self.input_image = np.asarray(input_image, dtype=np.float32)
+        # The document's header and plate solution (studio_input_headers),
+        # written into the temp FITS so Studio sees the full metadata.
+        self.header = header
+        self.wcs_header = wcs_header
         self.exe = str(exe)
         self.model_id = str(model_id)
         self.argv_opts = dict(argv_opts or {})
@@ -564,20 +605,45 @@ class _SyQonStudioCLIThread(QThread):
         self.progress.emit(int(np.clip(pct, 0, 100)), str(stage or ""))
 
     @staticmethod
-    def _write_fits(path: str, arr: np.ndarray):
+    def _write_fits(path: str, arr: np.ndarray, header=None, wcs_header=None):
         """The image exactly as SASpro holds it, as 32-bit float FITS: no
         normalisation, no clipping, no channel replication, no colour profile.
         Mono stays a 2-D image; colour is written as the (3, H, W) cube FITS
         expects. Written with astropy directly so no export path can touch it
         (save_image's TIFF writer embeds a Display P3 ICC profile, which a
-        colour-managed reader is entitled to convert)."""
+        colour-managed reader is entitled to convert).
+
+        The header is the document's, merged and cleaned exactly as the FITS
+        writer does it: structural cards rebuilt for this array, the plate
+        solution merged in, and DATAMIN/DATAMAX and display-level cards made
+        to agree with the data (a Siril DATAMAX=65535 over 0..1 data would
+        tell Studio the frame is black). ROWORDER is stamped TOP-DOWN because
+        that is how the rows are written; the header's WCS already describes
+        top-down pixels (load_image flips it along with the data)."""
         from astropy.io import fits as _fits
         a = np.asarray(arr, dtype=np.float32)
         if a.ndim == 3 and a.shape[2] == 1:
             a = a[:, :, 0]
         if a.ndim == 3:
             a = np.ascontiguousarray(np.transpose(a[:, :, :3], (2, 0, 1)))
-        _fits.PrimaryHDU(a).writeto(path, overwrite=True)
+        hdr = None
+        if header is not None or wcs_header is not None:
+            try:
+                from setiastro.saspro.legacy.image_manager import (
+                    _build_fits_header_for_export, _sync_fits_level_cards)
+                hdr = _build_fits_header_for_export(
+                    a, original_header=header, wcs_header=wcs_header)
+                hdr["BITPIX"] = -32
+                hdr["BSCALE"] = 1.0
+                hdr["BZERO"] = 0.0
+                _sync_fits_level_cards(hdr, a, -32)
+                hdr["ROWORDER"] = ("TOP-DOWN", "Row 0 is the top of the image")
+            except Exception as e:
+                # Pixels still go through; Studio just sees no metadata.
+                print(f"[SyQon Studio] header not written ({type(e).__name__}: {e}); "
+                      f"sending pixels only", flush=True)
+                hdr = None
+        _fits.PrimaryHDU(a, header=hdr).writeto(path, overwrite=True)
 
     @staticmethod
     def _load_result(path: str):
@@ -661,7 +727,8 @@ class _SyQonStudioCLIThread(QThread):
                 self._tmp_sec = str(run_dir / f"{tag}_sec.fits")
 
             self._emit(2, "Writing temp image…")
-            self._write_fits(self._tmp_in, self.input_image)
+            self._write_fits(self._tmp_in, self.input_image,
+                             header=self.header, wcs_header=self.wcs_header)
             if self._cancel:
                 raise RuntimeError("__cancelled__")
 
@@ -1412,6 +1479,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         else:
             self.lbl_status.setText("Processing…")
 
+        hdr_in, wcs_in = studio_input_headers(doc)
         self.proc_thr = _SyQonStudioCLIThread(
             input_image=x_in,
             exe=exe,
@@ -1419,6 +1487,8 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             argv_opts=self._collect_opts(),
             want_secondary=want_secondary,
             secondary_flag=secondary_flag,
+            header=hdr_in,
+            wcs_header=wcs_in,
             parent=None,  # keep the worker out of the widget tree
         )
         self.proc_thr.progress.connect(self._on_worker_progress)

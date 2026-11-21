@@ -4735,8 +4735,9 @@ class StellarNeighborhoodTab(QWidget):
             self._status.setText(f"Resolving {ident} via SIMBAD…")
             QApplication.processEvents()
             try:
-                from astroquery.simbad import Simbad
-                s = Simbad()
+                from setiastro.saspro import cds_health
+                # A bare Simbad() goes to Strasbourg whatever mirror is up.
+                s = cds_health.simbad_client()
                 try:
                     s.add_votable_fields("otype")
                 except Exception:
@@ -4768,11 +4769,11 @@ class StellarNeighborhoodTab(QWidget):
         QApplication.processEvents()
 
         try:
-            from astroquery.simbad import Simbad
+            from setiastro.saspro import cds_health
             from astropy.coordinates import SkyCoord
             import astropy.units as u
 
-            s = Simbad()
+            s = cds_health.simbad_client()
             try:
                 s.add_votable_fields("otype")
             except Exception:
@@ -4824,13 +4825,13 @@ class StellarNeighborhoodTab(QWidget):
         from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtCore import QUrl
         from urllib.parse import quote_plus
+        from setiastro.saspro import cds_health
 
         if self._selected_is_bright():
             ident = self._selected_identifier()
             if ident is None:
                 return
-            url = ("https://simbad.cds.unistra.fr/simbad/sim-id?Ident="
-                   + quote_plus(ident))
+            url = cds_health.simbad_web_url("sim-id?Ident=" + quote_plus(ident))
         else:
             # sim-id on a Gaia DR3 id 404s for uncatalogued sources; sim-coo
             # always lands on something useful.
@@ -4839,10 +4840,11 @@ class StellarNeighborhoodTab(QWidget):
             i = self._selected_idx
             ra  = float(self._data["ra"][i])
             dec = float(self._data["dec"][i])
-            url = ("https://simbad.cds.unistra.fr/simbad/sim-coo"
-                   f"?Coord={ra:.6f}+{dec:+.6f}"
-                   "&CooFrame=ICRS&CooEpoch=2000&CooEqui=2000"
-                   "&Radius=10&Radius.unit=arcsec")
+            url = cds_health.simbad_web_url(
+                "sim-coo"
+                f"?Coord={ra:.6f}+{dec:+.6f}"
+                "&CooFrame=ICRS&CooEpoch=2000&CooEqui=2000"
+                "&Radius=10&Radius.unit=arcsec")
 
         QDesktopServices.openUrl(QUrl(url))
 
@@ -5734,11 +5736,11 @@ class GaiaDatabaseDialog(QDialog):
             self._viewer_status.setText(f"Resolving '{name}' via SIMBAD…")
             QApplication.processEvents()
             try:
-                from astroquery.simbad import Simbad
+                from setiastro.saspro import cds_health
                 from astropy.coordinates import SkyCoord
 
                 try:
-                    s = Simbad()
+                    s = cds_health.simbad_client()
                     s.add_votable_fields("ids", "ra", "dec")
                     result = s.query_object(name)
                 except Exception:

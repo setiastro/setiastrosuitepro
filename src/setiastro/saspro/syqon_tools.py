@@ -2454,6 +2454,7 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
     from PyQt6.QtCore import QSettings as _QSettings
     from setiastro.saspro.syqon_studio import (
         _SyQonStudioCLIThread, find_studio_cli, studio_family_for,
+        studio_input_headers,
     )
     from setiastro.saspro.remove_stars import _push_as_new_doc
 
@@ -2522,9 +2523,11 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
     dlg = _ProcDialog(main, title="SyQon Studio Progress")
     dlg.append_text(f"Starting SyQon Studio ({mid})…\n")
 
+    hdr_in, wcs_in = studio_input_headers(doc)
     thr = _SyQonStudioCLIThread(
         input_image=x_in, exe=exe, model_id=mid,
         argv_opts=opts, want_secondary=want_secondary, secondary_flag=secondary_flag,
+        header=hdr_in, wcs_header=wcs_in,
         parent=dlg,
     )
 

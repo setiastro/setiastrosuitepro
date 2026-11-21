@@ -50,7 +50,16 @@ from typing import Callable, Optional, Tuple
 __all__ = [
     "MIRRORS",
     "VIZIER_MIRRORS",
+    "VIZIER_HTTP_ONLY",
     "canonical_server",
+    "simbad_client",
+    "simbad_web_url",
+    "simbad_web_host",
+    "point_vizier",
+    "vizier_client",
+    "vizier_preference",
+    "query_vizier",
+    "sesame_resolve",
     "probe",
     "simbad_available",
     "current_server",
@@ -81,36 +90,43 @@ __all__ = [
 
 # ── Configuration ────────────────────────────────────────────────────────
 
-# Order matters: first entry is preferred. These are exactly the two values
-# astroquery's `simbad.conf.server` accepts — it is a ConfigItem built from
-# `servers_list`, so assigning anything else raises and (because every
-# assignment here is individually guarded) would silently leave astroquery
-# pointed at the default. Verified against astroquery 0.4.10/0.4.11/0.4.12:
+# Order matters: first entry is preferred.
 #
-#     servers_list = ['simbad.cds.unistra.fr', 'simbad.harvard.edu']
+# Measured 2026-11-21, during the CDS cybersecurity incident, each mirror
+# end-to-end through astroquery (query_region, query_object, query_objects
+# with the sp/B/V/R/otype/ids fields) plus the sim-id / sim-coo web pages:
 #
-# WHY HARVARD IS BACK
-# -------------------
-# An earlier version of this module listed only Strasbourg, on the strength
-# of a probe against `simbad.cfa.harvard.edu` that answered on :443 but
-# returned HTTP 500 with HTML error output from vizier.cfa.harvard.edu for
-# /simbad/sim-tap/*. Two things were wrong with that conclusion:
+#   simbad.cds.unistra.fr  primary; HTTP 404 for TAP and the web UI
+#   simbad.harvard.edu     all of it, ~0.7 s; newest record 2026-10-14
+#                          (CDS: "data ingested up to 2026-10-14")
+#   simbad.idia.ac.za      all of it, ~1-4 s; newest record 2026-04-22 --
+#                          an older snapshot, so it goes last
 #
-#   * `simbad.cfa.harvard.edu` is the web-UI alias. It is the same machine
-#     as `simbad.harvard.edu`, but it is NOT a name astroquery will accept
-#     for `conf.server`, and its sim-tap path is not the one astroquery
-#     builds. The name to probe and to hand astroquery is
-#     `simbad.harvard.edu`.
-#   * A shallow "did something respond?" check cannot tell the two apart,
-#     which is how a broken endpoint looked healthy in the first place.
+# simbad.cfa.harvard.edu is the Harvard mirror under its web-UI name. It
+# serves /simbad/sim-tap now too (an earlier probe got HTTP 500 there), but
+# it is mapped onto simbad.harvard.edu so the same machine is never counted
+# as two independent mirrors.
 #
-# So the mirror is listed again AND the probe is now end-to-end: a mirror
-# is only declared usable once a real TAP query has returned a VOTable from
-# it (see _verify_tap). That is the check that should gate any future
-# addition to this list — not reachability.
+# ASTROQUERY KNOWS ONLY THE FIRST TWO. `simbad.conf.servers_list` is
+# ['simbad.cds.unistra.fr', 'simbad.harvard.edu'] (astroquery 0.4.10-0.4.12):
+#
+#   * the `SimbadClass.server` setter checks that list, which is a plain
+#     mutable list -- _register_with_astroquery() appends the rest, and an
+#     INSTANCE then takes them;
+#   * `conf.server` is an option() ConfigItem frozen at import and still
+#     raises for anything else -- and a fresh `Simbad()` starts from
+#     conf.server. So build new instances with simbad_client(), never
+#     `Simbad()`, or they go back to Strasbourg while the module-level
+#     instance is on the mirror.
+#
+# A mirror is only declared usable once a real TAP query has returned a
+# VOTable from it (see _verify_tap) -- a shallow "did something respond?"
+# check is how a broken endpoint once looked healthy. That is the check that
+# should gate any future addition to this list, not reachability.
 MIRRORS: tuple[str, ...] = (
     "simbad.cds.unistra.fr",
     "simbad.harvard.edu",
+    "simbad.idia.ac.za",
 )
 
 # Names users and web links use that astroquery will not accept. Mapped so
@@ -123,27 +139,26 @@ _SERVER_ALIASES: dict[str, str] = {
 
 # VizieR is separate infrastructure from the SIMBAD TAP endpoint, but the
 # primary is still a Strasbourg host, so a CDS-wide outage takes it down
-# too. These are values astroquery's vizier.conf.server accepts.
+# too.
 #
-# Ordered by how they measured on 2026-11-14, each probed end-to-end with a
-# real one-row query to /viz-bin/votable (the endpoint astroquery actually
-# POSTs to) rather than by reachability:
+# Measured 2026-11-21 with a real query to /viz-bin/votable (the endpoint
+# astroquery POSTs to) for each catalogue the tools use -- Gaia DR3, APASS,
+# VSX, UCAC4, 2MASS and HyperLEDA -- rather than by reachability:
 #
-#   vizier.cds.unistra.fr   primary; was 404ing that day (CDS outage)
-#   vizier.cfa.harvard.edu  VOTable in 1.1 s
-#   vizier.idia.ac.za       VOTable in 3.1 s; returned an error VOTable on
-#                           one attempt and data on the next, so it is listed
-#                           after the solid mirrors
-#   vizier.hia.nrc.ca       TCP connect timed out on :443 and :80
-#   vizier.nao.ac.jp        TCP connect timed out on :443 and :80
-#   vizier.iucaa.in         TCP connect timed out on :443 and :80
-#   vizier.china-vo.org     :80 open, :443 refused, query timed out
+#   vizier.cds.unistra.fr   primary; HTTP 404 (CDS incident)
+#   vizier.cfa.harvard.edu  all six over https, 0.3-8 s
+#   vizier.idia.ac.za       all six over https, 5-12 s
+#   vizier.nao.ac.jp        all six over plain HTTP, 0.7-8 s; :443 timed out
+#   vizier.china-vo.org     :443 refused; HTTP 500 for a query on :80
+#   vizier.hia.nrc.ca       TCP connect timed out (and on 2026-11-14)
+#   vizier.iucaa.in         TCP connect timed out (and on 2026-11-14)
 #
-# The last four are kept rather than deleted because a mirror that is down
-# today may be back tomorrow, and keeping them costs nothing: _race_mirrors
-# probes the candidates concurrently, so a dead host loses the race instead
-# of adding its timeout to the user's wait. Hosts that fail a live call are
-# moved to the back of the order for BREAKER_RESET seconds.
+# CDS's own mirror list now names IDIA, CfA, NAOJ and China-VO, the last two
+# with http:// URLs (see VIZIER_HTTP_ONLY). NRC and IUCAA are no longer on it
+# but stay at the end: a mirror that is down today may be back tomorrow, and
+# _race_mirrors probes the candidates concurrently, so a dead host loses the
+# race instead of adding its timeout to the user's wait. Hosts that fail a
+# live call are moved to the back of the order for BREAKER_RESET seconds.
 #
 # vizier.inasan.ru and vizier.ast.cam.ac.uk are deliberately absent: both
 # refuse :443 outright and Cambridge's :80 serves a 404, so neither is a
@@ -152,11 +167,22 @@ VIZIER_MIRRORS: tuple[str, ...] = (
     "vizier.cds.unistra.fr",
     "vizier.cfa.harvard.edu",
     "vizier.idia.ac.za",
-    "vizier.hia.nrc.ca",
     "vizier.nao.ac.jp",
-    "vizier.iucaa.in",
     "vizier.china-vo.org",
+    "vizier.hia.nrc.ca",
+    "vizier.iucaa.in",
 )
+
+# Mirrors that serve VizieR over plain HTTP only. astroquery always builds
+# "https://" + VIZIER_SERVER (VizierClass._server_to_url), so these need the
+# scheme overridden per Vizier object -- point_vizier() does that, and is the
+# only thing that should point one at a host. They must never go into
+# vizier.conf.server either: NAOJ is one of astroquery's accepted names, and
+# every fresh Vizier() would then try it over https and time out.
+VIZIER_HTTP_ONLY: frozenset = frozenset({
+    "vizier.nao.ac.jp",
+    "vizier.china-vo.org",
+})
 
 # VOSI standard availability endpoint — tiny XML payload, no query cost.
 # Stage 1 only: necessary, not sufficient.
@@ -250,6 +276,10 @@ _state: dict = {
     "vz_tripped":     False,
     "vz_tripped_at":  0.0,
     "vz_trip_reason": "",
+    # Host for browser links when no full probe has said which is good.
+    "web_host":       "",
+    "web_at":         0.0,
+    "web_ok":         False,
 }
 
 
@@ -319,7 +349,8 @@ def set_server_preference(server: str = "", *, pin: bool = False,
             _state["vizier_pref"] = viz
         _state.update(server=srv or MIRRORS[0], ok=None, checked_at=0.0,
                       detail="", details=[], verified_at={}, homed_at=0.0,
-                      tripped=False, tripped_at=0.0, trip_reason="")
+                      tripped=False, tripped_at=0.0, trip_reason="",
+                      web_host="", web_at=0.0, web_ok=False)
 
     if persist:
         try:
@@ -346,6 +377,61 @@ def vizier_server() -> str:
     _load_preference()
     with _lock:
         return _state["vizier_pref"] or VIZIER_MIRRORS[0]
+
+
+def vizier_preference() -> str:
+    """The STORED VizieR preference: "" for automatic, else a hostname.
+
+    Not vizier_server(), which resolves automatic to a concrete host -- a
+    settings dialog that pre-selects from that turns automatic into a pin
+    the first time someone presses OK.
+    """
+    _load_preference()
+    with _lock:
+        return _state["vizier_pref"] or ""
+
+
+def _vizier_scheme(host: str) -> str:
+    return "http" if host in VIZIER_HTTP_ONLY else "https"
+
+
+def point_vizier(v, host: str) -> bool:
+    """
+    Point one astroquery Vizier object -- a new instance, or the module-level
+    `Vizier` -- at `host`, scheme included. True only if the URL it will now
+    request is on that host over the right scheme.
+
+    VIZIER_SERVER is a plain attribute and takes any host; the scheme is the
+    catch. `_server_to_url()` hard-codes https, so for an http-only mirror an
+    instance attribute of the same name shadows the method, and for every
+    other host an override left there by an earlier call is removed.
+    """
+    host = (host or "").strip()
+    if not host:
+        return False
+    for attr in ("VIZIER_SERVER", "server", "_server"):
+        try:
+            setattr(v, attr, host)
+        except Exception:                            # noqa: BLE001
+            pass
+    try:
+        if host in VIZIER_HTTP_ONLY:
+            def _http_url(return_type="votable", _host=host):
+                if return_type not in ("votable", "asu-tsv", "asu-fits",
+                                       "asu-binfits"):
+                    raise TypeError(
+                        f"VizieR return type {return_type!r} is not supported")
+                return f"http://{_host}/viz-bin/{return_type}"
+            v._server_to_url = _http_url
+        else:
+            vars(v).pop("_server_to_url", None)
+    except Exception:                                # noqa: BLE001
+        return False
+    try:
+        url = str(v._server_to_url())
+    except Exception:                                # noqa: BLE001
+        return False
+    return url.startswith(f"{_vizier_scheme(host)}://{host}/")
 
 
 # ── Low-level probe ──────────────────────────────────────────────────────
@@ -597,7 +683,8 @@ def _verify_vizier(server: str, timeout: float = VERIFY_TIMEOUT
     if last and (_now() - last) < TTL_VERIFIED:
         return True, f"{server}: VizieR verified recently"
 
-    url = f"https://{server}{_VIZIER_PATH}?{urllib.parse.urlencode(_VIZIER_SMOKE)}"
+    url = (f"{_vizier_scheme(server)}://{server}{_VIZIER_PATH}?"
+           f"{urllib.parse.urlencode(_VIZIER_SMOKE)}")
     code, body, err = _fetch_with_hard_deadline(url, timeout)
 
     if err is not None:
@@ -753,7 +840,8 @@ def apply_vizier_server(server: str,
     failures are tolerated, and the result is decided by asking astroquery
     what URL it would use, not by whether an assignment threw. Guessing from
     the assignment is how a failover reports success while queries keep
-    going to the dead host.
+    going to the dead host. An http-only mirror (VIZIER_HTTP_ONLY) is kept
+    out of conf entirely and gets its scheme from point_vizier().
     """
     if status_cb is None:
         status_cb = lambda _m: None                  # noqa: E731
@@ -766,21 +854,18 @@ def apply_vizier_server(server: str,
     except Exception as e:                           # noqa: BLE001
         status_cb(f"astroquery.vizier unavailable: {e}")
         return False
-    for setter in (
-        lambda: setattr(_Vizier, "VIZIER_SERVER", host),
-        lambda: setattr(_aqv.conf, "server", host),   # may legitimately raise
-    ):
+    if host not in VIZIER_HTTP_ONLY:
         try:
-            setter()
+            _aqv.conf.server = host                  # may legitimately raise
         except Exception:                            # noqa: BLE001
             pass
 
     # The only answer that matters: where will the next request go?
-    try:
-        url = str(_Vizier._server_to_url())
-    except Exception:                                # noqa: BLE001
-        return False
-    if host not in url:
+    if not point_vizier(_Vizier, host):
+        try:
+            url = str(_Vizier._server_to_url())
+        except Exception:                            # noqa: BLE001
+            url = "an unreadable URL"
         status_cb(f"astroquery still points at {url} after being asked "
                   f"for {host}")
         return False
@@ -1140,7 +1225,8 @@ def reset() -> None:
         start = _state["pref"] or MIRRORS[0]
         _state.update(server=start, ok=None, checked_at=0.0, detail="",
                       details=[], verified_at={}, homed_at=0.0,
-                      tripped=False, tripped_at=0.0, trip_reason="")
+                      tripped=False, tripped_at=0.0, trip_reason="",
+                      web_host="", web_at=0.0, web_ok=False)
 
 
 # ── Wall-clock budget ────────────────────────────────────────────────────
@@ -1175,6 +1261,38 @@ class Budget:
 
 # ── astroquery integration ───────────────────────────────────────────────
 
+def _register_with_astroquery(_aqs) -> tuple:
+    """
+    Make astroquery's SIMBAD server check accept every host in MIRRORS.
+
+    The `SimbadClass.server` setter validates against `conf.servers_list`,
+    a plain list on the Conf class, so appending to it is all an INSTANCE
+    needs to take a mirror astroquery does not ship with. conf.server is a
+    separate, frozen option() and is not changed by this. Returns the list
+    as it now stands.
+    """
+    lst = getattr(_aqs.conf, "servers_list", None)
+    if isinstance(lst, list):
+        for host in MIRRORS:
+            if host not in lst:
+                lst.append(host)
+        return tuple(lst)
+    return tuple(lst or MIRRORS)
+
+
+def _simbad_target(s, _aqs) -> str:
+    """The host a Simbad object will actually query.
+
+    From astroquery 0.4.8 the TAP URL is built from the instance's `server`
+    property. Before that, requests went to conf.server whatever the
+    instance said, so reading back an attribute we just set would confirm
+    nothing there.
+    """
+    if isinstance(getattr(type(s), "server", None), property):
+        return str(s.server)
+    return str(getattr(_aqs.conf, "server", "") or "")
+
+
 def apply_server(server: str, status_cb: Optional[Callable[[str], None]] = None
                  ) -> bool:
     """
@@ -1187,6 +1305,11 @@ def apply_server(server: str, status_cb: Optional[Callable[[str], None]] = None
     keeps querying the default host while the UI reports it is using the
     mirror. That is a failover that silently does nothing, and it is
     indistinguishable from the outage it was meant to work around.
+
+    So the module-level `Simbad` instance is pointed at the host (which
+    works for every registered mirror), conf.server is set where astroquery
+    allows it, and the answer comes from where the instance will actually
+    send its next query. New instances need simbad_client().
     """
     if status_cb is None:
         status_cb = lambda _m: None                  # noqa: E731
@@ -1199,28 +1322,118 @@ def apply_server(server: str, status_cb: Optional[Callable[[str], None]] = None
         status_cb(f"astroquery.simbad unavailable: {e}")
         return False
 
-    allowed = tuple(getattr(_aqs.conf, "servers_list", MIRRORS) or MIRRORS)
+    allowed = _register_with_astroquery(_aqs)
     if host not in allowed:
         status_cb(f"astroquery will not accept SIMBAD server {host!r} "
                   f"(it accepts: {', '.join(allowed)})")
         return False
 
-    applied = False
+    # Raises for a mirror astroquery does not ship with (IDIA): expected,
+    # not a failure. It only seeds new Simbad() objects, and those are made
+    # with simbad_client(), which sets the instance itself.
     try:
         _aqs.conf.server = host
-        applied = True
-    except Exception as e:                           # noqa: BLE001
-        status_cb(f"could not set astroquery conf.server={host}: {e}")
-
-    # The module-level `Simbad` is an *instance*; new instances read conf,
-    # but an instance already in use needs setting directly.
-    try:
-        Simbad.server = host
-        applied = True
     except Exception:                                # noqa: BLE001
         pass
 
-    return applied
+    # The module-level `Simbad` is an *instance*, and it is the one
+    # Simbad.query_* and prepare_simbad() callers use.
+    try:
+        Simbad.server = host
+    except Exception as e:                           # noqa: BLE001
+        status_cb(f"could not point astroquery's Simbad at {host}: {e}")
+
+    target = _simbad_target(Simbad, _aqs)
+    if target != host:
+        status_cb(f"astroquery's Simbad still queries "
+                  f"{target or 'its default host'} after being asked for "
+                  f"{host}")
+        return False
+    return True
+
+
+def simbad_client(host: str = "",
+                  status_cb: Optional[Callable[[str], None]] = None):
+    """
+    A NEW astroquery Simbad instance on a working mirror. Use this instead
+    of `Simbad()`.
+
+    A fresh `Simbad()` starts from conf.server, which can only hold
+    astroquery's two built-in hosts and holds whatever the last
+    apply_server() left there -- Strasbourg, unless something failed over
+    first. So a tool that built its own instance kept querying Strasbourg
+    through an outage while the rest of SASpro was on a mirror.
+
+    With no `host` the mirror is the one the health probe picked (cached,
+    so this is free after the first call). Raises ConnectionError when no
+    mirror is answering (the text is status_text(), which says why), and
+    RuntimeError when astroquery cannot be pointed at the host.
+
+    No timeout is set here on purpose: on astroquery >= 0.4.8 the `timeout`
+    setter fetches the mirror's /capabilities over the network.
+    """
+    from astroquery.simbad import Simbad as _Simbad
+    import astroquery.simbad as _aqs
+
+    if host:
+        host = canonical_server(host)
+    else:
+        if not simbad_available(status_cb=status_cb):
+            raise ConnectionError(status_text())
+        host = current_server()
+    _register_with_astroquery(_aqs)
+    s = _Simbad()
+    try:
+        s.server = host
+    except Exception as e:                           # noqa: BLE001
+        raise RuntimeError(
+            f"astroquery will not use SIMBAD server {host}: {e}") from e
+    target = _simbad_target(s, _aqs)
+    if target != host:
+        raise RuntimeError(f"a new Simbad instance queries "
+                           f"{target or 'its default host'}, not {host}")
+    return s
+
+
+def simbad_web_host(*, timeout: float = 3.0) -> str:
+    """
+    The SIMBAD host to send a BROWSER to.
+
+    The mirror the health probe last found working, when there is one.
+    Otherwise the mirrors are raced on their availability endpoint alone,
+    with a hard deadline, and the answer is cached like a probe. That is
+    enough for a web page (it is what the user sees, not a query we parse),
+    and it is kept out of the probe's own state so it can never stand in
+    for the end-to-end TAP check that choosing a query mirror needs.
+    """
+    _load_preference()
+    with _lock:
+        if _state["ok"] and not _state["tripped"]:
+            return _state["server"] or MIRRORS[0]
+        host = _state["web_host"]
+        ttl = TTL_UP if _state["web_ok"] else TTL_DOWN
+        if host and (_now() - float(_state["web_at"])) < ttl:
+            return host
+    order = _probe_order()
+    ok, server, _detail, _details = _race_mirrors(
+        order, lambda s: _probe_one(s, timeout), timeout)
+    host = server if ok else (order[0] if order else MIRRORS[0])
+    with _lock:
+        _state.update(web_host=host, web_at=_now(), web_ok=bool(ok))
+    return host
+
+
+def simbad_web_url(path: str, *, timeout: float = 3.0) -> str:
+    """
+    Browser URL for a SIMBAD web page on a mirror that is answering.
+
+    `path` is everything after "/simbad/", e.g. "sim-id?Ident=Vega". Every
+    mirror serves the same sim-id / sim-coo / sim-basic / sim-sam pages, so
+    an "Open in SIMBAD" link during a Strasbourg outage lands on a mirror
+    instead of a 404 page.
+    """
+    return (f"https://{simbad_web_host(timeout=timeout)}/simbad/"
+            f"{str(path).lstrip('/')}")
 
 
 def _bind_timeouts(timeout: float) -> None:
@@ -1439,16 +1652,11 @@ def vizier_client(host: str = "", **kwargs):
             host = _state["vz_server"] or ""
         host = host or vizier_server()
     v = _Vizier(**kwargs)
-    for attr in ("VIZIER_SERVER", "server", "_server"):
+    if not point_vizier(v, host):
         try:
-            setattr(v, attr, host)
-        except Exception:                            # noqa: BLE001
-            pass
-    try:
-        url = str(v._server_to_url())
-    except Exception as e:                           # noqa: BLE001
-        raise RuntimeError(f"cannot read the Vizier URL: {e}") from e
-    if host not in url:
+            url = str(v._server_to_url())
+        except Exception as e:                       # noqa: BLE001
+            raise RuntimeError(f"cannot read the Vizier URL: {e}") from e
         raise RuntimeError(f"Vizier instance points at {url}, not {host}")
     return v
 
@@ -1591,7 +1799,9 @@ def query_vizier(run: Callable[[str], object], *, context: str = "",
 # on cds.unistra.fr -- a different host from simbad.cds.unistra.fr -- and on
 # the VizieR mirrors. On 2026-11-19, with both SIMBAD TAP mirrors down,
 # Sesame on cds.unistra.fr and vizier.idia.ac.za resolved HAT-P-32,
-# V336 Aps, TYC 9256-617-1 and TOI-1130 in 2-5 s each.
+# V336 Aps, TYC 9256-617-1 and TOI-1130 in 2-5 s each. On 2026-11-21
+# cds.unistra.fr's Sesame was a redirect to IDIA (4.5 s) and CfA answered in
+# 0.4 s; these three are the Sesame hosts CDS lists.
 
 SESAME_URLS: tuple[str, ...] = (
     "https://cds.unistra.fr/cgi-bin/nph-sesame",
@@ -1616,7 +1826,7 @@ def sesame_resolve(name: str, *, timeout: float = 10.0,
     with _lock:
         vz = _state["vz_server"] or ""
     if vz:
-        order.append(f"https://{vz}/viz-bin/nph-sesame")   # known-alive host
+        order.append(f"{_vizier_scheme(vz)}://{vz}/viz-bin/nph-sesame")   # known-alive host
     for url in SESAME_URLS[1:]:
         if url not in order:
             order.append(url)

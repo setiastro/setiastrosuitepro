@@ -75,7 +75,7 @@
 
 <ol>
   <li><b>Local Gaia XP library</b> (primary) — Gaia DR3 sources with stored BP/RP spectra, matched by position in a radius sweep across your field. Each matched spectrum is integrated through Johnson B / V / R passbands to synthesize per-star photometry, then anchored to each star's real Gaia G magnitude (see §10.5) to put the result on a true magnitude scale. This source is fully offline and typically delivers hundreds to thousands of stars across a modest field.</li>
-  <li><b>SIMBAD</b> (augment) — a cone query to CDS Strasbourg (with a VizieR SIMBAD-mirror fallback on separate CDS infrastructure if the primary endpoint is down). SIMBAD contributes bright saturated stars Gaia XP cannot cover, and lifts identifiers / spectral types / Pickles-match template labels onto the XP matches (2″ cross-match tolerance).</li>
+  <li><b>SIMBAD</b> (augment) — a cone query to SIMBAD at CDS Strasbourg, failing over to the Harvard and IDIA mirrors when it is down (with a VizieR SIMBAD-mirror fallback on separate CDS infrastructure after that). SIMBAD contributes bright saturated stars Gaia XP cannot cover, and lifts identifiers / spectral types / Pickles-match template labels onto the XP matches (2″ cross-match tolerance).</li>
   <li><b>APASS DR9</b> via VizieR (last-resort) — only triggered if the Gaia XP + SIMBAD union has fewer than 20 stars. Common on small FOVs with no local Gaia library installed, or during a widespread CDS outage.</li>
 </ol>
 

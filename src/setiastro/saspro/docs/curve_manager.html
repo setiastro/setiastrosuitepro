@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  ul, ol { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; width:100%; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2a2015; border-left:3px solid #f0a000; padding:8px 12px;
+          margin:10px 0; color:#f0d9a0; }
+</style>
+</head>
+<body>
+
+<h1>Filter / Sensor Curve Manager</h1>
+<p class="sub">One place to add, label, edit, share and delete the filter and
+sensor response curves that <a href="sfcc.html" style="color:#88ffcc;">SPCC</a>
+and <a href="sssc.html" style="color:#88ffcc;">SSSC</a> use. Open it from the
+<b>Filter / Sensor Curves&hellip;</b> button in either tool, or from
+<b>Functions &rarr; Color Calibration &rarr; Filter / Sensor Curve Manager</b>.</p>
+
+<div class="tip">SASpro ships with close to 200 filter and sensor curves, but new
+filters and sensors appear all the time. If yours isn't listed, the fastest route
+is usually: find the manufacturer's transmission or QE chart, take a screenshot,
+and use <b>Digitize Image&hellip;</b>. It takes about a minute per curve.</div>
+
+<h2>The window</h2>
+<ul>
+  <li><b>Library</b> (left): <i>My curves</i>, then the built-in filters grouped by
+      maker, then the built-in sensors. Type in the search box to filter by name,
+      maker, channel or category. Select several curves to overlay and compare
+      them. Double-click a curve to open it in the editor.</li>
+  <li><b>Plot</b> (top right): the selected curves, plus the curve you are editing
+      (thick yellow).</li>
+  <li><b>Curve editor</b> (bottom right): the point table, the labels, live
+      checks, and <b>Save to My Curves</b> (<code>Ctrl+S</code>).</li>
+</ul>
+<p>When you open the manager from SPCC or SSSC, your current R/G/B, sensor and
+LP/cut choices are pre-selected, so your whole optical chain is already
+plotted.</p>
+
+<h2>Four ways to get a curve in</h2>
+
+<h3>1 &middot; Paste Data</h3>
+<p>Copy two or more columns from Excel, a web page, a PDF table or a text file,
+then click <b>Paste Data</b> (or press <code>Ctrl+V</code> in the table).
+Tab, comma, semicolon or space delimiters, decimal commas, <code>%</code> signs
+and header rows are all handled. Units are detected and converted for you:</p>
+<ul>
+  <li>wavelengths in &Aring; (median &gt; 2000) or &micro;m (median &lt; 5) are
+      converted to nm;</li>
+  <li>a response that goes above 1.5 is treated as percent and divided by 100.</li>
+</ul>
+<p>If the data has more than one response column (say, wavelength plus the R, G
+and B QE of a color sensor), you pick the columns and every checked column
+becomes its own curve. They load one at a time: save the first, and the next
+appears with the maker and model carried over and the channel guessed from the
+column name.</p>
+
+<h3>2 &middot; Import File&hellip;</h3>
+<p>The same reader, for <code>.csv</code>, <code>.txt</code>, <code>.tsv</code>
+or <code>.dat</code> files. A <code>.fits</code> file is treated as a curve pack
+(see below). CSVs exported from the Curve Manager carry their labels in
+<code># key: value</code> comment lines, and those labels come back on
+import.</p>
+
+<h3>3 &middot; Digitize Image&hellip;</h3>
+<p>Turns a chart into numbers. Open, paste (<code>Ctrl+V</code>) or drag in the
+image: a datasheet screenshot (<code>Win+Shift+S</code> /
+<code>Cmd+Ctrl+Shift+4</code>), a scan, or a web graphic.</p>
+<ol>
+  <li><b>Calibrate the axes.</b> Click a labelled tick on the wavelength axis for
+      <b>X1</b> and type its value. Do the same for a second tick, far from the
+      first, for <b>X2</b>. Then do two ticks on the response axis for <b>Y1</b>
+      and <b>Y2</b> (for example 0 and 100). Set whether the response axis is in
+      percent or 0&ndash;1. A green grid is drawn from your calibration; if it
+      sits on the chart's own grid, the calibration is right. The markers can be
+      dragged to fine-tune them, using the magnifier under the preview.
+      Slightly rotated scans are fine.</li>
+  <li><b>Trace by color.</b> Click on the curve line. The trace starts where you
+      clicked and follows that line both ways, column by column, inside the
+      dashed plot-area box. The box is found automatically on the chart's axes;
+      redraw it to keep a legend out. Gridlines and frame lines are ignored, even
+      when they are the same color as the curve, and a filter's blocked region
+      lying on the 0&nbsp;% axis is followed. If several curves share one color
+      (a black-and-white datasheet), click the one you want. Raise the
+      <b>tolerance</b> if parts of the line are missing, or lower it if a
+      neighbouring curve gets picked up. <b>Erase Traced Points</b> removes stray
+      bits with a box.</li>
+  <li><b>&hellip;or click points by hand.</b> <b>Add / Move Points</b>, then
+      click along the curve. The corners, peaks and band edges are enough, and
+      <i>Smooth curve</i> joins them. Drag a point to move it, right-click to
+      delete it. Hand points can also patch a gap in a traced curve.</li>
+</ol>
+<p>Many charts show R, G and B (or several filters) together. Trace the first
+curve, click <b>Keep &amp; Trace Another</b>, and click the next line;
+the calibration stays. <b>Use Curve</b> sends every kept curve to the editor,
+one after another, with the channel guessed from the line color.</p>
+<div class="tip">If the trace goes astray, click the curve again somewhere clean;
+the trace restarts from that point. If it jumps onto a legend or text,
+<b>Erase</b> or a tighter box fixes it. Clearing the box entirely is rarely
+a good idea for a black curve: the axis labels are black too.</div>
+
+<h3>4 &middot; Generate Bandpass&hellip;</h3>
+<p>For filters where the maker only publishes specs. Add one row per passband:
+center wavelength (CWL), FWHM, peak transmission and edge <b>sharpness</b>
+(1 = Gaussian, 3&ndash;6 &asymp; a typical interference filter,
+15+ &asymp; rectangular). The quick-add buttons drop in H&alpha;, H&beta;,
+O&nbsp;III, S&nbsp;II and N&nbsp;II rows at your default FWHM, plus a 400&ndash;700&nbsp;nm
+broadband box. A dual- or tri-band filter is simply several rows. The FWHM is
+exact for any sharpness.</p>
+
+<h2>Labels</h2>
+<table>
+  <tr><th>Field</th><th>What it's for</th></tr>
+  <tr><td><b>Type</b></td><td><i>Filter</i> curves appear in SPCC's and SSSC's
+      R/G/B and LP/Cut lists; <i>Sensor (QE)</i> curves appear in SPCC's Sensor list.</td></tr>
+  <tr><td><b>Category</b></td><td>RGB channel, luminance / UV-IR cut, light-pollution,
+      narrowband, dual / multi-band, OSC color channel (sensor &times; CFA),
+      photometric band; or sensor QE / ideal reference.</td></tr>
+  <tr><td><b>Channel</b></td><td>R, G, B, L, H&alpha;, H&beta;, O&nbsp;III, S&nbsp;II, N&nbsp;II,
+      multi-line&hellip;</td></tr>
+  <tr><td><b>Maker / Model</b></td><td>Manufacturer and product. With <b>Auto</b> on,
+      the curve's name is built from these, e.g. <code>ANTLIA_V-PRO_SERIES_R</code>,
+      matching the built-in naming.</td></tr>
+  <tr><td><b>Source link / Notes</b></td><td>Where the data came from. This is worth
+      filling in when you plan to share the curve.</td></tr>
+</table>
+<p>The checks under the form flag common problems as you go: wavelengths that look
+like &Aring; or &micro;m, percent values, negative values, and a filter that
+doesn't fall to zero at its ends. Outside a curve's range, SPCC treats it as
+0 (fully blocking). The <b>Tools</b> menu fixes most of these: sort,
+resample, smooth, trim, clip to 0&ndash;1, normalize the peak, and convert units.
+<b>Undo</b> (<code>Ctrl+Z</code>) steps back through edits.</p>
+
+<h2>Editing, deleting, sharing</h2>
+<ul>
+  <li><b>Built-in curves are never changed.</b> <i>Open in Editor</i> on a built-in
+      starts a copy (<code>&hellip;_MOD</code>) that you save under its own name.</li>
+  <li>Renaming one of your curves asks whether to rename it or save a new copy.
+      Saving over an existing name always asks first.</li>
+  <li><b>Delete</b> works on your own curves only. Each save or delete keeps the
+      previous file as <code>usercustomcurves.fits.bak</code>.</li>
+  <li><b>Export</b> the selected curves as CSV, or as a <b>curve pack</b>
+      (<code>.fits</code>) that someone else adds with <b>Import Pack&hellip;</b>,
+      with all labels intact. Sending a pack is also the easiest way to suggest a
+      curve for the built-in library.</li>
+</ul>
+
+<h2>Where curves are stored</h2>
+<p>Your curves live in <code>usercustomcurves.fits</code> in SASpro's app-data
+folder: one table per curve, <code>WAVELENGTH</code> in &Aring; plus
+<code>THROUGHPUT</code> 0&ndash;1, the same layout as the built-in
+<code>SASP_data.fits</code>. The labels are extra header cards
+(<code>CURVCAT</code>, <code>CHANNEL</code>, <code>MAKER</code>,
+<code>MODEL</code>, <code>REFURL</code>, <code>NOTES</code>). Curves you added
+with the old SPCC / SSSC buttons are still there and open in the editor like any
+other.</p>
+
+</body>
+</html>

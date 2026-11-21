@@ -509,12 +509,17 @@ def identify_object(ra_deg: float, dec_deg: float, *,
     nearest object, or None if nothing is within the radius. Raises on a hard
     network failure after `tries` attempts.
     """
-    from astroquery.simbad import Simbad
+    from setiastro.saspro import cds_health
 
     coord = SkyCoord(ra=float(ra_deg) * u.deg, dec=float(dec_deg) * u.deg, frame="icrs")
 
+    # Built once, outside the retry. A bare Simbad() goes to Strasbourg
+    # whatever mirror is answering; and with no mirror up this raises
+    # ConnectionError (saying which mirrors failed) at once, instead of
+    # after `tries` attempts against a dead host.
+    s = cds_health.simbad_client()
+
     def _do():
-        s = Simbad()
         s.reset_votable_fields()
         s.add_votable_fields("otype")
         s.add_votable_fields("flux(V)")
@@ -588,16 +593,24 @@ def resolve_vsx_name(*, main_id: Optional[str] = None,
     then falls back to a name lookup against the SIMBAD main_id. Returns the VSX
     'Name' or None.
     """
-    from astroquery.vizier import Vizier
+    from setiastro.saspro import cds_health
+
+    # Each request runs on whichever VizieR mirror is answering, failing over
+    # between them (a bare Vizier() goes to Strasbourg). Each gets its own
+    # client: the old name lookup set ROW_LIMIT = 1 on astroquery's shared
+    # module-level Vizier, which WIMI's deep search then inherited.
 
     # 1) Positional cone search on B/vsx
     if ra_deg is not None and dec_deg is not None:
         coord = SkyCoord(ra=float(ra_deg) * u.deg, dec=float(dec_deg) * u.deg, frame="icrs")
 
         def _cone():
-            v = Vizier(columns=["Name", "RAJ2000", "DEJ2000"], catalog="B/vsx")
-            v.ROW_LIMIT = 5
-            return v.query_region(coord, radius=radius_arcsec * u.arcsec)
+            def _run(host):
+                v = cds_health.vizier_client(
+                    host, columns=["Name", "RAJ2000", "DEJ2000"],
+                    catalog="B/vsx", row_limit=5)
+                return v.query_region(coord, radius=radius_arcsec * u.arcsec)
+            return cds_health.query_vizier(_run, context="aavso/vsx-cone")[0]
 
         try:
             res = _retry(_cone, tries=tries, sleep_fn=sleep_fn)
@@ -614,10 +627,17 @@ def resolve_vsx_name(*, main_id: Optional[str] = None,
 
     # 2) Name lookup against SIMBAD id
     if main_id:
+        # require_rows: the name is resolved by the MIRROR's own Sesame, and
+        # they differ -- on 2026-11-21 IDIA returned nothing for "V* R Leo"
+        # while CfA and NAOJ found R Leo. So an empty answer here may be the
+        # mirror, unlike the positional cone above, where empty is normal.
         def _byname():
-            Vizier.ROW_LIMIT = 1
-            v = Vizier(columns=["Name"], catalog="B/vsx")
-            return v.query_object(main_id)
+            def _run(host):
+                v = cds_health.vizier_client(host, columns=["Name"],
+                                             catalog="B/vsx", row_limit=1)
+                return v.query_object(main_id)
+            return cds_health.query_vizier(_run, context="aavso/vsx-name",
+                                           require_rows=True)[0]
 
         try:
             res = _retry(_byname, tries=tries, sleep_fn=sleep_fn)
@@ -657,10 +677,11 @@ def resolve_name_to_radec(name: str, *, tries: int = 3,
 
     # Fallback: SIMBAD query_object with explicit coordinate fields
     try:
-        from astroquery.simbad import Simbad
+        from setiastro.saspro import cds_health
+
+        s = cds_health.simbad_client()
 
         def _q():
-            s = Simbad()
             return s.query_object(nm)
 
         table = _retry(_q, tries=tries, sleep_fn=sleep_fn)

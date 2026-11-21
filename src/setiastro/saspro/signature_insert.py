@@ -5,7 +5,7 @@ import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QSettings, QByteArray, pyqtSignal, QEvent, QRect
 from PyQt6.QtGui import (
-    QImage, QPixmap, QPainter, QColor, QPen, QTransform, QIcon, QFont, QPainterPath, QFontMetricsF, QFontDatabase, QTextCursor, QTextCharFormat, QBrush
+    QImage, QPixmap, QPainter, QColor, QPen, QTransform, QIcon, QFont, QPainterPath, QFontMetricsF, QFontDatabase, QTextCursor, QTextCharFormat, QBrush, QTextBlockFormat
 )
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel, QPushButton,
@@ -356,6 +356,8 @@ class OutlinedTextItem(QGraphicsTextItem):
     def __init__(self, text: str, font: QFont, fill: QColor, outline: QColor | None, outline_w: float = 0.0):
         super().__init__(text)
         self._font = font
+        # Line spacing, % of the font's own. 100 leaves Qt's layout untouched.
+        self._line_pct = 100
         self._fill = QColor(fill)
         self._outline = QColor(outline) if outline else None
         self._outline_w = float(max(0.0, outline_w))
@@ -371,11 +373,66 @@ class OutlinedTextItem(QGraphicsTextItem):
         self.setTransformOriginPoint(self.boundingRect().center())
         self.setZValue(1)
 
+    def _raw_line_height(self) -> float:
+        """One line as Qt's text layout measures it, ceil(ascent + descent + leading):
+        what a ProportionalHeight line height is a percentage of. Read off the laid-out
+        first line; QFontMetricsF's figures round differently for some fonts."""
+        try:
+            lay = self.document().firstBlock().layout()
+            if lay is not None and lay.lineCount() > 0:
+                ln = lay.lineAt(0)
+                return float(math.ceil(ln.ascent() + ln.descent() + ln.leading()))
+        except Exception:
+            pass
+        fm = QFontMetricsF(self.font())
+        return float(math.ceil(fm.ascent() + fm.descent() + fm.leading()))
+
+    def _line_pitch(self) -> float:
+        """Baseline to baseline for the outline path, the same as the document's lines."""
+        if self._line_pct == 100:
+            return QFontMetricsF(self._font).lineSpacing()
+        return self._raw_line_height() * self._line_pct / 100.0
+
+    def _apply_line_spacing(self):
+        """Give every block the line height. Blocks added later (Enter while editing
+        on the canvas) inherit it from the block they split."""
+        fmt = QTextBlockFormat()
+        if self._line_pct == 100:
+            fmt.setLineHeight(0.0, QTextBlockFormat.LineHeightTypes.SingleHeight.value)
+        else:
+            fmt.setLineHeight(float(self._line_pct), QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
+        cur = QTextCursor(self.document())
+        cur.select(QTextCursor.SelectionType.Document)
+        cur.mergeBlockFormat(fmt)
+        self.update()
+
+    def set_line_spacing(self, pct: int):
+        pct = int(max(10, min(400, int(pct))))
+        if pct == self._line_pct:
+            return
+        self.prepareGeometryChange()     # boundingRect depends on it below 100 %
+        self._line_pct = pct
+        self._apply_line_spacing()
+
+    def setPlainText(self, text: str):
+        super().setPlainText(text)
+        if self._line_pct != 100:        # new text comes in with default block formats
+            self._apply_line_spacing()
+
+    def boundingRect(self) -> QRectF:
+        r = super().boundingRect()
+        pct = getattr(self, "_line_pct", 100)
+        if pct < 100:
+            # Below 100 % a line's box is shorter than its glyphs, so the last line's
+            # descenders hang below the document; without this they are clipped.
+            r = r.adjusted(0.0, 0.0, 0.0, self._raw_line_height() * (100 - pct) / 100.0)
+        return r
+
     # simple multi-line path builder
     def _text_path(self) -> QPainterPath:
         path = QPainterPath()
         fm = QFontMetricsF(self._font)
-        lh = fm.lineSpacing()
+        lh = self._line_pitch()
         y = 0.0
         for i, line in enumerate(self.toPlainText().splitlines() or [""]):
             # baseline at +ascent for each line
@@ -758,6 +815,15 @@ class SignatureInsertDialogPro(QDialog):
         self.outline_w = QSpinBox()
         self.outline_w.setRange(0, 30)
         self.outline_w.setValue(0)
+        self.line_spacing = QSpinBox()
+        self.line_spacing.setRange(30, 300)
+        self.line_spacing.setSingleStep(5)
+        self.line_spacing.setSuffix(" %")
+        self.line_spacing.setValue(100)
+        self.line_spacing.setToolTip(
+            "Distance between lines, as a percentage of the font's own line spacing.\n"
+            "Some fonts build in very tall line spacing (Sans Serif Collection, Javanese Text,\n"
+            "Gabriola), so their lines look double-spaced; lower this to bring them together.")
 
         self.font_box.currentFontChanged.connect(lambda _: self._apply_text_controls_to_selected())
         self.font_size.valueChanged.connect(lambda _: self._apply_text_controls_to_selected())
@@ -766,6 +832,7 @@ class SignatureInsertDialogPro(QDialog):
         self.btn_fill.clicked.connect(self._pick_text_fill)
         self.btn_outline.clicked.connect(self._pick_text_outline)
         self.outline_w.valueChanged.connect(lambda _: self._apply_text_controls_to_selected())
+        self.line_spacing.valueChanged.connect(lambda _: self._apply_text_controls_to_selected())
 
         tg.addWidget(QLabel("Font"), 1, 0)
         tg.addWidget(self.font_box, 1, 1)
@@ -777,6 +844,8 @@ class SignatureInsertDialogPro(QDialog):
         tg.addWidget(self.btn_outline, 4, 1)
         tg.addWidget(QLabel("Outline (px)"), 5, 0)
         tg.addWidget(self.outline_w, 5, 1)
+        tg.addWidget(QLabel("Line spacing"), 6, 0)
+        tg.addWidget(self.line_spacing, 6, 1)
 
         # ---- Tech Card -----------------------------------------------------
         tech_grp = QGroupBox("Technical Card")
@@ -1489,6 +1558,7 @@ class SignatureInsertDialogPro(QDialog):
         self.chk_bold.setChecked(bool(s.value(self._k("text/bold"), self.chk_bold.isChecked(), type=bool)))
         self.chk_italic.setChecked(bool(s.value(self._k("text/italic"), self.chk_italic.isChecked(), type=bool)))
         self.outline_w.setValue(int(s.value(self._k("text/outline_w"), self.outline_w.value(), type=int)))
+        self.line_spacing.setValue(int(s.value(self._k("text/line_spacing"), self.line_spacing.value(), type=int)))
 
         # Persist your last-picked colors (also used by tech card)
         self._text_fill_color = _rgba_to_qcolor(
@@ -1568,6 +1638,7 @@ class SignatureInsertDialogPro(QDialog):
         s.setValue(self._k("text/bold"), bool(self.chk_bold.isChecked()))
         s.setValue(self._k("text/italic"), bool(self.chk_italic.isChecked()))
         s.setValue(self._k("text/outline_w"), int(self.outline_w.value()))
+        s.setValue(self._k("text/line_spacing"), int(self.line_spacing.value()))
 
         # Save last-picked colors (we keep them in attributes)
         s.setValue(self._k("text/fill_rgba"), _qcolor_to_rgba(getattr(self, "_text_fill_color", QColor("white"))))
@@ -1627,6 +1698,7 @@ class SignatureInsertDialogPro(QDialog):
         self.chk_bold.stateChanged.connect(lambda *_: save())
         self.chk_italic.stateChanged.connect(lambda *_: save())
         self.outline_w.valueChanged.connect(lambda *_: save())
+        self.line_spacing.valueChanged.connect(lambda *_: save())
 
         # transform controls
         self.sl_scale.valueChanged.connect(lambda *_: save())
@@ -1952,6 +2024,7 @@ class SignatureInsertDialogPro(QDialog):
         ow = float(self.outline_w.value())
         oc = getattr(self, "_text_outline_color", QColor("black")) if ow > 0 else None
         ti = OutlinedTextItem(text, font, color, outline=oc, outline_w=ow)
+        ti.set_line_spacing(self.line_spacing.value())
         ti.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
         ti.setZValue(1)
         ti.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -1992,6 +2065,7 @@ class SignatureInsertDialogPro(QDialog):
                     ti.set_outline(ti._outline, 0.0)
                 else:
                     ti.set_outline(ti._outline or QColor("black"), float(w))
+                ti.set_line_spacing(self.line_spacing.value())
             else:
                 ti.setFont(f)
 
@@ -2068,15 +2142,28 @@ class SignatureInsertDialogPro(QDialog):
         texts = self._selected_text_items()
         self.btn_edit_text.setEnabled(bool(texts))
         if texts:
+            # Show the item's settings. Signals stay blocked: each control's change
+            # applies ALL the controls to the selection, so syncing them one at a
+            # time pushed the not-yet-synced ones (the previous item's outline,
+            # line spacing) onto this item.
             ti = texts[0]
             f = ti.font()
-            self.font_box.setCurrentFont(f)
             ps = f.pointSize() if f.pointSize() > 0 else 36
-            self.font_size.setValue(int(ps))
-            self.chk_bold.setChecked(f.bold())
-            self.chk_italic.setChecked(f.italic())
-            if isinstance(ti, OutlinedTextItem):
-                self.outline_w.setValue(int(round(ti._outline_w)))
+            ctrls = (self.font_box, self.font_size, self.chk_bold, self.chk_italic,
+                     self.outline_w, self.line_spacing)
+            for w in ctrls:
+                w.blockSignals(True)
+            try:
+                self.font_box.setCurrentFont(f)
+                self.font_size.setValue(int(ps))
+                self.chk_bold.setChecked(f.bold())
+                self.chk_italic.setChecked(f.italic())
+                if isinstance(ti, OutlinedTextItem):
+                    self.outline_w.setValue(int(round(ti._outline_w)))
+                    self.line_spacing.setValue(int(ti._line_pct))
+            finally:
+                for w in ctrls:
+                    w.blockSignals(False)
 
         # Mirror the selected item's actual scale/opacity back into the sliders so
         # the next drag doesn't snap it to a stale value (TransformHandle mutates

@@ -1117,6 +1117,12 @@ class ToolbarMixin:
         self.act_sssc.setToolTip(self.tr("Open SSSC (Spectral Standard Star Calibration)"))
         self.act_sssc.triggered.connect(self.SSSC_show)
 
+        self.act_curve_manager = QAction(QIcon(spcc_icon_path), self.tr("Filter / Sensor Curve Manager..."), self)
+        self.act_curve_manager.setObjectName("curve_manager")
+        self.act_curve_manager.setIconVisibleInMenu(True)
+        self.act_curve_manager.setStatusTip(self.tr("Add, label, edit, share and delete the filter and sensor response curves SPCC and SSSC use"))
+        self.act_curve_manager.triggered.connect(self._open_curve_manager)
+
         self.act_nbextract = QAction(QIcon(nbextract_icon), self.tr("Narrowband Channel Extractor..."), self)
         self.act_nbextract.setObjectName("nbextract")
         self.act_nbextract.setIconVisibleInMenu(True)
