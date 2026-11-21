@@ -598,8 +598,8 @@ class DraggableToolBar(QToolBar):
 
         # ✅ NEW: Factory reset for all toolbars
         m.addSeparator()
-        reset_all = m.addAction(self.tr("Reset ALL Toolbars (Factory Layout)"))
-        reset_all.setStatusTip(self.tr("Clears saved toolbar positions/orders/hidden state and restores defaults"))
+        reset_all = m.addAction(self.tr("Reset to Factory Layout..."))
+        reset_all.setStatusTip(self.tr("Toolbars, panels, theme and background go back to how a new install starts"))
         reset_all.triggered.connect(lambda: getattr(self.window(), "_reset_all_toolbars_to_factory", lambda: None)())
 
         m.exec(ev.globalPos())

@@ -271,6 +271,15 @@ class DockRailMixin:
         for edge, area in _RAIL_AREAS.items():
             self._make_rail(edge, area)
 
+        self._assign_rails_by_plan()
+
+        self._refresh_all_rail_collapse_icons()
+        self._refresh_rail_visibility()
+
+    def _assign_rails_by_plan(self):
+        """Every panel's button on its planned rail (_DEFAULT_RAIL_PLAN), in
+        plan order; the rest on the edge their panel docks on. Used at startup
+        and by Reset to Factory Layout, so a reset matches a new install."""
         for edge, attr in _DEFAULT_RAIL_PLAN:
             dock = getattr(self, attr, None)
             if isinstance(dock, QDockWidget):
@@ -288,9 +297,6 @@ class DockRailMixin:
             edge = self._edge_for_dock(dock) or "bottom"
             self._assign_dock_to_rail(dock, edge)
             assigned.add(key)
-
-        self._refresh_all_rail_collapse_icons()
-        self._refresh_rail_visibility()
 
     def _repaint_dock_rail_icons(self):
         """Rebuild painted glyphs + rail stylesheets. Call this from your theme

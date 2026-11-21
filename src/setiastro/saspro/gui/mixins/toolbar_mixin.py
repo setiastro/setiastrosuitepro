@@ -6,8 +6,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QAction, QActionGroup, QIcon, QKeySequence, QDesktopServices
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from PyQt6.QtWidgets import QMenu, QToolButton
 
 from PyQt6.QtCore import QElapsedTimer
@@ -249,6 +249,8 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_pixelmath)
         tb_fn.addAction(self.act_signature)
         tb_fn.addAction(self.act_halobgon)
+        tb_fn.addAction(self.act_star_spikes)      # on Star Stuff until 1.24.8
+        tb_fn.addAction(self.act_astrospike)
 
         self._restore_toolbar_order(tb_fn, "Toolbar/Functions")
         try:
@@ -295,6 +297,8 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_magnitude)
         tb_tl.addAction(self.act_snr)
         tb_tl.addAction(self.act_slap_toolkit)
+        tb_tl.addAction(self.act_planet_projection)   # on Star Stuff until 1.24.8
+        tb_tl.addAction(self.act_flythrough)
 
         self._restore_toolbar_order(tb_tl, "Toolbar/Tools")
         try:
@@ -324,7 +328,31 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tb_star = DraggableToolBar(self.tr("Star Stuff"), self)
+        # Stacking, split out of Star Stuff in 1.24.8.
+        tb_stack = DraggableToolBar(self.tr("Stacking"), self)
+        tb_stack.setObjectName("Stacking")
+        tb_stack.setSettingsKey("Toolbar/Stacking")
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_stack)
+
+        tb_stack.addAction(self.act_stacking_suite)
+        tb_stack.addAction(self.act_live_stacking)
+        tb_stack.addAction(self.act_planetary_stacker)
+        tb_stack.addAction(self.act_star_align)
+        tb_stack.addAction(self.act_star_register)
+        tb_stack.addAction(self.act_rgb_align)
+        tb_stack.addAction(self.act_mosaic_master)
+        tb_stack.addAction(self.act_surface_mosaic)
+
+        self._restore_toolbar_order(tb_stack, "Toolbar/Stacking")
+        try:
+            tb_stack.apply_hidden_state()
+        except Exception:
+            pass
+
+        # Analysis: what stayed of Star Stuff. The object name and settings key
+        # are still Star Stuff's, so the toolbar keeps its saved position,
+        # visibility, icon order and hidden icons.
+        tb_star = DraggableToolBar(self.tr("Analysis"), self)
         tb_star.setObjectName("Star Stuff")
         tb_star.setSettingsKey("Toolbar/StarStuff")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_star)
@@ -332,21 +360,9 @@ class ToolbarMixin:
         tb_star.addAction(self.act_image_peeker)
         tb_star.addAction(self.act_psf_viewer)
         tb_star.addAction(self.act_dither_analysis)
-        tb_star.addAction(self.act_stacking_suite)
-        tb_star.addAction(self.act_live_stacking)
-        tb_star.addAction(self.act_planetary_stacker)
-        tb_star.addAction(self.act_planet_projection)
-        tb_star.addAction(self.act_flythrough)
         tb_star.addAction(self.act_plate_solve)
-        tb_star.addAction(self.act_unwarp)        
-        tb_star.addAction(self.act_star_align)
-        tb_star.addAction(self.act_star_register)
-        tb_star.addAction(self.act_rgb_align)
-        tb_star.addAction(self.act_mosaic_master)
-        tb_star.addAction(self.act_surface_mosaic)
+        tb_star.addAction(self.act_unwarp)
         tb_star.addAction(self.act_supernova_hunter)
-        tb_star.addAction(self.act_star_spikes)
-        tb_star.addAction(self.act_astrospike)
         tb_star.addAction(self.act_exo_detector)
         tb_star.addAction(self.act_isophote)
         tb_star.addAction(self.act_gaia_database)
@@ -409,6 +425,9 @@ class ToolbarMixin:
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_hidden)
         #tb_hidden.addAction(self.act_narrowband_normalization)
         tb_hidden.setVisible(False)  # <- always hidden
+
+        # Before memberships: drop drags that would pin a moved tool to Analysis.
+        self._migrate_star_stuff_split()
 
         # This can move actions between toolbars, so do it after each toolbar has its base order restored.
         self._restore_toolbar_memberships()
@@ -1431,7 +1450,7 @@ class ToolbarMixin:
         self.act_history_explorer.triggered.connect(self._open_history_explorer)
 
 
-        #STAR STUFF
+        #STACKING / ANALYSIS (Star Stuff until 1.24.8)
         self.act_image_peeker = QAction(QIcon(peeker_icon), self.tr("Image Peeker..."), self)
         self.act_image_peeker.setIconVisibleInMenu(True)
         self.act_image_peeker.setStatusTip(self.tr("Image Inspector and Focal Plane Analysis"))
@@ -1638,10 +1657,9 @@ class ToolbarMixin:
         self.act_check_updates.triggered.connect(self.check_for_updates_now)
 
         self.act_docs = QAction(self.tr("Documentation..."), self)
-        self.act_docs.setStatusTip(self.tr("Open the Seti Astro Suite Pro online documentation"))
-        self.act_docs.triggered.connect(
-            lambda: QDesktopServices.openUrl(QUrl("https://github.com/setiastro/setiastrosuitepro/wiki"))
-        )
+        self.act_docs.setStatusTip(self.tr(
+            "Browse and search every SASpro help page (the online wiki is linked from there)"))
+        self.act_docs.triggered.connect(self._open_docs_explorer)
 
         # Qt6-safe shortcut for Help/Docs (F1)
         try:
@@ -1824,10 +1842,28 @@ class ToolbarMixin:
 
     def _reset_all_toolbars_to_factory(self):
         """
-        Clears all persisted toolbar membership/order/hidden state so the UI
-        returns to the factory layout defined in code.
+        Reset to Factory Layout (toolbar right-click menu): the workspace a new
+        install starts with. Clears all persisted toolbar membership/order/
+        hidden state and rebuilds the toolbars from code, then
+        _reset_workspace_to_factory puts back the toolbar rows, the panels
+        (all closed, default places), the Gray theme and the built-in
+        background.
         """
         if not hasattr(self, "settings"):
+            return
+        from PyQt6.QtWidgets import QMessageBox
+        ok = QMessageBox.question(
+            self, self.tr("Reset to Factory Layout"),
+            self.tr("Reset the workspace to how a new install starts?\n\n"
+                    "\u2022 Toolbars: default icons, order and positions, nothing hidden.\n"
+                    "\u2022 Panels: all closed and back in their default places. Each "
+                    "keeps its button on the edge rail.\n"
+                    "\u2022 Gray theme, with the built-in SetiAstro background at 20% "
+                    "opacity. A custom background image is cleared.\n\n"
+                    "Open images, tool settings, presets and shortcuts are not changed."),
+            QMessageBox.StandardButton.Reset | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if ok != QMessageBox.StandardButton.Reset:
             return
 
         # 1) Clear global toolbar persistence
@@ -1835,6 +1871,7 @@ class ToolbarMixin:
             "Toolbar/Assignments",
             "Toolbar/HiddenPrev",
             "Toolbar/HiddenMigrationDone",
+            "Toolbar/StarStuffSplitDone",
 
             # Per-toolbar order lists
             "Toolbar/View",
@@ -1843,6 +1880,7 @@ class ToolbarMixin:
             "Toolbar/Tools",
             "Toolbar/Geometry",
             "Toolbar/StarStuff",
+            "Toolbar/Stacking",
             "Toolbar/Masks",
             "Toolbar/WhatsInMy",
             "Toolbar/Bundles",
@@ -1883,12 +1921,23 @@ class ToolbarMixin:
         # 3) Rebuild toolbars from code defaults
         # Safest approach: remove existing toolbars and rebuild.
         from setiastro.saspro.shortcuts import DraggableToolBar
+        # Detach each old toolbar now, not just deleteLater(): that only runs on
+        # the next event-loop pass, and until then the rebuilt toolbars have
+        # same-named twins. findChildren() lookups by settings key (the Hidden
+        # toolbar, memberships) and restoreState() by object name could pick
+        # the old one. The references are kept until Qt deletes them, because
+        # this runs from one of these toolbars' own right-click menu.
+        retired = []
         for tb in self.findChildren(DraggableToolBar):
             try:
                 self.removeToolBar(tb)
+                tb.hide()
+                tb.setParent(None)
+                retired.append(tb)
                 tb.deleteLater()
             except Exception:
                 pass
+        self._retired_toolbars = retired
 
         # Build fresh
         self._init_toolbar()
@@ -1897,6 +1946,11 @@ class ToolbarMixin:
         tb_hidden = self._hidden_toolbar()
         if tb_hidden:
             tb_hidden.setVisible(False)
+
+        # 4) Toolbar rows, panels, theme and background, as on a new install.
+        reset_ws = getattr(self, "_reset_workspace_to_factory", None)
+        if reset_ws is not None:
+            reset_ws()
 
 
     def _restore_toolbar_order(self, tb, settings_key: str):
@@ -2009,6 +2063,42 @@ class ToolbarMixin:
             key = getattr(tb, "_settings_key", None)
             if key:
                 self._restore_toolbar_order(tb, str(key))
+
+    # Tools that left the Star Stuff toolbar when it split in 1.24.8.
+    _STAR_STUFF_MOVED = frozenset({
+        "stacking_suite", "live_stacking", "planetary_stacker", "star_align",
+        "star_register", "rgb_align", "mosaic_master", "surface_mosaic",
+        "star_spikes", "astrospike", "planet_projection", "flythrough",
+    })
+
+    def _migrate_star_stuff_split(self):
+        """
+        One-time, for the 1.24.8 split of Star Stuff into Stacking and Analysis
+        (and the spike and 3D tools moving to Functions and Tools).
+
+        Toolbar/Assignments records cross-toolbar drags as {command_id:
+        settings_key}, and Analysis kept Star Stuff's key. An entry sending a
+        moved tool to Toolbar/StarStuff -- dragged out and back in -- would pin
+        it to Analysis instead of its new toolbar, so those entries are
+        dropped. Every other assignment, Hidden included, is kept.
+        """
+        if not hasattr(self, "settings"):
+            return
+        if self.settings.value("Toolbar/StarStuffSplitDone", False, type=bool):
+            return
+        try:
+            raw = self.settings.value("Toolbar/Assignments", "", type=str) or ""
+            mapping = json.loads(raw) if raw else {}
+        except Exception:
+            mapping = {}
+        if isinstance(mapping, dict):
+            stale = [cid for cid, key in mapping.items()
+                     if cid in self._STAR_STUFF_MOVED and key == "Toolbar/StarStuff"]
+            if stale:
+                for cid in stale:
+                    mapping.pop(cid, None)
+                self.settings.setValue("Toolbar/Assignments", json.dumps(mapping))
+        self.settings.setValue("Toolbar/StarStuffSplitDone", True)
 
     def _hidden_toolbar(self):
         from setiastro.saspro.shortcuts import DraggableToolBar
@@ -2178,8 +2268,11 @@ class ToolbarMixin:
                 self.settings.setValue(old_key, [])
                 continue
 
-            # Move matching actions into Hidden toolbar
-            for act in list(tb.actions()):
+            # Move matching actions into Hidden toolbar. Look on every toolbar:
+            # an action can have moved since the list was saved (Star Stuff's
+            # tools went to Stacking, Functions and Tools in 1.24.8).
+            for act in [a for t in self.findChildren(DraggableToolBar)
+                        if t is not tb_hidden for a in t.actions()]:
                 if act is None or act.isSeparator():
                     continue
                 cid = str(act.property("command_id") or act.objectName() or "")

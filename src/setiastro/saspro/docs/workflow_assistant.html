@@ -83,7 +83,7 @@
 <h2 id="s2">2. The tool catalog</h2>
 <p>The left panel lists every SASpro command that's available as a draggable step source. Three categories of entries land here automatically:</p>
 <ul>
-<li><b>Toolbar actions</b> &mdash; any <code>QAction</code> on a visible toolbar that carries a <code>command_id</code> property. These are grouped by toolbar title (Functions, Cosmic Clarity, Tools, Geometry, Star Stuff, Masks, Bundles, View, etc.) in a stable preferred order.</li>
+<li><b>Toolbar actions</b> &mdash; any <code>QAction</code> on a visible toolbar that carries a <code>command_id</code> property. These are grouped by toolbar title (Functions, Cosmic Clarity, Tools, Geometry, Stacking, Analysis, Masks, Bundles, View, etc.) in a stable preferred order.</li>
 <li><b>User scripts</b> &mdash; everything in the ScriptManager registry, discovered recursively from <code>SASpro/scripts</code>. Scripts are shown under <b>Scripts</b> at the top level, with any group tag they declare rendered as a <code>Scripts/&lt;group&gt;</code> subcategory. The command id for a script is <code>script:&lt;script_id&gt;</code>.</li>
 <li><b>Hidden toolbars</b> are explicitly excluded (any <code>QWidget</code> whose <code>windowTitle()</code> is <code>&quot;Hidden&quot;</code> is skipped during discovery).</li>
 </ul>
@@ -272,7 +272,7 @@ WorkflowStep = {
 <li><b>Toolbar discovery</b> walks every <code>QWidget</code> child of the main window and looks for ones that have an <code>actions()</code> method. For each action with a <code>command_id</code> property, a catalog entry is created with the action's icon, text, status tip, and the toolbar's title as the category. Toolbars whose title is literally <code>&quot;Hidden&quot;</code> are skipped; separators are ignored.</li>
 <li><b>Script discovery</b> looks up the ScriptManager (via several candidate attribute names), calls <code>load_registry()</code> if the registry is empty, and iterates every registered script. Each script becomes a catalog entry under <code>Scripts</code> or <code>Scripts/&lt;group&gt;</code> if the script declares a group. The command id is <code>script:&lt;script_id&gt;</code>. If a matching QAction already exists on the main window (via the <code>command_id</code> property), its icon and tooltip are reused; otherwise a placeholder action is created.</li>
 </ul>
-<p>Categories are sorted by a three-tier key: a preferred order list first (Functions, Cosmic Clarity, Tools, Geometry, Star Stuff, Masks, What's In My&hellip;, Bundles, View, Scripts), then <code>Scripts/*</code> subcategories alphabetically, then everything else alphabetically. The search box filters by matching both the action text and its tooltip, case-insensitive.</p>
+<p>Categories are sorted by a three-tier key: a preferred order list first (Functions, Cosmic Clarity, Tools, Geometry, Stacking, Analysis, Masks, What's In My&hellip;, Bundles, View, Scripts), then <code>Scripts/*</code> subcategories alphabetically, then everything else alphabetically. The search box filters by matching both the action text and its tooltip, case-insensitive.</p>
 
 <h3>15. MIME payload types and function-bundle expansion</h3>
 <p>The lane list accepts two MIME formats:</p>

@@ -196,8 +196,12 @@ class MenuMixin:
         m_geom.addSeparator()
         m_geom.addAction(self.act_debayer)
 
-        m_star = mb.addMenu(self.tr("&Star Stuff"))
-        menu_spec.build_categorized_menu(self, m_star, "star_stuff")
+        # "Star Stuff" until 1.24.8: split so stacking can be found by name.
+        m_stack = mb.addMenu(self.tr("&Stacking"))
+        menu_spec.build_sectioned_menu(self, m_stack, "stacking")
+
+        m_analysis = mb.addMenu(self.tr("&Analysis"))
+        menu_spec.build_sectioned_menu(self, m_analysis, "analysis")
 
         m_masks = mb.addMenu(self.tr("&Masks"))
         m_masks.addAction(self.act_create_mask)
@@ -406,7 +410,7 @@ class MenuMixin:
             QTimer.singleShot(0, self._register_native_help_menu)
         # Connect tool stats
         self._hook_tool_stats([
-            m_fn, m_tools, mCosmic, m_geom, m_star, m_masks,
+            m_fn, m_tools, mCosmic, m_geom, m_stack, m_analysis, m_masks,
             m_header, m_scripts,
         ])
 

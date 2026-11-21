@@ -5,6 +5,7 @@ Declarative menu taxonomy for AstroSuiteProMainWindow.
 SINGLE SOURCE OF TRUTH for:
   * which QAction attribute belongs to which top-level menu  (MENU_CONTENTS)
   * how the big menus are grouped into submenus              (SUBMENUS)
+  * which menus show those groups inline, between separators  (SECTIONED_MENUS)
   * what the Icon Cheat Sheet enumerates                     (cheat_sheet_groups)
 
 Add a new action to MENU_CONTENTS (and, optionally, to SUBMENUS) and it
@@ -57,7 +58,7 @@ MENU_CONTENTS: dict[str, List[str]] = {
         "act_pixelmath", "act_recombine_luma", "act_remove_green",
         "act_remove_stars", "act_rgb_combine", "act_rgb_extract",
         "act_satchroma", "act_sfcc", "act_srgc", "act_sssc", "act_curve_manager",
-        "act_signature",
+        "act_signature", "act_star_spikes", "act_astrospike",
         "act_star_stretch", "act_stat_stretch", "act_texture_clarity",
         "act_wavescale_de", "act_wavescale_hdr", "act_white_balance",
     ],
@@ -72,6 +73,7 @@ MENU_CONTENTS: dict[str, List[str]] = {
         "act_narrowband_normalization", "act_nbtorgb", "act_ppp",
         "act_selective_color", "act_selective_lum", "act_slap_toolkit",
         "act_magnitude", "act_snr", "act_view_bundles", "act_function_bundles",
+        "act_planet_projection", "act_flythrough",
     ],
     "geometry": [
         "act_geom_invert", "act_geom_flip_h", "act_geom_flip_v",
@@ -79,14 +81,16 @@ MENU_CONTENTS: dict[str, List[str]] = {
         "act_geom_rot_any", "act_geom_rescale", "act_geom_resize_canvas",
         "act_debayer",
     ],
-    "star_stuff": [
-        "act_astrospike", "act_exo_detector", "act_dither_analysis",
-        "act_image_peeker", "act_isophote", "act_live_stacking",
-        "act_mosaic_master", "act_flythrough", "act_planet_projection",
-        "act_planetary_stacker", "act_plate_solve", "act_psf_viewer",
-        "act_rgb_align", "act_star_align", "act_star_register",
-        "act_star_spikes", "act_stacking_suite", "act_supernova_hunter",
-        "act_surface_mosaic", "act_unwarp",
+    # "Star Stuff" until 1.24.8, split so stacking can be found by name.
+    "stacking": [
+        "act_stacking_suite", "act_live_stacking", "act_planetary_stacker",
+        "act_star_align", "act_star_register", "act_rgb_align",
+        "act_mosaic_master", "act_surface_mosaic",
+    ],
+    "analysis": [
+        "act_plate_solve", "act_unwarp", "act_psf_viewer", "act_image_peeker",
+        "act_dither_analysis", "act_isophote", "act_exo_detector",
+        "act_supernova_hunter",
     ],
     "masks": [
         "act_create_mask", "act_apply_mask", "act_remove_mask",
@@ -126,7 +130,9 @@ MENU_CONTENTS: dict[str, List[str]] = {
 
 
 # ---------------------------------------------------------------------------
-# Submenu grouping for the three oversized menus.
+# Grouping for the larger menus. Functions and Tools show each group as a
+# submenu; the menus in SECTIONED_MENUS are short enough to show the groups
+# inline, between separators. The Icon Cheat Sheet uses the groups either way.
 # Any action in MENU_CONTENTS that is NOT listed here still reaches the user
 # via the "Other" submenu and the "All ..." flat list -- nothing can be lost.
 # ---------------------------------------------------------------------------
@@ -153,6 +159,7 @@ SUBMENUS: dict[str, List[Tuple[str, List[str]]]] = {
         ]),
         ("Stars", [
             "act_remove_stars", "act_add_stars", "act_halobgon",
+            "act_star_spikes", "act_astrospike",
         ]),
         ("Channels && Luminance", [
             "act_extract_luma", "act_recombine_luma", "act_rgb_extract",
@@ -183,42 +190,46 @@ SUBMENUS: dict[str, List[Tuple[str, List[str]]]] = {
         ("Compositing", [
             "act_image_combine", "act_hdr_composition", "act_slap_toolkit",
         ]),
+        ("Visualization", [
+            "act_planet_projection", "act_flythrough",
+        ]),
         ("Bundles", [
             "act_view_bundles", "act_function_bundles",
         ]),
     ],
-    "star_stuff": [
+    "stacking": [
         ("Stacking", [
             "act_stacking_suite", "act_live_stacking", "act_planetary_stacker",
         ]),
         ("Registration && Alignment", [
             "act_star_align", "act_star_register", "act_rgb_align",
-            "act_unwarp",
         ]),
         ("Mosaics", [
             "act_mosaic_master", "act_surface_mosaic",
         ]),
-        ("Astrometry && Analysis", [
-            "act_plate_solve", "act_psf_viewer", "act_image_peeker",
-            "act_dither_analysis", "act_isophote",
+    ],
+    "analysis": [
+        ("Astrometry", [
+            "act_plate_solve", "act_unwarp",
+        ]),
+        ("Inspection", [
+            "act_psf_viewer", "act_image_peeker", "act_dither_analysis",
+            "act_isophote",
         ]),
         ("Discovery", [
             "act_exo_detector", "act_supernova_hunter",
         ]),
-        ("3D && Projection", [
-            "act_planet_projection", "act_flythrough",
-        ]),
-        ("Diffraction Spikes", [
-            "act_star_spikes", "act_astrospike",
-        ]),
     ],
 }
+
+# Menus whose groups are laid out inline (separators, no submenus, no "All"
+# list): with eight tools each, every one stays a single click away.
+SECTIONED_MENUS: frozenset[str] = frozenset({"stacking", "analysis"})
 
 # Label used for the flat "everything" submenu at the bottom of a grouped menu.
 ALL_LABELS: dict[str, str] = {
     "functions": "All Functions",
     "tools": "All Tools",
-    "star_stuff": "All Star Stuff",
 }
 
 # Human-readable names for cheat-sheet group headers.
@@ -230,7 +241,8 @@ MENU_TITLES: dict[str, str] = {
     "smart_tools": "Smart Tools",
     "tools": "Tools",
     "geometry": "Geometry",
-    "star_stuff": "Star Stuff",
+    "stacking": "Stacking",
+    "analysis": "Analysis",
     "masks": "Masks",
     "whats_in_my": "What's In My…",
     "header_misc": "Header & Misc",
@@ -245,7 +257,7 @@ MENU_TITLES: dict[str, str] = {
 # Order the Icon Cheat Sheet walks the menus in.
 CHEAT_SHEET_ORDER: List[str] = [
     "file", "edit", "display", "functions", "smart_tools", "tools",
-    "geometry", "star_stuff", "masks", "whats_in_my", "header_misc",
+    "geometry", "stacking", "analysis", "masks", "whats_in_my", "header_misc",
     "workflows", "view", "history", "shortcuts", "settings", "about",
 ]
 
@@ -347,6 +359,29 @@ def build_categorized_menu(
         menu.addSeparator()
         for act in every:
             menu.addAction(act)
+
+
+def build_sectioned_menu(window, menu, key: str) -> None:
+    """
+    Populate `menu` with its SUBMENUS groups laid out inline, one block per
+    group with a separator between blocks, for menus short enough that a
+    submenu would only hide the tools. Anything in MENU_CONTENTS that no group
+    lists goes in a last block, so nothing can be lost.
+    """
+    groups = SUBMENUS.get(key, [])
+    blocks = [_resolve(window, attrs) for _label, attrs in groups]
+    filed = {a for _label, attrs in groups for a in attrs}
+    blocks.append(_resolve(window, [a for a in MENU_CONTENTS.get(key, []) if a not in filed]))
+
+    first = True
+    for acts in blocks:
+        if not acts:
+            continue
+        if not first:
+            menu.addSeparator()
+        for act in acts:
+            menu.addAction(act)
+        first = False
 
 
 # ---------------------------------------------------------------------------
