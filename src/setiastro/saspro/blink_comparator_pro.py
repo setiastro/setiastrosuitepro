@@ -766,61 +766,58 @@ class MetricsPanel(QWidget):
         self._show_guides = bool(on)
 
         if not self._show_guides:
-            # ✅ hide immediately
-            if hasattr(self, "median_lines"):
-                for ln in self.median_lines:
-                    ln.hide()
-            if hasattr(self, "sigma_lines"):
-                for lo, hi in self.sigma_lines:
-                    lo.hide()
-                    hi.hide()
-                for lo, hi in self.sigma2_lines:
-                    lo.hide(); hi.hide()
-                for lo, hi in self.sigma1_lines:
-                    lo.hide(); hi.hide()                    
+            for m in range(len(self.median_lines)):
+                self._hide_guides(m)
             return
 
-        # ✅ turning ON: recompute/restore based on what’s currently plotted
+        # turning ON: recompute/restore based on what's currently plotted
         self._refresh_guides_from_current_plot()
 
     def _refresh_guides_from_current_plot(self):
         """Recompute/position guide lines using current plot data (if any)."""
-        if not getattr(self, "_show_guides", True):
-            return
-        if not hasattr(self, "median_lines") or not hasattr(self, "sigma_lines"):
-            return
-        # Use the scatter data already in each panel
         for m, scat in enumerate(self.scats):
-            x, y = scat.getData()[:2]
-            if y is None or len(y) == 0:
-                self.median_lines[m].hide()
-                lo, hi = self.sigma_lines[m]
+            y = scat.getData()[1]
+            self._position_guides(m, [] if y is None else y)
+
+    def _sigma_bands(self, m):
+        """(k, (lo_line, hi_line)) for the ±1σ/2σ/3σ guides of panel m."""
+        return ((3.0, self.sigma_lines[m]),
+                (2.0, self.sigma2_lines[m]),
+                (1.0, self.sigma1_lines[m]))
+
+    def _hide_guides(self, m):
+        self.median_lines[m].hide()
+        for _k, (lo, hi) in self._sigma_bands(m):
+            lo.hide(); hi.hide()
+
+    def _position_guides(self, m, y):
+        """Median and ±1σ/2σ/3σ lines for panel m from the values it shows.
+
+        y is exactly what the panel plots: the whole set on "All", one
+        filter's frames on a filter view. All seven lines move together --
+        the 1σ/2σ pairs used to be set only on open/refresh, so after
+        picking a filter they still showed the whole set's statistics.
+        """
+        if not self._show_guides:
+            self._hide_guides(m)
+            return
+        med, sig = self._median_and_robust_sigma(np.asarray(y, dtype=np.float32))
+        if not np.isfinite(med):
+            self._hide_guides(m)
+            return
+        mline = self.median_lines[m]
+        mline.setPos(med); mline.show()
+
+        if not (np.isfinite(sig) and sig > 0):
+            for _k, (lo, hi) in self._sigma_bands(m):
                 lo.hide(); hi.hide()
-                continue
-
-            med, sig = self._median_and_robust_sigma(np.asarray(y, dtype=np.float32))
-            mline = self.median_lines[m]
-            lo_ln, hi_ln = self.sigma_lines[m]
-
-            if np.isfinite(med):
-                mline.setPos(med); mline.show()
-            else:
-                mline.hide()
-
-            if np.isfinite(med) and np.isfinite(sig) and sig > 0:
-                # 3σ (existing)
-                lo_ln.setPos(med - 3.0 * sig); hi_ln.setPos(med + 3.0 * sig)
-                lo_ln.show(); hi_ln.show()
-                # 2σ
-                lo2, hi2 = self.sigma2_lines[m]
-                lo2.setPos(med - 2.0 * sig); hi2.setPos(med + 2.0 * sig)
-                lo2.show(); hi2.show()
-                # 1σ
-                lo1, hi1 = self.sigma1_lines[m]
-                lo1.setPos(med - 1.0 * sig); hi1.setPos(med + 1.0 * sig)
-                lo1.show(); hi1.show()
-            else:
-                lo_ln.hide(); hi_ln.hide()
+            return
+        for k, (lo, hi) in self._sigma_bands(m):
+            lo_v = med - k * sig
+            if m == 3:                       # star count cannot go below 0
+                lo_v = max(0.0, lo_v)
+            lo.setPos(lo_v); hi.setPos(med + k * sig)
+            lo.show(); hi.show()
 
 
     @staticmethod
@@ -1323,18 +1320,9 @@ class MetricsPanel(QWidget):
                 pw.getPlotItem().getViewBox().update()
                 pw.repaint()
 
-            # ✅ hide guides too
-            if hasattr(self, "median_lines"):
-                for ln in self.median_lines:
-                    ln.hide()
-            if hasattr(self, "sigma_lines"):
-                for lo, hi in self.sigma_lines:
-                    lo.hide()
-                    hi.hide()
-                for lo, hi in self.sigma2_lines:
-                    lo.hide(); hi.hide()
-                for lo, hi in self.sigma1_lines:
-                    lo.hide(); hi.hide()                    
+            # hide guides too
+            for m in range(len(self.median_lines)):
+                self._hide_guides(m)
             return
 
         # compute & cache on first call or new image list
@@ -1369,39 +1357,11 @@ class MetricsPanel(QWidget):
             ]
             scat.setData(x=x, y=y, brush=brushes, pen=pg.mkPen(None), size=8)
 
-            # --- update dashed reference lines (median + ±3σ) ---
-            if getattr(self, "_show_guides", True):
-                try:
-                    med, sig = self._median_and_robust_sigma(y)
-                    mline = self.median_lines[m]
-                    lo_ln, hi_ln = self.sigma_lines[m]
-
-                    if np.isfinite(med):
-                        mline.setPos(med)
-                        mline.show()
-                    else:
-                        mline.hide()
-
-                    if np.isfinite(med) and np.isfinite(sig) and sig > 0:
-                        lo = med - 3.0 * sig
-                        hi = med + 3.0 * sig
-                        if m == 3:
-                            lo = max(0.0, lo)
-                        lo_ln.setPos(lo); hi_ln.setPos(hi)
-                        lo_ln.show(); hi_ln.show()
-                    else:
-                        lo_ln.hide(); hi_ln.hide()
-                except Exception:
-                    if hasattr(self, "median_lines") and m < len(self.median_lines):
-                        self.median_lines[m].hide()
-                        a, b = self.sigma_lines[m]
-                        a.hide(); b.hide()
-            else:
-                # guides disabled -> force-hide
-                if hasattr(self, "median_lines") and m < len(self.median_lines):
-                    self.median_lines[m].hide()
-                    a, b = self.sigma_lines[m]
-                    a.hide(); b.hide()
+            # --- dashed reference lines (median, ±1σ/2σ/3σ) from this subset ---
+            try:
+                self._position_guides(m, y)
+            except Exception:
+                self._hide_guides(m)
 
 
             # initialize threshold line once
@@ -1556,7 +1516,7 @@ class MetricsWindow(QWidget):
         instr.setWordWrap(True)
         instr.setStyleSheet("color: #ccc; font-size: 12px;")
         vbox.addWidget(instr)
-        self.chk_guides = QCheckBox(self.tr("Show median and ±3σ guides"), self)
+        self.chk_guides = QCheckBox(self.tr("Show median and ±1σ/2σ/3σ guides"), self)
         self.chk_guides.setChecked(True)  # default on
         self.chk_guides.toggled.connect(self._on_toggle_guides)
         vbox.addWidget(self.chk_guides)

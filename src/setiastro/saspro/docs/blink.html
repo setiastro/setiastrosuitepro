@@ -379,7 +379,7 @@ flagged if <i>any</i> group's threshold triggers it, which keeps the
 per-filter tuning from unflagging a frame someone else wanted gone.</p>
 
 <h3>5.4 Guide lines</h3>
-<p>The <b>Show median and &plusmn;3&sigma; guides</b> checkbox draws
+<p>The <b>Show median and &plusmn;1&sigma;/2&sigma;/3&sigma; guides</b> checkbox draws
 dashed horizontal guides on every plot:</p>
 <ul>
   <li>White solid at the <b>median</b>.</li>
@@ -390,6 +390,11 @@ dashed horizontal guides on every plot:</p>
 <p>&sigma; here is the MAD-based robust estimator (&sect;&nbsp;13.5), so
 individual outliers don't skew it the way a plain standard deviation
 would.</p>
+<p>The guides are computed from the frames on screen: on
+&ldquo;All&rdquo; they describe the whole session, and with a filter
+selected (&sect;&nbsp;5.5) they describe that filter's frames alone, so
+a Luminance set with many more frames or stars doesn't set the lines
+for OIII.</p>
 
 <h3>5.5 Filter selector</h3>
 <p>The dropdown above the plots restricts the display to one FILTER
