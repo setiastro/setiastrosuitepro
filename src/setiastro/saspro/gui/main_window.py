@@ -745,6 +745,12 @@ class AstroSuiteProMainWindow(
         #    pass
         self.shortcuts.load_shortcuts()
         self._ensure_persistent_names() 
+        # The layout as built in code, before any saved one is applied: toolbar
+        # rows and panel places for Reset to Factory Layout.
+        try:
+            self._factory_state = self.saveState(version=1)
+        except Exception:
+            self._factory_state = None
         self._restore_window_placement()
         app = QApplication.instance()
         if app is not None:
@@ -829,6 +835,7 @@ class AstroSuiteProMainWindow(
         self.restore_main_window_state()
         if self._fresh_install:
             self._apply_first_run_layout()
+        self._place_new_stacking_toolbar()      # after BOTH saved layouts are restored
         # If docks were previously sent to secondary host, restore that now
         # Done here at end of __init__ so all docks are guaranteed constructed
         s = self.settings
@@ -857,6 +864,62 @@ class AstroSuiteProMainWindow(
                 pass
         try:
             self._refresh_all_rail_collapse_icons()
+        except Exception:
+            pass
+
+    def _reset_workspace_to_factory(self):
+        """The rest of Reset to Factory Layout, after the toolbars are rebuilt:
+        what a new install (or `--firstrun`) starts with.
+
+          * toolbar rows and panel places as built in code, every panel closed
+            (each keeps its rail button), panels in the second window
+            brought back first;
+          * Gray theme, built-in signature background at 20 %, no custom
+            background image.
+
+        Window size, open images, tool settings, presets, shortcuts and the
+        Display-Stretch options are left alone.
+        """
+        try:
+            self._return_all_host_docks_to_main()
+        except Exception:
+            pass
+        st = getattr(self, "_factory_state", None)
+        if st is not None:
+            try:
+                self.restoreState(st, version=1)
+            except Exception:
+                pass
+        # restoreState re-homes each rail button to the edge its panel docks on
+        # (Status Log docks right but its button belongs on the bottom rail);
+        # lay the rails out again exactly as a new install does.
+        try:
+            for names in self._rail_membership.values():
+                names.clear()
+            self._assign_rails_by_plan()
+            self._refresh_rail_visibility()
+        except Exception as e:
+            print(f"[reset] rail buttons: {e}")
+        self._apply_first_run_layout()
+
+        s = self.settings
+        try:
+            self._clear_custom_background()
+            self._set_builtin_background("signature")
+            s.setValue("display/bg_opacity", 20)
+            s.setValue("ui/theme", "gray")
+            self._apply_theme_safely()
+            self.mdi.viewport().update()
+        except Exception as e:
+            print(f"[reset] theme/background: {e}")
+
+        # Save now, so a crash before the next normal close can't bring the old
+        # layout back.
+        s.setValue("Toolbar/StackingPlaced", True)
+        try:
+            self.save_main_window_state()
+            s.setValue("ui/main/state", self.saveState(version=1))
+            s.sync()
         except Exception:
             pass
 
@@ -2293,6 +2356,12 @@ class AstroSuiteProMainWindow(
         if hasattr(self, "_refresh_mask_action_states"):
             self._refresh_mask_action_states()
 
+
+    def _open_docs_explorer(self):
+        """About -> Documentation... (F1): every built-in help page in one
+        window, with search and a link to the online wiki."""
+        from setiastro.saspro.docs_explorer import open_docs_explorer
+        open_docs_explorer(self)
 
     # ---------------- Settings Caching ----------------
     def _preload_settings(self):
@@ -10847,6 +10916,32 @@ class AstroSuiteProMainWindow(
             # sip may not be able to inspect; fall back and hope for the best
             pass
         dm.close_document(doc)
+
+    def _place_new_stacking_toolbar(self):
+        """
+        Once, on the first start after Star Stuff was split (1.24.8): a layout
+        saved before then has no Stacking toolbar, and restoreState leaves an
+        unknown toolbar at the end of the top row. Put it just before Analysis
+        (Star Stuff's toolbar, same object name), where stacking used to be.
+        Called after both saved layouts (ui/main/state, main_window/state) are
+        restored; either restore would otherwise move it back.
+        """
+        s = self.settings
+        if s.value("Toolbar/StackingPlaced", False, type=bool):
+            return
+        if getattr(self, "_fresh_install", False):
+            s.setValue("Toolbar/StackingPlaced", True)    # already in code order
+            return
+        try:
+            from setiastro.saspro.shortcuts import DraggableToolBar
+            tbs = {t.objectName(): t for t in self.findChildren(DraggableToolBar)}
+            stack, analysis = tbs.get("Stacking"), tbs.get("Star Stuff")
+            if stack is not None and analysis is not None and not analysis.isFloating():
+                self.insertToolBar(analysis, stack)
+                stack.setVisible(True)
+        except Exception:
+            pass
+        s.setValue("Toolbar/StackingPlaced", True)
 
     def _restore_window_placement(self):
         s = self.settings

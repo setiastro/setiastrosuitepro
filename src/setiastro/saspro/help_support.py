@@ -337,6 +337,41 @@ def make_help_button(doc_id: str, parent=None, size: int = 18) -> QToolButton:
 # ---------------------------------------------------------------------------
 # the viewer
 # ---------------------------------------------------------------------------
+def load_doc_into(browser: QTextBrowser, doc_id: str, html_path) -> bool:
+    """Render a help page into `browser`: LaTeX pre-rendered to images, and the
+    equation PNGs resolvable by bare file name. Shows a placeholder when the
+    page is missing. Shared by DocViewerDialog and the documentation explorer
+    (docs_explorer.py). True when the page itself was shown."""
+    if html_path and os.path.isfile(html_path):
+        try:
+            with open(html_path, "r", encoding="utf-8") as fh:
+                raw = fh.read()
+            html = _mathify_html(raw, _MATH_COLOR)
+            # make the rendered-equation PNGs resolvable by bare filename
+            try:
+                paths = list(browser.searchPaths())
+                md = _math_cache_dir()
+                if md not in paths:
+                    paths.append(md)
+                    browser.setSearchPaths(paths)
+            except Exception:
+                pass
+            browser.setHtml(html)
+            return True
+        except Exception:
+            try:
+                browser.setSource(QUrl.fromLocalFile(html_path))
+                return True
+            except Exception:
+                pass
+    title = _doc_title(doc_id)
+    browser.setHtml(
+        f"<h2>{title}</h2>"
+        f"<p>Documentation for this tool isn't available yet.</p>"
+    )
+    return False
+
+
 class DocViewerDialog(QDialog):
     """Lightweight in-app HTML help viewer (QTextBrowser-based).
 
@@ -370,6 +405,11 @@ class DocViewerDialog(QDialog):
 
         bar = QHBoxLayout()
         bar.setContentsMargins(10, 8, 10, 10)
+        # Every other page, in the documentation explorer, opened at this one.
+        self.btn_all_docs = QPushButton(self.tr("All Documentation..."))
+        self.btn_all_docs.setToolTip(self.tr("Browse and search every SASpro help page"))
+        self.btn_all_docs.clicked.connect(self._open_explorer)
+        bar.addWidget(self.btn_all_docs)
         bar.addStretch(1)
         self.btn_close = QPushButton(self.tr("Close"))
         self.btn_close.clicked.connect(self.close)
@@ -379,33 +419,14 @@ class DocViewerDialog(QDialog):
         self._load(html_path)
 
     def _load(self, html_path):
-        if html_path and os.path.isfile(html_path):
-            try:
-                with open(html_path, "r", encoding="utf-8") as fh:
-                    raw = fh.read()
-                html = _mathify_html(raw, _MATH_COLOR)
-                # make the rendered-equation PNGs resolvable by bare filename
-                try:
-                    paths = list(self.browser.searchPaths())
-                    md = _math_cache_dir()
-                    if md not in paths:
-                        paths.append(md)
-                        self.browser.setSearchPaths(paths)
-                except Exception:
-                    pass
-                self.browser.setHtml(html)
-                return
-            except Exception:
-                try:
-                    self.browser.setSource(QUrl.fromLocalFile(html_path))
-                    return
-                except Exception:
-                    pass
-        title = _doc_title(self._doc_id)
-        self.browser.setHtml(
-            f"<h2>{title}</h2>"
-            f"<p>Documentation for this tool isn't available yet.</p>"
-        )
+        load_doc_into(self.browser, self._doc_id, html_path)
+
+    def _open_explorer(self):
+        try:
+            from setiastro.saspro.docs_explorer import open_docs_explorer
+            open_docs_explorer(self, self._doc_id)
+        except Exception as e:
+            print(f"[docs] explorer failed to open: {e}")
 
 
 def show_tool_doc(doc_id: str, parent=None) -> DocViewerDialog:
