@@ -871,8 +871,9 @@ class SkyChartPanel(QWidget):
         note = QLabel("Files with an empty name are asked for when the chart is run.\n\n"
                       "Data: SASpro's local Gaia DR3 library (stars and Milky Way), HYG 4.1 (bright stars, "
                       "names and colors, CC BY-SA), OpenNGC (catalog and nebula outlines, CC BY-SA), "
-                      "Finkbeiner H-alpha and SFD dust maps (NASA LAMBDA), d3-celestial (constellations, BSD), "
-                      "SASpro catalogs.")
+                      "Finkbeiner H-alpha and SFD dust maps (NASA LAMBDA), Dobashi et al. 2011 2MASS "
+                      "extinction (dark clouds), RCW and Dutra & Bica 2002 (nebula names, VizieR), "
+                      "d3-celestial (constellations, BSD), SASpro catalogs.")
         note.setWordWrap(True)
         note.setStyleSheet("color: gray;")
         v.addWidget(note)
@@ -1424,6 +1425,23 @@ class SkyChartPanel(QWidget):
             pass
         return wcs
 
+    @staticmethod
+    def _doc_object_name(doc):
+        """The OBJECT keyword of a SASpro document's FITS header, or ''."""
+        meta = getattr(doc, "metadata", None) or {}
+        for key in ("original_header", "header", "wcs_header"):
+            hdr = meta.get(key) if hasattr(meta, "get") else None
+            if hdr is None:
+                continue
+            try:
+                v = hdr.get("OBJECT", "") if hasattr(hdr, "get") else ""
+            except Exception:
+                v = ""
+            v = re.sub(r"\s+", " ", str(v or "")).strip()
+            if v:
+                return v
+        return ""
+
     def _pick_image_document(self):
         """Ask which open SASpro image to use. Returns (doc, title) or (None, None)."""
         views = []
@@ -1570,6 +1588,10 @@ class SkyChartPanel(QWidget):
                 except Exception:
                     name = ""
             self._loading = True
+            # the chart now shows this image's field: a title saved from an earlier
+            # search would name another object. The image's OBJECT keyword, or the
+            # automatic title (constellation name).
+            self.ed_title.setText(self._doc_object_name(doc))
             self._set_center(ra0, dec0)
             self.sp_rot.setValue(round(rot, 2))
             self.ck_mir.setChecked(bool(mirrored))
