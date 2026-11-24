@@ -134,11 +134,13 @@ class ThemeMixin:
         except Exception:
             pass
 
-        # 3) Ensure the overlay canvas stays transparent and refreshes
+        # 3) Ensure the overlay canvas stays transparent and refreshes; chip
+        #    label color follows the new palette (shortcut_canvas_style)
         try:
             if hasattr(self, "shortcuts") and self.shortcuts and getattr(self.shortcuts, "canvas", None):
+                from setiastro.saspro.shortcuts import shortcut_canvas_style
                 c = self.shortcuts.canvas
-                c.setStyleSheet("background: transparent;")
+                c.setStyleSheet(shortcut_canvas_style())
                 c.update()
         except Exception:
             pass

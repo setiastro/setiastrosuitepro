@@ -214,6 +214,19 @@ class SettingsDialog(QDialog):
             "Unchecked, it only comes up from View > Start Panel."
         ))
 
+        # macOS only (the row is added only there): system menu bar vs menus
+        # inside the window. Read once when the menus are built.
+        self.chk_native_menu_bar = QCheckBox(self.tr("Show menus in the macOS menu bar"))
+        self.chk_native_menu_bar.setToolTip(self.tr(
+            "Checked, SASpro's menus sit in the macOS menu bar at the top of the\n"
+            "screen, and Help gets the macOS search field.\n"
+            "Unchecked, they sit inside the SASpro window, as on Windows and Linux.\n"
+            "Uncheck this on a MacBook with a notch, where the macOS menu bar has\n"
+            "no room for all of SASpro's menus and cuts their names short.\n\n"
+            "Takes effect after a restart."
+        ))
+        self._initial_native_menu_bar = True
+
         self.chk_save_shortcuts = QCheckBox(self.tr("Save desktop shortcuts on exit"))
         self.chk_open_all_hdus = QCheckBox(self.tr("Open All detected HDUs"))
         self.chk_open_all_hdus.setToolTip(self.tr(
@@ -465,6 +478,8 @@ class SettingsDialog(QDialog):
         left_col.addRow(self.tr("Theme:"), w_theme)
 
         left_col.addRow(self.tr("Language:"), self.cb_language)
+        if sys.platform == "darwin":
+            left_col.addRow(self.chk_native_menu_bar)
 
         # ---- Display ----
         left_col.addRow(QLabel(self.tr("<b>Display</b>")))
@@ -2046,7 +2061,11 @@ class SettingsDialog(QDialog):
         self.cb_language.setCurrentIndex(lang_idx)
         self.cb_language.blockSignals(False)
         self._initial_language = current_lang  # Track for restart notification
-        
+
+        from setiastro.saspro.gui.macos_help import use_native_menu_bar
+        self._initial_native_menu_bar = use_native_menu_bar(self.settings)
+        self.chk_native_menu_bar.setChecked(self._initial_native_menu_bar)
+
         # Path fields
         self.le_graxpert.setText(self.settings.value("paths/graxpert", "", type=str))
 
@@ -2418,6 +2437,15 @@ class SettingsDialog(QDialog):
                 self.tr("Language changed. Please manually restart the application to apply the new language.")
             )
 
+        # macOS menu bar vs in-window menus: the menus are built once.
+        menus_changed = False
+        if sys.platform == "darwin":
+            native_menus = self.chk_native_menu_bar.isChecked()
+            if native_menus != self._initial_native_menu_bar:
+                from setiastro.saspro.gui.macos_help import NATIVE_MENU_BAR_KEY
+                self.settings.setValue(NATIVE_MENU_BAR_KEY, native_menus)
+                menus_changed = True
+
         self.settings.sync()
 
         # Apply now if the parent knows how
@@ -2467,7 +2495,33 @@ class SettingsDialog(QDialog):
             except Exception:
                 pass
 
+        if menus_changed:
+            self._offer_restart_for_menus(p)
         self.accept()
+
+    def _offer_restart_for_menus(self, main):
+        """The menu bar is built once at startup: offer to restart now."""
+        from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtCore import QTimer
+        if main is None or not hasattr(main, "restart_app"):
+            QMessageBox.information(
+                self,
+                self.tr("Restart required"),
+                self.tr("The menus move when SASpro next starts."),
+            )
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(self.tr("Restart required"))
+        box.setText(self.tr("The menus move when SASpro restarts. Restart now?"))
+        now = box.addButton(self.tr("Restart Now"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(self.tr("Later"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(now)
+        box.exec()
+        if box.clickedButton() is now:
+            # After this dialog has closed; the main window asks first
+            # when images are open.
+            QTimer.singleShot(0, main.restart_app)
 
 from PyQt6.QtGui import QColor, QFont
 

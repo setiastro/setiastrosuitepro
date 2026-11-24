@@ -10,6 +10,14 @@ from PyQt6.QtGui import QAction, QStandardItem
 
 MAX_QUERY_LENGTH = 256
 
+# Other names people search for, keyed by the main window's action attribute.
+# Shown after the tool's name in the results -- "Survey Gradient (SRGC)" --
+# because the Command Search panel and the Essentials box match the name they
+# show, not hidden keywords. Not translated: acronyms read the same everywhere.
+SEARCH_ALIASES = {
+    "act_srgc": ("SRGC",),
+}
+
 
 class _CommandTarget:
     """Keep a Python reference without QVariant converting it to QObject*."""

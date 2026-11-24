@@ -4,7 +4,6 @@ Menu management mixin for AstroSuiteProMainWindow.
 """
 from __future__ import annotations
 import os
-import sys
 from typing import TYPE_CHECKING
 
 from PyQt6.QtGui import QAction, QKeySequence
@@ -99,7 +98,12 @@ class MenuMixin:
         mb = self.menuBar()
         # AppKit supplies Help's search field for the native menu bar. Keep
         # this policy here so installing Command Search cannot override it.
-        mb.setNativeMenuBar(sys.platform == "darwin")
+        # macOS users can turn it off in Preferences (applies on restart);
+        # everything below that is only for the native bar keys on this.
+        from setiastro.saspro.gui.macos_help import use_native_menu_bar
+        native = use_native_menu_bar(self.settings)
+        self._native_menus = native
+        mb.setNativeMenuBar(native)
 
         # File
         m_file = mb.addMenu(self.tr("&File"))
@@ -308,9 +312,9 @@ class MenuMixin:
         m_view.addSeparator()
 
         # Native menus need ordinary actions for keyboard navigation and Help
-        # search. Keep the embedded split button on other platforms.
+        # search. Keep the embedded split button for in-window menus.
         self._link_btn = None
-        if sys.platform != "darwin":
+        if not native:
             self._link_btn = QToolButton(self)
             self._link_btn.setDefaultAction(self.act_link_group)
             self._link_btn.setPopupMode(
@@ -349,7 +353,7 @@ class MenuMixin:
         a_C.triggered.connect(lambda: self._set_group_for_active("C"))
         a_D.triggered.connect(lambda: self._set_group_for_active("D"))
 
-        if sys.platform == "darwin":
+        if native:
             m_view.addAction(self.act_link_group)
             m_view.addMenu(link_menu)
         else:
@@ -397,7 +401,7 @@ class MenuMixin:
         # AppKit recognizes Help by its standard menu title and adds the
         # system search field, including menu-location highlighting.
         m_about = mb.addMenu(
-            self.tr("&Help") if sys.platform == "darwin" else self.tr("&About")
+            self.tr("&Help") if native else self.tr("&About")
         )
         from setiastro.saspro.gui.command_palette import palette_action
         m_about.addAction(palette_action(self, self._show_command_palette))
@@ -422,7 +426,7 @@ class MenuMixin:
         m_about.addAction(self.tr("Statistics..."), self._show_statistics)
         m_about.addSeparator()
         m_about.addAction(self.act_bored)
-        if sys.platform == "darwin":
+        if native:
             self._help_menu = m_about
             m_about.aboutToShow.connect(self._register_native_help_menu)
             # Wait until Qt has attached the native menus. Registration
@@ -438,7 +442,7 @@ class MenuMixin:
         self.update_undo_redo_action_labels()
 
     def _register_native_help_menu(self):
-        if sys.platform == "darwin":
+        if getattr(self, "_native_menus", False):
             from setiastro.saspro.gui.macos_help import register_help_menu
             menu = getattr(self, "_help_menu", None)
             if menu is not None:

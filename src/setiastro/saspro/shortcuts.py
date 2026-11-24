@@ -1391,6 +1391,28 @@ def _find_main_window(w):
         p = p.parent()
     return p
 
+def shortcut_canvas_style() -> str:
+    """The shortcut canvas's stylesheet. Re-applied on every theme change.
+
+    Scoped by object name: a selector-less "background: transparent;" here
+    cascaded to everything parented under the canvas -- preset dialogs,
+    message boxes and menus opened from a chip -- and made their Button,
+    Window and Base brushes transparent. Fusion paints a transparent button
+    black (or see-through), so the Light theme showed dark text on black
+    buttons (reported on 1.24.8, macOS). Only the canvas and its chips are
+    meant to be see-through.
+
+    Chip labels sit on the workspace backdrop, which is dark on every theme
+    (#1e1e1e under the background image), so they keep the theme's button
+    text only when that is light enough to read there.
+    """
+    text = QApplication.palette().buttonText().color()
+    chip_color = "" if text.lightness() >= 128 else " color: #dcdcdc;"
+    return ("QWidget#sas_shortcut_canvas { background: transparent; }\n"
+            "QWidget#sas_shortcut_canvas > QToolButton {"
+            f" background: transparent;{chip_color} }}")
+
+
 # ---------- overlay canvas that sits on top of QMdiArea.viewport() ----------
 class ShortcutCanvas(QWidget):
     def __init__(self, mgr: "ShortcutManager", parent: QWidget):
@@ -1398,7 +1420,8 @@ class ShortcutCanvas(QWidget):
         self._mgr = mgr
         self.setAcceptDrops(True)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet("background: transparent;")        
+        self.setObjectName("sas_shortcut_canvas")
+        self.setStyleSheet(shortcut_canvas_style())
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setGeometry(parent.rect())

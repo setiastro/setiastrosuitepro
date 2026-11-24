@@ -1123,6 +1123,9 @@ class ScriptManager(QObject):
 
                 act_pin = QAction(entry.name, self.app)
                 act_pin.setIcon(QIcon(icons.SCRIPT))  # NEW
+                # Same name as the run action: Command Search listed every
+                # script twice, and this one pins instead of running.
+                act_pin.setProperty("cmdp_exclude", True)
                 act_pin.triggered.connect(lambda _=False, c=cmdid: _pin_to_canvas(c))
                 pin_menu.addAction(act_pin)
 

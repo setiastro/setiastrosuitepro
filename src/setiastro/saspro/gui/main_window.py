@@ -10042,19 +10042,23 @@ class AstroSuiteProMainWindow(
             lambda e=edit, c=comp: self._trigger_first_visible_completion(e, c))
 
     def _build_command_model(self):
-        from setiastro.saspro.gui.command_search import command_item
+        from setiastro.saspro.gui.command_search import SEARCH_ALIASES, command_item
 
         self._cmd_model.clear()
         self._cmd_model.setColumnCount(1)
 
         actions = self._collect_all_qactions()
         actions.sort(key=lambda a: self._strip_menu_text(a.text()).lower())
+        aliases = {id(a): names for attr, names in SEARCH_ALIASES.items()
+                   if (a := getattr(self, attr, None)) is not None}
 
         items = []
         for act in actions:
             title = self._strip_menu_text(act.text())
             if not title:
                 continue
+            if id(act) in aliases:               # "Survey Gradient (SRGC)"
+                title = f"{title} ({', '.join(aliases[id(act)])})"
             # Full tool names often live in status tips (e.g. ADBE). The
             # palette searches these without importing or opening tool dialogs.
             items.append(command_item(act, title, _ROLE_ACTION))
@@ -11357,7 +11361,7 @@ class AstroSuiteProMainWindow(
     def changeEvent(self, event):
         super().changeEvent(event)
         if (
-            sys.platform == "darwin"
+            getattr(self, "_native_menus", False)
             and event.type() == QEvent.Type.ActivationChange
             and self.isActiveWindow()
         ):
