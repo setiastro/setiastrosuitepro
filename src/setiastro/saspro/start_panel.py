@@ -3,8 +3,8 @@
 """
 The start panel: what an empty workspace offers. Open, process, plan, a stacker
 for each kind of imaging (deep sky, smart telescope, planetary), and the last
-few images as thumbnails (or, with none yet, a way in for someone
-new). It goes when an image opens and comes back when the last one closes.
+twelve images as thumbnails in a row that scrolls sideways (or, with none yet,
+a way in for someone new). It goes when an image opens and comes back when the last one closes.
 
 It never covers a desktop shortcut, the setup reminder or the First Steps card:
 it moves aside, then drops its second half, then stays away. The ✕ closes it for
@@ -37,14 +37,14 @@ from PyQt6.QtCore import (QCoreApplication, QEvent, QObject, QPoint, QPointF, QR
 from PyQt6.QtGui import (QColor, QDesktopServices, QFontMetrics, QIcon, QImage,
                          QImageReader, QKeySequence, QPainter, QPainterPath, QPen, QPixmap)
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout,
-                             QLabel, QPushButton, QStyle, QStyleOptionButton, QVBoxLayout,
-                             QWidget)
+                             QLabel, QPushButton, QScrollArea, QStyle, QStyleOptionButton,
+                             QVBoxLayout, QWidget)
 
 STARTUP_KEY = "ui/start_panel"                   # show on startup
 RELEASES_URL = "https://github.com/setiastro/setiastrosuitepro/releases/latest"
 TUTORIAL_URL = "https://youtu.be/zBUOZl2OgaY"     # the welcome window's beginner video
 
-RECENTS = 4                      # shown
+RECENTS = 12                     # shown, in a row that scrolls sideways
 PROJECTS = 10                    # in the popup; File > Open Recent Projects has the rest
 THUMB = QSize(184, 112)          # logical size; the files hold twice that
 WIDTH = 840
@@ -75,6 +75,17 @@ QPushButton#sp_proj { background: transparent; border: none; border-radius: 7px;
 QPushButton#sp_proj:hover, QPushButton#sp_proj:focus { background-color: #25254a; }
 #sp_proj_more { color: #8fa0ff; font-size: 13px; background: transparent; }
 #sp_rule { background-color: #32325a; border: none; }
+QScrollArea#sp_strip { background: transparent; border: none; }
+#sp_strip_row { background: transparent; }
+QScrollArea#sp_strip QScrollBar:horizontal { height: 10px; margin: 4px 6px 0 6px;
+    background: transparent; border: none; }
+QScrollArea#sp_strip QScrollBar::handle:horizontal { background: #34345c; border-radius: 3px;
+    min-width: 40px; }
+QScrollArea#sp_strip QScrollBar::handle:horizontal:hover { background: #5f6fd8; }
+QScrollArea#sp_strip QScrollBar::add-line:horizontal, QScrollArea#sp_strip QScrollBar::sub-line:horizontal {
+    width: 0; height: 0; border: none; background: none; }
+QScrollArea#sp_strip QScrollBar::add-page:horizontal, QScrollArea#sp_strip QScrollBar::sub-page:horizontal {
+    background: transparent; }
 QPushButton#sp_recent { background: transparent; border: none; border-radius: 9px; }
 QPushButton#sp_recent:hover, QPushButton#sp_recent:focus { background-color: #25254a; }
 QPushButton#sp_link { background: transparent; border: none; color: #8fa0ff; font-size: 12px; padding: 2px; }
@@ -625,6 +636,55 @@ class _Recent(QPushButton):
         self._pic.setPixmap(pm)
 
 
+class _RecentStrip(QScrollArea):
+    """The recent images in one row that scrolls sideways: the mouse wheel
+    (a notch an image), the bar under them, or Tab to one off the end. The bar
+    only when they don't all fit."""
+
+    def __init__(self, buttons):
+        super().__init__()
+        self.setObjectName("sp_strip")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setWidgetResizable(True)
+        self.buttons = list(buttons)
+        row = QWidget()
+        row.setObjectName("sp_strip_row")
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        for b in self.buttons:
+            lay.addWidget(b)
+        lay.addStretch(1)
+        self.setWidget(row)
+        row.setAutoFillBackground(False)         # setWidget turned it on
+        self.viewport().setAutoFillBackground(False)
+        self.fit(10 ** 6)
+
+    def fit(self, room):
+        """`room` pixels across: the bar if they don't all fit, and its height."""
+        need = sum(b.width() for b in self.buttons) > room
+        bar = self.horizontalScrollBar()
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn if need
+                                          else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        bar.ensurePolished()
+        self.setFixedHeight(self.buttons[0].height() + (bar.sizeHint().height() if need else 0))
+
+    def wheelEvent(self, ev):
+        bar = self.horizontalScrollBar()
+        d = ev.angleDelta()
+        if bar.maximum() <= 0:
+            ev.ignore()                          # nothing to scroll
+            return
+        if abs(d.x()) > abs(d.y()):
+            super().wheelEvent(ev)               # sideways already (a touchpad)
+            return
+        # The wheel turns up and down: sideways here, a notch an image.
+        bar.setValue(bar.value() - round(d.y() * self.buttons[0].width() / 120))
+        ev.accept()
+
+
 # ── the panel ───────────────────────────────────────────────────────────────
 
 class StartPanel(QFrame):
@@ -640,7 +700,8 @@ class StartPanel(QFrame):
         self._placed_for = None
         self._shown_recents = None
         self._recent_buttons = []
-        self._summoned = None                    # the views it was put up over
+        self._strip = None                       # the row of them, when there are any
+        self._summoned = None                   # the views it was put up over
         self.on = self.on_startup()              # for this session
 
         self.thumbs = Thumbnails(self)
@@ -853,22 +914,23 @@ class StartPanel(QFrame):
                 w.hide()
                 w.deleteLater()
         self._recent_buttons = []
+        self._strip = None
         self._tour_link = None
-        box = QWidget()
-        box.setStyleSheet("background: transparent;")
-        row = QHBoxLayout(box)
-        row.setContentsMargins(0, 0, 0, 0)
         head = _label(_t("RECENT IMAGES") if paths else _t("NEW TO SASPRO?"), "sp_k")
         self._more_lay.addWidget(head)
         head.show()
         if paths:
-            row.setSpacing(0)
-            for p in paths:
-                b = _Recent(p, self.thumbs.pixmap(p), self._open_recent)
-                self._recent_buttons.append(b)
-                row.addWidget(b)
+            self._recent_buttons = [_Recent(p, self.thumbs.pixmap(p), self._open_recent)
+                                    for p in paths]
+            box = self._strip = _RecentStrip(self._recent_buttons)
+            # Not all its children: the scroll bars are the strip's to show.
+            shown = [box, box.viewport(), box.widget(), *box.widget().findChildren(QWidget)]
         else:
             from setiastro.saspro.first_steps_tour import sample_image_path
+            box = QWidget()
+            box.setStyleSheet("background: transparent;")
+            row = QHBoxLayout(box)
+            row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(18)
             if sample_image_path() is not None:
                 row.addWidget(_link(_t("Open the sample image"), self._runs(self._open_sample)))
@@ -879,11 +941,12 @@ class StartPanel(QFrame):
                 lambda: QDesktopServices.openUrl(QUrl(TUTORIAL_URL)))))
             row.addWidget(_link(_t("Documentation"),
                                 self._runs(lambda: self._mw.act_docs.trigger())))
-        row.addStretch(1)
+            row.addStretch(1)
+            shown = [box, *box.findChildren(QWidget)]
         self._more_lay.addWidget(box)
         # Added to a visible panel, children stay hidden until the next event
         # loop pass, and a layout measures hidden children as nothing.
-        for w in [box, *box.findChildren(QWidget)]:
+        for w in shown:
             w.show()
         self._sync_tour_link()
 
@@ -1034,10 +1097,8 @@ class StartPanel(QFrame):
                 w.updateGeometry()
             for full in (True, False):
                 self._more.setVisible(full)
-                if full and self._recent_buttons:
-                    fit = max(1, (width - 52) // self._recent_buttons[0].width())
-                    for i, b in enumerate(self._recent_buttons):
-                        b.setVisible(i < fit)
+                if full and self._strip is not None:
+                    self._strip.fit(width - 52)  # inside the panel's margins
                 self._more_lay.invalidate()      # refilled while hidden, the
                 self.layout().invalidate()       # old size would still be cached
                 size = QSize(width, self.layout().totalSizeHint().height())

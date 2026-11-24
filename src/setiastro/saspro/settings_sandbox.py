@@ -18,6 +18,13 @@ Either can be followed by a language, to see a first run in it:
 (a code, the English name or the language's own name; see i18n.py). The word
 is taken off the command line, so it is not mistaken for a file to open.
 
+--firstrun --recent: a new install, but with the real recent images and
+recent projects carried in, and the start panel's thumbnails of those images,
+to see the start panel with a full list. Nothing else comes across. On its
+own, without --firstrun, --recent does nothing.
+
+    setiastrosuitepro --firstrun --recent
+
 A restart from inside SASpro (a language change, a finished install) carries
 on in the same sandbox: the new SASpro is started with --firstrun and
 --sandbox-resume=<folder>, and the folder is deleted when that one exits.
@@ -55,6 +62,7 @@ import tempfile
 
 FIRSTRUN_FLAGS = ("--firstrun", "--first-run")
 UPGRADERUN_FLAGS = ("--upgraderun", "--upgrade-run")
+RECENT_FLAGS = ("--recent", "--recents")      # with --firstrun only
 _ENV = "SASPRO_SETTINGS_SANDBOX"
 _RESUME = "--sandbox-resume="
 _PREFIX = "saspro-firstrun-"
@@ -83,6 +91,8 @@ def enter_sandbox(argv) -> str:
         folder = _enter_upgrade_sandbox()
     else:
         folder = enter_firstrun_sandbox()
+        if _has_flag(argv, RECENT_FLAGS):
+            _carry_recents(folder)
     _start_in_language(argv)
     return folder
 
@@ -100,13 +110,19 @@ _ENGLISH_NAMES = {
 
 def _language_word(argv) -> int | None:
     """Where the word after --firstrun / --upgraderun is, when there is one
-    and it is not a file to open (or another flag)."""
+    and it is not a file to open (or another flag). --recent may come
+    between them: --firstrun --recent spanish."""
     args = [str(a) for a in (argv or [])]
-    for i, a in enumerate(args[:-1]):
+    for i, a in enumerate(args):
         if a.strip().lower() in FIRSTRUN_FLAGS + UPGRADERUN_FLAGS:
-            word = args[i + 1].strip()
+            j = i + 1
+            while j < len(args) and args[j].strip().lower() in RECENT_FLAGS:
+                j += 1
+            if j == len(args):
+                return None
+            word = args[j].strip()
             if word and not word.startswith("-") and not os.path.exists(word.strip('"').strip("'")):
-                return i + 1
+                return j
             return None
     return None
 
@@ -214,6 +230,47 @@ def enter_firstrun_sandbox() -> str:
     print(f"[firstrun] first-run sandbox: settings go to {_dir} and are discarded "
           f"on exit; your real settings are not changed.", flush=True)
     return _dir
+
+
+_RECENT_KEYS = ("recent/image_paths", "recent/project_paths")   # file_mixin._load_recent_lists
+
+
+def _carry_recents(folder: str) -> None:
+    """--firstrun --recent: copy the real recent images and projects into the
+    sandbox, with the start panel's thumbnails of them, which are made and kept
+    for the recent images only. The real ones are only read. Never stops a
+    launch: whatever does not copy just is not there."""
+    try:
+        from PyQt6.QtCore import QSettings, QStandardPaths
+        real = _store(QSettings.Format.NativeFormat)
+        box = _store(QSettings.Format.IniFormat)
+        counts = []
+        for k in _RECENT_KEYS:
+            v = real.value(k) if real.contains(k) else None
+            if v:
+                box.setValue(k, v)
+            counts.append(len(v) if isinstance(v, list) else int(bool(v)))
+        box.sync()
+        # start_panel.thumbnails_dir(), outside the sandbox and inside it. Copied
+        # with their times, so the panel sees them as up to date; any missing
+        # are made from the images, as on a real start.
+        base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.GenericDataLocation)
+        src = os.path.join(base, "SASpro", "recent_thumbnails")
+        dst = os.path.join(folder, "recent_thumbnails")
+        thumbs = 0
+        if os.path.isdir(src):
+            os.makedirs(dst, exist_ok=True)
+            for n in os.listdir(src):
+                if n.lower().endswith(".jpg"):
+                    try:
+                        shutil.copy2(os.path.join(src, n), os.path.join(dst, n))
+                        thumbs += 1
+                    except OSError:
+                        pass
+        print(f"[firstrun] --recent: carried in {counts[0]} recent images, {counts[1]} "
+              f"recent projects and {thumbs} thumbnails.", flush=True)
+    except Exception as e:
+        print(f"[firstrun] --recent: could not carry the recent lists in: {e!r}", flush=True)
 
 
 def _use_folder(folder: str) -> None:
