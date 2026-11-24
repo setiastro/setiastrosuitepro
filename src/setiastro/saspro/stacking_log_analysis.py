@@ -721,7 +721,7 @@ RULES: list = [
     ("temp_memmap",     re.compile(r"Creating temp memmap:\s*(?P<name>\S+)")),
     ("group_tiles",     re.compile(r"(?P<n>\d+)\s+tiles to process for this group")),
     ("tile_proc_start", re.compile(r"Starting tile processing for group\s+'(?P<g>[^']+)'")),
-    ("mdark_saved",     re.compile(r"Master Dark saved(?:\s+and added to UI)?:\s*(?P<path>.+?)\s*$")),
+    ("mdark_saved",     re.compile(r"Master Dark (?:queued|saved)(?:\s+and added to UI)?:\s*(?P<path>.+?)\s*$")),
     ("mflat_saved",     re.compile(r"Master Flat (?:queued|saved)(?:\s+and added to UI)?:\s*(?P<path>.+?)\s*$")),
     ("mflats_done",     re.compile(r"All master flats saved")),
     ("preload_darks",   re.compile(r"Pre-loading\s+(?P<n>\d+)\s+unique master dark")),

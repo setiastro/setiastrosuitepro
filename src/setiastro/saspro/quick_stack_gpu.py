@@ -6,7 +6,7 @@ Quick Stack on an NVIDIA GPU.
     CPU workers   read a frame into a shared slot
     GPU process   upload -> dark / flat -> debayer -> bin -> star detection
     CPU workers   match the star list to the reference's
-    GPU process   warp + accumulate -> trimmed mean
+    GPU process   warp + accumulate (weighted by the star count) -> trimmed mean
 
 The GPU process owns the card for the whole run: VRAM is released when it
 exits, and the app's own process never loads torch for this. It and the
@@ -87,10 +87,16 @@ extern "C" __global__ void qs_bin(const float* __restrict__ src, float* __restri
   out[i] = (float)(s / (double)(ds * ds));
 }
 
-/* bilinear inverse warp straight into the running sum / count / two highest / two lowest */
+/* bilinear inverse warp straight into the running sum / count / two highest / two lowest.
+   D[5] (weighted): the frame's samples are scaled by its weight wtab[Q[0]], the weights are summed,
+   and each extreme keeps the frame's code Q[0]; quick_stack_worker._accumulate_band. Without it the
+   weight is 1 and the weight arrays (one-element stand-ins then) are never touched. */
 extern "C" __global__ void qs_acc(const float* __restrict__ src, const double* __restrict__ P, const float* __restrict__ off, const int* __restrict__ D,
-   float* __restrict__ sumv, unsigned short* __restrict__ cnt, float* __restrict__ hi0, float* __restrict__ hi1, float* __restrict__ lo0, float* __restrict__ lo1) {
-  const int H = D[0], W = D[1], C = D[2], sH = D[3], sW = D[4];
+   const float* __restrict__ wtab, const int* __restrict__ Q,
+   float* __restrict__ sumv, unsigned short* __restrict__ cnt, float* __restrict__ wsum,
+   float* __restrict__ hi0, float* __restrict__ hi1, float* __restrict__ lo0, float* __restrict__ lo1,
+   unsigned char* __restrict__ qh0, unsigned char* __restrict__ qh1, unsigned char* __restrict__ ql0, unsigned char* __restrict__ ql1) {
+  const int H = D[0], W = D[1], C = D[2], sH = D[3], sW = D[4], wt = D[5];
   const long i = (long)blockIdx.x * blockDim.x + threadIdx.x; if (i >= (long)H * W) return;
   const int y = (int)(i / W), x = (int)(i - (long)y * W);
   const double sx = P[1] * y + P[2], sy = P[4] * y + P[5];
@@ -99,24 +105,48 @@ extern "C" __global__ void qs_acc(const float* __restrict__ src, const double* _
   const int ix = (int)xs, iy = (int)ys; if (ix >= sW - 1 || iy >= sH - 1) return;
   const float fx = (float)(xs - ix), fy = (float)(ys - iy);
   const long b0 = ((long)iy * sW + ix) * C, b1 = b0 + (long)sW * C;
+  const unsigned char q = (unsigned char)Q[0]; const float w = wt ? wtab[q] : 1.0f;
   for (int c = 0; c < C; ++c) {
     const float a = src[b0 + c], b = src[b0 + C + c], d = src[b1 + c], e = src[b1 + C + c];
     if (a == 0.0f || b == 0.0f || d == 0.0f || e == 0.0f) continue;
     const float t = a + (b - a) * fx, u = d + (e - d) * fx, v = t + (u - t) * fy;
     if (!(fabsf(v) < 1e30f)) continue;
     const float r = v - off[c]; const long k = i * C + c;
-    sumv[k] += r; cnt[k] += 1;
-    if (r > hi0[k]) { hi1[k] = hi0[k]; hi0[k] = r; } else if (r > hi1[k]) hi1[k] = r;
-    if (r < lo0[k]) { lo1[k] = lo0[k]; lo0[k] = r; } else if (r < lo1[k]) lo1[k] = r;
+    sumv[k] += w * r; cnt[k] += 1;
+    if (wt) {
+      wsum[k] += w;
+      if (r > hi0[k]) { hi1[k] = hi0[k]; qh1[k] = qh0[k]; hi0[k] = r; qh0[k] = q; } else if (r > hi1[k]) { hi1[k] = r; qh1[k] = q; }
+      if (r < lo0[k]) { lo1[k] = lo0[k]; ql1[k] = ql0[k]; lo0[k] = r; ql0[k] = q; } else if (r < lo1[k]) { lo1[k] = r; ql1[k] = q; }
+    } else {
+      if (r > hi0[k]) { hi1[k] = hi0[k]; hi0[k] = r; } else if (r > hi1[k]) hi1[k] = r;
+      if (r < lo0[k]) { lo1[k] = lo0[k]; lo0[k] = r; } else if (r < lo1[k]) lo1[k] = r;
+    }
   }
 }
 
-/* trimmed mean, the rule of quick_stack_worker._finish */
-extern "C" __global__ void qs_fin(const float* __restrict__ sumv, const unsigned short* __restrict__ cnt, const float* __restrict__ hi0, const float* __restrict__ hi1,
-   const float* __restrict__ lo0, const float* __restrict__ lo1, float* __restrict__ out, const int* __restrict__ D) {
+/* trimmed mean, the rule of quick_stack_worker._finish: with D[5] each dropped extreme takes its own
+   frame's weight out of the sum and the total weight; without, every frame weighs 1 */
+extern "C" __global__ void qs_fin(const float* __restrict__ sumv, const unsigned short* __restrict__ cnt, const float* __restrict__ wsum,
+   const float* __restrict__ hi0, const float* __restrict__ hi1, const float* __restrict__ lo0, const float* __restrict__ lo1,
+   const unsigned char* __restrict__ qh0, const unsigned char* __restrict__ qh1, const unsigned char* __restrict__ ql0, const unsigned char* __restrict__ ql1,
+   const float* __restrict__ wtab, float* __restrict__ out, const int* __restrict__ D) {
   const long N = (long)D[0] * D[1] * D[2], k = (long)blockIdx.x * blockDim.x + threadIdx.x; if (k >= N) return;
   const int n = cnt[k]; if (!n) { out[k] = 0.0f; return; }
-  double s = sumv[k]; int dr = 0;
+  double s = sumv[k];
+  if (D[5]) {
+    double ws = wsum[k], w;
+    if (n >= D[3]) {
+      w = wtab[qh0[k]]; s -= w * (double)hi0[k]; ws -= w;
+      w = wtab[ql0[k]]; s -= w * (double)lo0[k]; ws -= w;
+      if (n >= D[4]) {
+        w = wtab[qh1[k]]; s -= w * (double)hi1[k]; ws -= w;
+        w = wtab[ql1[k]]; s -= w * (double)lo1[k]; ws -= w;
+      }
+    }
+    out[k] = ws > 0.0 ? (float)(s / ws) : 0.0f;
+    return;
+  }
+  int dr = 0;
   if (n >= D[3]) { s -= hi0[k]; s -= lo0[k]; dr = 2; if (n >= D[4]) { s -= hi1[k]; s -= lo1[k]; dr = 4; } }
   out[k] = (float)(s / (n - dr));
 }
@@ -146,6 +176,26 @@ def _grid(n: int):
     return ((n + 255) // 256, 1, 1)
 
 
+ACC_BYTES = 4 + 2 + 16       # per sample: sum, count, two highest, two lowest
+WEIGHT_BYTES = 4 + 4         # and for the weights: their sum, a code beside each extreme
+
+
+def plan_memory(free: int, n_samples: int, other: int, held: int):
+    """(frames the card can hold waiting for their match, weighted).
+
+    The weights' accumulators are what is left out when the card cannot also
+    take them: the frames then weigh the same, and the stack stays on the
+    GPU. other: the scratch frame, masters and mosaic; held: one waiting frame."""
+    fixed = n_samples * ACC_BYTES + other
+    for weighted in (True, False):
+        need = fixed + (n_samples * WEIGHT_BYTES if weighted else 0)
+        n = int(min(MAX_HELD, (free - need - VRAM_RESERVE) // held))
+        if n >= 2:
+            return n, weighted
+    raise GpuUnavailable(f"needs about {(fixed + 2 * held + VRAM_RESERVE) / 1e9:.1f} GB of "
+                         f"video memory, {free / 1e9:.1f} GB is free")
+
+
 class _Run:
     """One stack on the card."""
 
@@ -157,19 +207,23 @@ class _Run:
         self.h, self.w = H // ds, W // ds
         N = H * W * C
         free, _total = torch.cuda.mem_get_info()
-        fixed = N * (4 + 2 + 16) + N * 4                          # accumulators + scratch frame
-        fixed += H * W * 4 * (len(p["masters"] or {}) + (1 if C == 3 else 0))     # masters, mosaic
+        other = N * 4                                             # scratch frame
+        other += H * W * 4 * (len(p["masters"] or {}) + (1 if C == 3 else 0))     # masters, mosaic
         held = max(H * W * 2, N * 4 if p["any_f32"] else 0) + self.h * self.w * 4
-        self.max_held = int(min(MAX_HELD, (free - fixed - VRAM_RESERVE) // held))
-        if self.max_held < 2:
-            raise GpuUnavailable(f"needs about {(fixed + 2 * held + VRAM_RESERVE) / 1e9:.1f} GB of "
-                                 f"video memory, {free / 1e9:.1f} GB is free")
+        self.max_held, self.weighted = plan_memory(free, N, other, held)
         shape = (H, W, C)
         inf = float("inf")
         full = lambda v: torch.full(shape, v, dtype=torch.float32, device=dev)   # noqa: E731
         self.sumv = full(0.0)
         self.cnt = torch.zeros(shape, dtype=torch.int16, device=dev)
         self.hi0, self.hi1, self.lo0, self.lo1 = full(-inf), full(-inf), full(inf), full(inf)
+        wshape = shape if self.weighted else (1,)                 # one-element stand-ins, never touched
+        self.wsum = torch.zeros(wshape, dtype=torch.float32, device=dev)
+        self.qh0, self.qh1, self.ql0, self.ql1 = (torch.zeros(wshape, dtype=torch.uint8, device=dev)
+                                                  for _ in range(4))
+        self.wtab = torch.from_numpy(engine.WEIGHT_TABLE).to(dev)
+        self.ref_stars = 0
+        self.weigh = False                   # by star count: decided by the reference's count
         self.scratch = torch.empty(shape, dtype=torch.float32, device=dev)
         ints = lambda *v: torch.tensor(v, dtype=torch.int32, device=dev)          # noqa: E731
         self.D_deb = {bp: ints(H, W, C, *codes) for bp, codes in _CFA.items()}
@@ -181,9 +235,9 @@ class _Run:
         self.dark, self.flat = (self._master(masters.get(w), torch) for w in ("dark", "flat"))
         self.mosaic = torch.empty((H, W), dtype=torch.float32, device=dev) if C == 3 else None
         self.D_bin = ints(H, W, C, ds, self.h, self.w)
-        self.D_acc = ints(H, W, C, H, W)
-        self.D_fin = ints(H, W, C, engine.MIN_TRIM_FRAMES, engine.FULL_TRIM_FRAMES)
-        self.held: dict = {}                 # idx -> (meta, tensor, sky, gray)
+        self.D_acc = ints(H, W, C, H, W, int(self.weighted))
+        self.D_fin = ints(H, W, C, engine.MIN_TRIM_FRAMES, engine.FULL_TRIM_FRAMES, int(self.weighted))
+        self.held: dict = {}                 # idx -> (meta, tensor, sky, gray, stars)
         self.ref_sky = None
         self.ladder = p["ladder"]
         self.slots = engine.SharedBlock.attach(p["slots"])
@@ -236,15 +290,18 @@ class _Run:
         return np.asarray(out, np.float32)
 
     def _points(self, gray, level):
+        """(points to match, stars found): the count is every star the detector
+        kept, before the matcher's cap of 25 per cell."""
         cfg = self.p["cfg"]
         r = self.gd.detect_stars_full(
             gray, detection_sigma=self.ladder[level], min_area=cfg["minarea"],
             max_stars=20000, min_fwhm=cfg["min_fwhm"], max_ellipticity=cfg["max_ellipticity"])
         if r is None or len(r["x"]) == 0:
-            return np.empty((0, 2), np.float32)
+            return np.empty((0, 2), np.float32), 0
+        x = np.asarray(r["x"], np.float32)
         return self.sa._grid_balance_uniform(
-            np.asarray(r["x"], np.float32), np.asarray(r["y"], np.float32),
-            self.h, self.w, (4, 4), 25, cfg["limit_stars"])
+            x, np.asarray(r["y"], np.float32),
+            self.h, self.w, (4, 4), 25, cfg["limit_stars"]), int(x.size)
 
     def frame(self, conn, idx, slot, meta, is_ref):
         torch = self.torch
@@ -261,33 +318,42 @@ class _Run:
         self.K["qs_bin"](grid=_grid(self.h * self.w), block=(256, 1, 1), args=[x, gray, self.D_bin])
         sky = self._sky(x)
         if is_ref:
-            levels = [self._points(gray, k) for k in range(len(self.ladder))]
+            found = [self._points(gray, k) for k in range(len(self.ladder))]
+            self.ref_stars = found[0][1]
+            self.weigh = self.weighted and engine.run_weighting(self.ref_stars)
             self.ref_sky = sky
+            code = engine.frame_code(self.ref_stars, self.weigh)
             if not self.p["ref_only"]:
-                self._accumulate(meta, t, sky, np.array([[1.0, 0, 0], [0, 1.0, 0]]))
-            conn.send(("ref", self.token, levels))
-            conn.send(("acc_done", self.token, idx, 0.0))
+                self._accumulate(meta, t, sky, np.array([[1.0, 0, 0], [0, 1.0, 0]]), code)
+            conn.send(("ref", self.token, [pts for pts, _n in found], self.ref_stars))
+            conn.send(("acc_done", self.token, idx, 0.0, self.ref_stars,
+                       float(engine.WEIGHT_TABLE[code])))
             return
-        self.held[idx] = (meta, t, sky, gray)
-        conn.send(("pts", self.token, idx, 0, self._points(gray, 0)))
+        pts, stars = self._points(gray, 0)
+        self.held[idx] = (meta, t, sky, gray, stars)
+        conn.send(("pts", self.token, idx, 0, pts))
 
     def redetect(self, conn, idx, level):
-        conn.send(("pts", self.token, idx, level, self._points(self.held[idx][3], level)))
+        conn.send(("pts", self.token, idx, level, self._points(self.held[idx][3], level)[0]))
 
-    def _accumulate(self, meta, t, sky, T):
+    def _accumulate(self, meta, t, sky, T, code):
         inv = np.linalg.inv(np.vstack([T, [0, 0, 1]]))[:2]
         torch = self.torch
         P = torch.tensor(inv.astype(np.float64).ravel(), device=self.dev)
         off = torch.tensor((sky - self.ref_sky).astype(np.float32), device=self.dev)
+        Q = torch.tensor([int(code)], dtype=torch.int32, device=self.dev)
         self.K["qs_acc"](grid=_grid(self.H * self.W), block=(256, 1, 1),
-                         args=[self._to_hwc(meta, t), P, off, self.D_acc, self.sumv, self.cnt,
-                               self.hi0, self.hi1, self.lo0, self.lo1])
+                         args=[self._to_hwc(meta, t), P, off, self.D_acc, self.wtab, Q,
+                               self.sumv, self.cnt, self.wsum, self.hi0, self.hi1, self.lo0, self.lo1,
+                               self.qh0, self.qh1, self.ql0, self.ql1])
         return off
 
     def accumulate(self, conn, idx, T):
-        meta, t, sky, _gray = self.held.pop(idx)
-        self._accumulate(meta, t, sky, T)
-        conn.send(("acc_done", self.token, idx, float((sky - self.ref_sky).mean())))
+        meta, t, sky, _gray, stars = self.held.pop(idx)
+        code = engine.frame_code(stars, self.weigh)
+        self._accumulate(meta, t, sky, T, code)
+        conn.send(("acc_done", self.token, idx, float((sky - self.ref_sky).mean()), stars,
+                   float(engine.WEIGHT_TABLE[code])))
 
     def finish(self, conn):
         torch = self.torch
@@ -296,8 +362,8 @@ class _Run:
         torch.cuda.empty_cache()
         out = torch.empty((self.H, self.W, self.C), dtype=torch.float32, device=self.dev)
         self.K["qs_fin"](grid=_grid(self.H * self.W * self.C), block=(256, 1, 1),
-                         args=[self.sumv, self.cnt, self.hi0, self.hi1, self.lo0, self.lo1,
-                               out, self.D_fin])
+                         args=[self.sumv, self.cnt, self.wsum, self.hi0, self.hi1, self.lo0, self.lo1,
+                               self.qh0, self.qh1, self.ql0, self.ql1, self.wtab, out, self.D_fin])
         cov = int(self.cnt.max())
         dst = torch.from_numpy(self.out.view((self.H, self.W, self.C), np.float32))
         dst.copy_(out)
@@ -310,7 +376,8 @@ class _Run:
                 self.torch.cuda.cudart().cudaHostUnregister(self.registered)
         self.registered = None
         self.held = {}
-        for n in ("sumv", "cnt", "hi0", "hi1", "lo0", "lo1", "scratch", "mosaic", "dark", "flat"):
+        for n in ("sumv", "cnt", "wsum", "hi0", "hi1", "lo0", "lo1", "qh0", "qh1", "ql0", "ql1", "wtab",
+                  "scratch", "mosaic", "dark", "flat"):
             self.__dict__.pop(n, None)
         self.slots.close()
         self.out.close()
@@ -368,16 +435,12 @@ def _self_test(torch, dev, K) -> None:
 
     # Enough frames, with values on both sides of zero, that every branch of
     # the accumulator runs (highest, second highest, lowest, second lowest),
-    # over shifts, a small rotation and a half turn; then the trim itself.
-    A = {n: np.zeros((H, W, C), d) for n, d in engine.SharedArrays.SPEC}
-    A["hi0"][...] = A["hi1"][...] = -np.inf
-    A["lo"][...] = A["lo1"][...] = np.inf
-    mk = lambda v: torch.full((H, W, C), v, dtype=torch.float32, device=dev)      # noqa: E731
-    inf = float("inf")
-    g = [mk(0.0), torch.zeros((H, W, C), dtype=torch.int16, device=dev), mk(-inf), mk(-inf),
-         mk(inf), mk(inf)]
-    D_acc = torch.tensor([H, W, C, H, W], dtype=torch.int32, device=dev)
+    # over shifts, a small rotation and a half turn, each frame with its own
+    # weight; then the trim itself. Both ways the card runs: weighted, and with
+    # every frame weighing 1 (no room for the weights), which must be the CPU
+    # with every frame on the equal code.
     n_frames = engine.FULL_TRIM_FRAMES + 3
+    frames = []
     for k in range(n_frames):
         f = rng.normal(0.0, 0.05, (H, W, C)).astype(np.float32) + np.float32(0.02)
         f[10:20, 30:50] = 0.0
@@ -387,29 +450,44 @@ def _self_test(torch, dev, K) -> None:
         tx, ty = ((0.4, -0.7), (14.2, -9.7), (W - 1.3, H - 2.6), (3.1, 0.2))[k % 4]
         inv = np.array([[c, -n, tx], [n, c, ty]])
         off = np.array([0.011, -0.003, 0.002], np.float32) * np.float32(k % 3)
-        for b in range(engine.N_BANDS):
-            engine._accumulate_band(f, inv, off, H * b // engine.N_BANDS,
-                                    H * (b + 1) // engine.N_BANDS, A["sumv"], A["cnt"],
-                                    A["hi0"], A["hi1"], A["lo"], A["lo1"])
-        K["qs_acc"](grid=_grid(H * W), block=(256, 1, 1),
-                    args=[torch.from_numpy(f).to(dev), torch.tensor(inv.ravel(), device=dev),
-                          torch.tensor(off, device=dev), D_acc, *g])
-    for name, t in zip(("sumv", "cnt", "hi0", "hi1", "lo", "lo1"), g):
-        x1, x2 = A[name], t.cpu().numpy()
-        if name == "cnt":
-            x2 = x2.astype(np.uint16)
-        if not np.array_equal(x1, x2, equal_nan=True):
-            raise GpuUnavailable(f"the accumulator self-test failed on this card ({name})")
-    cpu = np.empty((H, W, C), np.float32)
-    engine._finish(A["sumv"], A["cnt"], A["hi0"], A["hi1"], A["lo"], A["lo1"], cpu,
-                   engine.MIN_TRIM_FRAMES, engine.FULL_TRIM_FRAMES)
-    out = torch.empty((H, W, C), dtype=torch.float32, device=dev)
-    K["qs_fin"](grid=_grid(H * W * C), block=(256, 1, 1),
-                args=[*g, out, torch.tensor([H, W, C, engine.MIN_TRIM_FRAMES,
-                                             engine.FULL_TRIM_FRAMES],
-                                            dtype=torch.int32, device=dev)])
-    if not np.array_equal(cpu, out.cpu().numpy()):
-        raise GpuUnavailable("the trimmed-mean self-test failed on this card")
+        frames.append((f, inv, off, 1 + (k * 97) % 255))           # codes 1 .. 255
+    names = ("sumv", "cnt", "wsum", "hi0", "hi1", "lo", "lo1", "qhi0", "qhi1", "qlo", "qlo1")
+    wtab = torch.from_numpy(engine.WEIGHT_TABLE).to(dev)
+    inf = float("inf")
+    for weighted in (1, 0):
+        A = engine.SharedArrays.blank({n: np.empty((H, W, C), d) for n, d in engine.SharedArrays.SPEC})
+        mk = lambda v: torch.full((H, W, C), v, dtype=torch.float32, device=dev)      # noqa: E731
+        ws = (H, W, C) if weighted else (1,)
+        g = {"sumv": mk(0.0), "cnt": torch.zeros((H, W, C), dtype=torch.int16, device=dev),
+             "wsum": torch.zeros(ws, dtype=torch.float32, device=dev),
+             "hi0": mk(-inf), "hi1": mk(-inf), "lo": mk(inf), "lo1": mk(inf),
+             **{n: torch.zeros(ws, dtype=torch.uint8, device=dev) for n in names[7:]}}
+        D_acc = torch.tensor([H, W, C, H, W, weighted], dtype=torch.int32, device=dev)
+        for f, inv, off, code in frames:
+            q = code if weighted else engine.EQUAL_WEIGHT_CODE
+            for b in range(engine.N_BANDS):
+                engine.accumulate(A, f, inv, off, q, H * b // engine.N_BANDS,
+                                  H * (b + 1) // engine.N_BANDS)
+            K["qs_acc"](grid=_grid(H * W), block=(256, 1, 1),
+                        args=[torch.from_numpy(f).to(dev), torch.tensor(inv.ravel(), device=dev),
+                              torch.tensor(off, device=dev), D_acc, wtab,
+                              torch.tensor([q], dtype=torch.int32, device=dev),
+                              *(g[n] for n in names)])
+        for name in (names if weighted else ("sumv", "cnt", "hi0", "hi1", "lo", "lo1")):
+            x1, x2 = A[name], g[name].cpu().numpy()
+            if name == "cnt":
+                x2 = x2.astype(np.uint16)
+            if not np.array_equal(x1, x2, equal_nan=True):
+                raise GpuUnavailable(f"the accumulator self-test failed on this card ({name})")
+        cpu = np.empty((H, W, C), np.float32)
+        engine.finish(A, cpu)
+        out = torch.empty((H, W, C), dtype=torch.float32, device=dev)
+        K["qs_fin"](grid=_grid(H * W * C), block=(256, 1, 1),
+                    args=[*(g[n] for n in names), wtab, out,
+                          torch.tensor([H, W, C, engine.MIN_TRIM_FRAMES, engine.FULL_TRIM_FRAMES,
+                                        weighted], dtype=torch.int32, device=dev)])
+        if not np.array_equal(cpu, out.cpu().numpy()):
+            raise GpuUnavailable("the trimmed-mean self-test failed on this card")
 
 
 def _boot():
@@ -466,7 +544,7 @@ def _server_main(conn) -> None:
                     run.close()
                 run = None
                 run = _Run(torch, dev, K, gd, sa, m[1], m[2])
-                conn.send(("begun", run.token, run.max_held))
+                conn.send(("begun", run.token, run.max_held, run.weighted))
             elif run is None or m[1] != run.token:
                 if m[0] == "cancel":
                     conn.send(("closed", m[1]))
@@ -770,7 +848,7 @@ def _stack(paths, session, ref_path, say, step, stopped, t0, masters, mdesc):
             "slots": slots.descriptor(), "out": out.descriptor()})
         result = _loop(paths, as_u16, ref_i, ref_only, (H, W), nch, ds, cfg, cap, n_slots, mdesc, session,
                        token, slots, out, futures, step, stopped, say)
-        image, cov, oks, skipped = result
+        image, cov, oks, skipped, ref_stars, room = result
     finally:
         for f in futures:
             f.cancel()
@@ -789,8 +867,10 @@ def _stack(paths, session, ref_path, say, step, stopped, t0, masters, mdesc):
             for _ in range(session.workers):
                 session.pool().submit(engine.forget_blocks)
     engine.require_stack(oks, skipped, frames)
+    # room: the card had the memory for the weights (else _loop said so).
     return engine.make_result(image, ref_hdr, nch, oks, skipped, frames, cov, t0, say, "GPU",
-                              masters, ref_path)
+                              masters, ref_path, room and engine.run_weighting(ref_stars),
+                              ref_stars if room else None)
 
 
 def _reference(session, paths, ref_path, cfg, stopped, mdesc):
@@ -857,6 +937,7 @@ def _loop(paths, as_u16, ref_i, ref_only, hw, nch, ds, cfg, cap, n_slots, mdesc,
     slot_of: dict = {}
     held: set = set()                               # on the card, waiting for a match
     levels = None                                   # reference star lists, one per sigma
+    ref_stars = 0                                   # and its star count at the first
     oks, skipped = [], []
     max_held, done, finishing = 0, 0, False
     info_of: dict = {}
@@ -907,7 +988,10 @@ def _loop(paths, as_u16, ref_i, ref_only, hw, nch, ds, cfg, cap, n_slots, mdesc,
     m = _await(session, token, "begun", 60.0) if not stopped() else None
     if m is None:
         raise InterruptedError("Quick Stack was cancelled.")
-    max_held = m[2]
+    max_held, room = m[2], m[3]
+    if not room:
+        say("GPU: not enough video memory to weight the frames by star count as well, "
+            "so they weigh the same.")
     pump()
     last = time.monotonic()
     step(0, total, "Stacking…")
@@ -974,7 +1058,7 @@ def _loop(paths, as_u16, ref_i, ref_only, hw, nch, ds, cfg, cap, n_slots, mdesc,
                     del slot_of[i]
             free.append(s)
         elif kind == "ref":
-            levels = m[2]
+            levels, ref_stars = m[2], m[3]
         elif kind == "pts":
             match(m[2], m[3], m[4])
         elif kind == "acc_done":
@@ -985,9 +1069,9 @@ def _loop(paths, as_u16, ref_i, ref_only, hw, nch, ds, cfg, cap, n_slots, mdesc,
             d = info_of.pop(idx, None)
             if not isinstance(d, dict):              # the reference itself
                 d = {"angle": 0.0, "inliers": 0, "rms": 0.0}
-            oks.append((paths[idx], {**d, "offset": m[3]}))
+            oks.append((paths[idx], {**d, "offset": m[3], "stars": m[4], "weight": m[5]}))
             finish_frame()
         elif kind == "result":
-            return np.array(out.view((H, W, nch), np.float32))[..., 0] if nch == 1 else \
-                np.array(out.view((H, W, nch), np.float32)), m[2], oks, skipped
+            return (np.array(out.view((H, W, nch), np.float32))[..., 0] if nch == 1 else
+                    np.array(out.view((H, W, nch), np.float32)), m[2], oks, skipped, ref_stars, room)
         pump()

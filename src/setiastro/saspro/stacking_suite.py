@@ -200,6 +200,18 @@ from setiastro.saspro.stacking_calibrated_scan import (
     start_background_read,
     stat_entry,
 )
+from setiastro.saspro.stacking_master_picks import (
+    AUTO as _PICK_AUTO,
+    BROWSE as _PICK_BROWSE,
+    NONE as _PICK_NONE,
+    ROLE_CONTROL as _ROLE_CONTROL,
+    ROLE_FRAMES_SHOWN as _ROLE_FRAMES_SHOWN,
+    ROLE_ROWS as _ROLE_ROWS,
+    MasterPickRow,
+    insert_control_item,
+    is_control_item,
+    norm_path as _norm_path_key,
+)
 from setiastro.saspro import comet_stacking as CS
 #from setiastro.saspro.remove_stars import starnet_starless_from_array, darkstar_starless_from_array
 from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker
@@ -6040,6 +6052,57 @@ class _MMImageSeek:
         except Exception:
             pass
 
+def _load_fits_u16_fast(path: str):
+    """
+    (header, data) for a 16-bit unsigned FITS image (BITPIX=16, BZERO=32768,
+    BSCALE=1, no BLANK): every camera raw. None for anything else, and the
+    caller reads it with astropy as before.
+
+    data is the native uint16 array astropy's memmap=False read returns, value
+    for value. astropy builds it with a Python-level conversion that holds the
+    GIL, so threads cannot load frames side by side (64 x 46.8 MP: 10.8 s
+    serial, 12.8 s on 8 threads). Here the read and the conversion release it:
+    5.3 s serial, 2.7 s on 4 threads.
+    """
+    import sys
+    if sys.byteorder != "little":
+        return None
+    try:
+        with fits.open(path, memmap=True, mode="denywrite",
+                       do_not_scale_image_data=True) as hdul:
+            hdu = None
+            for h in hdul:
+                if getattr(h, "data", None) is not None:
+                    hdu = h
+                    break
+            if hdu is None or isinstance(hdu, fits.CompImageHDU):
+                return None
+            if not isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU)):
+                return None
+            hdr = hdu.header
+            if (int(hdr.get("BITPIX", 0)) != 16
+                    or float(hdr.get("BSCALE", 1.0)) != 1.0
+                    or float(hdr.get("BZERO", 0.0)) != 32768.0
+                    or "BLANK" in hdr):
+                return None
+            shape = tuple(int(s) for s in hdu.data.shape)
+            offset = int(hdu.fileinfo()["datLoc"])
+    except Exception:
+        return None
+    n = int(np.prod(shape))
+    try:
+        a = np.fromfile(path, dtype="<u2", count=n, offset=offset)
+    except Exception:
+        return None
+    if a.size != n:
+        return None
+    # The file holds big-endian int16 v-32768. Read byte-swapped, the sign bit
+    # sits in the low byte: flip it, then swap, and the result is uint16 v.
+    a ^= np.uint16(0x0080)
+    a.byteswap(inplace=True)
+    return hdr, a.reshape(shape)
+
+
 class _MMImage:
     """
     Unified memory-friendly reader for FITS (memmap) and XISF.
@@ -6131,14 +6194,22 @@ class _MMImage:
         # First attempt: memmap=True
         try:
             hdul, hdu = _do_open(memmap_flag=True)
+            header, d = hdu.header, hdu.data
         except Exception as e:
             #self._log(f"[MMImage] File uses FITS scaling keywords; falling back to non-memmap load for {os.path.basename(path)}.")
-            # Second attempt: memmap=False; if THIS fails, let it propagate.
-            hdul, hdu = _do_open(memmap_flag=False)
+            # Scaled data cannot be mapped. The usual case is a 16-bit camera
+            # raw (BZERO=32768): read it directly, identical values, 2-4x faster.
+            fast = _load_fits_u16_fast(path)
+            if fast is not None:
+                hdul = None
+                header, d = fast
+            else:
+                # Second attempt: memmap=False; if THIS fails, let it propagate.
+                hdul, hdu = _do_open(memmap_flag=False)
+                header, d = hdu.header, hdu.data
 
         self._fits_hdul = hdul
-        self._fits_header = hdu.header
-        d = hdu.data
+        self._fits_header = header
 
         self._fits_data = d
         self.shape = d.shape
@@ -6386,6 +6457,115 @@ def _close_mmimages(sources):
         try: s.close(collect=False)
         except Exception: pass
     gc.collect()
+
+
+# ── master dark / flat builders: loading, waiting, RAM ────────────────────────
+
+def _open_mmimages_parallel(paths, workers: int):
+    """Open the frames of one master side by side, in path order. _MMImage
+    reads a 16-bit raw whole, so this is the builders' disk read. If a frame
+    fails, the ones already open are closed and the first error is raised."""
+    from concurrent.futures import ThreadPoolExecutor
+    paths = list(paths)
+    if not paths:
+        return []
+    n = max(1, min(int(workers), len(paths)))
+    with ThreadPoolExecutor(max_workers=n, thread_name_prefix="masterOpen") as ex:
+        futs = [ex.submit(_MMImage, p) for p in paths]
+    sources, err = [], None
+    for f in futs:
+        try:
+            sources.append(f.result())
+        except Exception as e:
+            if err is None:
+                err = e
+    if err is not None:
+        _close_mmimages(sources)
+        raise err
+    return sources
+
+
+def _wait_pumping(fut, poll: float = 0.05):
+    """fut.result() for the master builders, which run on the GUI thread:
+    keep the window (and its Cancel button) alive while a load or save runs."""
+    from concurrent.futures import wait as _fut_wait
+    while not fut.done():
+        _fut_wait([fut], timeout=poll)
+        QApplication.processEvents()
+    return fut.result()
+
+
+def _ram_allows_prefetch(paths) -> bool:
+    """Whether the next master's frames may load while this one stacks.
+    That holds two groups in RAM at once, so only when the next group's files
+    (doubled for compressed formats) fit in 40% of what is free."""
+    need = 0
+    for p in paths:
+        try:
+            sz = os.path.getsize(p)
+        except OSError:
+            continue
+        need += sz * (2 if str(p).lower().endswith((".fz", ".xisf")) else 1)
+    try:
+        return need < 0.4 * psutil.virtual_memory().available
+    except Exception:
+        return False
+
+
+def _probe_frame_hwc(path: str):
+    """(H, W, C) of a FITS frame from its header alone, the shape _MMImage
+    reads; None when the header cannot say (XISF, data in an extension, other
+    layouts) and the caller loads the frame instead."""
+    if not str(path).lower().endswith((".fit", ".fits", ".fts")):
+        return None
+    try:
+        hdr = fits.getheader(path)
+        naxis = int(hdr.get("NAXIS", 0) or 0)
+        n1 = int(hdr.get("NAXIS1", 0) or 0)
+        n2 = int(hdr.get("NAXIS2", 0) or 0)
+        n3 = int(hdr.get("NAXIS3", 0) or 0)
+    except Exception:
+        return None
+    if n1 <= 0 or n2 <= 0:
+        return None
+    if naxis == 2:
+        return (n2, n1, 1)
+    if naxis == 3:
+        if n3 == 3:
+            return (n2, n1, 3)          # planes on disk (3, H, W)
+        if n1 == 3 and n3 > 3:
+            return (n3, n2, 3)          # pixels on disk (H, W, 3)
+    return None
+
+
+def _master_band_buffers(shape, pinned: bool):
+    """The two band buffers of a master's tile loop. Page-locked when a CUDA
+    GPU reduces them, so the upload is faster (64-frame 16-row band, median:
+    7.2 -> 5.4 ms; trimmed mean 14.7 -> 12.3 ms). Plain numpy otherwise, or
+    if pinning fails. A band is only refilled after its reduce has copied the
+    result back, which waits for the upload, so reuse is safe."""
+    if pinned:
+        try:
+            torch = _get_torch(prefer_cuda=True)
+            if torch is not None and torch.cuda.is_available():
+                return tuple(
+                    torch.empty(tuple(shape), dtype=torch.float32, pin_memory=True).numpy()
+                    for _ in range(2)
+                )
+        except Exception:
+            pass
+    b0 = np.empty(shape, dtype=np.float32, order="C")
+    return b0, np.empty_like(b0)
+
+
+def _master_reduce_gpu(ts_np, weights_np, **kw):
+    """_torch_reduce_tile for a master, which keeps only the stacked tile: the
+    per-frame rejection map stays on the GPU instead of being copied back
+    (8.5 MB per 16-row band of 64 x 8288 px, ~10% of the band's time)."""
+    out, _ = _torch_reduce_tile(ts_np, weights_np, return_device=True, **kw)
+    if hasattr(out, "cpu"):
+        out = out.cpu().numpy()
+    return out
 
 
 def _open_sources_for_mfdeconv(paths, log):
@@ -6677,17 +6857,21 @@ def _get_key_float(hdr: fits.Header, key: str):
     except Exception:
         return None
 
-def _collect_temp_stats(file_list: list[str]):
+def _collect_temp_stats(file_list: list[str], headers: dict | None = None):
+    """headers: path -> header already read (create_master_dark's grouping
+    pass); any path not in it is read here."""
     ccd = []
     setp = []
     n_ccd = 0
     n_set = 0
 
     for p in file_list:
-        try:
-            hdr = fits.getheader(p, memmap=True)
-        except Exception:
-            continue
+        hdr = (headers or {}).get(p)
+        if hdr is None:
+            try:
+                hdr = fits.getheader(p, memmap=True)
+            except Exception:
+                continue
 
         v1 = _get_key_float(hdr, "CCD-TEMP")
         v2 = _get_key_float(hdr, "SET-TEMP")
@@ -8367,6 +8551,15 @@ class StackingSuiteDialog(QDialog):
             self.session_override = {}  # path -> {"mode": "manual"/"header"/"folder", "value": "..."}
 
         self.flat_dark_override = {}  # {(group_key:str): path | None | "__NO_DARK__"}
+        # The masters each Lights group uses, picked by hand in its Dark / Flat
+        # rows: (kind, filter, exposure label, session or None) -> path | _PICK_NONE.
+        # A frame's own pick: (kind, _norm_path_key(frame)) -> path | _PICK_NONE.
+        self.light_master_choice = {}
+        self.light_frame_master = {}
+        self._flat_groups_info = {}     # Flats tab group key -> filter, size, exposures, first flat
+        self._flat_frames_shown = {}    # Flats tab group key -> are its frames listed
+        self._light_frames_shown = {}   # (filter, exposure label) -> are its frames listed
+        self._light_meta_cache = {}     # _norm_path_key(frame) -> size, gain, offset, temp
         self.deleted_calibrated_files = []
         self._norm_map = {}
         if not hasattr(self, "_mismatch_policy"):
@@ -9070,6 +9263,8 @@ class StackingSuiteDialog(QDialog):
             self.add_master_files(self.master_dark_tree, "DARK", valid_darks)
         if valid_flats:
             self.add_master_files(self.master_flat_tree, "FLAT", valid_flats)
+        if valid_darks or valid_flats:
+            self._refresh_master_picks()
 
     def _quick_build_master_dark(self):
         self.create_master_dark()
@@ -9646,6 +9841,8 @@ class StackingSuiteDialog(QDialog):
             count = 0
             for i in range(item.childCount()):
                 ch = item.child(i)
+                if is_control_item(ch):          # a group's Dark / Flat / frames row
+                    continue
                 if ch.childCount() == 0:
                     count += 1
                 else:
@@ -13085,12 +13282,8 @@ class StackingSuiteDialog(QDialog):
         # Add "Clear Selection" button for Master Darks
         self.clear_master_dark_selection_btn = QPushButton(self.tr("Clear Selection"))
         self.clear_master_dark_selection_btn.clicked.connect(
-            lambda: self.clear_tree_selection(self.master_dark_tree, self.master_files)
+            lambda: self._remove_selected_masters(self.master_dark_tree)
         )
-        self.clear_master_dark_selection_btn.clicked.connect(
-            lambda: (self.clear_tree_selection(self.master_dark_tree, self.master_files),
-                    self.save_master_paths_to_settings())
-        )        
         main_layout.addWidget(self.clear_master_dark_selection_btn)
 
         self.dark_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -13326,21 +13519,20 @@ class StackingSuiteDialog(QDialog):
         flat_frames_layout = QVBoxLayout()
         flat_frames_layout.addWidget(QLabel(self.tr("Flat Frames")))
 
+        # Each group lists the master dark it will use (a Dark row under it)
+        # and, behind an "N frames" row, its frames.
         self.flat_tree = QTreeWidget()
-        self.flat_tree.setColumnCount(4)
+        self.flat_tree.setColumnCount(2)
         self.flat_tree.setHeaderLabels([
             self.tr("Filter & Exposure"),
             self.tr("Metadata"),
-            self.tr("Master Dark Used"),
-            self.tr("Override Dark"),
         ])
-        self.flat_tree.setColumnWidth(0, 260)
-        self.flat_tree.setColumnWidth(1, 180)
-        self.flat_tree.setColumnWidth(2, 200)
-        self.flat_tree.setColumnWidth(3, 160)
+        self.flat_tree.setColumnWidth(0, 420)
+        self.flat_tree.setColumnWidth(1, 220)
         self.flat_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.flat_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.flat_tree.customContextMenuRequested.connect(self.flat_tree_context_menu)
+        self.flat_tree.itemClicked.connect(self._on_frames_row_clicked)
         flat_frames_layout.addWidget(self.flat_tree)
 
         btn_layout = QHBoxLayout()
@@ -13380,7 +13572,8 @@ class StackingSuiteDialog(QDialog):
         self.flat_auto_session_cb.toggled.connect(_sync_flat_session_keyword_enabled)
         _sync_flat_session_keyword_enabled()
 
-        session_hint_label = QLabel(self.tr("Right-click a group to override its Master Dark or set session tag"))
+        session_hint_label = QLabel(self.tr(
+            "Each group shows the master dark it will use: change it there. Right-click to set a session tag."))
         session_hint_label.setStyleSheet("color: #888; font-style: italic; font-size: 11px; margin-left: 4px;")
         flat_frames_layout.addWidget(session_hint_label)
 
@@ -13413,11 +13606,12 @@ class StackingSuiteDialog(QDialog):
 
         self.auto_select_dark_checkbox = QCheckBox(self.tr("Auto-Select Closest Master Dark"))
         self.auto_select_dark_checkbox.setChecked(True)
+        self.auto_select_dark_checkbox.toggled.connect(self._fill_flat_dark_rows)
         right_controls_layout.addWidget(self.auto_select_dark_checkbox)
 
-        # Info label replacing the old single-dark combobox
         dark_info = QLabel(self.tr(
-            "Per-group dark overrides:\nRight-click any flat group\nand choose 'Override Master Dark'."
+            "Auto picks by size, then gain, exposure and temperature. "
+            "Each flat group's Dark row shows its pick: choose another master, or None, there."
         ))
         dark_info.setWordWrap(True)
         dark_info.setStyleSheet("color: #aaa; font-size: 11px;")
@@ -13456,10 +13650,7 @@ class StackingSuiteDialog(QDialog):
 
         self.clear_master_flat_selection_btn = QPushButton(self.tr("Clear Selection"))
         self.clear_master_flat_selection_btn.clicked.connect(
-            lambda: (
-                self.clear_tree_selection(self.master_flat_tree, self.master_files),
-                self.save_master_paths_to_settings()
-            )
+            lambda: self._remove_selected_masters(self.master_flat_tree)
         )
         main_layout.addWidget(self.clear_master_flat_selection_btn)
 
@@ -13491,32 +13682,19 @@ class StackingSuiteDialog(QDialog):
 
     def flat_tree_context_menu(self, pos):
         item = self.flat_tree.itemAt(pos)
-        if not item:
+        if not item or is_control_item(item):
             return
 
         if not item.isSelected():
             self.flat_tree.clearSelection()
             item.setSelected(True)
 
+        # A group's master dark is picked in its Dark row.
         menu = QMenu(self.flat_tree)
-        act_override_dark = menu.addAction(self.tr("Override Master Dark for this group…"))
-        act_clear_dark    = menu.addAction(self.tr("Clear Dark Override for this group"))
-        act_no_dark       = menu.addAction(self.tr("No Dark Calibration for this group"))
-        menu.addSeparator()
         act_set_session   = menu.addAction(self.tr("Set Session Tag…"))
 
         action = menu.exec(self.flat_tree.viewport().mapToGlobal(pos))
-
-        # Resolve the group item (top-level = filter+exposure group)
-        group_item = item if item.parent() is None else item.parent()
-
-        if action == act_override_dark:
-            self._flat_override_dark_for_group(group_item)
-        elif action == act_clear_dark:
-            self._flat_clear_dark_override_for_group(group_item)
-        elif action == act_no_dark:
-            self._flat_set_no_dark_for_group(group_item)
-        elif action == act_set_session:
+        if action == act_set_session:
             self.prompt_set_session(item, "FLAT")
 
     def _flat_group_key_from_item(self, group_item) -> str | None:
@@ -13526,69 +13704,723 @@ class StackingSuiteDialog(QDialog):
             return str(key) if key else None
         except Exception:
             return None
-    def _flat_override_dark_for_group(self, group_item):
-        if not hasattr(self, "flat_dark_override"):
-            self.flat_dark_override = {}
+    # ── Master Dark / Flat rows (Quick Stack style) ──────────────────────────
+    # Under each group of the Flats and Lights tabs: the master it will use, in
+    # a list (Auto, a loaded master, None, or add one) with a badge saying why.
+    # Calibration resolves its masters through the same methods
+    # (_flat_group_dark_pick, _light_master_pick), so a group gets what it shows.
 
-        key = self._flat_group_key_from_item(group_item)
-        if key is None:
-            return
+    _DARK_MASTER_KEY_RX = re.compile(r"^\s*(?:[\d.]+s|Unknowns?)\s*\(")
 
-        last_dir = self.settings.value("stacking/last_flat_dark_dir", "", type=str) or ""
-        if not last_dir:
-            last_dir = getattr(self, "stacking_directory", "") or os.path.expanduser("~")
+    def _master_kind_of_key(self, key) -> str | None:
+        """'dark' or 'flat' for a master_files key; None for the bias."""
+        k = str(key or "")
+        if k == "Bias":
+            return None
+        return "dark" if self._DARK_MASTER_KEY_RX.match(k) else "flat"
 
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select Master Dark for this flat group"),
-            last_dir,
-            "Master Calibration (*.fits *.fit *.xisf);;All Files (*)"
-        )
-        if not file_path:
-            return
+    def _master_snapshot(self) -> dict:
+        """Every loaded master dark and flat, each header read once:
+        {"dark": [info], "flat": [info], "by_path": {_norm_path_key(path): info}}."""
+        snap = {"dark": [], "flat": [], "by_path": {}}
+        for key, path in list((getattr(self, "master_files", None) or {}).items()):
+            if not isinstance(path, str) or not path:
+                continue
+            kind = self._master_kind_of_key(key)
+            if kind is None:
+                continue
+            n = _norm_path_key(path)
+            if n in snap["by_path"]:
+                continue
+            info = self._read_master_info(path, str(key), kind)
+            snap["by_path"][n] = info
+            snap[kind].append(info)
+        return snap
 
+    def _read_master_info(self, path: str, key: str, kind: str) -> dict:
+        """Size, exposure, gain, offset and temperature (darks) or filter and
+        session (flats) of one master."""
+        info = {"path": path, "key": key, "kind": kind, "exposure": None, "size": None,
+                "gain": None, "offset": None, "temp": None, "filter": None, "session": None}
         try:
-            self.settings.setValue("stacking/last_flat_dark_dir", os.path.dirname(file_path))
+            hdr, _ = get_valid_header(path)
+        except Exception:
+            hdr = None
+        size = (getattr(self, "master_sizes", None) or {}).get(path)
+        if (not size or size == "Unknown") and hdr is not None:
+            try:
+                w, h = int(hdr.get("NAXIS1", 0) or 0), int(hdr.get("NAXIS2", 0) or 0)
+                if w and h:
+                    size = f"{w}x{h}"
+            except Exception:
+                pass
+        if not size or size == "Unknown":
+            m = re.search(r"\((\d+x\d+)\)", key)
+            size = m.group(1) if m else None
+        info["size"] = size
+        if hdr is not None:
+            for k in ("EXPOSURE", "EXPTIME"):
+                try:
+                    v = hdr.get(k)
+                    if v not in (None, ""):
+                        info["exposure"] = float(v)
+                        break
+                except Exception:
+                    pass
+            info["gain"] = _get_key_float(hdr, "GAIN")
+            off = _get_key_float(hdr, "OFFSET")
+            info["offset"] = off if off is not None else _get_key_float(hdr, "BLKLEVEL")
+        if kind == "dark":
+            if info["exposure"] is None:
+                for rx, text in ((r"^\s*([\d.]+)s\s*\(", key),
+                                 (r"EXPOSURE-([\d.]+)s", os.path.basename(path))):
+                    m = re.search(rx, text, re.IGNORECASE)
+                    if m:
+                        try:
+                            info["exposure"] = float(m.group(1))
+                            break
+                        except Exception:
+                            pass
+            try:
+                info["temp"] = self._get_master_dark_meta(path).get("temp")
+            except Exception:
+                pass
+        else:
+            m = re.match(r"^(.*?) \((?:\d+x\d+|Unknown)\)", key)
+            if m:
+                info["filter"] = m.group(1)
+            elif hdr is not None and hdr.get("FILTER") not in (None, ""):
+                info["filter"] = self._sanitize_name(str(hdr.get("FILTER")))
+            m = re.search(r"\[([^\]]+)\]", key)
+            info["session"] = m.group(1) if m else None
+        return info
+
+    def _light_frame_meta(self, path: str) -> dict:
+        """Size, gain, offset and temperature of a frame, read the way
+        calibration reads them (cached; process_fits_header fills it at ingest)."""
+        cache = getattr(self, "_light_meta_cache", None)
+        if cache is None:
+            cache = self._light_meta_cache = {}
+        n = _norm_path_key(path)
+        meta = cache.get(n)
+        if meta is not None:
+            return meta
+        meta = {"size": "Unknown", "gain": None, "offset": None, "temp": None}
+        try:
+            hdr, _ = get_valid_header(path)
+        except Exception:
+            hdr = None
+        if hdr is not None:
+            try:
+                w, h = int(hdr.get("NAXIS1", 0) or 0), int(hdr.get("NAXIS2", 0) or 0)
+                if w and h:
+                    meta["size"] = f"{w}x{h}"
+            except Exception:
+                pass
+            meta["gain"] = _get_key_float(hdr, "GAIN")
+            off = _get_key_float(hdr, "OFFSET")
+            meta["offset"] = off if off is not None else _get_key_float(hdr, "BLKLEVEL")
+        try:
+            meta["temp"] = self._get_light_temp(path)[2]
         except Exception:
             pass
+        cache[n] = meta
+        return meta
 
-        self.flat_dark_override[key] = file_path
-        # Update both col 2 (display) and col 3 (override indicator)
-        group_item.setText(2, os.path.basename(file_path))
-        group_item.setData(2, Qt.ItemDataRole.UserRole, file_path)
-        group_item.setText(3, self.tr("Override"))
-        group_item.setForeground(3, QColor("#FFD700"))
-        self.update_status(f"🌓 Dark override set for '{group_item.text(0)}': {os.path.basename(file_path)}")
+    @staticmethod
+    def _go_mismatch(gain, offset, m_gain, m_offset) -> bool:
+        """Gain or offset differ by more than 1 (unknown on either side is no mismatch)."""
+        if gain is not None and m_gain is not None and abs(gain - m_gain) > 1:
+            return True
+        if offset is not None and m_offset is not None and abs(offset - m_offset) > 1:
+            return True
+        return False
 
-    def _flat_clear_dark_override_for_group(self, group_item):
-        if not hasattr(self, "flat_dark_override"):
-            self.flat_dark_override = {}
+    def _auto_pick_dark(self, snap, image_size, exposure, gain=None, offset=None, temp=None):
+        """The master dark Auto gives frames of this size, exposure, gain /
+        offset and temperature: same size, then matching gain and offset, then
+        nearest exposure, then nearest temperature. None if none is this size."""
+        best, best_score = None, None
+        for m in snap["dark"]:
+            if (m["size"] or "Unknown") != image_size or m["exposure"] is None:
+                continue
+            go = self._go_mismatch(gain, offset, m["gain"], m["offset"])
+            exp_diff = abs(float(m["exposure"]) - float(exposure or 0.0))
+            if temp is not None and m["temp"] is not None:
+                t_unknown, t_diff = 0, abs(float(m["temp"]) - float(temp))
+            else:
+                t_unknown, t_diff = 1, 9999.0
+            score = (1 if go else 0, exp_diff, t_unknown, t_diff)
+            if best_score is None or score < best_score:
+                best, best_score = m["path"], score
+        return best
 
-        key = self._flat_group_key_from_item(group_item)
-        if key:
-            self.flat_dark_override.pop(key, None)
+    def _no_dark_reason(self, snap, image_size) -> tuple:
+        if not any((m["size"] or "Unknown") == image_size for m in snap["dark"]):
+            return ("warn", self.tr("⚠ none is {0}").format(image_size))
+        return ("warn", self.tr("⚠ none records its exposure: choose one"))
 
-        # Revert col 2 to Auto and clear col 3
-        auto_txt = "Auto" if self.auto_select_dark_checkbox.isChecked() else "None"
-        group_item.setText(2, auto_txt)
-        group_item.setData(2, Qt.ItemDataRole.UserRole, None)
-        group_item.setText(3, "")
-        group_item.setForeground(3, QColor("#888888"))
-        self.update_status(f"↩️ Dark override cleared for '{group_item.text(0)}'")
+    def _dark_badge_warnings(self, m, image_size, exposure, meta, tol=0.0) -> list:
+        """What is off about master dark `m` for frames of this size, exposure and meta."""
+        out = []
+        if m["size"] and image_size not in (None, "Unknown") and m["size"] != image_size:
+            out.append(("warn", self.tr("⚠ {0}, these frames are {1}").format(m["size"], image_size)))
+        if m["exposure"] is None:
+            out.append(("warn", self.tr("⚠ its exposure is not recorded")))
+        elif exposure and abs(m["exposure"] - exposure) > max(0.05 * exposure, tol):
+            out.append(("warn", self.tr("⚠ {0:g} s dark, {1:g} s frames").format(m["exposure"], exposure)))
+        g, o = meta.get("gain"), meta.get("offset")
+        if g is not None and m["gain"] is not None and abs(g - m["gain"]) > 1:
+            out.append(("warn", self.tr("⚠ gain {0:g}, frames {1:g}").format(m["gain"], g)))
+        elif o is not None and m["offset"] is not None and abs(o - m["offset"]) > 1:
+            out.append(("warn", self.tr("⚠ offset {0:g}, frames {1:g}").format(m["offset"], o)))
+        t = meta.get("temp")
+        if t is not None and m["temp"] is not None and abs(t - m["temp"]) > 2.0:
+            out.append(("warn", self.tr("⚠ dark {0:+.0f} °C, frames {1:+.0f} °C").format(m["temp"], t)))
+        return out
 
-    def _flat_set_no_dark_for_group(self, group_item):
-        if not hasattr(self, "flat_dark_override"):
-            self.flat_dark_override = {}
+    def _filters_match(self, a, b) -> bool:
+        """Ha = H-alpha = "Ha 7nm", O3 = OIII (Quick Stack's filter matching)."""
+        try:
+            from setiastro.saspro.quick_stack_worker import filter_key
+            ka, kb = filter_key(a), filter_key(b)
+            if ka and kb:
+                return ka == kb
+        except Exception:
+            pass
+        return self._sanitize_name(str(a or "")).strip().casefold() == \
+            self._sanitize_name(str(b or "")).strip().casefold()
 
-        key = self._flat_group_key_from_item(group_item)
-        if key:
-            self.flat_dark_override[key] = "__NO_DARK__"
+    def _flat_badge_warnings(self, m, filter_name, image_size, meta) -> list:
+        out = []
+        if m["size"] and image_size not in (None, "Unknown") and m["size"] != image_size:
+            out.append(("warn", self.tr("⚠ {0}, these frames are {1}").format(m["size"], image_size)))
+        if m["filter"] and filter_name and not self._filters_match(m["filter"], filter_name):
+            out.append(("warn", self.tr("⚠ it is the {0} flat").format(m["filter"])))
+        g = meta.get("gain")
+        if g is not None and m["gain"] is not None and abs(g - m["gain"]) > 1:
+            out.append(("warn", self.tr("⚠ gain {0:g}, frames {1:g}").format(m["gain"], g)))
+        return out
 
-        group_item.setText(2, self.tr("No Calibration"))
-        group_item.setData(2, Qt.ItemDataRole.UserRole, "__NO_DARK__")
-        group_item.setText(3, self.tr("Override"))
-        group_item.setForeground(3, QColor("#ff6b6b"))
-        self.update_status(f"⛔ No dark calibration set for '{group_item.text(0)}'")
+    def _flat_night_note(self, session, m):
+        """How the night of master flat `m` compares with the frames' session."""
+        try:
+            sd = self._session_token_to_date(session)
+            md = self._master_flat_night_date(m["path"], key=m["session"])
+        except Exception:
+            sd = md = None
+        if sd is not None and md is not None:
+            if sd == md:
+                return ("ok", self.tr("✓ same night"))
+            return ("info", self.tr("≈ nearest night: {0} ({1} d away)").format(
+                md.isoformat(), abs((md - sd).days)))
+        if m["session"] and session and m["session"] == session:
+            return ("ok", self.tr("✓ same session"))
+        return None
+
+    def _master_list_items(self, snap, kind, image_size) -> list:
+        """(text, path, enabled, tooltip) for each loaded master of `kind`; a
+        master of another size is listed but cannot be picked."""
+        items = []
+        for m in snap[kind]:
+            parts = [os.path.basename(m["path"])]
+            if kind == "dark":
+                if m["exposure"] is not None:
+                    parts.append(f"{m['exposure']:g} s")
+                if m["gain"] is not None:
+                    parts.append(self.tr("gain {0:g}").format(m["gain"]))
+                if m["temp"] is not None:
+                    parts.append(f"{m['temp']:+.0f} °C")
+            else:
+                if m["filter"]:
+                    parts.append(m["filter"])
+                if m["session"] and m["session"] != "Default":
+                    parts.append(m["session"])
+                if m["gain"] is not None:
+                    parts.append(self.tr("gain {0:g}").format(m["gain"]))
+            if m["size"]:
+                parts.append(m["size"].replace("x", " x "))
+            enabled = not (m["size"] and image_size not in (None, "Unknown") and m["size"] != image_size)
+            tip = m["path"] if enabled else self.tr("{0}: these frames are {1}").format(
+                m["size"], image_size) + "\n" + m["path"]
+            items.append(("  ·  ".join(parts), m["path"], enabled, tip))
+        return items
+
+    def _pick_label_width(self) -> int:
+        fm = self.fontMetrics()
+        return max(fm.horizontalAdvance(t) for t in (self.tr("Dark"), self.tr("Flat"))) + 6
+
+    def _set_pick_choices(self, row, snap, kind, image_size, auto_text, current):
+        row.set_choices(
+            auto_text=auto_text,
+            masters=self._master_list_items(snap, kind, image_size),
+            current=current,
+            none_text=self.tr("None"),
+            browse_text=self.tr("Add a master dark…") if kind == "dark" else self.tr("Add a master flat…"),
+            empty_text=self.tr("None loaded"),
+        )
+
+    def _refresh_master_picks(self, *_):
+        """Every Dark / Flat row and frame in the Flats and Lights tabs, after
+        the loaded masters or a pick changed."""
+        for fn in (self._fill_flat_dark_rows, self._refresh_light_master_rows):
+            try:
+                fn()
+            except Exception as e:
+                print(f"[Stacking] master rows: {type(e).__name__}: {e}")
+
+    def _on_master_row_picked(self, key, data):
+        """A Dark / Flat row's list was used. The trees are refreshed after,
+        never inside, the signal of a list they may delete."""
+        tab = key[0]
+        if data == _PICK_BROWSE:
+            kind = "dark" if tab == "flatdark" else key[1]
+            added = self._browse_masters_for_row(kind)
+            if not added:
+                QTimer.singleShot(0, self._refresh_master_picks)
+                return
+            data = added[0]
+        if tab == "flatdark":
+            gk = key[1]
+            if data == _PICK_NONE:
+                self.flat_dark_override[gk] = "__NO_DARK__"
+            elif data in (_PICK_AUTO, None):
+                self.flat_dark_override.pop(gk, None)
+            else:
+                self.flat_dark_override[gk] = data
+        else:
+            _tab, kind, filter_name, exposure_text, session = key
+            ck = self._light_choice_key(kind, filter_name, exposure_text, session)
+            if data in (_PICK_AUTO, None):
+                self.light_master_choice.pop(ck, None)
+            else:
+                self.light_master_choice[ck] = data
+        QTimer.singleShot(0, self._refresh_master_picks)
+
+    def _browse_masters_for_row(self, kind) -> list:
+        """Load master darks or flats from a file dialog, as Load Master Dark /
+        Flat does. Returns their paths, in order."""
+        skey = "stacking/last_master_dark_dir" if kind == "dark" else "stacking/last_master_flat_dir"
+        last_dir = (self.settings.value(skey, "", type=str)
+                    or self.settings.value("stacking/dir", "", type=str) or "")
+        title = self.tr("Choose Master Dark(s)") if kind == "dark" else self.tr("Choose Master Flat(s)")
+        files, _ = QFileDialog.getOpenFileNames(
+            self, title, last_dir, "Master Calibration (*.fits *.fit *.fts *.xisf);;All Files (*)")
+        if not files:
+            return []
+        self.settings.setValue(skey, os.path.dirname(files[0]))
+        tree = self.master_dark_tree if kind == "dark" else self.master_flat_tree
+        self.add_master_files(tree, kind.upper(), files)
+        self.save_master_paths_to_settings()
+        self._refresh_quick_stack_summary_later()
+        loaded = {_norm_path_key(v): v for v in (self.master_files or {}).values() if isinstance(v, str)}
+        return [loaded[_norm_path_key(f)] for f in files if _norm_path_key(f) in loaded]
+
+    def _remove_selected_masters(self, tree):
+        """Remove the selected masters (a file, or every file under a selected
+        group) from the list and from matching, and forget any group's or
+        frame's pick of them."""
+        def _path_of(child):
+            p = child.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(p, str) and p:
+                return p
+            name = child.text(0)
+            for v in (self.master_files or {}).values():
+                if isinstance(v, str) and os.path.basename(v) == name:
+                    return v
+            return None
+
+        selected = list(tree.selectedItems())
+        if not selected:
+            return
+        dead = set()
+        for it in selected:
+            kids = [it] if it.parent() is not None else [it.child(j) for j in range(it.childCount())]
+            for ch in kids:
+                p = _path_of(ch)
+                if p:
+                    dead.add(_norm_path_key(p))
+        for k, v in list((self.master_files or {}).items()):
+            if isinstance(v, str) and _norm_path_key(v) in dead:
+                del self.master_files[k]
+        # Children first: a selected group deletes its children with it.
+        for it in sorted(selected, key=lambda i: i.parent() is None):
+            try:
+                parent = it.parent()
+                if parent is None:
+                    idx = tree.indexOfTopLevelItem(it)
+                    if idx >= 0:
+                        tree.takeTopLevelItem(idx)
+                else:
+                    parent.removeChild(it)
+                    if parent.childCount() == 0:
+                        idx = tree.indexOfTopLevelItem(parent)
+                        if idx >= 0:
+                            tree.takeTopLevelItem(idx)
+            except RuntimeError:
+                pass        # already gone with its group
+        for d in (self.light_master_choice, self.light_frame_master):
+            for k, v in list(d.items()):
+                if isinstance(v, str) and v != _PICK_NONE and _norm_path_key(v) in dead:
+                    del d[k]
+        for k, v in list(self.flat_dark_override.items()):
+            if isinstance(v, str) and v != "__NO_DARK__" and _norm_path_key(v) in dead:
+                del self.flat_dark_override[k]
+        self.save_master_paths_to_settings()
+        self._refresh_master_picks()
+        self._refresh_quick_stack_summary_later()
+
+    # -- frames rows -----------------------------------------------------------
+    def _apply_frames_shown(self, group, frames_item, shown: bool):
+        """List or hide a group's frames behind its "N frames" row."""
+        leaves = [group.child(k) for k in range(group.childCount()) if not is_control_item(group.child(k))]
+        for leaf in leaves:
+            if not shown and leaf.isSelected():
+                leaf.setSelected(False)
+            leaf.setHidden(not shown)
+        group.setData(0, _ROLE_FRAMES_SHOWN, bool(shown))
+        frames_item.setText(0, ("▾ " if shown else "▸ ") + self.tr("{0} frames").format(len(leaves)))
+
+    def _on_frames_row_clicked(self, item, _column=0):
+        if item is None or item.data(0, _ROLE_CONTROL) != "frames":
+            return
+        group = item.parent()
+        if group is None:
+            return
+        shown = not bool(group.data(0, _ROLE_FRAMES_SHOWN))
+        if item.treeWidget() is getattr(self, "flat_tree", None):
+            self._flat_frames_shown[group.data(0, Qt.ItemDataRole.UserRole)] = shown
+        elif group.parent() is not None:
+            self._light_frames_shown[(group.parent().text(0), group.text(0))] = shown
+        self._apply_frames_shown(group, item, shown)
+
+    # -- Flats tab: each group's master dark -----------------------------------
+    def _flat_group_auto_dark(self, group_key: str, snap):
+        g = (self._flat_groups_info or {}).get(group_key)
+        if not g:
+            return None
+        meta = self._light_frame_meta(g["rep"]) if g.get("rep") else {}
+        return self._auto_pick_dark(snap, g["size"], g["e_min"], meta.get("gain"),
+                                    meta.get("offset"), meta.get("temp"))
+
+    def _flat_group_dark_pick(self, group_key: str, snap) -> tuple:
+        """(path or None, state) of the master dark a Flats tab group uses.
+        state: 'hand', 'hand-none', 'auto', or 'auto-off' (Auto-Select unchecked)."""
+        ud = (self.flat_dark_override or {}).get(group_key)
+        if ud == "__NO_DARK__":
+            return None, "hand-none"
+        if isinstance(ud, str) and ud and _norm_path_key(ud) in snap["by_path"]:
+            return snap["by_path"][_norm_path_key(ud)]["path"], "hand"
+        if not self.auto_select_dark_checkbox.isChecked():
+            return None, "auto-off"
+        return self._flat_group_auto_dark(group_key, snap), "auto"
+
+    def _fill_flat_dark_rows(self, *_):
+        """Each Flats tab group's Dark row: its list, its pick and the badge."""
+        tree = getattr(self, "flat_tree", None)
+        if tree is None:
+            return
+        snap = self._master_snapshot()
+        tol = float(self.flat_exposure_tolerance_spinbox.value())
+        auto_on = self.auto_select_dark_checkbox.isChecked()
+        for i in range(tree.topLevelItemCount()):
+            top = tree.topLevelItem(i)
+            gk = top.data(0, Qt.ItemDataRole.UserRole)
+            g = (self._flat_groups_info or {}).get(gk)
+            if not g:
+                continue
+            for k in range(top.childCount()):
+                ch = top.child(k)
+                if ch.data(0, _ROLE_CONTROL) != "pick":
+                    continue
+                row = tree.itemWidget(ch, 0)
+                if not isinstance(row, MasterPickRow):
+                    continue
+                path, state = self._flat_group_dark_pick(gk, snap)
+                auto = self._flat_group_auto_dark(gk, snap) if auto_on else None
+                if not auto_on:
+                    auto_text = self.tr("Auto: off (Auto-Select is unchecked)")
+                elif auto:
+                    auto_text = self.tr("Auto: {0}").format(os.path.basename(auto))
+                else:
+                    auto_text = self.tr("Auto: none fits")
+                current =(_PICK_NONE if state == "hand-none" else path if state == "hand" else _PICK_AUTO)
+                self._set_pick_choices(row, snap, "dark", g["size"], auto_text, current)
+
+                parts = []
+                if state == "hand":
+                    parts.append(("info", self.tr("✎ your choice")))
+                elif state == "hand-none":
+                    parts.append(("info", self.tr("✎ none")))
+                elif state == "auto-off":
+                    if snap["dark"]:
+                        parts.append(("info", self.tr("Auto-Select is off: pick a dark, or leave none")))
+                elif path:
+                    parts.append(("ok", self.tr("✓ auto")))
+                elif snap["dark"]:
+                    parts.append(self._no_dark_reason(snap, g["size"]))
+                if path:
+                    meta = self._light_frame_meta(g["rep"]) if g.get("rep") else {}
+                    parts += self._dark_badge_warnings(snap["by_path"][_norm_path_key(path)], g["size"],
+                                                       g["e_min"], meta, tol)
+                row.set_badge(parts, path or "")
+
+    # -- Lights tab: each group's master dark and flat(s) --------------------------
+    def _light_choice_key(self, kind, filter_name, exposure_text, session):
+        """A Lights group's pick: darks per group, flats per session (night)."""
+        return (kind, filter_name, exposure_text, None if kind == "dark" else (session or "Default"))
+
+    def _light_auto_master(self, kind, filter_name, exposure_text, session, light_path, meta, snap):
+        if kind == "dark":
+            exposure = self._exposure_from_label(exposure_text) or 0.0
+            return self._auto_pick_dark(snap, meta["size"], exposure, meta["gain"], meta["offset"],
+                                        meta["temp"])
+        if not snap["flat"]:
+            return None
+        return self._auto_pick_master_flat(filter_name, meta["size"], session or "Default",
+                                           light_path=light_path, light_gain=meta["gain"],
+                                           light_offset=meta["offset"])
+
+    def _light_master_pick(self, kind, filter_name, exposure_text, session, light_path, meta, snap) -> tuple:
+        """(path or None, state) of the master `kind` ('dark' / 'flat') a light
+        frame is calibrated with. state: 'frame' / 'frame-none' (picked for
+        this frame), 'hand' / 'hand-none' (its group's row), or 'auto'."""
+        v = self.light_frame_master.get((kind, _norm_path_key(light_path)))
+        if v == _PICK_NONE:
+            return None, "frame-none"
+        if v and _norm_path_key(v) in snap["by_path"]:
+            return snap["by_path"][_norm_path_key(v)]["path"], "frame"
+        v = self.light_master_choice.get(self._light_choice_key(kind, filter_name, exposure_text, session))
+        if v == _PICK_NONE:
+            return None, "hand-none"
+        if v and _norm_path_key(v) in snap["by_path"]:
+            return snap["by_path"][_norm_path_key(v)]["path"], "hand"
+        return self._light_auto_master(kind, filter_name, exposure_text, session, light_path, meta, snap), "auto"
+
+    def _group_leaves(self, group) -> list:
+        """A group's frame rows (not its Dark / Flat / frames rows)."""
+        return [group.child(k) for k in range(group.childCount())
+                if not is_control_item(group.child(k))]
+
+    @staticmethod
+    def _leaf_session(leaf) -> str:
+        return leaf.data(0, Qt.ItemDataRole.UserRole + 1) or "Default"
+
+    def _ensure_light_rows(self, f_item, e_item) -> None:
+        """Give a Lights group its Dark row, a Flat row per session and an
+        "N frames" row (again if its sessions changed)."""
+        leaves = self._group_leaves(e_item)
+        sessions = list(dict.fromkeys(self._leaf_session(leaf) for leaf in leaves)) or ["Default"]
+        layout = "\x1f".join(sessions)
+        has_rows = any(is_control_item(e_item.child(k)) for k in range(e_item.childCount()))
+        if has_rows and e_item.data(0, _ROLE_ROWS) == layout:
+            return
+        first = e_item.data(0, _ROLE_ROWS) is None
+        for k in reversed(range(e_item.childCount())):
+            if is_control_item(e_item.child(k)):
+                e_item.takeChild(k)
+        tree = self.light_tree
+        filter_name, exposure_text = f_item.text(0), e_item.text(0)
+        counts = {}
+        for leaf in leaves:
+            s = self._leaf_session(leaf)
+            counts[s] = counts.get(s, 0) + 1
+        multi = len(sessions) > 1
+        tags = {s: self.tr("{0} ({1})").format(s, counts.get(s, 0)) for s in sessions}
+        every = self.tr("every session")
+        tag_w = 0
+        if multi:
+            fm = self.fontMetrics()
+            tag_w = max(fm.horizontalAdvance(t) for t in list(tags.values()) + [every]) + 8
+        lw = self._pick_label_width()
+        dark_tip = self.tr(
+            "Auto picks by size, then gain, exposure and temperature. Pick another master, or None, "
+            "for this group only. Right-click frames to give them their own.")
+        flat_tip = self.tr(
+            "Auto picks by filter and size, then the flat from the same night (else the nearest night) "
+            "with matching gain. Pick another master, or None, for this group and session only.")
+        it = insert_control_item(e_item, 0, "pick")
+        row = MasterPickRow(("light", "dark", filter_name, exposure_text, None), self.tr("Dark"),
+                            label_width=lw, tag=every, tag_width=tag_w, tooltip=dark_tip)
+        row.picked.connect(self._on_master_row_picked)
+        tree.setItemWidget(it, 0, row)
+        for i, s in enumerate(sessions, start=1):
+            it = insert_control_item(e_item, i, "pick")
+            row = MasterPickRow(("light", "flat", filter_name, exposure_text, s), self.tr("Flat"),
+                                label_width=lw, tag=tags[s], tag_width=tag_w, tooltip=flat_tip)
+            row.picked.connect(self._on_master_row_picked)
+            tree.setItemWidget(it, 0, row)
+        insert_control_item(e_item, len(sessions) + 1, "frames")
+        e_item.setData(0, _ROLE_ROWS, layout)
+        if first:
+            f = e_item.font(0)
+            f.setBold(True)
+            e_item.setFont(0, f)
+            f_item.setExpanded(True)
+            e_item.setExpanded(True)
+
+    def _show_leaf_masters(self, leaf, dark, flat):
+        """A frame's Master Dark / Master Flat columns; ✎ marks its own pick."""
+        for col, (path, state) in ((2, dark), (3, flat)):
+            text = os.path.basename(path) if path else self.tr("None")
+            if state in ("frame", "frame-none"):
+                text = "✎ " + text
+            leaf.setText(col, text)
+            leaf.setToolTip(col, path or "")
+            leaf.setData(col, Qt.ItemDataRole.UserRole, None)
+
+    def _fill_light_row(self, row, kind, filter_name, exposure_text, session, mine, snap):
+        """One Lights Dark or Flat row. mine: (leaf, session, meta, dark, flat) of its frames."""
+        meta = mine[0][2] if mine else {"size": None, "gain": None, "offset": None, "temp": None}
+        image_size = meta["size"]
+        autos = []
+        for leaf, s, m, d, f in mine:
+            pick = d if kind == "dark" else f
+            if pick[1] == "auto":
+                autos.append(pick[0])
+            else:
+                autos.append(self._light_auto_master(kind, filter_name, exposure_text, s,
+                                                     leaf.data(0, Qt.ItemDataRole.UserRole), m, snap))
+        distinct = list(dict.fromkeys(_norm_path_key(a) if a else None for a in autos))
+        found = [a for a in distinct if a]
+        if not found:
+            auto_text = self.tr("Auto: none fits")
+        elif len(distinct) == 1:
+            auto_text = self.tr("Auto: {0}").format(os.path.basename(snap["by_path"][found[0]]["path"]))
+        else:
+            auto_text = self.tr("Auto: {0} masters, picked per frame").format(len(found))
+
+        choice = self.light_master_choice.get(self._light_choice_key(kind, filter_name, exposure_text, session))
+        if choice == _PICK_NONE:
+            current = _PICK_NONE
+        elif choice and _norm_path_key(choice) in snap["by_path"]:
+            current = snap["by_path"][_norm_path_key(choice)]["path"]
+        else:
+            current = _PICK_AUTO
+        self._set_pick_choices(row, snap, kind, image_size, auto_text, current)
+
+        parts = []
+        used = None
+        if current == _PICK_NONE:
+            parts.append(("info", self.tr("✎ none")))
+        elif current != _PICK_AUTO:
+            parts.append(("info", self.tr("✎ your choice")))
+            used = snap["by_path"][_norm_path_key(current)]
+        elif snap[kind]:
+            if not found:
+                if kind == "dark":
+                    parts.append(self._no_dark_reason(snap, image_size))
+                else:
+                    parts.append(("warn", self.tr("⚠ no {0} flat at {1}").format(filter_name, image_size)))
+            elif len(distinct) > 1:
+                parts.append(("info", self.tr("≈ {0} masters, picked per frame").format(len(found))))
+            else:
+                used = snap["by_path"][found[0]]
+                note = self._flat_night_note(session, used) if kind == "flat" else None
+                parts.append(note or ("ok", self.tr("✓ auto")))
+        if used is not None:
+            if kind == "dark":
+                exposure = self._exposure_from_label(exposure_text) or 0.0
+                parts += self._dark_badge_warnings(used, image_size, exposure, meta)
+            else:
+                parts += self._flat_badge_warnings(used, filter_name, image_size, meta)
+        own = sum(1 for _l, _s, _m, d, f in mine if (d if kind == "dark" else f)[1].startswith("frame"))
+        if own:
+            parts.append(("info", self.tr("✎ {0} frame(s) use their own").format(own)))
+        row.set_badge(parts, used["path"] if used is not None else "")
+
+    def _fill_light_group(self, f_item, e_item, snap, frames_default: bool):
+        tree = self.light_tree
+        filter_name, exposure_text = f_item.text(0), e_item.text(0)
+        res = []
+        for leaf in self._group_leaves(e_item):
+            path = leaf.data(0, Qt.ItemDataRole.UserRole)
+            if not path:
+                continue
+            sess = self._leaf_session(leaf)
+            meta = self._light_frame_meta(path)
+            d = self._light_master_pick("dark", filter_name, exposure_text, sess, path, meta, snap)
+            f = self._light_master_pick("flat", filter_name, exposure_text, sess, path, meta, snap)
+            self._show_leaf_masters(leaf, d, f)
+            res.append((leaf, sess, meta, d, f))
+        frames_item = None
+        for k in range(e_item.childCount()):
+            ch = e_item.child(k)
+            role = ch.data(0, _ROLE_CONTROL)
+            if role == "frames":
+                frames_item = ch
+            elif role == "pick":
+                row = tree.itemWidget(ch, 0)
+                if isinstance(row, MasterPickRow):
+                    _tab, kind, _f, _e, sess = row.key
+                    mine = [r for r in res if kind == "dark" or r[1] == sess]
+                    self._fill_light_row(row, kind, filter_name, exposure_text, sess, mine, snap)
+        if frames_item is not None:
+            shown = self._light_frames_shown.get((filter_name, exposure_text), frames_default)
+            self._apply_frames_shown(e_item, frames_item, shown)
+
+    def _refresh_light_master_rows(self):
+        """Show, under each Lights group, the master dark and flat(s) it will
+        use, and on each frame the ones it gets."""
+        tree = getattr(self, "light_tree", None)
+        if tree is None:
+            return
+        snap = self._master_snapshot()
+        groups = []
+        for i in range(tree.topLevelItemCount()):
+            f_item = tree.topLevelItem(i)
+            for j in range(f_item.childCount()):
+                e_item = f_item.child(j)
+                if not is_control_item(e_item):
+                    groups.append((f_item, e_item))
+        for f_item, e_item in groups:
+            self._ensure_light_rows(f_item, e_item)
+            self._fill_light_group(f_item, e_item, snap, frames_default=(len(groups) == 1))
+        tree.viewport().update()
+
+    def _override_selected_light_master(self, kind):
+        """Pick a master for the Lights selection: a frame gets its own; a
+        group (each group, for a filter) gets it in its Dark / Flat row(s)."""
+        sel = [it for it in self.light_tree.selectedItems() if not is_control_item(it)]
+        if not sel:
+            self.update_status("Select frames or groups in the Lights tab first.")     # the log: English
+            return
+        added = self._browse_masters_for_row(kind)
+        if not added:
+            self._refresh_master_picks()
+            return
+        path = added[0]
+        for it in sel:
+            if it.parent() is None:
+                groups = [(it, it.child(j)) for j in range(it.childCount())
+                          if not is_control_item(it.child(j))]
+            elif it.parent().parent() is None:
+                groups = [(it.parent(), it)]
+            else:
+                p = it.data(0, Qt.ItemDataRole.UserRole)
+                if p:
+                    self.light_frame_master[(kind, _norm_path_key(p))] = path
+                continue
+            for f_item, e_item in groups:
+                sessions = {self._leaf_session(leaf) for leaf in self._group_leaves(e_item)} or {"Default"}
+                for s in (sessions if kind == "flat" else {None}):
+                    self.light_master_choice[self._light_choice_key(kind, f_item.text(0), e_item.text(0), s)] = path
+        self._refresh_master_picks()
+
+    def _clear_selected_frame_masters(self):
+        """Selected frames (or every frame of a selected group) go back to their group's picks."""
+        paths = []
+        stack = [it for it in self.light_tree.selectedItems() if not is_control_item(it)]
+        while stack:
+            it = stack.pop()
+            p = it.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(p, str) and p and it.childCount() == 0:
+                paths.append(p)
+            stack.extend(it.child(k) for k in range(it.childCount()) if not is_control_item(it.child(k)))
+        for p in paths:
+            for kind in ("dark", "flat"):
+                self.light_frame_master.pop((kind, _norm_path_key(p)), None)
+        self._refresh_light_master_rows()
 
     def _refresh_light_tree_summaries(self):
         """
@@ -13612,11 +14444,11 @@ class StackingSuiteDialog(QDialog):
             # children are exposure-size groups like "20s (1080x1920)"
             for j in range(filt_item.childCount()):
                 exp_item = filt_item.child(j)
-                if exp_item is None:
+                if exp_item is None or is_control_item(exp_item):
                     continue
 
                 exp_seconds = self._exposure_from_label(exp_item.text(0)) or 0.0
-                n_files     = exp_item.childCount()
+                n_files     = len(self._group_leaves(exp_item))   # not its Dark / Flat rows
                 n_secs      = exp_seconds * n_files
 
                 # set exposure-row metadata
@@ -13649,6 +14481,9 @@ class StackingSuiteDialog(QDialog):
         self.light_tree.setColumnCount(5)  # Added columns for Master Dark and Flat
         self.light_tree.setHeaderLabels([self.tr("Filter & Exposure"), self.tr("Metadata"), self.tr("Master Dark"), self.tr("Master Flat"), self.tr("Corrections")])
         self.light_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        # Each group lists its Dark / Flat rows, then its frames behind an "N frames" row.
+        self.light_tree.setColumnWidth(0, 320)
+        self.light_tree.itemClicked.connect(self._on_frames_row_clicked)
 
         layout.addWidget(QLabel(self.tr("Light Frames")))
         layout.addWidget(self.light_tree)
@@ -13728,7 +14563,9 @@ class StackingSuiteDialog(QDialog):
 
         self.light_auto_session_cb.toggled.connect(_sync_light_session_keyword_enabled)
         _sync_light_session_keyword_enabled()
-        session_hint_label = QLabel(self.tr("Right Click to Assign Session Keys if desired"))
+        session_hint_label = QLabel(self.tr(
+            "Each group shows the master dark and flat it will use: change them there. "
+            "Right-click frames to give them their own, or to assign session keys."))
         session_hint_label.setStyleSheet("color: #888; font-style: italic; font-size: 11px; margin-left: 4px;")
         layout.addWidget(session_hint_label)
 
@@ -14239,7 +15076,7 @@ class StackingSuiteDialog(QDialog):
         # --- helper: identify a "leaf" row in your tree (file row) ---
         def _is_leaf(it):
             # leaf == no children AND looks like a file row (has a filename)
-            if not it or it.childCount() != 0:
+            if not it or it.childCount() != 0 or is_control_item(it):
                 return False
             name = (it.text(0) or "").strip()
             # file rows in your UI are actual filenames
@@ -16198,25 +17035,26 @@ class StackingSuiteDialog(QDialog):
     def save_master_paths_to_settings(self):
         """Save current master dark and flat paths to QSettings using their actual trees."""
 
-        # Master Darks
-        dark_paths = []
-        for i in range(self.master_dark_tree.topLevelItemCount()):
-            group = self.master_dark_tree.topLevelItem(i)
-            for j in range(group.childCount()):
-                fname = group.child(j).text(0)
-                for path in self.master_files.values():
-                    if os.path.basename(path) == fname:
-                        dark_paths.append(path)
+        def _paths_in(tree):
+            out = []
+            for i in range(tree.topLevelItemCount()):
+                group = tree.topLevelItem(i)
+                for j in range(group.childCount()):
+                    child = group.child(j)
+                    p = child.data(0, Qt.ItemDataRole.UserRole)
+                    if isinstance(p, str) and p:
+                        found = [p]
+                    else:           # a row made before rows held their path
+                        fname = child.text(0)
+                        found = [v for v in self.master_files.values()
+                                 if isinstance(v, str) and os.path.basename(v) == fname]
+                    for p in found:
+                        if _norm_path_key(p) not in {_norm_path_key(q) for q in out}:
+                            out.append(p)
+            return out
 
-        # Master Flats
-        flat_paths = []
-        for i in range(self.master_flat_tree.topLevelItemCount()):
-            group = self.master_flat_tree.topLevelItem(i)
-            for j in range(group.childCount()):
-                fname = group.child(j).text(0)
-                for path in self.master_files.values():
-                    if os.path.basename(path) == fname:
-                        flat_paths.append(path)
+        dark_paths = _paths_in(self.master_dark_tree)
+        flat_paths = _paths_in(self.master_flat_tree)
 
         self.settings.setValue("stacking/master_darks", dark_paths)
         self.settings.setValue("stacking/master_flats", flat_paths)
@@ -16639,101 +17477,148 @@ class StackingSuiteDialog(QDialog):
 
 
     def rebuild_flat_tree(self):
-        """Regroup flat frames in the flat_tree based on the exposure tolerance."""
+        """Regroup flat frames in the flat_tree: one group per master flat that
+        Turn Those Flats Into Master Flats will build (see _master_flat_groups)."""
         self.flat_tree.clear()
+        self._flat_groups_info = {}
         if not self.flat_files:
             return
 
-        import numpy as np
-        import re
+        groups, bad_keys = self._master_flat_groups()
+        for k in bad_keys:
+            self.update_status(f"⚠️ rebuild_flat_tree: could not parse key '{k}'")
+        groups = [g for g in groups if g["files"]]
 
-        tol = float(self.flat_exposure_tolerance_spinbox.value())
+        # Build tree from the groups: each group, its Dark row (the master
+        # dark create_master_flat will use), an "N frames" row, its frames.
+        lw = self._pick_label_width()
+        dark_tip = self.tr(
+            "Auto picks by size, then gain, exposure and temperature. Pick another master, or None, "
+            "for this group only.")
+        for g in groups:
+            filter_name, image_size, session = g["filter"], g["size"], g["session"]
+            files = g["files"]
+            e_min, e_max = g["e_min"], g["e_max"]
 
-        # Flatten from our canonical flat_files mapping:
-        #   (flat_key, session_tag) -> [paths]
-        # where flat_key looks like "FilterName - 1.00s (6264x4180)"
-        all_flats = []
-        for (filter_exp_size, session_tag), files in self.flat_files.items():
-            for f in files:
-                all_flats.append((filter_exp_size, session_tag, f))
-
-        grouped = {}  # (filter_name, min_exp, max_exp, image_size) -> [(path, exposure, session)]
-
-        for (filter_exp_size, session_tag, file_path) in all_flats:
-            try:
-                # Same parsing logic we use in create_master_flat()
-                filter_name, exposure_size = filter_exp_size.split(" - ")
-                exposure_str, image_size = exposure_size.split(" (")
-                image_size = image_size.rstrip(")")
-
-                m = re.match(r"([\d.]+)", exposure_str)
-                exposure = float(m.group(1)) if m else 0.0
-            except Exception as e:
-                self.update_status(f"⚠️ rebuild_flat_tree: could not parse key '{filter_exp_size}': {e}")
-                continue
-
-            # find compatible bucket (by filter+size+exp within tol)
-            found = None
-            for (filt, mn, mx, sz) in grouped.keys():
-                if filt == filter_name and sz == image_size and (mn - tol) <= exposure <= (mx + tol):
-                    found = (filt, mn, mx, sz)
-                    break
-
-            if found:
-                grouped[found].append((file_path, exposure, session_tag))
+            if e_max < 0:
+                exposure_str = "Unknown"
+            elif abs(e_max - e_min) > 0.001:
+                exposure_str = f"{e_min:.2f}s–{e_max:.2f}s"
             else:
-                key = (filter_name, exposure, exposure, image_size)
-                grouped.setdefault(key, []).append((file_path, exposure, session_tag))
+                exposure_str = f"{e_min:.2f}s"
 
-        # Build tree from grouped buckets
-        for (filter_name, min_exp, max_exp, image_size), files in grouped.items():
-            e_min = min(p[1] for p in files)
-            e_max = max(p[1] for p in files)
-
-            exposure_str = f"{e_min:.2f}s–{e_max:.2f}s" if abs(e_max - e_min) > 0.001 else f"{e_min:.2f}s"
+            label = f"{filter_name} - {exposure_str} ({image_size})"
+            if session not in ("", "Default"):
+                # Each night is its own master flat; say which night this is.
+                label += f"  ·  {session}"
 
             top_item = QTreeWidgetItem()
-            top_item.setText(0, f"{filter_name} - {exposure_str} ({image_size})")
+            top_item.setText(0, label)
             top_item.setText(1, self.tr("{0} files").format(len(files)))
+            f = top_item.font(0)
+            f.setBold(True)
+            top_item.setFont(0, f)
 
-            group_key = f"{filter_name}|{image_size}|{e_min:.3f}|{(e_min+tol):.3f}"
+            group_key = g["key"]
             top_item.setData(0, Qt.ItemDataRole.UserRole, group_key)
-
-            # column 2 shows what dark will be used
-            ud = self.flat_dark_override.get(group_key, None)
-            if ud is None:
-                if self.auto_select_dark_checkbox.isChecked():
-                    auto_dark = self._auto_pick_master_dark(image_size, e_min)
-                    col2_txt = os.path.basename(auto_dark) if auto_dark else "None"
-                else:
-                    col2_txt = "None"
-            elif ud == "__NO_DARK__":
-                col2_txt = "No Calibration"
-            else:
-                col2_txt = os.path.basename(ud)
-            top_item.setText(2, col2_txt)
-            top_item.setData(2, Qt.ItemDataRole.UserRole, ud)
+            self._flat_groups_info[group_key] = {
+                "filter": filter_name, "size": image_size, "session": session,
+                "e_min": e_min, "e_max": e_max, "rep": files[0],
+            }
 
             self.flat_tree.addTopLevelItem(top_item)
+            it = insert_control_item(top_item, 0, "pick")
+            row = MasterPickRow(("flatdark", group_key), self.tr("Dark"), label_width=lw, tooltip=dark_tip)
+            row.picked.connect(self._on_master_row_picked)
+            self.flat_tree.setItemWidget(it, 0, row)
+            frames_row = insert_control_item(top_item, 1, "frames")
 
             # leaves: we don’t touch file paths or sessions
-            for file_path, _, session_tag in files:
+            for file_path in files:
                 leaf_item = QTreeWidgetItem([
                     os.path.basename(file_path),
-                    f"Size: {image_size} | Session: {session_tag}"
+                    f"Size: {image_size} | Session: {session}"
                 ])
                 leaf_item.setData(0, Qt.ItemDataRole.UserRole, file_path)
                 top_item.addChild(leaf_item)
-            # col 3: override indicator
-            if ud is None:
-                top_item.setText(3, "")
-            elif ud == "__NO_DARK__":
-                top_item.setText(3, self.tr("Override"))
-                top_item.setForeground(3, QColor("#ff6b6b"))
-            else:
-                top_item.setText(3, self.tr("Override"))
-                top_item.setForeground(3, QColor("#FFD700"))
+            top_item.setExpanded(True)
+            self._apply_frames_shown(top_item, frames_row,
+                                     self._flat_frames_shown.get(group_key, len(groups) == 1))
 
+        self._fill_flat_dark_rows()
+
+    def _master_flat_groups(self) -> tuple[list[dict], list[str]]:
+        """
+        The master flats to build, in build order: one per filter, image size,
+        session (night) and exposure within the Flats tab's tolerance.
+        Returns (groups, keys that could not be parsed).
+
+        The Flats tab and create_master_flat both group with this, so the tab
+        shows exactly the masters the button makes. They used to group on
+        their own and disagree: the tab put every night of a filter in one
+        group, while the build made one master per night (2026-11-24, five
+        nights of SII/OIII/Ha shown as three groups, built as eight masters).
+        Frank's call: a master per night, and the tab shows the nights.
+
+        Each group: filter, size, session, exposure (the first exposure seen,
+        which names the master), e_min/e_max, files (deduplicated, order
+        kept) and key (the tab group's key; its Dark pick and frame-list state
+        are stored under it).
+        """
+        tol = float(self.flat_exposure_tolerance_spinbox.value())
+        groups: list[dict] = []
+        bad: list[str] = []
+        for key, file_list in (self.flat_files or {}).items():
+            # Support both legacy and new key formats
+            if isinstance(key, tuple) and len(key) >= 2:
+                filter_exposure = str(key[0])
+                session = str(key[1] or "Default").strip() or "Default"
+            else:
+                filter_exposure = str(key)
+                session = "Default"
+            try:
+                # rsplit so a filter name containing " - " (rare, but possible
+                # from the manual-entry prompt) doesn't break parsing — we want
+                # the rightmost " - " which separates filter from exposure/size.
+                filter_name, exposure_size = filter_exposure.rsplit(" - ", 1)
+                exposure_time_str, image_size = exposure_size.split(" (")
+                image_size = image_size.rstrip(")")
+            except ValueError:
+                bad.append(filter_exposure)
+                continue
+            m = re.match(r"([\d.]+)s?", exposure_time_str)
+            try:
+                exposure = float(m.group(1)) if m else -10.0
+            except ValueError:
+                exposure = -10.0
+
+            g = next((g for g in groups
+                      if abs(g["exposure"] - exposure) <= tol
+                      and g["size"] == image_size
+                      and g["filter"] == filter_name
+                      and g["session"] == session), None)
+            if g is None:
+                g = {"filter": filter_name, "size": image_size, "session": session,
+                     "exposure": exposure, "e_min": None, "e_max": None, "files": []}
+                groups.append(g)
+            if file_list:
+                g["e_min"] = exposure if g["e_min"] is None else min(g["e_min"], exposure)
+                g["e_max"] = exposure if g["e_max"] is None else max(g["e_max"], exposure)
+                g["files"].extend(file_list)
+
+        for g in groups:
+            # Dedupe paths within each group (prevents accidental double-counts)
+            seen, out = set(), []
+            for p in g["files"]:
+                pn = os.path.normcase(os.path.abspath(p))
+                if pn not in seen:
+                    seen.add(pn)
+                    out.append(p)
+            g["files"] = out
+            if g["e_min"] is None:
+                g["e_min"] = g["e_max"] = g["exposure"]
+            g["key"] = f"{g['filter']}|{g['size']}|{g['session']}|{g['exposure']!r}|{tol!r}"
+        return groups, bad
 
     def exposures_within_tolerance(self, exp1, exp2, tolerance):
         try:
@@ -17703,6 +18588,7 @@ class StackingSuiteDialog(QDialog):
             self.settings.setValue("stacking/last_master_flat_dir", os.path.dirname(files[0]))
             self.add_master_files(self.master_flat_tree, "FLAT", files)
             self.save_master_paths_to_settings()
+            self._refresh_master_picks()
             self._refresh_quick_stack_summary_later()
 
 
@@ -18980,6 +19866,32 @@ class StackingSuiteDialog(QDialog):
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)
                 exposure_item.addChild(leaf)
 
+                # What masters are matched on, from the header just read, the
+                # way _light_frame_meta / _get_light_temp would read it.
+                try:
+                    def _first_float(keys):
+                        for _k in keys:
+                            _v = self._parse_float(header.get(_k, None))
+                            if _v is not None:
+                                return _v
+                        return None
+                    l_ccd, l_set = _first_float(self._CCD_TEMP_KEYS), _first_float(self._SET_TEMP_KEYS)
+                    l_temp = self._temp_for_matching(l_ccd, l_set)
+                    if l_temp is None:
+                        l_temp = self._temp_from_filename(path)
+                    if getattr(self, "_light_temp_cache", None) is None:
+                        self._light_temp_cache = {}
+                    self._light_temp_cache[os.path.normpath(path)] = (l_ccd, l_set, l_temp)
+                    l_off = _get_key_float(header, "OFFSET")
+                    self._light_meta_cache[_norm_path_key(path)] = {
+                        "size": image_size,
+                        "gain": _get_key_float(header, "GAIN"),
+                        "offset": l_off if l_off is not None else _get_key_float(header, "BLKLEVEL"),
+                        "temp": l_temp,
+                    }
+                except Exception:
+                    pass
+
             self.update_status(f"✅ Added {os.path.basename(path)} as {expected_type_u}")
             QApplication.processEvents()
 
@@ -19078,8 +19990,14 @@ class StackingSuiteDialog(QDialog):
                 else:
                     item = items[0]
 
-                # Add the master file as a child node with metadata.
-                item.addChild(QTreeWidgetItem([os.path.basename(file_path), metadata]))
+                # Add the master file as a child node with metadata (once:
+                # loading a master again must not list it twice).
+                have = {_norm_path_key(item.child(j).data(0, Qt.ItemDataRole.UserRole))
+                        for j in range(item.childCount())}
+                if _norm_path_key(file_path) not in have:
+                    child = QTreeWidgetItem([os.path.basename(file_path), metadata])
+                    child.setData(0, Qt.ItemDataRole.UserRole, file_path)
+                    item.addChild(child)
 
 
                 self.update_status(f"✅ Added Master {file_type} -> {file_path} under {key} with metadata: {metadata}")
@@ -19121,11 +20039,22 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 return None
 
+        # Each dark's header, read once: grouping needs temperature, gain and
+        # offset, and the temperature stats for the master header reuse it.
+        dark_headers: dict = {}
+
+        def _dark_header(path: str):
+            if path not in dark_headers:
+                try:
+                    dark_headers[path] = fits.getheader(path, memmap=True)
+                except Exception:
+                    dark_headers[path] = None
+            return dark_headers[path]
+
         def _read_temp_quick(path: str) -> tuple[float | None, float | None, float | None]:
-            """Fast temp read (CCD, SET, chosen). Uses fits.getheader(memmap=True)."""
-            try:
-                hdr = fits.getheader(path, memmap=True)
-            except Exception:
+            """Fast temp read (CCD, SET, chosen) from the cached header."""
+            hdr = _dark_header(path)
+            if hdr is None:
                 return None, None, None
             ccd = _get_key_float(hdr, "CCD-TEMP")
             st  = _get_key_float(hdr, "SET-TEMP")
@@ -19142,10 +20071,9 @@ class StackingSuiteDialog(QDialog):
         dark_files_by_group: dict[tuple[float, str, str, float | None, float | None, float | None], list[str]] = {}
 
         def _read_go_quick(path: str) -> tuple[float | None, float | None]:
-            """Read GAIN and OFFSET/BLKLEVEL from header with minimal I/O."""
-            try:
-                hdr = fits.getheader(path, memmap=True)
-            except Exception:
+            """Read GAIN and OFFSET/BLKLEVEL from the cached header."""
+            hdr = _dark_header(path)
+            if hdr is None:
                 return None, None
             gain = _get_key_float(hdr, "GAIN")
             offset = _get_key_float(hdr, "OFFSET")
@@ -19246,12 +20174,17 @@ class StackingSuiteDialog(QDialog):
             if len(file_list) < 2:
                 continue
 
-            ref_data, _, _, _ = load_image(file_list[0])
-            if ref_data is None:
-                continue
+            # The header says the shape; loading a whole frame for it cost
+            # ~0.3 s per group on the GUI thread.
+            hwc = _probe_frame_hwc(file_list[0])
+            if hwc is None:
+                ref_data, _, _, _ = load_image(file_list[0])
+                if ref_data is None:
+                    continue
+                hwc = (ref_data.shape[0], ref_data.shape[1], 1 if ref_data.ndim == 2 else 3)
+                del ref_data
 
-            H, W = ref_data.shape[:2]
-            C = 1 if ref_data.ndim == 2 else 3
+            H, W, C = hwc
             C = max(1, C)
             N = len(file_list)
 
@@ -19312,15 +20245,77 @@ class StackingSuiteDialog(QDialog):
         pd = _Progress(self, self.tr("Create Master Darks"), total_tiles)
         from concurrent.futures import ThreadPoolExecutor
 
+        # Too-small or unreadable groups are reported up front; the loop below
+        # only sees groups it will build.
+        eligible_groups = []
+        for gk, file_list in dark_files_by_group.items():
+            if len(file_list) < 2:
+                self.update_status(f"⚠️ Skipping {gk[0]:g}s ({gk[1]}) - Not enough frames to stack.")
+            elif gk not in group_shapes:
+                self.update_status(f"❌ Failed to load reference {os.path.basename(file_list[0])}")
+            else:
+                eligible_groups.append(gk)
+        QApplication.processEvents()
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Where a 64-frame 46.8 MP master's time went before (2026-11-24, T:):
+        # ~9.5 s opening the frames one at a time on the GUI thread, ~14 s in
+        # the band loop behind ONE reader thread, then a synchronous save, and
+        # the next group started cold. Now:
+        #   prep_pool - opens the NEXT group's frames, several at a time, while
+        #               this one stacks (when RAM allows two groups at once)
+        #   read_pool - reads each band from all frames side by side
+        #   save_pool - writes finished masters; a master enters the tree only
+        #               once its file is on disk, so nothing reads it half-written
+        # The master itself is built in RAM. The old temp memmap .dat could not
+        # be deleted on Windows while np.asarray's view still mapped it, so one
+        # 187 MB file per master was left in Master_Calibration_Files.
+        # ─────────────────────────────────────────────────────────────────────
+        read_workers = max(1, int(self.settings.value("stacking/tile_read_workers", 4, type=int)))
+        prep_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="darkPrep")
+        read_pool = ThreadPoolExecutor(max_workers=read_workers, thread_name_prefix="darkRead")
+        save_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="darkSave")
+        prep_futs: dict = {}        # group key -> future of {"sources"} / {"error"}
+        pending_saves: list = []    # (future, on_saved), oldest first
+        live_sources: list = []     # the group being stacked, for cleanup
+
+        def _prepare(gk):
+            try:
+                return {"sources": _open_mmimages_parallel(dark_files_by_group[gk], read_workers)}
+            except Exception as e:
+                return {"error": str(e)}
+
+        def _submit_prep(idx: int):
+            if 0 <= idx < len(eligible_groups):
+                gk = eligible_groups[idx]
+                if gk not in prep_futs:
+                    prep_futs[gk] = prep_pool.submit(_prepare, gk)
+
+        def _finish_saves(block_all: bool = False, keep: int = 1):
+            """Run on_saved for finished saves, oldest first. Waits only while
+            more than `keep` are in flight (each holds a master in RAM), or for
+            all of them with block_all."""
+            while pending_saves:
+                fut, on_saved = pending_saves[0]
+                if not fut.done() and not block_all and len(pending_saves) <= keep:
+                    break
+                pending_saves.pop(0)
+                try:
+                    _wait_pumping(fut)
+                except Exception as e:
+                    self.update_status(f"⚠️ Master-dark save failed: {e}")
+                    continue
+                on_saved()
+
+        _submit_prep(0)
+
         try:
             # ---------------------------------------------------------------------
             # Per-group stacking loop
             # ---------------------------------------------------------------------
-            for (exposure_time, image_size, session, temp_bucket, gain, offset), file_list in dark_files_by_group.items():
-                if len(file_list) < 2:
-                    self.update_status(f"⚠️ Skipping {exposure_time:g}s ({image_size}) - Not enough frames to stack.")
-                    QApplication.processEvents()
-                    continue
+            for gi, gk in enumerate(eligible_groups):
+                (exposure_time, image_size, session, temp_bucket, gain, offset) = gk
+                file_list = dark_files_by_group[gk]
 
                 if pd.cancelled:
                     self.update_status("⛔ Master Dark creation cancelled.")
@@ -19331,26 +20326,7 @@ class StackingSuiteDialog(QDialog):
                     f"in session '{session}' at {temp_txt}…"))
                 QApplication.processEvents()
 
-                # --- reference shape and per-group chunk size ---
-                gk = (exposure_time, image_size, session, temp_bucket, gain, offset)
-                if gk in group_shapes:
-                    height, width, channels, chunk_height, chunk_width = group_shapes[gk]
-                else:
-                    ref_data, _, _, _ = load_image(file_list[0])
-                    if ref_data is None:
-                        self.update_status(f"❌ Failed to load reference {os.path.basename(file_list[0])}")
-                        continue
-                    height, width = ref_data.shape[:2]
-                    channels = 1 if ref_data.ndim == 2 else 3
-                    channels = max(1, channels)
-                    N_tmp = len(file_list)
-                    try:
-                        chunk_height, chunk_width = compute_safe_chunk(
-                            height, width, N_tmp, channels, DTYPE, pref_chunk_h, pref_chunk_w
-                        )
-                    except MemoryError:
-                        chunk_height, chunk_width = _band_shape(pref_chunk_h, height, width)
-
+                height, width, channels, chunk_height, chunk_width = group_shapes[gk]
                 N = len(file_list)
 
                 algo_name, params, cpu_label = _select_reducer("dark", N)
@@ -19360,35 +20336,24 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(f"⚙️ {algo_brief} selected for {N} frames (channels={channels})")
                 QApplication.processEvents()
 
-                # --- open sources ---
-                sources = []
-                try:
-                    for p in file_list:
-                        sources.append(_MMImage(p))
-                except Exception as e:
-                    for s in sources:
-                        try:
-                            s.close()
-                        except Exception:
-                            pass
-                    self.update_status(f"❌ Failed to memmap dark frames: {e}")
+                # --- this group's frames (usually loaded while the last one stacked) ---
+                _submit_prep(gi)
+                prep = _wait_pumping(prep_futs.pop(gk))
+                if "error" in prep:
+                    self.update_status(f"❌ Failed to memmap dark frames: {prep['error']}")
                     QApplication.processEvents()
+                    _submit_prep(gi + 1)
                     continue
+                sources = prep["sources"]
+                live_sources[:] = sources
+                if pd.cancelled:
+                    self.update_status("⛔ Master Dark creation cancelled.")
+                    break
+                if gi + 1 < len(eligible_groups) and _ram_allows_prefetch(
+                        dark_files_by_group[eligible_groups[gi + 1]]):
+                    _submit_prep(gi + 1)
 
-                # Create temp memmap (stem-safe normalization)
-                tb_tag     = "notemp" if temp_bucket is None else _temp_to_stem_tag(float(temp_bucket))
-                exp_stem   = f"{exposure_time:g}".replace("e-", "em").replace("e+", "ep").replace(".", "p")
-                gain_stem   = f"_G{int(round(gain))}"   if gain   is not None else ""
-                offset_stem = f"_O{int(round(offset))}" if offset is not None else ""
-                memmap_base = f"temp_dark_{session}_{exp_stem}s_{image_size}_{tb_tag}{gain_stem}{offset_stem}.dat"
-                memmap_base = self._normalize_master_stem(memmap_base)
-                memmap_path = os.path.normpath(os.path.join(master_dir, memmap_base))
-
-                self.update_status((f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} "
-                    f"(shape={height}×{width}×{channels}, dtype=float32)"))
-                QApplication.processEvents()
-
-                final_stacked = np.memmap(memmap_path, dtype=np.float32, mode="w+", shape=(height, width, channels))
+                final_stacked = np.empty((height, width, channels), dtype=np.float32)
 
                 tiles = _tile_grid(height, width, chunk_height, chunk_width)
                 total_tiles_group = len(tiles)
@@ -19396,15 +20361,18 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(f"📦 {total_tiles_group} tiles to process for this group (chunk {chunk_height}×{chunk_width}).")
                 QApplication.processEvents()
 
-                buf0 = np.empty((N, chunk_height, chunk_width, channels), dtype=np.float32, order="C")
-                buf1 = np.empty_like(buf0)
+                buf0, buf1 = _master_band_buffers((N, chunk_height, chunk_width, channels), use_gpu)
 
-                def _read_tile_into(buf, y0, y1, x0, x1):
+                def _read_tile_into(buf, y0, y1, x0, x1, _sources=sources, _N=N, _C=channels):
+                    # One band in flight at a time, so each source is only ever
+                    # read by one thread (see the integration reader's note).
                     th = y1 - y0
                     tw = x1 - x0
-                    ts = buf[:N, :th, :tw, :channels]
-                    for i, src in enumerate(sources):
-                        src.read_tile_into(ts[i], y0, y1, x0, x1, channels)
+                    ts = buf[:_N, :th, :tw, :_C]
+                    futs = [read_pool.submit(_sources[i].read_tile_into, ts[i], y0, y1, x0, x1, _C)
+                            for i in range(_N)]
+                    for f in futs:
+                        f.result()
                     return th, tw
 
                 tp = ThreadPoolExecutor(max_workers=1)
@@ -19415,109 +20383,90 @@ class StackingSuiteDialog(QDialog):
                 weights_np = np.ones((N,), dtype=np.float32)
 
                 cancelled_group = False
-                for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
-                    if pd.cancelled:
-                        cancelled_group = True
-                        self.update_status("⛔ Master Dark creation cancelled during tile processing.")
-                        break
-
-                    th, tw = fut.result()
-                    ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]
-
-                    if t_idx < total_tiles_group:
-                        ny0, ny1, nx0, nx1 = tiles[t_idx]
-                        fut = tp.submit(_read_tile_into, (buf1 if use0 else buf0), ny0, ny1, nx0, nx1)
-
-                    pd.set_label(self.tr(
-                        "{0}s ({1}) [{2}] [{3}] — "
-                        "tile {4}/{5} y:{6}-{7} x:{8}-{9}"
-                    ).format(int(exposure_time), image_size, session, temp_txt,
-                             t_idx, total_tiles_group, y0, y1, x0, x1))
-
-                    if use_gpu:
-                        tile_result, _ = _torch_reduce_tile(
-                            ts_np,
-                            weights_np,
-                            algo_name=algo_name,
-                            kappa=float(params.get("kappa", getattr(self, "kappa", 3.0))),
-                            iterations=int(params.get("iterations", getattr(self, "iterations", 1))),
-                            sigma_low=float(getattr(self, "sigma_low", 2.5)),
-                            sigma_high=float(getattr(self, "sigma_high", 2.5)),
-                            trim_fraction=float(params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))),
-                            esd_threshold=float(getattr(self, "esd_threshold", 3.0)),
-                            esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)),
-                            biweight_constant=float(getattr(self, "biweight_constant", 6.0)),
-                            modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
-                            comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
-                            comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
-                        )
-                    else:
-                        if cpu_label == "median":
-                            tile_result = _cpu_tile_median(ts_np)
-                        elif cpu_label == "trimmed":
-                            tile_result = _cpu_tile_trimmed_mean(ts_np, float(params.get("trim_fraction", 0.05)))
-                        else:
-                            tile_result = _cpu_tile_kappa_sigma_1iter(ts_np, float(params.get("kappa", 3.0)))
-
-                    if tile_result.ndim == 2:
-                        tile_result = tile_result[:, :, None]
-
-                    expected_shape = (th, tw, channels)
-                    if tile_result.shape != expected_shape:
-                        if tile_result.shape[:2] == (th, tw):
-                            if tile_result.shape[2] > channels:
-                                tile_result = tile_result[:, :, :channels]
-                            else:
-                                tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
-                        else:
-                            tile_result = np.zeros(expected_shape, dtype=np.float32)
-
-                    final_stacked[y0:y1, x0:x1, :] = tile_result
-                    pd.step()
-                    use0 = not use0
-
                 try:
-                    tp.shutdown(wait=True)
+                    for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
+                        if pd.cancelled:
+                            cancelled_group = True
+                            self.update_status("⛔ Master Dark creation cancelled during tile processing.")
+                            break
+
+                        th, tw = fut.result()
+                        ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]
+
+                        if t_idx < total_tiles_group:
+                            ny0, ny1, nx0, nx1 = tiles[t_idx]
+                            fut = tp.submit(_read_tile_into, (buf1 if use0 else buf0), ny0, ny1, nx0, nx1)
+
+                        pd.set_label(self.tr(
+                            "{0}s ({1}) [{2}] [{3}] — "
+                            "tile {4}/{5} y:{6}-{7} x:{8}-{9}"
+                        ).format(int(exposure_time), image_size, session, temp_txt,
+                                 t_idx, total_tiles_group, y0, y1, x0, x1))
+
+                        if use_gpu:
+                            tile_result = _master_reduce_gpu(
+                                ts_np,
+                                weights_np,
+                                algo_name=algo_name,
+                                kappa=float(params.get("kappa", getattr(self, "kappa", 3.0))),
+                                iterations=int(params.get("iterations", getattr(self, "iterations", 1))),
+                                sigma_low=float(getattr(self, "sigma_low", 2.5)),
+                                sigma_high=float(getattr(self, "sigma_high", 2.5)),
+                                trim_fraction=float(params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))),
+                                esd_threshold=float(getattr(self, "esd_threshold", 3.0)),
+                                esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)),
+                                biweight_constant=float(getattr(self, "biweight_constant", 6.0)),
+                                modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
+                                comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
+                                comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                            )
+                        else:
+                            if cpu_label == "median":
+                                tile_result = _cpu_tile_median(ts_np)
+                            elif cpu_label == "trimmed":
+                                tile_result = _cpu_tile_trimmed_mean(ts_np, float(params.get("trim_fraction", 0.05)))
+                            else:
+                                tile_result = _cpu_tile_kappa_sigma_1iter(ts_np, float(params.get("kappa", 3.0)))
+
+                        if tile_result.ndim == 2:
+                            tile_result = tile_result[:, :, None]
+
+                        expected_shape = (th, tw, channels)
+                        if tile_result.shape != expected_shape:
+                            if tile_result.shape[:2] == (th, tw):
+                                if tile_result.shape[2] > channels:
+                                    tile_result = tile_result[:, :, :channels]
+                                else:
+                                    tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
+                            else:
+                                tile_result = np.zeros(expected_shape, dtype=np.float32)
+
+                        final_stacked[y0:y1, x0:x1, :] = tile_result
+                        pd.step()
+                        use0 = not use0
+                        # A previous master finished writing: list it now, not after this group.
+                        if pending_saves and pending_saves[0][0].done():
+                            _finish_saves(keep=len(pending_saves))
                 finally:
-                    for s in sources:
-                        try:
-                            s.close()
-                        except Exception:
-                            pass
+                    tp.shutdown(wait=True)
+                    _close_mmimages(sources)
+                    live_sources.clear()
+                    del buf0, buf1
 
                 if cancelled_group:
-                    self.update_status("⛔ Master Dark creation cancelled; cleaning up temporary files.")
-                    try:
-                        del final_stacked
-                    except Exception:
-                        pass
-                    try:
-                        os.remove(memmap_path)
-                    except Exception:
-                        pass
                     break
 
-                # -------------------------------------------------------------
-                # Materialize final memmap to ndarray for save
-                # -------------------------------------------------------------
-                master_dark_data = np.asarray(final_stacked, dtype=np.float32)
-                try:
-                    del final_stacked
-                except Exception:
-                    pass
-                gc.collect()
+                # Frames are released: if RAM held the next group back, load it now.
+                _submit_prep(gi + 1)
 
-                try:
-                    os.remove(memmap_path)
-                except Exception:
-                    pass
+                master_dark_data = final_stacked
 
                 # -------------------------------------------------------------
                 # Collect temperature stats from input dark headers
                 # -------------------------------------------------------------
                 temp_info = {}
                 try:
-                    temp_info = _collect_temp_stats(file_list) or {}
+                    temp_info = _collect_temp_stats(file_list, dark_headers) or {}
                 except Exception:
                     temp_info = {}
 
@@ -19605,15 +20554,6 @@ class StackingSuiteDialog(QDialog):
                 if channels == 3:
                     master_header["NAXIS3"] = 3
 
-                save_image(
-                    master_dark_data,
-                    master_dark_path,
-                    "fit",
-                    "32-bit floating point",
-                    master_header,
-                    is_mono=(channels == 1)
-                )
-
                 # Tree label includes temp for visibility
                 # Darks are session-agnostic — no session bracket in the label.
                 tree_label = f"{exposure_time:g}s ({image_size})"
@@ -19624,21 +20564,61 @@ class StackingSuiteDialog(QDialog):
                 elif temp_bucket is not None:
                     tree_label += f" [TEMP {float(temp_bucket):+.1f}C]"
 
-                self.add_master_dark_to_tree(tree_label, master_dark_path)
-                self.update_status(f"✅ Master Dark saved: {master_dark_path}")
-                QApplication.processEvents()
+                def _on_saved(_path=master_dark_path, _label=tree_label):
+                    self.add_master_dark_to_tree(_label, _path)
+                    # Not "✅ ... saved": this can land after the next group has
+                    # started, and the monitor and Log Analysis would credit it
+                    # to that group. "queued" below is the group's end.
+                    self.update_status(f"💾 Master Dark written: {_path}")
+                    QApplication.processEvents()
+                    # Refresh assignments + persistence
+                    self.assign_best_master_files()
+                    self.save_master_paths_to_settings()
 
-                # Refresh assignments + persistence
-                self.assign_best_master_files()
-                self.save_master_paths_to_settings()
+                pending_saves.append((save_pool.submit(
+                    save_image,
+                    master_dark_data,
+                    master_dark_path,
+                    "fit",
+                    "32-bit floating point",
+                    master_header,
+                    is_mono=(channels == 1),
+                ), _on_saved))
+                del master_dark_data, final_stacked
+                self.update_status(f"✅ Master Dark queued: {master_dark_path}")
+                QApplication.processEvents()
+                _finish_saves(keep=1)
+
+            _finish_saves(block_all=True)
+            self.update_status("✅ All master darks saved.")
 
             # Post pass refresh (unchanged behavior)
             self.assign_best_master_dark()
-            
+
             self.assign_best_master_files()
             self._refresh_quick_stack_summary_later()
 
         finally:
+            # Land every queued master (a cancel keeps the masters already
+            # built), release frames loaded ahead for a group that never ran,
+            # then stop the pools.
+            try:
+                _finish_saves(block_all=True)
+            except Exception:
+                pass
+            _close_mmimages(live_sources)
+            live_sources.clear()
+            for _f in list(prep_futs.values()):
+                try:
+                    _close_mmimages(_f.result().get("sources", []) or [])
+                except Exception:
+                    pass
+            prep_futs.clear()
+            for _pool in (prep_pool, read_pool, save_pool):
+                try:
+                    _pool.shutdown(wait=True)
+                except Exception:
+                    pass
             try:
                 _free_torch_memory()
             except Exception as e:
@@ -19664,17 +20644,18 @@ class StackingSuiteDialog(QDialog):
         master_dark_path : str
             Full path to the master dark FITS.
         """
-        # Build/confirm size string from the file (for master_sizes)
+        # Build/confirm size string from the file (for master_sizes). The HDU's
+        # shape comes from its header; reading .data loaded the whole master.
         try:
             with fits.open(master_dark_path, memmap=False) as hdul:
-                data = hdul[0].data
-                if data is None:
+                shape = tuple(hdul[0].shape or ())
+                if not shape:
                     size = "Unknown"
                 else:
-                    if data.ndim == 2:
-                        h, w = data.shape
-                    elif data.ndim == 3:
-                        h, w = data.shape[:2]
+                    if len(shape) == 2:
+                        h, w = shape
+                    elif len(shape) == 3:
+                        h, w = shape[:2]
                     else:
                         h = w = 0
                     size = f"{w}x{h}" if (h and w) else "Unknown"
@@ -19720,120 +20701,21 @@ class StackingSuiteDialog(QDialog):
             self.master_dark_tree.addTopLevelItem(exposure_item)
 
         master_item = QTreeWidgetItem([os.path.basename(master_dark_path)])
+        master_item.setData(0, Qt.ItemDataRole.UserRole, master_dark_path)
         exposure_item.addChild(master_item)
 
         # ✅ Refresh UI bits that depend on master darks
         
         self.assign_best_master_dark()  # auto-select
-        self.update_status(f"✅ Master Dark saved and added to UI: {master_dark_path}")
+        # Runs once the file is written, possibly after the next group started:
+        # deliberately not a "✅ ... saved" line (see create_master_dark).
+        self.update_status(f"📁 Master Dark added to the list: {master_dark_path}")
 
 
     def assign_best_master_dark(self):
-        """ Assigns the closest matching master dark based on exposure & image size. """
-
-        if not self.master_files:
-            print("⚠️ WARNING: No Master Darks available.")
-            self.update_status("⚠️ WARNING: No Master Darks available.")
-            return  # Exit early if there are no master darks
-
-        print(f"📂 Loaded Master Darks ({len(self.master_files)} total):")
-        for key, value in self.master_files.items():
-            print(f"   📌 {key} -> {value}")
-
-        # Iterate through all flat groups (flat tree is single-level: one item per group)
-        for i in range(self.flat_tree.topLevelItemCount()):
-            exposure_item = self.flat_tree.topLevelItem(i)
-            exposure_text = exposure_item.text(0)  # e.g. "G - 0.0s–5.0s (4144x2822)"
-
-            # Extract exposure time — handle both "G - 0.01s (4144x2822)" and "0.01s (4144x2822)"
-            match = re.search(r"([\d.]+)s", exposure_text)
-            if not match:
-                continue
-
-            exposure_time = float(match.group(1))
-
-            # Extract image size from the group label
-            size_match = re.search(r"\((\d+x\d+)\)", exposure_text)
-            image_size = size_match.group(1) if size_match else "Unknown"
-
-            # Read gain/offset from first leaf child if available
-            flat_gain = flat_offset = None
-            if exposure_item.childCount() > 0:
-                flat_gain   = exposure_item.child(0).data(0, Qt.ItemDataRole.UserRole + 3)
-                flat_offset = exposure_item.child(0).data(0, Qt.ItemDataRole.UserRole + 4)
-
-            # Skip if this group has a manual override already set
-            ud = exposure_item.data(2, Qt.ItemDataRole.UserRole)
-            if ud is not None:
-                continue
-
-            # Find best matching master dark
-            best_match = None
-            best_diff = float("inf")
-
-            if not hasattr(self, "_master_dark_go"):
-                self._master_dark_go = {}
-
-            for master_dark_key, master_dark_path in self.master_files.items():
-                # Only consider dark keys (start with exposure time)
-                if not re.match(r"^\s*[\d.]+s\s*\(", str(master_dark_key)):
-                    continue
-
-                master_dark_size = self.master_sizes.get(master_dark_path, "Unknown")
-                if master_dark_size == "Unknown":
-                    try:
-                        with fits.open(master_dark_path) as hdul:
-                            master_dark_size = f"{hdul[0].data.shape[1]}x{hdul[0].data.shape[0]}"
-                            self.master_sizes[master_dark_path] = master_dark_size
-                    except Exception:
-                        continue
-
-                if image_size != master_dark_size:
-                    continue
-
-                m_exp = re.match(r"^\s*([\d.]+)s", str(master_dark_key))
-                if not m_exp:
-                    continue
-                master_exp_time = float(m_exp.group(1))
-                exp_diff = abs(master_exp_time - exposure_time)
-
-                # Read and cache gain/offset from master dark header
-                if master_dark_path not in self._master_dark_go:
-                    try:
-                        hdr = fits.getheader(master_dark_path, memmap=True)
-                        mg = _get_key_float(hdr, "GAIN")
-                        mo = _get_key_float(hdr, "OFFSET")
-                        if mo is None:
-                            mo = _get_key_float(hdr, "BLKLEVEL")
-                        self._master_dark_go[master_dark_path] = (mg, mo)
-                    except Exception:
-                        self._master_dark_go[master_dark_path] = (None, None)
-
-                master_gain, master_offset = self._master_dark_go[master_dark_path]
-
-                go_mismatch = False
-                if flat_gain is not None and master_gain is not None:
-                    if abs(flat_gain - master_gain) > 1:
-                        go_mismatch = True
-                if flat_offset is not None and master_offset is not None:
-                    if abs(flat_offset - master_offset) > 1:
-                        go_mismatch = True
-
-                score = exp_diff + (10000.0 if go_mismatch else 0.0)
-                if score < best_diff:
-                    best_match = master_dark_path
-                    best_diff = score
-
-            if best_match:
-                exposure_item.setText(2, os.path.basename(best_match))
-            else:
-                exposure_item.setText(2, "None")
-
-        self.flat_tree.viewport().update()
-
-        # 🔥 Force UI update to reflect changes
-        self.flat_tree.viewport().update()
-
+        """Show each Flats tab group's master dark in its Dark row (the pick
+        create_master_flat uses), and refresh the Lights tab with it."""
+        self._refresh_master_picks()
 
     def create_master_flat(self):
         """Creates master flats using per-frame dark subtraction before stacking (GPU-accelerated if available),
@@ -19849,64 +20731,19 @@ class StackingSuiteDialog(QDialog):
         if ui_algo == "Weighted Winsorized Sigma Clipping":
             ui_algo = "Winsorized Sigma Clipping"
 
-        exposure_tolerance = self.flat_exposure_tolerance_spinbox.value()
         flat_files_by_group: dict[tuple[float, str, str, str], list[str]] = {}  # (Exposure, Size, Filter, Session) -> list
+        tab_key_of: dict = {}   # same key -> the Flats tab group's key
 
         # -------------------------------------------------------------------------
-        # Group flats exactly as before
+        # Group flats the way the Flats tab shows them (one master per night)
         # -------------------------------------------------------------------------
-        for key, file_list in (self.flat_files or {}).items():
-            # Support both legacy and new key formats
-            if isinstance(key, tuple) and len(key) >= 2:
-                filter_exposure = str(key[0])
-                session = str(key[1] or "Default").strip() or "Default"
-            else:
-                filter_exposure = str(key)
-                session = "Default"
-
-            try:
-                # rsplit so a filter name containing " - " (rare, but possible from
-                # the manual-entry prompt) doesn't break parsing — we want the
-                # rightmost " - " which separates filter from exposure/size.
-                filter_name, exposure_size = filter_exposure.rsplit(" - ", 1)
-                exposure_time_str, image_size = exposure_size.split(" (")
-                image_size = image_size.rstrip(")")
-            except ValueError:
-                self.update_status(f"⚠️ ERROR: Could not parse {filter_exposure}")
-                continue
-
-            match = re.match(r"([\d.]+)s?", exposure_time_str)
-            exposure_time = float(match.group(1)) if match else -10.0
-
-            matched_group = None
-            for k in flat_files_by_group:
-                existing_exposure, existing_size, existing_filter, existing_session = k
-                if (
-                    abs(existing_exposure - exposure_time) <= exposure_tolerance
-                    and existing_size == image_size
-                    and existing_filter == filter_name
-                    and existing_session == session
-                ):
-                    matched_group = k
-                    break
-
-            if matched_group is None:
-                matched_group = (exposure_time, image_size, filter_name, session)
-                flat_files_by_group[matched_group] = []
-
-            flat_files_by_group[matched_group].extend(file_list or [])
-
-        # Dedupe paths within each group (prevents accidental double-counts)
-        for k, lst in list(flat_files_by_group.items()):
-            seen = set()
-            out = []
-            for p in (lst or []):
-                pn = os.path.normcase(os.path.abspath(p))
-                if pn in seen:
-                    continue
-                seen.add(pn)
-                out.append(p)
-            flat_files_by_group[k] = out
+        _groups, _bad_keys = self._master_flat_groups()
+        for filter_exposure in _bad_keys:
+            self.update_status(f"⚠️ ERROR: Could not parse {filter_exposure}")
+        for g in _groups:
+            gk = (g["exposure"], g["size"], g["filter"], g["session"])
+            flat_files_by_group[gk] = g["files"]
+            tab_key_of[gk] = g["key"]
 
 
         # Discovery summary
@@ -19954,60 +20791,22 @@ class StackingSuiteDialog(QDialog):
         # Dark-resolution helpers (hoisted so the pre-pass can resolve every
         # group's dark path up-front — mirrors image integration's PHASE 0C).
         # -------------------------------------------------------------------------
-        def _resolve_dark_path(exposure_time, image_size, filter_name) -> str | None:
-            """Resolve the master-dark path for a flat group, honouring per-group
-            override and auto-select. Returns a filesystem path, the sentinel
-            '__NO_DARK__', or None."""
-            override_val = None
-            fdo = getattr(self, "flat_dark_override", {}) or {}
-            if fdo:
-                exp_here = float(exposure_time)
-                for k, v in fdo.items():
-                    try:
-                        f_name, sz, lo_s, hi_s = k.split("|")
-                    except Exception:
-                        continue
-                    if f_name != filter_name:
-                        continue
-                    if sz != "Unknown" and image_size != "Unknown" and sz != image_size:
-                        continue
-                    if exp_here >= 0:
-                        lo = float(lo_s); hi = float(hi_s)
-                        if not (lo - 1e-6 <= exp_here <= hi + 1e-6):
-                            continue
-                    override_val = v
-                    break
+        flat_master_snap = self._master_snapshot()
 
-            if override_val == "__NO_DARK__":
-                return "__NO_DARK__"
-            if isinstance(override_val, str):
-                if os.path.exists(override_val):
-                    return override_val
-                # override missing on disk → fall through to auto/none
-
-            if self.auto_select_dark_checkbox.isChecked():
-                best = None
-                best_diff = float("inf")
-                exp_here = float(exposure_time)
-                for key, path in (getattr(self, "master_files", {}) or {}).items():
-                    if "MasterDark" not in os.path.basename(path):
-                        continue
-                    dark_size = self.master_sizes.get(path, "Unknown")
-                    m = re.match(r"([\d.]+)s", key or "")
-                    dark_exp = float(m.group(1)) if m else float("inf")
-                    size_ok = (
-                        image_size == "Unknown"
-                        or dark_size == "Unknown"
-                        or dark_size == image_size
-                    )
-                    if not size_ok:
-                        continue
-                    diff = abs(dark_exp - exp_here)
-                    if diff < best_diff:
-                        best_diff = diff
-                        best = path
-                return best
-            return None
+        def _resolve_dark_path(tab_key, exposure_time, image_size, file_list=()) -> str | None:
+            """The master dark of the Flats tab group these flats are, as its
+            Dark row shows it: a path, the sentinel '__NO_DARK__', or None."""
+            exp_here = float(exposure_time)
+            if tab_key in (self._flat_groups_info or {}):
+                path, state = self._flat_group_dark_pick(tab_key, flat_master_snap)
+                return "__NO_DARK__" if state == "hand-none" else path
+            # Not in the tree (it is rebuilt after every add, so this should not
+            # happen): the same Auto, from these flats.
+            if not self.auto_select_dark_checkbox.isChecked() or not file_list:
+                return None
+            meta = self._light_frame_meta(file_list[0])
+            return self._auto_pick_dark(flat_master_snap, image_size, max(0.0, exp_here),
+                                        meta["gain"], meta["offset"], meta["temp"])
 
         def _load_dark_normalized(path):
             """Load a dark FITS/XISF, flip ROWORDER if needed, normalise layout to
@@ -20043,11 +20842,16 @@ class StackingSuiteDialog(QDialog):
         for (exposure_time, image_size, filter_name, session), file_list in flat_files_by_group.items():
             if len(file_list) < 2:
                 continue
-            ref_data, _, _, _ = load_image(file_list[0])
-            if ref_data is None:
-                continue
-            H, W = ref_data.shape[:2]
-            C = 1 if ref_data.ndim == 2 else 3
+            # The header says the shape; loading a whole flat for it cost
+            # ~0.4 s per group on the GUI thread.
+            hwc = _probe_frame_hwc(file_list[0])
+            if hwc is None:
+                ref_data, _, _, _ = load_image(file_list[0])
+                if ref_data is None:
+                    continue
+                hwc = (ref_data.shape[0], ref_data.shape[1], 1 if ref_data.ndim == 2 else 3)
+                del ref_data
+            H, W, C = hwc
             C = max(1, C)
             N = len(file_list)
 
@@ -20074,7 +20878,9 @@ class StackingSuiteDialog(QDialog):
                 bayerpat = "RGGB"
 
             # Resolve the dark path up-front so we can load each unique dark once.
-            resolved_dark = _resolve_dark_path(exposure_time, image_size, filter_name)
+            resolved_dark = _resolve_dark_path(
+                tab_key_of.get((exposure_time, image_size, filter_name, session)),
+                exposure_time, image_size, file_list)
             if resolved_dark and resolved_dark != "__NO_DARK__":
                 unique_dark_paths.add(resolved_dark)
 
@@ -20174,12 +20980,21 @@ class StackingSuiteDialog(QDialog):
             out = np.where(cnt > 0, num / np.maximum(cnt, 1.0), med)
             return out.astype(np.float32, copy=False)
 
+        def _center_patch(sources, i, fp, y0, y1, x0, x1):
+            # The group's flats are already open for stacking: take the patch
+            # from there instead of loading each whole file a second time
+            # (same _MMImage.read_tile, so the same numbers).
+            if sources is not None:
+                return sources[i].read_tile(y0, y1, x0, x1)
+            return _read_center_patch_via_mmimage(fp, y0, y1, x0, x1)
+
         def _estimate_flat_scales_bayer(
             file_list: list[str],
             H: int,
             W: int,
             dark_data: np.ndarray | None,
             pattern: str,
+            sources=None,
         ):
             pat = (pattern or "RGGB").strip().upper()
             if pat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
@@ -20223,7 +21038,7 @@ class StackingSuiteDialog(QDialog):
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as exe:
                 fut2i = {
-                    exe.submit(_read_center_patch_via_mmimage, fp, y0, y1, x0, x1): i
+                    exe.submit(_center_patch, sources, i, fp, y0, y1, x0, x1): i
                     for i, fp in enumerate(file_list)
                 }
                 for fut in as_completed(fut2i):
@@ -20265,7 +21080,8 @@ class StackingSuiteDialog(QDialog):
             return np.clip(scales, 1e-3, 1e3).astype(np.float32)
 
 
-        def _estimate_flat_scales(file_list: list[str], H: int, W: int, C: int, dark_data: np.ndarray | None):
+        def _estimate_flat_scales(file_list: list[str], H: int, W: int, C: int, dark_data: np.ndarray | None,
+                                  sources=None):
             th = min(512, H); tw = min(512, W)
             y0 = (H - th) // 2; y1 = y0 + th
             x0 = (W - tw) // 2; x1 = x0 + tw
@@ -20284,7 +21100,7 @@ class StackingSuiteDialog(QDialog):
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 8)) as exe:
                 fut2i = {
-                    exe.submit(_read_center_patch_via_mmimage, fp, y0, y1, x0, x1): i
+                    exe.submit(_center_patch, sources, i, fp, y0, y1, x0, x1): i
                     for i, fp in enumerate(file_list)
                 }
                 for fut in as_completed(fut2i):
@@ -20375,26 +21191,34 @@ class StackingSuiteDialog(QDialog):
                     f"— Not enough frames to stack."))
 
         # ─────────────────────────────────────────────────────────────────────
-        # Background pools (the point of this refactor):
-        #   prep_pool  — opens the next group's _MMImages and estimates its
-        #                per-frame scales WHILE the current group's tile loop
-        #                runs. Removes the serial "scale-estimation + open-N-
-        #                mmaps" preamble that used to sit between every
-        #                master flat.
-        #   save_pool  — writes finished master flat FITS files in the
-        #                background so the NEXT group's tile loop isn't
-        #                blocked by the save.
+        # Background pools:
+        #   prep_pool  — opens a group's flats (several at a time) and takes
+        #                the per-frame scales from those open frames, for the
+        #                NEXT group while this one stacks when RAM allows two
+        #                groups at once. It used to load every flat twice: once
+        #                whole just for a 512x512 centre patch, then again for
+        #                stacking, one file at a time (20 s before the first of
+        #                48 46.8 MP flats stacked, 2026-11-24).
+        #   save_pool  — writes finished master flats while the next group
+        #                stacks. One writer, so two masters can never write the
+        #                same path at once; a master enters the tree only when
+        #                its file is on disk. The tree used to read the header
+        #                of a file not yet written, and the master's session
+        #                came out as its folder name ("Master_Calibration_
+        #                Files"), so lights could not pair it with their night.
         #   tile_tp    — per-group tile-prefetch pool (same role as before).
         # ─────────────────────────────────────────────────────────────────────
-        prep_pool = ThreadPoolExecutor(max_workers=1)
-        save_pool = ThreadPoolExecutor(max_workers=2)
-        save_futs: list = []
+        open_workers = max(1, int(self.settings.value("stacking/tile_read_workers", 4, type=int)))
+        prep_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="flatPrep")
+        save_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="flatSave")
+        prep_futs: dict = {}        # group key -> future of _prepare_group
+        pending_saves: list = []    # (future, on_saved), oldest first
+        live_sources: list = []     # the group being stacked, for cleanup
+        used_out_paths: set = set()
 
         def _prepare_group(gk):
-            """Open the group's mmimages + estimate per-frame scales.
-            Runs on prep_pool so the preamble overlaps with the previous
-            group's tile loop. Returns {'scales', 'sources', 'dark_arr'}
-            or {'error': msg}."""
+            """Open the group's flats + estimate per-frame scales.
+            Returns {'scales', 'sources', 'dark_arr'} or {'error': msg}."""
             plan = group_plan[gk]
             file_list = plan["file_list"]
             dark_entry = dark_cache.get(plan["dark_path"]) if plan["dark_path"] else None
@@ -20406,38 +21230,51 @@ class StackingSuiteDialog(QDialog):
                 scale_sub = master_bias
 
             try:
+                sources = _open_mmimages_parallel(file_list, open_workers)
+            except Exception as e:
+                return {"error": f"memmap open failed: {e}"}
+
+            try:
                 if plan["is_bayer"]:
                     scales = _estimate_flat_scales_bayer(
-                        file_list, plan["H"], plan["W"], scale_sub, plan["bayerpat"]
+                        file_list, plan["H"], plan["W"], scale_sub, plan["bayerpat"],
+                        sources=sources,
                     )
                 else:
                     scales = _estimate_flat_scales(
-                        file_list, plan["H"], plan["W"], plan["C"], dark_arr
+                        file_list, plan["H"], plan["W"], plan["C"], dark_arr,
+                        sources=sources,
                     )
             except Exception as e:
+                _close_mmimages(sources)
                 return {"error": f"scale estimation failed: {e}"}
-
-            sources = []
-            try:
-                for p in file_list:
-                    sources.append(_MMImage(p))
-            except Exception as e:
-                for s in sources:
-                    try:
-                        s.close()
-                    except Exception:
-                        pass
-                return {"error": f"memmap open failed: {e}"}
 
             return {"scales": scales, "sources": sources, "dark_arr": dark_arr}
 
-        # Prime the first group's prep so it starts running NOW; subsequent
-        # groups' prep is kicked off at the top of the previous group's loop
-        # body so it overlaps with that group's tile processing.
-        next_prep_fut = (
-            prep_pool.submit(_prepare_group, eligible_groups[0])
-            if eligible_groups else None
-        )
+        def _submit_prep(idx: int):
+            if 0 <= idx < len(eligible_groups):
+                gk = eligible_groups[idx]
+                if gk not in prep_futs:
+                    prep_futs[gk] = prep_pool.submit(_prepare_group, gk)
+
+        def _finish_saves(block_all: bool = False, keep: int = 1):
+            """Run on_saved for finished saves, oldest first. Waits only while
+            more than `keep` are in flight (each holds a master in RAM), or for
+            all of them with block_all."""
+            while pending_saves:
+                fut, on_saved = pending_saves[0]
+                if not fut.done() and not block_all and len(pending_saves) <= keep:
+                    break
+                pending_saves.pop(0)
+                try:
+                    _wait_pumping(fut)
+                except Exception as _se:
+                    self.update_status(f"⚠️ Master-flat save failed: {_se}")
+                    continue
+                on_saved()
+
+        # Start the first group's prep now.
+        _submit_prep(0)
 
         try:
             # ---------------------------------------------------------------------
@@ -20483,27 +21320,30 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(f"🧩 Bayer flat group detected: {bayerpat}")
                 QApplication.processEvents()
 
-                # Wait on THIS group's prep (ideally already done in background);
-                # then IMMEDIATELY submit next group's prep so it overlaps with
-                # this group's tile loop.
+                # Wait on THIS group's prep (ideally already done in background),
+                # then start the next group's while this one stacks, if RAM
+                # can hold both; otherwise it starts once these frames close.
                 self.update_status(f"⚙️ Normalizing {N} flats by per-frame medians (central patch).")
                 QApplication.processEvents()
-                prep = next_prep_fut.result()
-                if gi + 1 < len(eligible_groups):
-                    next_prep_fut = prep_pool.submit(
-                        _prepare_group, eligible_groups[gi + 1]
-                    )
-                else:
-                    next_prep_fut = None
+                _submit_prep(gi)
+                prep = _wait_pumping(prep_futs.pop(group_key))
 
                 if "error" in prep:
                     self.update_status(f"❌ {prep['error']} — skipping group.")
                     QApplication.processEvents()
+                    _submit_prep(gi + 1)
                     continue
 
                 sources  = prep["sources"]
                 scales   = prep["scales"]
                 dark_arr = prep["dark_arr"]
+                live_sources[:] = sources
+                if pd.cancelled:
+                    self.update_status("⛔ Master Flat creation cancelled.")
+                    break
+                if gi + 1 < len(eligible_groups) and _ram_allows_prefetch(
+                        group_plan[eligible_groups[gi + 1]]["file_list"]):
+                    _submit_prep(gi + 1)
 
                 # ── Shape mismatch check (dark vs flat color) ──────────────
                 # dark_cache stored the dark in final HWC-or-2D layout, so the
@@ -20544,14 +21384,8 @@ class StackingSuiteDialog(QDialog):
                     f"({ 'k=%.1f' % params.get('kappa', 0) if cpu_label=='kappa1' else 'trim=%.0f%%' % (params.get('trim_fraction', 0)*100) if cpu_label=='trimmed' else 'median'})"))
                 QApplication.processEvents()
 
-                # ─────────────────────────────────────────────────────────────
-                # Output buffer: plain RAM array. The old code wrote this to a
-                # temp memmap file and immediately read it back with np.asarray
-                # before deleting the file — pure disk round-trip for ~250 MB
-                # (mono) / ~750 MB (color) per master flat. One master-flat
-                # output easily fits in RAM; the per-stack working set
-                # (buf0+buf1) was already far bigger.
-                # ─────────────────────────────────────────────────────────────
+                # Output buffer: plain RAM array (one master flat easily fits;
+                # the per-stack working set buf0+buf1 is far bigger).
                 final_stacked = np.empty((height, width, channels), dtype=np.float32)
 
                 tiles = _tile_grid(height, width, chunk_height, chunk_width)
@@ -20561,23 +21395,13 @@ class StackingSuiteDialog(QDialog):
                 QApplication.processEvents()
 
                 # Allocate max-chunk buffers for this group
-                buf0 = np.empty(
-                    (N, chunk_height, chunk_width, channels),
-                    dtype=np.float32,
-                    order="C",
-                )
-                buf1 = np.empty_like(buf0)
+                buf0, buf1 = _master_band_buffers((N, chunk_height, chunk_width, channels), use_gpu)
 
                 # ─────────────────────────────────────────────────────────────
-                # Multi-reader tile prefetch: the old loop read N files
-                # serially inside the single-worker prefetcher — one source
-                # at a time, each waiting on disk I/O. We fan the per-source
-                # reads out over `read_workers` threads so a tile's N file
-                # slices load concurrently, which is a straight win on SSD /
-                # NVMe and still safe on HDD (each _MMImage holds its own
-                # independent read-only mmap, so there's no shared state to
-                # race on). Capped at min(N, 4) by default; the setting is
-                # exposed so an HDD user can dial it back to 2.
+                # Multi-reader tile prefetch: a tile's N frame slices are read
+                # by `read_workers` threads side by side (each _MMImage is its
+                # own independent source, so there is nothing shared to race
+                # on). The setting is exposed so an HDD user can dial it back.
                 # ─────────────────────────────────────────────────────────────
                 read_workers = int(self.settings.value(
                     "stacking/tile_read_workers", 4, type=int
@@ -20650,126 +21474,131 @@ class StackingSuiteDialog(QDialog):
                 # -----------------------------------------------------------------
                 # Tile loop
                 # -----------------------------------------------------------------
-                for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
-                    if pd.cancelled:
-                        cancelled_group = True
-                        break
-
-                    th, tw = fut.result()
-                    ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]
-
-                    # Prefetch next
-                    if t_idx < total_tiles_group:
-                        ny0, ny1, nx0, nx1 = tiles[t_idx]
-                        fut = tile_tp.submit(
-                            _read_tile_into,
-                            (buf1 if use0 else buf0),
-                            ny0, ny1, nx0, nx1,
-                        )
-
-                    pd.set_label(self.tr(
-                        "[{0}] {1} — tile {2}/{3} "
-                        "y:{4}-{5} x:{6}-{7}"
-                    ).format(filter_name, session, t_idx, total_tiles_group, y0, y1, x0, x1))
-
-                    if use_gpu:
-                        # Dark-sub + clip + per-frame scale happen on-device
-                        # inside the reducer; nothing to do on the CPU side.
-                        tile_result, _ = _torch_reduce_tile(
-                            ts_np,
-                            weights_np,
-                            algo_name=algo_name,
-                            kappa=float(params.get("kappa", getattr(self, "kappa", 3.0))),
-                            iterations=int(params.get("iterations", getattr(self, "iterations", 1))),
-                            sigma_low=float(getattr(self, "sigma_low", 2.5)),
-                            sigma_high=float(getattr(self, "sigma_high", 2.5)),
-                            trim_fraction=float(params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))),
-                            esd_threshold=float(getattr(self, "esd_threshold", 3.0)),
-                            esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)),
-                            biweight_constant=float(getattr(self, "biweight_constant", 6.0)),
-                            modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
-                            comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
-                            comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
-                            # ─── On-device calibration prep ───
-                            dark_full_np=gpu_dark_np,
-                            pedestal=0.0,
-                            scales_np=gpu_scales_np,
-                            bayer_pattern=gpu_bayer_pat,
-                            tile_origin=(y0, x0),
-                            group_key=gpu_group_key,
-                        )
-                    else:
-                        # CPU path: do dark-sub + clip + per-frame scale on
-                        # the host before the CPU reducer sees the stack.
-                        if tile_subtractor is not None:
-                            d_tile = tile_subtractor[y0:y1, x0:x1]
-                            if sub_is_2d_to_rgb:
-                                d_tile = np.repeat(d_tile[..., None], 3, axis=2)
-                            if d_tile.dtype != np.float32:
-                                d_tile = d_tile.astype(np.float32, copy=False)
-                            _subtract_dark_stack_inplace_hwc(ts_np, d_tile, pedestal=0.0)
-                            np.clip(ts_np, 0.0, None, out=ts_np)
-
-                        if is_bayer_group:
-                            _apply_bayer_scales_stack_inplace(ts_np, scales, bayerpat, y0, x0)
-                        else:
-                            ts_np *= scales.reshape(N, 1, 1, 1)
-
-                        if cpu_label == "median":
-                            tile_result = _cpu_tile_median(ts_np)
-                        elif cpu_label == "trimmed":
-                            tile_result = _cpu_tile_trimmed_mean(
-                                ts_np,
-                                float(params.get("trim_fraction", 0.05)),
-                            )
-                        else:  # 'kappa1'
-                            tile_result = _cpu_tile_kappa_sigma_1iter(
-                                ts_np,
-                                float(params.get("kappa", 3.0)),
-                            )
-
-                    # Ensure tile_result has correct shape (th, tw, channels)
-                    if tile_result.ndim == 2:
-                        tile_result = tile_result[:, :, None]
-                    expected_shape = (th, tw, channels)
-                    if tile_result.shape != expected_shape:
-                        if tile_result.shape[2] == 0:
-                            tile_result = np.zeros(expected_shape, dtype=np.float32)
-                        elif tile_result.shape[:2] == (th, tw):
-                            if tile_result.shape[2] > channels:
-                                tile_result = tile_result[:, :, :channels]
-                            else:
-                                tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
-
-                    final_stacked[y0:y1, x0:x1, :] = tile_result
-                    pd.step()
-                    use0 = not use0
-
                 try:
-                    tile_tp.shutdown(wait=True)
+                    for t_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
+                        if pd.cancelled:
+                            cancelled_group = True
+                            break
+
+                        th, tw = fut.result()
+                        ts_np = (buf0 if use0 else buf1)[:N, :th, :tw, :channels]
+
+                        # Prefetch next
+                        if t_idx < total_tiles_group:
+                            ny0, ny1, nx0, nx1 = tiles[t_idx]
+                            fut = tile_tp.submit(
+                                _read_tile_into,
+                                (buf1 if use0 else buf0),
+                                ny0, ny1, nx0, nx1,
+                            )
+
+                        pd.set_label(self.tr(
+                            "[{0}] {1} — tile {2}/{3} "
+                            "y:{4}-{5} x:{6}-{7}"
+                        ).format(filter_name, session, t_idx, total_tiles_group, y0, y1, x0, x1))
+
+                        if use_gpu:
+                            # Dark-sub + clip + per-frame scale happen on-device
+                            # inside the reducer; nothing to do on the CPU side.
+                            tile_result = _master_reduce_gpu(
+                                ts_np,
+                                weights_np,
+                                algo_name=algo_name,
+                                kappa=float(params.get("kappa", getattr(self, "kappa", 3.0))),
+                                iterations=int(params.get("iterations", getattr(self, "iterations", 1))),
+                                sigma_low=float(getattr(self, "sigma_low", 2.5)),
+                                sigma_high=float(getattr(self, "sigma_high", 2.5)),
+                                trim_fraction=float(params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))),
+                                esd_threshold=float(getattr(self, "esd_threshold", 3.0)),
+                                esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)),
+                                biweight_constant=float(getattr(self, "biweight_constant", 6.0)),
+                                modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
+                                comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
+                                comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                                # ─── On-device calibration prep ───
+                                dark_full_np=gpu_dark_np,
+                                pedestal=0.0,
+                                scales_np=gpu_scales_np,
+                                bayer_pattern=gpu_bayer_pat,
+                                tile_origin=(y0, x0),
+                                group_key=gpu_group_key,
+                            )
+                        else:
+                            # CPU path: do dark-sub + clip + per-frame scale on
+                            # the host before the CPU reducer sees the stack.
+                            if tile_subtractor is not None:
+                                d_tile = tile_subtractor[y0:y1, x0:x1]
+                                if sub_is_2d_to_rgb:
+                                    d_tile = np.repeat(d_tile[..., None], 3, axis=2)
+                                if d_tile.dtype != np.float32:
+                                    d_tile = d_tile.astype(np.float32, copy=False)
+                                _subtract_dark_stack_inplace_hwc(ts_np, d_tile, pedestal=0.0)
+                                np.clip(ts_np, 0.0, None, out=ts_np)
+
+                            if is_bayer_group:
+                                _apply_bayer_scales_stack_inplace(ts_np, scales, bayerpat, y0, x0)
+                            else:
+                                ts_np *= scales.reshape(N, 1, 1, 1)
+
+                            if cpu_label == "median":
+                                tile_result = _cpu_tile_median(ts_np)
+                            elif cpu_label == "trimmed":
+                                tile_result = _cpu_tile_trimmed_mean(
+                                    ts_np,
+                                    float(params.get("trim_fraction", 0.05)),
+                                )
+                            else:  # 'kappa1'
+                                tile_result = _cpu_tile_kappa_sigma_1iter(
+                                    ts_np,
+                                    float(params.get("kappa", 3.0)),
+                                )
+
+                        # Ensure tile_result has correct shape (th, tw, channels)
+                        if tile_result.ndim == 2:
+                            tile_result = tile_result[:, :, None]
+                        expected_shape = (th, tw, channels)
+                        if tile_result.shape != expected_shape:
+                            if tile_result.shape[2] == 0:
+                                tile_result = np.zeros(expected_shape, dtype=np.float32)
+                            elif tile_result.shape[:2] == (th, tw):
+                                if tile_result.shape[2] > channels:
+                                    tile_result = tile_result[:, :, :channels]
+                                else:
+                                    tile_result = np.repeat(tile_result, channels, axis=2)[:, :, :channels]
+
+                        final_stacked[y0:y1, x0:x1, :] = tile_result
+                        pd.step()
+                        use0 = not use0
+                        # A previous master finished writing: list it now, not after this group.
+                        if pending_saves and pending_saves[0][0].done():
+                            _finish_saves(keep=len(pending_saves))
                 finally:
                     try:
-                        read_pool.shutdown(wait=True)
-                    except Exception:
-                        pass
-                    # Release the per-group GPU calibration tensors (dark +
-                    # scales) so the next group's dark can slot in without
-                    # the previous one lingering in VRAM. Safe on CPU-only
-                    # runs — gpu_group_key is None there.
-                    try:
-                        if gpu_group_key is not None:
-                            _release_flat_group_ctx(gpu_group_key)
-                    except Exception:
-                        pass
-                    for s in sources:
+                        tile_tp.shutdown(wait=True)
+                    finally:
                         try:
-                            s.close()
+                            read_pool.shutdown(wait=True)
                         except Exception:
                             pass
+                        # Release the per-group GPU calibration tensors (dark +
+                        # scales) so the next group's dark can slot in without
+                        # the previous one lingering in VRAM. Safe on CPU-only
+                        # runs — gpu_group_key is None there.
+                        try:
+                            if gpu_group_key is not None:
+                                _release_flat_group_ctx(gpu_group_key)
+                        except Exception:
+                            pass
+                        _close_mmimages(sources)
+                        live_sources.clear()
+                        del buf0, buf1
 
                 if cancelled_group:
                     self.update_status("⛔ Master Flat creation cancelled.")
                     break
+
+                # Frames are released: if RAM held the next group back, load it now.
+                _submit_prep(gi + 1)
 
                 # If mono, squeeze to 2D (prevents accidental "(H,W,1)" weirdness later)
                 master_flat_data = final_stacked
@@ -20778,6 +21607,15 @@ class StackingSuiteDialog(QDialog):
 
                 master_flat_stem = f"MasterFlat_{session}_{int(exposure_time)}s_{image_size}_{filter_name}"
                 master_flat_path = self._build_out(master_dir, master_flat_stem, "fit")
+                if os.path.normcase(master_flat_path) in used_out_paths:
+                    # Two groups of one filter, size and night whose exposures
+                    # are further apart than the tolerance truncate to the same
+                    # whole second (0.03 s and 0.1 s are both "0s"); the second
+                    # master used to overwrite the first. Name it precisely.
+                    exp_stem = f"{exposure_time:g}".replace("e-", "em").replace("e+", "ep").replace(".", "p")
+                    master_flat_stem = f"MasterFlat_{session}_{exp_stem}s_{image_size}_{filter_name}"
+                    master_flat_path = self._build_out(master_dir, master_flat_stem, "fit")
+                used_out_paths.add(os.path.normcase(master_flat_path))
 
                 header = fits.Header()
                 header["IMAGETYP"] = "FLAT"
@@ -20856,12 +21694,20 @@ class StackingSuiteDialog(QDialog):
                     header["ROWORDER"] = flat_roworder
 
                 # ─────────────────────────────────────────────────────────────
-                # Async save: hand the finished master to save_pool and move
-                # straight into the next group's tile loop. Cap in-flight saves
-                # at 2 so RAM stays bounded even on slow disks (each pending
-                # save holds one master_flat_data buffer alive).
+                # Async save: the next group stacks while this one writes. The
+                # tree entry waits for the file (see save_pool above).
                 # ─────────────────────────────────────────────────────────────
-                save_futs.append(save_pool.submit(
+                def _on_saved(_path=master_flat_path, _filter=filter_name, _size=image_size):
+                    self.master_sizes[_path] = _size
+                    self.add_master_flat_to_tree(_filter, _path)
+                    # Not "✅ ... saved": this can land after the next group has
+                    # started, and the monitor and Log Analysis would credit it
+                    # to that group. "queued" below is the group's end.
+                    self.update_status(f"💾 Master Flat written: {os.path.basename(_path)}")
+                    QApplication.processEvents()
+                    self.save_master_paths_to_settings()
+
+                pending_saves.append((save_pool.submit(
                     save_image,
                     master_flat_data,
                     master_flat_path,
@@ -20869,26 +21715,14 @@ class StackingSuiteDialog(QDialog):
                     "32-bit floating point",
                     header,
                     is_mono=(channels == 1),
-                ))
-                while len(save_futs) > 2:
-                    try:
-                        save_futs.pop(0).result()
-                    except Exception as _se:
-                        self.update_status(f"⚠️ Master-flat save failed: {_se}")
-
-                self.master_sizes[master_flat_path] = image_size
-                self.add_master_flat_to_tree(filter_name, master_flat_path)
+                ), _on_saved))
+                del master_flat_data, final_stacked
                 self.update_status(f"✅ Master Flat queued: {os.path.basename(master_flat_path)}")
                 QApplication.processEvents()
-                self.save_master_paths_to_settings()
+                _finish_saves(keep=1)
 
             # Drain remaining in-flight saves before wrap-up
-            for _fs in save_futs:
-                try:
-                    _fs.result()
-                except Exception as _se:
-                    self.update_status(f"⚠️ Master-flat save failed: {_se}")
-            save_futs.clear()
+            _finish_saves(block_all=True)
             # Emit a clean "all done" marker so the Stacking Execution Monitor
             # closes the Master Flats row for sure — the per-group "queued"
             # message is the primary terminator, but if the monitor's rule
@@ -20902,31 +21736,26 @@ class StackingSuiteDialog(QDialog):
             self._refresh_quick_stack_summary_later()
 
         finally:
-            # Shut down pipeline pools first so no background work outlives the
-            # method. prep_pool: the next-group preamble may still be running
-            # if we broke out of the loop early — let it finish (its sources
-            # would otherwise leak file descriptors). save_pool: ensure every
-            # queued FITS write lands before we release resources.
+            # Land every queued master (a cancel keeps the masters already
+            # built), release flats loaded ahead for a group that never ran,
+            # then stop the pools.
             try:
-                prep_pool.shutdown(wait=True)
+                _finish_saves(block_all=True)
             except Exception:
                 pass
-            try:
-                save_pool.shutdown(wait=True)
-            except Exception:
-                pass
-            # Any sources opened by a prep that never ran as a group (early
-            # cancel) are owned by `next_prep_fut`'s result; drain and close.
-            try:
-                if next_prep_fut is not None:
-                    _leftover = next_prep_fut.result()
-                    for _s in (_leftover or {}).get("sources", []):
-                        try:
-                            _s.close()
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+            _close_mmimages(live_sources)
+            live_sources.clear()
+            for _f in list(prep_futs.values()):
+                try:
+                    _close_mmimages((_f.result() or {}).get("sources", []) or [])
+                except Exception:
+                    pass
+            prep_futs.clear()
+            for _pool in (prep_pool, save_pool):
+                try:
+                    _pool.shutdown(wait=True)
+                except Exception:
+                    pass
             try:
                 _free_torch_memory()
             except Exception as e:
@@ -20970,6 +21799,7 @@ class StackingSuiteDialog(QDialog):
         child_label = f"{os.path.basename(master_flat_path)}"
         child_meta = f"Size: {size}, Session: {session}{gain_suffix}"
         master_item = QTreeWidgetItem([child_label, child_meta])
+        master_item.setData(0, Qt.ItemDataRole.UserRole, master_flat_path)
         filter_item.addChild(master_item)
 
     def _parse_float(self, v):
@@ -21167,224 +21997,11 @@ class StackingSuiteDialog(QDialog):
 
     def assign_best_master_files(self, fill_only: bool = True):
         """
-        Assign best matching Master Dark and Flat to each Light leaf.
-        - Honors manual overrides (never ignored).
-        - If fill_only is True, do NOT overwrite non-empty cells.
+        Show, under each Lights group, the master dark and flat(s) it will use
+        and, on each frame, the ones it gets (_light_master_pick, the same
+        resolver calibrate_lights uses). fill_only is kept for old callers.
         """
-        for k, v in self.master_files.items():
-            print(f"  {k!r} -> {v!r}")
-        if not getattr(self, "master_files", None):
-            print("⚠️ WARNING: No Master Calibration Files available.")
-            self.update_status("⚠️ WARNING: No Master Calibration Files available.")
-            return
-
-        # Ensure override dicts exist
-        dark_over = getattr(self, "manual_dark_overrides", {}) or {}
-        flat_over = getattr(self, "manual_flat_overrides", {}) or {}
-        master_sizes = getattr(self, "master_sizes", {})
-        self.master_sizes = master_sizes  # keep cache alive
-
-        for i in range(self.light_tree.topLevelItemCount()):
-            filter_item = self.light_tree.topLevelItem(i)
-            filter_name_raw = filter_item.text(0)
-            filter_name = self._sanitize_name(filter_name_raw)
-
-            for j in range(filter_item.childCount()):
-                exposure_item = filter_item.child(j)
-                exposure_text = exposure_item.text(0)  # e.g. "300.0s (4144x2822)"
-
-                # Parse exposure seconds (for dark matching)
-                mexp = re.match(r"([\d.]+)s?", exposure_text or "")
-                exposure_time = float(mexp.group(1)) if mexp else 0.0
-
-                for k in range(exposure_item.childCount()):
-                    leaf_item = exposure_item.child(k)
-                    meta_text = leaf_item.text(1) or ""
-
-                    # Parse size & session from metadata column
-                    msize = re.search(r"Size:\s*(\d+x\d+)", meta_text)
-                    image_size = msize.group(1) if msize else "Unknown"
-                    msess = re.search(r"Session:\s*([^|]+)", meta_text)
-                    session_name = (msess.group(1).strip() if msess else "Default")
-
-                    # Current cells (so we can skip if fill_only)
-                    curr_dark = (leaf_item.text(2) or "").strip()
-                    curr_flat = (leaf_item.text(3) or "").strip()
-                    # Read light path and gain/offset once — used for both dark and flat matching
-                    light_path = leaf_item.data(0, Qt.ItemDataRole.UserRole)
-                    l_gain = l_offset = None
-                    try:
-                        if light_path:
-                            _lhdr = fits.getheader(light_path, memmap=True)
-                            l_gain = _get_key_float(_lhdr, "GAIN")
-                            l_offset = _get_key_float(_lhdr, "OFFSET")
-                            if l_offset is None:
-                                l_offset = _get_key_float(_lhdr, "BLKLEVEL")
-                    except Exception:
-                        pass
-                    # ---------- DARK RESOLUTION ----------
-                    dark_key_full  = f"{filter_name_raw} - {exposure_text}"
-                    dark_key_short = exposure_text
-                    dark_override  = dark_over.get(dark_key_full) or dark_over.get(dark_key_short)
-
-                    # Per-leaf UserRole path always wins — set by override_selected_master_dark
-                    existing_leaf_dark = leaf_item.data(2, Qt.ItemDataRole.UserRole)
-                    if existing_leaf_dark and os.path.isfile(existing_leaf_dark):
-                        dark_choice = curr_dark  # leaf has its own per-file override, leave it
-                    elif dark_override:
-                        dark_choice = os.path.basename(dark_override)
-                    else:
-                        # Always recompute auto-assignments (never keep a stale
-                        # auto-fill) so the load order (darks / lights / flats, in
-                        # any sequence) can't leave a wrong match in place. Manual
-                        # per-leaf and group overrides above still win.
-                        l_ccd, l_set, l_temp = self._get_light_temp(light_path)
-
-                        if not hasattr(self, "_master_dark_go"):
-                            self._master_dark_go = {}
-
-                        best_path = None
-                        best_score = None
-
-                        for mk, mp in (self.master_files or {}).items():
-                            if not mp:
-                                continue
-
-                            mk_str = str(mk or "").strip()
-                            bn = os.path.basename(mp).lower()
-
-                            is_dark_key = bool(re.match(r"^\s*[\d.]+s\s*\(\d+x\d+\)", mk_str, re.IGNORECASE))
-                            if (not is_dark_key) and ("masterflat" in bn):
-                                continue
-                            if not is_dark_key and ("exposure-" not in bn):
-                                continue
-
-                            md = {}
-                            try:
-                                md = self._get_master_dark_meta(mp) or {}
-                            except Exception:
-                                md = {}
-
-                            md_size = md.get("size")
-                            if not md_size:
-                                msize_key = re.search(r"\((\d+x\d+)\)", mk_str)
-                                if msize_key:
-                                    md_size = msize_key.group(1)
-                            if not md_size:
-                                msize_name = re.search(r"_(\d+x\d+)_EXPOSURE-", os.path.basename(mp), re.IGNORECASE)
-                                if msize_name:
-                                    md_size = msize_name.group(1)
-
-                            if (md_size or "Unknown") != image_size:
-                                continue
-
-                            md_exp = md.get("exp")
-                            if md_exp is None:
-                                mexp_key = re.match(r"^\s*([\d.]+)s\s*\(", mk_str, re.IGNORECASE)
-                                if mexp_key:
-                                    md_exp = float(mexp_key.group(1))
-                            if md_exp is None:
-                                mexp_name = re.search(r"EXPOSURE-([\d.]+)s", os.path.basename(mp), re.IGNORECASE)
-                                if mexp_name:
-                                    md_exp = float(mexp_name.group(1))
-                            if md_exp is None:
-                                continue
-
-                            exp_diff = abs(float(md_exp) - float(exposure_time))
-                            # Darks are session/date-agnostic — never let the capture
-                            # session influence which master dark is chosen. Selection
-                            # is purely exposure / gain / offset / temperature based.
-                            sess_mismatch = 0
-
-                            md_temp = md.get("temp")
-                            if (l_temp is not None) and (md_temp is not None):
-                                temp_diff = abs(float(md_temp) - float(l_temp))
-                                temp_unknown = 0
-                            else:
-                                temp_diff = 9999.0
-                                temp_unknown = 1
-
-                            # Gain/offset matching
-                            if mp not in self._master_dark_go:
-                                try:
-                                    hdr = fits.getheader(mp, memmap=True)
-                                    mg = _get_key_float(hdr, "GAIN")
-                                    mo = _get_key_float(hdr, "OFFSET")
-                                    if mo is None:
-                                        mo = _get_key_float(hdr, "BLKLEVEL")
-                                    self._master_dark_go[mp] = (mg, mo)
-                                except Exception:
-                                    self._master_dark_go[mp] = (None, None)
-
-                            master_gain, master_offset = self._master_dark_go[mp]
-                            go_mismatch = False
-                            if l_gain is not None and master_gain is not None:
-                                if abs(l_gain - master_gain) > 1:
-                                    go_mismatch = True
-                            if l_offset is not None and master_offset is not None:
-                                if abs(l_offset - master_offset) > 1:
-                                    go_mismatch = True
-
-                            score = (sess_mismatch, (1 if go_mismatch else 0), exp_diff, temp_unknown, temp_diff)
-                            if best_score is None or score < best_score:
-                                best_score = score
-                                best_path = mp
-
-                        dark_choice = os.path.basename(best_path) if best_path else ("None" if not curr_dark else curr_dark)
-
-                    # ---------- FLAT RESOLUTION ----------
-                    flat_key_full  = f"{filter_name_raw} - {exposure_text}"
-                    flat_key_short = exposure_text
-                    flat_override  = flat_over.get(flat_key_full) or flat_over.get(flat_key_short)
-
-                    # Per-leaf UserRole path always wins — set by override_selected_master_flat
-                    existing_leaf_flat = leaf_item.data(3, Qt.ItemDataRole.UserRole)
-                    if existing_leaf_flat and os.path.isfile(existing_leaf_flat):
-                        flat_choice = curr_flat  # leaf has its own per-file override, leave it
-                    elif flat_override:
-                        flat_choice = os.path.basename(flat_override)
-                    else:
-                        # Always recompute auto-assignments (see dark branch note).
-                        best_flat_path = None
-
-                        # NOTE: master_files keys are like:
-                        #   "H (6248x4176) [2026-01-07] [G100]"
-                        # i.e. the session bracket is NOT necessarily the last
-                        # bracket in the key (gain suffix may follow it), so we
-                        # can't do an exact dict-key match anymore. Match by prefix.
-                        exact_key_prefix = f"{filter_name} ({image_size}) [{session_name}]"
-                        exact_candidates = [
-                            mp for mk, mp in self.master_files.items()
-                            if str(mk).startswith(exact_key_prefix)
-                        ]
-
-                        if exact_candidates:
-                            for candidate in exact_candidates:
-                                fg, fo = self._master_flat_gain_offset(candidate)
-                                gain_ok = (l_gain is None or fg is None or abs(l_gain - fg) <= 1)
-                                offset_ok = (l_offset is None or fo is None or abs(l_offset - fo) <= 1)
-                                if gain_ok and offset_ok:
-                                    best_flat_path = candidate
-                                    break
-
-                        if best_flat_path is None:
-                            best_flat_path = self._closest_flat_for(
-                                filter_name=filter_name,
-                                image_size=image_size,
-                                light_path=light_path,
-                                light_gain=l_gain,
-                                light_offset=l_offset,
-                            )
-
-                        flat_choice = os.path.basename(best_flat_path) if best_flat_path else ("None" if not curr_flat else curr_flat)
-
-                    # ---------- WRITE CELLS ----------
-                    leaf_item.setText(2, dark_choice)
-                    leaf_item.setText(3, flat_choice)
-
-        self.light_tree.viewport().update()
-
-
+        self._refresh_light_master_rows()
 
     def update_light_corrections(self):
         """ Updates the light frame corrections when checkboxes change. """
@@ -21418,7 +22035,7 @@ class StackingSuiteDialog(QDialog):
 
     def light_tree_context_menu(self, pos):
         item = self.light_tree.itemAt(pos)
-        if not item:
+        if not item or is_control_item(item):
             return
 
         # ✅ Make right-click target part of the selection (but don’t nuke multi-select)
@@ -21430,6 +22047,7 @@ class StackingSuiteDialog(QDialog):
         menu = QMenu(self.light_tree)
         override_dark_action = menu.addAction(self.tr("Override Dark Frame"))
         override_flat_action = menu.addAction(self.tr("Override Flat Frame"))
+        use_group_action = menu.addAction(self.tr("Use the Group's Dark and Flat"))
         menu.addSeparator()
         set_session_action = menu.addAction(self.tr("Set Session Tag..."))
 
@@ -21438,6 +22056,8 @@ class StackingSuiteDialog(QDialog):
             self.override_selected_master_dark()
         elif action == override_flat_action:
             self.override_selected_master_flat()
+        elif action == use_group_action:
+            self._clear_selected_frame_masters()
         elif action == set_session_action:
             self.prompt_set_session(item, "LIGHT")
 
@@ -21480,114 +22100,9 @@ class StackingSuiteDialog(QDialog):
 
 
     def override_selected_master_dark(self):
-        selected_items = self.light_tree.selectedItems()
-        if not selected_items:
-            print("⚠️ No light item selected for dark frame override.")
-            return
-
-        last_dir = self.settings.value("stacking/last_master_dark_dir", "", type=str) if hasattr(self, "settings") else ""
-        if not last_dir:
-            last_dir = getattr(self, "stacking_directory", "") or ""
-        try:
-            it0 = selected_items[0]
-            p0 = it0.data(0, Qt.ItemDataRole.UserRole)
-            if isinstance(p0, str) and os.path.exists(p0):
-                last_dir = os.path.dirname(p0)
-        except Exception:
-            pass
-        if not last_dir:
-            last_dir = os.path.expanduser("~")
-
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, self.tr("Select Master Dark"), last_dir,
-            "Master Calibration (*.fits *.fit *.xisf);;All Files (*)"
-        )
-        if not file_path:
-            return
-
-        try:
-            if hasattr(self, "settings"):
-                self.settings.setValue("stacking/last_master_dark_dir", os.path.dirname(file_path))
-        except Exception:
-            pass
-
-        if not hasattr(self, "manual_dark_overrides") or self.manual_dark_overrides is None:
-            self.manual_dark_overrides = {}
-
-        for item in selected_items:
-            if item.parent() and item.childCount() > 0:
-                # Exposure group row selected — apply to all leaves in this group
-                for i in range(item.childCount()):
-                    leaf = item.child(i)
-                    leaf.setText(2, os.path.basename(file_path))
-                    leaf.setData(2, Qt.ItemDataRole.UserRole, file_path)
-
-            elif item.parent() and item.parent().parent():
-                # Individual leaf selected
-                item.setText(2, os.path.basename(file_path))
-                item.setData(2, Qt.ItemDataRole.UserRole, file_path)
-
-        # Do NOT write to manual_dark_overrides — per-leaf UserRole is the source of truth
-        print("✅ Light Dark override applied.")
-
-    def _auto_pick_master_dark(self, image_size: str, exposure_time: float,
-                                light_gain: float | None = None,
-                                light_offset: float | None = None):
-        if not hasattr(self, "_master_dark_go"):
-            self._master_dark_go = {}
-
-        best_path, best_score = None, float("inf")
-        for key, path in self.master_files.items():
-            m = re.match(r"^\s*([\d.]+)s\b", str(key))
-            if not m:
-                continue
-            try:
-                dark_exp = float(m.group(1))
-            except Exception:
-                continue
-
-            size = self.master_sizes.get(path)
-            if size is None:
-                try:
-                    with fits.open(path) as hdul:
-                        size = f"{hdul[0].data.shape[1]}x{hdul[0].data.shape[0]}"
-                    self.master_sizes[path] = size
-                except Exception:
-                    continue
-
-            if size != image_size:
-                continue
-
-            # Read and cache gain/offset from master header
-            if path not in self._master_dark_go:
-                try:
-                    hdr = fits.getheader(path, memmap=True)
-                    mg = _get_key_float(hdr, "GAIN")
-                    mo = _get_key_float(hdr, "OFFSET")
-                    if mo is None:
-                        mo = _get_key_float(hdr, "BLKLEVEL")
-                    self._master_dark_go[path] = (mg, mo)
-                except Exception:
-                    self._master_dark_go[path] = (None, None)
-
-            master_gain, master_offset = self._master_dark_go[path]
-
-            go_mismatch = False
-            if light_gain is not None and master_gain is not None:
-                if abs(light_gain - master_gain) > 1:
-                    go_mismatch = True
-            if light_offset is not None and master_offset is not None:
-                if abs(light_offset - master_offset) > 1:
-                    go_mismatch = True
-
-            exp_diff = abs(dark_exp - exposure_time)
-            score = exp_diff + (10000.0 if go_mismatch else 0.0)
-
-            if score < best_score:
-                best_score = score
-                best_path = path
-
-        return best_path
+        """Override Dark Frame: selected frames get their own master dark;
+        a selected group (or filter) gets it in its Dark row."""
+        self._override_selected_light_master("dark")
 
     def _auto_pick_master_flat(self, filter_name: str, image_size: str, session_name: str,
                                light_path: str | None = None,
@@ -21643,23 +22158,6 @@ class StackingSuiteDialog(QDialog):
         fallback_key = f"{filter_name} ({image_size})"
         return self.master_files.get(fallback_key)
 
-    def _lookup_flat_override(self, filter_name: str, exposure_text: str) -> str | None:
-        """Prefer 'Filter - exposure' override, else bare exposure."""
-        if not hasattr(self, "manual_flat_overrides"):
-            self.manual_flat_overrides = {}
-        key_full  = f"{filter_name} - {exposure_text}"
-        key_short = exposure_text
-        return (self.manual_flat_overrides.get(key_full)
-                or self.manual_flat_overrides.get(key_short))
-
-    def _lookup_dark_override(self, filter_name: str, exposure_text: str) -> str | None:
-        if not hasattr(self, "manual_dark_overrides"):
-            self.manual_dark_overrides = {}
-        key_full  = f"{filter_name} - {exposure_text}"
-        key_short = exposure_text
-        return (self.manual_dark_overrides.get(key_full)
-                or self.manual_dark_overrides.get(key_short))
-
     # --- key helpers (scoped to filter+exposure) ---------------------------------
     def _light_key(self, filter_name: str, exposure_text: str) -> str:
         # Keep this EXACT format if other code relies on it
@@ -21692,89 +22190,9 @@ class StackingSuiteDialog(QDialog):
 
 
     def override_selected_master_flat(self):
-        """
-        Override Master Flat for ONLY the selected leaf (file) rows.
-        Mirrors override_selected_master_dark in behaviour:
-        - remembers last directory via QSettings
-        - populates manual_flat_overrides under both
-            'Filter - exposure' and bare 'exposure' keys
-        - writes basename to column 3 and full path to UserRole on col 3
-            so both _leaf_assigned_flat_path and calibrate_lights find it
-        - accepts .fits / .fit / .xisf
-        """
-        leaves = list(self._iter_selected_light_leaves())
-        if not leaves:
-            print("⚠️ Select individual Light files (leaf rows) to override their flat.")
-            return
-
-        # ── remember last directory ──────────────────────────────────────────
-        last_dir = (
-            self.settings.value("stacking/last_master_flat_dir", "", type=str)
-            if hasattr(self, "settings") else ""
-        )
-        if not last_dir:
-            last_dir = getattr(self, "stacking_directory", "") or ""
-
-        # best guess: use the folder of the first selected leaf
-        try:
-            p0 = leaves[0].data(0, Qt.ItemDataRole.UserRole)
-            if isinstance(p0, str) and os.path.exists(p0):
-                last_dir = os.path.dirname(p0)
-        except Exception:
-            pass
-
-        if not last_dir:
-            last_dir = os.path.expanduser("~")
-
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            self.tr("Select Master Flat"),
-            last_dir,
-            "Master Calibration (*.fits *.fit *.xisf);;All Files (*)"
-        )
-        if not file_path:
-            return
-
-        # ── persist last directory ───────────────────────────────────────────
-        try:
-            if hasattr(self, "settings"):
-                self.settings.setValue(
-                    "stacking/last_master_flat_dir", os.path.dirname(file_path)
-                )
-        except Exception:
-            pass
-
-        # ── ensure dict exists ───────────────────────────────────────────────
-        if not hasattr(self, "manual_flat_overrides") or self.manual_flat_overrides is None:
-            self.manual_flat_overrides = {}
-
-        base = os.path.basename(file_path)
-
-        for leaf in leaves:
-            # Walk up to get filter_name and exposure_text for dict keys,
-            # mirroring the same hierarchy the dark override uses.
-            exposure_item = leaf.parent()          # e.g. "300.0s (4144x2822)"
-            filter_item   = exposure_item.parent() if exposure_item else None
-
-            if exposure_item and filter_item:
-                filter_name   = filter_item.text(0)
-                exposure_text = exposure_item.text(0)
-
-                # Populate both key forms so _lookup_flat_override and
-                # calibrate_lights (which only checks the full key directly)
-                # both find the override reliably.
-                self.manual_flat_overrides[f"{filter_name} - {exposure_text}"] = file_path
-                self.manual_flat_overrides[exposure_text] = file_path
-
-            # Column 3 = Master Flat display name
-            leaf.setText(3, base)
-            # Full path in UserRole so _leaf_assigned_flat_path returns it directly
-            leaf.setData(3, Qt.ItemDataRole.UserRole, file_path)
-
-        print(f"✅ Flat override applied to {len(leaves)} selected file(s): {base}")
-
-
-
+        """Override Flat Frame: selected frames get their own master flat;
+        a selected group (or filter) gets it in its Flat row(s)."""
+        self._override_selected_light_master("flat")
 
     def toggle_group_correction(self, group_item, which):
         """
@@ -21864,18 +22282,18 @@ class StackingSuiteDialog(QDialog):
         return bool(apply_cosmetic), bool(apply_pedestal)
 
     def _leaf_assigned_dark_path(self, leaf):
-        # Column 2 = Master Dark (full path stashed in UserRole when overridden)
+        """The master dark picked for this frame alone (right-click), or None."""
         try:
-            p = leaf.data(2, Qt.ItemDataRole.UserRole)
-            return str(p) if p else None
+            v = self.light_frame_master.get(("dark", _norm_path_key(leaf.data(0, Qt.ItemDataRole.UserRole))))
+            return v if isinstance(v, str) and v != _PICK_NONE else None
         except Exception:
             return None
 
     def _leaf_assigned_flat_path(self, leaf):
-        # Column 3 = Master Flat (full path stashed in UserRole when overridden)
+        """The master flat picked for this frame alone (right-click), or None."""
         try:
-            p = leaf.data(3, Qt.ItemDataRole.UserRole)
-            return str(p) if p else None
+            v = self.light_frame_master.get(("flat", _norm_path_key(leaf.data(0, Qt.ItemDataRole.UserRole))))
+            return v if isinstance(v, str) and v != _PICK_NONE else None
         except Exception:
             return None
 
@@ -23192,6 +23610,7 @@ class StackingSuiteDialog(QDialog):
         # ════════════════════════════════════════════════════════════════
         # frame_infos: ordered list of dicts, one per leaf
         frame_infos = []
+        master_snap = self._master_snapshot()
 
         for i in range(self.light_tree.topLevelItemCount()):
             filter_item  = self.light_tree.topLevelItem(i)
@@ -23199,6 +23618,8 @@ class StackingSuiteDialog(QDialog):
 
             for j in range(filter_item.childCount()):
                 exposure_item = filter_item.child(j)
+                if is_control_item(exposure_item):
+                    continue
                 exposure_text = exposure_item.text(0)
 
                 apply_cosmetic, apply_pedestal = \
@@ -23255,51 +23676,15 @@ class StackingSuiteDialog(QDialog):
                             light_offset = _get_key_float(header, "BLKLEVEL")
                     except Exception:
                         pass
-                    # resolve dark — per-leaf UserRole wins, then group override, then auto
-                    master_dark_path = self._leaf_assigned_dark_path(leaf)
-                    if master_dark_path is None:
-                        # Only use group override if this specific leaf has no per-leaf path
-                        full  = f"{filter_name} - {exposure_text}"
-                        short = exposure_text
-                        master_dark_path = (
-                            self.manual_dark_overrides.get(full)
-                            or self.manual_dark_overrides.get(short)
-                        )
-                    if master_dark_path is None:
-                        name_in_leaf = (leaf.text(2) or "").strip()
-                        if name_in_leaf and name_in_leaf.lower() != "none":
-                            for _, path in self.master_files.items():
-                                if os.path.basename(path) == name_in_leaf:
-                                    master_dark_path = path
-                                    break
-                    if master_dark_path is None:
-                        mm       = re.match(r"([\d.]+)s", exposure_text or "")
-                        exp_time = float(mm.group(1)) if mm else 0.0
-                        master_dark_path = self._auto_pick_master_dark(
-                            image_size, exp_time,
-                            light_gain=light_gain,
-                            light_offset=light_offset,
-                        )
-
-                    # resolve flat
-                    master_flat_path = self._leaf_assigned_flat_path(leaf)
-                    if master_flat_path is None:
-                        master_flat_path = self.manual_flat_overrides.get(
-                            f"{filter_name} - {exposure_text}"
-                        )
-                    if master_flat_path is None:
-                        name_in_leaf = (leaf.text(3) or "").strip()
-                        if name_in_leaf:
-                            for _, path in self.master_files.items():
-                                if os.path.basename(path) == name_in_leaf:
-                                    master_flat_path = path; break
-                    if master_flat_path is None:
-                        master_flat_path = self._auto_pick_master_flat(
-                            filter_name, image_size, session_name,
-                            light_path=light_file,
-                            light_gain=light_gain,
-                            light_offset=light_offset,
-                        )
+                    # The masters this frame's group shows in the Lights tab
+                    # (its Dark / Flat rows, or the frame's own pick).
+                    frame_meta = self._light_frame_meta(light_file)
+                    master_dark_path, _ = self._light_master_pick(
+                        "dark", filter_name, exposure_text, session_name,
+                        light_file, frame_meta, master_snap)
+                    master_flat_path, _ = self._light_master_pick(
+                        "flat", filter_name, exposure_text, session_name,
+                        light_file, frame_meta, master_snap)
 
                     group_key = (
                         filter_name, exposure_text, session_name,

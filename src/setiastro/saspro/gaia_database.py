@@ -858,6 +858,38 @@ class GaiaBulkLibrary:
             return (int(best_sid), float(best_sep))
         return None
 
+    def positions_in_box(self, ra_min: float, ra_max: float,
+                         dec_min: float, dec_max: float) -> Tuple[np.ndarray, np.ndarray]:
+        """RA and Dec (degrees) of every library star in a box, as two float64
+        arrays: the region read find_nearest_batch makes, for callers that need
+        the catalog itself (plate_solution_check counts chance matches)."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        conns = list(self._connections.values())
+        if not conns:
+            return np.zeros(0), np.zeros(0)
+
+        def _query_file(conn):
+            try:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT ra, dec FROM sources
+                    WHERE dec BETWEEN ? AND ?
+                      AND ra  BETWEEN ? AND ?
+                """, (dec_min, dec_max, ra_min, ra_max))
+                return cur.fetchall()
+            except Exception:
+                return []
+
+        rows: list = []
+        with ThreadPoolExecutor(max_workers=min(8, len(conns))) as ex:
+            for part in ex.map(_query_file, conns):
+                rows.extend(part)
+        if not rows:
+            return np.zeros(0), np.zeros(0)
+        arr = np.asarray(rows, dtype=np.float64)
+        return arr[:, 0], arr[:, 1]
+
     def get_group_status(self) -> List[GroupStatus]:
         """
         WARNING: runs COUNT(*) on every installed file. The UI no longer calls

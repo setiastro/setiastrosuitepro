@@ -6,9 +6,9 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
-from PyQt6.QtWidgets import QMenu, QToolButton
+from PyQt6.QtWidgets import QMenu, QToolButton, QToolBar
 
 from PyQt6.QtCore import QElapsedTimer
 
@@ -42,7 +42,7 @@ from setiastro.saspro.resources import (
 )
 
 # Import shortcuts module
-from setiastro.saspro.shortcuts import DraggableToolBar, ShortcutManager
+from setiastro.saspro.shortcuts import DraggableToolBar, EssentialsToolBar, ShortcutManager
 
 
 class ToolbarMixin:
@@ -427,6 +427,9 @@ class ToolbarMixin:
         #tb_hidden.addAction(self.act_narrowband_normalization)
         tb_hidden.setVisible(False)  # <- always hidden
 
+        self._build_essentials_toolbars()
+        self._build_toolbar_mode_bar()
+
         self._arrange_toolbar_rows()
 
         # Before memberships: drop drags that would pin a moved tool to the
@@ -458,14 +461,344 @@ class ToolbarMixin:
         self._rebind_view_dropdowns()
         self._rebind_extract_luma_dropdown()
         self._apply_toolbar_icon_size()
+        self._apply_toolbar_mode()
 
     # Default toolbar rows, by object name ("Star Stuff" is Analysis). One row
     # showed 41 of the 108 buttons at 1920 px wide, with eight toolbars down to
     # a single icon. When a row doesn't fit, its last toolbars shrink first.
+    # The Essentials bars share the rows: only one set shows at a time.
     _TOOLBAR_ROWS = (
-        ("View", "Stacking", "Tools", "Star Stuff", "What's In My..."),
-        ("Functions", "Smart Tools", "Masks", "Bundles", "Geometry", "Hidden"),
+        ("ToolbarMode", "View", "EssentialsLinear",
+         "Stacking", "Tools", "Star Stuff", "What's In My..."),
+        ("EssentialsFinish",
+         "Functions", "Smart Tools", "Masks", "Bundles", "Geometry", "Hidden"),
     )
+
+    # ── Essentials / All Tools ───────────────────────────────────────────────
+    # Essentials: the tools of the beginner workflows (workflows.py, the canned
+    # OSC / Mono RGB / Mono Narrowband flows), in the order they use them, plus
+    # the AI tools people come to SASpro for (Cosmic Clarity, SyQon, RC-Astro).
+    # Row 1 is the linear work, row 2 the stretch and finish. Each tool keeps
+    # its own icon and action; the label is a short name for under the icon
+    # (the tooltip still gives the full one).
+    _ESSENTIALS = (
+        ("EssentialsLinear", "Toolbar/EssentialsLinear",
+         QT_TRANSLATE_NOOP("Essentials", "Essentials: Linear"), (
+             ("act_crop", QT_TRANSLATE_NOOP("Essentials", "Crop")),
+             ("act_rgb_combine", QT_TRANSLATE_NOOP("Essentials", "LRGB Combine")),
+             ("act_abe", QT_TRANSLATE_NOOP("Essentials", "ADBE")),
+             ("act_background_neutral", QT_TRANSLATE_NOOP("Essentials", "BG Neutral")),
+             ("act_white_balance", QT_TRANSLATE_NOOP("Essentials", "White Balance")),
+             ("actCosmicUI", QT_TRANSLATE_NOOP("Essentials", "Cosmic Clarity")),
+             ("actSyQonTools", QT_TRANSLATE_NOOP("Essentials", "SyQon")),
+             ("act_rcastro", QT_TRANSLATE_NOOP("Essentials", "RC-Astro")),
+             ("act_remove_stars", QT_TRANSLATE_NOOP("Essentials", "Remove Stars")),
+         )),
+        ("EssentialsFinish", "Toolbar/EssentialsFinish",
+         QT_TRANSLATE_NOOP("Essentials", "Essentials: Non-Linear"), (
+             ("act_stat_stretch", QT_TRANSLATE_NOOP("Essentials", "Stretch")),
+             ("act_ppp", QT_TRANSLATE_NOOP("Essentials", "Palette Picker")),
+             ("act_curves", QT_TRANSLATE_NOOP("Essentials", "Curves")),
+             ("act_selective_color", QT_TRANSLATE_NOOP("Essentials", "Selective Color")),
+             ("act_texture_clarity", QT_TRANSLATE_NOOP("Essentials", "Texture")),
+             ("act_star_stretch", QT_TRANSLATE_NOOP("Essentials", "Star Stretch")),
+             ("act_nbtorgb", QT_TRANSLATE_NOOP("Essentials", "NB→RGB Stars")),
+             ("act_add_stars", QT_TRANSLATE_NOOP("Essentials", "Add Stars")),
+         )),
+    )
+    _TOOLBAR_MODE_KEY = "Toolbar/Mode"              # "essentials" | "full"
+    _FULL_VISIBLE_KEY = "Toolbar/FullVisible"       # full toolbars shown on leaving All Tools
+    _ESSENTIALS_LABELS_KEY = "Toolbar/EssentialsLabels"
+
+    def _full_toolbars(self):
+        """Every DraggableToolBar but the Essentials ones: the set that
+        memberships, Hidden and drags between toolbars work on."""
+        return [tb for tb in self.findChildren(DraggableToolBar) if not tb.is_essentials]
+
+    def _ensure_toolbar_mode_actions(self):
+        """The Essentials / All Tools pair (toolbar switch, View > Toolbar and
+        toolbar right-click) and Show Labels. Made once; menus rebuild around them."""
+        if getattr(self, "_toolbar_mode_actions", None):
+            return self._toolbar_mode_actions
+        grp = QActionGroup(self)
+        grp.setExclusive(True)
+        ess = QAction(self.tr("Essentials"), self)
+        ess.setToolTip(self.tr(
+            "Essentials: the tools of the beginner workflows, with their names.\n"
+            "Every tool is still in the menus and in Search Commands (Ctrl+/)."))
+        full = QAction(self.tr("All Tools"), self)
+        full.setToolTip(self.tr("All Tools: every toolbar and tool"))
+        for a, mode in ((ess, "essentials"), (full, "full")):
+            a.setCheckable(True)
+            a.setStatusTip(a.toolTip().split("\n")[0])
+            grp.addAction(a)
+            a.triggered.connect(lambda _=False, m=mode: self._set_toolbar_mode(m))
+        self._toolbar_mode_group = grp
+        self._toolbar_mode_actions = (ess, full)
+
+        lab = QAction(self.tr("Show Names Under Essentials Icons"), self)
+        lab.setCheckable(True)
+        lab.setChecked(self.settings.value(self._ESSENTIALS_LABELS_KEY, True, type=bool))
+        lab.toggled.connect(self._set_essentials_labels)
+        self._act_essentials_labels = lab
+        return self._toolbar_mode_actions
+
+    def _build_essentials_toolbars(self):
+        for name, key, title, items in self._ESSENTIALS:
+            tb = EssentialsToolBar(QCoreApplication.translate("Essentials", title), self)
+            tb.setObjectName(name)
+            tb.setSettingsKey(key)
+            self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
+            for attr, label in items:
+                act = getattr(self, attr, None)
+                if act is None:
+                    continue
+                # Shown only by a toolbar that shows text, and the full ones
+                # are icon-only; menus and the tooltip use text().
+                act.setIconText(QCoreApplication.translate("Essentials", label))
+                tb.addAction(act)
+            self._restore_toolbar_order(tb, key)
+            if name == "EssentialsFinish":
+                self._add_essentials_search(tb)
+                tb.addAction(self._ensure_start_panel_button())
+        self._apply_essentials_labels()
+
+    def _ensure_start_panel_button(self):
+        """Start Panel on Essentials, after the search box: the start panel,
+        over open images too (as View > Start Panel does). Not that menu's
+        action: it is a tick that stays on while the panel stands aside for
+        images, and on a toolbar it would look pressed with no panel up.
+        No command id (no desktop shortcut, kept last by a restored order),
+        and out of Command Search, where View > Start Panel already is."""
+        a = getattr(self, "act_start_panel_button", None)
+        if a is not None:
+            return a
+        a = QAction(QIcon(icon_path), self.tr("Start Panel"), self)
+        a.setToolTip(self.tr("Start Panel: open images, process step by step, stacking and more"))
+        a.setStatusTip(a.toolTip())
+        a.setProperty("cmdp_exclude", True)
+        a.triggered.connect(lambda _=False: self._start_panel_menu(True))
+        self.act_start_panel_button = a
+        return a
+
+    def _add_essentials_search(self, tb):
+        """Search Commands at the end of Essentials: Non-Linear, after Add
+        Stars: every tool that isn't on Essentials is a search away. It
+        searches the same commands as the Command Search panel. Its action
+        has no command id, so a restored order keeps it last."""
+        from PyQt6.QtWidgets import QLineEdit
+        edit = QLineEdit(tb)
+        edit.setObjectName("EssentialsSearch")
+        edit.setPlaceholderText(self.tr("Search commands...  (Ctrl+Shift+P)"))
+        edit.setClearButtonEnabled(True)
+        edit.setFixedWidth(260)
+        tb.addWidget(edit)
+        self._essentials_search = edit
+        # First start: the command list is made after the toolbars, and
+        # _install_command_search wires this box then. A rebuild wires it here.
+        if getattr(self, "_cmd_model", None) is not None:
+            self._attach_command_search_edit(edit)
+
+    def _build_toolbar_mode_bar(self):
+        """The Essentials | All Tools switch, first on the top row. A plain
+        QToolBar, made once: _rebuild_toolbars only replaces DraggableToolBars."""
+        ess, full = self._ensure_toolbar_mode_actions()
+        bar = getattr(self, "_toolbar_mode_bar", None)
+        if bar is not None:
+            try:
+                bar.objectName()
+                return bar
+            except RuntimeError:                 # deleted with its window
+                pass
+        bar = QToolBar(self.tr("Toolbar Mode"), self)
+        bar.setObjectName("ToolbarMode")
+        bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        # No grip and tight padding: All Tools fills the top row at 1920 px
+        # (the switch with a grip pushed What's In My... into the >> overflow).
+        bar.setMovable(False)
+        bar.addAction(ess)
+        bar.addAction(full)
+        for a, side in ((ess, "left"), (full, "right")):
+            w = bar.widgetForAction(a)
+            if w is not None:
+                w.setObjectName(f"toolbarMode_{side}")
+        bar.setStyleSheet(
+            "QToolBar { spacing: 0px; padding: 0px 4px 0px 2px; }"
+            "QToolButton { padding: 2px 6px; margin: 0px; border: 1px solid palette(mid); }"
+            "QToolButton#toolbarMode_left { border-top-left-radius: 4px;"
+            " border-bottom-left-radius: 4px; border-right: none; }"
+            "QToolButton#toolbarMode_right { border-top-right-radius: 4px;"
+            " border-bottom-right-radius: 4px; }"
+            "QToolButton:checked { background: palette(highlight);"
+            " color: palette(highlighted-text); }")
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
+        self._toolbar_mode_bar = bar
+        return bar
+
+    def _set_essentials_labels(self, on: bool):
+        self.settings.setValue(self._ESSENTIALS_LABELS_KEY, bool(on))
+        self._apply_essentials_labels()
+
+    def _apply_essentials_labels(self):
+        on = self.settings.value(self._ESSENTIALS_LABELS_KEY, True, type=bool)
+        style = (Qt.ToolButtonStyle.ToolButtonTextUnderIcon if on
+                 else Qt.ToolButtonStyle.ToolButtonIconOnly)
+        for tb in self.findChildren(EssentialsToolBar):
+            tb.setToolButtonStyle(style)
+
+    def _toolbar_mode(self) -> str:
+        mode = str(self.settings.value(self._TOOLBAR_MODE_KEY, "", type=str) or "")
+        if mode not in ("essentials", "full"):
+            # Decided once and written, so an update never changes it. The
+            # first start of 2.0 gets Essentials: a new install, and 1.x users
+            # too, whose layout was just set aside. Putting the 1.x layout
+            # back switches to All Tools (_use_saved_layout). A layout from
+            # 2.0 before Essentials existed keeps every toolbar.
+            mode = "essentials" if getattr(self, "_fresh_install", False) else "full"
+            self.settings.setValue(self._TOOLBAR_MODE_KEY, mode)
+        return mode
+
+    def _set_toolbar_mode(self, mode: str):
+        mode = "essentials" if mode == "essentials" else "full"
+        if self._toolbar_mode() == "full" and mode == "essentials":
+            # Remember which full toolbars were up, to bring the same ones back.
+            shown = [tb.objectName() for tb in self._full_toolbars()
+                     if not tb.isHidden() and tb.objectName() != "Hidden"]
+            self.settings.setValue(self._FULL_VISIBLE_KEY, json.dumps(shown))
+            # While the full set is still up: its rows say where they go.
+            self._place_essentials_toolbars()
+            switching_back = False
+        else:
+            switching_back = (mode == "full" and self._toolbar_mode() == "essentials")
+        self.settings.setValue(self._TOOLBAR_MODE_KEY, mode)
+        self._apply_toolbar_mode(restore_full=switching_back)
+
+    def _apply_toolbar_mode(self, restore_full: bool = False):
+        """Show the toolbar set for the mode. View and the switch show in both.
+
+        Essentials always hides the full toolbars. All Tools hides the
+        Essentials ones and leaves the full ones as the saved layout has them,
+        except when switching back from Essentials (restore_full): then the
+        ones that were up when Essentials was chosen come back.
+        """
+        mode = self._toolbar_mode()
+        ess = (mode == "essentials")
+        acts = self._ensure_toolbar_mode_actions()
+        acts[0 if ess else 1].setChecked(True)
+        shown = None
+        if restore_full:
+            try:
+                raw = self.settings.value(self._FULL_VISIBLE_KEY, "", type=str) or ""
+                shown = set(json.loads(raw)) if raw else None
+            except Exception:
+                shown = None
+        for tb in self.findChildren(DraggableToolBar):
+            name = tb.objectName()
+            try:
+                if tb.is_essentials:
+                    tb.setVisible(ess)
+                elif name == "Hidden":
+                    tb.setVisible(False)
+                elif name == "View":
+                    continue
+                elif ess:
+                    tb.setVisible(False)
+                elif restore_full:
+                    tb.setVisible(shown is None or name in shown)
+            except RuntimeError:
+                continue
+        bar = getattr(self, "_toolbar_mode_bar", None)
+        if bar is not None:
+            try:
+                bar.setVisible(True)
+            except RuntimeError:
+                pass
+
+    # A layout saved before Essentials existed (2.0 before it, or the 1.x
+    # layout put back) doesn't know these toolbars, and restoreState leaves
+    # them at the end of the top row. Each is put in place once per layout.
+    _SWITCH_PLACED_KEY = "Toolbar/SwitchPlaced"
+    _ESSENTIALS_PLACED_KEY = "Toolbar/EssentialsPlaced"
+
+    def _place_toolbar_switch(self, force: bool = False):
+        """The Essentials | All Tools switch first on View's row. At startup
+        (after both saved layouts are restored) and after the 1.x layout is
+        put back (force)."""
+        s = self.settings
+        if not force:
+            if s.value(self._SWITCH_PLACED_KEY, False, type=bool):
+                return
+            if getattr(self, "_fresh_install", False):
+                # Code order already; so are the Essentials bars.
+                s.setValue(self._SWITCH_PLACED_KEY, True)
+                s.setValue(self._ESSENTIALS_PLACED_KEY, True)
+                return
+        bar = getattr(self, "_toolbar_mode_bar", None)
+        view = self._toolbar_by_settings_key("Toolbar/View")
+        try:
+            if (bar is not None and view is not None and not view.isFloating()
+                    and self.toolBarArea(view) == Qt.ToolBarArea.TopToolBarArea):
+                self.insertToolBar(view, bar)
+                bar.setVisible(True)
+        except Exception:
+            pass
+        s.setValue(self._SWITCH_PLACED_KEY, True)
+
+    def _place_essentials_toolbars(self):
+        """
+        Linear just after View on View's row, Non-Linear first on the next row
+        (a new row when View's is the last), so Essentials reads in workflow
+        order on any layout. Done when switching to Essentials, while the
+        full toolbars are still up: their positions are what tell the rows
+        apart, and a window not yet shown has none.
+        """
+        s = self.settings
+        if s.value(self._ESSENTIALS_PLACED_KEY, False, type=bool):
+            return
+        top = Qt.ToolBarArea.TopToolBarArea
+        lin = self._toolbar_by_settings_key("Toolbar/EssentialsLinear")
+        fin = self._toolbar_by_settings_key("Toolbar/EssentialsFinish")
+        view = self._toolbar_by_settings_key("Toolbar/View")
+        if lin is None or fin is None:
+            return
+        try:
+            up = [t for t in self.findChildren(QToolBar)
+                  if t.parent() is self and t.isVisible() and not t.isFloating()
+                  and self.toolBarArea(t) == top
+                  and not getattr(t, "is_essentials", False)]
+            if view is None or view not in up:
+                # No View on the top rows: two rows of their own at the bottom.
+                for tb in (lin, fin):
+                    self.addToolBarBreak(top)
+                    self.addToolBar(top, tb)
+            else:
+                vg = view.geometry()
+                after = sorted((t for t in up if t.geometry().y() == vg.y()
+                                and t.geometry().x() > vg.x()), key=lambda t: t.geometry().x())
+                below = [t for t in up if t.geometry().y() > vg.y()]
+                next_row = []
+                if below:
+                    y2 = min(t.geometry().y() for t in below)
+                    next_row = sorted((t for t in below if t.geometry().y() == y2),
+                                      key=lambda t: t.geometry().x())
+                if after:
+                    self.insertToolBar(after[0], lin)
+                elif not below:
+                    self.addToolBar(top, lin)          # View ends the last row
+                else:
+                    self.insertToolBar(next_row[0], lin)
+                if next_row:
+                    self.insertToolBar(next_row[0], fin)
+                    if not after and below:            # Linear went there too
+                        self.insertToolBarBreak(fin)
+                else:
+                    self.addToolBarBreak(top)
+                    self.addToolBar(top, fin)
+            for tb in (lin, fin):
+                tb.setVisible(False)                   # _apply_toolbar_mode shows them
+        except Exception as e:
+            print(f"[toolbar] placing Essentials: {e!r}")
+        s.setValue(self._ESSENTIALS_PLACED_KEY, True)
 
     def _arrange_toolbar_rows(self):
         """Lay the toolbars out in the default rows. A saved layout, restored
@@ -473,6 +806,9 @@ class ToolbarMixin:
         from setiastro.saspro.shortcuts import DraggableToolBar
         area = Qt.ToolBarArea.TopToolBarArea
         bars = {tb.objectName(): tb for tb in self.findChildren(DraggableToolBar)}
+        mode_bar = getattr(self, "_toolbar_mode_bar", None)
+        if mode_bar is not None:                 # a plain QToolBar (not the rails)
+            bars[mode_bar.objectName()] = mode_bar
         for i, names in enumerate(self._TOOLBAR_ROWS):
             if i:
                 self.addToolBarBreak(area)
@@ -500,8 +836,7 @@ class ToolbarMixin:
                 pass
 
     def _toolbar_containing_action(self, action: QAction):
-        from setiastro.saspro.shortcuts import DraggableToolBar
-        for tb in self.findChildren(DraggableToolBar):
+        for tb in self._full_toolbars():
             if action in tb.actions():
                 return tb
         return None
@@ -1928,6 +2263,10 @@ class ToolbarMixin:
             "Toolbar/WhatsInMy",
             "Toolbar/Bundles",
             "Toolbar/Hidden",
+            "Toolbar/EssentialsLinear",
+            "Toolbar/EssentialsFinish",
+            # The mode itself is kept; switching to All Tools shows them all.
+            "Toolbar/FullVisible",
         ]
 
         for k in keys_to_clear:
@@ -1971,6 +2310,12 @@ class ToolbarMixin:
         reset_ws = getattr(self, "_reset_workspace_to_factory", None)
         if reset_ws is not None:
             reset_ws()
+        # The factory state shows the toolbar set of the mode at startup, which
+        # may not be this one. FullVisible is cleared above, so in All Tools
+        # every full toolbar comes back. Every toolbar is in code order now.
+        self.settings.setValue(self._SWITCH_PLACED_KEY, True)
+        self.settings.setValue(self._ESSENTIALS_PLACED_KEY, True)
+        self._apply_toolbar_mode(restore_full=True)
 
     def _rebuild_toolbars(self):
         """Build the toolbars again from code and the saved toolbar settings."""
@@ -2070,11 +2415,8 @@ class ToolbarMixin:
         if not mapping:
             return
 
-        # Gather all DraggableToolBar instances
-        from setiastro.saspro.shortcuts import DraggableToolBar
-        toolbars: list[DraggableToolBar] = [
-            tb for tb in self.findChildren(DraggableToolBar)
-        ]
+        # Gather the full toolbars (the Essentials ones share their actions)
+        toolbars: list[DraggableToolBar] = self._full_toolbars()
 
         tb_by_key: dict[str, DraggableToolBar] = {}
         for tb in toolbars:
@@ -2236,9 +2578,8 @@ class ToolbarMixin:
             prev[cid] = prev_key
             self.settings.setValue("Toolbar/HiddenPrev", json.dumps(prev))
 
-        # Remove from all toolbars, add to hidden
-        from setiastro.saspro.shortcuts import DraggableToolBar
-        for t in self.findChildren(DraggableToolBar):
+        # Remove from all full toolbars (not Essentials), add to hidden
+        for t in self._full_toolbars():
             if act in t.actions():
                 t.removeAction(act)
 
@@ -2321,13 +2662,11 @@ class ToolbarMixin:
         if not tb_hidden:
             return
 
-        from setiastro.saspro.shortcuts import DraggableToolBar
-
         # If Hidden toolbar already has actions, assume user is already on new system
         # but we still can migrate any remaining old keys.
         # (We won't early-return.)
 
-        for tb in self.findChildren(DraggableToolBar):
+        for tb in self._full_toolbars():
             k = getattr(tb, "_settings_key", None)
             if not k or str(k) == "Toolbar/Hidden":
                 continue
@@ -2361,7 +2700,7 @@ class ToolbarMixin:
             # Move matching actions into Hidden toolbar. Look on every toolbar:
             # an action can have moved since the list was saved (Star Stuff's
             # tools went to Stacking, Functions and Tools in 1.24.8).
-            for act in [a for t in self.findChildren(DraggableToolBar)
+            for act in [a for t in self._full_toolbars()
                         if t is not tb_hidden for a in t.actions()]:
                 if act is None or act.isSeparator():
                     continue

@@ -25,6 +25,8 @@ from setiastro.saspro.cosmicclarity_engines._backend_guard import (
 # Keep these imports because your runtime torch loader is still the right way
 # to get CUDA / DirectML / MPS / CPU fallback behavior.
 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
+from setiastro.saspro.cosmicclarity_engines._fastops import channel_medians, pad_constant, fill_batch
+from setiastro.saspro.cosmicclarity_engines._gpu_thread import gpu_thread_entry
 from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usable
 from setiastro.saspro.resources import get_resources
 
@@ -321,18 +323,10 @@ def add_border(image: np.ndarray, border_size: int = 5) -> np.ndarray:
             constant_values=med,
         )
     if image.ndim == 3 and image.shape[2] == 3:
-        meds = np.median(image, axis=(0, 1)).astype(np.float32)
-        chans = []
-        for c in range(3):
-            chans.append(
-                np.pad(
-                    image[..., c],
-                    ((border_size, border_size), (border_size, border_size)),
-                    mode="constant",
-                    constant_values=float(meds[c]),
-                )
-            )
-        return np.stack(chans, axis=-1)
+        # Same values as np.median(axis=(0, 1)) + a padded copy per channel +
+        # np.stack, in a quarter of the time (_fastops).
+        meds = channel_medians(image).astype(np.float32)
+        return pad_constant(image, border_size, [float(m) for m in meds])
     raise ValueError("add_border expects 2D or HxWx3")
 
 
@@ -373,7 +367,7 @@ def stretch_image_unlinked_rgb(img_rgb: np.ndarray, target_median: float = 0.25)
     x = img_rgb.astype(np.float32, copy=True)
     orig_min = x.reshape(-1, 3).min(axis=0)
     x = x - orig_min.reshape(1, 1, 3)
-    orig_meds = np.median(x, axis=(0, 1)).astype(np.float32)
+    orig_meds = channel_medians(x).astype(np.float32)
 
     for c in range(3):
         m = float(orig_meds[c])
@@ -388,8 +382,11 @@ def stretch_image_unlinked_rgb(img_rgb: np.ndarray, target_median: float = 0.25)
 
 def unstretch_image_unlinked_rgb(img_rgb: np.ndarray, orig_meds, orig_min):
     x = img_rgb.astype(np.float32, copy=True)
+    # Each channel's median is read before that channel is rewritten and the
+    # channels are independent, so taking all three up front changes nothing.
+    meds_now = channel_medians(x)
     for c in range(3):
-        m_now = float(np.median(x[..., c]))
+        m_now = float(meds_now[c])
         m0 = float(orig_meds[c])
         if m_now != 0 and m0 != 0:
             x[..., c] = ((m_now - 1) * m0 * x[..., c]) / (
@@ -444,6 +441,15 @@ def split_image_into_chunks_with_overlap(image: np.ndarray, chunk_size: int, ove
     return out
 
 
+def _chunk_count(h: int, w: int, chunk_size: int, overlap: int, border_size: int = 5) -> int:
+    """len(split_image_into_chunks_with_overlap(add_border(img, border_size), ...))
+    for an h x w image, without building either. Only the progress total needs
+    it, and building it cost a full-frame pad and median per call."""
+    step = max(1, chunk_size - overlap)
+    return (len(range(0, h + 2 * border_size, step))
+            * len(range(0, w + 2 * border_size, step)))
+
+
 def _blend_weights(chunk_size: int, overlap: int):
     if overlap <= 0:
         return np.ones((chunk_size, chunk_size), dtype=np.float32)
@@ -496,8 +502,9 @@ def stitch_chunks_soft_blend(
         rr1 = rr0 + ih
         cc1 = cc0 + iw
 
-        # IMPORTANT: crop weights to match the same inner region
-        bw = bw_full[top:th-bottom, left:tw-right].reshape(ih, iw, 1)
+        # IMPORTANT: crop weights to match the same inner region. A view: the
+        # .reshape(ih, iw, 1) this replaced copied the window for every tile.
+        bw = bw_full[top:th-bottom, left:tw-right, None]
 
         out[rr0:rr1, cc0:cc1, :] += inner * bw
         wsum[rr0:rr1, cc0:cc1, :] += bw
@@ -700,7 +707,10 @@ def _infer_tiles_rgb_batched(
 
             for i in range(0, len(padded_tiles), bs):
                 batch_tiles = padded_tiles[i:i + bs]
-                batch_np = np.stack(batch_tiles, axis=0)                # NHWC
+                n_real = len(batch_tiles)
+                # Short last batch filled to bs: one input shape per run (fill_batch).
+                batch_np = fill_batch(np.stack(batch_tiles, axis=0),
+                                      bs, len(padded_tiles))            # NHWC
                 batch_np = np.transpose(batch_np, (0, 3, 1, 2))         # NCHW
                 batch_np = batch_np.astype(np.float32, copy=False)
 
@@ -711,7 +721,7 @@ def _infer_tiles_rgb_batched(
                     x = x.to(device=device, dtype=torch.float32)
 
                 with torch.no_grad(), _autocast_context(torch, device):
-                    y = torch_to_np(model(x).detach().float())          # NCHW
+                    y = torch_to_np(model(x)[:n_real].detach().float())  # NCHW, not the fill
 
                 y = np.transpose(y, (0, 2, 3, 1))                       # NHWC
 
@@ -905,6 +915,47 @@ class DarkStarParams:
     edge_padding: int = 64              # reflect-pad full image before processing
     compatibility_mode: bool = False    # smaller inference batches for weaker GPUs
 
+def warm_up(image_hw, *, params: DarkStarParams, mono_input: bool = False,
+            should_stop=lambda: False) -> int:
+    """
+    Load the models and build the fp16 kernels a Dark Star run on an image
+    this size will use, so the run itself finds them ready. Run it on the GPU
+    thread (warmup.py does): kernels built on any other thread are not reused.
+    Mirrors darkstar_starremoval_rgb01 (tile cap) and _darkstar_impl (which
+    nets each processing path runs, their batch sizes, filled last batch).
+    Returns the number of input shapes warmed.
+    """
+    models = load_darkstar_models(use_gpu=bool(params.use_gpu), status_cb=lambda s: None)
+    if models.is_onnx or _device_type(models.device) != "cuda":
+        return 0                      # the per-shape compile is cuDNN's
+    torch, dev = models.torch, models.device
+    eff = _dc_replace(params, chunk_size=_cap_chunk_size_for_device(dev, int(params.chunk_size)))
+    chunk = int(eff.chunk_size)
+    overlap = int(round(float(eff.overlap_frac) * chunk))
+    total = _chunk_count(int(image_hw[0]), int(image_hw[1]), chunk, overlap)
+
+    mono_bs = 2 if bool(getattr(eff, "compatibility_mode", False)) else 8   # _run_channel_chunked
+    path = str(getattr(eff, "processing_path", "hybrid_luma_color")).strip().lower()
+    if mono_input or models.color_model is None or path == "mono_per_channel":
+        nets = [(models.mono_model, mono_bs)]
+    elif path == "color_only":
+        nets = [(models.color_model, _darkstar_batch_size(models, eff))]
+    else:
+        nets = [(models.mono_model, mono_bs), (models.color_model, _darkstar_batch_size(models, eff))]
+    done = 0
+    for net, bs in nets:
+        if net is None or should_stop():
+            continue
+        B = bs if total > bs else total
+        x = torch.zeros((B, 3, chunk, chunk), device=dev, dtype=torch.float32)
+        with torch.no_grad(), _autocast_context(torch, dev):
+            net(x)
+        torch.cuda.synchronize()
+        done += 1
+    return done
+
+
+@gpu_thread_entry        # one thread for all runs: its compiled fp16 kernels persist (_gpu_thread)
 def darkstar_starremoval_rgb01(
     img_rgb01: np.ndarray,
     *,
@@ -1013,13 +1064,7 @@ def _darkstar_impl(
         # total chunk count for one mono pass
         chunk_size = int(params.chunk_size)
         overlap = int(round(float(params.overlap_frac) * chunk_size))
-        total = len(
-            split_image_into_chunks_with_overlap(
-                add_border(stretched, border_size=5),
-                chunk_size=chunk_size,
-                overlap=overlap,
-            )
-        )
+        total = _chunk_count(stretched.shape[0], stretched.shape[1], chunk_size, overlap)
 
         # _run_channel_chunked is expected to take a 2D channel, triplicate it
         # to RGB internally for the RGB-trained NAFNet, then collapse back to mono.
@@ -1064,13 +1109,7 @@ def _darkstar_impl(
 
         chunk_size = int(params.chunk_size)
         overlap = int(round(float(params.overlap_frac) * chunk_size))
-        total = len(
-            split_image_into_chunks_with_overlap(
-                add_border(stretched, border_size=5),
-                chunk_size=chunk_size,
-                overlap=overlap,
-            )
-        )
+        total = _chunk_count(stretched.shape[0], stretched.shape[1], chunk_size, overlap)
 
         starless, _done = _run_channel_chunked(
             stretched,
@@ -1125,13 +1164,7 @@ def _darkstar_impl(
     # mono_per_channel
     # ------------------------------------------------------------------
     if path == "mono_per_channel":
-        n_chunks = len(
-            split_image_into_chunks_with_overlap(
-                add_border(stretched[..., 0], border_size=5),
-                chunk_size=chunk_size,
-                overlap=overlap,
-            )
-        )
+        n_chunks = _chunk_count(stretched.shape[0], stretched.shape[1], chunk_size, overlap)
         total = n_chunks * 3
 
         out = np.zeros_like(stretched, dtype=np.float32)
@@ -1155,13 +1188,7 @@ def _darkstar_impl(
     # color_only
     # ------------------------------------------------------------------
     elif path == "color_only":
-        total = len(
-            split_image_into_chunks_with_overlap(
-                add_border(stretched, border_size=5),
-                chunk_size=chunk_size,
-                overlap=overlap,
-            )
-        )
+        total = _chunk_count(stretched.shape[0], stretched.shape[1], chunk_size, overlap)
 
         starless, _done = _run_rgb_chunked_with_model(
             stretched,
@@ -1178,20 +1205,8 @@ def _darkstar_impl(
     # hybrid_luma_color
     # ------------------------------------------------------------------
     else:
-        n_chunks_rgb = len(
-            split_image_into_chunks_with_overlap(
-                add_border(stretched, border_size=5),
-                chunk_size=chunk_size,
-                overlap=overlap,
-            )
-        )
-        n_chunks_l = len(
-            split_image_into_chunks_with_overlap(
-                add_border(_compute_luminance_rec709(stretched), border_size=5),
-                chunk_size=chunk_size,
-                overlap=overlap,
-            )
-        )
+        n_chunks_rgb = _chunk_count(stretched.shape[0], stretched.shape[1], chunk_size, overlap)
+        n_chunks_l = n_chunks_rgb              # the luminance plane has the same size
         total = n_chunks_l + n_chunks_rgb
 
         # robust mono luminance

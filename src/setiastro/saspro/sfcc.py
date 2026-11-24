@@ -1175,6 +1175,8 @@ class SFCCDialog(QDialog):
        - get_metadata()  [optional]
        - get_header()    [preferred for WCS; else we look in metadata]
     """
+    # Named in the "plate solution looks wrong" prompt and its log lines.
+    _PLATE_CHECK_TOOL = "SPCC"
     def __init__(self, doc_manager, sasp_data_path, parent=None):
         super().__init__(parent)
         _force_mpl_no_tex()
@@ -2557,6 +2559,18 @@ class SFCCDialog(QDialog):
                     QApplication.processEvents()
             except Exception as e:
                 print(f"[SPCC] Gaia bulk match failed: {e}")
+
+        # ── Step 3b: does the plate solution fit? A wrong one matches at chance
+        _sfcc_status(self, "Checking the plate solution against Gaia…")
+        QApplication.processEvents()
+        from setiastro.saspro.plate_solution_check import check_dialog_plate_solution
+        _ps = check_dialog_plate_solution(self, sky_coords, tool=self._PLATE_CHECK_TOOL,
+                                          log_tag=self._PLATE_CHECK_TOOL)
+        if _ps == "resolved":                  # re-solved: Step 1 again on the new WCS
+            return SFCCDialog.fetch_stars(self)
+        if _ps == "stop":
+            _sfcc_status(self, "Step 1 stopped: the plate solution looks wrong.")
+            return
 
         # ── Step 4: Build star_list from SEP + Gaia matches ───────────────
         for i in range(len(sources)):

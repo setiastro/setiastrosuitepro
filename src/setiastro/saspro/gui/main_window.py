@@ -850,9 +850,18 @@ class AstroSuiteProMainWindow(
 
         self.status_log_dock.hide()
         self.restore_main_window_state()
+        if not (self.settings.contains(f"{self._mw_key()}/geometry")
+                or self.settings.contains("ui/main/geometry")):
+            # No window size was ever saved (a new install, `--firstrun`):
+            # out of the box SASpro fills the screen. Only the state is set;
+            # gui_entry shows the window. A 1.x user keeps their own size,
+            # which is not part of the layout 2.0 sets aside.
+            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
         if self._fresh_install:
             self._apply_first_run_layout()
         self._place_new_stacking_toolbar()      # after BOTH saved layouts are restored
+        self._place_toolbar_switch()            # likewise
+        self._apply_toolbar_mode()
         # If docks were previously sent to secondary host, restore that now
         # Done here at end of __init__ so all docks are guaranteed constructed
         s = self.settings
@@ -877,6 +886,15 @@ class AstroSuiteProMainWindow(
         if panel is not None:
             panel.on = bool(on)
             panel.sync()
+
+    def _start_panel_menu(self, on: bool):
+        """View > Start Panel. With images open the panel stands aside, ticked
+        or not, so there a click means "show it": up now, over the images."""
+        panel = getattr(self, "_start_panel", None)
+        if panel is not None and not panel.isVisible() and self.mdi.subWindowList():
+            panel.summon()
+            on = True
+        self._set_start_panel(on)
 
     def _set_start_panel_on_startup(self, on: bool):
         """Show on startup: on the panel and in Preferences. Turned off with the
@@ -1003,6 +1021,12 @@ class AstroSuiteProMainWindow(
         except Exception as e:
             print(f"[layout] restoring panels and toolbars: {e}")
         self._place_new_stacking_toolbar()
+        # Their own layout means their own toolbars: All Tools, as they had them.
+        self.settings.setValue(self._TOOLBAR_MODE_KEY, "full")
+        self.settings.remove(self._FULL_VISIBLE_KEY)
+        self.settings.remove(self._ESSENTIALS_PLACED_KEY)   # placed on switching to them
+        self._place_toolbar_switch(force=True)
+        self._apply_toolbar_mode()
         tb_hidden = self._hidden_toolbar()
         if tb_hidden:
             tb_hidden.setVisible(False)
@@ -5686,22 +5710,27 @@ class AstroSuiteProMainWindow(
                 srv.close()           # or the new one hands off to us and quits
             except Exception:
                 pass
+        # Under --firstrun / --upgraderun: carry on in the same sandbox, not
+        # in the real settings.
+        from setiastro.saspro import settings_sandbox
+        extra = settings_sandbox.restart_args()
         env = None
         if getattr(sys, "frozen", False):
-            cmd = [sys.executable]
+            cmd = [sys.executable] + extra
             if sys.platform == "darwin":
                 bundle = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
                 if bundle.endswith(".app"):
-                    cmd = ["open", "-n", bundle]
+                    cmd = ["open", "-n", bundle] + (["--args"] + extra if extra else [])
         else:
             import setiastro.saspro as _pkg
             root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_pkg.__file__))))
             env = dict(os.environ)
             env["PYTHONPATH"] = os.pathsep.join(
                 [root] + [x for x in env.get("PYTHONPATH", "").split(os.pathsep) if x and x != root])
-            cmd = [sys.executable, "-m", "setiastro.saspro"]
+            cmd = [sys.executable, "-m", "setiastro.saspro"] + extra
         try:
             subprocess.Popen(cmd, env=env)
+            settings_sandbox.handed_over()
         except Exception as e:
             print(f"[restart] could not start SASpro again: {e}")
 
@@ -9809,8 +9838,12 @@ class AstroSuiteProMainWindow(
         Drop on a specific subwindow -> apply Star Stretch headlessly to that doc.
         Lives in star_stretch.py so the command-line tool runs the same code.
         """
-        from setiastro.saspro.star_stretch import apply_star_stretch_preset_to_doc
-        return apply_star_stretch_preset_to_doc(doc, preset)
+        from setiastro.saspro.star_stretch import (
+            apply_star_stretch_preset_to_doc, display_stretch_off_for,
+        )
+        out = apply_star_stretch_preset_to_doc(doc, preset)
+        display_stretch_off_for(self, doc)
+        return out
 
 
     # --- Command Search (palette) ----------------------------------------
@@ -9968,6 +10001,11 @@ class AstroSuiteProMainWindow(
         # Initial population
         self._build_command_model()
 
+        # The Essentials toolbar's search box, made before this list was.
+        ess_search = getattr(self, "_essentials_search", None)
+        if ess_search is not None:
+            self._attach_command_search_edit(ess_search)
+
         # After window state restore, re-pin it to the top of the right area
         if not self.settings.value("window_layout/restored", False, type=bool):
             try:
@@ -9981,6 +10019,27 @@ class AstroSuiteProMainWindow(
                 pass
 
 
+
+    def _attach_command_search_edit(self, edit):
+        """Make another search box (the one on Essentials) search the same
+        command list as the Command Search panel, with the same Enter."""
+        try:
+            edit.objectName()
+        except RuntimeError:                     # deleted with its toolbar
+            return
+        comp = QCompleter(self._cmd_model, edit)
+        comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        comp.setFilterMode(Qt.MatchFlag.MatchContains)
+        popup = QListView(edit)
+        popup.setMinimumWidth(420)
+        popup.setIconSize(QSize(18, 18))
+        comp.setPopup(popup)
+        comp.setCompletionColumn(0)
+        popup.setModelColumn(0)
+        edit.setCompleter(comp)
+        comp.activated[QModelIndex].connect(self._run_selected_completion)
+        edit.returnPressed.connect(
+            lambda e=edit, c=comp: self._trigger_first_visible_completion(e, c))
 
     def _build_command_model(self):
         from setiastro.saspro.gui.command_search import command_item
@@ -10008,9 +10067,18 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.gui.command_search import run_command
         run_command(index, _ROLE_ACTION)
 
-    def _trigger_first_visible_completion(self):
-        """Run exact edit-text match, else highlighted popup row, else first filter hit."""
-        text = (self._cmd_edit.text() or "").strip()
+    def _trigger_first_visible_completion(self, edit=None, completer=None):
+        """Run exact edit-text match, else highlighted popup row, else first filter hit.
+        The panel's box unless another one (Essentials) is given."""
+        edit = edit or self._cmd_edit
+        completer = completer or self._cmd_completer
+        popup = completer.popup()
+        if popup is not None and popup.isVisible() and popup.currentIndex().isValid():
+            # A highlighted row: the completer runs it (activated) when this
+            # Enter reaches it after the box. Running it here as well opened
+            # the tool twice.
+            return
+        text = (edit.text() or "").strip()
         if text:
             needle = text.casefold()
             for row in range(self._cmd_model.rowCount()):
@@ -10019,17 +10087,10 @@ class AstroSuiteProMainWindow(
                 if title.casefold() == needle:
                     self._run_selected_completion(idx)
                     return
-        
-        popup = self._cmd_completer.popup()
-        if popup is not None and popup.isVisible():
-            cur = popup.currentIndex()
-            if cur.isValid():
-                self._run_selected_completion(cur)
-                return
 
         m = popup.model() if popup is not None else None
         if m is None:
-            m = self._cmd_completer.completionModel()
+            m = completer.completionModel()
         if m and m.rowCount() > 0:
             self._run_selected_completion(m.index(0, 0))
 
@@ -10039,11 +10100,16 @@ class AstroSuiteProMainWindow(
         # hides the docks), or tabbed behind another panel -- and focusing a
         # hidden line edit used to make Ctrl+Shift+P do nothing at all. In
         # those cases pop a palette over the middle of the window instead.
-        edit = getattr(self, "_cmd_edit", None)
-        if edit is not None and edit.isVisible() and not self.isMinimized():
-            edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
-            edit.selectAll()
-            return
+        # In Essentials the toolbar's box comes first: it is the one in view.
+        for edit in (getattr(self, "_essentials_search", None),
+                     getattr(self, "_cmd_edit", None)):
+            try:
+                if edit is not None and edit.isVisible() and not self.isMinimized():
+                    edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
+                    edit.selectAll()
+                    return
+            except RuntimeError:                 # deleted with its toolbar
+                continue
         self._show_command_palette()
 
     def _show_command_palette(self):

@@ -178,9 +178,10 @@ def entry(argv: list[str] | None = None) -> int:
     #
     # --firstrun / --upgraderun: switch to a throwaway settings store before
     # gui_entry's import reads any setting (icon pack, language). Never hands off.
-    from setiastro.saspro.settings_sandbox import wants_sandbox, enter_sandbox
+    from setiastro.saspro.settings_sandbox import wants_sandbox, enter_sandbox, without_language_word
     if wants_sandbox(argv):
         enter_sandbox(argv)
+        argv = without_language_word(argv)    # "--firstrun spanish" is not a file
     try:
         from setiastro.saspro.single_instance import maybe_handoff_and_exit
         _cleaned = maybe_handoff_and_exit(argv)

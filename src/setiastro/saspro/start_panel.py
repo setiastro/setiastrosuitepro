@@ -10,12 +10,17 @@ It never covers a desktop shortcut, the setup reminder or the First Steps card:
 it moves aside, then drops its second half, then stays away. The ✕ closes it for
 the rest of the session and View > Start Panel brings it back. With "Show on
 startup" off (here or in Preferences) it only comes when asked for, that one time.
+With images open, View > Start Panel puts it up over them until something is
+chosen from it, the workspace is clicked, Esc, or an image opens or closes.
 
 Thumbnails are small JPEGs in the SASpro data folder, one per recent image,
-made from the open image. One that was never open in this version is read from
-its file if that is cheap (FITS and XISF through Blink's downsampled reader,
-PNG/JPEG/WebP through Qt). All of that, down to asking whether a file exists,
-is on a worker thread: a recent image can be on a drive that isn't there.
+made from the open image. One with no open image to take it from (never open
+in this version, or a saved copy) is read from its file: FITS and XISF through
+Blink's downsampled reader, PNG/JPEG/WebP through Qt, a camera RAW's own
+preview, and anything else SASpro opens (TIFF, PSD, compressed FITS) through
+its loader at full size, once per change to the file. All of that, down to
+asking whether a file exists, is on a worker thread: a recent image can be on a
+drive that isn't there.
 """
 from __future__ import annotations
 
@@ -31,8 +36,9 @@ from PyQt6.QtCore import (QCoreApplication, QEvent, QObject, QPoint, QPointF, QR
                           QRectF, QSize, QStandardPaths, Qt, QTimer, QUrl, pyqtSignal)
 from PyQt6.QtGui import (QColor, QDesktopServices, QFontMetrics, QIcon, QImage,
                          QImageReader, QKeySequence, QPainter, QPainterPath, QPen, QPixmap)
-from PyQt6.QtWidgets import (QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
-                             QPushButton, QStyle, QStyleOptionButton, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout,
+                             QLabel, QPushButton, QStyle, QStyleOptionButton, QVBoxLayout,
+                             QWidget)
 
 STARTUP_KEY = "ui/start_panel"                   # show on startup
 RELEASES_URL = "https://github.com/setiastro/setiastrosuitepro/releases/latest"
@@ -134,33 +140,76 @@ def render_thumbnail(image) -> QImage | None:
     return QImage(u.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
 
 
+def _cover(img: QImage) -> QImage | None:
+    """Scaled and centre-cropped to fill the thumbnail file's size."""
+    if img.isNull():
+        return None
+    box = QSize(THUMB.width() * 2, THUMB.height() * 2)
+    img = img.scaled(box, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                     Qt.TransformationMode.SmoothTransformation)
+    return img.copy((img.width() - box.width()) // 2, (img.height() - box.height()) // 2,
+                    box.width(), box.height())
+
+
+def _raw_preview(path: str) -> QImage | None:
+    """The preview a camera stores in its RAW file. SASpro's own decode of a
+    RAW is the Bayer mosaic, which comes out grey, and takes far longer."""
+    import rawpy
+    with rawpy.imread(path) as raw:
+        th = raw.extract_thumb()
+    if th.format == rawpy.ThumbFormat.JPEG:
+        return _cover(QImage.fromData(bytes(th.data)))
+    a = np.ascontiguousarray(th.data, dtype=np.uint8)
+    if a.ndim == 3 and a.shape[2] == 3:
+        h, w = a.shape[:2]
+        return _cover(QImage(a.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy())
+    return None
+
+
 def _thumbnail_from_file(path: str) -> QImage | None:
-    """Cheap formats only; None leaves the placeholder until the image is opened."""
+    """For a recent image with no open image to take it from. Cheap readers
+    first; None leaves the placeholder."""
+    from setiastro.saspro.legacy.image_manager import RAW_EXTS, load_image
     low = path.lower()
+    if low.endswith(".pdf"):
+        return None                              # opens as pages, not one image
     if low.endswith((".png", ".jpg", ".jpeg", ".webp")):
         r = QImageReader(path)
         r.setAutoTransform(True)
         size = r.size()
-        if not size.isValid():
-            return None
-        box = QSize(THUMB.width() * 2, THUMB.height() * 2)
-        r.setScaledSize(size.scaled(box, Qt.AspectRatioMode.KeepAspectRatioByExpanding))
-        img = r.read()
-        if img.isNull():
-            return None
-        return img.copy((img.width() - box.width()) // 2, (img.height() - box.height()) // 2,
-                        box.width(), box.height())
-    from setiastro.saspro.blink_fast_read import read_downsampled
-    for step in (16, 8, 4):
-        got = read_downsampled(path, step, cfa_mode="luminance")
-        if got is None:
-            continue
-        # Twice what the file will hold, or there is nothing left to average and
-        # a star field comes out as hard white dots.
-        if step > 4 and min(got[0].shape[0] / THUMB.height(), got[0].shape[1] / THUMB.width()) < 4:
-            continue
-        return render_thumbnail(got[0])
-    return None
+        if size.isValid():
+            box = QSize(THUMB.width() * 2, THUMB.height() * 2)
+            r.setScaledSize(size.scaled(box, Qt.AspectRatioMode.KeepAspectRatioByExpanding))
+            img = r.read()
+            if not img.isNull():
+                return img.copy((img.width() - box.width()) // 2,
+                                (img.height() - box.height()) // 2, box.width(), box.height())
+    elif low.endswith(RAW_EXTS):
+        try:
+            img = _raw_preview(path)
+        except Exception:
+            img = None                           # none in the file: decoded below
+        if img is not None:
+            return img
+    else:
+        from setiastro.saspro.blink_fast_read import read_downsampled
+        for step in (16, 8, 4):
+            try:
+                got = read_downsampled(path, step, cfa_mode="luminance")
+            except Exception:
+                break                            # a bad file: the loader decides
+            if got is None:
+                continue
+            # Twice what the file will hold, or there is nothing left to average and
+            # a star field comes out as hard white dots.
+            if step > 4 and min(got[0].shape[0] / THUMB.height(), got[0].shape[1] / THUMB.width()) < 4:
+                continue
+            return render_thumbnail(got[0])
+    # Anything else SASpro opens (TIFF, PSD, compressed FITS, a FITS the reader
+    # above declines), and whatever Qt could not read: the whole image, through
+    # the loader File > Open uses.
+    image = load_image(path, max_retries=0)[0]
+    return None if image is None else render_thumbnail(image)
 
 
 class Thumbnails(QObject):
@@ -173,7 +222,7 @@ class Thumbnails(QObject):
         self._jobs: queue.Queue = queue.Queue()
         self._thread = None
         self._stopped = False
-        self._tried = set()                      # read from file once per session
+        self._read = {}                          # path: file time read at (worker only)
 
     def pixmap(self, path: str) -> QPixmap:
         return QPixmap(str(thumbnail_file(path)))
@@ -182,9 +231,9 @@ class Thumbnails(QObject):
         self._put(("image", path, image))
 
     def from_file(self, path: str):
-        if path not in self._tried:
-            self._tried.add(path)
-            self._put(("file", path, None))
+        """Does nothing if the thumbnail is up to date, or this version of the
+        file was read before (one that can't be read stays a placeholder)."""
+        self._put(("file", path, None))
 
     def keep_only(self, paths):
         self._put(("prune", list(paths), None))
@@ -211,21 +260,25 @@ class Thumbnails(QObject):
                 if kind == "prune":
                     self._prune(what)
                 elif self._make(kind, what, image) and not self._stopped:
-                    self.made.emit(what)
-            except RuntimeError:
-                return                           # the window is gone
+                    try:
+                        self.made.emit(what)
+                    except RuntimeError:
+                        return                   # the window is gone
             except OSError:
                 pass                             # the file is gone, or its drive
             except Exception as e:
                 print(f"[start panel] no thumbnail for {os.path.basename(str(what))}: {e!r}")
             del job, image
 
-    @staticmethod
-    def _make(kind, path, image) -> bool:
+    def _make(self, kind, path, image) -> bool:
         out = thumbnail_file(path)
         taken = os.stat(path).st_mtime           # raises when the file is gone
         if out.exists() and out.stat().st_mtime >= taken:
             return False
+        if kind == "file":
+            if self._read.get(path) == taken:
+                return False
+            self._read[path] = taken
         img = render_thumbnail(image) if kind == "image" else _thumbnail_from_file(path)
         if img is None:
             return False
@@ -490,6 +543,7 @@ class StartPanel(QFrame):
         self._placed_for = None
         self._shown_recents = None
         self._recent_buttons = []
+        self._summoned = None                    # the views it was put up over
         self.on = self.on_startup()              # for this session
 
         self.thumbs = Thumbnails(self)
@@ -572,8 +626,9 @@ class StartPanel(QFrame):
                 if act == "act_workflows":
                     slot = self._process_step_by_step
             i = grid.count()
-            tile = _Tile(icon, title, sub, slot, main=(i == 0),
-                         more=(act in ("deep_sky", "mosaics")))
+            more = act in ("deep_sky", "mosaics")    # the choice comes in a popup
+            tile = _Tile(icon, title, sub, slot if more else self._runs(slot),
+                         main=(i == 0), more=more)
             if act == "deep_sky":
                 self._deep_sky = tile
             elif act == "mosaics":
@@ -598,16 +653,34 @@ class StartPanel(QFrame):
                               "sp_s"))
         foot.addStretch(1)
         foot.setSpacing(16)
-        foot.addWidget(_link(_t("Open a project…"), mw.act_project_load.trigger))
-        foot.addWidget(_link(_t("What's new"), lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL))))
+        foot.addWidget(_link(_t("Open a project…"), self._runs(mw.act_project_load.trigger)))
+        foot.addWidget(_link(_t("What's new"), self._runs(
+            lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL)))))
         root.addLayout(foot)
         self._fill_more()
 
+    def _run(self, slot):
+        """Something chosen here. Put up over open images, the panel has done
+        its job and goes first."""
+        if self._summoned is not None:
+            self._dismiss()
+        slot()
+
+    def _runs(self, slot):
+        return lambda: self._run(slot)
+
     def _process_step_by_step(self):
-        """Images first, then the Workflow Assistant. This panel is only up with
-        no image open, and opening one takes it away; the assistant works on the
-        open images. Cancelled, the assistant still opens, to look around in."""
+        """Images first, then the Workflow Assistant; opening one takes this
+        panel away, and the assistant works on the open images. Cancelled, the
+        assistant still opens, to look around in. With an image already open
+        (the panel put up over it from View > Start Panel or the Essentials
+        button),
+        straight to the assistant: a file prompt then read as if SASpro
+        didn't know about the image."""
         mw = self._mw
+        if mw.mdi.subWindowList():
+            mw.act_workflows.trigger()
+            return
         try:
             mw.open_files()
         finally:
@@ -623,7 +696,7 @@ class StartPanel(QFrame):
             if a is not None:
                 choices.append((a.icon(), title, sub, a.trigger))
         if len(choices) == 1:
-            choices[0][3]()
+            self._run(choices[0][3])
             return
         self._show_choices(self._deep_sky, choices)
 
@@ -639,6 +712,7 @@ class StartPanel(QFrame):
              _t("Seestar and smart telescopes"), mw._open_robotic_mosaic)])
 
     def _show_choices(self, anchor, choices):
+        choices = [(icon, title, sub, self._runs(slot)) for icon, title, sub, slot in choices]
         pop = _Choices(anchor, choices, self)
         pop.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         pop.show()
@@ -685,13 +759,14 @@ class StartPanel(QFrame):
             from setiastro.saspro.first_steps_tour import sample_image_path
             row.setSpacing(18)
             if sample_image_path() is not None:
-                row.addWidget(_link(_t("Open the sample image"), self._open_sample))
+                row.addWidget(_link(_t("Open the sample image"), self._runs(self._open_sample)))
             self._tour_link = _link(_t("First Steps tour"),
-                                    lambda: self._mw.act_first_steps.trigger())
+                                    self._runs(lambda: self._mw.act_first_steps.trigger()))
             row.addWidget(self._tour_link)
-            row.addWidget(_link(_t("Beginner video"),
-                                lambda: QDesktopServices.openUrl(QUrl(TUTORIAL_URL))))
-            row.addWidget(_link(_t("Documentation"), lambda: self._mw.act_docs.trigger()))
+            row.addWidget(_link(_t("Beginner video"), self._runs(
+                lambda: QDesktopServices.openUrl(QUrl(TUTORIAL_URL)))))
+            row.addWidget(_link(_t("Documentation"),
+                                self._runs(lambda: self._mw.act_docs.trigger())))
         row.addStretch(1)
         self._more_lay.addWidget(box)
         # Added to a visible panel, children stay hidden until the next event
@@ -715,7 +790,7 @@ class StartPanel(QFrame):
         open_sample_image(self._mw)
 
     def _open_recent(self, path):
-        self._mw._open_recent_image(path)
+        self._run(lambda: self._mw._open_recent_image(path))
 
     # ---- recent images ------------------------------------------------------
     def recents_changed(self):
@@ -742,6 +817,11 @@ class StartPanel(QFrame):
                     self.thumbs.from_image(p, image)
             except Exception:
                 continue
+        # The rest from their files. A saved copy has no open image of its own,
+        # and startup's pass only read what was on the list then.
+        for p in (self._shown_recents or []):
+            if os.path.normcase(p) in wanted:
+                self.thumbs.from_file(p)
 
     def read_missing(self):
         """Thumbnails for recents never opened in this version, where cheap."""
@@ -764,19 +844,44 @@ class StartPanel(QFrame):
         """Show, place or hide, for the workspace as it is now."""
         mw = self._mw
         closing = getattr(mw, "_shutting_down", False)
-        images = bool(mw.mdi.subWindowList())
-        if closing or images or not self.on:
+        views = mw.mdi.subWindowList()
+        if self._summoned is not None and frozenset(views) != self._summoned:
+            self._unsummon()                     # an image opened or closed
+        if closing or (views and self._summoned is None) or not self.on:
             was_up = not self.isHidden()
+            self._unsummon()
             self._watch.stop()
             self._placed_for = None
             self.hide()
-            if images and was_up and not closing and not self.on_startup():
+            if views and was_up and not closing and not self.on_startup():
                 mw._set_start_panel(False)       # it was up for that one time
             return
         if not self._watch.isActive():
             self._watch.start()
         self._sync_tour_link()
         self._place()
+        if self._summoned is not None:
+            self.raise_()                        # an image activated since
+
+    # ---- over open images ---------------------------------------------------
+    def summon(self):
+        """View > Start Panel with images open: over them, until something is
+        chosen here, the workspace is clicked, Esc, or an image opens or
+        closes. Turning the panel on, as the menu does next, shows it."""
+        self._summoned = frozenset(self._mw.mdi.subWindowList())
+        QApplication.instance().installEventFilter(self)
+
+    def _unsummon(self):
+        if self._summoned is None:
+            return
+        self._summoned = None
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+
+    def _dismiss(self):
+        self._unsummon()
+        self.sync()                              # images are open: it goes
 
     def _in_the_way(self) -> list:
         """Desktop shortcuts and corner cards, in workspace coordinates."""
@@ -808,6 +913,13 @@ class StartPanel(QFrame):
         width = min(WIDTH, area.width() - 40)
         spot = None
         if width >= 600:
+            # A layout keeps each widget's size until that widget says it
+            # changed, and only a visible panel's layouts do the saying. Refilled
+            # while hidden behind images ("New to SASpro?" became a row of
+            # thumbnails, or back), the panel came up at its old height with
+            # its rows run together.
+            for w in (self._more, *self._more.findChildren(QWidget)):
+                w.updateGeometry()
             for full in (True, False):
                 self._more.setVisible(full)
                 if full and self._recent_buttons:
@@ -839,6 +951,17 @@ class StartPanel(QFrame):
                 # for the last one to close, and documentRemoved comes before
                 # its window is gone.
                 self._mw._views_sync_timer.start()
+        elif self._summoned is not None and isinstance(obj, QWidget):
+            # Put up over images, this filter is on the whole application.
+            kind = ev.type()
+            if kind == QEvent.Type.MouseButtonPress:
+                if (self._mw.mdi.isAncestorOf(obj)
+                        and not (obj is self or self.isAncestorOf(obj))):
+                    self._dismiss()              # the click still reaches the image
+            elif (kind == QEvent.Type.KeyPress and ev.key() == Qt.Key.Key_Escape
+                  and obj.window() is self._mw):
+                self._dismiss()
+                return True
         return False
 
     def mousePressEvent(self, ev):
@@ -868,6 +991,7 @@ class StartPanel(QFrame):
 
     def stop(self):
         """SASpro is closing."""
+        self._unsummon()
         for t in (self._watch, self._capture, self._settle):
             t.stop()
         self.thumbs.stop()

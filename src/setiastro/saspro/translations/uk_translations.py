@@ -17487,3 +17487,243 @@ for _ctx, _msgs in _ADDITIONS_2026_11.items():
     _dst = TRANSLATIONS_UK.setdefault(_ctx, {})
     _dst.update(_msgs)
 del _ctx, _msgs, _dst
+
+# 2026-11-24: the Essentials toolbars and their switch, the toolbars' right-click
+# menu where it was still English, Search Commands, and the White Balance preset
+# editor of Function Bundles.
+_ADDITIONS_2026_11_24 = {
+    "AstroSuiteProMainWindow": {
+        'All Tools: every toolbar and tool': 'Усі інструменти: усі панелі та інструменти',
+        'Essentials': 'Основні',
+        'Essentials: the tools of the beginner workflows, with their names.\nEvery tool is still in the menus and in Search Commands (Ctrl+/).': 'Основні: інструменти робочих процесів для початківців, з назвами.\nУсі інструменти й надалі доступні в меню та через «Пошук команд» (Ctrl+/).',
+        'Search Commands...': 'Пошук команд...',
+        'Show Names Under Essentials Icons': 'Показувати назви під значками основних інструментів',
+        'Toolbar Mode': 'Режим панелі інструментів',
+    },
+    "DraggableToolBar": {
+        'Create Desktop Shortcut': 'Створити ярлик на робочому столі',
+        'Hide this icon': 'Приховати цей значок',
+        'Lock Toolbar Icons': 'Заблокувати значки панелі інструментів',
+        'Reset hidden icons': 'Скинути приховані значки',
+        'Show hidden…': 'Показати приховані…',
+        'Tip: Alt+Drag to create': 'Порада: Alt+перетягування, щоб створити',
+    },
+    "Essentials": {
+        'ADBE': 'ADBE',
+        'Add Stars': 'Додати зірки',
+        'BG Neutral': 'Нейтральний фон',
+        'Cosmic Clarity': 'Cosmic Clarity',
+        'Crop': 'Обрізка',
+        'Curves': 'Криві',
+        'Essentials: Linear': 'Основні: лінійні',
+        'Essentials: Non-Linear': 'Основні: нелінійні',
+        'LRGB Combine': 'Комбінувати LRGB',
+        'NB→RGB Stars': 'Зірки NB→RGB',
+        'Palette Picker': 'Palette Picker',
+        'RC-Astro': 'RC-Astro',
+        'Remove Stars': 'Видалити зірки',
+        'Selective Color': 'Вибірковий колір',
+        'Star Stretch': 'Star Stretch',
+        'Stretch': 'Stretch',
+        'SyQon': 'SyQon',
+        'Texture': 'Текстура',
+        'White Balance': 'Баланс білого',
+    },
+    "EssentialsToolBar": {
+        'Create Desktop Shortcut': 'Створити ярлик на робочому столі',
+        'Lock Toolbar Icons': 'Заблокувати значки панелі інструментів',
+    },
+    "_WhiteBalancePresetDialog": {
+        'Auto σ (waterfall)': 'Авто σ (каскад)',
+        'Detection threshold (σ):': 'Поріг виявлення (σ):',
+        'Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.': 'Сам вибирає поріг виявлення, як у діалозі «Баланс білого». Зніміть позначку, щоб використати поріг вище.',
+        'Rotation strength:': 'Сила повороту:',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24.items():
+    TRANSLATIONS_UK.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Welcome and Setup, Gaia page: the Blind Solve Index section.
+_ADDITIONS_2026_11_24_SETUP = {
+    "Setup": {
+        'Blind Solve Index': 'Індекс сліпого вирішення',
+        'Build in the Gaia manager': 'Побудувати в менеджері Gaia',
+        'For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.': "Для сліпого вирішення: визначити, куди спрямоване зображення, без координат і без розміру поля. Індекс будується на цьому комп'ютері з ваших наборів Gaia, тож нічого не завантажується. Рекомендовані шари ({0}) займають близько {1} і охоплюють поля приблизно від 20′ до 25° — те, що дає більшість систем для зйомки.",
+        'For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.': 'Для вирішення координат; з них же будується індекс сліпого вирішення нижче. Рекомендовані набори займають близько 35 GB.',
+        'Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.': 'Папку індексу не знайдено: {0}. Підключіть цей диск або виберіть папку в менеджері Gaia.',
+        'Layers built: {0}. {1} on disk.': 'Побудовані шари: {0}. {1} на диску.',
+        'Not built yet. It is built from the Bright (G < 17) Astrometry set, so install that first.': 'Ще не побудовано. Індекс будується з астрометричного набору Яскраві (G < 17), тож спершу встановіть його.',
+        'Not built yet. Recommended layers you can build now: {0}.': 'Ще не побудовано. Рекомендовані шари, які можна побудувати зараз: {0}.',
+        'Not built yet. Your Gaia sets have everything the recommended layers need.': 'Ще не побудовано. Ваші набори Gaia містять усе, що потрібно рекомендованим шарам.',
+        'Open in the Gaia manager': 'Відкрити в менеджері Gaia',
+        'Ready for blind solving.': 'Готово до сліпого вирішення.',
+        'Recommended layers still to build: {0}.': 'Рекомендовані шари, які ще треба побудувати: {0}.',
+        'These need the Bright (G < 17) Astrometry set first: {0}.': 'Для цих спершу потрібен астрометричний набір Яскраві (G < 17): {0}.',
+        '{0} of {1} recommended layers': '{0} з {1} рекомендованих шарів',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_SETUP.items():
+    TRANSLATIONS_UK.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Stacking Suite Dark/Flat rows per group (Flats and Lights tabs), and the
+# Quick Stack window's description (frames weighted by star count).
+_ADDITIONS_2026_11_24_PICKS = {
+    "QuickStackDialog": {
+        "A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).": "Швидкий погляд на набір кадрів: калібрування, якщо надати майстер-кадри, вирівнювання за положенням, обертанням і масштабом, зведення до рівня неба опорного кадру й об'єднання усіченим середнім, зваженим за кількістю зірок, знайдених у кожному кадрі. Жодних каліброваних чи вирівняних файлів на диску. Кольорові камери дебаєризуються (bilinear).",
+    },
+    "StackingSuiteDialog": {
+        'Add a master dark…': 'Додати Master Dark…',
+        'Add a master flat…': 'Додати Master Flat…',
+        'Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.': 'Авто обирає за фільтром і розміром, далі flat тієї ж ночі (інакше найближчої ночі) з тим самим підсиленням. Оберіть інший майстер-кадр або «Немає» лише для цієї групи й сесії.',
+        "Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.": 'Авто обирає за розміром, далі за підсиленням, експозицією й температурою. Рядок Dark кожної групи flat показує вибір: там можна обрати інший майстер-кадр або «Немає».',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.': 'Авто обирає за розміром, далі за підсиленням, експозицією й температурою. Оберіть інший майстер-кадр або «Немає» лише для цієї групи.',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.': 'Авто обирає за розміром, далі за підсиленням, експозицією й температурою. Оберіть інший майстер-кадр або «Немає» лише для цієї групи. ПКМ на кадрах — дати їм власний.',
+        'Auto-Select is off: pick a dark, or leave none': 'Авто-вибір вимкнено: оберіть dark або залиште без нього',
+        'Auto: none fits': 'Авто: нічого не підходить',
+        'Auto: off (Auto-Select is unchecked)': 'Авто: вимкнено (Авто-вибір не позначено)',
+        'Auto: {0}': 'Авто: {0}',
+        'Auto: {0} masters, picked per frame': 'Авто: майстер-кадрів — {0}, вибір для кожного кадру',
+        'Choose Master Dark(s)': 'Обрати Master Dark',
+        'Choose Master Flat(s)': 'Обрати Master Flat',
+        'Dark': 'Dark',
+        'Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.': 'Кожна група показує Master Dark і Master Flat, які вона використає: змінюйте їх там. ПКМ на кадрах — дати їм власні або призначити ключі сесії.',
+        'Each group shows the master dark it will use: change it there. Right-click to set a session tag.': 'Кожна група показує Master Dark, який вона використає: змінюйте його там. ПКМ — задати мітку сесії.',
+        'Flat': 'Flat',
+        'None loaded': 'Нічого не завантажено',
+        "Use the Group's Dark and Flat": 'Використати Dark і Flat групи',
+        'every session': 'усі сесії',
+        'gain {0:g}': 'підсилення {0:g}',
+        '{0} ({1})': '{0} ({1})',
+        '{0} frames': 'Кадрів: {0}',
+        '{0}: these frames are {1}': '{0}: ці кадри {1}',
+        '≈ nearest night: {0} ({1} d away)': '≈ найближча ніч: {0} ({1} дн.)',
+        '≈ {0} masters, picked per frame': '≈ майстер-кадрів — {0}, вибір для кожного кадру',
+        '⚠ dark {0:+.0f} °C, frames {1:+.0f} °C': '⚠ dark {0:+.0f} °C, кадри {1:+.0f} °C',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ підсилення {0:g}, кадри {1:g}',
+        '⚠ it is the {0} flat': '⚠ це flat {0}',
+        '⚠ its exposure is not recorded': '⚠ його експозицію не записано',
+        '⚠ no {0} flat at {1}': '⚠ немає flat {0} розміру {1}',
+        '⚠ none is {0}': '⚠ жоден не має розміру {0}',
+        '⚠ none records its exposure: choose one': '⚠ жоден не містить експозиції: оберіть один',
+        '⚠ offset {0:g}, frames {1:g}': '⚠ зміщення {0:g}, кадри {1:g}',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ dark {0:g} с, кадри {1:g} с',
+        '⚠ {0}, these frames are {1}': '⚠ {0}, ці кадри {1}',
+        '✎ none': '✎ немає',
+        '✎ your choice': '✎ ваш вибір',
+        '✎ {0} frame(s) use their own': '✎ власний у кадрів: {0}',
+        '✓ auto': '✓ авто',
+        '✓ same night': '✓ та сама ніч',
+        '✓ same session': '✓ та сама сесія',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_PICKS.items():
+    TRANSLATIONS_UK.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: First Steps tour, the Crop step (now 4 steps).
+_ADDITIONS_2026_11_24_TOUR = {
+    "FirstStepsTour": {
+        '1 of 4': '1 з 4',
+        '2 of 4': '2 з 4',
+        '3 of 4': '3 з 4',
+        '4 of 4': '4 з 4',
+        'Crop off the stacking edges': 'Обріжте краї після стекінгу',
+        'No stacking edges? Skip this step': 'Немає країв після стекінгу? Пропустіть цей крок',
+        'Open Crop': 'Відкрити обрізку',
+        "Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.\n\nCrop is under Functions → Repair & Retouch → Crop. Drag the box inside the clean area, then click Apply.": 'Там, де субкадри не повністю перекрилися, стек має рвані краї: темні або шумні облямівки, іноді смуги. Спершу обріжте їх. Розтягування, видалення градієнта й калібрування кольору вимірюють усе зображення, і ці краї їх спотворюють.\n\nОбрізка — у Функції → Виправлення & ретуш → Обрізка. Перетягніть рамку всередину чистої області й натисніть «Застосувати».',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_TOUR.items():
+    TRANSLATIONS_UK.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Start Panel button on Essentials, after Search Commands
+# (its name is View > Start Panel's, already translated).
+_ADDITIONS_2026_11_24_START = {
+    'AstroSuiteProMainWindow': {
+        'Start Panel: open images, process step by step, stacking and more': 'Стартова панель: відкрити зображення, обробка крок за кроком, складання та багато іншого',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_START.items():
+    TRANSLATIONS_UK.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Quick Stack window's masters (per-group Dark / Flat lists, 2026-11-23)
+# and masters made in memory from single dark and flat frames.
+_ADDITIONS_2026_11_24_QS = {
+    "QuickStackDialog": {
+        'Add Masters…': 'Додати майстер-кадри…',
+        'Add a master dark or dark frames…': 'Додати Master Dark або кадри dark…',
+        'Add a master flat or flat frames…': 'Додати Master Flat або кадри flat…',
+        'Added {0}.': 'Додано: {0}.',
+        'Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.': 'Авто обирає за розміром, далі за фільтром: як написано, написано інакше (O3 для OIII, H-alpha для Ha) або вказано в назві файлу flat без картки фільтра. Оберіть інший майстер-кадр або «Немає» лише для цієї групи.',
+        'Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.': 'Авто обирає за розміром, далі за підсиленням і експозицією (dark) або фільтром (flat). Оберіть інший майстер-кадр або «Немає» лише для цієї групи.',
+        'Auto: none fits': 'Авто: нічого не підходить',
+        'Auto: {0}': 'Авто: {0}',
+        'Choose a master dark or dark frames': 'Обрати Master Dark або кадри dark',
+        'Choose a master flat or flat frames': 'Обрати Master Flat або кадри flat',
+        'Choose master darks and flats, or their frames': 'Обрати Master Dark і Flat або їхні кадри',
+        'Clear Masters': 'Очистити майстер-кадри',
+        'Dark': 'Dark',
+        'Darks and flats ({0});;All Files (*)': 'Dark і flat ({0});;Усі файли (*)',
+        'Flat': 'Flat',
+        'Is {0} a master dark or a master flat?': '{0} — це Master Dark чи Master Flat?',
+        'It has no IMAGETYP card, and its file name does not say.': 'Він не має картки IMAGETYP, а назва файлу цього не каже.',
+        'Left out {0}': 'Пропущено: {0}',
+        'Left out {0} bias / flat-dark file(s): Quick Stack does not use them.': 'Пропущено файлів bias / flat-dark: {0}. Quick Stack їх не використовує.',
+        'Left out {0} file(s): see below.': 'Пропущено файлів: {0}. Див. нижче.',
+        'Master Dark': 'Master Dark',
+        'Master Flat': 'Master Flat',
+        "Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.\n\nSingle dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.\n\nMasters and frames dropped on this window, or added with the lights, are sorted out by themselves.": "Master Dark і Flat — скільки маєте: один flat на фільтр, dark для кожної експозиції. Кожна група в списку показує dark і flat, які вона використає, обрані за розміром, далі за фільтром (flat) або підсиленням і експозицією (dark). Змінюйте вибір будь-якої групи там.\n\nОкремі кадри dark і flat теж підходять: їх об'єднують у майстер-кадри в пам'яті (усічене середнє), коли вони вперше потрібні стеку, і на диск нічого не записується. Dark групуються за експозицією, підсиленням і розміром; flat — за фільтром, розміром і ніччю.\n\nМайстер-кадри й кадри, перетягнуті на це вікно або додані разом з лайтами, сортуються самі.",
+        'Masters:': 'Майстер-кадри:',
+        'None': 'Немає',
+        'None loaded': 'Нічого не завантажено',
+        'Nothing was added.': 'Нічого не додано.',
+        'Skip': 'Пропустити',
+        'gain {0:g}': 'підсилення {0:g}',
+        'made in memory from {0} frames': "створено в пам'яті з кадрів: {0}",
+        'no filter': 'без фільтра',
+        'none (optional: drop or add master darks and flats, or their frames)': "немає (необов'язково: перетягніть або додайте Master Dark і Flat або їхні кадри)",
+        '{0} (from its name)': '{0} (з назви)',
+        '{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).': 'Кадрів bias: {0}. Quick Stack не використовує bias (його містить Master Dark).',
+        '{0} dark frame(s) to make master darks from': 'кадрів dark для створення Master Dark: {0}',
+        '{0} dark frames, {1:g} s': 'Кадрів dark: {0}, {1:g} с',
+        '{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses': 'Dark: {0}  ·  Flat: {1}. Кожна група показує ті, що використовує',
+        '{0} flat frame(s) to make master flats from': 'кадрів flat для створення Master Flat: {0}',
+        '{0} flat frames': 'Кадрів flat: {0}',
+        '{0} flat frames, {1}': 'Кадрів flat: {0}, {1}',
+        '{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).': 'Кадрів flat-dark: {0}. Quick Stack їх не використовує (Master Flat уже має бути каліброваним).',
+        '{0} frame(s)': 'кадрів: {0}',
+        '{0} frames': 'Кадрів: {0}',
+        '{0} master dark(s)': 'Master Dark: {0}',
+        '{0} master flat(s)': 'Master Flat: {0}',
+        '{0} x {1}: these frames are {2} x {3}': '{0} x {1}: ці кадри {2} x {3}',
+        '{0} {1} flat frames, {2}': 'Кадрів flat {1}: {0}, {2}',
+        '… and {0} more': '… і ще {0}',
+        '≈ {0} = {1}': '≈ {0} = {1}',
+        '≈ {0}, from its file name': '≈ {0}, з назви файлу',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ підсилення {0:g}, кадри {1:g}',
+        '⚠ it is the {0} flat': '⚠ це flat {0}',
+        '⚠ its exposure is not recorded': '⚠ його експозицію не записано',
+        '⚠ no {0} flat': '⚠ немає flat {0}',
+        '⚠ none is {0} x {1}': '⚠ жоден не має розміру {0} x {1}',
+        '⚠ the frames give no exposure: choose one': '⚠ кадри не вказують експозицію: оберіть один',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ dark {0:g} с, кадри {1:g} с',
+        "⚠ {0} x {1}, not these frames' size: it will be left out": '⚠ {0} x {1} — не розмір цих кадрів: його буде пропущено',
+        '✎ none': '✎ немає',
+        '✎ your choice': '✎ ваш вибір',
+        '✓ auto': '✓ авто',
+        '✓ the only flat': '✓ єдиний flat',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
+    TRANSLATIONS_UK.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

@@ -13,6 +13,8 @@ import cv2
 
 from setiastro.saspro.resources import get_resources
 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
+from setiastro.saspro.cosmicclarity_engines._fastops import channel_medians, pad_constant, fill_batch
+from setiastro.saspro.cosmicclarity_engines._gpu_thread import gpu_thread_entry
 from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usable
 
 warnings.filterwarnings("ignore")
@@ -863,12 +865,14 @@ def denoise_rgb_with_color_model(
                         axis=0
                     ).astype(np.float32, copy=False)  # (B,H,W,3)
 
+                    # Short last batch filled to batch_size: one input shape per run (fill_batch).
+                    batch_np = fill_batch(batch_np, batch_size, total)
                     inp = np.ascontiguousarray(np.transpose(batch_np, (0, 3, 1, 2)))  # (B,3,H,W)
                     t = np_to_torch(inp, device=dev, torch=torch)
 
                     with torch.no_grad(), _autocast_context(torch, dev):
                         out = models.color(t)  # (B,3,H,W)
-                        pred = torch_to_np(out.detach().float())
+                        pred = torch_to_np(out[:len(batch_coords)].detach().float())
 
                     pred = np.transpose(pred, (0, 2, 3, 1)).astype(np.float32, copy=False)
 
@@ -1018,7 +1022,7 @@ def stretch_image_unlinked(image: np.ndarray, target_median: float = 0.25):
             x = np.where(np.abs(denom) > 1e-12, ((m0 - 1.0) * t * x) / denom, x)
         return x, orig_min, orig_meds
 
-    orig_meds = [float(np.median(x[..., c])) for c in range(3)]
+    orig_meds = [float(m) for m in channel_medians(x[..., :3])]
     for c in range(3):
         m0 = float(orig_meds[c])
         if m0 != 0.0:
@@ -1070,13 +1074,10 @@ def add_border(image, border_size=16):
                       constant_values=med)
 
     elif image.ndim == 3 and image.shape[2] == 3:       # RGB
-        meds = np.median(image, axis=(0, 1)).astype(image.dtype)  # (3,)
-        padded = [np.pad(image[..., c],
-                         ((border_size, border_size), (border_size, border_size)),
-                         mode="constant",
-                         constant_values=float(meds[c]))
-                  for c in range(3)]
-        return np.stack(padded, axis=-1)
+        # Same values as np.median(axis=(0, 1)) + a padded copy per channel +
+        # np.stack, in a quarter of the time (_fastops).
+        meds = channel_medians(image).astype(image.dtype)  # (3,)
+        return pad_constant(image, border_size, [float(m) for m in meds])
     else:
         raise ValueError("add_border expects mono or RGB image.")
 
@@ -1209,12 +1210,14 @@ def denoise_channel(
                         axis=0
                     ).astype(np.float32, copy=False)  # (B,H,W)
 
+                    # Short last batch filled to batch_size: one input shape per run (fill_batch).
+                    batch_np = fill_batch(batch_np, batch_size, total)
                     t = np_to_torch(batch_np, device=dev, torch=torch).unsqueeze(1)
                     t3 = t.expand(-1, 3, -1, -1).contiguous()
 
                     with torch.no_grad(), _autocast_context(torch, dev):
                         out = model(t3)  # (B,3,H,W)
-                        pred = torch_to_np(out[:, 0, :, :].detach().float())
+                        pred = torch_to_np(out[:len(batch_coords), 0, :, :].detach().float())
 
                     for k, (y, x) in enumerate(batch_coords):
                         acc[y:y + chunk_size, x:x + chunk_size] += pred[k] * weight
@@ -1247,6 +1250,51 @@ def denoise_channel(
         progress_cb=progress_cb,
     )
 
+def warm_up(image_hw, *, use_gpu: bool = True, denoise_mode: str = "luminance",
+            separate_channels: bool = False, mono_input: bool = False,
+            chunk_size: int = 256, overlap: int = 64, lite: bool = False, walking: bool = False,
+            execution_mode: str = "auto", batch_size_override: int = 0,
+            should_stop=lambda: False) -> int:
+    """
+    Load the models and build the fp16 kernels a denoise run on an image this
+    size will use, so the run itself finds them ready. Run it on the GPU thread
+    (warmup.py does): kernels built on any other thread are not reused.
+    Mirrors denoise_rgb01 (compatibility caps, 16 px border, which passes run)
+    and denoise_channel / denoise_rgb_with_color_model (tile grid, batch size,
+    filled last batch). Returns the number of input shapes warmed.
+    """
+    if execution_mode == "compatibility":
+        batch_size_override = 1
+        chunk_size = min(int(chunk_size), 256)
+    models = load_models(use_gpu=bool(use_gpu), lite=bool(lite), walking=bool(walking),
+                         status_cb=lambda s: None)
+    if models.is_onnx or _device_type(models) != "cuda":
+        return 0                      # the per-shape compile is cuDNN's
+    torch, dev = models.torch, models.device
+    chunk = _cap_chunk_size_for_device(dev, int(chunk_size))
+    H, W = int(image_hw[0]) + 32, int(image_hw[1]) + 32
+    total = len(_tile_grid_and_pad((H, W), chunk, overlap)[2])
+
+    passes = [(models.mono, False)]   # luminance, separate channels, mono images
+    if (not mono_input and not separate_channels and denoise_mode not in ("luminance", "separate")
+            and getattr(models, "color", None) is not None):
+        passes.append((models.color, True))   # full mode's colour pass
+    done = 0
+    for net, rgb in passes:
+        if should_stop():
+            return done
+        bs = _auto_batch_size(models, chunk, rgb=rgb, execution_mode=execution_mode,
+                              batch_size_override=batch_size_override)
+        B = bs if total > bs else total
+        x = torch.zeros((B, 3, chunk, chunk), device=dev, dtype=torch.float32)
+        with torch.no_grad(), _autocast_context(torch, dev):
+            net(x)
+        torch.cuda.synchronize()
+        done += 1
+    return done
+
+
+@gpu_thread_entry        # one thread for all runs: its compiled fp16 kernels persist (_gpu_thread)
 def denoise_rgb01(
     img_rgb01: np.ndarray,
     *,
@@ -1385,7 +1433,7 @@ def denoise_rgb01(
         else:
             stretched_core = arr.astype(np.float32, copy=False)
             original_min = float(np.min(arr))
-            original_medians = [float(np.median(arr[..., c])) for c in range(3)]
+            original_medians = [float(m) for m in channel_medians(arr[..., :3])]
 
         stretched = add_border(stretched_core, border_size=16)
         tile_units = _tile_count_2d(stretched.shape[0], stretched.shape[1])

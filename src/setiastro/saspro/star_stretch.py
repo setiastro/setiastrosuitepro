@@ -606,6 +606,8 @@ class StarStretchDialog(QDialog):
             self.doc.apply_edit(self._preview.copy(), metadata=meta, step_name="Star Stretch")
 
             mw = self._find_main_window()
+            if mw is not None:
+                display_stretch_off_for(mw, self.doc)
             if mw and hasattr(mw, "_log"):
                 mw._log("Star Stretch: applied to document.")
 
@@ -1109,6 +1111,50 @@ def open_star_stretch_with_preset(main_window, preset: dict | None = None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def display_stretch_off_for(main_window, doc) -> int:
+    """
+    After Star Stretch has changed `doc`'s pixels: turn Display-Stretch off on
+    every view showing it, or the screen stretches the already-stretched data
+    a second time. Statistical Stretch does the same. Returns how many views
+    were switched off.
+    """
+    mdi = getattr(main_window, "mdi", None)
+    if mdi is None or doc is None:
+        return 0
+
+    def resolved(d):
+        try:
+            if hasattr(d, "_target") and callable(d._target):
+                return d._target()               # a _DocProxy: its current document
+        except Exception:
+            pass
+        return d
+
+    # The dialog is handed view.document, which is a _DocProxy; a Preview tab
+    # hands it an ROI document whose _parent_doc is the image. Any of them
+    # names the image, so compare by identity against all of them.
+    wanted = [d for d in (doc, resolved(doc), getattr(doc, "_parent_doc", None)) if d is not None]
+    n = 0
+    for sw in list(mdi.subWindowList()):
+        try:
+            view = sw.widget()
+        except RuntimeError:                     # deleted with its window
+            continue
+        if view is None or not getattr(view, "autostretch_enabled", False):
+            continue
+        shown = getattr(view, "document", None)
+        mine = [d for d in (shown, resolved(shown), getattr(view, "base_document", None))
+                if d is not None]
+        if not any(a is b for a in mine for b in wanted):
+            continue
+        try:
+            view.set_autostretch(False)
+            n += 1
+        except Exception:
+            pass
+    return n
+
+
 def apply_star_stretch_preset_to_doc(doc, preset: dict | None = None):
     """
     Headless Star Stretch on a specific document: what a shortcut or a drop on

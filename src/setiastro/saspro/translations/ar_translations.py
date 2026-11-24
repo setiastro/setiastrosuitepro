@@ -17452,3 +17452,241 @@ for _ctx, _msgs in _ADDITIONS_2026_11.items():
     _dst = TRANSLATIONS_AR.setdefault(_ctx, {})
     _dst.update(_msgs)
 del _ctx, _msgs, _dst
+
+# 2026-11-24: the Essentials toolbars and their switch, the toolbars' right-click
+# menu where it was still English, Search Commands, and the White Balance preset
+# editor of Function Bundles.
+_ADDITIONS_2026_11_24 = {
+    "AstroSuiteProMainWindow": {
+        'All Tools: every toolbar and tool': 'جميع الأدوات: كل أشرطة الأدوات وكل الأدوات',
+        'Essentials': 'الأساسيات',
+        'Essentials: the tools of the beginner workflows, with their names.\nEvery tool is still in the menus and in Search Commands (Ctrl+/).': 'الأساسيات: أدوات مسارات العمل للمبتدئين، مع أسمائها.\nتبقى كل أداة متاحة في القوائم وفي «البحث عن الأوامر» (Ctrl+/).',
+        'Search Commands...': 'البحث عن الأوامر...',
+        'Show Names Under Essentials Icons': 'إظهار الأسماء أسفل أيقونات الأساسيات',
+        'Toolbar Mode': 'وضع شريط الأدوات',
+    },
+    "DraggableToolBar": {
+        'Create Desktop Shortcut': 'إنشاء اختصار على سطح المكتب',
+        'Hide this icon': 'إخفاء هذه الأيقونة',
+        'Lock Toolbar Icons': 'قفل أيقونات شريط الأدوات',
+        'Reset hidden icons': 'إعادة تعيين الأيقونات المخفية',
+        'Show hidden…': 'إظهار المخفية…',
+        'Tip: Alt+Drag to create': 'تلميح: Alt+سحب للإنشاء',
+    },
+    "Essentials": {
+        'ADBE': 'ADBE',
+        'Add Stars': 'إضافة نجوم',
+        'BG Neutral': 'تحييد الخلفية',
+        'Cosmic Clarity': 'Cosmic Clarity',
+        'Crop': 'قص',
+        'Curves': 'المنحنيات',
+        'Essentials: Linear': 'الأساسيات: خطي',
+        'Essentials: Non-Linear': 'الأساسيات: غير خطي',
+        'LRGB Combine': 'دمج LRGB',
+        'NB→RGB Stars': 'نجوم NB→RGB',
+        'Palette Picker': 'Palette Picker',
+        'RC-Astro': 'RC-Astro',
+        'Remove Stars': 'إزالة النجوم',
+        'Selective Color': 'الألوان الانتقائية',
+        'Star Stretch': 'Star Stretch',
+        'Stretch': 'Stretch',
+        'SyQon': 'SyQon',
+        'Texture': 'الملمس',
+        'White Balance': 'توازن اللون الأبيض',
+    },
+    "EssentialsToolBar": {
+        'Create Desktop Shortcut': 'إنشاء اختصار على سطح المكتب',
+        'Lock Toolbar Icons': 'قفل أيقونات شريط الأدوات',
+    },
+    "_WhiteBalancePresetDialog": {
+        'Auto σ (waterfall)': 'σ تلقائية (تدريجي)',
+        'Detection threshold (σ):': 'عتبة الكشف (σ):',
+        'Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.': 'يختار عتبة الكشف تلقائيًا، كما في نافذة توازن اللون الأبيض. ألغِ التحديد لاستخدام العتبة أعلاه.',
+        'Rotation strength:': 'قوة التدوير:',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Welcome and Setup, Gaia page: the Blind Solve Index section.
+_ADDITIONS_2026_11_24_SETUP = {
+    "Setup": {
+        'Blind Solve Index': 'فهرس الحل الأعمى',
+        'Build in the Gaia manager': 'البناء في مدير Gaia',
+        'For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.': 'للحل الأعمى: معرفة إلى أين تتجه الصورة دون إحداثيات ودون حجم المجال. يُبنى على هذا الحاسوب من مجموعات Gaia لديك، فلا يُنزَّل شيء. تشغل الطبقات الموصى بها ({0}) نحو {1} وتغطي مجالات من نحو 20′ إلى 25°، وهو ما تنتجه معظم أجهزة التصوير.',
+        'For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.': 'لحل اللوحة، ومنها يُبنى فهرس الحل الأعمى أدناه. المجموعات الموصى بها نحو 35 GB.',
+        'Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.': 'مجلد الفهرس غير موجود: {0}. صِل ذلك القرص، أو اختر المجلد في مدير Gaia.',
+        'Layers built: {0}. {1} on disk.': 'الطبقات المبنية: {0}. {1} على القرص.',
+        'Not built yet. It is built from the Bright (G < 17) Astrometry set, so install that first.': 'لم يُبنَ بعد. يُبنى من مجموعة القياس الفلكي ساطع (G < 17)، فثبّتها أولاً.',
+        'Not built yet. Recommended layers you can build now: {0}.': 'لم يُبنَ بعد. الطبقات الموصى بها التي يمكنك بناؤها الآن: {0}.',
+        'Not built yet. Your Gaia sets have everything the recommended layers need.': 'لم يُبنَ بعد. تحتوي مجموعات Gaia لديك على كل ما تحتاجه الطبقات الموصى بها.',
+        'Open in the Gaia manager': 'فتح في مدير Gaia',
+        'Ready for blind solving.': 'جاهز للحل الأعمى.',
+        'Recommended layers still to build: {0}.': 'طبقات موصى بها لم تُبنَ بعد: {0}.',
+        'These need the Bright (G < 17) Astrometry set first: {0}.': 'تحتاج هذه أولاً إلى مجموعة القياس الفلكي ساطع (G < 17): {0}.',
+        '{0} of {1} recommended layers': '{0} من {1} طبقات موصى بها',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_SETUP.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Stacking Suite Dark/Flat rows per group (Flats and Lights tabs), and the
+# Quick Stack window's description (frames weighted by star count).
+_ADDITIONS_2026_11_24_PICKS = {
+    "QuickStackDialog": {
+        "A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).": 'نظرة سريعة على مجموعة من الإطارات الفرعية: معايَرة إذا أعطيتها ملفات Master، ومحاذاة حسب الموضع والدوران والمقياس، ومُعادة إلى مستوى سماء المرجع، ومدمجة كمتوسط مقتطع مرجَّح بعدد النجوم الموجودة في كل إطار. لا توجد ملفات معايَرة أو محاذاة على القرص. تخضع الكاميرات الملونة لـ Debayer (ثنائي الخطية).',
+    },
+    "StackingSuiteDialog": {
+        'Add a master dark…': 'إضافة Master Dark…',
+        'Add a master flat…': 'إضافة Master Flat…',
+        'Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.': 'يختار التلقائي حسب المرشح والحجم، ثم Flat من الليلة نفسها (وإلا فمن أقرب ليلة) بالكسب نفسه. اختر Master آخر، أو لا شيء، لهذه المجموعة وهذه الجلسة فقط.',
+        "Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.": 'يختار التلقائي حسب الحجم، ثم الكسب والتعرض ودرجة الحرارة. يعرض صف Dark في كل مجموعة Flat اختياره: اختر هناك Master آخر، أو لا شيء.',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.': 'يختار التلقائي حسب الحجم، ثم الكسب والتعرض ودرجة الحرارة. اختر Master آخر، أو لا شيء، لهذه المجموعة فقط.',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.': 'يختار التلقائي حسب الحجم، ثم الكسب والتعرض ودرجة الحرارة. اختر Master آخر، أو لا شيء، لهذه المجموعة فقط. انقر بزر الماوس الأيمن على الإطارات لمنحها ملفًا خاصًا بها.',
+        'Auto-Select is off: pick a dark, or leave none': 'الاختيار التلقائي متوقف: اختر Dark، أو اتركه بلا شيء',
+        'Auto: none fits': 'تلقائي: لا شيء مناسب',
+        'Auto: off (Auto-Select is unchecked)': 'تلقائي: متوقف (الاختيار التلقائي غير محدد)',
+        'Auto: {0}': 'تلقائي: {0}',
+        'Auto: {0} masters, picked per frame': 'تلقائي: {0} من ملفات Master، يُختار لكل إطار',
+        'Choose Master Dark(s)': 'اختيار Master Dark',
+        'Choose Master Flat(s)': 'اختيار Master Flat',
+        'Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.': 'تعرض كل مجموعة ملفي Master Dark وMaster Flat اللذين ستستخدمهما: غيّرهما هناك. انقر بزر الماوس الأيمن على الإطارات لمنحها ملفات خاصة بها، أو لتعيين مفاتيح الجلسة.',
+        'Each group shows the master dark it will use: change it there. Right-click to set a session tag.': 'تعرض كل مجموعة ملف Master Dark الذي ستستخدمه: غيّره هناك. انقر بزر الماوس الأيمن لتعيين وسم الجلسة.',
+        'None loaded': 'لم يُحمَّل شيء',
+        "Use the Group's Dark and Flat": 'استخدام Dark وFlat المجموعة',
+        'every session': 'كل الجلسات',
+        'gain {0:g}': 'الكسب {0:g}',
+        '{0} ({1})': '{0} ({1})',
+        '{0} frames': 'الإطارات: {0}',
+        '{0}: these frames are {1}': '{0}: هذه الإطارات {1}',
+        '≈ nearest night: {0} ({1} d away)': '≈ أقرب ليلة: {0} (على بعد {1} يوم)',
+        '≈ {0} masters, picked per frame': '≈ {0} من ملفات Master، يُختار لكل إطار',
+        '⚠ dark {0:+.0f} °C, frames {1:+.0f} °C': '⚠ Dark: {0:+.0f} °C، الإطارات: {1:+.0f} °C',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ الكسب {0:g}، الإطارات {1:g}',
+        '⚠ it is the {0} flat': '⚠ إنه Flat الخاص بـ {0}',
+        '⚠ its exposure is not recorded': '⚠ التعرض غير مسجل',
+        '⚠ no {0} flat at {1}': '⚠ لا يوجد Flat لـ {0} بحجم {1}',
+        '⚠ none is {0}': '⚠ لا شيء بحجم {0}',
+        '⚠ none records its exposure: choose one': '⚠ لا يسجل أي منها التعرض: اختر واحدًا',
+        '⚠ offset {0:g}, frames {1:g}': '⚠ الإزاحة {0:g}، الإطارات {1:g}',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ Dark مدته {0:g} ث، الإطارات {1:g} ث',
+        '⚠ {0}, these frames are {1}': '⚠ {0}، هذه الإطارات {1}',
+        '✎ none': '✎ لا شيء',
+        '✎ your choice': '✎ اختيارك',
+        '✎ {0} frame(s) use their own': '✎ إطارات تستخدم ملفها الخاص: {0}',
+        '✓ auto': '✓ تلقائي',
+        '✓ same night': '✓ الليلة نفسها',
+        '✓ same session': '✓ الجلسة نفسها',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_PICKS.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: First Steps tour, the Crop step (now 4 steps).
+_ADDITIONS_2026_11_24_TOUR = {
+    "FirstStepsTour": {
+        '1 of 4': '1 من 4',
+        '2 of 4': '2 من 4',
+        '3 of 4': '3 من 4',
+        '4 of 4': '4 من 4',
+        'Crop off the stacking edges': 'قصّ حواف التكديس',
+        'No stacking edges? Skip this step': 'لا توجد حواف تكديس؟ تخطَّ هذه الخطوة',
+        'Open Crop': 'فتح القص',
+        "Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.\n\nCrop is under Functions → Repair & Retouch → Crop. Drag the box inside the clean area, then click Apply.": 'حيث لا تتداخل الإطارات الفرعية تمامًا، تكون حواف التكديس غير منتظمة: حدود داكنة أو مشوشة، وأحيانًا خطوط. قصّها أولاً. فالتمديد وإزالة التدرج ومعايرة الألوان كلها تقيس الصورة كاملة، وتلك الحواف تفسد نتائجها.\n\nقص موجود في وظائف → الإصلاح & التنقيح → قص. اسحب المربع داخل المنطقة النظيفة، ثم انقر تطبيق.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_TOUR.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Start Panel button on Essentials, after Search Commands
+# (its name is View > Start Panel's, already translated).
+_ADDITIONS_2026_11_24_START = {
+    'AstroSuiteProMainWindow': {
+        'Start Panel: open images, process step by step, stacking and more': 'لوحة البدء: فتح الصور، المعالجة خطوة بخطوة، التكديس والمزيد',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_START.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Quick Stack window's masters (per-group Dark / Flat lists, 2026-11-23)
+# and masters made in memory from single dark and flat frames.
+_ADDITIONS_2026_11_24_QS = {
+    "QuickStackDialog": {
+        'Add Masters…': 'إضافة ملفات Master…',
+        'Add a master dark or dark frames…': 'إضافة Master Dark أو إطارات Dark…',
+        'Add a master flat or flat frames…': 'إضافة Master Flat أو إطارات Flat…',
+        'Added {0}.': 'تمت الإضافة: {0}.',
+        'Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.': 'يختار التلقائي حسب الحجم، ثم المرشح: كما هو مكتوب، أو مكتوبًا بطريقة أخرى (O3 لـ OIII، وH-alpha لـ Ha)، أو مذكورًا في اسم ملف Flat ليست فيه بطاقة مرشح. اختر Master آخر، أو لا شيء، لهذه المجموعة فقط.',
+        'Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.': 'يختار التلقائي حسب الحجم، ثم الكسب والتعرض (Dark) أو المرشح (Flat). اختر Master آخر، أو لا شيء، لهذه المجموعة فقط.',
+        'Auto: none fits': 'تلقائي: لا شيء مناسب',
+        'Auto: {0}': 'تلقائي: {0}',
+        'Choose a master dark or dark frames': 'اختيار Master Dark أو إطارات Dark',
+        'Choose a master flat or flat frames': 'اختيار Master Flat أو إطارات Flat',
+        'Choose master darks and flats, or their frames': 'اختيار ملفات Master Dark وFlat، أو إطاراتها',
+        'Clear Masters': 'مسح ملفات Master',
+        'Dark': 'Dark',
+        'Darks and flats ({0});;All Files (*)': 'Dark وFlat ({0});;كل الملفات (*)',
+        'Flat': 'Flat',
+        'Is {0} a master dark or a master flat?': 'هل {0} ملف Master Dark أم Master Flat؟',
+        'It has no IMAGETYP card, and its file name does not say.': 'ليست فيه بطاقة IMAGETYP، واسم ملفه لا يوضح ذلك.',
+        'Left out {0}': 'تم استبعاد {0}',
+        'Left out {0} bias / flat-dark file(s): Quick Stack does not use them.': 'تم استبعاد {0} من ملفات Bias / Flat-Dark: لا يستخدمها Quick Stack.',
+        'Left out {0} file(s): see below.': 'تم استبعاد {0} من الملفات: انظر أدناه.',
+        'Master Dark': 'Master Dark',
+        'Master Flat': 'Master Flat',
+        "Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.\n\nSingle dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.\n\nMasters and frames dropped on this window, or added with the lights, are sorted out by themselves.": 'ملفات Master Dark وFlat، بقدر ما لديك: Flat واحد لكل مرشح، وDark لكل تعرض. تعرض كل مجموعة في القائمة ملفي Dark وFlat اللذين ستستخدمهما، ويُختاران حسب الحجم، ثم المرشح (Flat) أو الكسب والتعرض (Dark). غيّر اختيار أي مجموعة هناك.\n\nتصلح أيضًا إطارات Dark وFlat المفردة: تُدمج في ملفات Master في الذاكرة (متوسط مقتطع) في أول مرة يحتاجها فيها تكديس، ولا يُكتب شيء على القرص. تُجمَّع إطارات Dark حسب التعرض والكسب والحجم، وإطارات Flat حسب المرشح والحجم والليلة.\n\nملفات Master والإطارات التي تُفلت على هذه النافذة، أو تُضاف مع إطارات Light، تُفرز تلقائيًا.',
+        'Masters:': 'ملفات Master:',
+        'None': 'لا شيء',
+        'None loaded': 'لم يُحمَّل شيء',
+        'Nothing was added.': 'لم تتم إضافة شيء.',
+        'Skip': 'تخطٍّ',
+        'gain {0:g}': 'الكسب {0:g}',
+        'made in memory from {0} frames': 'أُنشئ في الذاكرة من {0} إطار',
+        'no filter': 'بلا مرشح',
+        'none (optional: drop or add master darks and flats, or their frames)': 'لا شيء (اختياري: أفلت أو أضف ملفات Master Dark وFlat، أو إطاراتها)',
+        '{0} (from its name)': '{0} (من اسمه)',
+        '{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).': '{0} من إطارات Bias: لا يستخدم Quick Stack إطارات Bias (يتضمنها Master Dark).',
+        '{0} dark frame(s) to make master darks from': '{0} من إطارات Dark لإنشاء ملفات Master Dark',
+        '{0} dark frames, {1:g} s': '{0} من إطارات Dark، {1:g} ث',
+        '{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses': '{0} Dark  ·  {1} Flat: تعرض كل مجموعة ما تستخدمه',
+        '{0} flat frame(s) to make master flats from': '{0} من إطارات Flat لإنشاء ملفات Master Flat',
+        '{0} flat frames': '{0} من إطارات Flat',
+        '{0} flat frames, {1}': '{0} من إطارات Flat، {1}',
+        '{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).': '{0} من إطارات Flat-Dark: لا يستخدمها Quick Stack (يُفترض أن يكون Master Flat معايَرًا بالفعل).',
+        '{0} frame(s)': '{0} إطار',
+        '{0} frames': 'الإطارات: {0}',
+        '{0} master dark(s)': '{0} Master Dark',
+        '{0} master flat(s)': '{0} Master Flat',
+        '{0} x {1}: these frames are {2} x {3}': '{0} x {1}: هذه الإطارات {2} x {3}',
+        '{0} {1} flat frames, {2}': '{0} من إطارات Flat لـ {1}، {2}',
+        '… and {0} more': '… و{0} أخرى',
+        '≈ {0} = {1}': '≈ {0} = {1}',
+        '≈ {0}, from its file name': '≈ {0}، من اسم ملفه',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ الكسب {0:g}، الإطارات {1:g}',
+        '⚠ it is the {0} flat': '⚠ إنه Flat الخاص بـ {0}',
+        '⚠ its exposure is not recorded': '⚠ التعرض غير مسجل',
+        '⚠ no {0} flat': '⚠ لا يوجد Flat لـ {0}',
+        '⚠ none is {0} x {1}': '⚠ لا شيء بحجم {0} x {1}',
+        '⚠ the frames give no exposure: choose one': '⚠ الإطارات لا تذكر التعرض: اختر واحدًا',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ Dark مدته {0:g} ث، الإطارات {1:g} ث',
+        "⚠ {0} x {1}, not these frames' size: it will be left out": '⚠ {0} x {1}، ليس حجم هذه الإطارات: سيُستبعد',
+        '✎ none': '✎ لا شيء',
+        '✎ your choice': '✎ اختيارك',
+        '✓ auto': '✓ تلقائي',
+        '✓ the only flat': '✓ ملف Flat الوحيد',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

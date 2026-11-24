@@ -4661,6 +4661,36 @@ Install it with:  pip install pypdfium2</source>
       <source>▼  Advanced</source>
       <translation>▼  उन्नत</translation>
     </message>
+    <message>
+      <source>All Tools: every toolbar and tool</source>
+      <translation>सभी उपकरण: हर टूलबार और हर उपकरण</translation>
+    </message>
+    <message>
+      <source>Essentials</source>
+      <translation>आवश्यक उपकरण</translation>
+    </message>
+    <message>
+      <source>Essentials: the tools of the beginner workflows, with their names.
+Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
+      <translation>आवश्यक उपकरण: शुरुआती वर्कफ़्लो के उपकरण, उनके नामों के साथ।
+हर उपकरण अब भी मेनू में और "कमांड खोजें" (Ctrl+/) में है।</translation>
+    </message>
+    <message>
+      <source>Search Commands...</source>
+      <translation>कमांड खोजें...</translation>
+    </message>
+    <message>
+      <source>Show Names Under Essentials Icons</source>
+      <translation>आवश्यक उपकरण आइकनों के नीचे नाम दिखाएँ</translation>
+    </message>
+    <message>
+      <source>Toolbar Mode</source>
+      <translation>टूलबार मोड</translation>
+    </message>
+    <message>
+      <source>Start Panel: open images, process step by step, stacking and more</source>
+      <translation>प्रारंभ पैनल: छवियाँ खोलें, चरण-दर-चरण प्रोसेस करें, स्टैकिंग और बहुत कुछ</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -11784,27 +11814,27 @@ RAF सीधे खोलें, या हेडर में RAW_PATH जो�
     <name>DraggableToolBar</name>
     <message>
       <source>Create Desktop Shortcut</source>
-      <translation>Create Desktop Shortcut</translation>
+      <translation>डेस्कटॉप शॉर्टकट बनाएँ</translation>
     </message>
     <message>
       <source>Hide this icon</source>
-      <translation>Hide this icon</translation>
+      <translation>यह आइकन छिपाएँ</translation>
     </message>
     <message>
       <source>Lock Toolbar Icons</source>
-      <translation>Lock Toolbar Icons</translation>
+      <translation>टूलबार आइकन लॉक करें</translation>
     </message>
     <message>
       <source>Reset hidden icons</source>
-      <translation>Reset hidden icons</translation>
+      <translation>छिपे हुए आइकन रीसेट करें</translation>
     </message>
     <message>
       <source>Show hidden…</source>
-      <translation>Show hidden…</translation>
+      <translation>छिपे हुए दिखाएँ…</translation>
     </message>
     <message>
       <source>Tip: Alt+Drag to create</source>
-      <translation>Tip: Alt+Drag to create</translation>
+      <translation>सुझाव: बनाने के लिए Alt+ड्रैग करें</translation>
     </message>
     <message>
       <source>Reset to Factory Layout...</source>
@@ -27932,6 +27962,166 @@ Calibrate only the {2} new frame(s) and reuse the existing calibrated frames for
       <source>🖼 Open Saved Masters</source>
       <translation>🖼 सहेजे गए मास्टर्स खोलें</translation>
     </message>
+    <message>
+      <source>Add a master dark…</source>
+      <translation>मास्टर डार्क जोड़ें…</translation>
+    </message>
+    <message>
+      <source>Add a master flat…</source>
+      <translation>मास्टर फ्लैट जोड़ें…</translation>
+    </message>
+    <message>
+      <source>Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.</source>
+      <translation>स्वतः फ़िल्टर और आकार से चुनता है, फिर उसी रात (वरना निकटतम रात) का मिलते गेन वाला फ्लैट। केवल इस समूह और सत्र के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें।</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>स्वतः आकार से चुनता है, फिर गेन, एक्सपोज़र और तापमान से। हर फ्लैट समूह की डार्क पंक्ति उसका चयन दिखाती है: वहीं कोई दूसरा मास्टर, या कोई नहीं, चुनें।</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.</source>
+      <translation>स्वतः आकार से चुनता है, फिर गेन, एक्सपोज़र और तापमान से। केवल इस समूह के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें।</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>स्वतः आकार से चुनता है, फिर गेन, एक्सपोज़र और तापमान से। केवल इस समूह के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें। फ़्रेमों को उनका अपना देने के लिए उन पर राइट-क्लिक करें।</translation>
+    </message>
+    <message>
+      <source>Auto-Select is off: pick a dark, or leave none</source>
+      <translation>स्वचालित चयन बंद है: कोई डार्क चुनें, या कोई नहीं रहने दें</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>स्वतः: कोई उपयुक्त नहीं</translation>
+    </message>
+    <message>
+      <source>Auto: off (Auto-Select is unchecked)</source>
+      <translation>स्वतः: बंद (स्वचालित चयन चेक नहीं है)</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>स्वतः: {0}</translation>
+    </message>
+    <message>
+      <source>Auto: {0} masters, picked per frame</source>
+      <translation>स्वतः: {0} मास्टर, हर फ़्रेम के लिए चुने गए</translation>
+    </message>
+    <message>
+      <source>Choose Master Dark(s)</source>
+      <translation>मास्टर डार्क चुनें</translation>
+    </message>
+    <message>
+      <source>Choose Master Flat(s)</source>
+      <translation>मास्टर फ्लैट चुनें</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.</source>
+      <translation>हर समूह वह मास्टर डार्क और फ्लैट दिखाता है जो वह उपयोग करेगा: उन्हें वहीं बदलें। फ़्रेमों को उनके अपने देने, या सत्र कुंजियाँ असाइन करने के लिए उन पर राइट-क्लिक करें।</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark it will use: change it there. Right-click to set a session tag.</source>
+      <translation>हर समूह वह मास्टर डार्क दिखाता है जो वह उपयोग करेगा: उसे वहीं बदलें। सत्र टैग सेट करने के लिए राइट-क्लिक करें।</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>कोई लोड नहीं</translation>
+    </message>
+    <message>
+      <source>Use the Group's Dark and Flat</source>
+      <translation>समूह का डार्क और फ्लैट उपयोग करें</translation>
+    </message>
+    <message>
+      <source>every session</source>
+      <translation>हर सत्र</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>गेन {0:g}</translation>
+    </message>
+    <message>
+      <source>{0} ({1})</source>
+      <translation>{0} ({1})</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>{0} फ़्रेम</translation>
+    </message>
+    <message>
+      <source>{0}: these frames are {1}</source>
+      <translation>{0}: ये फ़्रेम {1} हैं</translation>
+    </message>
+    <message>
+      <source>≈ nearest night: {0} ({1} d away)</source>
+      <translation>≈ निकटतम रात: {0} ({1} दिन दूर)</translation>
+    </message>
+    <message>
+      <source>≈ {0} masters, picked per frame</source>
+      <translation>≈ {0} मास्टर, हर फ़्रेम के लिए चुने गए</translation>
+    </message>
+    <message>
+      <source>⚠ dark {0:+.0f} °C, frames {1:+.0f} °C</source>
+      <translation>⚠ डार्क {0:+.0f} °C, फ़्रेम {1:+.0f} °C</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ गेन {0:g}, फ़्रेम {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ यह {0} फ्लैट है</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ इसका एक्सपोज़र दर्ज नहीं है</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat at {1}</source>
+      <translation>⚠ {1} पर कोई {0} फ्लैट नहीं</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0}</source>
+      <translation>⚠ कोई भी {0} नहीं है</translation>
+    </message>
+    <message>
+      <source>⚠ none records its exposure: choose one</source>
+      <translation>⚠ किसी का एक्सपोज़र दर्ज नहीं है: एक चुनें</translation>
+    </message>
+    <message>
+      <source>⚠ offset {0:g}, frames {1:g}</source>
+      <translation>⚠ ऑफसेट {0:g}, फ़्रेम {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ {0:g} s डार्क, {1:g} s फ़्रेम</translation>
+    </message>
+    <message>
+      <source>⚠ {0}, these frames are {1}</source>
+      <translation>⚠ {0}, ये फ़्रेम {1} हैं</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ कोई नहीं</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ आपका चयन</translation>
+    </message>
+    <message>
+      <source>✎ {0} frame(s) use their own</source>
+      <translation>✎ {0} फ़्रेम अपना उपयोग करते हैं</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ स्वतः</translation>
+    </message>
+    <message>
+      <source>✓ same night</source>
+      <translation>✓ वही रात</translation>
+    </message>
+    <message>
+      <source>✓ same session</source>
+      <translation>✓ वही सत्र</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -40626,6 +40816,42 @@ Statistical Stretch पिक्सेल बदलता है। यह क�
       <source>You've processed your first image</source>
       <translation>आपने अपनी पहली छवि प्रोसेस कर ली है</translation>
     </message>
+    <message>
+      <source>1 of 4</source>
+      <translation>4 में से 1</translation>
+    </message>
+    <message>
+      <source>2 of 4</source>
+      <translation>4 में से 2</translation>
+    </message>
+    <message>
+      <source>3 of 4</source>
+      <translation>4 में से 3</translation>
+    </message>
+    <message>
+      <source>4 of 4</source>
+      <translation>4 में से 4</translation>
+    </message>
+    <message>
+      <source>Crop off the stacking edges</source>
+      <translation>स्टैकिंग के किनारे काटें</translation>
+    </message>
+    <message>
+      <source>No stacking edges? Skip this step</source>
+      <translation>स्टैकिंग के किनारे नहीं हैं? यह चरण छोड़ें</translation>
+    </message>
+    <message>
+      <source>Open Crop</source>
+      <translation>क्रॉप खोलें</translation>
+    </message>
+    <message>
+      <source>Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.
+
+Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside the clean area, then click Apply.</source>
+      <translation>जहाँ सब-फ़्रेम पूरी तरह ओवरलैप नहीं हुए, वहाँ स्टैक के किनारे उबड़-खाबड़ होते हैं: गहरे या शोर वाले किनारे, कभी-कभी धारियाँ। पहले उन्हें काट दें। स्ट्रेचिंग, ग्रेडिएंट हटाना और रंग कैलिब्रेशन सभी पूरी छवि को मापते हैं, और ये किनारे उन्हें बिगाड़ देते हैं।
+
+क्रॉप कार्य → मरम्मत &amp; सुधार → क्रॉप में है। बॉक्स को साफ़ हिस्से के अंदर खींचें, फिर लागू करें पर क्लिक करें।</translation>
+    </message>
   </context>
   <context>
     <name>FitsBundleExportDialog</name>
@@ -52215,6 +52441,266 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, combined as a trimmed mean. No weighting or normalization, and no calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
       <translation>सब्स के एक सेट पर त्वरित नज़र: यदि आप मास्टर देते हैं तो कैलिब्रेटेड, स्थिति, रोटेशन और स्केल से संरेखित, ट्रिम्ड मीन के रूप में संयोजित। कोई वेटिंग या सामान्यीकरण नहीं, और डिस्क पर कोई कैलिब्रेटेड या संरेखित फ़ाइल नहीं। कलर कैमरे डीबेयर किए जाते हैं (बिलिनियर)।</translation>
     </message>
+    <message>
+      <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
+      <translation>सब्स के एक सेट पर त्वरित नज़र: यदि आप मास्टर देते हैं तो कैलिब्रेटेड, स्थिति, रोटेशन और स्केल से संरेखित, संदर्भ के आकाश स्तर पर लाया गया, और हर फ़्रेम में मिले तारों से भारित ट्रिम्ड मीन के रूप में संयोजित। डिस्क पर कोई कैलिब्रेटेड या संरेखित फ़ाइल नहीं। कलर कैमरे डीबेयर किए जाते हैं (बिलिनियर)।</translation>
+    </message>
+    <message>
+      <source>Add Masters…</source>
+      <translation>मास्टर जोड़ें…</translation>
+    </message>
+    <message>
+      <source>Add a master dark or dark frames…</source>
+      <translation>मास्टर डार्क या डार्क फ़्रेम जोड़ें…</translation>
+    </message>
+    <message>
+      <source>Add a master flat or flat frames…</source>
+      <translation>मास्टर फ्लैट या फ्लैट फ़्रेम जोड़ें…</translation>
+    </message>
+    <message>
+      <source>Added {0}.</source>
+      <translation>जोड़ा गया: {0}।</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.</source>
+      <translation>स्वतः पहले आकार से चुनता है, फिर फ़िल्टर से: जैसा लिखा है, दूसरे तरीके से लिखा (OIII के लिए O3, Ha के लिए H-alpha), या बिना फ़िल्टर कार्ड वाले फ्लैट के फ़ाइल नाम में दिया गया। केवल इस समूह के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें।</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.</source>
+      <translation>स्वतः पहले आकार से चुनता है, फिर गेन और एक्सपोज़र (डार्क) या फ़िल्टर (फ्लैट) से। केवल इस समूह के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें।</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>स्वतः: कोई उपयुक्त नहीं</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>स्वतः: {0}</translation>
+    </message>
+    <message>
+      <source>Choose a master dark or dark frames</source>
+      <translation>मास्टर डार्क या डार्क फ़्रेम चुनें</translation>
+    </message>
+    <message>
+      <source>Choose a master flat or flat frames</source>
+      <translation>मास्टर फ्लैट या फ्लैट फ़्रेम चुनें</translation>
+    </message>
+    <message>
+      <source>Choose master darks and flats, or their frames</source>
+      <translation>मास्टर डार्क और फ्लैट, या उनके फ़्रेम चुनें</translation>
+    </message>
+    <message>
+      <source>Clear Masters</source>
+      <translation>मास्टर साफ़ करें</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>डार्क (Dark)</translation>
+    </message>
+    <message>
+      <source>Darks and flats ({0});;All Files (*)</source>
+      <translation>डार्क और फ्लैट ({0});;सभी फ़ाइलें (*)</translation>
+    </message>
+    <message>
+      <source>Flat</source>
+      <translation>फ्लैट (Flat)</translation>
+    </message>
+    <message>
+      <source>Is {0} a master dark or a master flat?</source>
+      <translation>क्या {0} मास्टर डार्क है या मास्टर फ्लैट?</translation>
+    </message>
+    <message>
+      <source>It has no IMAGETYP card, and its file name does not say.</source>
+      <translation>इसमें IMAGETYP कार्ड नहीं है, और इसका फ़ाइल नाम भी नहीं बताता।</translation>
+    </message>
+    <message>
+      <source>Left out {0}</source>
+      <translation>छोड़ा गया: {0}</translation>
+    </message>
+    <message>
+      <source>Left out {0} bias / flat-dark file(s): Quick Stack does not use them.</source>
+      <translation>{0} बायस / फ्लैट-डार्क फ़ाइलें छोड़ी गईं: Quick Stack इनका उपयोग नहीं करता।</translation>
+    </message>
+    <message>
+      <source>Left out {0} file(s): see below.</source>
+      <translation>{0} फ़ाइलें छोड़ी गईं: नीचे देखें।</translation>
+    </message>
+    <message>
+      <source>Master Dark</source>
+      <translation>मास्टर डार्क</translation>
+    </message>
+    <message>
+      <source>Master Flat</source>
+      <translation>मास्टर फ्लैट</translation>
+    </message>
+    <message>
+      <source>Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.
+
+Single dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.
+
+Masters and frames dropped on this window, or added with the lights, are sorted out by themselves.</source>
+      <translation>मास्टर डार्क और फ्लैट, जितने आपके पास हों: हर फ़िल्टर के लिए एक फ्लैट, हर एक्सपोज़र के लिए डार्क। सूची का हर समूह वह डार्क और फ्लैट दिखाता है जो वह उपयोग करेगा, जो आकार से, फिर फ़िल्टर (फ्लैट) या गेन और एक्सपोज़र (डार्क) से चुने जाते हैं। किसी भी समूह का चयन वहीं बदलें।
+
+अलग-अलग डार्क और फ्लैट फ़्रेम भी चलते हैं: जब किसी स्टैक को पहली बार उनकी ज़रूरत होती है, वे मेमोरी में मास्टर में मिलाए जाते हैं (ट्रिम्ड मीन), और डिस्क पर कुछ नहीं लिखा जाता। डार्क एक्सपोज़र, गेन और आकार से समूहित होते हैं; फ्लैट फ़िल्टर, आकार और रात से।
+
+इस विंडो पर छोड़े गए, या लाइट के साथ जोड़े गए मास्टर और फ़्रेम अपने आप छँट जाते हैं।</translation>
+    </message>
+    <message>
+      <source>Masters:</source>
+      <translation>मास्टर:</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>कोई नहीं</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>कोई लोड नहीं</translation>
+    </message>
+    <message>
+      <source>Nothing was added.</source>
+      <translation>कुछ नहीं जोड़ा गया।</translation>
+    </message>
+    <message>
+      <source>Skip</source>
+      <translation>छोड़ें</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>गेन {0:g}</translation>
+    </message>
+    <message>
+      <source>made in memory from {0} frames</source>
+      <translation>{0} फ़्रेम से मेमोरी में बनाया गया</translation>
+    </message>
+    <message>
+      <source>no filter</source>
+      <translation>कोई फ़िल्टर नहीं</translation>
+    </message>
+    <message>
+      <source>none (optional: drop or add master darks and flats, or their frames)</source>
+      <translation>कोई नहीं (वैकल्पिक: मास्टर डार्क और फ्लैट, या उनके फ़्रेम छोड़ें या जोड़ें)</translation>
+    </message>
+    <message>
+      <source>{0} (from its name)</source>
+      <translation>{0} (इसके नाम से)</translation>
+    </message>
+    <message>
+      <source>{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).</source>
+      <translation>{0} बायस फ़्रेम: Quick Stack बायस का उपयोग नहीं करता (मास्टर डार्क में वह शामिल है)।</translation>
+    </message>
+    <message>
+      <source>{0} dark frame(s) to make master darks from</source>
+      <translation>मास्टर डार्क बनाने के लिए {0} डार्क फ़्रेम</translation>
+    </message>
+    <message>
+      <source>{0} dark frames, {1:g} s</source>
+      <translation>{0} डार्क फ़्रेम, {1:g} s</translation>
+    </message>
+    <message>
+      <source>{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses</source>
+      <translation>{0} डार्क  ·  {1} फ्लैट: हर समूह वही दिखाता है जो वह उपयोग करता है</translation>
+    </message>
+    <message>
+      <source>{0} flat frame(s) to make master flats from</source>
+      <translation>मास्टर फ्लैट बनाने के लिए {0} फ्लैट फ़्रेम</translation>
+    </message>
+    <message>
+      <source>{0} flat frames</source>
+      <translation>{0} फ्लैट फ़्रेम</translation>
+    </message>
+    <message>
+      <source>{0} flat frames, {1}</source>
+      <translation>{0} फ्लैट फ़्रेम, {1}</translation>
+    </message>
+    <message>
+      <source>{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).</source>
+      <translation>{0} फ्लैट-डार्क फ़्रेम: Quick Stack इनका उपयोग नहीं करता (मास्टर फ्लैट पहले से कैलिब्रेटेड होना चाहिए)।</translation>
+    </message>
+    <message>
+      <source>{0} frame(s)</source>
+      <translation>{0} फ़्रेम</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>{0} फ़्रेम</translation>
+    </message>
+    <message>
+      <source>{0} master dark(s)</source>
+      <translation>{0} मास्टर डार्क</translation>
+    </message>
+    <message>
+      <source>{0} master flat(s)</source>
+      <translation>{0} मास्टर फ्लैट</translation>
+    </message>
+    <message>
+      <source>{0} x {1}: these frames are {2} x {3}</source>
+      <translation>{0} x {1}: ये फ़्रेम {2} x {3} हैं</translation>
+    </message>
+    <message>
+      <source>{0} {1} flat frames, {2}</source>
+      <translation>{0} {1} फ्लैट फ़्रेम, {2}</translation>
+    </message>
+    <message>
+      <source>… and {0} more</source>
+      <translation>… और {0}</translation>
+    </message>
+    <message>
+      <source>≈ {0} = {1}</source>
+      <translation>≈ {0} = {1}</translation>
+    </message>
+    <message>
+      <source>≈ {0}, from its file name</source>
+      <translation>≈ {0}, इसके फ़ाइल नाम से</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ गेन {0:g}, फ़्रेम {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ यह {0} फ्लैट है</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ इसका एक्सपोज़र दर्ज नहीं है</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat</source>
+      <translation>⚠ कोई {0} फ्लैट नहीं</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0} x {1}</source>
+      <translation>⚠ कोई भी {0} x {1} नहीं है</translation>
+    </message>
+    <message>
+      <source>⚠ the frames give no exposure: choose one</source>
+      <translation>⚠ फ़्रेम एक्सपोज़र नहीं बताते: एक चुनें</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ {0:g} s डार्क, {1:g} s फ़्रेम</translation>
+    </message>
+    <message>
+      <source>⚠ {0} x {1}, not these frames' size: it will be left out</source>
+      <translation>⚠ {0} x {1}, इन फ़्रेमों का आकार नहीं: इसे छोड़ दिया जाएगा</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ कोई नहीं</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ आपका चयन</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ स्वतः</translation>
+    </message>
+    <message>
+      <source>✓ the only flat</source>
+      <translation>✓ एकमात्र फ्लैट</translation>
+    </message>
   </context>
   <context>
     <name>RCAstro</name>
@@ -58008,6 +58494,62 @@ Thank you for being part of this journey. Clear skies.</source>
     <message>
       <source>— Franklin Marek (Seti Astro)</source>
       <translation>— Franklin Marek (Seti Astro)</translation>
+    </message>
+    <message>
+      <source>Blind Solve Index</source>
+      <translation>ब्लाइंड सॉल्व इंडेक्स</translation>
+    </message>
+    <message>
+      <source>Build in the Gaia manager</source>
+      <translation>Gaia मैनेजर में बनाएँ</translation>
+    </message>
+    <message>
+      <source>For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.</source>
+      <translation>ब्लाइंड सॉल्विंग के लिए: बिना निर्देशांक और बिना फ़ील्ड आकार के यह पता लगाना कि छवि कहाँ की ओर है। यह इसी कंप्यूटर पर आपके Gaia सेट से बनता है, इसलिए कुछ भी डाउनलोड नहीं होता। {0} अनुशंसित लेयर लगभग {1} लेती हैं और लगभग 20′ से 25° तक के फ़ील्ड कवर करती हैं, जो ज़्यादातर इमेजिंग सेटअप देते हैं।</translation>
+    </message>
+    <message>
+      <source>For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.</source>
+      <translation>प्लेट सॉल्विंग के लिए, और नीचे वाला ब्लाइंड सॉल्व इंडेक्स इन्हीं से बनता है। अनुशंसित सेट लगभग 35 GB हैं।</translation>
+    </message>
+    <message>
+      <source>Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.</source>
+      <translation>इंडेक्स फ़ोल्डर नहीं मिला: {0}। वह ड्राइव कनेक्ट करें, या Gaia मैनेजर में फ़ोल्डर चुनें।</translation>
+    </message>
+    <message>
+      <source>Layers built: {0}. {1} on disk.</source>
+      <translation>बनी हुई लेयर: {0}। डिस्क पर {1}।</translation>
+    </message>
+    <message>
+      <source>Not built yet. It is built from the Bright (G &lt; 17) Astrometry set, so install that first.</source>
+      <translation>अभी नहीं बना है। यह चमकीला (G &lt; 17) एस्ट्रोमेट्री सेट से बनता है, इसलिए पहले उसे इंस्टॉल करें।</translation>
+    </message>
+    <message>
+      <source>Not built yet. Recommended layers you can build now: {0}.</source>
+      <translation>अभी नहीं बना है। अनुशंसित लेयर जो आप अभी बना सकते हैं: {0}।</translation>
+    </message>
+    <message>
+      <source>Not built yet. Your Gaia sets have everything the recommended layers need.</source>
+      <translation>अभी नहीं बना है। आपके Gaia सेट में अनुशंसित लेयर की ज़रूरत की हर चीज़ है।</translation>
+    </message>
+    <message>
+      <source>Open in the Gaia manager</source>
+      <translation>Gaia मैनेजर में खोलें</translation>
+    </message>
+    <message>
+      <source>Ready for blind solving.</source>
+      <translation>ब्लाइंड सॉल्विंग के लिए तैयार।</translation>
+    </message>
+    <message>
+      <source>Recommended layers still to build: {0}.</source>
+      <translation>अभी बनाई जाने वाली अनुशंसित लेयर: {0}।</translation>
+    </message>
+    <message>
+      <source>These need the Bright (G &lt; 17) Astrometry set first: {0}.</source>
+      <translation>इनके लिए पहले चमकीला (G &lt; 17) एस्ट्रोमेट्री सेट चाहिए: {0}।</translation>
+    </message>
+    <message>
+      <source>{0} of {1} recommended layers</source>
+      <translation>{1} में से {0} अनुशंसित लेयर</translation>
     </message>
   </context>
   <context>
@@ -72594,6 +73136,22 @@ NOT recommended for narrowband or duoband data.</source>
       <source>White Balance — Preset</source>
       <translation>श्वेत संतुलन — प्रीसेट</translation>
     </message>
+    <message>
+      <source>Auto σ (waterfall)</source>
+      <translation>ऑटो σ (वॉटरफ़ॉल)</translation>
+    </message>
+    <message>
+      <source>Detection threshold (σ):</source>
+      <translation>डिटेक्शन थ्रेशोल्ड (σ):</translation>
+    </message>
+    <message>
+      <source>Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.</source>
+      <translation>श्वेत संतुलन डायलॉग की तरह, डिटेक्शन थ्रेशोल्ड स्वयं चुनता है। ऊपर वाला थ्रेशोल्ड इस्तेमाल करने के लिए अनचेक करें।</translation>
+    </message>
+    <message>
+      <source>Rotation strength:</source>
+      <translation>घूर्णन तीव्रता:</translation>
+    </message>
   </context>
   <context>
     <name>_WorkerCloseGuardMixin</name>
@@ -72635,6 +73193,96 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>Show the workflow as one plain list of steps per lane (Ctrl+G)</source>
       <translation>वर्कफ़्लो को प्रति लेन चरणों की एक सादी सूची के रूप में दिखाएँ (Ctrl+G)</translation>
+    </message>
+  </context>
+  <context>
+    <name>Essentials</name>
+    <message>
+      <source>ADBE</source>
+      <translation>ADBE</translation>
+    </message>
+    <message>
+      <source>Add Stars</source>
+      <translation>तारे जोड़ें</translation>
+    </message>
+    <message>
+      <source>BG Neutral</source>
+      <translation>पृष्ठभूमि तटस्थ</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Crop</source>
+      <translation>क्रॉप</translation>
+    </message>
+    <message>
+      <source>Curves</source>
+      <translation>कर्व्स</translation>
+    </message>
+    <message>
+      <source>Essentials: Linear</source>
+      <translation>आवश्यक उपकरण: रैखिक</translation>
+    </message>
+    <message>
+      <source>Essentials: Non-Linear</source>
+      <translation>आवश्यक उपकरण: अरैखिक</translation>
+    </message>
+    <message>
+      <source>LRGB Combine</source>
+      <translation>LRGB संयोजन</translation>
+    </message>
+    <message>
+      <source>NB→RGB Stars</source>
+      <translation>NB→RGB तारे</translation>
+    </message>
+    <message>
+      <source>Palette Picker</source>
+      <translation>Palette Picker</translation>
+    </message>
+    <message>
+      <source>RC-Astro</source>
+      <translation>RC-Astro</translation>
+    </message>
+    <message>
+      <source>Remove Stars</source>
+      <translation>तारे हटाएं</translation>
+    </message>
+    <message>
+      <source>Selective Color</source>
+      <translation>चयनात्मक रंग</translation>
+    </message>
+    <message>
+      <source>Star Stretch</source>
+      <translation>Star Stretch</translation>
+    </message>
+    <message>
+      <source>Stretch</source>
+      <translation>Stretch</translation>
+    </message>
+    <message>
+      <source>SyQon</source>
+      <translation>SyQon</translation>
+    </message>
+    <message>
+      <source>Texture</source>
+      <translation>बनावट</translation>
+    </message>
+    <message>
+      <source>White Balance</source>
+      <translation>श्वेत संतुलन</translation>
+    </message>
+  </context>
+  <context>
+    <name>EssentialsToolBar</name>
+    <message>
+      <source>Create Desktop Shortcut</source>
+      <translation>डेस्कटॉप शॉर्टकट बनाएँ</translation>
+    </message>
+    <message>
+      <source>Lock Toolbar Icons</source>
+      <translation>टूलबार आइकन लॉक करें</translation>
     </message>
   </context>
 </TS>

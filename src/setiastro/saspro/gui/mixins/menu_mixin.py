@@ -293,7 +293,12 @@ class MenuMixin:
         self.act_start_panel.setChecked(
             panel.on if panel is not None
             else self.settings.value("ui/start_panel", True, type=bool))
-        self.act_start_panel.triggered.connect(lambda on: self._set_start_panel(on))
+        self.act_start_panel.triggered.connect(lambda on: self._start_panel_menu(on))
+        m_toolbar = m_view.addMenu(self.tr("Toolbar"))
+        for a in self._ensure_toolbar_mode_actions():
+            m_toolbar.addAction(a)
+        m_toolbar.addSeparator()
+        m_toolbar.addAction(self._act_essentials_labels)
         m_layout = m_view.addMenu(self.tr("Layout"))
         m_layout.addAction(self.tr("Reset to Factory Layout..."),
                            self._reset_all_toolbars_to_factory)

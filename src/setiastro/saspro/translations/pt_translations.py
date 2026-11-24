@@ -17194,3 +17194,233 @@ for _ctx, _msgs in _ADDITIONS_2026_11.items():
     _dst = TRANSLATIONS_PT.setdefault(_ctx, {})
     _dst.update(_msgs)
 del _ctx, _msgs, _dst
+
+# 2026-11-24: the Essentials toolbars and their switch, the toolbars' right-click
+# menu where it was still English, Search Commands, and the White Balance preset
+# editor of Function Bundles.
+_ADDITIONS_2026_11_24 = {
+    "AstroSuiteProMainWindow": {
+        'All Tools: every toolbar and tool': 'Todas as ferramentas: todas as barras e ferramentas',
+        'Essentials': 'Essenciais',
+        'Essentials: the tools of the beginner workflows, with their names.\nEvery tool is still in the menus and in Search Commands (Ctrl+/).': 'Essenciais: as ferramentas dos fluxos de trabalho para iniciantes, com seus nomes.\nTodas as ferramentas continuam nos menus e em Buscar comandos (Ctrl+/).',
+        'Search Commands...': 'Buscar comandos...',
+        'Show Names Under Essentials Icons': 'Mostrar nomes sob os ícones de Essenciais',
+        'Toolbar Mode': 'Modo da barra de ferramentas',
+    },
+    "Essentials": {
+        'ADBE': 'ADBE',
+        'Add Stars': 'Adicionar Estrelas',
+        'BG Neutral': 'Fundo neutro',
+        'Cosmic Clarity': 'Cosmic Clarity',
+        'Crop': 'Recortar',
+        'Curves': 'Curvas',
+        'Essentials: Linear': 'Essenciais: linear',
+        'Essentials: Non-Linear': 'Essenciais: não linear',
+        'LRGB Combine': 'Combinar LRGB',
+        'NB→RGB Stars': 'Estrelas NB→RGB',
+        'Palette Picker': 'Palette Picker',
+        'RC-Astro': 'RC-Astro',
+        'Remove Stars': 'Remover Estrelas',
+        'Selective Color': 'Cor seletiva',
+        'Star Stretch': 'Star Stretch',
+        'Stretch': 'Stretch',
+        'SyQon': 'SyQon',
+        'Texture': 'Textura',
+        'White Balance': 'Balanço de Branco',
+    },
+    "EssentialsToolBar": {
+        'Create Desktop Shortcut': 'Criar atalho na área de trabalho',
+        'Lock Toolbar Icons': 'Bloquear ícones da barra de ferramentas',
+    },
+    "_WhiteBalancePresetDialog": {
+        'Auto σ (waterfall)': 'σ automático (cascata)',
+        'Detection threshold (σ):': 'Limiar de detecção (σ):',
+        'Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.': 'Escolhe sozinho o limiar de detecção, como na janela Balanço de Branco. Desmarque para usar o limiar acima.',
+        'Rotation strength:': 'Intensidade da rotação:',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24.items():
+    TRANSLATIONS_PT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Welcome and Setup, Gaia page: the Blind Solve Index section.
+_ADDITIONS_2026_11_24_SETUP = {
+    "Setup": {
+        'Blind Solve Index': 'Índice de solução cega',
+        'Build in the Gaia manager': 'Construir no gerenciador Gaia',
+        'For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.': 'Para solução às cegas: descobrir para onde uma imagem aponta sem coordenadas nem tamanho de campo. É construído neste computador a partir dos seus conjuntos Gaia, então nada é baixado. As {0} camadas recomendadas ocupam cerca de {1} e cobrem campos de cerca de 20′ a 25°, o que a maioria dos equipamentos de imagem produz.',
+        'For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.': 'Para plate solving e para construir o índice de solução cega abaixo. Os conjuntos recomendados têm cerca de 35 GB.',
+        'Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.': 'Pasta do índice não encontrada: {0}. Conecte essa unidade ou escolha a pasta no gerenciador Gaia.',
+        'Layers built: {0}. {1} on disk.': 'Camadas construídas: {0}. {1} em disco.',
+        'Not built yet. It is built from the Bright (G < 17) Astrometry set, so install that first.': 'Ainda não construído. Ele é construído a partir do conjunto astrométrico Brilhante (G < 17), então instale-o primeiro.',
+        'Not built yet. Recommended layers you can build now: {0}.': 'Ainda não construído. Camadas recomendadas que você pode construir agora: {0}.',
+        'Not built yet. Your Gaia sets have everything the recommended layers need.': 'Ainda não construído. Seus conjuntos Gaia têm tudo o que as camadas recomendadas precisam.',
+        'Open in the Gaia manager': 'Abrir no gerenciador Gaia',
+        'Ready for blind solving.': 'Pronto para solução às cegas.',
+        'Recommended layers still to build: {0}.': 'Camadas recomendadas ainda por construir: {0}.',
+        'These need the Bright (G < 17) Astrometry set first: {0}.': 'Estas precisam primeiro do conjunto astrométrico Brilhante (G < 17): {0}.',
+        '{0} of {1} recommended layers': '{0} de {1} camadas recomendadas',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_SETUP.items():
+    TRANSLATIONS_PT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Stacking Suite Dark/Flat rows per group (Flats and Lights tabs), and the
+# Quick Stack window's description (frames weighted by star count).
+_ADDITIONS_2026_11_24_PICKS = {
+    "QuickStackDialog": {
+        "A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).": 'Uma visão rápida de um conjunto de subs: calibrados se você fornecer masters, alinhados por posição, rotação e escala, levados ao nível de céu da referência e combinados por média aparada ponderada pelas estrelas encontradas em cada frame. Nenhum arquivo calibrado ou alinhado em disco. Câmeras coloridas passam por debayer (bilinear).',
+    },
+    "StackingSuiteDialog": {
+        'Add a master dark…': 'Adicionar um master dark…',
+        'Add a master flat…': 'Adicionar um master flat…',
+        'Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.': 'Auto escolhe por filtro e tamanho, depois o flat da mesma noite (senão da noite mais próxima) com o mesmo ganho. Escolha outro master, ou Nenhum, apenas para este grupo e esta sessão.',
+        "Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.": 'Auto escolhe por tamanho, depois ganho, exposição e temperatura. A linha Dark de cada grupo de flats mostra a escolha: escolha ali outro master, ou Nenhum.',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.': 'Auto escolhe por tamanho, depois ganho, exposição e temperatura. Escolha outro master, ou Nenhum, apenas para este grupo.',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.': 'Auto escolhe por tamanho, depois ganho, exposição e temperatura. Escolha outro master, ou Nenhum, apenas para este grupo. Clique com o botão direito nos frames para dar a eles um próprio.',
+        'Auto-Select is off: pick a dark, or leave none': 'Auto-Selecionar está desligado: escolha um dark, ou deixe nenhum',
+        'Auto: none fits': 'Auto: nenhum serve',
+        'Auto: off (Auto-Select is unchecked)': 'Auto: desligado (Auto-Selecionar está desmarcado)',
+        'Auto: {0}': 'Auto: {0}',
+        'Auto: {0} masters, picked per frame': 'Auto: {0} masters, escolhidos por frame',
+        'Choose Master Dark(s)': 'Escolher master dark(s)',
+        'Choose Master Flat(s)': 'Escolher master flat(s)',
+        'Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.': 'Cada grupo mostra o master dark e o master flat que vai usar: altere-os ali. Clique com o botão direito nos frames para dar a eles os próprios, ou para atribuir chaves de sessão.',
+        'Each group shows the master dark it will use: change it there. Right-click to set a session tag.': 'Cada grupo mostra o master dark que vai usar: altere-o ali. Clique com o botão direito para definir uma etiqueta de sessão.',
+        'None loaded': 'Nenhum carregado',
+        "Use the Group's Dark and Flat": 'Usar o Dark e o Flat do grupo',
+        'every session': 'todas as sessões',
+        'gain {0:g}': 'ganho {0:g}',
+        '{0} ({1})': '{0} ({1})',
+        '{0} frames': '{0} frames',
+        '{0}: these frames are {1}': '{0}: estes frames são {1}',
+        '≈ nearest night: {0} ({1} d away)': '≈ noite mais próxima: {0} (a {1} d)',
+        '≈ {0} masters, picked per frame': '≈ {0} masters, escolhidos por frame',
+        '⚠ dark {0:+.0f} °C, frames {1:+.0f} °C': '⚠ dark {0:+.0f} °C, frames {1:+.0f} °C',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ ganho {0:g}, frames {1:g}',
+        '⚠ it is the {0} flat': '⚠ é o flat de {0}',
+        '⚠ its exposure is not recorded': '⚠ a exposição dele não está registrada',
+        '⚠ no {0} flat at {1}': '⚠ nenhum flat de {0} em {1}',
+        '⚠ none is {0}': '⚠ nenhum é {0}',
+        '⚠ none records its exposure: choose one': '⚠ nenhum registra a exposição: escolha um',
+        '⚠ offset {0:g}, frames {1:g}': '⚠ offset {0:g}, frames {1:g}',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ dark de {0:g} s, frames de {1:g} s',
+        '⚠ {0}, these frames are {1}': '⚠ {0}, estes frames são {1}',
+        '✎ none': '✎ nenhum',
+        '✎ your choice': '✎ sua escolha',
+        '✎ {0} frame(s) use their own': '✎ {0} frame(s) usam o próprio',
+        '✓ auto': '✓ auto',
+        '✓ same night': '✓ mesma noite',
+        '✓ same session': '✓ mesma sessão',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_PICKS.items():
+    TRANSLATIONS_PT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: First Steps tour, the Crop step (now 4 steps).
+_ADDITIONS_2026_11_24_TOUR = {
+    "FirstStepsTour": {
+        '1 of 4': '1 de 4',
+        '2 of 4': '2 de 4',
+        '3 of 4': '3 de 4',
+        '4 of 4': '4 de 4',
+        'Crop off the stacking edges': 'Recorte as bordas do empilhamento',
+        'No stacking edges? Skip this step': 'Sem bordas de empilhamento? Pule esta etapa',
+        'Open Crop': 'Abrir Recortar',
+        "Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.\n\nCrop is under Functions → Repair & Retouch → Crop. Drag the box inside the clean area, then click Apply.": 'Onde os subs não se sobrepõem por completo, uma pilha tem bordas irregulares: bordas escuras ou ruidosas, às vezes listras. Recorte-as primeiro. O estiramento, a remoção de gradiente e a calibração de cor medem a imagem inteira, e essas bordas os atrapalham.\n\nRecortar fica em Funções → Reparo & retoque → Recortar. Arraste a caixa para dentro da área limpa e clique em Aplicar.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_TOUR.items():
+    TRANSLATIONS_PT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Start Panel button on Essentials, after Search Commands
+# (its name is View > Start Panel's, already translated).
+_ADDITIONS_2026_11_24_START = {
+    'AstroSuiteProMainWindow': {
+        'Start Panel: open images, process step by step, stacking and more': 'Painel inicial: abrir imagens, processar passo a passo, empilhamento e mais',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_START.items():
+    TRANSLATIONS_PT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Quick Stack window's masters (per-group Dark / Flat lists, 2026-11-23)
+# and masters made in memory from single dark and flat frames.
+_ADDITIONS_2026_11_24_QS = {
+    "QuickStackDialog": {
+        'Add Masters…': 'Adicionar masters…',
+        'Add a master dark or dark frames…': 'Adicionar um master dark ou quadros de dark…',
+        'Add a master flat or flat frames…': 'Adicionar um master flat ou quadros de flat…',
+        'Added {0}.': 'Adicionado: {0}.',
+        'Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.': 'Auto escolhe por tamanho, depois por filtro: como escrito, escrito de outra forma (O3 para OIII, H-alpha para Ha) ou indicado no nome do arquivo de um flat sem cartão de filtro. Escolha outro master, ou Nenhum, apenas para este grupo.',
+        'Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.': 'Auto escolhe por tamanho, depois ganho e exposição (darks) ou filtro (flats). Escolha outro master, ou Nenhum, apenas para este grupo.',
+        'Auto: none fits': 'Auto: nenhum serve',
+        'Auto: {0}': 'Auto: {0}',
+        'Choose a master dark or dark frames': 'Escolher um master dark ou quadros de dark',
+        'Choose a master flat or flat frames': 'Escolher um master flat ou quadros de flat',
+        'Choose master darks and flats, or their frames': 'Escolher master darks e flats, ou seus quadros',
+        'Clear Masters': 'Limpar masters',
+        'Dark': 'Dark',
+        'Darks and flats ({0});;All Files (*)': 'Darks e flats ({0});;Todos os Arquivos (*)',
+        'Flat': 'Flat',
+        'Is {0} a master dark or a master flat?': '{0} é um master dark ou um master flat?',
+        'It has no IMAGETYP card, and its file name does not say.': 'Ele não tem cartão IMAGETYP, e o nome do arquivo não diz.',
+        'Left out {0}': 'Deixado de fora: {0}',
+        'Left out {0} bias / flat-dark file(s): Quick Stack does not use them.': '{0} arquivo(s) de bias / flat-dark deixado(s) de fora: o Quick Stack não os usa.',
+        'Left out {0} file(s): see below.': '{0} arquivo(s) deixado(s) de fora: veja abaixo.',
+        'Master Dark': 'Master Dark',
+        'Master Flat': 'Master Flat',
+        "Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.\n\nSingle dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.\n\nMasters and frames dropped on this window, or added with the lights, are sorted out by themselves.": 'Master darks e flats, quantos você tiver: um flat por filtro, darks para cada exposição. Cada grupo da lista mostra o dark e o flat que vai usar, escolhidos por tamanho, depois filtro (flats) ou ganho e exposição (darks). Altere ali a escolha de qualquer grupo.\n\nQuadros de dark e flat avulsos também servem: eles são combinados em masters na memória (média aparada) na primeira vez que um empilhamento precisa deles, e nada é gravado no disco. Os darks são agrupados por exposição, ganho e tamanho; os flats por filtro, tamanho e noite.\n\nMasters e quadros soltos nesta janela, ou adicionados com os lights, são separados automaticamente.',
+        'Masters:': 'Masters:',
+        'None': 'Nenhum',
+        'None loaded': 'Nenhum carregado',
+        'Nothing was added.': 'Nada foi adicionado.',
+        'Skip': 'Pular',
+        'gain {0:g}': 'ganho {0:g}',
+        'made in memory from {0} frames': 'feito na memória a partir de {0} quadros',
+        'no filter': 'sem filtro',
+        'none (optional: drop or add master darks and flats, or their frames)': 'nenhum (opcional: solte ou adicione master darks e flats, ou seus quadros)',
+        '{0} (from its name)': '{0} (pelo nome)',
+        '{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).': '{0} quadro(s) de bias: o Quick Stack não usa bias (o master dark já o contém).',
+        '{0} dark frame(s) to make master darks from': '{0} quadro(s) de dark para fazer master darks',
+        '{0} dark frames, {1:g} s': '{0} quadros de dark, {1:g} s',
+        '{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses': '{0} dark(s)  ·  {1} flat(s): cada grupo mostra os que usa',
+        '{0} flat frame(s) to make master flats from': '{0} quadro(s) de flat para fazer master flats',
+        '{0} flat frames': '{0} quadros de flat',
+        '{0} flat frames, {1}': '{0} quadros de flat, {1}',
+        '{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).': '{0} quadro(s) de flat-dark: o Quick Stack não os usa (um master flat já deve estar calibrado).',
+        '{0} frame(s)': '{0} quadro(s)',
+        '{0} frames': '{0} quadros',
+        '{0} master dark(s)': '{0} master dark(s)',
+        '{0} master flat(s)': '{0} master flat(s)',
+        '{0} x {1}: these frames are {2} x {3}': '{0} x {1}: estes quadros são {2} x {3}',
+        '{0} {1} flat frames, {2}': '{0} quadros de flat de {1}, {2}',
+        '… and {0} more': '… e mais {0}',
+        '≈ {0} = {1}': '≈ {0} = {1}',
+        '≈ {0}, from its file name': '≈ {0}, pelo nome do arquivo',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ ganho {0:g}, quadros {1:g}',
+        '⚠ it is the {0} flat': '⚠ é o flat de {0}',
+        '⚠ its exposure is not recorded': '⚠ a exposição dele não está registrada',
+        '⚠ no {0} flat': '⚠ nenhum flat de {0}',
+        '⚠ none is {0} x {1}': '⚠ nenhum é {0} x {1}',
+        '⚠ the frames give no exposure: choose one': '⚠ os quadros não informam a exposição: escolha um',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ dark de {0:g} s, quadros de {1:g} s',
+        "⚠ {0} x {1}, not these frames' size: it will be left out": '⚠ {0} x {1}, não é o tamanho destes quadros: será deixado de fora',
+        '✎ none': '✎ nenhum',
+        '✎ your choice': '✎ sua escolha',
+        '✓ auto': '✓ auto',
+        '✓ the only flat': '✓ o único flat',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
+    TRANSLATIONS_PT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

@@ -4659,6 +4659,36 @@ Run the installer now? (SAS will close.)</source>
 
 Запустить установщик сейчас? (SAS закроется.)</translation>
     </message>
+    <message>
+      <source>All Tools: every toolbar and tool</source>
+      <translation>Все инструменты: все панели и инструменты</translation>
+    </message>
+    <message>
+      <source>Essentials</source>
+      <translation>Основные</translation>
+    </message>
+    <message>
+      <source>Essentials: the tools of the beginner workflows, with their names.
+Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
+      <translation>Основные: инструменты рабочих процессов для начинающих, с названиями.
+Все инструменты по-прежнему доступны в меню и через «Поиск команд» (Ctrl+/).</translation>
+    </message>
+    <message>
+      <source>Search Commands...</source>
+      <translation>Поиск команд...</translation>
+    </message>
+    <message>
+      <source>Show Names Under Essentials Icons</source>
+      <translation>Показывать названия под значками основных инструментов</translation>
+    </message>
+    <message>
+      <source>Toolbar Mode</source>
+      <translation>Режим панели инструментов</translation>
+    </message>
+    <message>
+      <source>Start Panel: open images, process step by step, stacking and more</source>
+      <translation>Стартовая панель: открыть изображения, обработка шаг за шагом, сложение и многое другое</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -10121,27 +10151,27 @@ Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to
     <name>DraggableToolBar</name>
     <message>
       <source>Create Desktop Shortcut</source>
-      <translation>Create Desktop Shortcut</translation>
+      <translation>Создать ярлык на рабочем столе</translation>
     </message>
     <message>
       <source>Hide this icon</source>
-      <translation>Hide this icon</translation>
+      <translation>Скрыть этот значок</translation>
     </message>
     <message>
       <source>Lock Toolbar Icons</source>
-      <translation>Lock Toolbar Icons</translation>
+      <translation>Заблокировать значки панели инструментов</translation>
     </message>
     <message>
       <source>Reset hidden icons</source>
-      <translation>Reset hidden icons</translation>
+      <translation>Сбросить скрытые значки</translation>
     </message>
     <message>
       <source>Show hidden…</source>
-      <translation>Show hidden…</translation>
+      <translation>Показать скрытые…</translation>
     </message>
     <message>
       <source>Tip: Alt+Drag to create</source>
-      <translation>Tip: Alt+Drag to create</translation>
+      <translation>Совет: Alt+перетаскивание, чтобы создать</translation>
     </message>
     <message>
       <source>Reset to Factory Layout...</source>
@@ -25729,6 +25759,166 @@ Typical: 1.05–1.5 for conservative, ~2 for punchier updates.</source>
       <source>🖼 Open Saved Masters</source>
       <translation>🖼 Открыть сохраненные мастера</translation>
     </message>
+    <message>
+      <source>Add a master dark…</source>
+      <translation>Добавить Master Dark…</translation>
+    </message>
+    <message>
+      <source>Add a master flat…</source>
+      <translation>Добавить Master Flat…</translation>
+    </message>
+    <message>
+      <source>Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.</source>
+      <translation>Авто выбирает по фильтру и размеру, затем флэт той же ночи (иначе ближайшей ночи) с тем же усилением. Выберите другой мастер или «Нет» только для этой группы и сессии.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>Авто выбирает по размеру, затем по усилению, выдержке и температуре. Строка «Дарк» каждой группы флэтов показывает выбор: там можно выбрать другой мастер или «Нет».</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.</source>
+      <translation>Авто выбирает по размеру, затем по усилению, выдержке и температуре. Выберите другой мастер или «Нет» только для этой группы.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>Авто выбирает по размеру, затем по усилению, выдержке и температуре. Выберите другой мастер или «Нет» только для этой группы. Щелкните кадры правой кнопкой, чтобы задать им собственный.</translation>
+    </message>
+    <message>
+      <source>Auto-Select is off: pick a dark, or leave none</source>
+      <translation>Авто-выбор выключен: выберите дарк или оставьте без него</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>Авто: ничего не подходит</translation>
+    </message>
+    <message>
+      <source>Auto: off (Auto-Select is unchecked)</source>
+      <translation>Авто: выключено (Авто-выбор не отмечен)</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>Авто: {0}</translation>
+    </message>
+    <message>
+      <source>Auto: {0} masters, picked per frame</source>
+      <translation>Авто: мастеров — {0}, выбор для каждого кадра</translation>
+    </message>
+    <message>
+      <source>Choose Master Dark(s)</source>
+      <translation>Выбрать Master Dark</translation>
+    </message>
+    <message>
+      <source>Choose Master Flat(s)</source>
+      <translation>Выбрать Master Flat</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.</source>
+      <translation>Каждая группа показывает Master Dark и Master Flat, которые она использует: меняйте их там. Щелкните кадры правой кнопкой, чтобы задать им собственные или назначить ключи сессий.</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark it will use: change it there. Right-click to set a session tag.</source>
+      <translation>Каждая группа показывает Master Dark, который она использует: меняйте его там. Щелкните правой кнопкой, чтобы задать метку сессии.</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>Ничего не загружено</translation>
+    </message>
+    <message>
+      <source>Use the Group's Dark and Flat</source>
+      <translation>Использовать дарк и флэт группы</translation>
+    </message>
+    <message>
+      <source>every session</source>
+      <translation>все сессии</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>усиление {0:g}</translation>
+    </message>
+    <message>
+      <source>{0} ({1})</source>
+      <translation>{0} ({1})</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>Кадров: {0}</translation>
+    </message>
+    <message>
+      <source>{0}: these frames are {1}</source>
+      <translation>{0}: эти кадры {1}</translation>
+    </message>
+    <message>
+      <source>≈ nearest night: {0} ({1} d away)</source>
+      <translation>≈ ближайшая ночь: {0} ({1} дн.)</translation>
+    </message>
+    <message>
+      <source>≈ {0} masters, picked per frame</source>
+      <translation>≈ мастеров — {0}, выбор для каждого кадра</translation>
+    </message>
+    <message>
+      <source>⚠ dark {0:+.0f} °C, frames {1:+.0f} °C</source>
+      <translation>⚠ дарк {0:+.0f} °C, кадры {1:+.0f} °C</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ усиление {0:g}, кадры {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ это флэт {0}</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ его выдержка не записана</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat at {1}</source>
+      <translation>⚠ нет флэта {0} размера {1}</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0}</source>
+      <translation>⚠ ни один не имеет размера {0}</translation>
+    </message>
+    <message>
+      <source>⚠ none records its exposure: choose one</source>
+      <translation>⚠ ни у одного не записана выдержка: выберите один</translation>
+    </message>
+    <message>
+      <source>⚠ offset {0:g}, frames {1:g}</source>
+      <translation>⚠ offset {0:g}, кадры {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ дарк {0:g} с, кадры {1:g} с</translation>
+    </message>
+    <message>
+      <source>⚠ {0}, these frames are {1}</source>
+      <translation>⚠ {0}, эти кадры {1}</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ нет</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ ваш выбор</translation>
+    </message>
+    <message>
+      <source>✎ {0} frame(s) use their own</source>
+      <translation>✎ собственный у кадров: {0}</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ авто</translation>
+    </message>
+    <message>
+      <source>✓ same night</source>
+      <translation>✓ та же ночь</translation>
+    </message>
+    <message>
+      <source>✓ same session</source>
+      <translation>✓ та же сессия</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -39558,6 +39748,42 @@ Statistical Stretch изменяет пиксели. Он находится в 
       <source>You've processed your first image</source>
       <translation>Вы обработали свое первое изображение</translation>
     </message>
+    <message>
+      <source>1 of 4</source>
+      <translation>1 из 4</translation>
+    </message>
+    <message>
+      <source>2 of 4</source>
+      <translation>2 из 4</translation>
+    </message>
+    <message>
+      <source>3 of 4</source>
+      <translation>3 из 4</translation>
+    </message>
+    <message>
+      <source>4 of 4</source>
+      <translation>4 из 4</translation>
+    </message>
+    <message>
+      <source>Crop off the stacking edges</source>
+      <translation>Обрежьте края после стекинга</translation>
+    </message>
+    <message>
+      <source>No stacking edges? Skip this step</source>
+      <translation>Нет краев после стекинга? Пропустите этот шаг</translation>
+    </message>
+    <message>
+      <source>Open Crop</source>
+      <translation>Открыть обрезку</translation>
+    </message>
+    <message>
+      <source>Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.
+
+Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside the clean area, then click Apply.</source>
+      <translation>Там, где субкадры не полностью перекрылись, у стека рваные края: темные или шумные кромки, иногда полосы. Сначала обрежьте их. Растяжка, удаление градиента и калибровка цвета измеряют все изображение, и эти края их искажают.
+
+Обрезка находится в Функции → Исправление &amp; ретушь → Обрезка. Перетащите рамку внутрь чистой области и нажмите «Применить».</translation>
+    </message>
   </context>
   <context>
     <name>FitsBundleExportDialog</name>
@@ -51208,6 +51434,266 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, combined as a trimmed mean. No weighting or normalization, and no calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
       <translation>Быстрый взгляд на набор кадров: калибровка, если указаны мастеры, выравнивание по положению, повороту и масштабу, объединение усеченным средним. Без взвешивания и нормализации; калиброванные или выровненные файлы на диск не пишутся. Кадры цветных камер дебайеризуются (билинейно).</translation>
     </message>
+    <message>
+      <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
+      <translation>Быстрый взгляд на набор кадров: калибровка, если указаны мастеры, выравнивание по положению, повороту и масштабу, приведение к уровню неба опорного кадра и объединение усеченным средним, взвешенным по числу звезд, найденных в каждом кадре. Калиброванные или выровненные файлы на диск не пишутся. Кадры цветных камер дебайеризуются (билинейно).</translation>
+    </message>
+    <message>
+      <source>Add Masters…</source>
+      <translation>Добавить мастеры…</translation>
+    </message>
+    <message>
+      <source>Add a master dark or dark frames…</source>
+      <translation>Добавить Master Dark или дарк-кадры…</translation>
+    </message>
+    <message>
+      <source>Add a master flat or flat frames…</source>
+      <translation>Добавить Master Flat или флэт-кадры…</translation>
+    </message>
+    <message>
+      <source>Added {0}.</source>
+      <translation>Добавлено: {0}.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.</source>
+      <translation>Авто выбирает по размеру, затем по фильтру: как написано, написано иначе (O3 для OIII, H-alpha для Ha) или указано в имени файла флэта без карточки фильтра. Выберите другой мастер или «Нет» только для этой группы.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.</source>
+      <translation>Авто выбирает по размеру, затем по усилению и выдержке (дарки) или фильтру (флэты). Выберите другой мастер или «Нет» только для этой группы.</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>Авто: ничего не подходит</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>Авто: {0}</translation>
+    </message>
+    <message>
+      <source>Choose a master dark or dark frames</source>
+      <translation>Выбрать Master Dark или дарк-кадры</translation>
+    </message>
+    <message>
+      <source>Choose a master flat or flat frames</source>
+      <translation>Выбрать Master Flat или флэт-кадры</translation>
+    </message>
+    <message>
+      <source>Choose master darks and flats, or their frames</source>
+      <translation>Выбрать Master Dark и Flat или их кадры</translation>
+    </message>
+    <message>
+      <source>Clear Masters</source>
+      <translation>Очистить мастеры</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>Дарк</translation>
+    </message>
+    <message>
+      <source>Darks and flats ({0});;All Files (*)</source>
+      <translation>Дарки и флэты ({0});;Все файлы (*)</translation>
+    </message>
+    <message>
+      <source>Flat</source>
+      <translation>Флэт</translation>
+    </message>
+    <message>
+      <source>Is {0} a master dark or a master flat?</source>
+      <translation>{0} — это Master Dark или Master Flat?</translation>
+    </message>
+    <message>
+      <source>It has no IMAGETYP card, and its file name does not say.</source>
+      <translation>У него нет карточки IMAGETYP, и имя файла об этом не говорит.</translation>
+    </message>
+    <message>
+      <source>Left out {0}</source>
+      <translation>Пропущено: {0}</translation>
+    </message>
+    <message>
+      <source>Left out {0} bias / flat-dark file(s): Quick Stack does not use them.</source>
+      <translation>Пропущено файлов bias / флэт-дарков: {0}. Quick Stack их не использует.</translation>
+    </message>
+    <message>
+      <source>Left out {0} file(s): see below.</source>
+      <translation>Пропущено файлов: {0}. См. ниже.</translation>
+    </message>
+    <message>
+      <source>Master Dark</source>
+      <translation>Master Dark</translation>
+    </message>
+    <message>
+      <source>Master Flat</source>
+      <translation>Master Flat</translation>
+    </message>
+    <message>
+      <source>Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.
+
+Single dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.
+
+Masters and frames dropped on this window, or added with the lights, are sorted out by themselves.</source>
+      <translation>Master Dark и Flat — сколько есть: один флэт на фильтр, дарки для каждой выдержки. Каждая группа в списке показывает дарк и флэт, которые она использует, выбранные по размеру, затем по фильтру (флэты) или усилению и выдержке (дарки). Меняйте выбор любой группы там.
+
+Отдельные дарк- и флэт-кадры тоже подходят: они объединяются в мастеры в памяти (усеченное среднее), когда впервые нужны стеку, и на диск ничего не пишется. Дарки группируются по выдержке, усилению и размеру; флэты — по фильтру, размеру и ночи.
+
+Мастеры и кадры, перетащенные в это окно или добавленные вместе с лайтами, сортируются сами.</translation>
+    </message>
+    <message>
+      <source>Masters:</source>
+      <translation>Мастеры:</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>Нет</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>Ничего не загружено</translation>
+    </message>
+    <message>
+      <source>Nothing was added.</source>
+      <translation>Ничего не добавлено.</translation>
+    </message>
+    <message>
+      <source>Skip</source>
+      <translation>Пропустить</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>усиление {0:g}</translation>
+    </message>
+    <message>
+      <source>made in memory from {0} frames</source>
+      <translation>создан в памяти из кадров: {0}</translation>
+    </message>
+    <message>
+      <source>no filter</source>
+      <translation>без фильтра</translation>
+    </message>
+    <message>
+      <source>none (optional: drop or add master darks and flats, or their frames)</source>
+      <translation>нет (необязательно: перетащите или добавьте Master Dark и Flat или их кадры)</translation>
+    </message>
+    <message>
+      <source>{0} (from its name)</source>
+      <translation>{0} (по имени)</translation>
+    </message>
+    <message>
+      <source>{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).</source>
+      <translation>Bias-кадров: {0}. Quick Stack не использует bias (он есть в Master Dark).</translation>
+    </message>
+    <message>
+      <source>{0} dark frame(s) to make master darks from</source>
+      <translation>дарк-кадров для создания Master Dark: {0}</translation>
+    </message>
+    <message>
+      <source>{0} dark frames, {1:g} s</source>
+      <translation>Дарк-кадров: {0}, {1:g} с</translation>
+    </message>
+    <message>
+      <source>{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses</source>
+      <translation>Дарков: {0}  ·  флэтов: {1}. Каждая группа показывает те, что использует</translation>
+    </message>
+    <message>
+      <source>{0} flat frame(s) to make master flats from</source>
+      <translation>флэт-кадров для создания Master Flat: {0}</translation>
+    </message>
+    <message>
+      <source>{0} flat frames</source>
+      <translation>Флэт-кадров: {0}</translation>
+    </message>
+    <message>
+      <source>{0} flat frames, {1}</source>
+      <translation>Флэт-кадров: {0}, {1}</translation>
+    </message>
+    <message>
+      <source>{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).</source>
+      <translation>Флэт-дарк-кадров: {0}. Quick Stack их не использует (Master Flat уже должен быть откалиброван).</translation>
+    </message>
+    <message>
+      <source>{0} frame(s)</source>
+      <translation>кадров: {0}</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>Кадров: {0}</translation>
+    </message>
+    <message>
+      <source>{0} master dark(s)</source>
+      <translation>Master Dark: {0}</translation>
+    </message>
+    <message>
+      <source>{0} master flat(s)</source>
+      <translation>Master Flat: {0}</translation>
+    </message>
+    <message>
+      <source>{0} x {1}: these frames are {2} x {3}</source>
+      <translation>{0} x {1}: эти кадры {2} x {3}</translation>
+    </message>
+    <message>
+      <source>{0} {1} flat frames, {2}</source>
+      <translation>Флэт-кадров {1}: {0}, {2}</translation>
+    </message>
+    <message>
+      <source>… and {0} more</source>
+      <translation>… и еще {0}</translation>
+    </message>
+    <message>
+      <source>≈ {0} = {1}</source>
+      <translation>≈ {0} = {1}</translation>
+    </message>
+    <message>
+      <source>≈ {0}, from its file name</source>
+      <translation>≈ {0}, по имени файла</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ усиление {0:g}, кадры {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ это флэт {0}</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ его выдержка не записана</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat</source>
+      <translation>⚠ нет флэта {0}</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0} x {1}</source>
+      <translation>⚠ ни один не имеет размера {0} x {1}</translation>
+    </message>
+    <message>
+      <source>⚠ the frames give no exposure: choose one</source>
+      <translation>⚠ кадры не указывают выдержку: выберите один</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ дарк {0:g} с, кадры {1:g} с</translation>
+    </message>
+    <message>
+      <source>⚠ {0} x {1}, not these frames' size: it will be left out</source>
+      <translation>⚠ {0} x {1} — не размер этих кадров: будет пропущен</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ нет</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ ваш выбор</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ авто</translation>
+    </message>
+    <message>
+      <source>✓ the only flat</source>
+      <translation>✓ единственный флэт</translation>
+    </message>
   </context>
   <context>
     <name>RCAstro</name>
@@ -57163,6 +57649,62 @@ Thank you for being part of this journey. Clear skies.</source>
     <message>
       <source>— Franklin Marek (Seti Astro)</source>
       <translation>— Franklin Marek (Seti Astro)</translation>
+    </message>
+    <message>
+      <source>Blind Solve Index</source>
+      <translation>Индекс слепого решения</translation>
+    </message>
+    <message>
+      <source>Build in the Gaia manager</source>
+      <translation>Построить в менеджере Gaia</translation>
+    </message>
+    <message>
+      <source>For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.</source>
+      <translation>Для слепого решения: определить, куда направлен снимок, без координат и без размера поля. Индекс строится на этом компьютере из ваших наборов Gaia, поэтому ничего не скачивается. Рекомендуемые слои ({0}) занимают около {1} и покрывают поля примерно от 20′ до 25° — то, что дает большинство съемочных систем.</translation>
+    </message>
+    <message>
+      <source>For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.</source>
+      <translation>Для plate solve; из них же строится индекс слепого решения ниже. Рекомендуемые наборы — около 35 GB.</translation>
+    </message>
+    <message>
+      <source>Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.</source>
+      <translation>Папка индекса не найдена: {0}. Подключите этот диск или выберите папку в менеджере Gaia.</translation>
+    </message>
+    <message>
+      <source>Layers built: {0}. {1} on disk.</source>
+      <translation>Построенные слои: {0}. {1} на диске.</translation>
+    </message>
+    <message>
+      <source>Not built yet. It is built from the Bright (G &lt; 17) Astrometry set, so install that first.</source>
+      <translation>Еще не построен. Индекс строится из астрометрического набора Яркие (G &lt; 17), поэтому сначала установите его.</translation>
+    </message>
+    <message>
+      <source>Not built yet. Recommended layers you can build now: {0}.</source>
+      <translation>Еще не построен. Рекомендуемые слои, которые можно построить сейчас: {0}.</translation>
+    </message>
+    <message>
+      <source>Not built yet. Your Gaia sets have everything the recommended layers need.</source>
+      <translation>Еще не построен. В ваших наборах Gaia есть все, что нужно рекомендуемым слоям.</translation>
+    </message>
+    <message>
+      <source>Open in the Gaia manager</source>
+      <translation>Открыть в менеджере Gaia</translation>
+    </message>
+    <message>
+      <source>Ready for blind solving.</source>
+      <translation>Готово к слепому решению.</translation>
+    </message>
+    <message>
+      <source>Recommended layers still to build: {0}.</source>
+      <translation>Рекомендуемые слои, которые еще нужно построить: {0}.</translation>
+    </message>
+    <message>
+      <source>These need the Bright (G &lt; 17) Astrometry set first: {0}.</source>
+      <translation>Для этих сначала нужен астрометрический набор Яркие (G &lt; 17): {0}.</translation>
+    </message>
+    <message>
+      <source>{0} of {1} recommended layers</source>
+      <translation>{0} из {1} рекомендуемых слоев</translation>
     </message>
   </context>
   <context>
@@ -71848,6 +72390,22 @@ NOT recommended for narrowband or duoband data.</source>
       <source>White Balance — Preset</source>
       <translation>Баланс белого — Пресет</translation>
     </message>
+    <message>
+      <source>Auto σ (waterfall)</source>
+      <translation>Авто σ (каскад)</translation>
+    </message>
+    <message>
+      <source>Detection threshold (σ):</source>
+      <translation>Порог обнаружения (σ):</translation>
+    </message>
+    <message>
+      <source>Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.</source>
+      <translation>Сам выбирает порог обнаружения, как в диалоге «Баланс белого». Снимите флажок, чтобы использовать порог выше.</translation>
+    </message>
+    <message>
+      <source>Rotation strength:</source>
+      <translation>Сила поворота:</translation>
+    </message>
   </context>
   <context>
     <name>_WorkerCloseGuardMixin</name>
@@ -71889,6 +72447,96 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>Show the workflow as one plain list of steps per lane (Ctrl+G)</source>
       <translation>Показать рабочий процесс как простой список шагов по дорожкам (Ctrl+G)</translation>
+    </message>
+  </context>
+  <context>
+    <name>Essentials</name>
+    <message>
+      <source>ADBE</source>
+      <translation>ADBE</translation>
+    </message>
+    <message>
+      <source>Add Stars</source>
+      <translation>Добавить звезды</translation>
+    </message>
+    <message>
+      <source>BG Neutral</source>
+      <translation>Нейтральный фон</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Crop</source>
+      <translation>Обрезка</translation>
+    </message>
+    <message>
+      <source>Curves</source>
+      <translation>Кривые</translation>
+    </message>
+    <message>
+      <source>Essentials: Linear</source>
+      <translation>Основные: линейные</translation>
+    </message>
+    <message>
+      <source>Essentials: Non-Linear</source>
+      <translation>Основные: нелинейные</translation>
+    </message>
+    <message>
+      <source>LRGB Combine</source>
+      <translation>Комбинировать LRGB</translation>
+    </message>
+    <message>
+      <source>NB→RGB Stars</source>
+      <translation>NB→RGB Звезды</translation>
+    </message>
+    <message>
+      <source>Palette Picker</source>
+      <translation>Palette Picker</translation>
+    </message>
+    <message>
+      <source>RC-Astro</source>
+      <translation>RC-Astro</translation>
+    </message>
+    <message>
+      <source>Remove Stars</source>
+      <translation>Удалить звезды</translation>
+    </message>
+    <message>
+      <source>Selective Color</source>
+      <translation>Выборочный цвет</translation>
+    </message>
+    <message>
+      <source>Star Stretch</source>
+      <translation>Star Stretch</translation>
+    </message>
+    <message>
+      <source>Stretch</source>
+      <translation>Stretch</translation>
+    </message>
+    <message>
+      <source>SyQon</source>
+      <translation>SyQon</translation>
+    </message>
+    <message>
+      <source>Texture</source>
+      <translation>Текстура</translation>
+    </message>
+    <message>
+      <source>White Balance</source>
+      <translation>Баланс белого</translation>
+    </message>
+  </context>
+  <context>
+    <name>EssentialsToolBar</name>
+    <message>
+      <source>Create Desktop Shortcut</source>
+      <translation>Создать ярлык на рабочем столе</translation>
+    </message>
+    <message>
+      <source>Lock Toolbar Icons</source>
+      <translation>Заблокировать значки панели инструментов</translation>
     </message>
   </context>
 </TS>

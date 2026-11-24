@@ -17252,3 +17252,241 @@ for _ctx, _msgs in _ADDITIONS_2026_11.items():
     _dst = TRANSLATIONS_SW.setdefault(_ctx, {})
     _dst.update(_msgs)
 del _ctx, _msgs, _dst
+
+# 2026-11-24: the Essentials toolbars and their switch, the toolbars' right-click
+# menu where it was still English, Search Commands, and the White Balance preset
+# editor of Function Bundles.
+_ADDITIONS_2026_11_24 = {
+    "AstroSuiteProMainWindow": {
+        'All Tools: every toolbar and tool': 'Zana Zote: kila upau wa zana na kila zana',
+        'Essentials': 'Zana Muhimu',
+        'Essentials: the tools of the beginner workflows, with their names.\nEvery tool is still in the menus and in Search Commands (Ctrl+/).': 'Zana Muhimu: zana za mitiririko ya kazi ya wanaoanza, pamoja na majina yake.\nKila zana bado iko kwenye menyu na kwenye Tafuta Amri (Ctrl+/).',
+        'Search Commands...': 'Tafuta Amri...',
+        'Show Names Under Essentials Icons': 'Onyesha Majina Chini ya Aikoni za Zana Muhimu',
+        'Toolbar Mode': 'Hali ya Upau wa Zana',
+    },
+    "DraggableToolBar": {
+        'Create Desktop Shortcut': 'Unda Njia ya Mkato ya Eneo-kazi',
+        'Hide this icon': 'Ficha aikoni hii',
+        'Lock Toolbar Icons': 'Funga Aikoni za Upau wa Zana',
+        'Reset hidden icons': 'Weka upya aikoni zilizofichwa',
+        'Show hidden…': 'Onyesha zilizofichwa…',
+        'Tip: Alt+Drag to create': 'Kidokezo: Alt+Buruta ili kuunda',
+    },
+    "Essentials": {
+        'ADBE': 'ADBE',
+        'Add Stars': 'Ongeza Nyota',
+        'BG Neutral': 'Mandharinyuma Neutral',
+        'Cosmic Clarity': 'Cosmic Clarity',
+        'Crop': 'Kata',
+        'Curves': 'Curves',
+        'Essentials: Linear': 'Zana Muhimu: Linear',
+        'Essentials: Non-Linear': 'Zana Muhimu: Isiyo linear',
+        'LRGB Combine': 'Unganisha LRGB',
+        'NB→RGB Stars': 'Nyota za NB→RGB',
+        'Palette Picker': 'Palette Picker',
+        'RC-Astro': 'RC-Astro',
+        'Remove Stars': 'Ondoa Nyota',
+        'Selective Color': 'Rangi Teule',
+        'Star Stretch': 'Star Stretch',
+        'Stretch': 'Stretch',
+        'SyQon': 'SyQon',
+        'Texture': 'Umbile',
+        'White Balance': 'Usawa Mweupe',
+    },
+    "EssentialsToolBar": {
+        'Create Desktop Shortcut': 'Unda Njia ya Mkato ya Eneo-kazi',
+        'Lock Toolbar Icons': 'Funga Aikoni za Upau wa Zana',
+    },
+    "_WhiteBalancePresetDialog": {
+        'Auto σ (waterfall)': 'Auto σ (waterfall)',
+        'Detection threshold (σ):': 'Kikomo cha ugunduzi (σ):',
+        'Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.': 'Huchagua kikomo cha ugunduzi chenyewe, kama kwenye kidirisha cha Usawa Mweupe. Ondoa alama ili kutumia kikomo kilicho juu.',
+        'Rotation strength:': 'Nguvu ya mzunguko:',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Welcome and Setup, Gaia page: the Blind Solve Index section.
+_ADDITIONS_2026_11_24_SETUP = {
+    "Setup": {
+        'Blind Solve Index': 'Blind Solve Index',
+        'Build in the Gaia manager': 'Jenga katika kidhibiti cha Gaia',
+        'For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.': 'Kwa blind solve: kupata picha inaelekea wapi bila viwianishi wala ukubwa wa uga. Hujengwa kwenye kompyuta hii kutoka seti zako za Gaia, kwa hivyo hakuna kinachopakuliwa. Tabaka {0} zinazopendekezwa huchukua takriban {1} na hufunika uga wa takriban 20′ hadi 25°, ambao vifaa vingi vya upigaji picha hutoa.',
+        'For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.': 'Kwa plate solve, na Blind Solve Index iliyo hapa chini hujengwa kutoka kwazo. Seti zinazopendekezwa ni takriban GB 35.',
+        'Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.': 'Folda ya index haikupatikana: {0}. Unganisha diski hiyo, au chagua folda katika kidhibiti cha Gaia.',
+        'Layers built: {0}. {1} on disk.': 'Tabaka zilizojengwa: {0}. {1} kwenye diski.',
+        'Not built yet. It is built from the Bright (G < 17) Astrometry set, so install that first.': 'Bado haijajengwa. Hujengwa kutoka seti ya Astrometry Angavu (G < 17), kwa hivyo isakinishe kwanza.',
+        'Not built yet. Recommended layers you can build now: {0}.': 'Bado haijajengwa. Tabaka zinazopendekezwa unazoweza kujenga sasa: {0}.',
+        'Not built yet. Your Gaia sets have everything the recommended layers need.': 'Bado haijajengwa. Seti zako za Gaia zina kila kitu ambacho tabaka zinazopendekezwa zinahitaji.',
+        'Open in the Gaia manager': 'Fungua katika kidhibiti cha Gaia',
+        'Ready for blind solving.': 'Tayari kwa blind solve.',
+        'Recommended layers still to build: {0}.': 'Tabaka zinazopendekezwa ambazo bado hazijajengwa: {0}.',
+        'These need the Bright (G < 17) Astrometry set first: {0}.': 'Hizi zinahitaji kwanza seti ya Astrometry Angavu (G < 17): {0}.',
+        '{0} of {1} recommended layers': 'tabaka {0} kati ya {1} zinazopendekezwa',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_SETUP.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Stacking Suite Dark/Flat rows per group (Flats and Lights tabs), and the
+# Quick Stack window's description (frames weighted by star count).
+_ADDITIONS_2026_11_24_PICKS = {
+    "QuickStackDialog": {
+        "A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).": 'Mtazamo wa haraka wa seti ya subs: zinafanyiwa calibration ukiipa masters, zinapangiliwa kwa nafasi, mzunguko na scale, zinalinganishwa na kiwango cha anga cha marejeleo, na zinaunganishwa kama trimmed mean iliyopimwa kwa nyota zilizopatikana katika kila fremu. Hakuna faili zilizofanyiwa calibration au kupangiliwa kwenye diski. Kamera za rangi hufanyiwa debayer (bilinear).',
+    },
+    "StackingSuiteDialog": {
+        'Add a master dark…': 'Ongeza master dark…',
+        'Add a master flat…': 'Ongeza master flat…',
+        'Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.': 'Otomatiki huchagua kwa kichujio na ukubwa, kisha flat ya usiku uleule (au usiku ulio karibu zaidi) yenye gain inayolingana. Chagua master nyingine, au Hakuna, kwa kikundi hiki na session hii tu.',
+        "Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.": 'Otomatiki huchagua kwa ukubwa, kisha gain, mfiduo na joto. Safu ya Dark ya kila kikundi cha flat inaonyesha chaguo lake: chagua hapo master nyingine, au Hakuna.',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.': 'Otomatiki huchagua kwa ukubwa, kisha gain, mfiduo na joto. Chagua master nyingine, au Hakuna, kwa kikundi hiki tu.',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.': 'Otomatiki huchagua kwa ukubwa, kisha gain, mfiduo na joto. Chagua master nyingine, au Hakuna, kwa kikundi hiki tu. Bofya kulia fremu ili kuzipa zao wenyewe.',
+        'Auto-Select is off: pick a dark, or leave none': 'Uchaguzi wa moja kwa moja umezimwa: chagua dark, au acha bila',
+        'Auto: none fits': 'Otomatiki: hakuna inayofaa',
+        'Auto: off (Auto-Select is unchecked)': 'Otomatiki: imezimwa (uchaguzi wa moja kwa moja haujachaguliwa)',
+        'Auto: {0}': 'Otomatiki: {0}',
+        'Auto: {0} masters, picked per frame': 'Otomatiki: master {0}, zimechaguliwa kwa kila fremu',
+        'Choose Master Dark(s)': 'Chagua Master Dark',
+        'Choose Master Flat(s)': 'Chagua Master Flat',
+        'Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.': 'Kila kikundi kinaonyesha master dark na flat kitakachotumia: zibadilishe hapo. Bofya kulia fremu ili kuzipa zao wenyewe, au kupanga funguo za session.',
+        'Each group shows the master dark it will use: change it there. Right-click to set a session tag.': 'Kila kikundi kinaonyesha master dark kitakachotumia: ibadilishe hapo. Bofya kulia ili kuweka lebo ya session.',
+        'None loaded': 'Hakuna iliyopakiwa',
+        "Use the Group's Dark and Flat": 'Tumia Dark na Flat ya Kikundi',
+        'every session': 'kila session',
+        'gain {0:g}': 'gain {0:g}',
+        '{0} ({1})': '{0} ({1})',
+        '{0} frames': 'fremu {0}',
+        '{0}: these frames are {1}': '{0}: fremu hizi ni {1}',
+        '≈ nearest night: {0} ({1} d away)': '≈ usiku ulio karibu zaidi: {0} (siku {1} mbali)',
+        '≈ {0} masters, picked per frame': '≈ master {0}, zimechaguliwa kwa kila fremu',
+        '⚠ dark {0:+.0f} °C, frames {1:+.0f} °C': '⚠ dark {0:+.0f} °C, fremu {1:+.0f} °C',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ gain {0:g}, fremu {1:g}',
+        '⚠ it is the {0} flat': '⚠ ni flat ya {0}',
+        '⚠ its exposure is not recorded': '⚠ mfiduo wake haujarekodiwa',
+        '⚠ no {0} flat at {1}': '⚠ hakuna flat ya {0} kwa {1}',
+        '⚠ none is {0}': '⚠ hakuna iliyo {0}',
+        '⚠ none records its exposure: choose one': '⚠ hakuna inayorekodi mfiduo wake: chagua moja',
+        '⚠ offset {0:g}, frames {1:g}': '⚠ offset {0:g}, fremu {1:g}',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ dark ya {0:g} s, fremu za {1:g} s',
+        '⚠ {0}, these frames are {1}': '⚠ {0}, fremu hizi ni {1}',
+        '✎ none': '✎ hakuna',
+        '✎ your choice': '✎ chaguo lako',
+        '✎ {0} frame(s) use their own': '✎ fremu {0} zinatumia zao wenyewe',
+        '✓ auto': '✓ otomatiki',
+        '✓ same night': '✓ usiku uleule',
+        '✓ same session': '✓ session ileile',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_PICKS.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: First Steps tour, the Crop step (now 4 steps).
+_ADDITIONS_2026_11_24_TOUR = {
+    "FirstStepsTour": {
+        '1 of 4': '1 kati ya 4',
+        '2 of 4': '2 kati ya 4',
+        '3 of 4': '3 kati ya 4',
+        '4 of 4': '4 kati ya 4',
+        'Crop off the stacking edges': 'Kata kingo za stacking',
+        'No stacking edges? Skip this step': 'Hakuna kingo za stacking? Ruka hatua hii',
+        'Open Crop': 'Fungua Kata',
+        "Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.\n\nCrop is under Functions → Repair & Retouch → Crop. Drag the box inside the clean area, then click Apply.": 'Pale ambapo picha ndogo hazikupishana kikamilifu, stack huwa na kingo zisizo sawa: kingo nyeusi au zenye kelele, wakati mwingine mistari. Zikate kwanza. Kunyoosha, kuondoa gradient na kusawazisha rangi zote hupima picha nzima, na kingo hizo huziharibu.\n\nKata iko chini ya Kazi (Functions) → Ukarabati & Urekebishaji → Kata. Buruta kisanduku ndani ya eneo safi, kisha bofya Tumia.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_TOUR.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Start Panel button on Essentials, after Search Commands
+# (its name is View > Start Panel's, already translated).
+_ADDITIONS_2026_11_24_START = {
+    'AstroSuiteProMainWindow': {
+        'Start Panel: open images, process step by step, stacking and more': 'Paneli ya Kuanza: fungua picha, chakata hatua kwa hatua, stacking na zaidi',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_START.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Quick Stack window's masters (per-group Dark / Flat lists, 2026-11-23)
+# and masters made in memory from single dark and flat frames.
+_ADDITIONS_2026_11_24_QS = {
+    "QuickStackDialog": {
+        'Add Masters…': 'Ongeza Masters…',
+        'Add a master dark or dark frames…': 'Ongeza master dark au fremu za dark…',
+        'Add a master flat or flat frames…': 'Ongeza master flat au fremu za flat…',
+        'Added {0}.': 'Imeongezwa: {0}.',
+        'Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.': 'Otomatiki huchagua kwa ukubwa, kisha kichujio: kama kilivyoandikwa, kilivyoandikwa kwa namna nyingine (O3 kwa OIII, H-alpha kwa Ha), au kilichotajwa katika jina la faili la flat isiyo na kadi ya kichujio. Chagua master nyingine, au Hakuna, kwa kikundi hiki tu.',
+        'Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.': 'Otomatiki huchagua kwa ukubwa, kisha gain na mfiduo (darks) au kichujio (flats). Chagua master nyingine, au Hakuna, kwa kikundi hiki tu.',
+        'Auto: none fits': 'Otomatiki: hakuna inayofaa',
+        'Auto: {0}': 'Otomatiki: {0}',
+        'Choose a master dark or dark frames': 'Chagua master dark au fremu za dark',
+        'Choose a master flat or flat frames': 'Chagua master flat au fremu za flat',
+        'Choose master darks and flats, or their frames': 'Chagua master darks na flats, au fremu zao',
+        'Clear Masters': 'Futa Masters',
+        'Dark': 'Dark',
+        'Darks and flats ({0});;All Files (*)': 'Darks na flats ({0});;Faili Zote (*)',
+        'Flat': 'Flat',
+        'Is {0} a master dark or a master flat?': 'Je, {0} ni master dark au master flat?',
+        'It has no IMAGETYP card, and its file name does not say.': 'Haina kadi ya IMAGETYP, na jina la faili lake halisemi.',
+        'Left out {0}': 'Zimeachwa: {0}',
+        'Left out {0} bias / flat-dark file(s): Quick Stack does not use them.': 'Faili {0} za bias / flat-dark zimeachwa: Quick Stack haizitumii.',
+        'Left out {0} file(s): see below.': 'Faili {0} zimeachwa: tazama hapa chini.',
+        'Master Dark': 'Master Dark',
+        'Master Flat': 'Master Flat',
+        "Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.\n\nSingle dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.\n\nMasters and frames dropped on this window, or added with the lights, are sorted out by themselves.": 'Master darks na flats, kadiri ulivyo nazo: flat moja kwa kila kichujio, darks kwa kila mfiduo. Kila kikundi katika orodha kinaonyesha dark na flat kitakachotumia, zilizochaguliwa kwa ukubwa, kisha kichujio (flats) au gain na mfiduo (darks). Badilisha chaguo la kikundi chochote hapo.\n\nFremu moja moja za dark na flat zinafaa pia: zinaunganishwa kuwa masters kwenye kumbukumbu (trimmed mean) mara ya kwanza stack inapozihitaji, na hakuna kinachoandikwa kwenye diski. Darks huwekwa katika makundi kwa mfiduo, gain na ukubwa; flats kwa kichujio, ukubwa na usiku.\n\nMasters na fremu zinazodondoshwa kwenye dirisha hili, au kuongezwa pamoja na lights, hupangwa zenyewe.',
+        'Masters:': 'Masters:',
+        'None': 'Hakuna',
+        'None loaded': 'Hakuna iliyopakiwa',
+        'Nothing was added.': 'Hakuna kilichoongezwa.',
+        'Skip': 'Ruka',
+        'gain {0:g}': 'gain {0:g}',
+        'made in memory from {0} frames': 'imetengenezwa kwenye kumbukumbu kutoka fremu {0}',
+        'no filter': 'hakuna kichujio',
+        'none (optional: drop or add master darks and flats, or their frames)': 'hakuna (si lazima: dondosha au ongeza master darks na flats, au fremu zao)',
+        '{0} (from its name)': '{0} (kutoka jina lake)',
+        '{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).': 'Fremu {0} za bias: Quick Stack haitumii bias (master dark inayo).',
+        '{0} dark frame(s) to make master darks from': 'fremu {0} za dark za kutengeneza master darks',
+        '{0} dark frames, {1:g} s': 'fremu {0} za dark, {1:g} s',
+        '{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses': 'dark {0}  ·  flat {1}: kila kikundi kinaonyesha zile kinazotumia',
+        '{0} flat frame(s) to make master flats from': 'fremu {0} za flat za kutengeneza master flats',
+        '{0} flat frames': 'fremu {0} za flat',
+        '{0} flat frames, {1}': 'fremu {0} za flat, {1}',
+        '{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).': 'Fremu {0} za flat-dark: Quick Stack haizitumii (master flat inapaswa kuwa tayari imefanyiwa calibration).',
+        '{0} frame(s)': 'fremu {0}',
+        '{0} frames': 'fremu {0}',
+        '{0} master dark(s)': 'master dark {0}',
+        '{0} master flat(s)': 'master flat {0}',
+        '{0} x {1}: these frames are {2} x {3}': '{0} x {1}: fremu hizi ni {2} x {3}',
+        '{0} {1} flat frames, {2}': 'fremu {0} za flat ya {1}, {2}',
+        '… and {0} more': '… na {0} zaidi',
+        '≈ {0} = {1}': '≈ {0} = {1}',
+        '≈ {0}, from its file name': '≈ {0}, kutoka jina la faili lake',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ gain {0:g}, fremu {1:g}',
+        '⚠ it is the {0} flat': '⚠ ni flat ya {0}',
+        '⚠ its exposure is not recorded': '⚠ mfiduo wake haujarekodiwa',
+        '⚠ no {0} flat': '⚠ hakuna flat ya {0}',
+        '⚠ none is {0} x {1}': '⚠ hakuna iliyo {0} x {1}',
+        '⚠ the frames give no exposure: choose one': '⚠ fremu hazitaji mfiduo: chagua moja',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ dark ya {0:g} s, fremu za {1:g} s',
+        "⚠ {0} x {1}, not these frames' size: it will be left out": '⚠ {0} x {1}, si ukubwa wa fremu hizi: itaachwa',
+        '✎ none': '✎ hakuna',
+        '✎ your choice': '✎ chaguo lako',
+        '✓ auto': '✓ otomatiki',
+        '✓ the only flat': '✓ flat pekee',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

@@ -17143,3 +17143,241 @@ for _ctx, _msgs in _ADDITIONS_2026_11.items():
     _dst = TRANSLATIONS_HI.setdefault(_ctx, {})
     _dst.update(_msgs)
 del _ctx, _msgs, _dst
+
+# 2026-11-24: the Essentials toolbars and their switch, the toolbars' right-click
+# menu where it was still English, Search Commands, and the White Balance preset
+# editor of Function Bundles.
+_ADDITIONS_2026_11_24 = {
+    "AstroSuiteProMainWindow": {
+        'All Tools: every toolbar and tool': 'सभी उपकरण: हर टूलबार और हर उपकरण',
+        'Essentials': 'आवश्यक उपकरण',
+        'Essentials: the tools of the beginner workflows, with their names.\nEvery tool is still in the menus and in Search Commands (Ctrl+/).': 'आवश्यक उपकरण: शुरुआती वर्कफ़्लो के उपकरण, उनके नामों के साथ।\nहर उपकरण अब भी मेनू में और "कमांड खोजें" (Ctrl+/) में है।',
+        'Search Commands...': 'कमांड खोजें...',
+        'Show Names Under Essentials Icons': 'आवश्यक उपकरण आइकनों के नीचे नाम दिखाएँ',
+        'Toolbar Mode': 'टूलबार मोड',
+    },
+    "DraggableToolBar": {
+        'Create Desktop Shortcut': 'डेस्कटॉप शॉर्टकट बनाएँ',
+        'Hide this icon': 'यह आइकन छिपाएँ',
+        'Lock Toolbar Icons': 'टूलबार आइकन लॉक करें',
+        'Reset hidden icons': 'छिपे हुए आइकन रीसेट करें',
+        'Show hidden…': 'छिपे हुए दिखाएँ…',
+        'Tip: Alt+Drag to create': 'सुझाव: बनाने के लिए Alt+ड्रैग करें',
+    },
+    "Essentials": {
+        'ADBE': 'ADBE',
+        'Add Stars': 'तारे जोड़ें',
+        'BG Neutral': 'पृष्ठभूमि तटस्थ',
+        'Cosmic Clarity': 'Cosmic Clarity',
+        'Crop': 'क्रॉप',
+        'Curves': 'कर्व्स',
+        'Essentials: Linear': 'आवश्यक उपकरण: रैखिक',
+        'Essentials: Non-Linear': 'आवश्यक उपकरण: अरैखिक',
+        'LRGB Combine': 'LRGB संयोजन',
+        'NB→RGB Stars': 'NB→RGB तारे',
+        'Palette Picker': 'Palette Picker',
+        'RC-Astro': 'RC-Astro',
+        'Remove Stars': 'तारे हटाएं',
+        'Selective Color': 'चयनात्मक रंग',
+        'Star Stretch': 'Star Stretch',
+        'Stretch': 'Stretch',
+        'SyQon': 'SyQon',
+        'Texture': 'बनावट',
+        'White Balance': 'श्वेत संतुलन',
+    },
+    "EssentialsToolBar": {
+        'Create Desktop Shortcut': 'डेस्कटॉप शॉर्टकट बनाएँ',
+        'Lock Toolbar Icons': 'टूलबार आइकन लॉक करें',
+    },
+    "_WhiteBalancePresetDialog": {
+        'Auto σ (waterfall)': 'ऑटो σ (वॉटरफ़ॉल)',
+        'Detection threshold (σ):': 'डिटेक्शन थ्रेशोल्ड (σ):',
+        'Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.': 'श्वेत संतुलन डायलॉग की तरह, डिटेक्शन थ्रेशोल्ड स्वयं चुनता है। ऊपर वाला थ्रेशोल्ड इस्तेमाल करने के लिए अनचेक करें।',
+        'Rotation strength:': 'घूर्णन तीव्रता:',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Welcome and Setup, Gaia page: the Blind Solve Index section.
+_ADDITIONS_2026_11_24_SETUP = {
+    "Setup": {
+        'Blind Solve Index': 'ब्लाइंड सॉल्व इंडेक्स',
+        'Build in the Gaia manager': 'Gaia मैनेजर में बनाएँ',
+        'For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.': 'ब्लाइंड सॉल्विंग के लिए: बिना निर्देशांक और बिना फ़ील्ड आकार के यह पता लगाना कि छवि कहाँ की ओर है। यह इसी कंप्यूटर पर आपके Gaia सेट से बनता है, इसलिए कुछ भी डाउनलोड नहीं होता। {0} अनुशंसित लेयर लगभग {1} लेती हैं और लगभग 20′ से 25° तक के फ़ील्ड कवर करती हैं, जो ज़्यादातर इमेजिंग सेटअप देते हैं।',
+        'For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.': 'प्लेट सॉल्विंग के लिए, और नीचे वाला ब्लाइंड सॉल्व इंडेक्स इन्हीं से बनता है। अनुशंसित सेट लगभग 35 GB हैं।',
+        'Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.': 'इंडेक्स फ़ोल्डर नहीं मिला: {0}। वह ड्राइव कनेक्ट करें, या Gaia मैनेजर में फ़ोल्डर चुनें।',
+        'Layers built: {0}. {1} on disk.': 'बनी हुई लेयर: {0}। डिस्क पर {1}।',
+        'Not built yet. It is built from the Bright (G < 17) Astrometry set, so install that first.': 'अभी नहीं बना है। यह चमकीला (G < 17) एस्ट्रोमेट्री सेट से बनता है, इसलिए पहले उसे इंस्टॉल करें।',
+        'Not built yet. Recommended layers you can build now: {0}.': 'अभी नहीं बना है। अनुशंसित लेयर जो आप अभी बना सकते हैं: {0}।',
+        'Not built yet. Your Gaia sets have everything the recommended layers need.': 'अभी नहीं बना है। आपके Gaia सेट में अनुशंसित लेयर की ज़रूरत की हर चीज़ है।',
+        'Open in the Gaia manager': 'Gaia मैनेजर में खोलें',
+        'Ready for blind solving.': 'ब्लाइंड सॉल्विंग के लिए तैयार।',
+        'Recommended layers still to build: {0}.': 'अभी बनाई जाने वाली अनुशंसित लेयर: {0}।',
+        'These need the Bright (G < 17) Astrometry set first: {0}.': 'इनके लिए पहले चमकीला (G < 17) एस्ट्रोमेट्री सेट चाहिए: {0}।',
+        '{0} of {1} recommended layers': '{1} में से {0} अनुशंसित लेयर',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_SETUP.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Stacking Suite Dark/Flat rows per group (Flats and Lights tabs), and the
+# Quick Stack window's description (frames weighted by star count).
+_ADDITIONS_2026_11_24_PICKS = {
+    "QuickStackDialog": {
+        "A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).": 'सब्स के एक सेट पर त्वरित नज़र: यदि आप मास्टर देते हैं तो कैलिब्रेटेड, स्थिति, रोटेशन और स्केल से संरेखित, संदर्भ के आकाश स्तर पर लाया गया, और हर फ़्रेम में मिले तारों से भारित ट्रिम्ड मीन के रूप में संयोजित। डिस्क पर कोई कैलिब्रेटेड या संरेखित फ़ाइल नहीं। कलर कैमरे डीबेयर किए जाते हैं (बिलिनियर)।',
+    },
+    "StackingSuiteDialog": {
+        'Add a master dark…': 'मास्टर डार्क जोड़ें…',
+        'Add a master flat…': 'मास्टर फ्लैट जोड़ें…',
+        'Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.': 'स्वतः फ़िल्टर और आकार से चुनता है, फिर उसी रात (वरना निकटतम रात) का मिलते गेन वाला फ्लैट। केवल इस समूह और सत्र के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें।',
+        "Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.": 'स्वतः आकार से चुनता है, फिर गेन, एक्सपोज़र और तापमान से। हर फ्लैट समूह की डार्क पंक्ति उसका चयन दिखाती है: वहीं कोई दूसरा मास्टर, या कोई नहीं, चुनें।',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.': 'स्वतः आकार से चुनता है, फिर गेन, एक्सपोज़र और तापमान से। केवल इस समूह के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें।',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.': 'स्वतः आकार से चुनता है, फिर गेन, एक्सपोज़र और तापमान से। केवल इस समूह के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें। फ़्रेमों को उनका अपना देने के लिए उन पर राइट-क्लिक करें।',
+        'Auto-Select is off: pick a dark, or leave none': 'स्वचालित चयन बंद है: कोई डार्क चुनें, या कोई नहीं रहने दें',
+        'Auto: none fits': 'स्वतः: कोई उपयुक्त नहीं',
+        'Auto: off (Auto-Select is unchecked)': 'स्वतः: बंद (स्वचालित चयन चेक नहीं है)',
+        'Auto: {0}': 'स्वतः: {0}',
+        'Auto: {0} masters, picked per frame': 'स्वतः: {0} मास्टर, हर फ़्रेम के लिए चुने गए',
+        'Choose Master Dark(s)': 'मास्टर डार्क चुनें',
+        'Choose Master Flat(s)': 'मास्टर फ्लैट चुनें',
+        'Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.': 'हर समूह वह मास्टर डार्क और फ्लैट दिखाता है जो वह उपयोग करेगा: उन्हें वहीं बदलें। फ़्रेमों को उनके अपने देने, या सत्र कुंजियाँ असाइन करने के लिए उन पर राइट-क्लिक करें।',
+        'Each group shows the master dark it will use: change it there. Right-click to set a session tag.': 'हर समूह वह मास्टर डार्क दिखाता है जो वह उपयोग करेगा: उसे वहीं बदलें। सत्र टैग सेट करने के लिए राइट-क्लिक करें।',
+        'None loaded': 'कोई लोड नहीं',
+        "Use the Group's Dark and Flat": 'समूह का डार्क और फ्लैट उपयोग करें',
+        'every session': 'हर सत्र',
+        'gain {0:g}': 'गेन {0:g}',
+        '{0} ({1})': '{0} ({1})',
+        '{0} frames': '{0} फ़्रेम',
+        '{0}: these frames are {1}': '{0}: ये फ़्रेम {1} हैं',
+        '≈ nearest night: {0} ({1} d away)': '≈ निकटतम रात: {0} ({1} दिन दूर)',
+        '≈ {0} masters, picked per frame': '≈ {0} मास्टर, हर फ़्रेम के लिए चुने गए',
+        '⚠ dark {0:+.0f} °C, frames {1:+.0f} °C': '⚠ डार्क {0:+.0f} °C, फ़्रेम {1:+.0f} °C',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ गेन {0:g}, फ़्रेम {1:g}',
+        '⚠ it is the {0} flat': '⚠ यह {0} फ्लैट है',
+        '⚠ its exposure is not recorded': '⚠ इसका एक्सपोज़र दर्ज नहीं है',
+        '⚠ no {0} flat at {1}': '⚠ {1} पर कोई {0} फ्लैट नहीं',
+        '⚠ none is {0}': '⚠ कोई भी {0} नहीं है',
+        '⚠ none records its exposure: choose one': '⚠ किसी का एक्सपोज़र दर्ज नहीं है: एक चुनें',
+        '⚠ offset {0:g}, frames {1:g}': '⚠ ऑफसेट {0:g}, फ़्रेम {1:g}',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ {0:g} s डार्क, {1:g} s फ़्रेम',
+        '⚠ {0}, these frames are {1}': '⚠ {0}, ये फ़्रेम {1} हैं',
+        '✎ none': '✎ कोई नहीं',
+        '✎ your choice': '✎ आपका चयन',
+        '✎ {0} frame(s) use their own': '✎ {0} फ़्रेम अपना उपयोग करते हैं',
+        '✓ auto': '✓ स्वतः',
+        '✓ same night': '✓ वही रात',
+        '✓ same session': '✓ वही सत्र',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_PICKS.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: First Steps tour, the Crop step (now 4 steps).
+_ADDITIONS_2026_11_24_TOUR = {
+    "FirstStepsTour": {
+        '1 of 4': '4 में से 1',
+        '2 of 4': '4 में से 2',
+        '3 of 4': '4 में से 3',
+        '4 of 4': '4 में से 4',
+        'Crop off the stacking edges': 'स्टैकिंग के किनारे काटें',
+        'No stacking edges? Skip this step': 'स्टैकिंग के किनारे नहीं हैं? यह चरण छोड़ें',
+        'Open Crop': 'क्रॉप खोलें',
+        "Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.\n\nCrop is under Functions → Repair & Retouch → Crop. Drag the box inside the clean area, then click Apply.": 'जहाँ सब-फ़्रेम पूरी तरह ओवरलैप नहीं हुए, वहाँ स्टैक के किनारे उबड़-खाबड़ होते हैं: गहरे या शोर वाले किनारे, कभी-कभी धारियाँ। पहले उन्हें काट दें। स्ट्रेचिंग, ग्रेडिएंट हटाना और रंग कैलिब्रेशन सभी पूरी छवि को मापते हैं, और ये किनारे उन्हें बिगाड़ देते हैं।\n\nक्रॉप कार्य → मरम्मत & सुधार → क्रॉप में है। बॉक्स को साफ़ हिस्से के अंदर खींचें, फिर लागू करें पर क्लिक करें।',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_TOUR.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Start Panel button on Essentials, after Search Commands
+# (its name is View > Start Panel's, already translated).
+_ADDITIONS_2026_11_24_START = {
+    'AstroSuiteProMainWindow': {
+        'Start Panel: open images, process step by step, stacking and more': 'प्रारंभ पैनल: छवियाँ खोलें, चरण-दर-चरण प्रोसेस करें, स्टैकिंग और बहुत कुछ',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_START.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Quick Stack window's masters (per-group Dark / Flat lists, 2026-11-23)
+# and masters made in memory from single dark and flat frames.
+_ADDITIONS_2026_11_24_QS = {
+    "QuickStackDialog": {
+        'Add Masters…': 'मास्टर जोड़ें…',
+        'Add a master dark or dark frames…': 'मास्टर डार्क या डार्क फ़्रेम जोड़ें…',
+        'Add a master flat or flat frames…': 'मास्टर फ्लैट या फ्लैट फ़्रेम जोड़ें…',
+        'Added {0}.': 'जोड़ा गया: {0}।',
+        'Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.': 'स्वतः पहले आकार से चुनता है, फिर फ़िल्टर से: जैसा लिखा है, दूसरे तरीके से लिखा (OIII के लिए O3, Ha के लिए H-alpha), या बिना फ़िल्टर कार्ड वाले फ्लैट के फ़ाइल नाम में दिया गया। केवल इस समूह के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें।',
+        'Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.': 'स्वतः पहले आकार से चुनता है, फिर गेन और एक्सपोज़र (डार्क) या फ़िल्टर (फ्लैट) से। केवल इस समूह के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें।',
+        'Auto: none fits': 'स्वतः: कोई उपयुक्त नहीं',
+        'Auto: {0}': 'स्वतः: {0}',
+        'Choose a master dark or dark frames': 'मास्टर डार्क या डार्क फ़्रेम चुनें',
+        'Choose a master flat or flat frames': 'मास्टर फ्लैट या फ्लैट फ़्रेम चुनें',
+        'Choose master darks and flats, or their frames': 'मास्टर डार्क और फ्लैट, या उनके फ़्रेम चुनें',
+        'Clear Masters': 'मास्टर साफ़ करें',
+        'Dark': 'डार्क (Dark)',
+        'Darks and flats ({0});;All Files (*)': 'डार्क और फ्लैट ({0});;सभी फ़ाइलें (*)',
+        'Flat': 'फ्लैट (Flat)',
+        'Is {0} a master dark or a master flat?': 'क्या {0} मास्टर डार्क है या मास्टर फ्लैट?',
+        'It has no IMAGETYP card, and its file name does not say.': 'इसमें IMAGETYP कार्ड नहीं है, और इसका फ़ाइल नाम भी नहीं बताता।',
+        'Left out {0}': 'छोड़ा गया: {0}',
+        'Left out {0} bias / flat-dark file(s): Quick Stack does not use them.': '{0} बायस / फ्लैट-डार्क फ़ाइलें छोड़ी गईं: Quick Stack इनका उपयोग नहीं करता।',
+        'Left out {0} file(s): see below.': '{0} फ़ाइलें छोड़ी गईं: नीचे देखें।',
+        'Master Dark': 'मास्टर डार्क',
+        'Master Flat': 'मास्टर फ्लैट',
+        "Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.\n\nSingle dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.\n\nMasters and frames dropped on this window, or added with the lights, are sorted out by themselves.": 'मास्टर डार्क और फ्लैट, जितने आपके पास हों: हर फ़िल्टर के लिए एक फ्लैट, हर एक्सपोज़र के लिए डार्क। सूची का हर समूह वह डार्क और फ्लैट दिखाता है जो वह उपयोग करेगा, जो आकार से, फिर फ़िल्टर (फ्लैट) या गेन और एक्सपोज़र (डार्क) से चुने जाते हैं। किसी भी समूह का चयन वहीं बदलें।\n\nअलग-अलग डार्क और फ्लैट फ़्रेम भी चलते हैं: जब किसी स्टैक को पहली बार उनकी ज़रूरत होती है, वे मेमोरी में मास्टर में मिलाए जाते हैं (ट्रिम्ड मीन), और डिस्क पर कुछ नहीं लिखा जाता। डार्क एक्सपोज़र, गेन और आकार से समूहित होते हैं; फ्लैट फ़िल्टर, आकार और रात से।\n\nइस विंडो पर छोड़े गए, या लाइट के साथ जोड़े गए मास्टर और फ़्रेम अपने आप छँट जाते हैं।',
+        'Masters:': 'मास्टर:',
+        'None': 'कोई नहीं',
+        'None loaded': 'कोई लोड नहीं',
+        'Nothing was added.': 'कुछ नहीं जोड़ा गया।',
+        'Skip': 'छोड़ें',
+        'gain {0:g}': 'गेन {0:g}',
+        'made in memory from {0} frames': '{0} फ़्रेम से मेमोरी में बनाया गया',
+        'no filter': 'कोई फ़िल्टर नहीं',
+        'none (optional: drop or add master darks and flats, or their frames)': 'कोई नहीं (वैकल्पिक: मास्टर डार्क और फ्लैट, या उनके फ़्रेम छोड़ें या जोड़ें)',
+        '{0} (from its name)': '{0} (इसके नाम से)',
+        '{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).': '{0} बायस फ़्रेम: Quick Stack बायस का उपयोग नहीं करता (मास्टर डार्क में वह शामिल है)।',
+        '{0} dark frame(s) to make master darks from': 'मास्टर डार्क बनाने के लिए {0} डार्क फ़्रेम',
+        '{0} dark frames, {1:g} s': '{0} डार्क फ़्रेम, {1:g} s',
+        '{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses': '{0} डार्क  ·  {1} फ्लैट: हर समूह वही दिखाता है जो वह उपयोग करता है',
+        '{0} flat frame(s) to make master flats from': 'मास्टर फ्लैट बनाने के लिए {0} फ्लैट फ़्रेम',
+        '{0} flat frames': '{0} फ्लैट फ़्रेम',
+        '{0} flat frames, {1}': '{0} फ्लैट फ़्रेम, {1}',
+        '{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).': '{0} फ्लैट-डार्क फ़्रेम: Quick Stack इनका उपयोग नहीं करता (मास्टर फ्लैट पहले से कैलिब्रेटेड होना चाहिए)।',
+        '{0} frame(s)': '{0} फ़्रेम',
+        '{0} frames': '{0} फ़्रेम',
+        '{0} master dark(s)': '{0} मास्टर डार्क',
+        '{0} master flat(s)': '{0} मास्टर फ्लैट',
+        '{0} x {1}: these frames are {2} x {3}': '{0} x {1}: ये फ़्रेम {2} x {3} हैं',
+        '{0} {1} flat frames, {2}': '{0} {1} फ्लैट फ़्रेम, {2}',
+        '… and {0} more': '… और {0}',
+        '≈ {0} = {1}': '≈ {0} = {1}',
+        '≈ {0}, from its file name': '≈ {0}, इसके फ़ाइल नाम से',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ गेन {0:g}, फ़्रेम {1:g}',
+        '⚠ it is the {0} flat': '⚠ यह {0} फ्लैट है',
+        '⚠ its exposure is not recorded': '⚠ इसका एक्सपोज़र दर्ज नहीं है',
+        '⚠ no {0} flat': '⚠ कोई {0} फ्लैट नहीं',
+        '⚠ none is {0} x {1}': '⚠ कोई भी {0} x {1} नहीं है',
+        '⚠ the frames give no exposure: choose one': '⚠ फ़्रेम एक्सपोज़र नहीं बताते: एक चुनें',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ {0:g} s डार्क, {1:g} s फ़्रेम',
+        "⚠ {0} x {1}, not these frames' size: it will be left out": '⚠ {0} x {1}, इन फ़्रेमों का आकार नहीं: इसे छोड़ दिया जाएगा',
+        '✎ none': '✎ कोई नहीं',
+        '✎ your choice': '✎ आपका चयन',
+        '✓ auto': '✓ स्वतः',
+        '✓ the only flat': '✓ एकमात्र फ्लैट',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

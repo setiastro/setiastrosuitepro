@@ -9,6 +9,19 @@ first-run dialog -- without touching the real settings.
     python -m setiastro.saspro --firstrun
     SetiAstroSuitePro.exe --firstrun
 
+Either can be followed by a language, to see a first run in it:
+
+    setiastrosuitepro --firstrun spanish
+    setiastrosuitepro --firstrun es
+    setiastrosuitepro --upgraderun deutsch
+
+(a code, the English name or the language's own name; see i18n.py). The word
+is taken off the command line, so it is not mistaken for a file to open.
+
+A restart from inside SASpro (a language change, a finished install) carries
+on in the same sandbox: the new SASpro is started with --firstrun and
+--sandbox-resume=<folder>, and the folder is deleted when that one exits.
+
 --upgraderun: the same, but the throwaway store starts as a copy of the real
 settings (API keys left out) and this launch behaves as the first start of SASpro 2.0 (the saved
 layout is set aside and the welcome window offers it back). For trying the
@@ -43,7 +56,10 @@ import tempfile
 FIRSTRUN_FLAGS = ("--firstrun", "--first-run")
 UPGRADERUN_FLAGS = ("--upgraderun", "--upgrade-run")
 _ENV = "SASPRO_SETTINGS_SANDBOX"
+_RESUME = "--sandbox-resume="
+_PREFIX = "saspro-firstrun-"
 _dir: str | None = None
+_handed_over = False          # a restarted SASpro took the folder over
 
 
 def _has_flag(argv, flags) -> bool:
@@ -60,9 +76,88 @@ def enter_sandbox(argv) -> str:
     folder. Must run before anything constructs a QSettings."""
     if _dir:
         return _dir
+    resumed = _resume(argv)
+    if resumed:
+        return resumed
     if _has_flag(argv, UPGRADERUN_FLAGS):
-        return _enter_upgrade_sandbox()
-    return enter_firstrun_sandbox()
+        folder = _enter_upgrade_sandbox()
+    else:
+        folder = enter_firstrun_sandbox()
+    _start_in_language(argv)
+    return folder
+
+
+# --firstrun spanish. Codes and each language's own name come from
+# i18n.AVAILABLE_LANGUAGES; these are the English names, also used for the
+# console messages (ASCII, so a frozen build's console can always print them).
+_ENGLISH_NAMES = {
+    "en": "English", "it": "Italian", "fr": "French", "es": "Spanish",
+    "zh": "Chinese", "de": "German", "pt": "Portuguese", "ja": "Japanese",
+    "hi": "Hindi", "sw": "Swahili", "uk": "Ukrainian", "ru": "Russian",
+    "ar": "Arabic",
+}
+
+
+def _language_word(argv) -> int | None:
+    """Where the word after --firstrun / --upgraderun is, when there is one
+    and it is not a file to open (or another flag)."""
+    args = [str(a) for a in (argv or [])]
+    for i, a in enumerate(args[:-1]):
+        if a.strip().lower() in FIRSTRUN_FLAGS + UPGRADERUN_FLAGS:
+            word = args[i + 1].strip()
+            if word and not word.startswith("-") and not os.path.exists(word.strip('"').strip("'")):
+                return i + 1
+            return None
+    return None
+
+
+def without_language_word(argv) -> list:
+    """The command line without the language after --firstrun, for the code
+    that opens the files named on it."""
+    args = list(argv or [])
+    i = _language_word(args)
+    if i is not None:
+        del args[i]
+    return args
+
+
+def _fold(text: str) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFKD", str(text).strip().lower())
+    return "".join(c for c in t if not unicodedata.combining(c))
+
+
+def language_code(word: str) -> str | None:
+    """"spanish", "es", "Español" or "espanol" -> "es"; None if SASpro does not
+    have that language."""
+    from setiastro.saspro.i18n import AVAILABLE_LANGUAGES
+    w = _fold(word)
+    for code, own in AVAILABLE_LANGUAGES.items():
+        if w in (code, _fold(own), _fold(_ENGLISH_NAMES.get(code, code))):
+            return code
+    return None
+
+
+def _start_in_language(argv) -> None:
+    """Save the language named after the flag into the sandbox, where the
+    startup reads it before any window exists. Never stops a launch."""
+    try:
+        i = _language_word(argv)
+        if i is None:
+            return
+        word = str(list(argv)[i])
+        code = language_code(word)
+        if code is None:
+            from setiastro.saspro.i18n import AVAILABLE_LANGUAGES
+            names = ", ".join(_ENGLISH_NAMES.get(c, c) for c in AVAILABLE_LANGUAGES)
+            print(f"[firstrun] {ascii(word)} is not a language SASpro has, so this "
+                  f"run starts in English. Languages: {names}.", flush=True)
+            return
+        from setiastro.saspro.i18n import save_language
+        save_language(code)
+        print(f"[firstrun] starting in {_ENGLISH_NAMES.get(code, code)} ({code}).", flush=True)
+    except Exception as e:
+        print(f"[firstrun] could not set the language: {e!r}", flush=True)
 
 
 # Where the Gaia databases are (gaia_database.py, gaia_quad_index.py).
@@ -109,19 +204,66 @@ def enter_firstrun_sandbox() -> str:
     from PyQt6.QtCore import QSettings
     real = _store(QSettings.Format.NativeFormat)
     gaia = {k: real.value(k) for k in _GAIA_DIR_KEYS if real.contains(k)}
-    _dir = tempfile.mkdtemp(prefix="saspro-firstrun-")
-    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, _dir)
+    _dir = tempfile.mkdtemp(prefix=_PREFIX)
+    _use_folder(_dir)
     if gaia:
         box = _store(QSettings.Format.IniFormat)
         for k, v in gaia.items():
             box.setValue(k, v)
         box.sync()
-    os.environ[_ENV] = _dir
-    atexit.register(shutil.rmtree, _dir, True)
     print(f"[firstrun] first-run sandbox: settings go to {_dir} and are discarded "
           f"on exit; your real settings are not changed.", flush=True)
     return _dir
+
+
+def _use_folder(folder: str) -> None:
+    from PyQt6.QtCore import QSettings
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, folder)
+    os.environ[_ENV] = folder
+    atexit.register(_delete_folder)
+
+
+def _delete_folder() -> None:
+    if _dir and not _handed_over:
+        shutil.rmtree(_dir, True)
+
+
+def _resume(argv) -> str | None:
+    """--sandbox-resume=<folder>: carry on in the sandbox a restart came from.
+    Only a sandbox folder in the temp folder is taken, because this process
+    deletes it on exit; anything else starts a new sandbox."""
+    global _dir
+    for a in (argv or []):
+        a = str(a).strip()
+        if not a.lower().startswith(_RESUME):
+            continue
+        folder = os.path.realpath(a[len(_RESUME):].strip('"').strip("'"))
+        ours = (os.path.dirname(folder) == os.path.realpath(tempfile.gettempdir())
+                and os.path.basename(folder).startswith(_PREFIX)
+                and os.path.isdir(folder))
+        if not ours:
+            print(f"[firstrun] cannot carry on in {ascii(folder)}; starting a new sandbox.",
+                  flush=True)
+            return None
+        _dir = folder
+        _use_folder(folder)
+        print(f"[firstrun] restarted in the same sandbox: {folder}", flush=True)
+        return folder
+    return None
+
+
+def restart_args() -> list:
+    """What a restart started from inside the sandbox adds to its command
+    line, to carry on in the same settings. [] outside the sandbox."""
+    return [FIRSTRUN_FLAGS[0], _RESUME + _dir] if _dir else []
+
+
+def handed_over() -> None:
+    """The restarted SASpro started: leave the folder for it to delete."""
+    global _handed_over
+    if _dir:
+        _handed_over = True
 
 
 def active() -> str | None:

@@ -2710,6 +2710,17 @@ class SSSCDialog(QDialog):
             except Exception as e:
                 print(f"[SSSC] Gaia bulk match failed: {e}")
 
+        # Does the plate solution fit? A wrong one matches Gaia at chance level.
+        _sfcc_status(self, "Checking the plate solution against Gaia…")
+        QApplication.processEvents()
+        from setiastro.saspro.plate_solution_check import check_dialog_plate_solution
+        _ps = check_dialog_plate_solution(self, sky_coords, tool="SSSC", log_tag="SSSC")
+        if _ps == "resolved":                  # re-solved: Step 1 again on the new WCS
+            return self.fetch_stars()
+        if _ps == "stop":
+            _sfcc_status(self, "Step 1 stopped: the plate solution looks wrong.")
+            return
+
         for i in range(len(sources)):
             sid  = gaia_source_map.get(i)
             info = None

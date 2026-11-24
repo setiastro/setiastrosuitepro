@@ -2274,7 +2274,11 @@ def import_torch(
                     except Exception:
                         pass
                 import torch
-                import torchvision
+                # No torchvision here. Importing it costs ~2.5 s per session
+                # (it pulls in torch._dynamo, sympy and its custom-op registry)
+                # and only the satellite engine uses it, which imports it
+                # itself. This cache entry was written after torchvision
+                # imported cleanly, and the slower paths below still check it.
                 if require_torchaudio:
                     import torchaudio
                 _TORCH_CACHED = torch

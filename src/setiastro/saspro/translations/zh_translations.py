@@ -17217,3 +17217,241 @@ for _ctx, _msgs in _ADDITIONS_2026_11.items():
     _dst = TRANSLATIONS_ZH.setdefault(_ctx, {})
     _dst.update(_msgs)
 del _ctx, _msgs, _dst
+
+# 2026-11-24: the Essentials toolbars and their switch, the toolbars' right-click
+# menu where it was still English, Search Commands, and the White Balance preset
+# editor of Function Bundles.
+_ADDITIONS_2026_11_24 = {
+    "AstroSuiteProMainWindow": {
+        'All Tools: every toolbar and tool': '所有工具：全部工具栏和工具',
+        'Essentials': '基本工具',
+        'Essentials: the tools of the beginner workflows, with their names.\nEvery tool is still in the menus and in Search Commands (Ctrl+/).': '基本工具：新手工作流程用到的工具，并显示名称。\n所有工具仍在菜单和“搜索命令”(Ctrl+/) 中。',
+        'Search Commands...': '搜索命令...',
+        'Show Names Under Essentials Icons': '在基本工具图标下显示名称',
+        'Toolbar Mode': '工具栏模式',
+    },
+    "DraggableToolBar": {
+        'Create Desktop Shortcut': '创建桌面快捷方式',
+        'Hide this icon': '隐藏此图标',
+        'Lock Toolbar Icons': '锁定工具栏图标',
+        'Reset hidden icons': '重置隐藏的图标',
+        'Show hidden…': '显示隐藏的图标…',
+        'Tip: Alt+Drag to create': '提示：按住 Alt 拖动即可创建',
+    },
+    "Essentials": {
+        'ADBE': 'ADBE',
+        'Add Stars': '添加星点',
+        'BG Neutral': '背景中和',
+        'Cosmic Clarity': 'Cosmic Clarity',
+        'Crop': '裁剪',
+        'Curves': '曲线',
+        'Essentials: Linear': '基本工具：线性',
+        'Essentials: Non-Linear': '基本工具：非线性',
+        'LRGB Combine': 'LRGB 合成',
+        'NB→RGB Stars': '窄带→RGB星点',
+        'Palette Picker': 'Palette Picker',
+        'RC-Astro': 'RC-Astro',
+        'Remove Stars': '移除星点',
+        'Selective Color': '选择性色彩',
+        'Star Stretch': 'Star Stretch',
+        'Stretch': 'Stretch',
+        'SyQon': 'SyQon',
+        'Texture': '纹理',
+        'White Balance': '白平衡',
+    },
+    "EssentialsToolBar": {
+        'Create Desktop Shortcut': '创建桌面快捷方式',
+        'Lock Toolbar Icons': '锁定工具栏图标',
+    },
+    "_WhiteBalancePresetDialog": {
+        'Auto σ (waterfall)': '自动 σ（逐级）',
+        'Detection threshold (σ):': '检测阈值 (σ)：',
+        'Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.': '自动选择检测阈值，与白平衡对话框相同。取消勾选则使用上方的阈值。',
+        'Rotation strength:': '旋转强度：',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Welcome and Setup, Gaia page: the Blind Solve Index section.
+_ADDITIONS_2026_11_24_SETUP = {
+    "Setup": {
+        'Blind Solve Index': '盲解析索引',
+        'Build in the Gaia manager': '在 Gaia 管理器中构建',
+        'For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.': '用于盲解析：在没有坐标、也不知道视场大小的情况下找出图像指向的位置。它在本机由你的 Gaia 数据集构建，无需下载任何内容。{0} 个推荐层约占 {1}，覆盖约 20′ 至 25° 的视场，适用于大多数成像设备。',
+        'For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.': '用于解析，下方的盲解析索引也由它们构建。推荐的数据集约 35 GB。',
+        'Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.': '未找到索引文件夹：{0}。请连接该驱动器，或在 Gaia 管理器中选择文件夹。',
+        'Layers built: {0}. {1} on disk.': '已构建的层：{0}。占用磁盘 {1}。',
+        'Not built yet. It is built from the Bright (G < 17) Astrometry set, so install that first.': '尚未构建。它由天体测量数据集 明亮 (G < 17) 构建，请先安装该数据集。',
+        'Not built yet. Recommended layers you can build now: {0}.': '尚未构建。现在即可构建的推荐层：{0}。',
+        'Not built yet. Your Gaia sets have everything the recommended layers need.': '尚未构建。你的 Gaia 数据集已包含推荐层所需的全部内容。',
+        'Open in the Gaia manager': '在 Gaia 管理器中打开',
+        'Ready for blind solving.': '盲解析已就绪。',
+        'Recommended layers still to build: {0}.': '尚待构建的推荐层：{0}。',
+        'These need the Bright (G < 17) Astrometry set first: {0}.': '以下层需要先安装天体测量数据集 明亮 (G < 17)：{0}。',
+        '{0} of {1} recommended layers': '{0} / {1} 个推荐层',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_SETUP.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Stacking Suite Dark/Flat rows per group (Flats and Lights tabs), and the
+# Quick Stack window's description (frames weighted by star count).
+_ADDITIONS_2026_11_24_PICKS = {
+    "QuickStackDialog": {
+        "A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).": '快速查看一组子帧：如提供主校准帧则进行校准，按位置、旋转和比例对齐，调整到参考帧的天空背景水平，并以按每帧检测到的星数加权的截尾均值合并。不会在磁盘上生成已校准或已对齐的文件。彩色相机图像会去马赛克（双线性）。',
+    },
+    "StackingSuiteDialog": {
+        'Add a master dark…': '添加主暗场…',
+        'Add a master flat…': '添加主平场…',
+        'Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.': '自动按滤镜和尺寸选择，然后选同一夜（否则为最近一夜）且增益相同的平场。可仅为本组和本会话改选其他主校准帧，或选“无”。',
+        "Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.": '自动按尺寸选择，其次是增益、曝光和温度。每个平场组的“暗场”行会显示所选项：可在该处改选其他主暗场，或选“无”。',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.': '自动按尺寸选择，其次是增益、曝光和温度。可仅为本组改选其他主校准帧，或选“无”。',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.': '自动按尺寸选择，其次是增益、曝光和温度。可仅为本组改选其他主校准帧，或选“无”。右键单击帧可为其单独指定。',
+        'Auto-Select is off: pick a dark, or leave none': '自动选择已关闭：请选择一个暗场，或不使用',
+        'Auto: none fits': '自动：没有合适的',
+        'Auto: off (Auto-Select is unchecked)': '自动：已关闭（未勾选“自动选择”）',
+        'Auto: {0}': '自动：{0}',
+        'Auto: {0} masters, picked per frame': '自动：{0} 个主校准帧，按帧选择',
+        'Choose Master Dark(s)': '选择主暗场',
+        'Choose Master Flat(s)': '选择主平场',
+        'Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.': '每个组都显示它将使用的主暗场和主平场：请在那里更改。右键单击帧可为其单独指定，或分配会话键。',
+        'Each group shows the master dark it will use: change it there. Right-click to set a session tag.': '每个组都显示它将使用的主暗场：请在那里更改。右键单击可设置会话标签。',
+        'None loaded': '未加载',
+        "Use the Group's Dark and Flat": '使用组的暗场和平场',
+        'every session': '所有会话',
+        'gain {0:g}': '增益 {0:g}',
+        '{0} ({1})': '{0}（{1}）',
+        '{0} frames': '{0} 帧',
+        '{0}: these frames are {1}': '{0}：这些帧为 {1}',
+        '≈ nearest night: {0} ({1} d away)': '≈ 最近一夜：{0}（相隔 {1} 天）',
+        '≈ {0} masters, picked per frame': '≈ {0} 个主校准帧，按帧选择',
+        '⚠ dark {0:+.0f} °C, frames {1:+.0f} °C': '⚠ 暗场 {0:+.0f} °C，帧 {1:+.0f} °C',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ 增益 {0:g}，帧 {1:g}',
+        '⚠ it is the {0} flat': '⚠ 这是 {0} 平场',
+        '⚠ its exposure is not recorded': '⚠ 未记录其曝光时间',
+        '⚠ no {0} flat at {1}': '⚠ 没有 {1} 的 {0} 平场',
+        '⚠ none is {0}': '⚠ 没有 {0} 的',
+        '⚠ none records its exposure: choose one': '⚠ 均未记录曝光时间：请选择一个',
+        '⚠ offset {0:g}, frames {1:g}': '⚠ 偏移 {0:g}，帧 {1:g}',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ 暗场 {0:g} 秒，帧 {1:g} 秒',
+        '⚠ {0}, these frames are {1}': '⚠ {0}，这些帧为 {1}',
+        '✎ none': '✎ 无',
+        '✎ your choice': '✎ 您的选择',
+        '✎ {0} frame(s) use their own': '✎ {0} 帧使用自己的',
+        '✓ auto': '✓ 自动',
+        '✓ same night': '✓ 同一夜',
+        '✓ same session': '✓ 同一会话',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_PICKS.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: First Steps tour, the Crop step (now 4 steps).
+_ADDITIONS_2026_11_24_TOUR = {
+    "FirstStepsTour": {
+        '1 of 4': '第 1/4 步',
+        '2 of 4': '第 2/4 步',
+        '3 of 4': '第 3/4 步',
+        '4 of 4': '第 4/4 步',
+        'Crop off the stacking edges': '裁掉叠加边缘',
+        'No stacking edges? Skip this step': '没有叠加边缘？跳过此步',
+        'Open Crop': '打开裁剪',
+        "Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.\n\nCrop is under Functions → Repair & Retouch → Crop. Drag the box inside the clean area, then click Apply.": '子帧没有完全重叠的地方，叠加结果会留下参差不齐的边缘：暗的或噪声很大的边框，有时还有条纹。请先把它们裁掉。拉伸、去除梯度和颜色校准都会测量整幅图像，这些边缘会让结果出错。\n\n裁剪位于 功能 → 修复与修饰 → 裁剪。把框拖到干净区域内，然后单击“应用”。',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_TOUR.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Start Panel button on Essentials, after Search Commands
+# (its name is View > Start Panel's, already translated).
+_ADDITIONS_2026_11_24_START = {
+    'AstroSuiteProMainWindow': {
+        'Start Panel: open images, process step by step, stacking and more': '开始面板：打开图像、逐步处理、叠加等',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_START.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Quick Stack window's masters (per-group Dark / Flat lists, 2026-11-23)
+# and masters made in memory from single dark and flat frames.
+_ADDITIONS_2026_11_24_QS = {
+    "QuickStackDialog": {
+        'Add Masters…': '添加主校准帧…',
+        'Add a master dark or dark frames…': '添加主暗场或暗场帧…',
+        'Add a master flat or flat frames…': '添加主平场或平场帧…',
+        'Added {0}.': '已添加 {0}。',
+        'Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.': '自动先按尺寸选择，再按滤镜：按原写法、其他写法（O3 即 OIII，H-alpha 即 Ha），或无滤镜卡的平场文件名中写明的滤镜。可仅为本组改选其他主校准帧，或选“无”。',
+        'Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.': '自动先按尺寸选择，再按增益和曝光（暗场）或滤镜（平场）。可仅为本组改选其他主校准帧，或选“无”。',
+        'Auto: none fits': '自动：没有合适的',
+        'Auto: {0}': '自动：{0}',
+        'Choose a master dark or dark frames': '选择主暗场或暗场帧',
+        'Choose a master flat or flat frames': '选择主平场或平场帧',
+        'Choose master darks and flats, or their frames': '选择主暗场和主平场，或它们的帧',
+        'Clear Masters': '清除主校准帧',
+        'Dark': '暗场',
+        'Darks and flats ({0});;All Files (*)': '暗场和平场 ({0});;所有文件 (*)',
+        'Flat': '平场',
+        'Is {0} a master dark or a master flat?': '{0} 是主暗场还是主平场？',
+        'It has no IMAGETYP card, and its file name does not say.': '它没有 IMAGETYP 卡，文件名也未说明。',
+        'Left out {0}': '已略过 {0}',
+        'Left out {0} bias / flat-dark file(s): Quick Stack does not use them.': '已略过 {0} 个偏置 / 平场暗场文件：Quick Stack 不使用它们。',
+        'Left out {0} file(s): see below.': '已略过 {0} 个文件：见下文。',
+        'Master Dark': '主暗场',
+        'Master Flat': '主平场',
+        "Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.\n\nSingle dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.\n\nMasters and frames dropped on this window, or added with the lights, are sorted out by themselves.": '主暗场和主平场，有多少都可以：每个滤镜一个平场，每种曝光一个暗场。列表中的每个组都显示它将使用的暗场和平场，先按尺寸选择，再按滤镜（平场）或增益和曝光（暗场）。可在那里更改任何组的选择。\n\n单张暗场帧和平场帧也可以：叠加首次需要时，它们会在内存中合并为主校准帧（截尾均值），不会向磁盘写入任何内容。暗场按曝光、增益和尺寸分组；平场按滤镜、尺寸和夜晚分组。\n\n拖放到此窗口或与亮场一起添加的主校准帧和帧会自动分类。',
+        'Masters:': '主校准帧：',
+        'None': '无',
+        'None loaded': '未加载',
+        'Nothing was added.': '未添加任何内容。',
+        'Skip': '跳过',
+        'gain {0:g}': '增益 {0:g}',
+        'made in memory from {0} frames': '由 {0} 帧在内存中生成',
+        'no filter': '无滤镜',
+        'none (optional: drop or add master darks and flats, or their frames)': '无（可选：拖放或添加主暗场和主平场，或它们的帧）',
+        '{0} (from its name)': '{0}（来自文件名）',
+        '{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).': '{0} 个偏置帧：Quick Stack 不使用偏置（主暗场已包含）。',
+        '{0} dark frame(s) to make master darks from': '{0} 个用于生成主暗场的暗场帧',
+        '{0} dark frames, {1:g} s': '{0} 个暗场帧，{1:g} 秒',
+        '{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses': '{0} 个暗场  ·  {1} 个平场：每个组都显示它使用的那些',
+        '{0} flat frame(s) to make master flats from': '{0} 个用于生成主平场的平场帧',
+        '{0} flat frames': '{0} 个平场帧',
+        '{0} flat frames, {1}': '{0} 个平场帧，{1}',
+        '{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).': '{0} 个平场暗场帧：Quick Stack 不使用它们（主平场应已校准）。',
+        '{0} frame(s)': '{0} 帧',
+        '{0} frames': '{0} 帧',
+        '{0} master dark(s)': '{0} 个主暗场',
+        '{0} master flat(s)': '{0} 个主平场',
+        '{0} x {1}: these frames are {2} x {3}': '{0} x {1}：这些帧为 {2} x {3}',
+        '{0} {1} flat frames, {2}': '{0} 个 {1} 平场帧，{2}',
+        '… and {0} more': '… 以及另外 {0} 个',
+        '≈ {0} = {1}': '≈ {0} = {1}',
+        '≈ {0}, from its file name': '≈ {0}，来自其文件名',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ 增益 {0:g}，帧 {1:g}',
+        '⚠ it is the {0} flat': '⚠ 这是 {0} 平场',
+        '⚠ its exposure is not recorded': '⚠ 未记录其曝光时间',
+        '⚠ no {0} flat': '⚠ 没有 {0} 平场',
+        '⚠ none is {0} x {1}': '⚠ 没有 {0} x {1} 的',
+        '⚠ the frames give no exposure: choose one': '⚠ 这些帧未给出曝光时间：请选择一个',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ 暗场 {0:g} 秒，帧 {1:g} 秒',
+        "⚠ {0} x {1}, not these frames' size: it will be left out": '⚠ {0} x {1}，不是这些帧的尺寸：将被略过',
+        '✎ none': '✎ 无',
+        '✎ your choice': '✎ 您的选择',
+        '✓ auto': '✓ 自动',
+        '✓ the only flat': '✓ 唯一的平场',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

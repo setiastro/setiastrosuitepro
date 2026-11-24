@@ -22,6 +22,7 @@ def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
     )
 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
 from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usable
+from setiastro.saspro.cosmicclarity_engines._gpu_thread import gpu_thread_entry
 
 
 from setiastro.saspro.resources import get_resources
@@ -311,6 +312,7 @@ def _amp_ok(torch, device) -> bool:
         return False
 
 
+@gpu_thread_entry        # one thread for all runs: its compiled fp16 kernels persist (_gpu_thread)
 def superres_rgb01(
     img_rgb01: np.ndarray,
     *,

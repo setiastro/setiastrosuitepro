@@ -4,20 +4,29 @@
 Quick Stack engine (GUI-free).
 
     load (Live Stacking's load_calibrated, bilinear debayer; a master dark and
-    flat, if given, go on the mosaic first, made to fit the frames once per run)
+    flat, if given, go on the mosaic first, made to fit the frames once per run;
+    masters can be made in memory from single dark and flat frames, raw_sets)
       -> similarity delta to the reference (the alignment pass's own helpers,
          with the meridian-flip check)
       -> bilinear warp straight into shared accumulators
-      -> trimmed mean
+      -> weighted trimmed mean
 
-No weighting, rejection maps, distortion or normalization. Beyond the masters,
-the one thing applied per frame is a single additive sky offset per channel (a
-strided median), which makes the trim compare frames at the same sky level.
-Calibrated and aligned frames live in memory only.
+Each frame is weighted by the stars its alignment found: half the stars, half
+the weight. Fewer stars is what clouds, a brighter sky, poor seeing, a focus
+shift and guiding trouble all do to a frame, so the count is the whole score.
+It is every source that passes the star filters at the user's detection sigma
+on the solve grid, before the matcher's cap of 25 per cell. No frame is
+dropped for its count. Beyond the masters, the one normalization is a single
+additive sky offset per channel (a strided median), which puts every frame on
+the reference's sky level so the trim compares like with like; nothing is
+scaled. No rejection maps or distortion. Calibrated and aligned frames live in
+memory only.
 
-Trimming is streamed: each output pixel keeps its sum, its count, and its two
-highest and two lowest samples, so memory does not depend on the number of
-frames and the result does not depend on the order they finish in. The trim
+Trimming is streamed: each output pixel keeps its weighted sum, its count, the
+sum of its weights, and its two highest and two lowest samples with the weight
+code of the frame each came from (so a dropped sample takes its own weight out
+with it), so memory does not depend on the number of frames and the result
+does not depend on the order they finish in. The trim
 is symmetric (the same number off each end): an uneven one biases the mean,
 and where the count per pixel changes (dithered edges) the bias would step.
 Accumulators live in shared memory and workers add to them in bands under a
@@ -52,6 +61,14 @@ MIN_INLIER_FRACTION = 0.25 # available: unrelated fields reach ~9 by chance, a t
 SOLVE_GRID_MP = 3.0        # the solve grid is about this many megapixels, so star detection costs
 MAX_SOLVE_DOWNSAMPLE = 3   # about the same on any sensor; small frames are solved at full resolution
 
+# A frame's weight is its star count, stored as one byte per frame on a log
+# scale: WEIGHT_TABLE[code] is within 2.2 % of the count it codes, from 1 star
+# (code 1, also what a frame with none gets) to about 60,000 (code 255).
+WEIGHT_STEPS = 16          # codes per doubling of the star count
+WEIGHT_TABLE = (2.0 ** ((np.arange(256) - 1) / WEIGHT_STEPS)).astype(np.float32)
+EQUAL_WEIGHT_CODE = 1      # every frame the same: WEIGHT_TABLE[1] is exactly 1.0
+MIN_WEIGHT_STARS = 20      # fewer in the reference: counts this small are mostly noise, so frames weigh the same
+
 RAW_EXTS = ('.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef')
 FRAME_EXTS = ('.fits', '.fit', '.fts', '.fits.gz', '.fit.gz', '.fz', '.xisf',
               '.tif', '.tiff') + RAW_EXTS
@@ -75,6 +92,8 @@ class FrameInfo:
     imagetyp: str = ""          # what the file says it is (route_file sorts on it)
     bitpix: int = 0             # as stored: negative for floating-point pixels
     ncombine: int = 0
+    date: str = ""              # DATE-OBS; for a master made from raw frames, their night
+    frames: tuple = ()          # a master made from raw frames (raw_sets): their paths; path is then a name
 
 
 @dataclass
@@ -279,22 +298,48 @@ def _pick_flat(frame: FrameInfo, flats: list) -> Pick:
                                            f"{_sizes_of(flats, frame)}: none was applied."])
     exact = [m for m in fit if m.filter.upper() == frame.filter.upper()]
     if exact:
-        return Pick(exact[0], "auto")
+        return Pick(_nearest_night(exact, frame), "auto")
     key = filter_key(frame.filter)
     if key:
         named = [m for m in fit if filter_key(m.filter) == key]
         if named:
-            m = named[0]
+            m = _nearest_night(named, frame)
             return Pick(m, "name", "", [f"The master flat {os.path.basename(m.path)} is for {m.filter}, "
                                         f"taken as the frames' {frame.filter}."])
         by_file = [m for m in fit if not filter_key(m.filter) and filter_from_name(m.path) == key]
         if by_file:
-            m = by_file[0]
+            m = _nearest_night(by_file, frame)
             return Pick(m, "file", "", [f"The master flat {os.path.basename(m.path)} has no filter card; "
                                         f"its name says {frame.filter}."])
     if len(flats) == 1:
         return Pick(fit[0], "only", "", _flat_notes(fit[0], frame))
     return Pick(None, "none", "filter", [f"⚠ No loaded master flat is for {frame.filter}: none was applied."])
+
+
+def night_of(date_obs: str) -> str:
+    """The night a DATE-OBS (UTC) belongs to, as the date twelve hours before
+    it ("2026-07-19"), so an evening's frames and the flats after them share
+    one; "" if it does not parse."""
+    import datetime as dt
+    s = str(date_obs or "").strip().replace(" ", "T")
+    try:
+        t = dt.datetime.fromisoformat(s[:19])
+    except ValueError:
+        return ""
+    return (t - dt.timedelta(hours=12)).date().isoformat()
+
+
+def _nearest_night(cands: list, frame: FrameInfo) -> FrameInfo:
+    """Of several flats that fit, the one from the night nearest the frames'.
+    Only flats made from raw frames know their night (a master's DATE-OBS may
+    be when it was stacked); without one, the first."""
+    import datetime as dt
+    night = night_of(frame.date) if len(cands) > 1 else ""
+    dated = [m for m in cands if m.frames and m.date]
+    if not (night and dated):
+        return cands[0]
+    d0 = dt.date.fromisoformat(night)
+    return min(dated, key=lambda m: (abs((dt.date.fromisoformat(m.date) - d0).days), m.path))
 
 
 def _hand_pick(kind: str, path, pool: list, frame: FrameInfo) -> Pick | None:
@@ -369,7 +414,13 @@ def _bayer_of(hdr) -> str:
 
 def load_master(path: str):
     """(pixels, header) of a master as it is stored: (H,W) or (H,W,C) float32
-    in the frames' [0,1] units. Raises MasterMismatch if it cannot be read."""
+    in the frames' [0,1] units. Raises MasterMismatch if it cannot be read.
+    A master made from raw frames (raw_sets) comes from memory, read-only."""
+    made = _MADE.get(os.path.normcase(str(path)))
+    if made is not None:
+        return made[1], made[2]
+    if os.path.normcase(str(path)) in _MADE_NAMES:
+        raise MasterMismatch("could not be made from its frames")
     with _quiet():
         from setiastro.saspro.legacy.image_manager import load_image
         img, hdr = load_image(path)[:2]
@@ -767,6 +818,380 @@ def _drop_masters() -> None:
     _MASTER_CACHE.clear()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Masters made from raw darks and flats, in memory
+# ─────────────────────────────────────────────────────────────────────────────
+# Raw dark and flat frames are grouped into the masters they make (raw_sets);
+# each stands in the pick lists like a loaded master, its path a name for it.
+# The first stack that uses one combines its frames (trimmed mean, as the
+# lights are), and the result is kept here, in the app's process, for every
+# later stack: nothing is written to disk. load_master serves it from here.
+_MADE: dict = {}            # normcase(name) -> (frames, pixels (read-only), header)
+_MADE_NAMES: set = set()    # every name raw_sets has given out
+
+
+def raw_sets(frames: list, kind: str) -> list:
+    """Raw darks or flats grouped into the masters they make, as FrameInfo:
+    darks by size, binning, gain and exposure; flats by size, binning, gain,
+    filter and night (dust moves between nights). `frames` of each holds its
+    paths, and `path` is its name ("made from 46 dark frames (900 s, gain 121)",
+    in the folder of its first frame), not a file."""
+    groups: dict = {}
+    for f in frames:
+        base = (f.width, f.height, f.binning, f.gain, f.bayer)
+        key = base + ((round(f.exposure, 4),) if kind == "dark"
+                      else (filter_key(f.filter) or f.filter.upper(), night_of(f.date)))
+        groups.setdefault(key, []).append(f)
+    out = []
+    for fs in groups.values():
+        fs = sorted(fs, key=lambda i: os.path.normcase(i.path))
+        first = fs[0]
+        exps = sorted(i.exposure for i in fs)
+        night = night_of(first.date)
+        if kind == "dark":
+            what = f"{exps[len(exps) // 2]:g} s" + (f", gain {first.gain:g}" if first.gain else "")
+            label = f"made from {len(fs)} dark frames ({what})"
+        else:
+            what = ", ".join(x for x in (first.filter if first.filter != "Unknown" else "",
+                                         night, f"gain {first.gain:g}" if first.gain else "") if x)
+            label = f"made from {len(fs)} flat frames" + (f" ({what})" if what else "")
+        info = FrameInfo(path="", filter=first.filter, exposure=exps[len(exps) // 2],
+                         width=first.width, height=first.height, bayer=first.bayer,
+                         binning=first.binning, gain=first.gain,
+                         imagetyp="Master Dark" if kind == "dark" else "Master Flat",
+                         bitpix=-32, ncombine=len(fs), date=night,
+                         frames=tuple(i.path for i in fs))
+        out.append((label, os.path.dirname(first.path), info))
+    # Two sets that read the same (other sizes or binnings) are told apart.
+    seen: dict = {}
+    for label, folder, info in out:
+        seen.setdefault(os.path.normcase(os.path.join(folder, label)), []).append(info)
+    result = []
+    for label, folder, info in out:
+        name = os.path.join(folder, label)
+        if len(seen[os.path.normcase(name)]) > 1:
+            extra = f"{info.width} x {info.height}" + (f", bin {info.binning}" if info.binning else "")
+            twins = [i for i in seen[os.path.normcase(name)]
+                     if (i.width, i.height, i.binning) == (info.width, info.height, info.binning)]
+            if len(twins) > 1:
+                extra += f", #{twins.index(info) + 1}"
+            name = os.path.join(folder, label[:-1] + f", {extra})" if label.endswith(")")
+                                else label + f" ({extra})")
+        info.path = name
+        _MADE_NAMES.add(os.path.normcase(name))
+        result.append(info)
+    result.sort(key=lambda i: (i.filter, i.exposure, i.date, i.path))
+    return result
+
+
+def is_made(info) -> bool:
+    """A master Quick Stack makes from raw frames (raw_sets), not a file."""
+    return bool(getattr(info, "frames", ()))
+
+
+def made_already(info: FrameInfo) -> bool:
+    hit = _MADE.get(os.path.normcase(info.path))
+    return hit is not None and hit[0] == info.frames
+
+
+def forget_made() -> None:
+    """Let the masters made from raw frames go (Clear Masters, closing the window)."""
+    _MADE.clear()
+
+
+def read_raw_frame(path: str):
+    """(pixels, header or None) of one raw calibration frame, as load_master
+    gives it. A plain 16-bit FITS is read straight into memory (about six times
+    quicker than the loader at 46.8 MP, the same pixels); anything else goes
+    through load_master. header is None on the quick path."""
+    plan = u16_plan(path) if quick_u16(path) else None
+    if plan is None:
+        return load_master(path)
+    a = np.empty((plan["h"], plan["w"]), ">i2")
+    with open(path, "rb") as f:
+        f.seek(plan["offset"])
+        if f.readinto(memoryview(a).cast("B")) != a.nbytes:
+            raise MasterMismatch("the pixel data is cut short")
+    img = (a.astype(np.float32) + np.float32(32768.0)) / np.float32(65535.0)
+    del a
+    if plan["flip"]:
+        img = np.ascontiguousarray(img[::-1])
+    return img, None
+
+
+@nb.njit(nogil=True, cache=True)
+def _combine_band(src, scale, y0, y1, sumv, cnt, hi0, hi1, lo, lo1):
+    """Rows [y0, y1) of one raw frame (H,W,C) into the running sum / count /
+    two highest / two lowest, each sample times scale[y % 2, x % 2, c] (its
+    Bayer site's, for a flat). 0.0 and non-finite samples are no data."""
+    H, W, C = src.shape
+    for y in range(y0, y1):
+        for x in range(W):
+            for c in range(C):
+                a = src[y, x, c]
+                if a == 0.0 or not (abs(a) < 1e30):
+                    continue
+                r = a * scale[y & 1, x & 1, c]
+                sumv[y, x, c] += r
+                cnt[y, x, c] += 1
+                if r > hi0[y, x, c]:
+                    hi1[y, x, c] = hi0[y, x, c]
+                    hi0[y, x, c] = r
+                elif r > hi1[y, x, c]:
+                    hi1[y, x, c] = r
+                if r < lo[y, x, c]:
+                    lo1[y, x, c] = lo[y, x, c]
+                    lo[y, x, c] = r
+                elif r < lo1[y, x, c]:
+                    lo1[y, x, c] = r
+
+
+@nb.njit(nogil=True, cache=True)
+def _combine_band_u16(raw, flip, scale, y0, y1, sumv, cnt, hi0, hi1, lo, lo1):
+    """_combine_band straight from a plain 16-bit FITS plane as stored (int16,
+    value - 32768, native byte order), turned over when flip: the same float32
+    arithmetic as read_raw_frame, so the same sums, without a float copy of
+    the frame (at 46.8 MP that copy was most of the time)."""
+    H, W = raw.shape
+    for y in range(y0, y1):
+        ys = H - 1 - y if flip else y
+        for x in range(W):
+            a = (np.float32(raw[ys, x]) + np.float32(32768.0)) / np.float32(65535.0)
+            if a == 0.0:
+                continue
+            r = a * scale[y & 1, x & 1, 0]
+            sumv[y, x, 0] += r
+            cnt[y, x, 0] += 1
+            if r > hi0[y, x, 0]:
+                hi1[y, x, 0] = hi0[y, x, 0]
+                hi0[y, x, 0] = r
+            elif r > hi1[y, x, 0]:
+                hi1[y, x, 0] = r
+            if r < lo[y, x, 0]:
+                lo1[y, x, 0] = lo[y, x, 0]
+                lo[y, x, 0] = r
+            elif r < lo1[y, x, 0]:
+                lo1[y, x, 0] = r
+
+
+def _read_u16_plane(path: str, plan: dict) -> np.ndarray:
+    """A plain 16-bit FITS plane as stored (int16, value - 32768), native byte order."""
+    a = np.empty((plan["h"], plan["w"]), ">i2")
+    with open(path, "rb") as f:
+        f.seek(plan["offset"])
+        if f.readinto(memoryview(a).cast("B")) != a.nbytes:
+            raise MasterMismatch("the pixel data is cut short")
+    a.byteswap(inplace=True)
+    return a.view(a.dtype.newbyteorder("="))
+
+
+@nb.njit(nogil=True, cache=True, parallel=True)
+def _combine_finish(sumv, cnt, hi0, hi1, lo, lo1, out, min_trim, full_trim):
+    """The trimmed mean of the frames, as the lights are combined (unweighted)."""
+    H, W, C = sumv.shape
+    for y in nb.prange(H):
+        for x in range(W):
+            for c in range(C):
+                n = int(cnt[y, x, c])
+                if n == 0:
+                    out[y, x, c] = 0.0
+                    continue
+                s = np.float64(sumv[y, x, c])
+                drop = 0
+                if n >= min_trim:
+                    s -= np.float64(hi0[y, x, c])
+                    s -= np.float64(lo[y, x, c])
+                    drop = 2
+                    if n >= full_trim:
+                        s -= np.float64(hi1[y, x, c])
+                        s -= np.float64(lo1[y, x, c])
+                        drop = 4
+                out[y, x, c] = s / (n - drop)
+
+
+def flat_scale(src: np.ndarray, mosaic: bool, u16: bool = False) -> np.ndarray:
+    """(2,2,C) float32: what a raw flat (H,W,C) is multiplied by to bring it
+    to 1, so the trim compares flats of any brightness: one over the median of
+    each Bayer site for a mosaic, of each channel otherwise. No offset is taken
+    off first (Frank, 2026-11-24: at a flat's exposure the bias pedestal moves
+    the corner correction by a few tenths of a percent).
+
+    u16: src is a 16-bit plane as stored (H,W) (_read_u16_plane, turned over
+    already); the same samples are taken and converted as read_raw_frame
+    converts them, so the scale is the float path's to the bit."""
+    planes = [src] if u16 else [src[..., c] for c in range(src.shape[2])]
+    out = np.ones((2, 2, len(planes)), np.float32)
+    for c, plane in enumerate(planes):
+        for sy, sx in (((0, 0), (0, 1), (1, 0), (1, 1)) if mosaic else ((None, None),)):
+            v = plane[::8, ::8] if sy is None else plane[sy::2, sx::2][::4, ::4]
+            if u16:
+                v = (v.astype(np.float32) + np.float32(32768.0)) / np.float32(65535.0)
+            v = v[np.isfinite(v) & (v != 0)]
+            med = float(np.median(v)) if v.size else 0.0
+            if not med > 0.0:
+                raise MasterMismatch("has no light in it")
+            if sy is None:
+                out[:, :, c] = np.float32(1.0 / med)
+            else:
+                out[sy, sx, c] = np.float32(1.0 / med)
+    return out
+
+
+def make_master(info: FrameInfo, kind: str, say=None, progress=None, stopped=None):
+    """Combine a raw set's frames into its master: (pixels, header). Trimmed
+    mean as the lights get (2 + 2 off from 15 frames, 1 + 1 from 6, a plain
+    mean below); flats are each brought to 1 first. Frames are read and added
+    on threads (reading and the numba kernel let go of the GIL). A frame that
+    cannot be read or differs in size is left out; none at all raises
+    MasterMismatch."""
+    say = say or (lambda s: None)
+    progress = progress or (lambda done, total: None)
+    stopped = stopped or (lambda: False)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    t0 = time.perf_counter()
+    paths = list(info.frames)
+    name = os.path.basename(info.path)
+    plan0 = u16_plan(paths[0]) if quick_u16(paths[0]) else None
+    first = hdr = None
+    if plan0 is not None:
+        H, W, C = plan0["h"], plan0["w"], 1
+    else:
+        first, hdr = read_raw_frame(paths[0])
+        first = first[..., None] if first.ndim == 2 else first
+        H, W, C = first.shape
+    mosaic = kind == "flat" and C == 1 and bool(info.bayer or paths[0].lower().endswith(RAW_EXTS))
+    A = {n: np.empty((H, W, C), dt) for n, dt in (("sumv", np.float32), ("cnt", np.uint16),
+                                                   ("hi0", np.float32), ("hi1", np.float32),
+                                                   ("lo", np.float32), ("lo1", np.float32))}
+    for n, a in A.items():
+        a[...] = -np.inf if n in ("hi0", "hi1") else np.inf if n in ("lo", "lo1") else 0
+    bands = 128                         # fine bands: the threads seldom wait on each other
+    locks = [threading.Lock() for _ in range(bands)]
+    ones = np.ones((2, 2, C), np.float32)
+
+    def accumulate_bands(i, fn):
+        start = (i * 37) % bands         # each frame starts on its own band
+        for k in range(bands):
+            b = (k + start) % bands
+            with locks[b]:
+                fn(H * b // bands, H * (b + 1) // bands)
+
+    def add(i, path, src=None):
+        plan = None if src is not None else (u16_plan(path) if quick_u16(path) else None)
+        if plan is not None:
+            if (plan["h"], plan["w"], 1) != (H, W, C):
+                raise MasterMismatch(f"is {plan['w']} x {plan['h']}, its set is {W} x {H}")
+            raw = _read_u16_plane(path, plan)
+            flip = bool(plan["flip"])
+            scale = flat_scale(raw[::-1] if flip else raw, mosaic, u16=True) if kind == "flat" else ones
+            accumulate_bands(i, lambda y0, y1: _combine_band_u16(
+                raw, flip, scale, y0, y1, A["sumv"], A["cnt"], A["hi0"], A["hi1"], A["lo"], A["lo1"]))
+            return
+        if src is None:
+            src = read_raw_frame(path)[0]
+        src = src[..., None] if src.ndim == 2 else src
+        if src.shape != (H, W, C):
+            raise MasterMismatch(f"is {src.shape[1]} x {src.shape[0]}, its set is {W} x {H}")
+        scale = flat_scale(src, mosaic) if kind == "flat" else ones
+        accumulate_bands(i, lambda y0, y1: _combine_band(
+            src, scale, y0, y1, A["sumv"], A["cnt"], A["hi0"], A["hi1"], A["lo"], A["lo1"]))
+
+    def job(i, path, img=None):
+        if stopped():
+            return path, "stopped"
+        try:
+            add(i, path, img)
+            return path, None
+        except Exception as e:
+            return path, str(e) if isinstance(e, MasterMismatch) else f"{type(e).__name__}: {e}"
+
+    n_threads = max(1, min(12, (os.cpu_count() or 4) // 2, len(paths)))
+    with contextlib.suppress(Exception):
+        import psutil
+        n_threads = max(1, min(n_threads, int(psutil.virtual_memory().available * 0.4
+                                              // max(1, H * W * C * 6))))
+    used, skipped = 0, []
+    with ThreadPoolExecutor(n_threads) as ex:
+        futs = [ex.submit(job, 0, paths[0], first)] + [ex.submit(job, i, p) for i, p in
+                                                       enumerate(paths[1:], 1)]
+        del first
+        for f in as_completed(futs):
+            p, why = f.result()
+            if why is None:
+                used += 1
+            elif why != "stopped":
+                skipped.append((p, why))
+            progress(used + len(skipped), len(paths))
+    if stopped():
+        raise InterruptedError("Quick Stack was cancelled.")
+    if not used:
+        raise MasterMismatch("could not be made: none of its frames could be read")
+    out = np.empty((H, W, C), np.float32)
+    from setiastro.saspro.legacy.numba_utils import NUMBA_PARALLEL_LOCK
+    with NUMBA_PARALLEL_LOCK:
+        _combine_finish(A["sumv"], A["cnt"], A["hi0"], A["hi1"], A["lo"], A["lo1"], out,
+                        MIN_TRIM_FRAMES, FULL_TRIM_FRAMES)
+    A.clear()                           # the accumulators: about 1 GB at 46.8 MP
+    for p, why in skipped[:3]:
+        say(f"⚠ Master {kind} {name}: left out {os.path.basename(p)} ({why}).")
+    if len(skipped) > 3:
+        say(f"⚠ Master {kind} {name}: left out {len(skipped) - 3} more frames.")
+    say(f"Combined {used} {kind} frames into a master {kind} in memory "
+        f"({time.perf_counter() - t0:.1f} s).")
+    if hdr is None:
+        hdr = _made_header(paths[0])
+    with contextlib.suppress(Exception):
+        hdr["IMAGETYP"] = "Master Dark" if kind == "dark" else "Master Flat"
+        hdr["NCOMBINE"] = (int(used), "frames combined in memory by Quick Stack")
+    img = out[..., 0] if C == 1 else out
+    img.flags.writeable = False         # shared by every stack that uses it
+    return img, hdr
+
+
+def _made_header(path: str):
+    """The header of a raw frame read on the quick path, as load_image would
+    leave it: turned top-down if it was stored bottom-up."""
+    from astropy.io import fits
+    try:
+        from setiastro.saspro import blink_fast_read as bf
+        src = bf._probe_fits(path)
+        hdr = src.header.copy() if src is not None else fits.Header()
+        if src is not None and bf._needs_vertical_flip(src.header):
+            hdr["ROWORDER"] = "TOP-DOWN"
+    except Exception:
+        hdr = fits.Header()
+    if not isinstance(hdr, fits.Header):
+        with contextlib.suppress(Exception):
+            hdr = fits.Header(dict(hdr))
+    return hdr
+
+
+def ensure_made(choice, pool, say=None, progress=None, stopped=None) -> None:
+    """Make the masters `choice` names that are raw sets in `pool` and are not
+    made yet (or were made from other frames). One that cannot be made is
+    said, and MasterSet.load then leaves it out."""
+    say = say or (lambda s: None)
+    by_name = {os.path.normcase(m.path): m for m in pool if is_made(m)}
+    for kind, p in (("dark", getattr(choice, "dark", None)), ("flat", getattr(choice, "flat", None))):
+        m = by_name.get(os.path.normcase(p)) if p else None
+        if m is None or made_already(m):
+            continue
+        _MADE.pop(os.path.normcase(m.path), None)
+        try:
+            img, hdr = make_master(m, kind, say,
+                                   (lambda d, t, k=kind: progress(d, t, f"Making the master {k}: "
+                                                                        f"frame {d} of {t}…"))
+                                   if progress else None, stopped)
+        except InterruptedError:
+            raise
+        except Exception as e:              # a master never stops a stack: it is left out
+            why = str(e) if isinstance(e, MasterMismatch) else \
+                f"could not be made ({type(e).__name__}: {e})"
+            say(f"⚠ The master {kind} {os.path.basename(m.path)} {why}.")
+            continue
+        _MADE[os.path.normcase(m.path)] = (m.frames, img, hdr)
+
+
 def forget_masters() -> None:
     with _MASTER_LOCK:
         _drop_masters()
@@ -814,6 +1239,7 @@ def probe_frame(path: str) -> FrameInfo:
     info.binning = str(_get("XBINNING", default="") or "").strip()
     info.roworder = str(_get("ROWORDER", default="") or "").strip().upper()
     info.imagetyp = str(_get("IMAGETYP", "FRAMETYP", default="") or "").strip()
+    info.date = str(_get("DATE-OBS", "DATE-LOC", default="") or "").strip()
     try:
         info.gain = float(_get("GAIN", default=0.0))
     except (TypeError, ValueError):
@@ -935,13 +1361,52 @@ def group_frames(infos: list) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Weights
+# ─────────────────────────────────────────────────────────────────────────────
+def weight_code(stars: int) -> int:
+    """A frame's weight as the accumulators store it (WEIGHT_TABLE[code] is the
+    weight): its star count, on a log scale. A frame with no stars still counts
+    as one star's worth, so no frame is ever dropped by its weight."""
+    n = max(1, int(stars))
+    return int(min(255, 1 + round(WEIGHT_STEPS * float(np.log2(n)))))
+
+
+def run_weighting(ref_stars: int) -> bool:
+    """Weight this run's frames by star count? Not when the reference shows so
+    few stars at the detection sigma that the counts would mostly be noise."""
+    return int(ref_stars) >= MIN_WEIGHT_STARS
+
+
+def frame_code(stars: int, weighted: bool) -> int:
+    return weight_code(stars) if weighted else EQUAL_WEIGHT_CODE
+
+
+def weights_line(oks, weighted: bool, ref_stars: int) -> str:
+    """The log's account of the weights, from the frames' details."""
+    stars = [int(d.get("stars", 0)) for _, d in oks]
+    if not stars:
+        return ""
+    if not weighted:
+        return (f"Frames weigh the same: the reference shows only {ref_stars} stars at the detection "
+                f"sigma, too few for the counts to mean much (needs {MIN_WEIGHT_STARS}).")
+    w = np.array([float(d.get("weight", 1.0)) for _, d in oks])
+    rel = w / w.max()
+    eff = float(w.sum() ** 2 / (w * w).sum())
+    return (f"Weighted by the stars found in each frame: {min(stars)} to {max(stars)}, so weights "
+            f"{rel.min():.2f} to 1.00 (the frames count as {eff:.1f} equal ones).")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Kernels
 # ─────────────────────────────────────────────────────────────────────────────
 @nb.njit(nogil=True, cache=True)
-def _accumulate_band(src, inv, off, y0, y1, sumv, cnt, hi0, hi1, lo, lo1):
+def _accumulate_band(src, inv, off, wt, q, y0, y1, sumv, cnt, wsum, hi0, hi1, lo, lo1,
+                     qhi0, qhi1, qlo, qlo1):
     """Bilinear inverse-warp `src` (H,W,C) into the rows [y0, y1) of the
     accumulators. `inv` maps output pixel -> source pixel. Samples whose 2x2
-    neighbourhood holds a 0.0 (no data) or anything non-finite are skipped."""
+    neighbourhood holds a 0.0 (no data) or anything non-finite are skipped.
+    wt: the frame's weight (float32), q: its code (WEIGHT_TABLE[q] == wt),
+    kept beside each of the two highest and two lowest samples."""
     H, W, C = src.shape
     w = sumv.shape[1]
     dx = inv[0, 0]
@@ -973,22 +1438,32 @@ def _accumulate_band(src, inv, off, y0, y1, sumv, cnt, hi0, hi1, lo, lo1):
                 if not (abs(v) < 1e30):
                     continue
                 r = v - off[c]
-                sumv[y, x, c] += r
+                sumv[y, x, c] += wt * r
                 cnt[y, x, c] += 1
+                wsum[y, x, c] += wt
                 if r > hi0[y, x, c]:
                     hi1[y, x, c] = hi0[y, x, c]
+                    qhi1[y, x, c] = qhi0[y, x, c]
                     hi0[y, x, c] = r
+                    qhi0[y, x, c] = q
                 elif r > hi1[y, x, c]:
                     hi1[y, x, c] = r
+                    qhi1[y, x, c] = q
                 if r < lo[y, x, c]:
                     lo1[y, x, c] = lo[y, x, c]
+                    qlo1[y, x, c] = qlo[y, x, c]
                     lo[y, x, c] = r
+                    qlo[y, x, c] = q
                 elif r < lo1[y, x, c]:
                     lo1[y, x, c] = r
+                    qlo1[y, x, c] = q
 
 
 @nb.njit(nogil=True, cache=True, parallel=True)
-def _finish(sumv, cnt, hi0, hi1, lo, lo1, out, min_trim, full_trim):
+def _finish(sumv, cnt, wsum, hi0, hi1, lo, lo1, qhi0, qhi1, qlo, qlo1, wtab, out,
+            min_trim, full_trim):
+    """The weighted trimmed mean: the extremes are picked by value, and each
+    takes its own frame's weight out of the sum and of the total weight."""
     H, W, C = sumv.shape
     for y in nb.prange(H):
         for x in range(W):
@@ -998,16 +1473,35 @@ def _finish(sumv, cnt, hi0, hi1, lo, lo1, out, min_trim, full_trim):
                     out[y, x, c] = 0.0
                     continue
                 s = np.float64(sumv[y, x, c])      # double: the trim subtracts close values
-                drop = 0
+                ws = np.float64(wsum[y, x, c])
                 if n >= min_trim:
-                    s -= np.float64(hi0[y, x, c])
-                    s -= np.float64(lo[y, x, c])
-                    drop = 2
+                    w0 = np.float64(wtab[qhi0[y, x, c]])
+                    s -= w0 * np.float64(hi0[y, x, c])
+                    ws -= w0
+                    w0 = np.float64(wtab[qlo[y, x, c]])
+                    s -= w0 * np.float64(lo[y, x, c])
+                    ws -= w0
                     if n >= full_trim:
-                        s -= np.float64(hi1[y, x, c])
-                        s -= np.float64(lo1[y, x, c])
-                        drop = 4
-                out[y, x, c] = s / (n - drop)
+                        w0 = np.float64(wtab[qhi1[y, x, c]])
+                        s -= w0 * np.float64(hi1[y, x, c])
+                        ws -= w0
+                        w0 = np.float64(wtab[qlo1[y, x, c]])
+                        s -= w0 * np.float64(lo1[y, x, c])
+                        ws -= w0
+                out[y, x, c] = s / ws if ws > 0.0 else 0.0
+
+
+def accumulate(A: dict, src, inv, off, q: int, y0: int, y1: int) -> None:
+    """_accumulate_band on an accumulator set, for a frame of weight code q."""
+    _accumulate_band(src, inv, off, WEIGHT_TABLE[q], q, y0, y1, A["sumv"], A["cnt"], A["wsum"],
+                     A["hi0"], A["hi1"], A["lo"], A["lo1"],
+                     A["qhi0"], A["qhi1"], A["qlo"], A["qlo1"])
+
+
+def finish(A: dict, out) -> None:
+    _finish(A["sumv"], A["cnt"], A["wsum"], A["hi0"], A["hi1"], A["lo"], A["lo1"],
+            A["qhi0"], A["qhi1"], A["qlo"], A["qlo1"], WEIGHT_TABLE, out,
+            MIN_TRIM_FRAMES, FULL_TRIM_FRAMES)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1032,8 +1526,17 @@ class SharedArrays:
     Shared memory when the platform has room for it, else memory-mapped temp
     files (Linux caps /dev/shm; some containers give it 64 MB)."""
 
-    SPEC = (("sumv", np.float32), ("cnt", np.uint16), ("hi0", np.float32),
-            ("hi1", np.float32), ("lo", np.float32), ("lo1", np.float32))
+    SPEC = (("sumv", np.float32), ("cnt", np.uint16), ("wsum", np.float32), ("hi0", np.float32),
+            ("hi1", np.float32), ("lo", np.float32), ("lo1", np.float32),
+            ("qhi0", np.uint8), ("qhi1", np.uint8), ("qlo", np.uint8), ("qlo1", np.uint8))
+    BYTES = sum(np.dtype(dt).itemsize for _, dt in SPEC)      # per sample: 30
+
+    @classmethod
+    def blank(cls, arrays: dict) -> dict:
+        """Empty accumulators: nothing summed, extremes that any sample replaces."""
+        for name, a in arrays.items():
+            a[...] = -np.inf if name in ("hi0", "hi1") else np.inf if name in ("lo", "lo1") else 0
+        return arrays
 
     def __init__(self, shape, kind="shm", names=None, tmpdir=None):
         self.shape = tuple(int(v) for v in shape)
@@ -1049,7 +1552,7 @@ class SharedArrays:
         self = cls(shape)
         n = int(np.prod(self.shape))
         try:
-            if not _shm_has_room(n * sum(np.dtype(dt).itemsize for _, dt in cls.SPEC)):
+            if not _shm_has_room(n * cls.BYTES):
                 raise OSError("not enough shared memory")
             from multiprocessing import shared_memory
             names = {}
@@ -1070,12 +1573,7 @@ class SharedArrays:
                 self.arrays[name] = np.memmap(path, dtype=dt, mode="w+", shape=self.shape)
                 names[name] = path
             self.names = names
-        self.arrays["sumv"][...] = 0.0
-        self.arrays["cnt"][...] = 0
-        self.arrays["hi0"][...] = -np.inf
-        self.arrays["hi1"][...] = -np.inf
-        self.arrays["lo"][...] = np.inf
-        self.arrays["lo1"][...] = np.inf
+        cls.blank(self.arrays)
         return self
 
     def descriptor(self) -> dict:
@@ -1168,11 +1666,52 @@ def _seed_detection() -> None:
 
 
 def _detect(gray_ds, sigma, cfg):
+    """Stars on the solve grid: (points to match, stars found).
+
+    star_alignment._detect_stars_uniform's SEP path, which keeps only its
+    points: at most 25 per cell of a 4 x 4 grid (and limit_stars in all), so
+    the list is full on any rich field and says nothing about the frame. The
+    count is every source that passed the star filters, before that cap. SEP
+    always, never the GPU detector, so every frame of a run is counted alike."""
+    import sep
     from setiastro.saspro import star_alignment as sa
+    img32 = np.asarray(gray_ds, np.float32, order="C")
+    H, W = img32.shape[:2]
+    minarea = int(cfg["minarea"])
+    mask = None
+    if not np.isfinite(img32).all():            # no-data reaches here as NaN; SEP cannot cross it
+        mask = ~np.isfinite(img32)
+        img32 = np.nan_to_num(img32, nan=0.0, posinf=0.0, neginf=0.0)
+    if not img32.flags.writeable:               # SEP rejects read-only buffers
+        img32 = img32.copy()
     _seed_detection()
-    return sa._detect_stars_uniform(gray_ds, sigma, cfg["minarea"], grid=(4, 4), max_per_cell=25,
-                                    max_total=cfg["limit_stars"], min_fwhm=cfg["min_fwhm"],
-                                    max_ellipticity=cfg["max_ellipticity"])
+    bkg = sep.Background(img32, bw=64, bh=64, mask=mask)
+    thresh = float(sigma) * float(bkg.globalrms)
+    objs = sep.extract(img32 - bkg.back(), thresh, minarea=minarea, mask=mask,
+                       segmentation_map=False)
+    if objs is None or len(objs) == 0:
+        return np.empty((0, 2), np.float32), 0
+    a2 = objs["a"].astype(np.float32)
+    b2 = objs["b"].astype(np.float32)
+    fwhm_approx = 2.0 * np.sqrt(2.0 * np.log(2.0)) * a2
+    ellipticity = np.where(a2 > 1e-6, 1.0 - (b2 / a2), 1.0)
+    npix = objs["npix"].astype(np.int32) if "npix" in objs.dtype.names else np.ones(len(objs), np.int32)
+    valid = ((fwhm_approx >= float(cfg["min_fwhm"]))
+             & (ellipticity <= float(cfg["max_ellipticity"]))
+             & (npix >= minarea))
+    stars = int(valid.sum())
+    if stars == 0:
+        # Nothing passed: the matcher falls back to size alone. Those are not
+        # stars, so they do not count.
+        valid = npix >= max(2, minarea // 2)
+    objs = objs[valid]
+    if len(objs) == 0:
+        return np.empty((0, 2), np.float32), stars
+    order = np.argsort(objs["flux"])[::-1]
+    pts = sa._grid_balance_uniform(objs["x"][order].astype(np.float32),
+                                   objs["y"][order].astype(np.float32),
+                                   H, W, (4, 4), 25, cfg["limit_stars"])
+    return pts, stars
 
 
 def _similarity_once(src_pts, ref_pts, cfg, last):
@@ -1249,7 +1788,8 @@ def solve_delta(gray_ds, ref_ds, ref_wh, cfg, ref_key=None):
     """Similarity (no shear) mapping a frame to the reference, as full-res 2x3.
 
     Star detection on the solve grid (SEP), then solve_points. Detection sigma
-    drops when the first try cannot match (narrowband).
+    drops when the first try cannot match (narrowband); the star count, the
+    frame's weight, is always the first try's, at the user's sigma.
     Returns (T_full_2x3, info) or (None, reason)."""
     from setiastro.saspro import star_alignment as sa
     ds = int(cfg["downsample"])
@@ -1258,8 +1798,11 @@ def solve_delta(gray_ds, ref_ds, ref_wh, cfg, ref_key=None):
     base = np.ascontiguousarray(gray_ds, dtype=np.float32)
     why = "no stars found"
     T = info = None
+    stars = None
     for sigma in _sigma_ladder(cfg["det_sigma"]):
-        src_pts = _detect(base, sigma, cfg)
+        src_pts, n = _detect(base, sigma, cfg)
+        if stars is None:
+            stars = n
         _seed_detection()
         ref_pts = sa._ref_pts_cached(ref_ds, ref_key, box, sigma, cfg["minarea"],
                                      cfg["limit_stars"], cfg["min_fwhm"],
@@ -1274,7 +1817,7 @@ def solve_delta(gray_ds, ref_ds, ref_wh, cfg, ref_key=None):
     if T_full is None:
         return None, bad
     return T_full, {"inliers": info["inliers"], "rms": info["rms"] * ds,
-                    "angle": rotation_deg(T_full)}
+                    "angle": rotation_deg(T_full), "stars": int(stars or 0)}
 
 
 def channel_sky(img: np.ndarray) -> np.ndarray:
@@ -1531,19 +2074,6 @@ _G: dict = {}
 _THREAD_MODE_LOCK = threading.Lock()     # thread fallback keeps its state in _G
 
 
-@contextlib.contextmanager
-def _cpu_detection():
-    """Star detection through SEP only, for code running in the app's process.
-    Puts back whatever the process's GPU detection state was."""
-    from setiastro.saspro import star_alignment as sa
-    saved = list(sa._GPU_DETECT_SLOT)
-    sa._GPU_DETECT_SLOT[:] = [None]
-    try:
-        yield
-    finally:
-        sa._GPU_DETECT_SLOT[:] = saved
-
-
 def init_session_worker() -> None:
     """Pool initializer for a GpuSession's workers."""
     die_with_parent()
@@ -1616,15 +2146,18 @@ def _frame_job(task) -> tuple:
         inliers, rms = 0, 0.0
         if is_ref:
             T = np.array([[1.0, 0, 0], [0, 1.0, 0]])
+            stars = _G["ref_stars"]
         else:
             gray_ds = downsample_gray(to_gray(img), _G["cfg"]["downsample"])
             T, info = solve_delta(gray_ds, _G["ref_ds"], _G["ref_wh"], _G["cfg"],
                                   _G["ref_key"])
             if T is None:
                 return "skip", path, info
-            angle, inliers, rms = info["angle"], info["inliers"], info["rms"]
+            angle, inliers, rms, stars = info["angle"], info["inliers"], info["rms"], info["stars"]
         if _G["stop"].is_set():
             return "stop", path, None
+        q = frame_code(stars, _G["weighted"])
+        wt = WEIGHT_TABLE[q]
         off = (sky - _G["ref_sky"]).astype(np.float32)
         inv = np.linalg.inv(np.vstack([T, [0, 0, 1]]))[:2].astype(np.float64)
         src = img[..., None] if img.ndim == 2 else img
@@ -1638,10 +2171,9 @@ def _frame_job(task) -> tuple:
             y0 = H * b // N_BANDS
             y1 = H * (b + 1) // N_BANDS
             with _G["locks"][b]:
-                _accumulate_band(src, inv, off, y0, y1, A["sumv"], A["cnt"],
-                                 A["hi0"], A["hi1"], A["lo"], A["lo1"])
+                accumulate(A, src, inv, off, q, y0, y1)
         return "ok", path, {"angle": angle, "inliers": inliers, "rms": rms,
-                            "offset": float(off.mean())}
+                            "offset": float(off.mean()), "stars": int(stars), "weight": float(wt)}
     except Exception as e:
         return "skip", path, f"{type(e).__name__}: {e}"
 
@@ -1660,8 +2192,9 @@ class StackResult:
     rms: float
     seconds: float
     coverage_max: int
-    frames: list = field(default_factory=list)   # (path, {"angle", "inliers", "rms", "offset"})
+    frames: list = field(default_factory=list)   # (path, {"angle", "inliers", "rms", "offset", "stars", "weight"})
     engine: str = "CPU"
+    weighted: bool = True                         # by star count; False: every frame the same
 
 
 def _worker_count(shape, requested: int = 0) -> int:
@@ -1671,7 +2204,7 @@ def _worker_count(shape, requested: int = 0) -> int:
     per_worker = px * 4 * 2.5 + 600e6           # frame, gray, resample buffers, libraries
     try:
         import psutil
-        avail = float(psutil.virtual_memory().available) - px * 22.0     # the accumulators
+        avail = float(psutil.virtual_memory().available) - px * float(SharedArrays.BYTES)  # the accumulators
         if avail > 0:
             n = min(n, max(1, int(avail * 0.75 // per_worker)))
     except Exception:
@@ -1689,9 +2222,10 @@ def _executor_kind() -> str:
 
 
 def choose_reference(paths, ref_path, cfg, say, masters=None):
-    """(image, header, path) of the frame everything is aligned to: the one
-    given, else the first that loads and shows stars. Sets cfg["downsample"]."""
-    # Counted with SEP, not the GPU detector: this runs in the app's process.
+    """(image, header, path, stars) of the frame everything is aligned to: the
+    one given, else the first that loads and shows stars. stars: its count at
+    the detection sigma, as solve_delta counts every other frame. Sets
+    cfg["downsample"]."""
     for cand in ([ref_path] if ref_path else paths[:5]):
         img, hdr = load_frame(cand, masters)
         if img is None:
@@ -1699,14 +2233,16 @@ def choose_reference(paths, ref_path, cfg, say, masters=None):
             continue
         cfg["downsample"] = solve_downsample(img.shape[0], img.shape[1])
         gds = downsample_gray(to_gray(img), cfg["downsample"])
-        npts = 0
-        with _cpu_detection():
-            for sigma in _sigma_ladder(cfg["det_sigma"]):
-                npts = max(npts, len(_detect(gds, sigma, cfg)))
-                if npts >= 8:
-                    break
+        npts = stars = 0
+        for k, sigma in enumerate(_sigma_ladder(cfg["det_sigma"])):
+            pts, n = _detect(gds, sigma, cfg)
+            if k == 0:
+                stars = n
+            npts = max(npts, len(pts))
+            if npts >= 8:
+                break
         if npts >= 8:
-            return img, hdr, os.path.normpath(cand)
+            return img, hdr, os.path.normpath(cand), stars
         say(f"Reference {os.path.basename(cand)}: only {npts} stars, trying the next frame")
     raise RuntimeError("No usable reference frame: none of the first frames "
                        "could be loaded with enough stars.")
@@ -1727,21 +2263,28 @@ def require_stack(oks, skipped, paths) -> None:
 
 
 def make_result(image, ref_hdr, nch, oks, skipped, paths, cov, t0, say, engine="CPU",
-                masters=None, ref_path=None) -> StackResult:
-    """The result both engines return, and the closing log lines."""
+                masters=None, ref_path=None, weighted=True, ref_stars=None) -> StackResult:
+    """The result both engines return, and the closing log lines.
+
+    ref_stars: the reference's star count, for the line on the weights; None
+    when the engine has already said why it did not weight."""
     flipped = sum(1 for _, d in oks if abs(d["angle"]) > 90.0)
     rms = [d["rms"] for _, d in oks if d["rms"] > 0]
     used = len(oks)
     secs = time.perf_counter() - t0
     say(f"Stacked {used} of {len(paths)} frames on the {engine} ({len(skipped)} skipped, "
         f"{flipped} rotated about 180°) in {secs:.0f} s")
+    if ref_stars is not None:
+        line = weights_line(oks, weighted, ref_stars)
+        if line:
+            say(line)
     if flipped and flipped < used:
         say("Both pier sides are in this stack. They are aligned by position, rotation and "
             "scale only, so stars can look slightly soft, most near the corners.")
     like = paths[0] if ref_path and index_of(paths, ref_path) < 0 else None
-    return StackResult(image, result_header(ref_hdr, used, nch, masters, like), used, len(paths), flipped,
-                       skipped, float(np.median(rms)) if rms else 0.0, secs, cov,
-                       sorted(oks, key=lambda t: t[0]), engine)
+    return StackResult(image, result_header(ref_hdr, used, nch, masters, like, weighted), used,
+                       len(paths), flipped, skipped, float(np.median(rms)) if rms else 0.0, secs,
+                       cov, sorted(oks, key=lambda t: t[0]), engine, weighted)
 
 
 def reference_job(paths, ref_path, cfg, masters=None) -> tuple:
@@ -1750,7 +2293,7 @@ def reference_job(paths, ref_path, cfg, masters=None) -> tuple:
     solve-grid binning, log lines)."""
     _limit_child_threads()
     lines: list = []
-    img, hdr, path = choose_reference(paths, ref_path, cfg, lines.append, masters)
+    img, hdr, path, _stars = choose_reference(paths, ref_path, cfg, lines.append, masters)
     return (img.shape[:2], 1 if img.ndim == 2 else img.shape[2], hdr, path,
             cfg["downsample"], lines)
 
@@ -1808,7 +2351,8 @@ def _stack_cpu(paths, ref_path, workers, kind, say, step, stopped, masters, mdes
     cfg = align_settings()
 
     # Reference: what was given, else the first frame that loads and shows stars.
-    ref_img, ref_hdr, ref_path = choose_reference(paths, ref_path, cfg, say, mdesc)
+    ref_img, ref_hdr, ref_path, ref_stars = choose_reference(paths, ref_path, cfg, say, mdesc)
+    weighted = run_weighting(ref_stars)
     ref_i = index_of(paths, ref_path)           # -1: only aligned to, not stacked
     shape = (ref_img.shape[0], ref_img.shape[1], 1 if ref_img.ndim == 2 else ref_img.shape[2])
     ref_sky = channel_sky(ref_img)
@@ -1832,11 +2376,7 @@ def _stack_cpu(paths, ref_path, workers, kind, say, step, stopped, masters, mdes
     try:
         shared = SharedArrays.create(shape) if kind == "process" else SharedArrays(shape)
         if kind == "thread":
-            shared.arrays = {n: np.zeros(shape, dt) for n, dt in SharedArrays.SPEC}
-            shared.arrays["hi0"][...] = -np.inf
-            shared.arrays["hi1"][...] = -np.inf
-            shared.arrays["lo"][...] = np.inf
-            shared.arrays["lo1"][...] = np.inf
+            shared.arrays = SharedArrays.blank({n: np.empty(shape, dt) for n, dt in SharedArrays.SPEC})
         if kind == "process":
             ctx = mp.get_context("spawn")
             locks = [ctx.Lock() for _ in range(N_BANDS)]
@@ -1847,7 +2387,8 @@ def _stack_cpu(paths, ref_path, workers, kind, say, step, stopped, masters, mdes
         cfgd = {"cfg": cfg, "desc": None if kind == "thread" else shared.descriptor(),
                 "arrays": shared.arrays if kind == "thread" else None,
                 "locks": locks, "stop": stop_ev, "ref_ds_npy": ref_ds_npy,
-                "ref_wh": ref_wh, "ref_sky": ref_sky, "shape": shape, "masters": mdesc}
+                "ref_wh": ref_wh, "ref_sky": ref_sky, "shape": shape, "masters": mdesc,
+                "ref_stars": ref_stars, "weighted": weighted}
         if kind == "process":
             pool = ProcessPoolExecutor(n_workers, mp_context=ctx, initializer=_worker_init,
                                        initargs=(cfgd,))
@@ -1889,8 +2430,7 @@ def _stack_cpu(paths, ref_path, workers, kind, say, step, stopped, masters, mdes
         out = np.empty(shape, np.float32)
         A = shared.arrays
         with NUMBA_PARALLEL_LOCK:
-            _finish(A["sumv"], A["cnt"], A["hi0"], A["hi1"], A["lo"], A["lo1"], out,
-                    MIN_TRIM_FRAMES, FULL_TRIM_FRAMES)
+            finish(A, out)
         cov = int(A["cnt"].max())
         image = out[..., 0] if shape[2] == 1 else out
     finally:
@@ -1904,7 +2444,7 @@ def _stack_cpu(paths, ref_path, workers, kind, say, step, stopped, masters, mdes
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     return make_result(image, ref_hdr, shape[2], oks, skipped, paths, cov, t0, say,
-                       masters=masters, ref_path=ref_path)
+                       masters=masters, ref_path=ref_path, weighted=weighted, ref_stars=ref_stars)
 
 
 def _shutdown(pool, kind, hard: bool) -> None:
@@ -1923,7 +2463,8 @@ _PER_GROUP_CARDS = ("FILTER", "EXPTIME", "EXPOSURE", "GAIN", "OBJECT", "DATE-OBS
                     "XBINNING", "YBINNING")
 
 
-def result_header(ref_header, used: int, channels: int, masters=None, like: str | None = None):
+def result_header(ref_header, used: int, channels: int, masters=None, like: str | None = None,
+                  weighted: bool = True):
     """Reference header turned into a stack header. Astrometry stays valid: the
     stack is on the reference's pixel grid.
 
@@ -1956,8 +2497,9 @@ def result_header(ref_header, used: int, channels: int, masters=None, like: str 
     h["NCOMBINE"] = (int(used), "frames stacked")
     if exp > 0:
         h["TOTALEXP"] = (float(exp * used), "total integration (s), approximate")
-    h["HISTORY"] = ("SASpro Quick Stack: similarity alignment, trimmed mean, "
-                    "one sky offset per frame")
+    h["HISTORY"] = ("SASpro Quick Stack: similarity alignment, "
+                    + ("trimmed mean weighted by star count, " if weighted else "trimmed mean, ")
+                    + "one sky offset per frame")
     how = getattr(masters, "how", None) or {}
     cal = [f"master {w} {os.path.basename(p)}" + (f" ({how[w]})" if how.get(w) else "") for w, p in
            (("dark", masters.dark if masters else None), ("flat", masters.flat if masters else None)) if p]

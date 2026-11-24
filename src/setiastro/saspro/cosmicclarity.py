@@ -1196,6 +1196,27 @@ class CosmicClarityDialogPro(QDialog):
         self._restore_cc_geometry()
         QTimer.singleShot(0, self._deferred_resize)
 
+        # Warm the engine while settings are chosen (cosmicclarity_engines.warmup):
+        # once the window is up, and again when a choice changes which models or
+        # shapes the run will use. Debounced, so flicking a combo queues one.
+        self._warm_timer = QTimer(self)
+        self._warm_timer.setSingleShot(True)
+        self._warm_timer.setInterval(400)
+        self._warm_timer.timeout.connect(self._start_warmup)
+        for _sig in (self.cmb_mode.currentIndexChanged, self.cmb_gpu.currentIndexChanged,
+                     self.cmb_sh_mode.currentTextChanged, self.cmb_dn_mode.currentTextChanged):
+            _sig.connect(lambda *_: self._warm_timer.start())
+        self._warm_timer.start()
+
+    def _start_warmup(self):
+        try:
+            img = getattr(getattr(self, "doc", None), "image", None)
+            if img is None or not self.isVisible():
+                return
+            from setiastro.saspro.cosmicclarity_engines.warmup import warm_cosmic_clarity
+            warm_cosmic_clarity(self.build_preset_from_ui(), img)
+        except Exception as e:
+            print(f"[CC warm-up] not started ({type(e).__name__}: {e})")
 
     def _dn_model_changed(self, idx: int):
             self._save_cc_ui_settings()
@@ -1230,6 +1251,12 @@ class CosmicClarityDialogPro(QDialog):
             #     clear_superres_models_cache(aggressive=aggressive, status_cb=print)
             # except Exception:
             #     pass
+
+            try:        # models are gone: let the next dialog warm them up again
+                from setiastro.saspro.cosmicclarity_engines.warmup import forget
+                forget()
+            except Exception:
+                pass
 
             QMessageBox.information(
                 self,

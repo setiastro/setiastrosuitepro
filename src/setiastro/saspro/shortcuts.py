@@ -145,6 +145,10 @@ class DraggableToolBar(QToolBar):
     We hook QToolButton children (not the toolbar itself), because
     mouse events go to the buttons.
     """
+    # The Essentials toolbars (EssentialsToolBar) show the same actions as
+    # these; the main window leaves them out of memberships and Hidden.
+    is_essentials = False
+
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self._press_pos: dict[QToolButton, QPoint] = {}
@@ -451,11 +455,16 @@ class DraggableToolBar(QToolBar):
                 return a
         return None
 
+    def _accepts_reorder_from(self, src_tb) -> bool:
+        """A button dragged from src_tb may be dropped here: any full toolbar.
+        An Essentials button never leaves its own bar (EssentialsToolBar)."""
+        return isinstance(src_tb, DraggableToolBar) and not src_tb.is_essentials
+
     def dragEnterEvent(self, e):
         # Accept toolbar-reorder drags from any DraggableToolBar
         if e.mimeData().hasFormat(TOOLBAR_REORDER_MIME):
             src = e.source()
-            if isinstance(src, QToolButton) and isinstance(src.parent(), DraggableToolBar):
+            if isinstance(src, QToolButton) and self._accepts_reorder_from(src.parent()):
                 e.acceptProposedAction()
                 return
         super().dragEnterEvent(e)
@@ -463,7 +472,7 @@ class DraggableToolBar(QToolBar):
     def dragMoveEvent(self, e):
         if e.mimeData().hasFormat(TOOLBAR_REORDER_MIME):
             src = e.source()
-            if isinstance(src, QToolButton) and isinstance(src.parent(), DraggableToolBar):
+            if isinstance(src, QToolButton) and self._accepts_reorder_from(src.parent()):
                 e.acceptProposedAction()
                 return
         super().dragMoveEvent(e)
@@ -473,7 +482,7 @@ class DraggableToolBar(QToolBar):
             src_btn = e.source()
             if isinstance(src_btn, QToolButton):
                 src_tb = src_btn.parent()
-                if isinstance(src_tb, DraggableToolBar):
+                if self._accepts_reorder_from(src_tb):
                     # Find the QAction that belongs to the dragged button
                     src_act = src_tb._find_action_for_button(src_btn)
                     if src_act is None:
@@ -574,6 +583,13 @@ class DraggableToolBar(QToolBar):
         # Right-click on empty toolbar area
         m = QMenu(self)
 
+        # 0. Essentials / All Tools
+        mode_acts = getattr(self.window(), "_toolbar_mode_actions", None)
+        if mode_acts:
+            for a in mode_acts:
+                m.addAction(a)
+            m.addSeparator()
+
         # 1. Lock/Unlock Action
         is_locked = self._is_locked()
         act_lock = m.addAction(self.tr("Lock Toolbar Icons"))
@@ -627,6 +643,54 @@ class DraggableToolBar(QToolBar):
         acts = [a for a in tb_hidden.actions() if not a.isSeparator()]
         for a in acts:
             mw._unhide_action_from_hidden_toolbar(a)
+
+
+class EssentialsToolBar(DraggableToolBar):
+    """
+    One of the Essentials toolbars: the tools of the beginner workflows, with
+    names under the icons, shown instead of the full toolbars in Essentials
+    mode (Toolbar > Essentials / All Tools).
+
+    Its actions are the same QActions the full toolbars hold, so a tool is
+    one action wherever it shows. That means this bar must keep out of what
+    moves actions between the full toolbars: its buttons can be dragged onto
+    a view, onto the workspace (desktop shortcut) and along this bar, but not
+    onto another toolbar, and it takes none from one; right-click has no
+    Hide, which moves a tool to the Hidden toolbar of the full set. The main
+    window leaves it out of memberships and Hidden (_full_toolbars).
+    """
+    is_essentials = True
+
+    def _accepts_reorder_from(self, src_tb) -> bool:
+        return src_tb is self
+
+    def _show_toolbutton_context_menu(self, btn: QToolButton, act: QAction, gpos: QPoint):
+        m = QMenu(btn)
+        if self._action_id(act):                 # the Start Panel button has none
+            m.addAction(self.tr("Create Desktop Shortcut"), lambda: self._add_shortcut_for_action(act))
+        self._add_essentials_items(m)
+        m.exec(gpos)
+
+    def contextMenuEvent(self, ev):
+        m = QMenu(self)
+        act_lock = m.addAction(self.tr("Lock Toolbar Icons"))
+        act_lock.setCheckable(True)
+        act_lock.setChecked(self._is_locked())
+        act_lock.triggered.connect(self._set_locked)
+        self._add_essentials_items(m)
+        m.exec(ev.globalPos())
+
+    def _add_essentials_items(self, m: QMenu):
+        mw = self.window()
+        labels = getattr(mw, "_act_essentials_labels", None)
+        mode_acts = getattr(mw, "_toolbar_mode_actions", None)
+        if labels is not None:
+            m.addSeparator()
+            m.addAction(labels)
+        if mode_acts:
+            m.addSeparator()
+            for a in mode_acts:
+                m.addAction(a)
 
 
 

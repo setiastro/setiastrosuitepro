@@ -4952,6 +4952,36 @@ Install it with:  pip install pypdfium2</source>
       <source>▼  Advanced</source>
       <translation>▼  Додатково</translation>
     </message>
+    <message>
+      <source>All Tools: every toolbar and tool</source>
+      <translation>Усі інструменти: усі панелі та інструменти</translation>
+    </message>
+    <message>
+      <source>Essentials</source>
+      <translation>Основні</translation>
+    </message>
+    <message>
+      <source>Essentials: the tools of the beginner workflows, with their names.
+Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
+      <translation>Основні: інструменти робочих процесів для початківців, з назвами.
+Усі інструменти й надалі доступні в меню та через «Пошук команд» (Ctrl+/).</translation>
+    </message>
+    <message>
+      <source>Search Commands...</source>
+      <translation>Пошук команд...</translation>
+    </message>
+    <message>
+      <source>Show Names Under Essentials Icons</source>
+      <translation>Показувати назви під значками основних інструментів</translation>
+    </message>
+    <message>
+      <source>Toolbar Mode</source>
+      <translation>Режим панелі інструментів</translation>
+    </message>
+    <message>
+      <source>Start Panel: open images, process step by step, stacking and more</source>
+      <translation>Стартова панель: відкрити зображення, обробка крок за кроком, складання та багато іншого</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -12724,27 +12754,27 @@ Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to
     <name>DraggableToolBar</name>
     <message>
       <source>Create Desktop Shortcut</source>
-      <translation>Create Desktop Shortcut</translation>
+      <translation>Створити ярлик на робочому столі</translation>
     </message>
     <message>
       <source>Hide this icon</source>
-      <translation>Hide this icon</translation>
+      <translation>Приховати цей значок</translation>
     </message>
     <message>
       <source>Lock Toolbar Icons</source>
-      <translation>Lock Toolbar Icons</translation>
+      <translation>Заблокувати значки панелі інструментів</translation>
     </message>
     <message>
       <source>Reset hidden icons</source>
-      <translation>Reset hidden icons</translation>
+      <translation>Скинути приховані значки</translation>
     </message>
     <message>
       <source>Show hidden…</source>
-      <translation>Show hidden…</translation>
+      <translation>Показати приховані…</translation>
     </message>
     <message>
       <source>Tip: Alt+Drag to create</source>
-      <translation>Tip: Alt+Drag to create</translation>
+      <translation>Порада: Alt+перетягування, щоб створити</translation>
     </message>
     <message>
       <source>Reset to Factory Layout...</source>
@@ -29486,6 +29516,174 @@ Calibrate only the {2} new frame(s) and reuse the existing calibrated frames for
       <source>🖼 Open Saved Masters</source>
       <translation>🖼 Відкрити збережені майстер-кадри</translation>
     </message>
+    <message>
+      <source>Add a master dark…</source>
+      <translation>Додати Master Dark…</translation>
+    </message>
+    <message>
+      <source>Add a master flat…</source>
+      <translation>Додати Master Flat…</translation>
+    </message>
+    <message>
+      <source>Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.</source>
+      <translation>Авто обирає за фільтром і розміром, далі flat тієї ж ночі (інакше найближчої ночі) з тим самим підсиленням. Оберіть інший майстер-кадр або «Немає» лише для цієї групи й сесії.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>Авто обирає за розміром, далі за підсиленням, експозицією й температурою. Рядок Dark кожної групи flat показує вибір: там можна обрати інший майстер-кадр або «Немає».</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.</source>
+      <translation>Авто обирає за розміром, далі за підсиленням, експозицією й температурою. Оберіть інший майстер-кадр або «Немає» лише для цієї групи.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>Авто обирає за розміром, далі за підсиленням, експозицією й температурою. Оберіть інший майстер-кадр або «Немає» лише для цієї групи. ПКМ на кадрах — дати їм власний.</translation>
+    </message>
+    <message>
+      <source>Auto-Select is off: pick a dark, or leave none</source>
+      <translation>Авто-вибір вимкнено: оберіть dark або залиште без нього</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>Авто: нічого не підходить</translation>
+    </message>
+    <message>
+      <source>Auto: off (Auto-Select is unchecked)</source>
+      <translation>Авто: вимкнено (Авто-вибір не позначено)</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>Авто: {0}</translation>
+    </message>
+    <message>
+      <source>Auto: {0} masters, picked per frame</source>
+      <translation>Авто: майстер-кадрів — {0}, вибір для кожного кадру</translation>
+    </message>
+    <message>
+      <source>Choose Master Dark(s)</source>
+      <translation>Обрати Master Dark</translation>
+    </message>
+    <message>
+      <source>Choose Master Flat(s)</source>
+      <translation>Обрати Master Flat</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>Dark</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.</source>
+      <translation>Кожна група показує Master Dark і Master Flat, які вона використає: змінюйте їх там. ПКМ на кадрах — дати їм власні або призначити ключі сесії.</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark it will use: change it there. Right-click to set a session tag.</source>
+      <translation>Кожна група показує Master Dark, який вона використає: змінюйте його там. ПКМ — задати мітку сесії.</translation>
+    </message>
+    <message>
+      <source>Flat</source>
+      <translation>Flat</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>Нічого не завантажено</translation>
+    </message>
+    <message>
+      <source>Use the Group's Dark and Flat</source>
+      <translation>Використати Dark і Flat групи</translation>
+    </message>
+    <message>
+      <source>every session</source>
+      <translation>усі сесії</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>підсилення {0:g}</translation>
+    </message>
+    <message>
+      <source>{0} ({1})</source>
+      <translation>{0} ({1})</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>Кадрів: {0}</translation>
+    </message>
+    <message>
+      <source>{0}: these frames are {1}</source>
+      <translation>{0}: ці кадри {1}</translation>
+    </message>
+    <message>
+      <source>≈ nearest night: {0} ({1} d away)</source>
+      <translation>≈ найближча ніч: {0} ({1} дн.)</translation>
+    </message>
+    <message>
+      <source>≈ {0} masters, picked per frame</source>
+      <translation>≈ майстер-кадрів — {0}, вибір для кожного кадру</translation>
+    </message>
+    <message>
+      <source>⚠ dark {0:+.0f} °C, frames {1:+.0f} °C</source>
+      <translation>⚠ dark {0:+.0f} °C, кадри {1:+.0f} °C</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ підсилення {0:g}, кадри {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ це flat {0}</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ його експозицію не записано</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat at {1}</source>
+      <translation>⚠ немає flat {0} розміру {1}</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0}</source>
+      <translation>⚠ жоден не має розміру {0}</translation>
+    </message>
+    <message>
+      <source>⚠ none records its exposure: choose one</source>
+      <translation>⚠ жоден не містить експозиції: оберіть один</translation>
+    </message>
+    <message>
+      <source>⚠ offset {0:g}, frames {1:g}</source>
+      <translation>⚠ зміщення {0:g}, кадри {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ dark {0:g} с, кадри {1:g} с</translation>
+    </message>
+    <message>
+      <source>⚠ {0}, these frames are {1}</source>
+      <translation>⚠ {0}, ці кадри {1}</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ немає</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ ваш вибір</translation>
+    </message>
+    <message>
+      <source>✎ {0} frame(s) use their own</source>
+      <translation>✎ власний у кадрів: {0}</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ авто</translation>
+    </message>
+    <message>
+      <source>✓ same night</source>
+      <translation>✓ та сама ніч</translation>
+    </message>
+    <message>
+      <source>✓ same session</source>
+      <translation>✓ та сама сесія</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -41695,6 +41893,42 @@ Statistical Stretch змінює пікселі. Він знаходиться �
       <source>You've processed your first image</source>
       <translation>Ви обробили своє перше зображення</translation>
     </message>
+    <message>
+      <source>1 of 4</source>
+      <translation>1 з 4</translation>
+    </message>
+    <message>
+      <source>2 of 4</source>
+      <translation>2 з 4</translation>
+    </message>
+    <message>
+      <source>3 of 4</source>
+      <translation>3 з 4</translation>
+    </message>
+    <message>
+      <source>4 of 4</source>
+      <translation>4 з 4</translation>
+    </message>
+    <message>
+      <source>Crop off the stacking edges</source>
+      <translation>Обріжте краї після стекінгу</translation>
+    </message>
+    <message>
+      <source>No stacking edges? Skip this step</source>
+      <translation>Немає країв після стекінгу? Пропустіть цей крок</translation>
+    </message>
+    <message>
+      <source>Open Crop</source>
+      <translation>Відкрити обрізку</translation>
+    </message>
+    <message>
+      <source>Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.
+
+Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside the clean area, then click Apply.</source>
+      <translation>Там, де субкадри не повністю перекрилися, стек має рвані краї: темні або шумні облямівки, іноді смуги. Спершу обріжте їх. Розтягування, видалення градієнта й калібрування кольору вимірюють усе зображення, і ці краї їх спотворюють.
+
+Обрізка — у Функції → Виправлення &amp; ретуш → Обрізка. Перетягніть рамку всередину чистої області й натисніть «Застосувати».</translation>
+    </message>
   </context>
   <context>
     <name>FitsBundleExportDialog</name>
@@ -53326,6 +53560,266 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, combined as a trimmed mean. No weighting or normalization, and no calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
       <translation>Швидкий погляд на набір кадрів: калібрування, якщо надати майстер-кадри, вирівнювання за положенням, обертанням і масштабом, об'єднання усіченим середнім. Без зважування й нормалізації, і жодних каліброваних чи вирівняних файлів на диску. Кольорові камери дебаєризуються (bilinear).</translation>
     </message>
+    <message>
+      <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
+      <translation>Швидкий погляд на набір кадрів: калібрування, якщо надати майстер-кадри, вирівнювання за положенням, обертанням і масштабом, зведення до рівня неба опорного кадру й об'єднання усіченим середнім, зваженим за кількістю зірок, знайдених у кожному кадрі. Жодних каліброваних чи вирівняних файлів на диску. Кольорові камери дебаєризуються (bilinear).</translation>
+    </message>
+    <message>
+      <source>Add Masters…</source>
+      <translation>Додати майстер-кадри…</translation>
+    </message>
+    <message>
+      <source>Add a master dark or dark frames…</source>
+      <translation>Додати Master Dark або кадри dark…</translation>
+    </message>
+    <message>
+      <source>Add a master flat or flat frames…</source>
+      <translation>Додати Master Flat або кадри flat…</translation>
+    </message>
+    <message>
+      <source>Added {0}.</source>
+      <translation>Додано: {0}.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.</source>
+      <translation>Авто обирає за розміром, далі за фільтром: як написано, написано інакше (O3 для OIII, H-alpha для Ha) або вказано в назві файлу flat без картки фільтра. Оберіть інший майстер-кадр або «Немає» лише для цієї групи.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.</source>
+      <translation>Авто обирає за розміром, далі за підсиленням і експозицією (dark) або фільтром (flat). Оберіть інший майстер-кадр або «Немає» лише для цієї групи.</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>Авто: нічого не підходить</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>Авто: {0}</translation>
+    </message>
+    <message>
+      <source>Choose a master dark or dark frames</source>
+      <translation>Обрати Master Dark або кадри dark</translation>
+    </message>
+    <message>
+      <source>Choose a master flat or flat frames</source>
+      <translation>Обрати Master Flat або кадри flat</translation>
+    </message>
+    <message>
+      <source>Choose master darks and flats, or their frames</source>
+      <translation>Обрати Master Dark і Flat або їхні кадри</translation>
+    </message>
+    <message>
+      <source>Clear Masters</source>
+      <translation>Очистити майстер-кадри</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>Dark</translation>
+    </message>
+    <message>
+      <source>Darks and flats ({0});;All Files (*)</source>
+      <translation>Dark і flat ({0});;Усі файли (*)</translation>
+    </message>
+    <message>
+      <source>Flat</source>
+      <translation>Flat</translation>
+    </message>
+    <message>
+      <source>Is {0} a master dark or a master flat?</source>
+      <translation>{0} — це Master Dark чи Master Flat?</translation>
+    </message>
+    <message>
+      <source>It has no IMAGETYP card, and its file name does not say.</source>
+      <translation>Він не має картки IMAGETYP, а назва файлу цього не каже.</translation>
+    </message>
+    <message>
+      <source>Left out {0}</source>
+      <translation>Пропущено: {0}</translation>
+    </message>
+    <message>
+      <source>Left out {0} bias / flat-dark file(s): Quick Stack does not use them.</source>
+      <translation>Пропущено файлів bias / flat-dark: {0}. Quick Stack їх не використовує.</translation>
+    </message>
+    <message>
+      <source>Left out {0} file(s): see below.</source>
+      <translation>Пропущено файлів: {0}. Див. нижче.</translation>
+    </message>
+    <message>
+      <source>Master Dark</source>
+      <translation>Master Dark</translation>
+    </message>
+    <message>
+      <source>Master Flat</source>
+      <translation>Master Flat</translation>
+    </message>
+    <message>
+      <source>Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.
+
+Single dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.
+
+Masters and frames dropped on this window, or added with the lights, are sorted out by themselves.</source>
+      <translation>Master Dark і Flat — скільки маєте: один flat на фільтр, dark для кожної експозиції. Кожна група в списку показує dark і flat, які вона використає, обрані за розміром, далі за фільтром (flat) або підсиленням і експозицією (dark). Змінюйте вибір будь-якої групи там.
+
+Окремі кадри dark і flat теж підходять: їх об'єднують у майстер-кадри в пам'яті (усічене середнє), коли вони вперше потрібні стеку, і на диск нічого не записується. Dark групуються за експозицією, підсиленням і розміром; flat — за фільтром, розміром і ніччю.
+
+Майстер-кадри й кадри, перетягнуті на це вікно або додані разом з лайтами, сортуються самі.</translation>
+    </message>
+    <message>
+      <source>Masters:</source>
+      <translation>Майстер-кадри:</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>Немає</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>Нічого не завантажено</translation>
+    </message>
+    <message>
+      <source>Nothing was added.</source>
+      <translation>Нічого не додано.</translation>
+    </message>
+    <message>
+      <source>Skip</source>
+      <translation>Пропустити</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>підсилення {0:g}</translation>
+    </message>
+    <message>
+      <source>made in memory from {0} frames</source>
+      <translation>створено в пам'яті з кадрів: {0}</translation>
+    </message>
+    <message>
+      <source>no filter</source>
+      <translation>без фільтра</translation>
+    </message>
+    <message>
+      <source>none (optional: drop or add master darks and flats, or their frames)</source>
+      <translation>немає (необов'язково: перетягніть або додайте Master Dark і Flat або їхні кадри)</translation>
+    </message>
+    <message>
+      <source>{0} (from its name)</source>
+      <translation>{0} (з назви)</translation>
+    </message>
+    <message>
+      <source>{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).</source>
+      <translation>Кадрів bias: {0}. Quick Stack не використовує bias (його містить Master Dark).</translation>
+    </message>
+    <message>
+      <source>{0} dark frame(s) to make master darks from</source>
+      <translation>кадрів dark для створення Master Dark: {0}</translation>
+    </message>
+    <message>
+      <source>{0} dark frames, {1:g} s</source>
+      <translation>Кадрів dark: {0}, {1:g} с</translation>
+    </message>
+    <message>
+      <source>{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses</source>
+      <translation>Dark: {0}  ·  Flat: {1}. Кожна група показує ті, що використовує</translation>
+    </message>
+    <message>
+      <source>{0} flat frame(s) to make master flats from</source>
+      <translation>кадрів flat для створення Master Flat: {0}</translation>
+    </message>
+    <message>
+      <source>{0} flat frames</source>
+      <translation>Кадрів flat: {0}</translation>
+    </message>
+    <message>
+      <source>{0} flat frames, {1}</source>
+      <translation>Кадрів flat: {0}, {1}</translation>
+    </message>
+    <message>
+      <source>{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).</source>
+      <translation>Кадрів flat-dark: {0}. Quick Stack їх не використовує (Master Flat уже має бути каліброваним).</translation>
+    </message>
+    <message>
+      <source>{0} frame(s)</source>
+      <translation>кадрів: {0}</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>Кадрів: {0}</translation>
+    </message>
+    <message>
+      <source>{0} master dark(s)</source>
+      <translation>Master Dark: {0}</translation>
+    </message>
+    <message>
+      <source>{0} master flat(s)</source>
+      <translation>Master Flat: {0}</translation>
+    </message>
+    <message>
+      <source>{0} x {1}: these frames are {2} x {3}</source>
+      <translation>{0} x {1}: ці кадри {2} x {3}</translation>
+    </message>
+    <message>
+      <source>{0} {1} flat frames, {2}</source>
+      <translation>Кадрів flat {1}: {0}, {2}</translation>
+    </message>
+    <message>
+      <source>… and {0} more</source>
+      <translation>… і ще {0}</translation>
+    </message>
+    <message>
+      <source>≈ {0} = {1}</source>
+      <translation>≈ {0} = {1}</translation>
+    </message>
+    <message>
+      <source>≈ {0}, from its file name</source>
+      <translation>≈ {0}, з назви файлу</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ підсилення {0:g}, кадри {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ це flat {0}</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ його експозицію не записано</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat</source>
+      <translation>⚠ немає flat {0}</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0} x {1}</source>
+      <translation>⚠ жоден не має розміру {0} x {1}</translation>
+    </message>
+    <message>
+      <source>⚠ the frames give no exposure: choose one</source>
+      <translation>⚠ кадри не вказують експозицію: оберіть один</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ dark {0:g} с, кадри {1:g} с</translation>
+    </message>
+    <message>
+      <source>⚠ {0} x {1}, not these frames' size: it will be left out</source>
+      <translation>⚠ {0} x {1} — не розмір цих кадрів: його буде пропущено</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ немає</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ ваш вибір</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ авто</translation>
+    </message>
+    <message>
+      <source>✓ the only flat</source>
+      <translation>✓ єдиний flat</translation>
+    </message>
   </context>
   <context>
     <name>RCAstro</name>
@@ -59183,6 +59677,62 @@ Thank you for being part of this journey. Clear skies.</source>
     <message>
       <source>— Franklin Marek (Seti Astro)</source>
       <translation>— Franklin Marek (Seti Astro)</translation>
+    </message>
+    <message>
+      <source>Blind Solve Index</source>
+      <translation>Індекс сліпого вирішення</translation>
+    </message>
+    <message>
+      <source>Build in the Gaia manager</source>
+      <translation>Побудувати в менеджері Gaia</translation>
+    </message>
+    <message>
+      <source>For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.</source>
+      <translation>Для сліпого вирішення: визначити, куди спрямоване зображення, без координат і без розміру поля. Індекс будується на цьому комп'ютері з ваших наборів Gaia, тож нічого не завантажується. Рекомендовані шари ({0}) займають близько {1} і охоплюють поля приблизно від 20′ до 25° — те, що дає більшість систем для зйомки.</translation>
+    </message>
+    <message>
+      <source>For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.</source>
+      <translation>Для вирішення координат; з них же будується індекс сліпого вирішення нижче. Рекомендовані набори займають близько 35 GB.</translation>
+    </message>
+    <message>
+      <source>Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.</source>
+      <translation>Папку індексу не знайдено: {0}. Підключіть цей диск або виберіть папку в менеджері Gaia.</translation>
+    </message>
+    <message>
+      <source>Layers built: {0}. {1} on disk.</source>
+      <translation>Побудовані шари: {0}. {1} на диску.</translation>
+    </message>
+    <message>
+      <source>Not built yet. It is built from the Bright (G &lt; 17) Astrometry set, so install that first.</source>
+      <translation>Ще не побудовано. Індекс будується з астрометричного набору Яскраві (G &lt; 17), тож спершу встановіть його.</translation>
+    </message>
+    <message>
+      <source>Not built yet. Recommended layers you can build now: {0}.</source>
+      <translation>Ще не побудовано. Рекомендовані шари, які можна побудувати зараз: {0}.</translation>
+    </message>
+    <message>
+      <source>Not built yet. Your Gaia sets have everything the recommended layers need.</source>
+      <translation>Ще не побудовано. Ваші набори Gaia містять усе, що потрібно рекомендованим шарам.</translation>
+    </message>
+    <message>
+      <source>Open in the Gaia manager</source>
+      <translation>Відкрити в менеджері Gaia</translation>
+    </message>
+    <message>
+      <source>Ready for blind solving.</source>
+      <translation>Готово до сліпого вирішення.</translation>
+    </message>
+    <message>
+      <source>Recommended layers still to build: {0}.</source>
+      <translation>Рекомендовані шари, які ще треба побудувати: {0}.</translation>
+    </message>
+    <message>
+      <source>These need the Bright (G &lt; 17) Astrometry set first: {0}.</source>
+      <translation>Для цих спершу потрібен астрометричний набір Яскраві (G &lt; 17): {0}.</translation>
+    </message>
+    <message>
+      <source>{0} of {1} recommended layers</source>
+      <translation>{0} з {1} рекомендованих шарів</translation>
     </message>
   </context>
   <context>
@@ -73903,6 +74453,22 @@ NOT recommended for narrowband or duoband data.</source>
       <source>White Balance — Preset</source>
       <translation>Баланс білого — Пресет</translation>
     </message>
+    <message>
+      <source>Auto σ (waterfall)</source>
+      <translation>Авто σ (каскад)</translation>
+    </message>
+    <message>
+      <source>Detection threshold (σ):</source>
+      <translation>Поріг виявлення (σ):</translation>
+    </message>
+    <message>
+      <source>Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.</source>
+      <translation>Сам вибирає поріг виявлення, як у діалозі «Баланс білого». Зніміть позначку, щоб використати поріг вище.</translation>
+    </message>
+    <message>
+      <source>Rotation strength:</source>
+      <translation>Сила повороту:</translation>
+    </message>
   </context>
   <context>
     <name>_WorkerCloseGuardMixin</name>
@@ -73944,6 +74510,96 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>Show the workflow as one plain list of steps per lane (Ctrl+G)</source>
       <translation>Показати робочий процес як простий список кроків для кожної доріжки (Ctrl+G)</translation>
+    </message>
+  </context>
+  <context>
+    <name>Essentials</name>
+    <message>
+      <source>ADBE</source>
+      <translation>ADBE</translation>
+    </message>
+    <message>
+      <source>Add Stars</source>
+      <translation>Додати зірки</translation>
+    </message>
+    <message>
+      <source>BG Neutral</source>
+      <translation>Нейтральний фон</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Crop</source>
+      <translation>Обрізка</translation>
+    </message>
+    <message>
+      <source>Curves</source>
+      <translation>Криві</translation>
+    </message>
+    <message>
+      <source>Essentials: Linear</source>
+      <translation>Основні: лінійні</translation>
+    </message>
+    <message>
+      <source>Essentials: Non-Linear</source>
+      <translation>Основні: нелінійні</translation>
+    </message>
+    <message>
+      <source>LRGB Combine</source>
+      <translation>Комбінувати LRGB</translation>
+    </message>
+    <message>
+      <source>NB→RGB Stars</source>
+      <translation>Зірки NB→RGB</translation>
+    </message>
+    <message>
+      <source>Palette Picker</source>
+      <translation>Palette Picker</translation>
+    </message>
+    <message>
+      <source>RC-Astro</source>
+      <translation>RC-Astro</translation>
+    </message>
+    <message>
+      <source>Remove Stars</source>
+      <translation>Видалити зірки</translation>
+    </message>
+    <message>
+      <source>Selective Color</source>
+      <translation>Вибірковий колір</translation>
+    </message>
+    <message>
+      <source>Star Stretch</source>
+      <translation>Star Stretch</translation>
+    </message>
+    <message>
+      <source>Stretch</source>
+      <translation>Stretch</translation>
+    </message>
+    <message>
+      <source>SyQon</source>
+      <translation>SyQon</translation>
+    </message>
+    <message>
+      <source>Texture</source>
+      <translation>Текстура</translation>
+    </message>
+    <message>
+      <source>White Balance</source>
+      <translation>Баланс білого</translation>
+    </message>
+  </context>
+  <context>
+    <name>EssentialsToolBar</name>
+    <message>
+      <source>Create Desktop Shortcut</source>
+      <translation>Створити ярлик на робочому столі</translation>
+    </message>
+    <message>
+      <source>Lock Toolbar Icons</source>
+      <translation>Заблокувати значки панелі інструментів</translation>
     </message>
   </context>
 </TS>

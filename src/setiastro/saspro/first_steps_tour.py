@@ -2,12 +2,15 @@
 # SetiAstro Suite Pro  ·  Franklin Marek  ·  www.setiastro.com
 """
 First Steps: a small card in the corner of the workspace that walks a new
-user through a first edit -- open an image, Statistical Stretch, Curves.
+user through a first edit -- open an image, crop off the stacking edges,
+Statistical Stretch, Curves.
 
 It moves on when the user actually does each step, not on a Next button:
-an image opening, then a "Statistical Stretch ..." and a "Curves" entry
-landing in an image's history. An image that already looks stretched skips
-straight to Curves. Step 1 also offers the bundled sample, a stacked linear
+an image opening, then a "Crop", a "Statistical Stretch ..." and a "Curves"
+entry landing in an image's history. Crop comes first because uncropped
+stacking edges are the most common reason a stretch, gradient removal or
+color calibration goes wrong; an image without them skips it with one click.
+An image that already looks stretched skips straight to Curves. Step 1 also offers the bundled sample, a stacked linear
 16-bit TIFF (images/sample_image.tif), for anyone without an image to hand.
 
 Starts once, after the welcome screen closes, on a brand-new install (no
@@ -40,17 +43,26 @@ def _t(text: str) -> str:
 
 
 # step key -> (counter, title, body, button label, button action)
-# Actions: "open" = File > Open, "stretch" / "curves" = open that tool,
+# Actions: "open" = File > Open, "crop" / "stretch" / "curves" = open that tool,
 # "skip_to_curves" = go to the Curves step, "tutorial" = the video.
 _STEPS = {
     "open": (
-        QT_TRANSLATE_NOOP("FirstStepsTour", "1 of 3"), QT_TRANSLATE_NOOP("FirstStepsTour", "Open an image"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "1 of 4"), QT_TRANSLATE_NOOP("FirstStepsTour", "Open an image"),
         QT_TRANSLATE_NOOP("FirstStepsTour", "Double-click the empty workspace, or use File → Open.\n\n"
         "Any image works. A stacked, unstretched FITS, XISF or TIFF is ideal. "
         "Only have subs? Stacking → Quick Stack turns them into one."),
         QT_TRANSLATE_NOOP("FirstStepsTour", "Open images…"), "open"),
+    "crop": (
+        QT_TRANSLATE_NOOP("FirstStepsTour", "2 of 4"), QT_TRANSLATE_NOOP("FirstStepsTour", "Crop off the stacking edges"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Where the subs didn't fully overlap, a stack has ragged edges: dark or "
+        "noisy borders, sometimes stripes. Crop them off first. Stretching, gradient "
+        "removal and color calibration all measure the whole image, and those edges "
+        "throw them off.\n\n"
+        "Crop is under Functions → Repair & Retouch → Crop. Drag the box inside the "
+        "clean area, then click Apply."),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Open Crop"), "crop"),
     "stretch": (
-        QT_TRANSLATE_NOOP("FirstStepsTour", "2 of 3"), QT_TRANSLATE_NOOP("FirstStepsTour", "Stretch it with Statistical Stretch"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "3 of 4"), QT_TRANSLATE_NOOP("FirstStepsTour", "Stretch it with Statistical Stretch"),
         QT_TRANSLATE_NOOP("FirstStepsTour", "Stacked data is linear: nearly everything sits close to black, which "
         "is why it looks dark. If Display-Stretch is on in the toolbar, the view "
         "is brightened but the pixels are not.\n\n"
@@ -58,12 +70,12 @@ _STEPS = {
         "Stretching & Tone → Statistical Stretch. Click Apply when it looks right."),
         QT_TRANSLATE_NOOP("FirstStepsTour", "Open Statistical Stretch"), "stretch"),
     "already_stretched": (
-        QT_TRANSLATE_NOOP("FirstStepsTour", "2 of 3"), QT_TRANSLATE_NOOP("FirstStepsTour", "This image is already stretched"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "3 of 4"), QT_TRANSLATE_NOOP("FirstStepsTour", "This image is already stretched"),
         QT_TRANSLATE_NOOP("FirstStepsTour", "Its brightness is already spread out, so Statistical Stretch, which is "
         "for linear data, isn't needed here. Go straight to Curves."),
         QT_TRANSLATE_NOOP("FirstStepsTour", "Continue to Curves"), "skip_to_curves"),
     "curves": (
-        QT_TRANSLATE_NOOP("FirstStepsTour", "3 of 3"), QT_TRANSLATE_NOOP("FirstStepsTour", "Add contrast with Curves"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "4 of 4"), QT_TRANSLATE_NOOP("FirstStepsTour", "Add contrast with Curves"),
         QT_TRANSLATE_NOOP("FirstStepsTour", "Curves is under Functions → Stretching & Tone → Curves Editor. "
         "Lift the middle of the curve a little to bring out faint detail, or "
         "make a gentle S-curve for contrast, then click Apply to Document."),
@@ -96,11 +108,11 @@ _STYLE = """
     background: transparent; border: none; color: #8888bb; font-size: 9pt;
 }
 #fst_close:hover, #fst_skip:hover { color: #ffffff; }
-#fst_sample {
+#fst_sample, #fst_link {
     background: transparent; border: none; color: #8fa0ff; font-size: 10pt;
     text-align: left; padding: 0px;
 }
-#fst_sample:hover { color: #ffffff; text-decoration: underline; }
+#fst_sample:hover, #fst_link:hover { color: #ffffff; text-decoration: underline; }
 #fst_primary {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3344bb, stop:1 #5566dd);
     color: #ffffff; border: none; border-radius: 7px; padding: 7px 14px;
@@ -115,6 +127,7 @@ _STYLE = """
 # step -> the action whose toolbar icon and menu path the spotlight marks
 _STEP_ACTION = {
     "open": "act_open",
+    "crop": "act_crop",
     "stretch": "act_stat_stretch",
     "already_stretched": "act_curves",
     "curves": "act_curves",
@@ -404,6 +417,11 @@ class FirstStepsTour(QFrame):
         self._sample.setToolTip(_t("A stacked, unstretched 16-bit image bundled with SASpro"))
         self._sample.clicked.connect(lambda: open_sample_image(self._mw))
         lay.addWidget(self._sample)
+        self._skip_crop = QPushButton(_t("No stacking edges? Skip this step"),
+                                      objectName="fst_link")
+        self._skip_crop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._skip_crop.clicked.connect(lambda: self._after_crop())
+        lay.addWidget(self._skip_crop)
         lay.addSpacing(6)
         row = QHBoxLayout()
         self._skip = QPushButton(_t("Skip tour"), objectName="fst_skip")
@@ -437,7 +455,7 @@ class FirstStepsTour(QFrame):
         except Exception:
             pass
         if active is not None and getattr(active, "image", None) is not None:
-            self._go("stretch" if looks_linear(active.image) else "already_stretched")
+            self._go("crop")
         else:
             self._go("open")
 
@@ -453,6 +471,7 @@ class FirstStepsTour(QFrame):
         self._primary.setText(_t(button))
         self._skip.setText(_t("Close") if step == "done" else _t("Skip tour"))
         self._sample.setVisible(step == "open" and sample_image_path() is not None)
+        self._skip_crop.setVisible(step == "crop")
         self._fit()
         act = getattr(self._mw, _STEP_ACTION[step], None) if step in _STEP_ACTION else None
         self._spot.point_at(act)
@@ -513,6 +532,8 @@ class FirstStepsTour(QFrame):
         action = _STEPS[self._step][4]
         if action == "open":
             self._trigger("act_open")
+        elif action == "crop":
+            self._trigger("act_crop")
         elif action == "stretch":
             self._trigger("act_stat_stretch")
         elif action == "curves":
@@ -541,7 +562,7 @@ class FirstStepsTour(QFrame):
     def _on_doc_added(self, doc):
         self._watch(doc)
         if self._step == "open" and getattr(doc, "image", None) is not None:
-            self._go("stretch" if looks_linear(doc.image) else "already_stretched")
+            self._go("crop")
 
     def _on_doc_removed(self, _doc=None):
         QTimer.singleShot(0, lambda: _alive(self) and self._back_to_open())
@@ -549,7 +570,7 @@ class FirstStepsTour(QFrame):
     def _back_to_open(self):
         """The last image was closed part way: nothing to stretch any more, and
         the start panel is back."""
-        if self._torn_down or self._step not in ("stretch", "already_stretched", "curves"):
+        if self._torn_down or self._step not in ("crop", "stretch", "already_stretched", "curves"):
             return
         try:
             docs = list(self._dm.all_documents() or [])
@@ -558,9 +579,25 @@ class FirstStepsTour(QFrame):
         if not any(getattr(d, "image", None) is not None for d in docs):
             self._go("open")
 
+    def _after_crop(self, doc=None):
+        """Cropped, or no edges to crop: Statistical Stretch next, or Curves if
+        the image is already stretched."""
+        if doc is None:
+            try:
+                doc = self._mw._active_doc()
+            except Exception:
+                doc = None
+        img = getattr(doc, "image", None)
+        self._go("already_stretched" if img is not None and not looks_linear(img) else "stretch")
+
     def _on_doc_changed(self):
-        name = _last_step_name(self.sender())
-        if self._step in ("stretch", "already_stretched", "open") and name.startswith("Statistical Stretch"):
+        doc = self.sender()
+        name = _last_step_name(doc)
+        if self._step == "crop" and name.startswith("Crop"):
+            self._after_crop(doc)
+        elif (self._step in ("crop", "stretch", "already_stretched", "open")
+                and name.startswith("Statistical Stretch")):
+            # Stretched without cropping: no point holding them on Crop.
             self._go("curves")
         elif self._step in ("stretch", "already_stretched", "curves") and name.startswith("Curves"):
             self._go("done")

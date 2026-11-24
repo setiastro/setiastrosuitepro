@@ -4659,6 +4659,36 @@ Install it with:  pip install pypdfium2</source>
       <source>▼  Advanced</source>
       <translation>▼  متقدم</translation>
     </message>
+    <message>
+      <source>All Tools: every toolbar and tool</source>
+      <translation>جميع الأدوات: كل أشرطة الأدوات وكل الأدوات</translation>
+    </message>
+    <message>
+      <source>Essentials</source>
+      <translation>الأساسيات</translation>
+    </message>
+    <message>
+      <source>Essentials: the tools of the beginner workflows, with their names.
+Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
+      <translation>الأساسيات: أدوات مسارات العمل للمبتدئين، مع أسمائها.
+تبقى كل أداة متاحة في القوائم وفي «البحث عن الأوامر» (Ctrl+/).</translation>
+    </message>
+    <message>
+      <source>Search Commands...</source>
+      <translation>البحث عن الأوامر...</translation>
+    </message>
+    <message>
+      <source>Show Names Under Essentials Icons</source>
+      <translation>إظهار الأسماء أسفل أيقونات الأساسيات</translation>
+    </message>
+    <message>
+      <source>Toolbar Mode</source>
+      <translation>وضع شريط الأدوات</translation>
+    </message>
+    <message>
+      <source>Start Panel: open images, process step by step, stacking and more</source>
+      <translation>لوحة البدء: فتح الصور، المعالجة خطوة بخطوة، التكديس والمزيد</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -11720,27 +11750,27 @@ Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to
     <name>DraggableToolBar</name>
     <message>
       <source>Create Desktop Shortcut</source>
-      <translation>Create Desktop Shortcut</translation>
+      <translation>إنشاء اختصار على سطح المكتب</translation>
     </message>
     <message>
       <source>Hide this icon</source>
-      <translation>Hide this icon</translation>
+      <translation>إخفاء هذه الأيقونة</translation>
     </message>
     <message>
       <source>Lock Toolbar Icons</source>
-      <translation>Lock Toolbar Icons</translation>
+      <translation>قفل أيقونات شريط الأدوات</translation>
     </message>
     <message>
       <source>Reset hidden icons</source>
-      <translation>Reset hidden icons</translation>
+      <translation>إعادة تعيين الأيقونات المخفية</translation>
     </message>
     <message>
       <source>Show hidden…</source>
-      <translation>Show hidden…</translation>
+      <translation>إظهار المخفية…</translation>
     </message>
     <message>
       <source>Tip: Alt+Drag to create</source>
-      <translation>Tip: Alt+Drag to create</translation>
+      <translation>تلميح: Alt+سحب للإنشاء</translation>
     </message>
     <message>
       <source>Reset to Factory Layout...</source>
@@ -29166,6 +29196,166 @@ Calibrate only the {2} new frame(s) and reuse the existing calibrated frames for
       <source>🖼 Open Saved Masters</source>
       <translation>🖼 فتح ملفات Master المحفوظة</translation>
     </message>
+    <message>
+      <source>Add a master dark…</source>
+      <translation>إضافة Master Dark…</translation>
+    </message>
+    <message>
+      <source>Add a master flat…</source>
+      <translation>إضافة Master Flat…</translation>
+    </message>
+    <message>
+      <source>Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.</source>
+      <translation>يختار التلقائي حسب المرشح والحجم، ثم Flat من الليلة نفسها (وإلا فمن أقرب ليلة) بالكسب نفسه. اختر Master آخر، أو لا شيء، لهذه المجموعة وهذه الجلسة فقط.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>يختار التلقائي حسب الحجم، ثم الكسب والتعرض ودرجة الحرارة. يعرض صف Dark في كل مجموعة Flat اختياره: اختر هناك Master آخر، أو لا شيء.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.</source>
+      <translation>يختار التلقائي حسب الحجم، ثم الكسب والتعرض ودرجة الحرارة. اختر Master آخر، أو لا شيء، لهذه المجموعة فقط.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>يختار التلقائي حسب الحجم، ثم الكسب والتعرض ودرجة الحرارة. اختر Master آخر، أو لا شيء، لهذه المجموعة فقط. انقر بزر الماوس الأيمن على الإطارات لمنحها ملفًا خاصًا بها.</translation>
+    </message>
+    <message>
+      <source>Auto-Select is off: pick a dark, or leave none</source>
+      <translation>الاختيار التلقائي متوقف: اختر Dark، أو اتركه بلا شيء</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>تلقائي: لا شيء مناسب</translation>
+    </message>
+    <message>
+      <source>Auto: off (Auto-Select is unchecked)</source>
+      <translation>تلقائي: متوقف (الاختيار التلقائي غير محدد)</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>تلقائي: {0}</translation>
+    </message>
+    <message>
+      <source>Auto: {0} masters, picked per frame</source>
+      <translation>تلقائي: {0} من ملفات Master، يُختار لكل إطار</translation>
+    </message>
+    <message>
+      <source>Choose Master Dark(s)</source>
+      <translation>اختيار Master Dark</translation>
+    </message>
+    <message>
+      <source>Choose Master Flat(s)</source>
+      <translation>اختيار Master Flat</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.</source>
+      <translation>تعرض كل مجموعة ملفي Master Dark وMaster Flat اللذين ستستخدمهما: غيّرهما هناك. انقر بزر الماوس الأيمن على الإطارات لمنحها ملفات خاصة بها، أو لتعيين مفاتيح الجلسة.</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark it will use: change it there. Right-click to set a session tag.</source>
+      <translation>تعرض كل مجموعة ملف Master Dark الذي ستستخدمه: غيّره هناك. انقر بزر الماوس الأيمن لتعيين وسم الجلسة.</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>لم يُحمَّل شيء</translation>
+    </message>
+    <message>
+      <source>Use the Group's Dark and Flat</source>
+      <translation>استخدام Dark وFlat المجموعة</translation>
+    </message>
+    <message>
+      <source>every session</source>
+      <translation>كل الجلسات</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>الكسب {0:g}</translation>
+    </message>
+    <message>
+      <source>{0} ({1})</source>
+      <translation>{0} ({1})</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>الإطارات: {0}</translation>
+    </message>
+    <message>
+      <source>{0}: these frames are {1}</source>
+      <translation>{0}: هذه الإطارات {1}</translation>
+    </message>
+    <message>
+      <source>≈ nearest night: {0} ({1} d away)</source>
+      <translation>≈ أقرب ليلة: {0} (على بعد {1} يوم)</translation>
+    </message>
+    <message>
+      <source>≈ {0} masters, picked per frame</source>
+      <translation>≈ {0} من ملفات Master، يُختار لكل إطار</translation>
+    </message>
+    <message>
+      <source>⚠ dark {0:+.0f} °C, frames {1:+.0f} °C</source>
+      <translation>⚠ Dark: {0:+.0f} °C، الإطارات: {1:+.0f} °C</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ الكسب {0:g}، الإطارات {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ إنه Flat الخاص بـ {0}</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ التعرض غير مسجل</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat at {1}</source>
+      <translation>⚠ لا يوجد Flat لـ {0} بحجم {1}</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0}</source>
+      <translation>⚠ لا شيء بحجم {0}</translation>
+    </message>
+    <message>
+      <source>⚠ none records its exposure: choose one</source>
+      <translation>⚠ لا يسجل أي منها التعرض: اختر واحدًا</translation>
+    </message>
+    <message>
+      <source>⚠ offset {0:g}, frames {1:g}</source>
+      <translation>⚠ الإزاحة {0:g}، الإطارات {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ Dark مدته {0:g} ث، الإطارات {1:g} ث</translation>
+    </message>
+    <message>
+      <source>⚠ {0}, these frames are {1}</source>
+      <translation>⚠ {0}، هذه الإطارات {1}</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ لا شيء</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ اختيارك</translation>
+    </message>
+    <message>
+      <source>✎ {0} frame(s) use their own</source>
+      <translation>✎ إطارات تستخدم ملفها الخاص: {0}</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ تلقائي</translation>
+    </message>
+    <message>
+      <source>✓ same night</source>
+      <translation>✓ الليلة نفسها</translation>
+    </message>
+    <message>
+      <source>✓ same session</source>
+      <translation>✓ الجلسة نفسها</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -41806,6 +41996,42 @@ Statistical Stretch changes the pixels. It is under Functions → Stretching &am
       <source>You've processed your first image</source>
       <translation>لقد عالجت صورتك الأولى</translation>
     </message>
+    <message>
+      <source>1 of 4</source>
+      <translation>1 من 4</translation>
+    </message>
+    <message>
+      <source>2 of 4</source>
+      <translation>2 من 4</translation>
+    </message>
+    <message>
+      <source>3 of 4</source>
+      <translation>3 من 4</translation>
+    </message>
+    <message>
+      <source>4 of 4</source>
+      <translation>4 من 4</translation>
+    </message>
+    <message>
+      <source>Crop off the stacking edges</source>
+      <translation>قصّ حواف التكديس</translation>
+    </message>
+    <message>
+      <source>No stacking edges? Skip this step</source>
+      <translation>لا توجد حواف تكديس؟ تخطَّ هذه الخطوة</translation>
+    </message>
+    <message>
+      <source>Open Crop</source>
+      <translation>فتح القص</translation>
+    </message>
+    <message>
+      <source>Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.
+
+Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside the clean area, then click Apply.</source>
+      <translation>حيث لا تتداخل الإطارات الفرعية تمامًا، تكون حواف التكديس غير منتظمة: حدود داكنة أو مشوشة، وأحيانًا خطوط. قصّها أولاً. فالتمديد وإزالة التدرج ومعايرة الألوان كلها تقيس الصورة كاملة، وتلك الحواف تفسد نتائجها.
+
+قص موجود في وظائف → الإصلاح &amp; التنقيح → قص. اسحب المربع داخل المنطقة النظيفة، ثم انقر تطبيق.</translation>
+    </message>
   </context>
   <context>
     <name>FitsBundleExportDialog</name>
@@ -53363,6 +53589,266 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, combined as a trimmed mean. No weighting or normalization, and no calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
       <translation>نظرة سريعة على مجموعة من الإطارات الفرعية: معايَرة إذا أعطيتها ملفات Master، ومحاذاة حسب الموضع والدوران والمقياس، ومدمجة كمتوسط مقتطع. بلا ترجيح أو تطبيع، ولا توجد ملفات معايَرة أو محاذاة على القرص. تخضع الكاميرات الملونة لـ Debayer (ثنائي الخطية).</translation>
     </message>
+    <message>
+      <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
+      <translation>نظرة سريعة على مجموعة من الإطارات الفرعية: معايَرة إذا أعطيتها ملفات Master، ومحاذاة حسب الموضع والدوران والمقياس، ومُعادة إلى مستوى سماء المرجع، ومدمجة كمتوسط مقتطع مرجَّح بعدد النجوم الموجودة في كل إطار. لا توجد ملفات معايَرة أو محاذاة على القرص. تخضع الكاميرات الملونة لـ Debayer (ثنائي الخطية).</translation>
+    </message>
+    <message>
+      <source>Add Masters…</source>
+      <translation>إضافة ملفات Master…</translation>
+    </message>
+    <message>
+      <source>Add a master dark or dark frames…</source>
+      <translation>إضافة Master Dark أو إطارات Dark…</translation>
+    </message>
+    <message>
+      <source>Add a master flat or flat frames…</source>
+      <translation>إضافة Master Flat أو إطارات Flat…</translation>
+    </message>
+    <message>
+      <source>Added {0}.</source>
+      <translation>تمت الإضافة: {0}.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.</source>
+      <translation>يختار التلقائي حسب الحجم، ثم المرشح: كما هو مكتوب، أو مكتوبًا بطريقة أخرى (O3 لـ OIII، وH-alpha لـ Ha)، أو مذكورًا في اسم ملف Flat ليست فيه بطاقة مرشح. اختر Master آخر، أو لا شيء، لهذه المجموعة فقط.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.</source>
+      <translation>يختار التلقائي حسب الحجم، ثم الكسب والتعرض (Dark) أو المرشح (Flat). اختر Master آخر، أو لا شيء، لهذه المجموعة فقط.</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>تلقائي: لا شيء مناسب</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>تلقائي: {0}</translation>
+    </message>
+    <message>
+      <source>Choose a master dark or dark frames</source>
+      <translation>اختيار Master Dark أو إطارات Dark</translation>
+    </message>
+    <message>
+      <source>Choose a master flat or flat frames</source>
+      <translation>اختيار Master Flat أو إطارات Flat</translation>
+    </message>
+    <message>
+      <source>Choose master darks and flats, or their frames</source>
+      <translation>اختيار ملفات Master Dark وFlat، أو إطاراتها</translation>
+    </message>
+    <message>
+      <source>Clear Masters</source>
+      <translation>مسح ملفات Master</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>Dark</translation>
+    </message>
+    <message>
+      <source>Darks and flats ({0});;All Files (*)</source>
+      <translation>Dark وFlat ({0});;كل الملفات (*)</translation>
+    </message>
+    <message>
+      <source>Flat</source>
+      <translation>Flat</translation>
+    </message>
+    <message>
+      <source>Is {0} a master dark or a master flat?</source>
+      <translation>هل {0} ملف Master Dark أم Master Flat؟</translation>
+    </message>
+    <message>
+      <source>It has no IMAGETYP card, and its file name does not say.</source>
+      <translation>ليست فيه بطاقة IMAGETYP، واسم ملفه لا يوضح ذلك.</translation>
+    </message>
+    <message>
+      <source>Left out {0}</source>
+      <translation>تم استبعاد {0}</translation>
+    </message>
+    <message>
+      <source>Left out {0} bias / flat-dark file(s): Quick Stack does not use them.</source>
+      <translation>تم استبعاد {0} من ملفات Bias / Flat-Dark: لا يستخدمها Quick Stack.</translation>
+    </message>
+    <message>
+      <source>Left out {0} file(s): see below.</source>
+      <translation>تم استبعاد {0} من الملفات: انظر أدناه.</translation>
+    </message>
+    <message>
+      <source>Master Dark</source>
+      <translation>Master Dark</translation>
+    </message>
+    <message>
+      <source>Master Flat</source>
+      <translation>Master Flat</translation>
+    </message>
+    <message>
+      <source>Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.
+
+Single dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.
+
+Masters and frames dropped on this window, or added with the lights, are sorted out by themselves.</source>
+      <translation>ملفات Master Dark وFlat، بقدر ما لديك: Flat واحد لكل مرشح، وDark لكل تعرض. تعرض كل مجموعة في القائمة ملفي Dark وFlat اللذين ستستخدمهما، ويُختاران حسب الحجم، ثم المرشح (Flat) أو الكسب والتعرض (Dark). غيّر اختيار أي مجموعة هناك.
+
+تصلح أيضًا إطارات Dark وFlat المفردة: تُدمج في ملفات Master في الذاكرة (متوسط مقتطع) في أول مرة يحتاجها فيها تكديس، ولا يُكتب شيء على القرص. تُجمَّع إطارات Dark حسب التعرض والكسب والحجم، وإطارات Flat حسب المرشح والحجم والليلة.
+
+ملفات Master والإطارات التي تُفلت على هذه النافذة، أو تُضاف مع إطارات Light، تُفرز تلقائيًا.</translation>
+    </message>
+    <message>
+      <source>Masters:</source>
+      <translation>ملفات Master:</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>لا شيء</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>لم يُحمَّل شيء</translation>
+    </message>
+    <message>
+      <source>Nothing was added.</source>
+      <translation>لم تتم إضافة شيء.</translation>
+    </message>
+    <message>
+      <source>Skip</source>
+      <translation>تخطٍّ</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>الكسب {0:g}</translation>
+    </message>
+    <message>
+      <source>made in memory from {0} frames</source>
+      <translation>أُنشئ في الذاكرة من {0} إطار</translation>
+    </message>
+    <message>
+      <source>no filter</source>
+      <translation>بلا مرشح</translation>
+    </message>
+    <message>
+      <source>none (optional: drop or add master darks and flats, or their frames)</source>
+      <translation>لا شيء (اختياري: أفلت أو أضف ملفات Master Dark وFlat، أو إطاراتها)</translation>
+    </message>
+    <message>
+      <source>{0} (from its name)</source>
+      <translation>{0} (من اسمه)</translation>
+    </message>
+    <message>
+      <source>{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).</source>
+      <translation>{0} من إطارات Bias: لا يستخدم Quick Stack إطارات Bias (يتضمنها Master Dark).</translation>
+    </message>
+    <message>
+      <source>{0} dark frame(s) to make master darks from</source>
+      <translation>{0} من إطارات Dark لإنشاء ملفات Master Dark</translation>
+    </message>
+    <message>
+      <source>{0} dark frames, {1:g} s</source>
+      <translation>{0} من إطارات Dark، {1:g} ث</translation>
+    </message>
+    <message>
+      <source>{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses</source>
+      <translation>{0} Dark  ·  {1} Flat: تعرض كل مجموعة ما تستخدمه</translation>
+    </message>
+    <message>
+      <source>{0} flat frame(s) to make master flats from</source>
+      <translation>{0} من إطارات Flat لإنشاء ملفات Master Flat</translation>
+    </message>
+    <message>
+      <source>{0} flat frames</source>
+      <translation>{0} من إطارات Flat</translation>
+    </message>
+    <message>
+      <source>{0} flat frames, {1}</source>
+      <translation>{0} من إطارات Flat، {1}</translation>
+    </message>
+    <message>
+      <source>{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).</source>
+      <translation>{0} من إطارات Flat-Dark: لا يستخدمها Quick Stack (يُفترض أن يكون Master Flat معايَرًا بالفعل).</translation>
+    </message>
+    <message>
+      <source>{0} frame(s)</source>
+      <translation>{0} إطار</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>الإطارات: {0}</translation>
+    </message>
+    <message>
+      <source>{0} master dark(s)</source>
+      <translation>{0} Master Dark</translation>
+    </message>
+    <message>
+      <source>{0} master flat(s)</source>
+      <translation>{0} Master Flat</translation>
+    </message>
+    <message>
+      <source>{0} x {1}: these frames are {2} x {3}</source>
+      <translation>{0} x {1}: هذه الإطارات {2} x {3}</translation>
+    </message>
+    <message>
+      <source>{0} {1} flat frames, {2}</source>
+      <translation>{0} من إطارات Flat لـ {1}، {2}</translation>
+    </message>
+    <message>
+      <source>… and {0} more</source>
+      <translation>… و{0} أخرى</translation>
+    </message>
+    <message>
+      <source>≈ {0} = {1}</source>
+      <translation>≈ {0} = {1}</translation>
+    </message>
+    <message>
+      <source>≈ {0}, from its file name</source>
+      <translation>≈ {0}، من اسم ملفه</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ الكسب {0:g}، الإطارات {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ إنه Flat الخاص بـ {0}</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ التعرض غير مسجل</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat</source>
+      <translation>⚠ لا يوجد Flat لـ {0}</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0} x {1}</source>
+      <translation>⚠ لا شيء بحجم {0} x {1}</translation>
+    </message>
+    <message>
+      <source>⚠ the frames give no exposure: choose one</source>
+      <translation>⚠ الإطارات لا تذكر التعرض: اختر واحدًا</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ Dark مدته {0:g} ث، الإطارات {1:g} ث</translation>
+    </message>
+    <message>
+      <source>⚠ {0} x {1}, not these frames' size: it will be left out</source>
+      <translation>⚠ {0} x {1}، ليس حجم هذه الإطارات: سيُستبعد</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ لا شيء</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ اختيارك</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ تلقائي</translation>
+    </message>
+    <message>
+      <source>✓ the only flat</source>
+      <translation>✓ ملف Flat الوحيد</translation>
+    </message>
   </context>
   <context>
     <name>RCAstro</name>
@@ -59152,6 +59638,62 @@ Thank you for being part of this journey. Clear skies.</source>
     <message>
       <source>— Franklin Marek (Seti Astro)</source>
       <translation>— Franklin Marek (Seti Astro)</translation>
+    </message>
+    <message>
+      <source>Blind Solve Index</source>
+      <translation>فهرس الحل الأعمى</translation>
+    </message>
+    <message>
+      <source>Build in the Gaia manager</source>
+      <translation>البناء في مدير Gaia</translation>
+    </message>
+    <message>
+      <source>For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.</source>
+      <translation>للحل الأعمى: معرفة إلى أين تتجه الصورة دون إحداثيات ودون حجم المجال. يُبنى على هذا الحاسوب من مجموعات Gaia لديك، فلا يُنزَّل شيء. تشغل الطبقات الموصى بها ({0}) نحو {1} وتغطي مجالات من نحو 20′ إلى 25°، وهو ما تنتجه معظم أجهزة التصوير.</translation>
+    </message>
+    <message>
+      <source>For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.</source>
+      <translation>لحل اللوحة، ومنها يُبنى فهرس الحل الأعمى أدناه. المجموعات الموصى بها نحو 35 GB.</translation>
+    </message>
+    <message>
+      <source>Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.</source>
+      <translation>مجلد الفهرس غير موجود: {0}. صِل ذلك القرص، أو اختر المجلد في مدير Gaia.</translation>
+    </message>
+    <message>
+      <source>Layers built: {0}. {1} on disk.</source>
+      <translation>الطبقات المبنية: {0}. {1} على القرص.</translation>
+    </message>
+    <message>
+      <source>Not built yet. It is built from the Bright (G &lt; 17) Astrometry set, so install that first.</source>
+      <translation>لم يُبنَ بعد. يُبنى من مجموعة القياس الفلكي ساطع (G &lt; 17)، فثبّتها أولاً.</translation>
+    </message>
+    <message>
+      <source>Not built yet. Recommended layers you can build now: {0}.</source>
+      <translation>لم يُبنَ بعد. الطبقات الموصى بها التي يمكنك بناؤها الآن: {0}.</translation>
+    </message>
+    <message>
+      <source>Not built yet. Your Gaia sets have everything the recommended layers need.</source>
+      <translation>لم يُبنَ بعد. تحتوي مجموعات Gaia لديك على كل ما تحتاجه الطبقات الموصى بها.</translation>
+    </message>
+    <message>
+      <source>Open in the Gaia manager</source>
+      <translation>فتح في مدير Gaia</translation>
+    </message>
+    <message>
+      <source>Ready for blind solving.</source>
+      <translation>جاهز للحل الأعمى.</translation>
+    </message>
+    <message>
+      <source>Recommended layers still to build: {0}.</source>
+      <translation>طبقات موصى بها لم تُبنَ بعد: {0}.</translation>
+    </message>
+    <message>
+      <source>These need the Bright (G &lt; 17) Astrometry set first: {0}.</source>
+      <translation>تحتاج هذه أولاً إلى مجموعة القياس الفلكي ساطع (G &lt; 17): {0}.</translation>
+    </message>
+    <message>
+      <source>{0} of {1} recommended layers</source>
+      <translation>{0} من {1} طبقات موصى بها</translation>
     </message>
   </context>
   <context>
@@ -73716,6 +74258,22 @@ NOT recommended for narrowband or duoband data.</source>
       <source>White Balance — Preset</source>
       <translation>توازن اللون الأبيض — إعداد مسبق</translation>
     </message>
+    <message>
+      <source>Auto σ (waterfall)</source>
+      <translation>σ تلقائية (تدريجي)</translation>
+    </message>
+    <message>
+      <source>Detection threshold (σ):</source>
+      <translation>عتبة الكشف (σ):</translation>
+    </message>
+    <message>
+      <source>Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.</source>
+      <translation>يختار عتبة الكشف تلقائيًا، كما في نافذة توازن اللون الأبيض. ألغِ التحديد لاستخدام العتبة أعلاه.</translation>
+    </message>
+    <message>
+      <source>Rotation strength:</source>
+      <translation>قوة التدوير:</translation>
+    </message>
   </context>
   <context>
     <name>_WorkerCloseGuardMixin</name>
@@ -73757,6 +74315,96 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>Show the workflow as one plain list of steps per lane (Ctrl+G)</source>
       <translation>عرض سير العمل كقائمة بسيطة واحدة من الخطوات لكل مسار (Ctrl+G)</translation>
+    </message>
+  </context>
+  <context>
+    <name>Essentials</name>
+    <message>
+      <source>ADBE</source>
+      <translation>ADBE</translation>
+    </message>
+    <message>
+      <source>Add Stars</source>
+      <translation>إضافة نجوم</translation>
+    </message>
+    <message>
+      <source>BG Neutral</source>
+      <translation>تحييد الخلفية</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Crop</source>
+      <translation>قص</translation>
+    </message>
+    <message>
+      <source>Curves</source>
+      <translation>المنحنيات</translation>
+    </message>
+    <message>
+      <source>Essentials: Linear</source>
+      <translation>الأساسيات: خطي</translation>
+    </message>
+    <message>
+      <source>Essentials: Non-Linear</source>
+      <translation>الأساسيات: غير خطي</translation>
+    </message>
+    <message>
+      <source>LRGB Combine</source>
+      <translation>دمج LRGB</translation>
+    </message>
+    <message>
+      <source>NB→RGB Stars</source>
+      <translation>نجوم NB→RGB</translation>
+    </message>
+    <message>
+      <source>Palette Picker</source>
+      <translation>Palette Picker</translation>
+    </message>
+    <message>
+      <source>RC-Astro</source>
+      <translation>RC-Astro</translation>
+    </message>
+    <message>
+      <source>Remove Stars</source>
+      <translation>إزالة النجوم</translation>
+    </message>
+    <message>
+      <source>Selective Color</source>
+      <translation>الألوان الانتقائية</translation>
+    </message>
+    <message>
+      <source>Star Stretch</source>
+      <translation>Star Stretch</translation>
+    </message>
+    <message>
+      <source>Stretch</source>
+      <translation>Stretch</translation>
+    </message>
+    <message>
+      <source>SyQon</source>
+      <translation>SyQon</translation>
+    </message>
+    <message>
+      <source>Texture</source>
+      <translation>الملمس</translation>
+    </message>
+    <message>
+      <source>White Balance</source>
+      <translation>توازن اللون الأبيض</translation>
+    </message>
+  </context>
+  <context>
+    <name>EssentialsToolBar</name>
+    <message>
+      <source>Create Desktop Shortcut</source>
+      <translation>إنشاء اختصار على سطح المكتب</translation>
+    </message>
+    <message>
+      <source>Lock Toolbar Icons</source>
+      <translation>قفل أيقونات شريط الأدوات</translation>
     </message>
   </context>
 </TS>

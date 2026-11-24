@@ -679,6 +679,7 @@ class NBExtractDialog(SFCCDialog):
         Step 3: per-pixel NNLS channel extraction with Q-blended regularisation
         Two new output documents (line1, line2)
     """
+    _PLATE_CHECK_TOOL = "NBExtract"     # in SFCC's plate-solution check
 
     def __init__(self, doc_manager, sasp_data_path: str, parent=None):
         super().__init__(doc_manager, sasp_data_path, parent)

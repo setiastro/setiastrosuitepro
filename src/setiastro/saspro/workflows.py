@@ -502,6 +502,10 @@ def _discover_toolbar_categories(main) -> Dict[str, List[WorkflowActionInfo]]:
 
         if tb_name == "Hidden" or tb.objectName() == "Hidden":
             continue
+        # Essentials repeats tools of the full toolbars; their category stays
+        # the full toolbar's (Functions, Tools...), never "Essentials".
+        if getattr(tb, "is_essentials", False):
+            continue
 
         items: List[WorkflowActionInfo] = []
 

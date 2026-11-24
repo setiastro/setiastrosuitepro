@@ -4661,6 +4661,36 @@ Isakinishe kwa:  pip install pypdfium2</translation>
       <source>▼  Advanced</source>
       <translation>▼  Hali ya Juu</translation>
     </message>
+    <message>
+      <source>All Tools: every toolbar and tool</source>
+      <translation>Zana Zote: kila upau wa zana na kila zana</translation>
+    </message>
+    <message>
+      <source>Essentials</source>
+      <translation>Zana Muhimu</translation>
+    </message>
+    <message>
+      <source>Essentials: the tools of the beginner workflows, with their names.
+Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
+      <translation>Zana Muhimu: zana za mitiririko ya kazi ya wanaoanza, pamoja na majina yake.
+Kila zana bado iko kwenye menyu na kwenye Tafuta Amri (Ctrl+/).</translation>
+    </message>
+    <message>
+      <source>Search Commands...</source>
+      <translation>Tafuta Amri...</translation>
+    </message>
+    <message>
+      <source>Show Names Under Essentials Icons</source>
+      <translation>Onyesha Majina Chini ya Aikoni za Zana Muhimu</translation>
+    </message>
+    <message>
+      <source>Toolbar Mode</source>
+      <translation>Hali ya Upau wa Zana</translation>
+    </message>
+    <message>
+      <source>Start Panel: open images, process step by step, stacking and more</source>
+      <translation>Paneli ya Kuanza: fungua picha, chakata hatua kwa hatua, stacking na zaidi</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -11760,27 +11790,27 @@ Fungua RAF moja kwa moja, au weka RAW_PATH kwenye kichwa, au weka RAW kando ya f
     <name>DraggableToolBar</name>
     <message>
       <source>Create Desktop Shortcut</source>
-      <translation>Create Desktop Shortcut</translation>
+      <translation>Unda Njia ya Mkato ya Eneo-kazi</translation>
     </message>
     <message>
       <source>Hide this icon</source>
-      <translation>Hide this icon</translation>
+      <translation>Ficha aikoni hii</translation>
     </message>
     <message>
       <source>Lock Toolbar Icons</source>
-      <translation>Lock Toolbar Icons</translation>
+      <translation>Funga Aikoni za Upau wa Zana</translation>
     </message>
     <message>
       <source>Reset hidden icons</source>
-      <translation>Reset hidden icons</translation>
+      <translation>Weka upya aikoni zilizofichwa</translation>
     </message>
     <message>
       <source>Show hidden…</source>
-      <translation>Show hidden…</translation>
+      <translation>Onyesha zilizofichwa…</translation>
     </message>
     <message>
       <source>Tip: Alt+Drag to create</source>
-      <translation>Tip: Alt+Drag to create</translation>
+      <translation>Kidokezo: Alt+Buruta ili kuunda</translation>
     </message>
     <message>
       <source>Reset to Factory Layout...</source>
@@ -28234,6 +28264,166 @@ Calibrate fremu {2} mpya pekee na utumie tena fremu zilizocalibratiwa zilizopo k
       <source>🖼 Open Saved Masters</source>
       <translation>🖼 Fungua Masters Zilizohifadhiwa</translation>
     </message>
+    <message>
+      <source>Add a master dark…</source>
+      <translation>Ongeza master dark…</translation>
+    </message>
+    <message>
+      <source>Add a master flat…</source>
+      <translation>Ongeza master flat…</translation>
+    </message>
+    <message>
+      <source>Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.</source>
+      <translation>Otomatiki huchagua kwa kichujio na ukubwa, kisha flat ya usiku uleule (au usiku ulio karibu zaidi) yenye gain inayolingana. Chagua master nyingine, au Hakuna, kwa kikundi hiki na session hii tu.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>Otomatiki huchagua kwa ukubwa, kisha gain, mfiduo na joto. Safu ya Dark ya kila kikundi cha flat inaonyesha chaguo lake: chagua hapo master nyingine, au Hakuna.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.</source>
+      <translation>Otomatiki huchagua kwa ukubwa, kisha gain, mfiduo na joto. Chagua master nyingine, au Hakuna, kwa kikundi hiki tu.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>Otomatiki huchagua kwa ukubwa, kisha gain, mfiduo na joto. Chagua master nyingine, au Hakuna, kwa kikundi hiki tu. Bofya kulia fremu ili kuzipa zao wenyewe.</translation>
+    </message>
+    <message>
+      <source>Auto-Select is off: pick a dark, or leave none</source>
+      <translation>Uchaguzi wa moja kwa moja umezimwa: chagua dark, au acha bila</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>Otomatiki: hakuna inayofaa</translation>
+    </message>
+    <message>
+      <source>Auto: off (Auto-Select is unchecked)</source>
+      <translation>Otomatiki: imezimwa (uchaguzi wa moja kwa moja haujachaguliwa)</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>Otomatiki: {0}</translation>
+    </message>
+    <message>
+      <source>Auto: {0} masters, picked per frame</source>
+      <translation>Otomatiki: master {0}, zimechaguliwa kwa kila fremu</translation>
+    </message>
+    <message>
+      <source>Choose Master Dark(s)</source>
+      <translation>Chagua Master Dark</translation>
+    </message>
+    <message>
+      <source>Choose Master Flat(s)</source>
+      <translation>Chagua Master Flat</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.</source>
+      <translation>Kila kikundi kinaonyesha master dark na flat kitakachotumia: zibadilishe hapo. Bofya kulia fremu ili kuzipa zao wenyewe, au kupanga funguo za session.</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark it will use: change it there. Right-click to set a session tag.</source>
+      <translation>Kila kikundi kinaonyesha master dark kitakachotumia: ibadilishe hapo. Bofya kulia ili kuweka lebo ya session.</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>Hakuna iliyopakiwa</translation>
+    </message>
+    <message>
+      <source>Use the Group's Dark and Flat</source>
+      <translation>Tumia Dark na Flat ya Kikundi</translation>
+    </message>
+    <message>
+      <source>every session</source>
+      <translation>kila session</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>gain {0:g}</translation>
+    </message>
+    <message>
+      <source>{0} ({1})</source>
+      <translation>{0} ({1})</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>fremu {0}</translation>
+    </message>
+    <message>
+      <source>{0}: these frames are {1}</source>
+      <translation>{0}: fremu hizi ni {1}</translation>
+    </message>
+    <message>
+      <source>≈ nearest night: {0} ({1} d away)</source>
+      <translation>≈ usiku ulio karibu zaidi: {0} (siku {1} mbali)</translation>
+    </message>
+    <message>
+      <source>≈ {0} masters, picked per frame</source>
+      <translation>≈ master {0}, zimechaguliwa kwa kila fremu</translation>
+    </message>
+    <message>
+      <source>⚠ dark {0:+.0f} °C, frames {1:+.0f} °C</source>
+      <translation>⚠ dark {0:+.0f} °C, fremu {1:+.0f} °C</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ gain {0:g}, fremu {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ ni flat ya {0}</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ mfiduo wake haujarekodiwa</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat at {1}</source>
+      <translation>⚠ hakuna flat ya {0} kwa {1}</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0}</source>
+      <translation>⚠ hakuna iliyo {0}</translation>
+    </message>
+    <message>
+      <source>⚠ none records its exposure: choose one</source>
+      <translation>⚠ hakuna inayorekodi mfiduo wake: chagua moja</translation>
+    </message>
+    <message>
+      <source>⚠ offset {0:g}, frames {1:g}</source>
+      <translation>⚠ offset {0:g}, fremu {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ dark ya {0:g} s, fremu za {1:g} s</translation>
+    </message>
+    <message>
+      <source>⚠ {0}, these frames are {1}</source>
+      <translation>⚠ {0}, fremu hizi ni {1}</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ hakuna</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ chaguo lako</translation>
+    </message>
+    <message>
+      <source>✎ {0} frame(s) use their own</source>
+      <translation>✎ fremu {0} zinatumia zao wenyewe</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ otomatiki</translation>
+    </message>
+    <message>
+      <source>✓ same night</source>
+      <translation>✓ usiku uleule</translation>
+    </message>
+    <message>
+      <source>✓ same session</source>
+      <translation>✓ session ileile</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -40970,6 +41160,42 @@ Statistical Stretch hubadilisha pixel. Iko chini ya Kazi → Stretch &amp; Toni 
       <source>You've processed your first image</source>
       <translation>Umechakata picha yako ya kwanza</translation>
     </message>
+    <message>
+      <source>1 of 4</source>
+      <translation>1 kati ya 4</translation>
+    </message>
+    <message>
+      <source>2 of 4</source>
+      <translation>2 kati ya 4</translation>
+    </message>
+    <message>
+      <source>3 of 4</source>
+      <translation>3 kati ya 4</translation>
+    </message>
+    <message>
+      <source>4 of 4</source>
+      <translation>4 kati ya 4</translation>
+    </message>
+    <message>
+      <source>Crop off the stacking edges</source>
+      <translation>Kata kingo za stacking</translation>
+    </message>
+    <message>
+      <source>No stacking edges? Skip this step</source>
+      <translation>Hakuna kingo za stacking? Ruka hatua hii</translation>
+    </message>
+    <message>
+      <source>Open Crop</source>
+      <translation>Fungua Kata</translation>
+    </message>
+    <message>
+      <source>Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.
+
+Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside the clean area, then click Apply.</source>
+      <translation>Pale ambapo picha ndogo hazikupishana kikamilifu, stack huwa na kingo zisizo sawa: kingo nyeusi au zenye kelele, wakati mwingine mistari. Zikate kwanza. Kunyoosha, kuondoa gradient na kusawazisha rangi zote hupima picha nzima, na kingo hizo huziharibu.
+
+Kata iko chini ya Kazi (Functions) → Ukarabati &amp; Urekebishaji → Kata. Buruta kisanduku ndani ya eneo safi, kisha bofya Tumia.</translation>
+    </message>
   </context>
   <context>
     <name>FitsBundleExportDialog</name>
@@ -52601,6 +52827,266 @@ fremu {1}</translation>
       <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, combined as a trimmed mean. No weighting or normalization, and no calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
       <translation>Mtazamo wa haraka wa seti ya subs: zinafanyiwa calibration ukiipa masters, zinapangiliwa kwa nafasi, mzunguko na scale, zinaunganishwa kama trimmed mean. Hakuna uzani wala normalization, na hakuna faili zilizofanyiwa calibration au kupangiliwa kwenye diski. Kamera za rangi hufanyiwa debayer (bilinear).</translation>
     </message>
+    <message>
+      <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
+      <translation>Mtazamo wa haraka wa seti ya subs: zinafanyiwa calibration ukiipa masters, zinapangiliwa kwa nafasi, mzunguko na scale, zinalinganishwa na kiwango cha anga cha marejeleo, na zinaunganishwa kama trimmed mean iliyopimwa kwa nyota zilizopatikana katika kila fremu. Hakuna faili zilizofanyiwa calibration au kupangiliwa kwenye diski. Kamera za rangi hufanyiwa debayer (bilinear).</translation>
+    </message>
+    <message>
+      <source>Add Masters…</source>
+      <translation>Ongeza Masters…</translation>
+    </message>
+    <message>
+      <source>Add a master dark or dark frames…</source>
+      <translation>Ongeza master dark au fremu za dark…</translation>
+    </message>
+    <message>
+      <source>Add a master flat or flat frames…</source>
+      <translation>Ongeza master flat au fremu za flat…</translation>
+    </message>
+    <message>
+      <source>Added {0}.</source>
+      <translation>Imeongezwa: {0}.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.</source>
+      <translation>Otomatiki huchagua kwa ukubwa, kisha kichujio: kama kilivyoandikwa, kilivyoandikwa kwa namna nyingine (O3 kwa OIII, H-alpha kwa Ha), au kilichotajwa katika jina la faili la flat isiyo na kadi ya kichujio. Chagua master nyingine, au Hakuna, kwa kikundi hiki tu.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.</source>
+      <translation>Otomatiki huchagua kwa ukubwa, kisha gain na mfiduo (darks) au kichujio (flats). Chagua master nyingine, au Hakuna, kwa kikundi hiki tu.</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>Otomatiki: hakuna inayofaa</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>Otomatiki: {0}</translation>
+    </message>
+    <message>
+      <source>Choose a master dark or dark frames</source>
+      <translation>Chagua master dark au fremu za dark</translation>
+    </message>
+    <message>
+      <source>Choose a master flat or flat frames</source>
+      <translation>Chagua master flat au fremu za flat</translation>
+    </message>
+    <message>
+      <source>Choose master darks and flats, or their frames</source>
+      <translation>Chagua master darks na flats, au fremu zao</translation>
+    </message>
+    <message>
+      <source>Clear Masters</source>
+      <translation>Futa Masters</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>Dark</translation>
+    </message>
+    <message>
+      <source>Darks and flats ({0});;All Files (*)</source>
+      <translation>Darks na flats ({0});;Faili Zote (*)</translation>
+    </message>
+    <message>
+      <source>Flat</source>
+      <translation>Flat</translation>
+    </message>
+    <message>
+      <source>Is {0} a master dark or a master flat?</source>
+      <translation>Je, {0} ni master dark au master flat?</translation>
+    </message>
+    <message>
+      <source>It has no IMAGETYP card, and its file name does not say.</source>
+      <translation>Haina kadi ya IMAGETYP, na jina la faili lake halisemi.</translation>
+    </message>
+    <message>
+      <source>Left out {0}</source>
+      <translation>Zimeachwa: {0}</translation>
+    </message>
+    <message>
+      <source>Left out {0} bias / flat-dark file(s): Quick Stack does not use them.</source>
+      <translation>Faili {0} za bias / flat-dark zimeachwa: Quick Stack haizitumii.</translation>
+    </message>
+    <message>
+      <source>Left out {0} file(s): see below.</source>
+      <translation>Faili {0} zimeachwa: tazama hapa chini.</translation>
+    </message>
+    <message>
+      <source>Master Dark</source>
+      <translation>Master Dark</translation>
+    </message>
+    <message>
+      <source>Master Flat</source>
+      <translation>Master Flat</translation>
+    </message>
+    <message>
+      <source>Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.
+
+Single dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.
+
+Masters and frames dropped on this window, or added with the lights, are sorted out by themselves.</source>
+      <translation>Master darks na flats, kadiri ulivyo nazo: flat moja kwa kila kichujio, darks kwa kila mfiduo. Kila kikundi katika orodha kinaonyesha dark na flat kitakachotumia, zilizochaguliwa kwa ukubwa, kisha kichujio (flats) au gain na mfiduo (darks). Badilisha chaguo la kikundi chochote hapo.
+
+Fremu moja moja za dark na flat zinafaa pia: zinaunganishwa kuwa masters kwenye kumbukumbu (trimmed mean) mara ya kwanza stack inapozihitaji, na hakuna kinachoandikwa kwenye diski. Darks huwekwa katika makundi kwa mfiduo, gain na ukubwa; flats kwa kichujio, ukubwa na usiku.
+
+Masters na fremu zinazodondoshwa kwenye dirisha hili, au kuongezwa pamoja na lights, hupangwa zenyewe.</translation>
+    </message>
+    <message>
+      <source>Masters:</source>
+      <translation>Masters:</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>Hakuna</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>Hakuna iliyopakiwa</translation>
+    </message>
+    <message>
+      <source>Nothing was added.</source>
+      <translation>Hakuna kilichoongezwa.</translation>
+    </message>
+    <message>
+      <source>Skip</source>
+      <translation>Ruka</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>gain {0:g}</translation>
+    </message>
+    <message>
+      <source>made in memory from {0} frames</source>
+      <translation>imetengenezwa kwenye kumbukumbu kutoka fremu {0}</translation>
+    </message>
+    <message>
+      <source>no filter</source>
+      <translation>hakuna kichujio</translation>
+    </message>
+    <message>
+      <source>none (optional: drop or add master darks and flats, or their frames)</source>
+      <translation>hakuna (si lazima: dondosha au ongeza master darks na flats, au fremu zao)</translation>
+    </message>
+    <message>
+      <source>{0} (from its name)</source>
+      <translation>{0} (kutoka jina lake)</translation>
+    </message>
+    <message>
+      <source>{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).</source>
+      <translation>Fremu {0} za bias: Quick Stack haitumii bias (master dark inayo).</translation>
+    </message>
+    <message>
+      <source>{0} dark frame(s) to make master darks from</source>
+      <translation>fremu {0} za dark za kutengeneza master darks</translation>
+    </message>
+    <message>
+      <source>{0} dark frames, {1:g} s</source>
+      <translation>fremu {0} za dark, {1:g} s</translation>
+    </message>
+    <message>
+      <source>{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses</source>
+      <translation>dark {0}  ·  flat {1}: kila kikundi kinaonyesha zile kinazotumia</translation>
+    </message>
+    <message>
+      <source>{0} flat frame(s) to make master flats from</source>
+      <translation>fremu {0} za flat za kutengeneza master flats</translation>
+    </message>
+    <message>
+      <source>{0} flat frames</source>
+      <translation>fremu {0} za flat</translation>
+    </message>
+    <message>
+      <source>{0} flat frames, {1}</source>
+      <translation>fremu {0} za flat, {1}</translation>
+    </message>
+    <message>
+      <source>{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).</source>
+      <translation>Fremu {0} za flat-dark: Quick Stack haizitumii (master flat inapaswa kuwa tayari imefanyiwa calibration).</translation>
+    </message>
+    <message>
+      <source>{0} frame(s)</source>
+      <translation>fremu {0}</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>fremu {0}</translation>
+    </message>
+    <message>
+      <source>{0} master dark(s)</source>
+      <translation>master dark {0}</translation>
+    </message>
+    <message>
+      <source>{0} master flat(s)</source>
+      <translation>master flat {0}</translation>
+    </message>
+    <message>
+      <source>{0} x {1}: these frames are {2} x {3}</source>
+      <translation>{0} x {1}: fremu hizi ni {2} x {3}</translation>
+    </message>
+    <message>
+      <source>{0} {1} flat frames, {2}</source>
+      <translation>fremu {0} za flat ya {1}, {2}</translation>
+    </message>
+    <message>
+      <source>… and {0} more</source>
+      <translation>… na {0} zaidi</translation>
+    </message>
+    <message>
+      <source>≈ {0} = {1}</source>
+      <translation>≈ {0} = {1}</translation>
+    </message>
+    <message>
+      <source>≈ {0}, from its file name</source>
+      <translation>≈ {0}, kutoka jina la faili lake</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ gain {0:g}, fremu {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ ni flat ya {0}</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ mfiduo wake haujarekodiwa</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat</source>
+      <translation>⚠ hakuna flat ya {0}</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0} x {1}</source>
+      <translation>⚠ hakuna iliyo {0} x {1}</translation>
+    </message>
+    <message>
+      <source>⚠ the frames give no exposure: choose one</source>
+      <translation>⚠ fremu hazitaji mfiduo: chagua moja</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ dark ya {0:g} s, fremu za {1:g} s</translation>
+    </message>
+    <message>
+      <source>⚠ {0} x {1}, not these frames' size: it will be left out</source>
+      <translation>⚠ {0} x {1}, si ukubwa wa fremu hizi: itaachwa</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ hakuna</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ chaguo lako</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ otomatiki</translation>
+    </message>
+    <message>
+      <source>✓ the only flat</source>
+      <translation>✓ flat pekee</translation>
+    </message>
   </context>
   <context>
     <name>RCAstro</name>
@@ -58458,6 +58944,62 @@ Asante kwa kuwa sehemu ya safari hii. Anga safi.</translation>
     <message>
       <source>— Franklin Marek (Seti Astro)</source>
       <translation>— Franklin Marek (Seti Astro)</translation>
+    </message>
+    <message>
+      <source>Blind Solve Index</source>
+      <translation>Blind Solve Index</translation>
+    </message>
+    <message>
+      <source>Build in the Gaia manager</source>
+      <translation>Jenga katika kidhibiti cha Gaia</translation>
+    </message>
+    <message>
+      <source>For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.</source>
+      <translation>Kwa blind solve: kupata picha inaelekea wapi bila viwianishi wala ukubwa wa uga. Hujengwa kwenye kompyuta hii kutoka seti zako za Gaia, kwa hivyo hakuna kinachopakuliwa. Tabaka {0} zinazopendekezwa huchukua takriban {1} na hufunika uga wa takriban 20′ hadi 25°, ambao vifaa vingi vya upigaji picha hutoa.</translation>
+    </message>
+    <message>
+      <source>For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.</source>
+      <translation>Kwa plate solve, na Blind Solve Index iliyo hapa chini hujengwa kutoka kwazo. Seti zinazopendekezwa ni takriban GB 35.</translation>
+    </message>
+    <message>
+      <source>Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.</source>
+      <translation>Folda ya index haikupatikana: {0}. Unganisha diski hiyo, au chagua folda katika kidhibiti cha Gaia.</translation>
+    </message>
+    <message>
+      <source>Layers built: {0}. {1} on disk.</source>
+      <translation>Tabaka zilizojengwa: {0}. {1} kwenye diski.</translation>
+    </message>
+    <message>
+      <source>Not built yet. It is built from the Bright (G &lt; 17) Astrometry set, so install that first.</source>
+      <translation>Bado haijajengwa. Hujengwa kutoka seti ya Astrometry Angavu (G &lt; 17), kwa hivyo isakinishe kwanza.</translation>
+    </message>
+    <message>
+      <source>Not built yet. Recommended layers you can build now: {0}.</source>
+      <translation>Bado haijajengwa. Tabaka zinazopendekezwa unazoweza kujenga sasa: {0}.</translation>
+    </message>
+    <message>
+      <source>Not built yet. Your Gaia sets have everything the recommended layers need.</source>
+      <translation>Bado haijajengwa. Seti zako za Gaia zina kila kitu ambacho tabaka zinazopendekezwa zinahitaji.</translation>
+    </message>
+    <message>
+      <source>Open in the Gaia manager</source>
+      <translation>Fungua katika kidhibiti cha Gaia</translation>
+    </message>
+    <message>
+      <source>Ready for blind solving.</source>
+      <translation>Tayari kwa blind solve.</translation>
+    </message>
+    <message>
+      <source>Recommended layers still to build: {0}.</source>
+      <translation>Tabaka zinazopendekezwa ambazo bado hazijajengwa: {0}.</translation>
+    </message>
+    <message>
+      <source>These need the Bright (G &lt; 17) Astrometry set first: {0}.</source>
+      <translation>Hizi zinahitaji kwanza seti ya Astrometry Angavu (G &lt; 17): {0}.</translation>
+    </message>
+    <message>
+      <source>{0} of {1} recommended layers</source>
+      <translation>tabaka {0} kati ya {1} zinazopendekezwa</translation>
     </message>
   </context>
   <context>
@@ -73143,6 +73685,22 @@ HAIPENDEKEZWI kwa data ya narrowband au duoband.</translation>
       <source>White Balance — Preset</source>
       <translation>Usawa Mweupe — Preset</translation>
     </message>
+    <message>
+      <source>Auto σ (waterfall)</source>
+      <translation>Auto σ (waterfall)</translation>
+    </message>
+    <message>
+      <source>Detection threshold (σ):</source>
+      <translation>Kikomo cha ugunduzi (σ):</translation>
+    </message>
+    <message>
+      <source>Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.</source>
+      <translation>Huchagua kikomo cha ugunduzi chenyewe, kama kwenye kidirisha cha Usawa Mweupe. Ondoa alama ili kutumia kikomo kilicho juu.</translation>
+    </message>
+    <message>
+      <source>Rotation strength:</source>
+      <translation>Nguvu ya mzunguko:</translation>
+    </message>
   </context>
   <context>
     <name>_WorkerCloseGuardMixin</name>
@@ -73184,6 +73742,96 @@ Ighairi na ufunge? (Inaweza kuchukua muda kidogo kumaliza kigae cha sasa.)</tran
     <message>
       <source>Show the workflow as one plain list of steps per lane (Ctrl+G)</source>
       <translation>Onyesha mtiririko wa kazi kama orodha moja rahisi ya hatua kwa kila njia (Ctrl+G)</translation>
+    </message>
+  </context>
+  <context>
+    <name>Essentials</name>
+    <message>
+      <source>ADBE</source>
+      <translation>ADBE</translation>
+    </message>
+    <message>
+      <source>Add Stars</source>
+      <translation>Ongeza Nyota</translation>
+    </message>
+    <message>
+      <source>BG Neutral</source>
+      <translation>Mandharinyuma Neutral</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Crop</source>
+      <translation>Kata</translation>
+    </message>
+    <message>
+      <source>Curves</source>
+      <translation>Curves</translation>
+    </message>
+    <message>
+      <source>Essentials: Linear</source>
+      <translation>Zana Muhimu: Linear</translation>
+    </message>
+    <message>
+      <source>Essentials: Non-Linear</source>
+      <translation>Zana Muhimu: Isiyo linear</translation>
+    </message>
+    <message>
+      <source>LRGB Combine</source>
+      <translation>Unganisha LRGB</translation>
+    </message>
+    <message>
+      <source>NB→RGB Stars</source>
+      <translation>Nyota za NB→RGB</translation>
+    </message>
+    <message>
+      <source>Palette Picker</source>
+      <translation>Palette Picker</translation>
+    </message>
+    <message>
+      <source>RC-Astro</source>
+      <translation>RC-Astro</translation>
+    </message>
+    <message>
+      <source>Remove Stars</source>
+      <translation>Ondoa Nyota</translation>
+    </message>
+    <message>
+      <source>Selective Color</source>
+      <translation>Rangi Teule</translation>
+    </message>
+    <message>
+      <source>Star Stretch</source>
+      <translation>Star Stretch</translation>
+    </message>
+    <message>
+      <source>Stretch</source>
+      <translation>Stretch</translation>
+    </message>
+    <message>
+      <source>SyQon</source>
+      <translation>SyQon</translation>
+    </message>
+    <message>
+      <source>Texture</source>
+      <translation>Umbile</translation>
+    </message>
+    <message>
+      <source>White Balance</source>
+      <translation>Usawa Mweupe</translation>
+    </message>
+  </context>
+  <context>
+    <name>EssentialsToolBar</name>
+    <message>
+      <source>Create Desktop Shortcut</source>
+      <translation>Unda Njia ya Mkato ya Eneo-kazi</translation>
+    </message>
+    <message>
+      <source>Lock Toolbar Icons</source>
+      <translation>Funga Aikoni za Upau wa Zana</translation>
     </message>
   </context>
 </TS>

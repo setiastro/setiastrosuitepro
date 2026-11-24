@@ -2591,7 +2591,51 @@ def _open_darkstar_config(main, doc, icon_path=None, preset=None):
     # Non-blocking .show(): nobody reads .result(), so fire the run on `accepted`.
     cfg.accepted.connect(lambda: _darkstar_run_from_dialog(main, doc, cfg))
     cfg.show(); cfg.raise_(); cfg.activateWindow()
+    _start_darkstar_warmup(cfg, doc)
     return cfg
+
+
+def _start_darkstar_warmup(cfg, doc):
+    """
+    Warm Dark Star while its options are chosen (cosmicclarity_engines.warmup),
+    and again when a choice changes the models or tile shapes it will use.
+    Reads the widgets directly: get_values() also saves them, and that must
+    wait for OK. Mirrors _darkstar_run_from_dialog's input: the image plus
+    its reflect edge padding.
+    """
+    from PyQt6.QtCore import QTimer
+
+    def _warm():
+        try:
+            img = getattr(doc, "image", None)
+            if img is None or not cfg.isVisible():
+                return
+            shape = list(np.shape(img))
+            pad = int(cfg.cmb_padding.currentData() or 0)
+            if pad > 0:
+                shape[0] += 2 * pad
+                shape[1] += 2 * pad
+            params = DarkStarParams(
+                use_gpu=not cfg.chk_disable_gpu.isChecked(),
+                chunk_size=int(cfg.cmb_chunk_size.currentData()),
+                overlap_frac=float(cfg.cmb_overlap.currentData()),
+                processing_path=str(cfg.cmb_processing.currentData()),
+                compatibility_mode=bool(cfg.chk_compatibility.isChecked()),
+            )
+            from setiastro.saspro.cosmicclarity_engines.warmup import warm_darkstar
+            warm_darkstar(params, tuple(shape))
+        except Exception as e:
+            print(f"[CC warm-up] not started ({type(e).__name__}: {e})")
+
+    timer = QTimer(cfg)
+    timer.setSingleShot(True)
+    timer.setInterval(400)
+    timer.timeout.connect(_warm)
+    for sig in (cfg.cmb_processing.currentIndexChanged, cfg.cmb_chunk_size.currentIndexChanged,
+                cfg.cmb_overlap.currentIndexChanged, cfg.cmb_padding.currentIndexChanged,
+                cfg.chk_compatibility.toggled, cfg.chk_disable_gpu.toggled):
+        sig.connect(lambda *_: timer.start())
+    timer.start()
 
 
 def _run_darkstar(main, doc, icon_path=None):

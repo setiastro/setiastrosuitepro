@@ -6,7 +6,9 @@ Quick Stack: pick frames, press a button, get an image.
 A fast look at a set of subs, not a replacement for the Stacking Suite. Frames
 are aligned by position, rotation and scale only (the registration delta
 pass, meridian-flip check included), calibrated with a master dark and flat if
-they are given, never weighted or normalized, and combined as a trimmed mean.
+they are given (or made in memory from single dark and flat frames), put on
+the reference's sky level (one offset per channel),
+weighted by the stars found in each, and combined as a trimmed mean.
 Each filter / exposure / size group in the list becomes its own image and opens
 as a new view. No calibrated or aligned frames are written to disk.
 
@@ -166,6 +168,10 @@ class _StackThread(QThread):
                 for line in notes:
                     self.log_line.emit(prefix + line)
             try:
+                if masters:
+                    engine.ensure_made(masters, self._darks + self._flats, self.log_line.emit,
+                                       progress=lambda d, t, m, p=prefix: self.step.emit(d, t, p + m),
+                                       stopped=self._stop.is_set)
                 r = engine.stack_frames([f.path for f in g.frames], ref_path=ref, masters=masters,
                                         workers=self._workers, log=self.log_line.emit,
                                         progress=lambda d, t, m, p=prefix: self.step.emit(d, t, p + m),
@@ -191,6 +197,10 @@ class QuickStackDialog(QDialog):
         self._infos: list = []              # FrameInfo
         self._darks: list = []              # FrameInfo of the master darks
         self._flats: list = []              # and of the master flats
+        self._raw_darks: list = []          # FrameInfo of single dark frames, made into masters
+        self._raw_flats: list = []          # and of single flat frames
+        self._dark_sets: list = []          # engine.raw_sets of those: stand in the lists as masters
+        self._flat_sets: list = []
         self._chosen: dict = {}             # group key -> {"dark"/"flat": path, or None}: picked by hand
         self._cal: dict = {}                # (group key, kind) -> (group, combo, badge) in the list
         self._scan: dict = {}               # what the files being added turned out to be
@@ -220,8 +230,9 @@ class QuickStackDialog(QDialog):
         top = QHBoxLayout()
         blurb = QLabel(self.tr(
             "A fast look at a set of subs: calibrated if you give it masters, aligned by position, "
-            "rotation and scale, combined as a trimmed mean. No weighting or normalization, and no "
-            "calibrated or aligned files on disk. Colour cameras are debayered (bilinear)."))
+            "rotation and scale, matched to the reference's sky level, and combined as a trimmed mean "
+            "weighted by the stars found in each frame. No calibrated or aligned files on disk. "
+            "Colour cameras are debayered (bilinear)."))
         blurb.setWordWrap(True)
         top.addWidget(blurb, 1)
         top.addWidget(make_help_button("quick_stack", self), 0, Qt.AlignmentFlag.AlignTop)
@@ -280,7 +291,11 @@ class QuickStackDialog(QDialog):
             "Master darks and flats, as many as you have: one flat per filter, darks for each exposure. "
             "Each group in the list shows the dark and flat it will use, picked by size, then filter "
             "(flats) or gain and exposure (darks). Change any group's choice there.\n\n"
-            "Masters dropped on this window, or added with the frames, are sorted out by themselves.")
+            "Single dark and flat frames work too: they are combined into masters in memory "
+            "(trimmed mean) the first time a stack needs them, and nothing is written to disk. "
+            "Darks are grouped by exposure, gain and size; flats by filter, size and night.\n\n"
+            "Masters and frames dropped on this window, or added with the lights, are sorted out by "
+            "themselves.")
         for w in (lab, self.btn_masters):
             w.setToolTip(self._masters_tip)
         mrow.addWidget(self.btn_masters)
@@ -391,7 +406,8 @@ class QuickStackDialog(QDialog):
 
     def _start_probe(self):
         paths, self._queue = self._queue, []
-        known = frozenset(os.path.normcase(i.path) for i in self._infos + self._darks + self._flats)
+        known = frozenset(os.path.normcase(i.path) for i in self._infos + self._darks + self._flats
+                          + self._raw_darks + self._raw_flats)
         t = _ProbeThread(paths, known)
         t.probed.connect(self._on_probed)
         t.progressed.connect(self._on_probe_progress)
@@ -407,15 +423,29 @@ class QuickStackDialog(QDialog):
         self.lbl_status.setText(self.tr("Reading headers: {0} of {1}…").format(done, total))
 
     def _on_probed(self, infos):
-        """Lights to the list, master darks and flats to the masters, and the
-        rest (single calibration frames, bias) left out and counted."""
+        """Lights to the list, master darks and flats to the masters, single
+        dark and flat frames to be made into masters, and the rest (bias,
+        flat-darks) left out and counted."""
         for info in infos:
             where = engine.route_file(info)
             if where == "light":
                 self._infos.append(info)
             elif where in ("dark", "flat"):
                 (self._darks if where == "dark" else self._flats).append(info)
+            elif where in ("dark-frames", "flat-frames"):
+                (self._raw_darks if where == "dark-frames" else self._raw_flats).append(info)
             self._scan.setdefault(where, []).append(info.path)
+
+    def _regroup(self):
+        """The masters the single dark and flat frames make."""
+        self._dark_sets = engine.raw_sets(self._raw_darks, "dark")
+        self._flat_sets = engine.raw_sets(self._raw_flats, "flat")
+
+    def _dark_pool(self) -> list:
+        return self._darks + self._dark_sets
+
+    def _flat_pool(self) -> list:
+        return self._flats + self._flat_sets
 
     # -- GPU ---------------------------------------------------------------
     def showEvent(self, e):
@@ -455,6 +485,7 @@ class QuickStackDialog(QDialog):
             self._start_probe()
             return
         scan, self._scan = self._scan, {}
+        self._regroup()
         self._show_masters()
         self._refresh()
         if not self._infos:
@@ -464,17 +495,14 @@ class QuickStackDialog(QDialog):
     def _report_scan(self, scan: dict):
         """Say what the files just added turned out to be, and what was left out and why."""
         n_light, n_dark, n_flat = (len(scan.get(k, ())) for k in ("light", "dark", "flat"))
+        n_rdark, n_rflat = (len(scan.get(k, ())) for k in ("dark-frames", "flat-frames"))
         why = {
-            "dark-frames": self.tr("{0} dark frame(s) that are not masters: Quick Stack calibrates with "
-                                   "master darks. If they are masters, add them with Add Masters…"),
-            "flat-frames": self.tr("{0} flat frame(s) that are not masters: Quick Stack calibrates with "
-                                   "master flats. If they are masters, add them with Add Masters…"),
             "bias": self.tr("{0} bias frame(s): Quick Stack does not use bias (the master dark holds it)."),
             "darkflat": self.tr("{0} flat-dark frame(s): Quick Stack does not use them (a master flat "
                                 "should already be calibrated)."),
         }
         left = [(why[k].format(len(scan[k])), scan[k]) for k in why if scan.get(k)]
-        if not (n_dark or n_flat or left):
+        if not (n_dark or n_flat or n_rdark or n_rflat or left):
             return                          # only lights: the list says it all
         got = []
         if n_light:
@@ -483,6 +511,10 @@ class QuickStackDialog(QDialog):
             got.append(self.tr("{0} master dark(s)").format(n_dark))
         if n_flat:
             got.append(self.tr("{0} master flat(s)").format(n_flat))
+        if n_rdark:
+            got.append(self.tr("{0} dark frame(s) to make master darks from").format(n_rdark))
+        if n_rflat:
+            got.append(self.tr("{0} flat frame(s) to make master flats from").format(n_rflat))
         msg = self.tr("Added {0}.").format(", ".join(got)) if got else self.tr("Nothing was added.")
         if left:
             msg += " " + self.tr("Left out {0} file(s): see below.").format(sum(len(p) for _w, p in left))
@@ -601,7 +633,28 @@ class QuickStackDialog(QDialog):
         combo.activated.connect(lambda i, key=g.key, k=kind: self._on_cal_picked(key, k, i))
         return w
 
+    def _name(self, m, kind) -> str:
+        """A master's short name: its file's, or for one made from frames, what it is made from."""
+        if not engine.is_made(m):
+            return os.path.basename(m.path)
+        n = len(m.frames)
+        if kind == "dark":
+            return self.tr("{0} dark frames, {1:g} s").format(n, m.exposure)
+        what = m.filter if m.filter != "Unknown" else ""
+        if what and m.date:
+            return self.tr("{0} {1} flat frames, {2}").format(n, what, m.date)
+        if what or m.date:
+            return self.tr("{0} flat frames, {1}").format(n, what or m.date)
+        return self.tr("{0} flat frames").format(n)
+
     def _master_text(self, m, kind) -> str:
+        if engine.is_made(m):
+            parts = [self._name(m, kind)]
+            if kind == "dark" and m.gain:
+                parts.append(self.tr("gain {0:g}").format(m.gain))
+            if m.width:
+                parts.append(f"{m.width} x {m.height}")
+            return "  ·  ".join(parts)
         parts = [os.path.basename(m.path)]
         if kind == "dark":
             if m.exposure:
@@ -623,15 +676,15 @@ class QuickStackDialog(QDialog):
     def _fill_cal(self, key, kind):
         g, combo, badge = self._cal[(key, kind)]
         frame = g.frames[0]
-        pool = self._darks if kind == "dark" else self._flats
+        pool = self._dark_pool() if kind == "dark" else self._flat_pool()
         chosen = self._chosen.get(key, {})
-        auto = engine.plan_masters(frame, self._darks, self._flats)[kind]
+        auto = engine.plan_masters(frame, self._dark_pool(), self._flat_pool())[kind]
         combo.blockSignals(True)
         combo.clear()
         if not pool:
             combo.addItem(self.tr("None loaded"), _AUTO)
         else:
-            combo.addItem(self.tr("Auto: {0}").format(os.path.basename(auto.master.path)) if auto.master
+            combo.addItem(self.tr("Auto: {0}").format(self._name(auto.master, kind)) if auto.master
                           else self.tr("Auto: none fits"), _AUTO)
             combo.insertSeparator(combo.count())
             for m in pool:
@@ -643,8 +696,8 @@ class QuickStackDialog(QDialog):
                         m.width, m.height, frame.width, frame.height), Qt.ItemDataRole.ToolTipRole)
             combo.addItem(self.tr("None"), _NONE)
         combo.insertSeparator(combo.count())
-        combo.addItem(self.tr("Add a master dark…") if kind == "dark" else self.tr("Add a master flat…"),
-                      _BROWSE)
+        combo.addItem(self.tr("Add a master dark or dark frames…") if kind == "dark"
+                      else self.tr("Add a master flat or flat frames…"), _BROWSE)
         i = 0
         if kind in chosen:
             i = max(0, combo.findData(_NONE if chosen[kind] is None else chosen[kind]))
@@ -655,7 +708,7 @@ class QuickStackDialog(QDialog):
     def _show_badge(self, key, kind):
         g, _combo, badge = self._cal[(key, kind)]
         frame = g.frames[0]
-        p = engine.plan_masters(frame, self._darks, self._flats, self._chosen.get(key))[kind]
+        p = engine.plan_masters(frame, self._dark_pool(), self._flat_pool(), self._chosen.get(key))[kind]
         parts = []
         m = p.master
         if p.state == "auto":
@@ -696,6 +749,8 @@ class QuickStackDialog(QDialog):
                     if p.state == "only":
                         parts = []
                     parts.append(("warn", self.tr("⚠ it is the {0} flat").format(said)))
+        if m is not None and engine.is_made(m):
+            parts.append(("info", self.tr("made in memory from {0} frames").format(len(m.frames))))
         badge.setText("  ".join(f'<span style="color:{_BADGE_COLOUR[c]}">{html.escape(t)}</span>'
                                 for c, t in parts))
 
@@ -724,27 +779,36 @@ class QuickStackDialog(QDialog):
     def _browse_masters(self, kind, rebuild: bool = True) -> list:
         """Add masters from a file dialog. kind "dark"/"flat": the files are
         that (a group's "Add a master …"); None: each says what it is."""
-        exts = " ".join("*" + e for e in engine.MASTER_EXTS)
+        exts = " ".join("*" + e for e in engine.FRAME_EXTS)
         start = self._settings.value(f"{_SETTINGS}/last_master_dir", "", type=str) or self._last_dir()
-        title = {"dark": self.tr("Choose master dark(s)"), "flat": self.tr("Choose master flat(s)")}.get(
-            kind, self.tr("Choose master darks and flats"))
+        title = {"dark": self.tr("Choose a master dark or dark frames"),
+                 "flat": self.tr("Choose a master flat or flat frames")}.get(
+            kind, self.tr("Choose master darks and flats, or their frames"))
         files, _ = QFileDialog.getOpenFileNames(
-            self, title, start, self.tr("Master calibration ({0});;All Files (*)").format(exts))
+            self, title, start, self.tr("Darks and flats ({0});;All Files (*)").format(exts))
         if not files:
             return []
         self._settings.setValue(f"{_SETTINGS}/last_master_dir", os.path.dirname(files[0]))
         return self.add_masters(kind, files, rebuild=rebuild)
 
     def add_masters(self, kind, files, rebuild: bool = True) -> list:
-        """Add master files. kind "dark"/"flat" says what they are; None reads
-        it from each (IMAGETYP, else the file or folder name) and asks about
-        one that does not say. Returns the paths that are masters now, in order."""
-        out, left = [], []
+        """Add masters, or single frames to make them from. kind "dark"/"flat"
+        says which they are; None reads it from each (IMAGETYP, else the file
+        or folder name) and asks about one that does not say. A file that is
+        not a master (integer pixels, no NCOMBINE, no "master" in its name)
+        joins the frames its master is made from. Returns, in order, what the
+        files are now part of: a master's own path, a frame's set's name."""
+        out, left, frames = [], [], []
         known = {os.path.normcase(i.path): i for i in self._darks + self._flats}
+        raw_known = {os.path.normcase(i.path) for i in self._raw_darks + self._raw_flats}
         for f in files:
             f = os.path.normpath(f)
             if os.path.normcase(f) in known:
                 out.append(known[os.path.normcase(f)].path)
+                continue
+            if os.path.normcase(f) in raw_known:
+                frames.append(f)
+                out.append(f)
                 continue
             info = engine.probe_frame(f)
             what = kind or engine.route_file(info, as_master=True)
@@ -755,14 +819,25 @@ class QuickStackDialog(QDialog):
                 what = self._ask_kind(info)
                 if what is None:
                     continue
-            (self._darks if what == "dark" else self._flats).append(info)
-            known[os.path.normcase(f)] = info
+            if engine.is_master(info):
+                (self._darks if what == "dark" else self._flats).append(info)
+                known[os.path.normcase(f)] = info
+            else:
+                (self._raw_darks if what == "dark" else self._raw_flats).append(info)
+                raw_known.add(os.path.normcase(f))
+                frames.append(info.path)
             out.append(info.path)
-            drop = os.path.normcase(f)              # added as a frame before: it is a master now
+            drop = os.path.normcase(f)              # added as a light before: it is calibration now
             self._infos = [i for i in self._infos if os.path.normcase(i.path) != drop]
+        self._regroup()
+        if frames:                                  # a frame stands for the master its set makes
+            set_of = {os.path.normcase(p): s.path for s in self._dark_sets + self._flat_sets
+                      for p in s.frames}
+            out = [set_of.get(os.path.normcase(p), p) for p in out]
+        out = list(dict.fromkeys(out))
         if left:
-            self.lbl_status.setText(self.tr("Left out {0} bias / flat-dark file(s): Quick Stack uses only "
-                                            "master darks and flats.").format(len(left)))
+            self.lbl_status.setText(self.tr("Left out {0} bias / flat-dark file(s): Quick Stack does not "
+                                            "use them.").format(len(left)))
         self._show_masters()
         if rebuild:
             self._refresh()
@@ -784,6 +859,10 @@ class QuickStackDialog(QDialog):
     def _clear_masters(self):
         self._darks.clear()
         self._flats.clear()
+        self._raw_darks.clear()
+        self._raw_flats.clear()
+        self._regroup()
+        engine.forget_made()
         for ch in self._chosen.values():            # a "None" choice still holds
             for k in [k for k, v in ch.items() if v is not None]:
                 del ch[k]
@@ -791,15 +870,17 @@ class QuickStackDialog(QDialog):
         self._refresh()
 
     def _show_masters(self):
-        nd, nf = len(self._darks), len(self._flats)
+        darks, flats = self._dark_pool(), self._flat_pool()
+        nd, nf = len(darks), len(flats)
         if not (nd or nf):
-            self.lbl_masters.setText(self.tr("none (optional: drop or add master darks and flats)"))
+            self.lbl_masters.setText(self.tr("none (optional: drop or add master darks and flats, or "
+                                             "their frames)"))
             self.lbl_masters.setToolTip(self._masters_tip)
         else:
             self.lbl_masters.setText(self.tr("{0} dark(s)  ·  {1} flat(s): each group shows the ones it "
                                              "uses").format(nd, nf))
-            lines = [self._master_text(m, "dark") for m in self._darks] + \
-                    [self._master_text(m, "flat") for m in self._flats]
+            lines = [self._master_text(m, "dark") for m in darks] + \
+                    [self._master_text(m, "flat") for m in flats]
             self.lbl_masters.setToolTip("\n".join(lines))
         self.btn_masters_clear.setEnabled(bool(nd or nf) and not self._busy())
 
@@ -825,7 +906,7 @@ class QuickStackDialog(QDialog):
         for b in (self.btn_files, self.btn_folder, self.btn_remove, self.btn_clear,
                   self.btn_ref, self.btn_ref_sel, self.btn_ref_clear, self.btn_masters):
             b.setEnabled(not busy)
-        self.btn_masters_clear.setEnabled(not busy and bool(self._darks or self._flats))
+        self.btn_masters_clear.setEnabled(not busy and bool(self._dark_pool() or self._flat_pool()))
         for _g, combo, _badge in self._cal.values():
             combo.setEnabled(not busy)
         self.btn_run.setEnabled(not busy and len(self._infos) > 1)
@@ -848,7 +929,7 @@ class QuickStackDialog(QDialog):
             self.log.appendPlainText(self.tr("Skipping {0}: only one frame").format(g.label))
         self._ensure_session()
         t = _StackThread(groups, self.ed_ref.text().strip() or None, session=self._session,
-                         darks=self._darks, flats=self._flats, chosen=self._chosen)
+                         darks=self._dark_pool(), flats=self._flat_pool(), chosen=self._chosen)
         t.log_line.connect(self.log.appendPlainText)
         t.step.connect(self._on_step)
         t.stacked.connect(self._on_stacked)
@@ -1014,6 +1095,7 @@ class QuickStackDialog(QDialog):
             if t is not None:
                 t.cancel()          # _LIVE_THREADS keeps it alive until it finishes
         self._close_session()
+        engine.forget_made()        # the masters made from frames (memory)
 
     def reject(self):
         # Esc and Close land here; Qt does not run closeEvent on this path.

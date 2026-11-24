@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 
-from PyQt6.QtCore import (QCoreApplication, QEvent, QLocale, QPoint, QPointF, QRectF, QSize, Qt,
+from PyQt6.QtCore import (QCoreApplication, QEvent, QPoint, QPointF, QRectF, QSize, Qt,
                           QTimer, QTranslator, QUrl, pyqtSignal)
 from PyQt6.QtGui import (QColor, QDesktopServices, QGuiApplication, QKeySequence,
                          QPainter, QPen, QPixmap)
@@ -47,31 +47,6 @@ def _t(text: str) -> str:
 # .qm), so someone who reads no English can still find theirs.
 
 REOPEN_KEY = "ui/setup_reopen_page"      # a language restart brings this window back, on this page
-
-
-def pick_language(ui_languages, available) -> str | None:
-    """The first of the system's UI languages, in its order of preference, that
-    SASpro has a translation for. None when English comes first: English is
-    what SASpro already speaks. Only Simplified Chinese is translated, so a
-    Traditional Chinese system is not offered it."""
-    for tag in ui_languages:
-        parts = tag.replace("_", "-").lower().split("-")
-        base = parts[0]
-        if base == "en":
-            return None
-        if base == "zh" and {"hant", "tw", "hk", "mo"} & set(parts[1:]):
-            continue
-        if base in available:
-            return base
-    return None
-
-
-def system_language() -> str | None:
-    from setiastro.saspro.i18n import get_available_languages
-    try:
-        return pick_language(QLocale.system().uiLanguages(), get_available_languages())
-    except Exception:
-        return None
 
 
 _TRANSLATORS: dict = {}
@@ -628,10 +603,10 @@ class SetupCenter(QDialog):
         return rail
 
     def _build_language(self) -> QWidget:
-        """🌐 and every language in its own name. The welcome opens on the
-        system's language when SASpro has it, so it is seen; nothing changes
-        until the restart button (in that language) is pressed."""
-        from setiastro.saspro import first_run_dialog
+        """🌐 and every language in its own name, showing the language SASpro
+        is in. Not the system's: an English window over a picker that says
+        Deutsch reads as a bug. Nothing changes until the restart button (in
+        that language) is pressed."""
         from setiastro.saspro.i18n import get_available_languages, get_current_language
         box = QWidget()
         v = QVBoxLayout(box)
@@ -646,10 +621,7 @@ class SetupCenter(QDialog):
         self._lang.setCursor(Qt.CursorShape.PointingHandCursor)
         for code, name in get_available_languages().items():
             self._lang.addItem(name, code)
-        pick = get_current_language()
-        if pick == "en" and first_run_dialog.welcome_due(self._mw):
-            pick = system_language() or "en"
-        self._lang.setCurrentIndex(max(0, self._lang.findData(pick)))
+        self._lang.setCurrentIndex(max(0, self._lang.findData(get_current_language())))
         self._lang.currentIndexChanged.connect(lambda _i: self._sync_language())
         row.addWidget(globe)
         row.addWidget(self._lang, 1)
@@ -1000,7 +972,7 @@ class SetupCenter(QDialog):
              _t("For SFCC color calibration, magnitudes and narrowband extraction. "
                 "The recommended sets are about 11 GB.")),
             ("astro", _t("Astrometry"),
-             _t("For plate solving, and for blind solving once its index is built there. "
+             _t("For plate solving, and what the blind solve index below is built from. "
                 "The recommended sets are about 35 GB.")),
         ):
             box = QFrame()
@@ -1017,6 +989,43 @@ class SetupCenter(QDialog):
             bl.addWidget(_label(body, "sc_detail"))
             self._gaia_lines[key] = n
             lay.addWidget(box)
+        lay.addWidget(self._build_quad_box())
+
+    def _build_quad_box(self) -> QFrame:
+        """The blind solve index: built on this computer from the sets above,
+        so it is counted here, not downloaded. Layers built, what is left, and
+        the manager's Blind Solve Index tab one click away."""
+        from setiastro.saspro.gaia_quad_index import QUAD_LAYER_DEFS, fmt_size
+        rec = [d for d in QUAD_LAYER_DEFS if d.recommended]
+        box = QFrame()
+        box.setObjectName("sc_panel")
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(18, 12, 18, 12)
+        bl.setSpacing(3)
+        head = QHBoxLayout()
+        head.addWidget(_label(_t("Blind Solve Index"), "sc_row_title", wrap=False))
+        head.addStretch(1)
+        self._quad_count = _label("", "sc_detail", wrap=False)
+        head.addWidget(self._quad_count)
+        bl.addLayout(head)
+        bl.addWidget(_label(_t(
+            "For blind solving: finding where an image points with no coordinates and no "
+            "field size. It is built on this computer from your Gaia sets, so nothing is "
+            "downloaded. The {0} recommended layers take about {1} and cover fields from "
+            "about 20′ to 25°, what most imaging rigs produce.").format(
+                # The size estimate matches a real build (layers 2-7: 322 MB).
+                # The field range is the Blind Solve Index tab's own, quoted
+                # conservatively, not the per-layer 8x formula (34°).
+                len(rec), fmt_size(sum(d.est_bytes for d in rec))), "sc_detail"))
+        self._quad_state = _label("", "sc_detail")
+        bl.addWidget(self._quad_state)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 6, 0, 0)
+        self._quad_btn = _button(_t("Open in the Gaia manager"), "sc_plain", self._open_quad_tab)
+        row.addWidget(self._quad_btn)
+        row.addStretch(1)
+        bl.addLayout(row)
+        return box
 
     def _sync_gaia(self):
         item = self._mgr.items["gaia"]
@@ -1024,6 +1033,66 @@ class SetupCenter(QDialog):
         for key, lb in self._gaia_lines.items():
             n = item.extra.get(key)
             lb.setText(_t("{0} of {1} sets").format(*n) if n else "")
+        self._sync_quads(item.extra.get("quads") or {})
+
+    def _sync_quads(self, q: dict):
+        from setiastro.saspro.gaia_quad_index import fmt_size
+
+        def nums(xs):
+            return ", ".join(str(x) for x in xs)
+
+        open_txt = _t("Open in the Gaia manager")
+        if "lost" in q:
+            self._quad_count.setText("")
+            self._quad_state.setText(_t(
+                "Index folder not found: {0}. Connect that drive, or choose the folder "
+                "in the Gaia manager.").format(q["lost"]))
+            self._quad_btn.setText(open_txt)
+            return
+        if "rec" not in q:                       # not checked yet, or the check failed
+            self._quad_count.setText("")
+            self._quad_state.setText("")
+            self._quad_btn.setText(open_txt)
+            return
+        self._quad_count.setText(_t("{0} of {1} recommended layers").format(
+            len(q["rec_built"]), len(q["rec"])))
+        parts = []
+        if q["built"]:
+            if len(q["rec_built"]) == len(q["rec"]):
+                parts.append(_t("Ready for blind solving."))
+            parts.append(_t("Layers built: {0}. {1} on disk.").format(
+                nums(q["built"]), fmt_size(q["bytes"])))
+            if q["todo_can"]:
+                parts.append(_t("Recommended layers still to build: {0}.").format(
+                    nums(q["todo_can"])))
+            if q["todo_cant"]:
+                parts.append(_t("These need the Bright (G < 17) Astrometry set first: {0}.")
+                             .format(nums(q["todo_cant"])))
+        elif q["todo_can"] and not q["todo_cant"]:
+            parts.append(_t("Not built yet. Your Gaia sets have everything the recommended "
+                            "layers need."))
+        elif q["todo_can"]:
+            parts.append(_t("Not built yet. Recommended layers you can build now: {0}.")
+                         .format(nums(q["todo_can"])))
+            parts.append(_t("These need the Bright (G < 17) Astrometry set first: {0}.")
+                         .format(nums(q["todo_cant"])))
+        else:
+            parts.append(_t("Not built yet. It is built from the Bright (G < 17) Astrometry "
+                            "set, so install that first."))
+        self._quad_state.setText(" ".join(parts))
+        self._quad_btn.setText(_t("Build in the Gaia manager") if q["todo_can"] else open_txt)
+
+    def _open_quad_tab(self):
+        """The Gaia manager, on Blind Solve Index: the recommended layers are
+        ticked there, so building is one press of Build Selected."""
+        self._open_gaia()
+        win = getattr(self._mw, "_gaia_db_window", None)
+        tab = getattr(win, "_quad_tab", None)
+        if tab is not None:
+            try:
+                win._tabs.setCurrentWidget(tab)
+            except Exception:
+                pass
 
     def _open_gaia(self):
         self._mgr.gaia_seen()
@@ -1151,8 +1220,8 @@ class SetupCenter(QDialog):
         self._mgr.refresh()
 
     def _can_restart(self) -> bool:
-        from setiastro.saspro.settings_sandbox import active
-        return hasattr(self._mw, "restart_app") and not active()
+        # Also under --firstrun: the restart carries on in the same sandbox.
+        return hasattr(self._mw, "restart_app")
 
     def _restart(self):
         self._mw.restart_app()

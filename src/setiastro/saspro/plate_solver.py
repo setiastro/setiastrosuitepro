@@ -1882,6 +1882,60 @@ def _gaia_pass(parent, settings, image, seed_header, say=None):
     return False, f"{res}  (blind retry also failed: {res2})"
 
 
+# Header cards that hint at the pixel scale (as _gaia_pass's retry drops them).
+_SCALE_HINT_KEYS = ("FOCALLEN", "PIXSCALE", "SCALE", "PLTSCALE", "SECPIX",
+                    "SECPIX1", "SECPIX2", "XPIXSZ", "YPIXSZ", "PIXSZ",
+                    "PIXSIZE1", "PIXSIZE2", "XBINNING", "YBINNING")
+
+
+def _gaia_blind_resolve(parent, settings, image, seed_header):
+    """
+    Re-solve an image whose current solution is known to be wrong, from the
+    star pattern alone: the in-house Gaia DR3 solver, forced blind.
+
+    The current WCS goes, and with it the scale it implies -- when the
+    solution is what's in doubt, so is its scale, and _estimate_scale_arcsec
+    _from_header reads the WCS first. Focal length and pixel size stay for the
+    first try, since they narrow the quad search; if that fails, one more try
+    with no scale at all, the way _gaia_pass retries a failed seeded solve.
+    Gaia only: this is the "find the field from scratch" button, not the
+    fallback chain. Returns (ok, Header | error_str).
+    """
+    try:
+        try:
+            from setiastro.saspro.gaia_quad_index import get_quad_library
+            have_index = get_quad_library().any_installed()
+        except Exception:
+            have_index = False
+        if not have_index:
+            return False, ("Gaia DR3 blind solve needs a Blind Solve Index. Build one "
+                           "on the Gaia DR3 Library → Blind Solve Index tab.")
+        base = _strip_wcs_keys(seed_header) if isinstance(seed_header, Header) else None
+        ok, res = _solve_with_GAIA_threaded(parent, settings, image, base,
+                                            force_blind=True)
+        if ok:
+            return True, res
+        if base is None or _estimate_scale_arcsec_from_header(base) is None:
+            return False, res
+        bare = base.copy()
+        for _k in _SCALE_HINT_KEYS:
+            bare.pop(_k, None)
+        print("[PlateSolver] blind re-solve with the header's scale failed; "
+              "retrying at every scale")
+        _set_status_ui(parent, "Status: Blind solve at the header's pixel scale "
+                               "failed — retrying at every scale…")
+        ok2, res2 = _solve_with_GAIA_threaded(parent, settings, image, bare,
+                                              force_blind=True)
+        if ok2:
+            return True, res2
+        return False, f"{res}  (retry at every scale also failed: {res2})"
+    finally:
+        try:
+            _status_popup_close()
+        except Exception:
+            pass
+
+
 def _solve_numpy_with_fallback_impl(
     parent, settings, image: np.ndarray, seed_header
 ) -> tuple[bool, "Header | str"]:
@@ -5080,7 +5134,11 @@ def plate_solve_numpy_headless(
         return True, _merge_wcs_into_base_header(acq_base, res)
     return True, res
 
-def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
+def plate_solve_doc_inplace(parent, doc, settings, *,
+                            gaia_blind: bool = False) -> Tuple[bool, Header | str]:
+    """Solve `doc` and merge the solution into it. gaia_blind=True skips the
+    fallback chain for _gaia_blind_resolve: for an image whose current
+    solution is wrong (plate_solution_check)."""
     img = getattr(doc, "image", None)
     if img is None:
         return False, QCoreApplication.translate("PlateSolver", "Active document has no image data.")
@@ -5139,7 +5197,10 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
 
     ok_solve = False
     try:
-        ok, res = _solve_numpy_with_fallback(parent, settings, img, seed_h)
+        if gaia_blind:
+            ok, res = _gaia_blind_resolve(parent, settings, img, seed_h)
+        else:
+            ok, res = _solve_numpy_with_fallback(parent, settings, img, seed_h)
         if not ok:
             return False, res
 

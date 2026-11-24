@@ -193,6 +193,54 @@ def check_models() -> Item:
     return Item("ok", _t("Installed"))
 
 
+def _quad_index(settings, catalogs) -> dict:
+    """The blind solve index: which layers are built, and whether the installed
+    catalogs can build the recommended ones still missing. From file names
+    only: no catalog is opened and the index folder is not created.
+
+    `catalogs` is (settings key, folder getter, file prefix) per Gaia library.
+    """
+    from PyQt6.QtCore import QStandardPaths
+    from setiastro.saspro.gaia_quad_index import QUAD_LAYER_DEFS, _SETTINGS_QUAD_LIBRARY_DIR
+    # The builder's own rule for how deep a set of catalog files reaches.
+    from setiastro.saspro.gaia_quad_builder import _band_from_filename, _contiguous_depth
+
+    saved = settings.value(_SETTINGS_QUAD_LIBRARY_DIR, "", type=str)
+    if saved and not os.path.isdir(saved):
+        return {"lost": saved}               # a drive that isn't connected
+    folder = saved or os.path.join(QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.AppDataLocation), "gaia_quad_library")
+    built, size = [], 0
+    for d in QUAD_LAYER_DEFS:
+        p = os.path.join(folder, d.filename)
+        if os.path.isfile(p):
+            built.append(d.index)
+            size += os.path.getsize(p)
+
+    depth = 0.0
+    for key, getter, prefix in catalogs:
+        where = settings.value(key, "", type=str)
+        if where and not os.path.isdir(where):
+            continue
+        try:
+            names = [e.name for e in os.scandir(getter())
+                     if e.name.startswith(prefix) and e.name.endswith(".sqlite")]
+        except OSError:
+            continue
+        depth = max(depth, _contiguous_depth([_band_from_filename(n) for n in names]))
+
+    rec = sorted((d for d in QUAD_LAYER_DEFS if d.recommended), key=lambda d: d.index)
+    todo = [d for d in rec if d.index not in built]
+    return {
+        "built": sorted(built),
+        "bytes": size,
+        "rec": [d.index for d in rec],
+        "rec_built": [d.index for d in rec if d.index in built],
+        "todo_can": [d.index for d in todo if depth >= d.gmag_limit - 1e-6],
+        "todo_cant": [d.index for d in todo if depth < d.gmag_limit - 1e-6],
+    }
+
+
 def check_gaia() -> Item:
     from PyQt6.QtCore import QSettings
     from setiastro.saspro.gaia_database import (
@@ -219,6 +267,12 @@ def check_gaia() -> Item:
     a_done, a_all, a_size = count(ASTRO_GROUP_DEFS, _SETTINGS_ASTRO_LIBRARY_DIR,
                                   get_astro_library_dir)
     extra = {"spectral": (s_done, s_all), "astro": (a_done, a_all)}
+    try:
+        extra["quads"] = _quad_index(settings, (
+            (_SETTINGS_ASTRO_LIBRARY_DIR, get_astro_library_dir, "gaia_astro_"),
+            (_SETTINGS_LIBRARY_DIR, get_library_dir, "gaia_xp_")))
+    except Exception as e:                   # never costs the catalog counts
+        print(f"[setup] blind solve index: {e!r}")
     found = _t("{0} of {1} sets installed").format(s_done + a_done, s_all + a_all)
     if lost:
         where = _t("Not found: {0}. Connect that drive, or choose the folder in the Gaia "

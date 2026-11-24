@@ -1558,10 +1558,11 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
     # (settings_sandbox.py). Before the splash, which reads settings.
     # Idempotent when __main__.entry() already did it.
     try:
-        from setiastro.saspro.settings_sandbox import wants_sandbox, enter_sandbox
+        from setiastro.saspro.settings_sandbox import wants_sandbox, enter_sandbox, without_language_word
         _sandbox_argv = argv if argv is not None else sys.argv[1:]
         if wants_sandbox(_sandbox_argv):
             enter_sandbox(_sandbox_argv)
+            argv = without_language_word(_sandbox_argv)    # "--firstrun spanish" is not a file
     except Exception:
         import traceback as _tb
         print("[firstrun] could not set up the settings sandbox:")

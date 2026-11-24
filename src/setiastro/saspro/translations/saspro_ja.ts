@@ -4661,6 +4661,36 @@ Install it with:  pip install pypdfium2</source>
       <source>▼  Advanced</source>
       <translation>▼  詳細設定</translation>
     </message>
+    <message>
+      <source>All Tools: every toolbar and tool</source>
+      <translation>すべてのツール: すべてのツールバーとツール</translation>
+    </message>
+    <message>
+      <source>Essentials</source>
+      <translation>基本ツール</translation>
+    </message>
+    <message>
+      <source>Essentials: the tools of the beginner workflows, with their names.
+Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
+      <translation>基本ツール: 初心者向けワークフローのツールを名前付きで表示します。
+すべてのツールは引き続きメニューと「コマンドを検索」(Ctrl+/) から使えます。</translation>
+    </message>
+    <message>
+      <source>Search Commands...</source>
+      <translation>コマンドを検索...</translation>
+    </message>
+    <message>
+      <source>Show Names Under Essentials Icons</source>
+      <translation>基本ツールのアイコンの下に名前を表示</translation>
+    </message>
+    <message>
+      <source>Toolbar Mode</source>
+      <translation>ツールバーモード</translation>
+    </message>
+    <message>
+      <source>Start Panel: open images, process step by step, stacking and more</source>
+      <translation>スタートパネル：画像を開く、ステップごとに処理、スタッキングなど</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -11616,27 +11646,27 @@ RAF を直接開くか、ヘッダーに RAW_PATH を埋め込むか、RAW を�
     <name>DraggableToolBar</name>
     <message>
       <source>Create Desktop Shortcut</source>
-      <translation>Create Desktop Shortcut</translation>
+      <translation>デスクトップショートカットを作成</translation>
     </message>
     <message>
       <source>Hide this icon</source>
-      <translation>Hide this icon</translation>
+      <translation>このアイコンを隠す</translation>
     </message>
     <message>
       <source>Lock Toolbar Icons</source>
-      <translation>Lock Toolbar Icons</translation>
+      <translation>ツールバーのアイコンをロック</translation>
     </message>
     <message>
       <source>Reset hidden icons</source>
-      <translation>Reset hidden icons</translation>
+      <translation>非表示のアイコンをリセット</translation>
     </message>
     <message>
       <source>Show hidden…</source>
-      <translation>Show hidden…</translation>
+      <translation>非表示のアイコンを表示…</translation>
     </message>
     <message>
       <source>Tip: Alt+Drag to create</source>
-      <translation>Tip: Alt+Drag to create</translation>
+      <translation>ヒント: Alt を押しながらドラッグして作成</translation>
     </message>
     <message>
       <source>Reset to Factory Layout...</source>
@@ -27986,6 +28016,166 @@ Calibrate only the {2} new frame(s) and reuse the existing calibrated frames for
       <source>🖼 Open Saved Masters</source>
       <translation>🖼 保存したマスターを開く</translation>
     </message>
+    <message>
+      <source>Add a master dark…</source>
+      <translation>マスターダークを追加…</translation>
+    </message>
+    <message>
+      <source>Add a master flat…</source>
+      <translation>マスターフラットを追加…</translation>
+    </message>
+    <message>
+      <source>Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.</source>
+      <translation>自動ではフィルターとサイズで選び、次に同じ夜 (なければ最も近い夜) のゲインが一致するフラットを選びます。このグループとセッションだけ、別のマスターまたは「なし」を選べます。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>自動ではサイズ、次にゲイン、露出、温度の順で選びます。各フラットグループの「ダーク」行に選択が表示されます: そこで別のマスターまたは「なし」を選んでください。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.</source>
+      <translation>自動ではサイズ、次にゲイン、露出、温度の順で選びます。このグループだけ、別のマスターまたは「なし」を選べます。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>自動ではサイズ、次にゲイン、露出、温度の順で選びます。このグループだけ、別のマスターまたは「なし」を選べます。フレームを右クリックすると、そのフレーム専用のものを指定できます。</translation>
+    </message>
+    <message>
+      <source>Auto-Select is off: pick a dark, or leave none</source>
+      <translation>自動選択はオフです: ダークを選ぶか、なしのままにしてください</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>自動: 合うものなし</translation>
+    </message>
+    <message>
+      <source>Auto: off (Auto-Select is unchecked)</source>
+      <translation>自動: オフ (自動選択のチェックが外れています)</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>自動: {0}</translation>
+    </message>
+    <message>
+      <source>Auto: {0} masters, picked per frame</source>
+      <translation>自動: {0} 個のマスター、フレームごとに選択</translation>
+    </message>
+    <message>
+      <source>Choose Master Dark(s)</source>
+      <translation>マスターダークを選択</translation>
+    </message>
+    <message>
+      <source>Choose Master Flat(s)</source>
+      <translation>マスターフラットを選択</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.</source>
+      <translation>各グループに、使用するマスターダークとマスターフラットが表示されます: そこで変更してください。フレームを右クリックすると、専用のものを指定したり、セッションキーを割り当てたりできます。</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark it will use: change it there. Right-click to set a session tag.</source>
+      <translation>各グループに、使用するマスターダークが表示されます: そこで変更してください。右クリックでセッションタグを設定できます。</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>読み込みなし</translation>
+    </message>
+    <message>
+      <source>Use the Group's Dark and Flat</source>
+      <translation>グループのダークとフラットを使用</translation>
+    </message>
+    <message>
+      <source>every session</source>
+      <translation>すべてのセッション</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>ゲイン {0:g}</translation>
+    </message>
+    <message>
+      <source>{0} ({1})</source>
+      <translation>{0} ({1})</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>{0} フレーム</translation>
+    </message>
+    <message>
+      <source>{0}: these frames are {1}</source>
+      <translation>{0}: これらのフレームは {1}</translation>
+    </message>
+    <message>
+      <source>≈ nearest night: {0} ({1} d away)</source>
+      <translation>≈ 最も近い夜: {0} ({1} 日差)</translation>
+    </message>
+    <message>
+      <source>≈ {0} masters, picked per frame</source>
+      <translation>≈ {0} 個のマスター、フレームごとに選択</translation>
+    </message>
+    <message>
+      <source>⚠ dark {0:+.0f} °C, frames {1:+.0f} °C</source>
+      <translation>⚠ ダーク {0:+.0f} °C、フレーム {1:+.0f} °C</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ ゲイン {0:g}、フレーム {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ {0} のフラットです</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ 露出が記録されていません</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat at {1}</source>
+      <translation>⚠ {1} の {0} フラットがありません</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0}</source>
+      <translation>⚠ {0} のものがありません</translation>
+    </message>
+    <message>
+      <source>⚠ none records its exposure: choose one</source>
+      <translation>⚠ どれも露出が記録されていません: 1 つ選んでください</translation>
+    </message>
+    <message>
+      <source>⚠ offset {0:g}, frames {1:g}</source>
+      <translation>⚠ オフセット {0:g}、フレーム {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ ダーク {0:g} 秒、フレーム {1:g} 秒</translation>
+    </message>
+    <message>
+      <source>⚠ {0}, these frames are {1}</source>
+      <translation>⚠ {0}、これらのフレームは {1}</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ なし</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ 手動選択</translation>
+    </message>
+    <message>
+      <source>✎ {0} frame(s) use their own</source>
+      <translation>✎ {0} フレームが専用のものを使用</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ 自動</translation>
+    </message>
+    <message>
+      <source>✓ same night</source>
+      <translation>✓ 同じ夜</translation>
+    </message>
+    <message>
+      <source>✓ same session</source>
+      <translation>✓ 同じセッション</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -40711,6 +40901,42 @@ Statistical Stretch はピクセルを変更します。機能 → ストレッ�
       <source>You've processed your first image</source>
       <translation>初めての画像を処理しました</translation>
     </message>
+    <message>
+      <source>1 of 4</source>
+      <translation>1/4</translation>
+    </message>
+    <message>
+      <source>2 of 4</source>
+      <translation>2/4</translation>
+    </message>
+    <message>
+      <source>3 of 4</source>
+      <translation>3/4</translation>
+    </message>
+    <message>
+      <source>4 of 4</source>
+      <translation>4/4</translation>
+    </message>
+    <message>
+      <source>Crop off the stacking edges</source>
+      <translation>スタックの縁をトリミング</translation>
+    </message>
+    <message>
+      <source>No stacking edges? Skip this step</source>
+      <translation>スタックの縁がない場合は、この手順をスキップ</translation>
+    </message>
+    <message>
+      <source>Open Crop</source>
+      <translation>トリミングを開く</translation>
+    </message>
+    <message>
+      <source>Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.
+
+Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside the clean area, then click Apply.</source>
+      <translation>サブフレームが完全に重ならなかった部分では、スタック画像の縁がぎざぎざになります。暗い縁やノイズの多い縁、ときには縞模様です。まずそこをトリミングしてください。ストレッチ、グラデーション除去、色較正はどれも画像全体を測定するため、こうした縁があると結果が狂います。
+
+トリミングは 機能 → 修復 &amp; レタッチ → トリミング にあります。枠をきれいな領域の内側にドラッグし、「適用」をクリックします。</translation>
+    </message>
   </context>
   <context>
     <name>FitsBundleExportDialog</name>
@@ -52300,6 +52526,266 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, combined as a trimmed mean. No weighting or normalization, and no calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
       <translation>サブフレーム一式を素早く確認します: マスターを指定すればキャリブレーションし、位置・回転・スケールで整列し、トリム平均で合成します。重み付けや正規化は行わず、キャリブレーション済みや整列済みのファイルもディスクに残しません。カラーカメラはデベイヤーされます (バイリニア)。</translation>
     </message>
+    <message>
+      <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
+      <translation>サブフレーム一式を素早く確認します: マスターを指定すればキャリブレーションし、位置・回転・スケールで整列し、リファレンスの空のレベルに合わせ、各フレームで見つかった星の数で重み付けしたトリム平均で合成します。キャリブレーション済みや整列済みのファイルはディスクに残しません。カラーカメラはデベイヤーされます (バイリニア)。</translation>
+    </message>
+    <message>
+      <source>Add Masters…</source>
+      <translation>マスターを追加…</translation>
+    </message>
+    <message>
+      <source>Add a master dark or dark frames…</source>
+      <translation>マスターダークまたはダークフレームを追加…</translation>
+    </message>
+    <message>
+      <source>Add a master flat or flat frames…</source>
+      <translation>マスターフラットまたはフラットフレームを追加…</translation>
+    </message>
+    <message>
+      <source>Added {0}.</source>
+      <translation>追加しました: {0}。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.</source>
+      <translation>自動ではサイズ、次にフィルターで選びます: 表記どおり、別の表記 (OIII の O3、Ha の H-alpha)、またはフィルターカードのないフラットのファイル名にある名前。このグループだけ、別のマスターまたは「なし」を選べます。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.</source>
+      <translation>自動ではサイズ、次にゲインと露出 (ダーク) またはフィルター (フラット) で選びます。このグループだけ、別のマスターまたは「なし」を選べます。</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>自動: 合うものなし</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>自動: {0}</translation>
+    </message>
+    <message>
+      <source>Choose a master dark or dark frames</source>
+      <translation>マスターダークまたはダークフレームを選択</translation>
+    </message>
+    <message>
+      <source>Choose a master flat or flat frames</source>
+      <translation>マスターフラットまたはフラットフレームを選択</translation>
+    </message>
+    <message>
+      <source>Choose master darks and flats, or their frames</source>
+      <translation>マスターダークとフラット、またはそのフレームを選択</translation>
+    </message>
+    <message>
+      <source>Clear Masters</source>
+      <translation>マスターをクリア</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>ダーク</translation>
+    </message>
+    <message>
+      <source>Darks and flats ({0});;All Files (*)</source>
+      <translation>ダークとフラット ({0});;すべてのファイル (*)</translation>
+    </message>
+    <message>
+      <source>Flat</source>
+      <translation>フラット</translation>
+    </message>
+    <message>
+      <source>Is {0} a master dark or a master flat?</source>
+      <translation>{0} はマスターダークですか、マスターフラットですか?</translation>
+    </message>
+    <message>
+      <source>It has no IMAGETYP card, and its file name does not say.</source>
+      <translation>IMAGETYP カードがなく、ファイル名からも分かりません。</translation>
+    </message>
+    <message>
+      <source>Left out {0}</source>
+      <translation>除外: {0}</translation>
+    </message>
+    <message>
+      <source>Left out {0} bias / flat-dark file(s): Quick Stack does not use them.</source>
+      <translation>バイアス / フラットダークのファイル {0} 個を除外しました: Quick Stack はこれらを使用しません。</translation>
+    </message>
+    <message>
+      <source>Left out {0} file(s): see below.</source>
+      <translation>{0} 個のファイルを除外しました: 下を参照してください。</translation>
+    </message>
+    <message>
+      <source>Master Dark</source>
+      <translation>マスターダーク</translation>
+    </message>
+    <message>
+      <source>Master Flat</source>
+      <translation>マスターフラット</translation>
+    </message>
+    <message>
+      <source>Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.
+
+Single dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.
+
+Masters and frames dropped on this window, or added with the lights, are sorted out by themselves.</source>
+      <translation>マスターダークとフラットは、あるだけ使えます: フィルターごとにフラット 1 枚、露出ごとにダーク。リストの各グループに、使用するダークとフラットが表示されます。サイズ、次にフィルター (フラット) またはゲインと露出 (ダーク) で選ばれます。どのグループの選択もそこで変更できます。
+
+個々のダークフレームとフラットフレームも使えます: スタックで初めて必要になったときにメモリ上でマスターに合成され (トリム平均)、ディスクには何も書き込まれません。ダークは露出、ゲイン、サイズで、フラットはフィルター、サイズ、夜でグループ化されます。
+
+このウィンドウにドロップしたマスターとフレーム、またはライトと一緒に追加したものは、自動的に振り分けられます。</translation>
+    </message>
+    <message>
+      <source>Masters:</source>
+      <translation>マスター:</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>なし</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>読み込みなし</translation>
+    </message>
+    <message>
+      <source>Nothing was added.</source>
+      <translation>何も追加されませんでした。</translation>
+    </message>
+    <message>
+      <source>Skip</source>
+      <translation>スキップ</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>ゲイン {0:g}</translation>
+    </message>
+    <message>
+      <source>made in memory from {0} frames</source>
+      <translation>{0} フレームからメモリ上で作成</translation>
+    </message>
+    <message>
+      <source>no filter</source>
+      <translation>フィルターなし</translation>
+    </message>
+    <message>
+      <source>none (optional: drop or add master darks and flats, or their frames)</source>
+      <translation>なし (任意: マスターダークとフラット、またはそのフレームをドロップするか追加)</translation>
+    </message>
+    <message>
+      <source>{0} (from its name)</source>
+      <translation>{0} (名前から)</translation>
+    </message>
+    <message>
+      <source>{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).</source>
+      <translation>バイアスフレーム {0} 枚: Quick Stack はバイアスを使用しません (マスターダークに含まれます)。</translation>
+    </message>
+    <message>
+      <source>{0} dark frame(s) to make master darks from</source>
+      <translation>マスターダークを作るダークフレーム {0} 枚</translation>
+    </message>
+    <message>
+      <source>{0} dark frames, {1:g} s</source>
+      <translation>ダークフレーム {0} 枚、{1:g} 秒</translation>
+    </message>
+    <message>
+      <source>{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses</source>
+      <translation>ダーク {0}  ·  フラット {1}: 各グループに使うものが表示されます</translation>
+    </message>
+    <message>
+      <source>{0} flat frame(s) to make master flats from</source>
+      <translation>マスターフラットを作るフラットフレーム {0} 枚</translation>
+    </message>
+    <message>
+      <source>{0} flat frames</source>
+      <translation>フラットフレーム {0} 枚</translation>
+    </message>
+    <message>
+      <source>{0} flat frames, {1}</source>
+      <translation>フラットフレーム {0} 枚、{1}</translation>
+    </message>
+    <message>
+      <source>{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).</source>
+      <translation>フラットダークフレーム {0} 枚: Quick Stack はこれらを使用しません (マスターフラットはキャリブレーション済みのはずです)。</translation>
+    </message>
+    <message>
+      <source>{0} frame(s)</source>
+      <translation>{0} フレーム</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>{0} フレーム</translation>
+    </message>
+    <message>
+      <source>{0} master dark(s)</source>
+      <translation>マスターダーク {0} 枚</translation>
+    </message>
+    <message>
+      <source>{0} master flat(s)</source>
+      <translation>マスターフラット {0} 枚</translation>
+    </message>
+    <message>
+      <source>{0} x {1}: these frames are {2} x {3}</source>
+      <translation>{0} x {1}: これらのフレームは {2} x {3}</translation>
+    </message>
+    <message>
+      <source>{0} {1} flat frames, {2}</source>
+      <translation>{1} フラットフレーム {0} 枚、{2}</translation>
+    </message>
+    <message>
+      <source>… and {0} more</source>
+      <translation>… ほか {0} 件</translation>
+    </message>
+    <message>
+      <source>≈ {0} = {1}</source>
+      <translation>≈ {0} = {1}</translation>
+    </message>
+    <message>
+      <source>≈ {0}, from its file name</source>
+      <translation>≈ {0}、ファイル名から</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ ゲイン {0:g}、フレーム {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ {0} のフラットです</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ 露出が記録されていません</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat</source>
+      <translation>⚠ {0} のフラットがありません</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0} x {1}</source>
+      <translation>⚠ {0} x {1} のものがありません</translation>
+    </message>
+    <message>
+      <source>⚠ the frames give no exposure: choose one</source>
+      <translation>⚠ フレームに露出がありません: 1 つ選んでください</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ ダーク {0:g} 秒、フレーム {1:g} 秒</translation>
+    </message>
+    <message>
+      <source>⚠ {0} x {1}, not these frames' size: it will be left out</source>
+      <translation>⚠ {0} x {1}、これらのフレームのサイズではありません: 除外されます</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ なし</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ 手動選択</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ 自動</translation>
+    </message>
+    <message>
+      <source>✓ the only flat</source>
+      <translation>✓ 唯一のフラット</translation>
+    </message>
   </context>
   <context>
     <name>RCAstro</name>
@@ -58093,6 +58579,62 @@ Thank you for being part of this journey. Clear skies.</source>
     <message>
       <source>— Franklin Marek (Seti Astro)</source>
       <translation>— Franklin Marek (Seti Astro)</translation>
+    </message>
+    <message>
+      <source>Blind Solve Index</source>
+      <translation>ブラインドソルブ インデックス</translation>
+    </message>
+    <message>
+      <source>Build in the Gaia manager</source>
+      <translation>Gaia マネージャーで構築</translation>
+    </message>
+    <message>
+      <source>For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.</source>
+      <translation>ブラインドソルブ用: 座標も視野の大きさも分からない画像が、どこを向いているかを見つけます。お使いの Gaia セットからこのコンピューター上で構築されるため、ダウンロードは不要です。推奨の {0} レイヤーは約 {1} で、約 20′ から 25° の視野をカバーします。ほとんどの撮影機材はこの範囲です。</translation>
+    </message>
+    <message>
+      <source>For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.</source>
+      <translation>プレートソルブ用です。下のブラインドソルブ インデックスもここから構築されます。推奨セットは約 35 GB です。</translation>
+    </message>
+    <message>
+      <source>Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.</source>
+      <translation>インデックス フォルダーが見つかりません: {0}。そのドライブを接続するか、Gaia マネージャーでフォルダを選択してください。</translation>
+    </message>
+    <message>
+      <source>Layers built: {0}. {1} on disk.</source>
+      <translation>構築済みレイヤー: {0}。ディスク使用量 {1}。</translation>
+    </message>
+    <message>
+      <source>Not built yet. It is built from the Bright (G &lt; 17) Astrometry set, so install that first.</source>
+      <translation>まだ構築されていません。アストロメトリの 明るい (G &lt; 17) セットから構築されるため、先にそれをインストールしてください。</translation>
+    </message>
+    <message>
+      <source>Not built yet. Recommended layers you can build now: {0}.</source>
+      <translation>まだ構築されていません。今すぐ構築できる推奨レイヤー: {0}。</translation>
+    </message>
+    <message>
+      <source>Not built yet. Your Gaia sets have everything the recommended layers need.</source>
+      <translation>まだ構築されていません。お使いの Gaia セットには推奨レイヤーに必要なものがすべて揃っています。</translation>
+    </message>
+    <message>
+      <source>Open in the Gaia manager</source>
+      <translation>Gaia マネージャーで開く</translation>
+    </message>
+    <message>
+      <source>Ready for blind solving.</source>
+      <translation>ブラインドソルブの準備ができています。</translation>
+    </message>
+    <message>
+      <source>Recommended layers still to build: {0}.</source>
+      <translation>まだ構築していない推奨レイヤー: {0}。</translation>
+    </message>
+    <message>
+      <source>These need the Bright (G &lt; 17) Astrometry set first: {0}.</source>
+      <translation>次のレイヤーには先にアストロメトリの 明るい (G &lt; 17) セットが必要です: {0}。</translation>
+    </message>
+    <message>
+      <source>{0} of {1} recommended layers</source>
+      <translation>推奨 {1} レイヤー中 {0} レイヤー</translation>
     </message>
   </context>
   <context>
@@ -72679,6 +73221,22 @@ NOT recommended for narrowband or duoband data.</source>
       <source>White Balance — Preset</source>
       <translation>ホワイトバランス — プリセット</translation>
     </message>
+    <message>
+      <source>Auto σ (waterfall)</source>
+      <translation>自動 σ (ウォーターフォール)</translation>
+    </message>
+    <message>
+      <source>Detection threshold (σ):</source>
+      <translation>検出しきい値 (σ):</translation>
+    </message>
+    <message>
+      <source>Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.</source>
+      <translation>ホワイトバランスのダイアログと同様に、検出しきい値を自動で選びます。上のしきい値を使うにはチェックを外します。</translation>
+    </message>
+    <message>
+      <source>Rotation strength:</source>
+      <translation>回転の強さ:</translation>
+    </message>
   </context>
   <context>
     <name>_WorkerCloseGuardMixin</name>
@@ -72720,6 +73278,96 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>Show the workflow as one plain list of steps per lane (Ctrl+G)</source>
       <translation>ワークフローをレーンごとのステップの単純なリストで表示 (Ctrl+G)</translation>
+    </message>
+  </context>
+  <context>
+    <name>Essentials</name>
+    <message>
+      <source>ADBE</source>
+      <translation>ADBE</translation>
+    </message>
+    <message>
+      <source>Add Stars</source>
+      <translation>星を追加</translation>
+    </message>
+    <message>
+      <source>BG Neutral</source>
+      <translation>背景の中性化</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Crop</source>
+      <translation>トリミング</translation>
+    </message>
+    <message>
+      <source>Curves</source>
+      <translation>カーブ</translation>
+    </message>
+    <message>
+      <source>Essentials: Linear</source>
+      <translation>基本ツール: リニア</translation>
+    </message>
+    <message>
+      <source>Essentials: Non-Linear</source>
+      <translation>基本ツール: ノンリニア</translation>
+    </message>
+    <message>
+      <source>LRGB Combine</source>
+      <translation>LRGB 合成</translation>
+    </message>
+    <message>
+      <source>NB→RGB Stars</source>
+      <translation>NB→RGB 星</translation>
+    </message>
+    <message>
+      <source>Palette Picker</source>
+      <translation>Palette Picker</translation>
+    </message>
+    <message>
+      <source>RC-Astro</source>
+      <translation>RC-Astro</translation>
+    </message>
+    <message>
+      <source>Remove Stars</source>
+      <translation>星を削除</translation>
+    </message>
+    <message>
+      <source>Selective Color</source>
+      <translation>選択的色補正</translation>
+    </message>
+    <message>
+      <source>Star Stretch</source>
+      <translation>Star Stretch</translation>
+    </message>
+    <message>
+      <source>Stretch</source>
+      <translation>Stretch</translation>
+    </message>
+    <message>
+      <source>SyQon</source>
+      <translation>SyQon</translation>
+    </message>
+    <message>
+      <source>Texture</source>
+      <translation>テクスチャ</translation>
+    </message>
+    <message>
+      <source>White Balance</source>
+      <translation>ホワイトバランス</translation>
+    </message>
+  </context>
+  <context>
+    <name>EssentialsToolBar</name>
+    <message>
+      <source>Create Desktop Shortcut</source>
+      <translation>デスクトップショートカットを作成</translation>
+    </message>
+    <message>
+      <source>Lock Toolbar Icons</source>
+      <translation>ツールバーのアイコンをロック</translation>
     </message>
   </context>
 </TS>

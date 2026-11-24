@@ -310,12 +310,16 @@ class DockMixin:
         self.minimap_dock = MinimapDock(self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,
                            self.minimap_dock)
+        # Its own panel, under the System Monitor, like every other panel on
+        # this edge. It used to be tabbed with the System Monitor, so opening
+        # the right rail showed the two as tabs of one panel. The anchor must
+        # not be in a tab group: splitDockWidget would make this a tab of it.
         try:
             anchor = (getattr(self, "resource_monitor_dock", None)
                       or getattr(self, "header_dock", None)
                       or getattr(self, "layers_dock", None))
             if anchor is not None:
-                self.tabifyDockWidget(anchor, self.minimap_dock)
+                self.splitDockWidget(anchor, self.minimap_dock, Qt.Orientation.Vertical)
         except Exception:
             pass
         # Off by default: it is a navigation aid for a workspace that has
@@ -337,15 +341,10 @@ class DockMixin:
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,
                            self.resource_monitor_dock)
 
-        # Tab it alongside the existing right-side stack if present, so it
-        # doesn't force a tall new column on first run. restoreState() will
-        # override this with the user's saved layout when there is one.
-        try:
-            anchor = getattr(self, "header_dock", None) or getattr(self, "layers_dock", None)
-            if anchor is not None:
-                self.tabifyDockWidget(anchor, self.resource_monitor_dock)
-        except Exception:
-            pass
+        # Its own panel, like every other panel on this edge, not a tab of the
+        # Header Viewer. That tab group also caught the Workspace Map: Qt's
+        # splitDockWidget adds a dock to a tabbed anchor as one more tab. A
+        # saved layout still restores over this (restoreState).
 
         # Legacy alias: the floating-overlay attribute is gone. Keep the name
         # defined (None) so any lingering `self.resource_monitor` truthiness

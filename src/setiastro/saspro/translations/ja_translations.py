@@ -17142,3 +17142,241 @@ for _ctx, _msgs in _ADDITIONS_2026_11.items():
     _dst = TRANSLATIONS_JA.setdefault(_ctx, {})
     _dst.update(_msgs)
 del _ctx, _msgs, _dst
+
+# 2026-11-24: the Essentials toolbars and their switch, the toolbars' right-click
+# menu where it was still English, Search Commands, and the White Balance preset
+# editor of Function Bundles.
+_ADDITIONS_2026_11_24 = {
+    "AstroSuiteProMainWindow": {
+        'All Tools: every toolbar and tool': 'すべてのツール: すべてのツールバーとツール',
+        'Essentials': '基本ツール',
+        'Essentials: the tools of the beginner workflows, with their names.\nEvery tool is still in the menus and in Search Commands (Ctrl+/).': '基本ツール: 初心者向けワークフローのツールを名前付きで表示します。\nすべてのツールは引き続きメニューと「コマンドを検索」(Ctrl+/) から使えます。',
+        'Search Commands...': 'コマンドを検索...',
+        'Show Names Under Essentials Icons': '基本ツールのアイコンの下に名前を表示',
+        'Toolbar Mode': 'ツールバーモード',
+    },
+    "DraggableToolBar": {
+        'Create Desktop Shortcut': 'デスクトップショートカットを作成',
+        'Hide this icon': 'このアイコンを隠す',
+        'Lock Toolbar Icons': 'ツールバーのアイコンをロック',
+        'Reset hidden icons': '非表示のアイコンをリセット',
+        'Show hidden…': '非表示のアイコンを表示…',
+        'Tip: Alt+Drag to create': 'ヒント: Alt を押しながらドラッグして作成',
+    },
+    "Essentials": {
+        'ADBE': 'ADBE',
+        'Add Stars': '星を追加',
+        'BG Neutral': '背景の中性化',
+        'Cosmic Clarity': 'Cosmic Clarity',
+        'Crop': 'トリミング',
+        'Curves': 'カーブ',
+        'Essentials: Linear': '基本ツール: リニア',
+        'Essentials: Non-Linear': '基本ツール: ノンリニア',
+        'LRGB Combine': 'LRGB 合成',
+        'NB→RGB Stars': 'NB→RGB 星',
+        'Palette Picker': 'Palette Picker',
+        'RC-Astro': 'RC-Astro',
+        'Remove Stars': '星を削除',
+        'Selective Color': '選択的色補正',
+        'Star Stretch': 'Star Stretch',
+        'Stretch': 'Stretch',
+        'SyQon': 'SyQon',
+        'Texture': 'テクスチャ',
+        'White Balance': 'ホワイトバランス',
+    },
+    "EssentialsToolBar": {
+        'Create Desktop Shortcut': 'デスクトップショートカットを作成',
+        'Lock Toolbar Icons': 'ツールバーのアイコンをロック',
+    },
+    "_WhiteBalancePresetDialog": {
+        'Auto σ (waterfall)': '自動 σ (ウォーターフォール)',
+        'Detection threshold (σ):': '検出しきい値 (σ):',
+        'Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.': 'ホワイトバランスのダイアログと同様に、検出しきい値を自動で選びます。上のしきい値を使うにはチェックを外します。',
+        'Rotation strength:': '回転の強さ:',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Welcome and Setup, Gaia page: the Blind Solve Index section.
+_ADDITIONS_2026_11_24_SETUP = {
+    "Setup": {
+        'Blind Solve Index': 'ブラインドソルブ インデックス',
+        'Build in the Gaia manager': 'Gaia マネージャーで構築',
+        'For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.': 'ブラインドソルブ用: 座標も視野の大きさも分からない画像が、どこを向いているかを見つけます。お使いの Gaia セットからこのコンピューター上で構築されるため、ダウンロードは不要です。推奨の {0} レイヤーは約 {1} で、約 20′ から 25° の視野をカバーします。ほとんどの撮影機材はこの範囲です。',
+        'For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.': 'プレートソルブ用です。下のブラインドソルブ インデックスもここから構築されます。推奨セットは約 35 GB です。',
+        'Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.': 'インデックス フォルダーが見つかりません: {0}。そのドライブを接続するか、Gaia マネージャーでフォルダを選択してください。',
+        'Layers built: {0}. {1} on disk.': '構築済みレイヤー: {0}。ディスク使用量 {1}。',
+        'Not built yet. It is built from the Bright (G < 17) Astrometry set, so install that first.': 'まだ構築されていません。アストロメトリの 明るい (G < 17) セットから構築されるため、先にそれをインストールしてください。',
+        'Not built yet. Recommended layers you can build now: {0}.': 'まだ構築されていません。今すぐ構築できる推奨レイヤー: {0}。',
+        'Not built yet. Your Gaia sets have everything the recommended layers need.': 'まだ構築されていません。お使いの Gaia セットには推奨レイヤーに必要なものがすべて揃っています。',
+        'Open in the Gaia manager': 'Gaia マネージャーで開く',
+        'Ready for blind solving.': 'ブラインドソルブの準備ができています。',
+        'Recommended layers still to build: {0}.': 'まだ構築していない推奨レイヤー: {0}。',
+        'These need the Bright (G < 17) Astrometry set first: {0}.': '次のレイヤーには先にアストロメトリの 明るい (G < 17) セットが必要です: {0}。',
+        '{0} of {1} recommended layers': '推奨 {1} レイヤー中 {0} レイヤー',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_SETUP.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: Stacking Suite Dark/Flat rows per group (Flats and Lights tabs), and the
+# Quick Stack window's description (frames weighted by star count).
+_ADDITIONS_2026_11_24_PICKS = {
+    "QuickStackDialog": {
+        "A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).": 'サブフレーム一式を素早く確認します: マスターを指定すればキャリブレーションし、位置・回転・スケールで整列し、リファレンスの空のレベルに合わせ、各フレームで見つかった星の数で重み付けしたトリム平均で合成します。キャリブレーション済みや整列済みのファイルはディスクに残しません。カラーカメラはデベイヤーされます (バイリニア)。',
+    },
+    "StackingSuiteDialog": {
+        'Add a master dark…': 'マスターダークを追加…',
+        'Add a master flat…': 'マスターフラットを追加…',
+        'Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.': '自動ではフィルターとサイズで選び、次に同じ夜 (なければ最も近い夜) のゲインが一致するフラットを選びます。このグループとセッションだけ、別のマスターまたは「なし」を選べます。',
+        "Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.": '自動ではサイズ、次にゲイン、露出、温度の順で選びます。各フラットグループの「ダーク」行に選択が表示されます: そこで別のマスターまたは「なし」を選んでください。',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.': '自動ではサイズ、次にゲイン、露出、温度の順で選びます。このグループだけ、別のマスターまたは「なし」を選べます。',
+        'Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.': '自動ではサイズ、次にゲイン、露出、温度の順で選びます。このグループだけ、別のマスターまたは「なし」を選べます。フレームを右クリックすると、そのフレーム専用のものを指定できます。',
+        'Auto-Select is off: pick a dark, or leave none': '自動選択はオフです: ダークを選ぶか、なしのままにしてください',
+        'Auto: none fits': '自動: 合うものなし',
+        'Auto: off (Auto-Select is unchecked)': '自動: オフ (自動選択のチェックが外れています)',
+        'Auto: {0}': '自動: {0}',
+        'Auto: {0} masters, picked per frame': '自動: {0} 個のマスター、フレームごとに選択',
+        'Choose Master Dark(s)': 'マスターダークを選択',
+        'Choose Master Flat(s)': 'マスターフラットを選択',
+        'Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.': '各グループに、使用するマスターダークとマスターフラットが表示されます: そこで変更してください。フレームを右クリックすると、専用のものを指定したり、セッションキーを割り当てたりできます。',
+        'Each group shows the master dark it will use: change it there. Right-click to set a session tag.': '各グループに、使用するマスターダークが表示されます: そこで変更してください。右クリックでセッションタグを設定できます。',
+        'None loaded': '読み込みなし',
+        "Use the Group's Dark and Flat": 'グループのダークとフラットを使用',
+        'every session': 'すべてのセッション',
+        'gain {0:g}': 'ゲイン {0:g}',
+        '{0} ({1})': '{0} ({1})',
+        '{0} frames': '{0} フレーム',
+        '{0}: these frames are {1}': '{0}: これらのフレームは {1}',
+        '≈ nearest night: {0} ({1} d away)': '≈ 最も近い夜: {0} ({1} 日差)',
+        '≈ {0} masters, picked per frame': '≈ {0} 個のマスター、フレームごとに選択',
+        '⚠ dark {0:+.0f} °C, frames {1:+.0f} °C': '⚠ ダーク {0:+.0f} °C、フレーム {1:+.0f} °C',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ ゲイン {0:g}、フレーム {1:g}',
+        '⚠ it is the {0} flat': '⚠ {0} のフラットです',
+        '⚠ its exposure is not recorded': '⚠ 露出が記録されていません',
+        '⚠ no {0} flat at {1}': '⚠ {1} の {0} フラットがありません',
+        '⚠ none is {0}': '⚠ {0} のものがありません',
+        '⚠ none records its exposure: choose one': '⚠ どれも露出が記録されていません: 1 つ選んでください',
+        '⚠ offset {0:g}, frames {1:g}': '⚠ オフセット {0:g}、フレーム {1:g}',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ ダーク {0:g} 秒、フレーム {1:g} 秒',
+        '⚠ {0}, these frames are {1}': '⚠ {0}、これらのフレームは {1}',
+        '✎ none': '✎ なし',
+        '✎ your choice': '✎ 手動選択',
+        '✎ {0} frame(s) use their own': '✎ {0} フレームが専用のものを使用',
+        '✓ auto': '✓ 自動',
+        '✓ same night': '✓ 同じ夜',
+        '✓ same session': '✓ 同じセッション',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_PICKS.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: First Steps tour, the Crop step (now 4 steps).
+_ADDITIONS_2026_11_24_TOUR = {
+    "FirstStepsTour": {
+        '1 of 4': '1/4',
+        '2 of 4': '2/4',
+        '3 of 4': '3/4',
+        '4 of 4': '4/4',
+        'Crop off the stacking edges': 'スタックの縁をトリミング',
+        'No stacking edges? Skip this step': 'スタックの縁がない場合は、この手順をスキップ',
+        'Open Crop': 'トリミングを開く',
+        "Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.\n\nCrop is under Functions → Repair & Retouch → Crop. Drag the box inside the clean area, then click Apply.": 'サブフレームが完全に重ならなかった部分では、スタック画像の縁がぎざぎざになります。暗い縁やノイズの多い縁、ときには縞模様です。まずそこをトリミングしてください。ストレッチ、グラデーション除去、色較正はどれも画像全体を測定するため、こうした縁があると結果が狂います。\n\nトリミングは 機能 → 修復 & レタッチ → トリミング にあります。枠をきれいな領域の内側にドラッグし、「適用」をクリックします。',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_TOUR.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Start Panel button on Essentials, after Search Commands
+# (its name is View > Start Panel's, already translated).
+_ADDITIONS_2026_11_24_START = {
+    'AstroSuiteProMainWindow': {
+        'Start Panel: open images, process step by step, stacking and more': 'スタートパネル：画像を開く、ステップごとに処理、スタッキングなど',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_START.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-24: the Quick Stack window's masters (per-group Dark / Flat lists, 2026-11-23)
+# and masters made in memory from single dark and flat frames.
+_ADDITIONS_2026_11_24_QS = {
+    "QuickStackDialog": {
+        'Add Masters…': 'マスターを追加…',
+        'Add a master dark or dark frames…': 'マスターダークまたはダークフレームを追加…',
+        'Add a master flat or flat frames…': 'マスターフラットまたはフラットフレームを追加…',
+        'Added {0}.': '追加しました: {0}。',
+        'Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.': '自動ではサイズ、次にフィルターで選びます: 表記どおり、別の表記 (OIII の O3、Ha の H-alpha)、またはフィルターカードのないフラットのファイル名にある名前。このグループだけ、別のマスターまたは「なし」を選べます。',
+        'Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.': '自動ではサイズ、次にゲインと露出 (ダーク) またはフィルター (フラット) で選びます。このグループだけ、別のマスターまたは「なし」を選べます。',
+        'Auto: none fits': '自動: 合うものなし',
+        'Auto: {0}': '自動: {0}',
+        'Choose a master dark or dark frames': 'マスターダークまたはダークフレームを選択',
+        'Choose a master flat or flat frames': 'マスターフラットまたはフラットフレームを選択',
+        'Choose master darks and flats, or their frames': 'マスターダークとフラット、またはそのフレームを選択',
+        'Clear Masters': 'マスターをクリア',
+        'Dark': 'ダーク',
+        'Darks and flats ({0});;All Files (*)': 'ダークとフラット ({0});;すべてのファイル (*)',
+        'Flat': 'フラット',
+        'Is {0} a master dark or a master flat?': '{0} はマスターダークですか、マスターフラットですか?',
+        'It has no IMAGETYP card, and its file name does not say.': 'IMAGETYP カードがなく、ファイル名からも分かりません。',
+        'Left out {0}': '除外: {0}',
+        'Left out {0} bias / flat-dark file(s): Quick Stack does not use them.': 'バイアス / フラットダークのファイル {0} 個を除外しました: Quick Stack はこれらを使用しません。',
+        'Left out {0} file(s): see below.': '{0} 個のファイルを除外しました: 下を参照してください。',
+        'Master Dark': 'マスターダーク',
+        'Master Flat': 'マスターフラット',
+        "Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.\n\nSingle dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.\n\nMasters and frames dropped on this window, or added with the lights, are sorted out by themselves.": 'マスターダークとフラットは、あるだけ使えます: フィルターごとにフラット 1 枚、露出ごとにダーク。リストの各グループに、使用するダークとフラットが表示されます。サイズ、次にフィルター (フラット) またはゲインと露出 (ダーク) で選ばれます。どのグループの選択もそこで変更できます。\n\n個々のダークフレームとフラットフレームも使えます: スタックで初めて必要になったときにメモリ上でマスターに合成され (トリム平均)、ディスクには何も書き込まれません。ダークは露出、ゲイン、サイズで、フラットはフィルター、サイズ、夜でグループ化されます。\n\nこのウィンドウにドロップしたマスターとフレーム、またはライトと一緒に追加したものは、自動的に振り分けられます。',
+        'Masters:': 'マスター:',
+        'None': 'なし',
+        'None loaded': '読み込みなし',
+        'Nothing was added.': '何も追加されませんでした。',
+        'Skip': 'スキップ',
+        'gain {0:g}': 'ゲイン {0:g}',
+        'made in memory from {0} frames': '{0} フレームからメモリ上で作成',
+        'no filter': 'フィルターなし',
+        'none (optional: drop or add master darks and flats, or their frames)': 'なし (任意: マスターダークとフラット、またはそのフレームをドロップするか追加)',
+        '{0} (from its name)': '{0} (名前から)',
+        '{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).': 'バイアスフレーム {0} 枚: Quick Stack はバイアスを使用しません (マスターダークに含まれます)。',
+        '{0} dark frame(s) to make master darks from': 'マスターダークを作るダークフレーム {0} 枚',
+        '{0} dark frames, {1:g} s': 'ダークフレーム {0} 枚、{1:g} 秒',
+        '{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses': 'ダーク {0}  ·  フラット {1}: 各グループに使うものが表示されます',
+        '{0} flat frame(s) to make master flats from': 'マスターフラットを作るフラットフレーム {0} 枚',
+        '{0} flat frames': 'フラットフレーム {0} 枚',
+        '{0} flat frames, {1}': 'フラットフレーム {0} 枚、{1}',
+        '{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).': 'フラットダークフレーム {0} 枚: Quick Stack はこれらを使用しません (マスターフラットはキャリブレーション済みのはずです)。',
+        '{0} frame(s)': '{0} フレーム',
+        '{0} frames': '{0} フレーム',
+        '{0} master dark(s)': 'マスターダーク {0} 枚',
+        '{0} master flat(s)': 'マスターフラット {0} 枚',
+        '{0} x {1}: these frames are {2} x {3}': '{0} x {1}: これらのフレームは {2} x {3}',
+        '{0} {1} flat frames, {2}': '{1} フラットフレーム {0} 枚、{2}',
+        '… and {0} more': '… ほか {0} 件',
+        '≈ {0} = {1}': '≈ {0} = {1}',
+        '≈ {0}, from its file name': '≈ {0}、ファイル名から',
+        '⚠ gain {0:g}, frames {1:g}': '⚠ ゲイン {0:g}、フレーム {1:g}',
+        '⚠ it is the {0} flat': '⚠ {0} のフラットです',
+        '⚠ its exposure is not recorded': '⚠ 露出が記録されていません',
+        '⚠ no {0} flat': '⚠ {0} のフラットがありません',
+        '⚠ none is {0} x {1}': '⚠ {0} x {1} のものがありません',
+        '⚠ the frames give no exposure: choose one': '⚠ フレームに露出がありません: 1 つ選んでください',
+        '⚠ {0:g} s dark, {1:g} s frames': '⚠ ダーク {0:g} 秒、フレーム {1:g} 秒',
+        "⚠ {0} x {1}, not these frames' size: it will be left out": '⚠ {0} x {1}、これらのフレームのサイズではありません: 除外されます',
+        '✎ none': '✎ なし',
+        '✎ your choice': '✎ 手動選択',
+        '✓ auto': '✓ 自動',
+        '✓ the only flat': '✓ 唯一のフラット',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

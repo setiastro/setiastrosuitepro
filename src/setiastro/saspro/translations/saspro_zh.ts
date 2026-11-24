@@ -4661,6 +4661,36 @@ Install it with:  pip install pypdfium2</source>
       <source>▼  Advanced</source>
       <translation>▼  高级</translation>
     </message>
+    <message>
+      <source>All Tools: every toolbar and tool</source>
+      <translation>所有工具：全部工具栏和工具</translation>
+    </message>
+    <message>
+      <source>Essentials</source>
+      <translation>基本工具</translation>
+    </message>
+    <message>
+      <source>Essentials: the tools of the beginner workflows, with their names.
+Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
+      <translation>基本工具：新手工作流程用到的工具，并显示名称。
+所有工具仍在菜单和“搜索命令”(Ctrl+/) 中。</translation>
+    </message>
+    <message>
+      <source>Search Commands...</source>
+      <translation>搜索命令...</translation>
+    </message>
+    <message>
+      <source>Show Names Under Essentials Icons</source>
+      <translation>在基本工具图标下显示名称</translation>
+    </message>
+    <message>
+      <source>Toolbar Mode</source>
+      <translation>工具栏模式</translation>
+    </message>
+    <message>
+      <source>Start Panel: open images, process step by step, stacking and more</source>
+      <translation>开始面板：打开图像、逐步处理、叠加等</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -11796,27 +11826,27 @@ Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to
     <name>DraggableToolBar</name>
     <message>
       <source>Create Desktop Shortcut</source>
-      <translation>Create Desktop Shortcut</translation>
+      <translation>创建桌面快捷方式</translation>
     </message>
     <message>
       <source>Hide this icon</source>
-      <translation>Hide this icon</translation>
+      <translation>隐藏此图标</translation>
     </message>
     <message>
       <source>Lock Toolbar Icons</source>
-      <translation>Lock Toolbar Icons</translation>
+      <translation>锁定工具栏图标</translation>
     </message>
     <message>
       <source>Reset hidden icons</source>
-      <translation>Reset hidden icons</translation>
+      <translation>重置隐藏的图标</translation>
     </message>
     <message>
       <source>Show hidden…</source>
-      <translation>Show hidden…</translation>
+      <translation>显示隐藏的图标…</translation>
     </message>
     <message>
       <source>Tip: Alt+Drag to create</source>
-      <translation>Tip: Alt+Drag to create</translation>
+      <translation>提示：按住 Alt 拖动即可创建</translation>
     </message>
     <message>
       <source>Reset to Factory Layout...</source>
@@ -28202,6 +28232,166 @@ Calibrate only the {2} new frame(s) and reuse the existing calibrated frames for
       <source>🖼 Open Saved Masters</source>
       <translation>🖼 打开已保存的主场</translation>
     </message>
+    <message>
+      <source>Add a master dark…</source>
+      <translation>添加主暗场…</translation>
+    </message>
+    <message>
+      <source>Add a master flat…</source>
+      <translation>添加主平场…</translation>
+    </message>
+    <message>
+      <source>Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.</source>
+      <translation>自动按滤镜和尺寸选择，然后选同一夜（否则为最近一夜）且增益相同的平场。可仅为本组和本会话改选其他主校准帧，或选“无”。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>自动按尺寸选择，其次是增益、曝光和温度。每个平场组的“暗场”行会显示所选项：可在该处改选其他主暗场，或选“无”。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.</source>
+      <translation>自动按尺寸选择，其次是增益、曝光和温度。可仅为本组改选其他主校准帧，或选“无”。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>自动按尺寸选择，其次是增益、曝光和温度。可仅为本组改选其他主校准帧，或选“无”。右键单击帧可为其单独指定。</translation>
+    </message>
+    <message>
+      <source>Auto-Select is off: pick a dark, or leave none</source>
+      <translation>自动选择已关闭：请选择一个暗场，或不使用</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>自动：没有合适的</translation>
+    </message>
+    <message>
+      <source>Auto: off (Auto-Select is unchecked)</source>
+      <translation>自动：已关闭（未勾选“自动选择”）</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>自动：{0}</translation>
+    </message>
+    <message>
+      <source>Auto: {0} masters, picked per frame</source>
+      <translation>自动：{0} 个主校准帧，按帧选择</translation>
+    </message>
+    <message>
+      <source>Choose Master Dark(s)</source>
+      <translation>选择主暗场</translation>
+    </message>
+    <message>
+      <source>Choose Master Flat(s)</source>
+      <translation>选择主平场</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.</source>
+      <translation>每个组都显示它将使用的主暗场和主平场：请在那里更改。右键单击帧可为其单独指定，或分配会话键。</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark it will use: change it there. Right-click to set a session tag.</source>
+      <translation>每个组都显示它将使用的主暗场：请在那里更改。右键单击可设置会话标签。</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>未加载</translation>
+    </message>
+    <message>
+      <source>Use the Group's Dark and Flat</source>
+      <translation>使用组的暗场和平场</translation>
+    </message>
+    <message>
+      <source>every session</source>
+      <translation>所有会话</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>增益 {0:g}</translation>
+    </message>
+    <message>
+      <source>{0} ({1})</source>
+      <translation>{0}（{1}）</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>{0} 帧</translation>
+    </message>
+    <message>
+      <source>{0}: these frames are {1}</source>
+      <translation>{0}：这些帧为 {1}</translation>
+    </message>
+    <message>
+      <source>≈ nearest night: {0} ({1} d away)</source>
+      <translation>≈ 最近一夜：{0}（相隔 {1} 天）</translation>
+    </message>
+    <message>
+      <source>≈ {0} masters, picked per frame</source>
+      <translation>≈ {0} 个主校准帧，按帧选择</translation>
+    </message>
+    <message>
+      <source>⚠ dark {0:+.0f} °C, frames {1:+.0f} °C</source>
+      <translation>⚠ 暗场 {0:+.0f} °C，帧 {1:+.0f} °C</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ 增益 {0:g}，帧 {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ 这是 {0} 平场</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ 未记录其曝光时间</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat at {1}</source>
+      <translation>⚠ 没有 {1} 的 {0} 平场</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0}</source>
+      <translation>⚠ 没有 {0} 的</translation>
+    </message>
+    <message>
+      <source>⚠ none records its exposure: choose one</source>
+      <translation>⚠ 均未记录曝光时间：请选择一个</translation>
+    </message>
+    <message>
+      <source>⚠ offset {0:g}, frames {1:g}</source>
+      <translation>⚠ 偏移 {0:g}，帧 {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ 暗场 {0:g} 秒，帧 {1:g} 秒</translation>
+    </message>
+    <message>
+      <source>⚠ {0}, these frames are {1}</source>
+      <translation>⚠ {0}，这些帧为 {1}</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ 无</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ 您的选择</translation>
+    </message>
+    <message>
+      <source>✎ {0} frame(s) use their own</source>
+      <translation>✎ {0} 帧使用自己的</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ 自动</translation>
+    </message>
+    <message>
+      <source>✓ same night</source>
+      <translation>✓ 同一夜</translation>
+    </message>
+    <message>
+      <source>✓ same session</source>
+      <translation>✓ 同一会话</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -40896,6 +41086,42 @@ Statistical Stretch 会改变像素。它位于 功能 → 拉伸与色调 → S
       <source>You've processed your first image</source>
       <translation>您已处理了第一张图像</translation>
     </message>
+    <message>
+      <source>1 of 4</source>
+      <translation>第 1/4 步</translation>
+    </message>
+    <message>
+      <source>2 of 4</source>
+      <translation>第 2/4 步</translation>
+    </message>
+    <message>
+      <source>3 of 4</source>
+      <translation>第 3/4 步</translation>
+    </message>
+    <message>
+      <source>4 of 4</source>
+      <translation>第 4/4 步</translation>
+    </message>
+    <message>
+      <source>Crop off the stacking edges</source>
+      <translation>裁掉叠加边缘</translation>
+    </message>
+    <message>
+      <source>No stacking edges? Skip this step</source>
+      <translation>没有叠加边缘？跳过此步</translation>
+    </message>
+    <message>
+      <source>Open Crop</source>
+      <translation>打开裁剪</translation>
+    </message>
+    <message>
+      <source>Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.
+
+Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside the clean area, then click Apply.</source>
+      <translation>子帧没有完全重叠的地方，叠加结果会留下参差不齐的边缘：暗的或噪声很大的边框，有时还有条纹。请先把它们裁掉。拉伸、去除梯度和颜色校准都会测量整幅图像，这些边缘会让结果出错。
+
+裁剪位于 功能 → 修复与修饰 → 裁剪。把框拖到干净区域内，然后单击“应用”。</translation>
+    </message>
   </context>
   <context>
     <name>FitsBundleExportDialog</name>
@@ -52485,6 +52711,266 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, combined as a trimmed mean. No weighting or normalization, and no calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
       <translation>快速查看一组子帧：如提供主校准帧则进行校准，按位置、旋转和比例对齐，并以截尾均值合并。不进行加权或归一化，也不会在磁盘上生成已校准或已对齐的文件。彩色相机图像会去马赛克（双线性）。</translation>
     </message>
+    <message>
+      <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
+      <translation>快速查看一组子帧：如提供主校准帧则进行校准，按位置、旋转和比例对齐，调整到参考帧的天空背景水平，并以按每帧检测到的星数加权的截尾均值合并。不会在磁盘上生成已校准或已对齐的文件。彩色相机图像会去马赛克（双线性）。</translation>
+    </message>
+    <message>
+      <source>Add Masters…</source>
+      <translation>添加主校准帧…</translation>
+    </message>
+    <message>
+      <source>Add a master dark or dark frames…</source>
+      <translation>添加主暗场或暗场帧…</translation>
+    </message>
+    <message>
+      <source>Add a master flat or flat frames…</source>
+      <translation>添加主平场或平场帧…</translation>
+    </message>
+    <message>
+      <source>Added {0}.</source>
+      <translation>已添加 {0}。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.</source>
+      <translation>自动先按尺寸选择，再按滤镜：按原写法、其他写法（O3 即 OIII，H-alpha 即 Ha），或无滤镜卡的平场文件名中写明的滤镜。可仅为本组改选其他主校准帧，或选“无”。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.</source>
+      <translation>自动先按尺寸选择，再按增益和曝光（暗场）或滤镜（平场）。可仅为本组改选其他主校准帧，或选“无”。</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>自动：没有合适的</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>自动：{0}</translation>
+    </message>
+    <message>
+      <source>Choose a master dark or dark frames</source>
+      <translation>选择主暗场或暗场帧</translation>
+    </message>
+    <message>
+      <source>Choose a master flat or flat frames</source>
+      <translation>选择主平场或平场帧</translation>
+    </message>
+    <message>
+      <source>Choose master darks and flats, or their frames</source>
+      <translation>选择主暗场和主平场，或它们的帧</translation>
+    </message>
+    <message>
+      <source>Clear Masters</source>
+      <translation>清除主校准帧</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>暗场</translation>
+    </message>
+    <message>
+      <source>Darks and flats ({0});;All Files (*)</source>
+      <translation>暗场和平场 ({0});;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>Flat</source>
+      <translation>平场</translation>
+    </message>
+    <message>
+      <source>Is {0} a master dark or a master flat?</source>
+      <translation>{0} 是主暗场还是主平场？</translation>
+    </message>
+    <message>
+      <source>It has no IMAGETYP card, and its file name does not say.</source>
+      <translation>它没有 IMAGETYP 卡，文件名也未说明。</translation>
+    </message>
+    <message>
+      <source>Left out {0}</source>
+      <translation>已略过 {0}</translation>
+    </message>
+    <message>
+      <source>Left out {0} bias / flat-dark file(s): Quick Stack does not use them.</source>
+      <translation>已略过 {0} 个偏置 / 平场暗场文件：Quick Stack 不使用它们。</translation>
+    </message>
+    <message>
+      <source>Left out {0} file(s): see below.</source>
+      <translation>已略过 {0} 个文件：见下文。</translation>
+    </message>
+    <message>
+      <source>Master Dark</source>
+      <translation>主暗场</translation>
+    </message>
+    <message>
+      <source>Master Flat</source>
+      <translation>主平场</translation>
+    </message>
+    <message>
+      <source>Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.
+
+Single dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.
+
+Masters and frames dropped on this window, or added with the lights, are sorted out by themselves.</source>
+      <translation>主暗场和主平场，有多少都可以：每个滤镜一个平场，每种曝光一个暗场。列表中的每个组都显示它将使用的暗场和平场，先按尺寸选择，再按滤镜（平场）或增益和曝光（暗场）。可在那里更改任何组的选择。
+
+单张暗场帧和平场帧也可以：叠加首次需要时，它们会在内存中合并为主校准帧（截尾均值），不会向磁盘写入任何内容。暗场按曝光、增益和尺寸分组；平场按滤镜、尺寸和夜晚分组。
+
+拖放到此窗口或与亮场一起添加的主校准帧和帧会自动分类。</translation>
+    </message>
+    <message>
+      <source>Masters:</source>
+      <translation>主校准帧：</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>无</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>未加载</translation>
+    </message>
+    <message>
+      <source>Nothing was added.</source>
+      <translation>未添加任何内容。</translation>
+    </message>
+    <message>
+      <source>Skip</source>
+      <translation>跳过</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>增益 {0:g}</translation>
+    </message>
+    <message>
+      <source>made in memory from {0} frames</source>
+      <translation>由 {0} 帧在内存中生成</translation>
+    </message>
+    <message>
+      <source>no filter</source>
+      <translation>无滤镜</translation>
+    </message>
+    <message>
+      <source>none (optional: drop or add master darks and flats, or their frames)</source>
+      <translation>无（可选：拖放或添加主暗场和主平场，或它们的帧）</translation>
+    </message>
+    <message>
+      <source>{0} (from its name)</source>
+      <translation>{0}（来自文件名）</translation>
+    </message>
+    <message>
+      <source>{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).</source>
+      <translation>{0} 个偏置帧：Quick Stack 不使用偏置（主暗场已包含）。</translation>
+    </message>
+    <message>
+      <source>{0} dark frame(s) to make master darks from</source>
+      <translation>{0} 个用于生成主暗场的暗场帧</translation>
+    </message>
+    <message>
+      <source>{0} dark frames, {1:g} s</source>
+      <translation>{0} 个暗场帧，{1:g} 秒</translation>
+    </message>
+    <message>
+      <source>{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses</source>
+      <translation>{0} 个暗场  ·  {1} 个平场：每个组都显示它使用的那些</translation>
+    </message>
+    <message>
+      <source>{0} flat frame(s) to make master flats from</source>
+      <translation>{0} 个用于生成主平场的平场帧</translation>
+    </message>
+    <message>
+      <source>{0} flat frames</source>
+      <translation>{0} 个平场帧</translation>
+    </message>
+    <message>
+      <source>{0} flat frames, {1}</source>
+      <translation>{0} 个平场帧，{1}</translation>
+    </message>
+    <message>
+      <source>{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).</source>
+      <translation>{0} 个平场暗场帧：Quick Stack 不使用它们（主平场应已校准）。</translation>
+    </message>
+    <message>
+      <source>{0} frame(s)</source>
+      <translation>{0} 帧</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>{0} 帧</translation>
+    </message>
+    <message>
+      <source>{0} master dark(s)</source>
+      <translation>{0} 个主暗场</translation>
+    </message>
+    <message>
+      <source>{0} master flat(s)</source>
+      <translation>{0} 个主平场</translation>
+    </message>
+    <message>
+      <source>{0} x {1}: these frames are {2} x {3}</source>
+      <translation>{0} x {1}：这些帧为 {2} x {3}</translation>
+    </message>
+    <message>
+      <source>{0} {1} flat frames, {2}</source>
+      <translation>{0} 个 {1} 平场帧，{2}</translation>
+    </message>
+    <message>
+      <source>… and {0} more</source>
+      <translation>… 以及另外 {0} 个</translation>
+    </message>
+    <message>
+      <source>≈ {0} = {1}</source>
+      <translation>≈ {0} = {1}</translation>
+    </message>
+    <message>
+      <source>≈ {0}, from its file name</source>
+      <translation>≈ {0}，来自其文件名</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ 增益 {0:g}，帧 {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ 这是 {0} 平场</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ 未记录其曝光时间</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat</source>
+      <translation>⚠ 没有 {0} 平场</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0} x {1}</source>
+      <translation>⚠ 没有 {0} x {1} 的</translation>
+    </message>
+    <message>
+      <source>⚠ the frames give no exposure: choose one</source>
+      <translation>⚠ 这些帧未给出曝光时间：请选择一个</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ 暗场 {0:g} 秒，帧 {1:g} 秒</translation>
+    </message>
+    <message>
+      <source>⚠ {0} x {1}, not these frames' size: it will be left out</source>
+      <translation>⚠ {0} x {1}，不是这些帧的尺寸：将被略过</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ 无</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ 您的选择</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ 自动</translation>
+    </message>
+    <message>
+      <source>✓ the only flat</source>
+      <translation>✓ 唯一的平场</translation>
+    </message>
   </context>
   <context>
     <name>RCAstro</name>
@@ -58278,6 +58764,62 @@ Thank you for being part of this journey. Clear skies.</source>
     <message>
       <source>— Franklin Marek (Seti Astro)</source>
       <translation>— Franklin Marek (Seti Astro)</translation>
+    </message>
+    <message>
+      <source>Blind Solve Index</source>
+      <translation>盲解析索引</translation>
+    </message>
+    <message>
+      <source>Build in the Gaia manager</source>
+      <translation>在 Gaia 管理器中构建</translation>
+    </message>
+    <message>
+      <source>For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.</source>
+      <translation>用于盲解析：在没有坐标、也不知道视场大小的情况下找出图像指向的位置。它在本机由你的 Gaia 数据集构建，无需下载任何内容。{0} 个推荐层约占 {1}，覆盖约 20′ 至 25° 的视场，适用于大多数成像设备。</translation>
+    </message>
+    <message>
+      <source>For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.</source>
+      <translation>用于解析，下方的盲解析索引也由它们构建。推荐的数据集约 35 GB。</translation>
+    </message>
+    <message>
+      <source>Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.</source>
+      <translation>未找到索引文件夹：{0}。请连接该驱动器，或在 Gaia 管理器中选择文件夹。</translation>
+    </message>
+    <message>
+      <source>Layers built: {0}. {1} on disk.</source>
+      <translation>已构建的层：{0}。占用磁盘 {1}。</translation>
+    </message>
+    <message>
+      <source>Not built yet. It is built from the Bright (G &lt; 17) Astrometry set, so install that first.</source>
+      <translation>尚未构建。它由天体测量数据集 明亮 (G &lt; 17) 构建，请先安装该数据集。</translation>
+    </message>
+    <message>
+      <source>Not built yet. Recommended layers you can build now: {0}.</source>
+      <translation>尚未构建。现在即可构建的推荐层：{0}。</translation>
+    </message>
+    <message>
+      <source>Not built yet. Your Gaia sets have everything the recommended layers need.</source>
+      <translation>尚未构建。你的 Gaia 数据集已包含推荐层所需的全部内容。</translation>
+    </message>
+    <message>
+      <source>Open in the Gaia manager</source>
+      <translation>在 Gaia 管理器中打开</translation>
+    </message>
+    <message>
+      <source>Ready for blind solving.</source>
+      <translation>盲解析已就绪。</translation>
+    </message>
+    <message>
+      <source>Recommended layers still to build: {0}.</source>
+      <translation>尚待构建的推荐层：{0}。</translation>
+    </message>
+    <message>
+      <source>These need the Bright (G &lt; 17) Astrometry set first: {0}.</source>
+      <translation>以下层需要先安装天体测量数据集 明亮 (G &lt; 17)：{0}。</translation>
+    </message>
+    <message>
+      <source>{0} of {1} recommended layers</source>
+      <translation>{0} / {1} 个推荐层</translation>
     </message>
   </context>
   <context>
@@ -72864,6 +73406,22 @@ NOT recommended for narrowband or duoband data.</source>
       <source>White Balance — Preset</source>
       <translation>白平衡 — 预设</translation>
     </message>
+    <message>
+      <source>Auto σ (waterfall)</source>
+      <translation>自动 σ（逐级）</translation>
+    </message>
+    <message>
+      <source>Detection threshold (σ):</source>
+      <translation>检测阈值 (σ)：</translation>
+    </message>
+    <message>
+      <source>Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.</source>
+      <translation>自动选择检测阈值，与白平衡对话框相同。取消勾选则使用上方的阈值。</translation>
+    </message>
+    <message>
+      <source>Rotation strength:</source>
+      <translation>旋转强度：</translation>
+    </message>
   </context>
   <context>
     <name>_WorkerCloseGuardMixin</name>
@@ -72905,6 +73463,96 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>Show the workflow as one plain list of steps per lane (Ctrl+G)</source>
       <translation>以每个泳道一个简单步骤列表的形式显示工作流程 (Ctrl+G)</translation>
+    </message>
+  </context>
+  <context>
+    <name>Essentials</name>
+    <message>
+      <source>ADBE</source>
+      <translation>ADBE</translation>
+    </message>
+    <message>
+      <source>Add Stars</source>
+      <translation>添加星点</translation>
+    </message>
+    <message>
+      <source>BG Neutral</source>
+      <translation>背景中和</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Crop</source>
+      <translation>裁剪</translation>
+    </message>
+    <message>
+      <source>Curves</source>
+      <translation>曲线</translation>
+    </message>
+    <message>
+      <source>Essentials: Linear</source>
+      <translation>基本工具：线性</translation>
+    </message>
+    <message>
+      <source>Essentials: Non-Linear</source>
+      <translation>基本工具：非线性</translation>
+    </message>
+    <message>
+      <source>LRGB Combine</source>
+      <translation>LRGB 合成</translation>
+    </message>
+    <message>
+      <source>NB→RGB Stars</source>
+      <translation>窄带→RGB星点</translation>
+    </message>
+    <message>
+      <source>Palette Picker</source>
+      <translation>Palette Picker</translation>
+    </message>
+    <message>
+      <source>RC-Astro</source>
+      <translation>RC-Astro</translation>
+    </message>
+    <message>
+      <source>Remove Stars</source>
+      <translation>移除星点</translation>
+    </message>
+    <message>
+      <source>Selective Color</source>
+      <translation>选择性色彩</translation>
+    </message>
+    <message>
+      <source>Star Stretch</source>
+      <translation>Star Stretch</translation>
+    </message>
+    <message>
+      <source>Stretch</source>
+      <translation>Stretch</translation>
+    </message>
+    <message>
+      <source>SyQon</source>
+      <translation>SyQon</translation>
+    </message>
+    <message>
+      <source>Texture</source>
+      <translation>纹理</translation>
+    </message>
+    <message>
+      <source>White Balance</source>
+      <translation>白平衡</translation>
+    </message>
+  </context>
+  <context>
+    <name>EssentialsToolBar</name>
+    <message>
+      <source>Create Desktop Shortcut</source>
+      <translation>创建桌面快捷方式</translation>
+    </message>
+    <message>
+      <source>Lock Toolbar Icons</source>
+      <translation>锁定工具栏图标</translation>
     </message>
   </context>
 </TS>

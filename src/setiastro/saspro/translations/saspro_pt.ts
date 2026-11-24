@@ -4661,6 +4661,36 @@ Instale-o com:  pip install pypdfium2</translation>
       <source>▼  Advanced</source>
       <translation>▼  Avançado</translation>
     </message>
+    <message>
+      <source>All Tools: every toolbar and tool</source>
+      <translation>Todas as ferramentas: todas as barras e ferramentas</translation>
+    </message>
+    <message>
+      <source>Essentials</source>
+      <translation>Essenciais</translation>
+    </message>
+    <message>
+      <source>Essentials: the tools of the beginner workflows, with their names.
+Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
+      <translation>Essenciais: as ferramentas dos fluxos de trabalho para iniciantes, com seus nomes.
+Todas as ferramentas continuam nos menus e em Buscar comandos (Ctrl+/).</translation>
+    </message>
+    <message>
+      <source>Search Commands...</source>
+      <translation>Buscar comandos...</translation>
+    </message>
+    <message>
+      <source>Show Names Under Essentials Icons</source>
+      <translation>Mostrar nomes sob os ícones de Essenciais</translation>
+    </message>
+    <message>
+      <source>Toolbar Mode</source>
+      <translation>Modo da barra de ferramentas</translation>
+    </message>
+    <message>
+      <source>Start Panel: open images, process step by step, stacking and more</source>
+      <translation>Painel inicial: abrir imagens, processar passo a passo, empilhamento e mais</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -28040,6 +28070,166 @@ Calibrar apenas o(s) {2} frame(s) novo(s) e reutilizar os frames calibrados exis
       <source>🖼 Open Saved Masters</source>
       <translation>🖼 Abrir masters salvos</translation>
     </message>
+    <message>
+      <source>Add a master dark…</source>
+      <translation>Adicionar um master dark…</translation>
+    </message>
+    <message>
+      <source>Add a master flat…</source>
+      <translation>Adicionar um master flat…</translation>
+    </message>
+    <message>
+      <source>Auto picks by filter and size, then the flat from the same night (else the nearest night) with matching gain. Pick another master, or None, for this group and session only.</source>
+      <translation>Auto escolhe por filtro e tamanho, depois o flat da mesma noite (senão da noite mais próxima) com o mesmo ganho. Escolha outro master, ou Nenhum, apenas para este grupo e esta sessão.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>Auto escolhe por tamanho, depois ganho, exposição e temperatura. A linha Dark de cada grupo de flats mostra a escolha: escolha ali outro master, ou Nenhum.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only.</source>
+      <translation>Auto escolhe por tamanho, depois ganho, exposição e temperatura. Escolha outro master, ou Nenhum, apenas para este grupo.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>Auto escolhe por tamanho, depois ganho, exposição e temperatura. Escolha outro master, ou Nenhum, apenas para este grupo. Clique com o botão direito nos frames para dar a eles um próprio.</translation>
+    </message>
+    <message>
+      <source>Auto-Select is off: pick a dark, or leave none</source>
+      <translation>Auto-Selecionar está desligado: escolha um dark, ou deixe nenhum</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>Auto: nenhum serve</translation>
+    </message>
+    <message>
+      <source>Auto: off (Auto-Select is unchecked)</source>
+      <translation>Auto: desligado (Auto-Selecionar está desmarcado)</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>Auto: {0}</translation>
+    </message>
+    <message>
+      <source>Auto: {0} masters, picked per frame</source>
+      <translation>Auto: {0} masters, escolhidos por frame</translation>
+    </message>
+    <message>
+      <source>Choose Master Dark(s)</source>
+      <translation>Escolher master dark(s)</translation>
+    </message>
+    <message>
+      <source>Choose Master Flat(s)</source>
+      <translation>Escolher master flat(s)</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark and flat it will use: change them there. Right-click frames to give them their own, or to assign session keys.</source>
+      <translation>Cada grupo mostra o master dark e o master flat que vai usar: altere-os ali. Clique com o botão direito nos frames para dar a eles os próprios, ou para atribuir chaves de sessão.</translation>
+    </message>
+    <message>
+      <source>Each group shows the master dark it will use: change it there. Right-click to set a session tag.</source>
+      <translation>Cada grupo mostra o master dark que vai usar: altere-o ali. Clique com o botão direito para definir uma etiqueta de sessão.</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>Nenhum carregado</translation>
+    </message>
+    <message>
+      <source>Use the Group's Dark and Flat</source>
+      <translation>Usar o Dark e o Flat do grupo</translation>
+    </message>
+    <message>
+      <source>every session</source>
+      <translation>todas as sessões</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>ganho {0:g}</translation>
+    </message>
+    <message>
+      <source>{0} ({1})</source>
+      <translation>{0} ({1})</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>{0} frames</translation>
+    </message>
+    <message>
+      <source>{0}: these frames are {1}</source>
+      <translation>{0}: estes frames são {1}</translation>
+    </message>
+    <message>
+      <source>≈ nearest night: {0} ({1} d away)</source>
+      <translation>≈ noite mais próxima: {0} (a {1} d)</translation>
+    </message>
+    <message>
+      <source>≈ {0} masters, picked per frame</source>
+      <translation>≈ {0} masters, escolhidos por frame</translation>
+    </message>
+    <message>
+      <source>⚠ dark {0:+.0f} °C, frames {1:+.0f} °C</source>
+      <translation>⚠ dark {0:+.0f} °C, frames {1:+.0f} °C</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ ganho {0:g}, frames {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ é o flat de {0}</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ a exposição dele não está registrada</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat at {1}</source>
+      <translation>⚠ nenhum flat de {0} em {1}</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0}</source>
+      <translation>⚠ nenhum é {0}</translation>
+    </message>
+    <message>
+      <source>⚠ none records its exposure: choose one</source>
+      <translation>⚠ nenhum registra a exposição: escolha um</translation>
+    </message>
+    <message>
+      <source>⚠ offset {0:g}, frames {1:g}</source>
+      <translation>⚠ offset {0:g}, frames {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ dark de {0:g} s, frames de {1:g} s</translation>
+    </message>
+    <message>
+      <source>⚠ {0}, these frames are {1}</source>
+      <translation>⚠ {0}, estes frames são {1}</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ nenhum</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ sua escolha</translation>
+    </message>
+    <message>
+      <source>✎ {0} frame(s) use their own</source>
+      <translation>✎ {0} frame(s) usam o próprio</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ auto</translation>
+    </message>
+    <message>
+      <source>✓ same night</source>
+      <translation>✓ mesma noite</translation>
+    </message>
+    <message>
+      <source>✓ same session</source>
+      <translation>✓ mesma sessão</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -40807,6 +40997,42 @@ O Statistical Stretch altera os pixels. Ele fica em Funções → Stretch &amp; 
       <source>You've processed your first image</source>
       <translation>Você processou sua primeira imagem</translation>
     </message>
+    <message>
+      <source>1 of 4</source>
+      <translation>1 de 4</translation>
+    </message>
+    <message>
+      <source>2 of 4</source>
+      <translation>2 de 4</translation>
+    </message>
+    <message>
+      <source>3 of 4</source>
+      <translation>3 de 4</translation>
+    </message>
+    <message>
+      <source>4 of 4</source>
+      <translation>4 de 4</translation>
+    </message>
+    <message>
+      <source>Crop off the stacking edges</source>
+      <translation>Recorte as bordas do empilhamento</translation>
+    </message>
+    <message>
+      <source>No stacking edges? Skip this step</source>
+      <translation>Sem bordas de empilhamento? Pule esta etapa</translation>
+    </message>
+    <message>
+      <source>Open Crop</source>
+      <translation>Abrir Recortar</translation>
+    </message>
+    <message>
+      <source>Where the subs didn't fully overlap, a stack has ragged edges: dark or noisy borders, sometimes stripes. Crop them off first. Stretching, gradient removal and color calibration all measure the whole image, and those edges throw them off.
+
+Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside the clean area, then click Apply.</source>
+      <translation>Onde os subs não se sobrepõem por completo, uma pilha tem bordas irregulares: bordas escuras ou ruidosas, às vezes listras. Recorte-as primeiro. O estiramento, a remoção de gradiente e a calibração de cor medem a imagem inteira, e essas bordas os atrapalham.
+
+Recortar fica em Funções → Reparo &amp; retoque → Recortar. Arraste a caixa para dentro da área limpa e clique em Aplicar.</translation>
+    </message>
   </context>
   <context>
     <name>FitsBundleExportDialog</name>
@@ -52438,6 +52664,266 @@ Dica: Dual dá "volume" às nebulosas mesmo onde o brilho é mais plano.</transl
       <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, combined as a trimmed mean. No weighting or normalization, and no calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
       <translation>Uma visão rápida de um conjunto de subs: calibrados se você fornecer masters, alinhados por posição, rotação e escala, combinados por média aparada. Sem ponderação nem normalização, e nenhum arquivo calibrado ou alinhado em disco. Câmeras coloridas passam por debayer (bilinear).</translation>
     </message>
+    <message>
+      <source>A fast look at a set of subs: calibrated if you give it masters, aligned by position, rotation and scale, matched to the reference's sky level, and combined as a trimmed mean weighted by the stars found in each frame. No calibrated or aligned files on disk. Colour cameras are debayered (bilinear).</source>
+      <translation>Uma visão rápida de um conjunto de subs: calibrados se você fornecer masters, alinhados por posição, rotação e escala, levados ao nível de céu da referência e combinados por média aparada ponderada pelas estrelas encontradas em cada frame. Nenhum arquivo calibrado ou alinhado em disco. Câmeras coloridas passam por debayer (bilinear).</translation>
+    </message>
+    <message>
+      <source>Add Masters…</source>
+      <translation>Adicionar masters…</translation>
+    </message>
+    <message>
+      <source>Add a master dark or dark frames…</source>
+      <translation>Adicionar um master dark ou quadros de dark…</translation>
+    </message>
+    <message>
+      <source>Add a master flat or flat frames…</source>
+      <translation>Adicionar um master flat ou quadros de flat…</translation>
+    </message>
+    <message>
+      <source>Added {0}.</source>
+      <translation>Adicionado: {0}.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then filter: as written, written another way (O3 for OIII, H-alpha for Ha), or named in the file name of a flat with no filter card. Pick another master, or None, for this group only.</source>
+      <translation>Auto escolhe por tamanho, depois por filtro: como escrito, escrito de outra forma (O3 para OIII, H-alpha para Ha) ou indicado no nome do arquivo de um flat sem cartão de filtro. Escolha outro master, ou Nenhum, apenas para este grupo.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain and exposure (darks) or filter (flats). Pick another master, or None, for this group only.</source>
+      <translation>Auto escolhe por tamanho, depois ganho e exposição (darks) ou filtro (flats). Escolha outro master, ou Nenhum, apenas para este grupo.</translation>
+    </message>
+    <message>
+      <source>Auto: none fits</source>
+      <translation>Auto: nenhum serve</translation>
+    </message>
+    <message>
+      <source>Auto: {0}</source>
+      <translation>Auto: {0}</translation>
+    </message>
+    <message>
+      <source>Choose a master dark or dark frames</source>
+      <translation>Escolher um master dark ou quadros de dark</translation>
+    </message>
+    <message>
+      <source>Choose a master flat or flat frames</source>
+      <translation>Escolher um master flat ou quadros de flat</translation>
+    </message>
+    <message>
+      <source>Choose master darks and flats, or their frames</source>
+      <translation>Escolher master darks e flats, ou seus quadros</translation>
+    </message>
+    <message>
+      <source>Clear Masters</source>
+      <translation>Limpar masters</translation>
+    </message>
+    <message>
+      <source>Dark</source>
+      <translation>Dark</translation>
+    </message>
+    <message>
+      <source>Darks and flats ({0});;All Files (*)</source>
+      <translation>Darks e flats ({0});;Todos os Arquivos (*)</translation>
+    </message>
+    <message>
+      <source>Flat</source>
+      <translation>Flat</translation>
+    </message>
+    <message>
+      <source>Is {0} a master dark or a master flat?</source>
+      <translation>{0} é um master dark ou um master flat?</translation>
+    </message>
+    <message>
+      <source>It has no IMAGETYP card, and its file name does not say.</source>
+      <translation>Ele não tem cartão IMAGETYP, e o nome do arquivo não diz.</translation>
+    </message>
+    <message>
+      <source>Left out {0}</source>
+      <translation>Deixado de fora: {0}</translation>
+    </message>
+    <message>
+      <source>Left out {0} bias / flat-dark file(s): Quick Stack does not use them.</source>
+      <translation>{0} arquivo(s) de bias / flat-dark deixado(s) de fora: o Quick Stack não os usa.</translation>
+    </message>
+    <message>
+      <source>Left out {0} file(s): see below.</source>
+      <translation>{0} arquivo(s) deixado(s) de fora: veja abaixo.</translation>
+    </message>
+    <message>
+      <source>Master Dark</source>
+      <translation>Master Dark</translation>
+    </message>
+    <message>
+      <source>Master Flat</source>
+      <translation>Master Flat</translation>
+    </message>
+    <message>
+      <source>Master darks and flats, as many as you have: one flat per filter, darks for each exposure. Each group in the list shows the dark and flat it will use, picked by size, then filter (flats) or gain and exposure (darks). Change any group's choice there.
+
+Single dark and flat frames work too: they are combined into masters in memory (trimmed mean) the first time a stack needs them, and nothing is written to disk. Darks are grouped by exposure, gain and size; flats by filter, size and night.
+
+Masters and frames dropped on this window, or added with the lights, are sorted out by themselves.</source>
+      <translation>Master darks e flats, quantos você tiver: um flat por filtro, darks para cada exposição. Cada grupo da lista mostra o dark e o flat que vai usar, escolhidos por tamanho, depois filtro (flats) ou ganho e exposição (darks). Altere ali a escolha de qualquer grupo.
+
+Quadros de dark e flat avulsos também servem: eles são combinados em masters na memória (média aparada) na primeira vez que um empilhamento precisa deles, e nada é gravado no disco. Os darks são agrupados por exposição, ganho e tamanho; os flats por filtro, tamanho e noite.
+
+Masters e quadros soltos nesta janela, ou adicionados com os lights, são separados automaticamente.</translation>
+    </message>
+    <message>
+      <source>Masters:</source>
+      <translation>Masters:</translation>
+    </message>
+    <message>
+      <source>None</source>
+      <translation>Nenhum</translation>
+    </message>
+    <message>
+      <source>None loaded</source>
+      <translation>Nenhum carregado</translation>
+    </message>
+    <message>
+      <source>Nothing was added.</source>
+      <translation>Nada foi adicionado.</translation>
+    </message>
+    <message>
+      <source>Skip</source>
+      <translation>Pular</translation>
+    </message>
+    <message>
+      <source>gain {0:g}</source>
+      <translation>ganho {0:g}</translation>
+    </message>
+    <message>
+      <source>made in memory from {0} frames</source>
+      <translation>feito na memória a partir de {0} quadros</translation>
+    </message>
+    <message>
+      <source>no filter</source>
+      <translation>sem filtro</translation>
+    </message>
+    <message>
+      <source>none (optional: drop or add master darks and flats, or their frames)</source>
+      <translation>nenhum (opcional: solte ou adicione master darks e flats, ou seus quadros)</translation>
+    </message>
+    <message>
+      <source>{0} (from its name)</source>
+      <translation>{0} (pelo nome)</translation>
+    </message>
+    <message>
+      <source>{0} bias frame(s): Quick Stack does not use bias (the master dark holds it).</source>
+      <translation>{0} quadro(s) de bias: o Quick Stack não usa bias (o master dark já o contém).</translation>
+    </message>
+    <message>
+      <source>{0} dark frame(s) to make master darks from</source>
+      <translation>{0} quadro(s) de dark para fazer master darks</translation>
+    </message>
+    <message>
+      <source>{0} dark frames, {1:g} s</source>
+      <translation>{0} quadros de dark, {1:g} s</translation>
+    </message>
+    <message>
+      <source>{0} dark(s)  ·  {1} flat(s): each group shows the ones it uses</source>
+      <translation>{0} dark(s)  ·  {1} flat(s): cada grupo mostra os que usa</translation>
+    </message>
+    <message>
+      <source>{0} flat frame(s) to make master flats from</source>
+      <translation>{0} quadro(s) de flat para fazer master flats</translation>
+    </message>
+    <message>
+      <source>{0} flat frames</source>
+      <translation>{0} quadros de flat</translation>
+    </message>
+    <message>
+      <source>{0} flat frames, {1}</source>
+      <translation>{0} quadros de flat, {1}</translation>
+    </message>
+    <message>
+      <source>{0} flat-dark frame(s): Quick Stack does not use them (a master flat should already be calibrated).</source>
+      <translation>{0} quadro(s) de flat-dark: o Quick Stack não os usa (um master flat já deve estar calibrado).</translation>
+    </message>
+    <message>
+      <source>{0} frame(s)</source>
+      <translation>{0} quadro(s)</translation>
+    </message>
+    <message>
+      <source>{0} frames</source>
+      <translation>{0} quadros</translation>
+    </message>
+    <message>
+      <source>{0} master dark(s)</source>
+      <translation>{0} master dark(s)</translation>
+    </message>
+    <message>
+      <source>{0} master flat(s)</source>
+      <translation>{0} master flat(s)</translation>
+    </message>
+    <message>
+      <source>{0} x {1}: these frames are {2} x {3}</source>
+      <translation>{0} x {1}: estes quadros são {2} x {3}</translation>
+    </message>
+    <message>
+      <source>{0} {1} flat frames, {2}</source>
+      <translation>{0} quadros de flat de {1}, {2}</translation>
+    </message>
+    <message>
+      <source>… and {0} more</source>
+      <translation>… e mais {0}</translation>
+    </message>
+    <message>
+      <source>≈ {0} = {1}</source>
+      <translation>≈ {0} = {1}</translation>
+    </message>
+    <message>
+      <source>≈ {0}, from its file name</source>
+      <translation>≈ {0}, pelo nome do arquivo</translation>
+    </message>
+    <message>
+      <source>⚠ gain {0:g}, frames {1:g}</source>
+      <translation>⚠ ganho {0:g}, quadros {1:g}</translation>
+    </message>
+    <message>
+      <source>⚠ it is the {0} flat</source>
+      <translation>⚠ é o flat de {0}</translation>
+    </message>
+    <message>
+      <source>⚠ its exposure is not recorded</source>
+      <translation>⚠ a exposição dele não está registrada</translation>
+    </message>
+    <message>
+      <source>⚠ no {0} flat</source>
+      <translation>⚠ nenhum flat de {0}</translation>
+    </message>
+    <message>
+      <source>⚠ none is {0} x {1}</source>
+      <translation>⚠ nenhum é {0} x {1}</translation>
+    </message>
+    <message>
+      <source>⚠ the frames give no exposure: choose one</source>
+      <translation>⚠ os quadros não informam a exposição: escolha um</translation>
+    </message>
+    <message>
+      <source>⚠ {0:g} s dark, {1:g} s frames</source>
+      <translation>⚠ dark de {0:g} s, quadros de {1:g} s</translation>
+    </message>
+    <message>
+      <source>⚠ {0} x {1}, not these frames' size: it will be left out</source>
+      <translation>⚠ {0} x {1}, não é o tamanho destes quadros: será deixado de fora</translation>
+    </message>
+    <message>
+      <source>✎ none</source>
+      <translation>✎ nenhum</translation>
+    </message>
+    <message>
+      <source>✎ your choice</source>
+      <translation>✎ sua escolha</translation>
+    </message>
+    <message>
+      <source>✓ auto</source>
+      <translation>✓ auto</translation>
+    </message>
+    <message>
+      <source>✓ the only flat</source>
+      <translation>✓ o único flat</translation>
+    </message>
   </context>
   <context>
     <name>RCAstro</name>
@@ -58295,6 +58781,62 @@ Obrigado por fazer parte desta jornada. Céus limpos.</translation>
     <message>
       <source>— Franklin Marek (Seti Astro)</source>
       <translation>— Franklin Marek (Seti Astro)</translation>
+    </message>
+    <message>
+      <source>Blind Solve Index</source>
+      <translation>Índice de solução cega</translation>
+    </message>
+    <message>
+      <source>Build in the Gaia manager</source>
+      <translation>Construir no gerenciador Gaia</translation>
+    </message>
+    <message>
+      <source>For blind solving: finding where an image points with no coordinates and no field size. It is built on this computer from your Gaia sets, so nothing is downloaded. The {0} recommended layers take about {1} and cover fields from about 20′ to 25°, what most imaging rigs produce.</source>
+      <translation>Para solução às cegas: descobrir para onde uma imagem aponta sem coordenadas nem tamanho de campo. É construído neste computador a partir dos seus conjuntos Gaia, então nada é baixado. As {0} camadas recomendadas ocupam cerca de {1} e cobrem campos de cerca de 20′ a 25°, o que a maioria dos equipamentos de imagem produz.</translation>
+    </message>
+    <message>
+      <source>For plate solving, and what the blind solve index below is built from. The recommended sets are about 35 GB.</source>
+      <translation>Para plate solving e para construir o índice de solução cega abaixo. Os conjuntos recomendados têm cerca de 35 GB.</translation>
+    </message>
+    <message>
+      <source>Index folder not found: {0}. Connect that drive, or choose the folder in the Gaia manager.</source>
+      <translation>Pasta do índice não encontrada: {0}. Conecte essa unidade ou escolha a pasta no gerenciador Gaia.</translation>
+    </message>
+    <message>
+      <source>Layers built: {0}. {1} on disk.</source>
+      <translation>Camadas construídas: {0}. {1} em disco.</translation>
+    </message>
+    <message>
+      <source>Not built yet. It is built from the Bright (G &lt; 17) Astrometry set, so install that first.</source>
+      <translation>Ainda não construído. Ele é construído a partir do conjunto astrométrico Brilhante (G &lt; 17), então instale-o primeiro.</translation>
+    </message>
+    <message>
+      <source>Not built yet. Recommended layers you can build now: {0}.</source>
+      <translation>Ainda não construído. Camadas recomendadas que você pode construir agora: {0}.</translation>
+    </message>
+    <message>
+      <source>Not built yet. Your Gaia sets have everything the recommended layers need.</source>
+      <translation>Ainda não construído. Seus conjuntos Gaia têm tudo o que as camadas recomendadas precisam.</translation>
+    </message>
+    <message>
+      <source>Open in the Gaia manager</source>
+      <translation>Abrir no gerenciador Gaia</translation>
+    </message>
+    <message>
+      <source>Ready for blind solving.</source>
+      <translation>Pronto para solução às cegas.</translation>
+    </message>
+    <message>
+      <source>Recommended layers still to build: {0}.</source>
+      <translation>Camadas recomendadas ainda por construir: {0}.</translation>
+    </message>
+    <message>
+      <source>These need the Bright (G &lt; 17) Astrometry set first: {0}.</source>
+      <translation>Estas precisam primeiro do conjunto astrométrico Brilhante (G &lt; 17): {0}.</translation>
+    </message>
+    <message>
+      <source>{0} of {1} recommended layers</source>
+      <translation>{0} de {1} camadas recomendadas</translation>
     </message>
   </context>
   <context>
@@ -72980,6 +73522,22 @@ NÃO recomendado para dados de banda estreita ou duoband.</translation>
       <source>White Balance — Preset</source>
       <translation>Balanço de Branco — Predefinição</translation>
     </message>
+    <message>
+      <source>Auto σ (waterfall)</source>
+      <translation>σ automático (cascata)</translation>
+    </message>
+    <message>
+      <source>Detection threshold (σ):</source>
+      <translation>Limiar de detecção (σ):</translation>
+    </message>
+    <message>
+      <source>Picks the detection threshold itself, as in the White Balance dialog. Uncheck to use the threshold above.</source>
+      <translation>Escolhe sozinho o limiar de detecção, como na janela Balanço de Branco. Desmarque para usar o limiar acima.</translation>
+    </message>
+    <message>
+      <source>Rotation strength:</source>
+      <translation>Intensidade da rotação:</translation>
+    </message>
   </context>
   <context>
     <name>_WorkerCloseGuardMixin</name>
@@ -73021,6 +73579,96 @@ Cancelar e fechar? (Pode levar um momento para terminar o bloco atual.)</transla
     <message>
       <source>Show the workflow as one plain list of steps per lane (Ctrl+G)</source>
       <translation>Mostra o fluxo de trabalho como uma lista simples de etapas por raia (Ctrl+G)</translation>
+    </message>
+  </context>
+  <context>
+    <name>Essentials</name>
+    <message>
+      <source>ADBE</source>
+      <translation>ADBE</translation>
+    </message>
+    <message>
+      <source>Add Stars</source>
+      <translation>Adicionar Estrelas</translation>
+    </message>
+    <message>
+      <source>BG Neutral</source>
+      <translation>Fundo neutro</translation>
+    </message>
+    <message>
+      <source>Cosmic Clarity</source>
+      <translation>Cosmic Clarity</translation>
+    </message>
+    <message>
+      <source>Crop</source>
+      <translation>Recortar</translation>
+    </message>
+    <message>
+      <source>Curves</source>
+      <translation>Curvas</translation>
+    </message>
+    <message>
+      <source>Essentials: Linear</source>
+      <translation>Essenciais: linear</translation>
+    </message>
+    <message>
+      <source>Essentials: Non-Linear</source>
+      <translation>Essenciais: não linear</translation>
+    </message>
+    <message>
+      <source>LRGB Combine</source>
+      <translation>Combinar LRGB</translation>
+    </message>
+    <message>
+      <source>NB→RGB Stars</source>
+      <translation>Estrelas NB→RGB</translation>
+    </message>
+    <message>
+      <source>Palette Picker</source>
+      <translation>Palette Picker</translation>
+    </message>
+    <message>
+      <source>RC-Astro</source>
+      <translation>RC-Astro</translation>
+    </message>
+    <message>
+      <source>Remove Stars</source>
+      <translation>Remover Estrelas</translation>
+    </message>
+    <message>
+      <source>Selective Color</source>
+      <translation>Cor seletiva</translation>
+    </message>
+    <message>
+      <source>Star Stretch</source>
+      <translation>Star Stretch</translation>
+    </message>
+    <message>
+      <source>Stretch</source>
+      <translation>Stretch</translation>
+    </message>
+    <message>
+      <source>SyQon</source>
+      <translation>SyQon</translation>
+    </message>
+    <message>
+      <source>Texture</source>
+      <translation>Textura</translation>
+    </message>
+    <message>
+      <source>White Balance</source>
+      <translation>Balanço de Branco</translation>
+    </message>
+  </context>
+  <context>
+    <name>EssentialsToolBar</name>
+    <message>
+      <source>Create Desktop Shortcut</source>
+      <translation>Criar atalho na área de trabalho</translation>
+    </message>
+    <message>
+      <source>Lock Toolbar Icons</source>
+      <translation>Bloquear ícones da barra de ferramentas</translation>
     </message>
   </context>
 </TS>

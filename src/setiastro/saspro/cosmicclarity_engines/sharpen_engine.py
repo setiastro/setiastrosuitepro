@@ -8,6 +8,8 @@ import os
 import numpy as np
 from setiastro.saspro.resources import get_resources
 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
+from setiastro.saspro.cosmicclarity_engines._fastops import channel_medians, fill_batch
+from setiastro.saspro.cosmicclarity_engines._gpu_thread import gpu_thread_entry
 from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usable
 from setiastro.saspro.cosmicclarity_engines._backend_guard import (
     DeviceLostError,
@@ -234,7 +236,7 @@ def stretch_image_unlinked_rgb(image_rgb: np.ndarray, target_median: float = 0.2
     x = image_rgb.astype(np.float32, copy=True)
     orig_min = float(np.min(x))
     x -= orig_min
-    orig_meds = [float(np.median(x[..., c])) for c in range(3)]
+    orig_meds = [float(m) for m in channel_medians(x[..., :3])]
     for c in range(3):
         m = orig_meds[c]
         if m != 0:
@@ -247,8 +249,10 @@ def stretch_image_unlinked_rgb(image_rgb: np.ndarray, target_median: float = 0.2
 
 def unstretch_image_unlinked_rgb(image_rgb: np.ndarray, orig_meds, orig_min: float, was_mono: bool):
     x = image_rgb.astype(np.float32, copy=True)
+    # Read before each channel is rewritten; the channels are independent.
+    meds_now = channel_medians(x[..., :3])
     for c in range(3):
-        m_now = float(np.median(x[..., c]))
+        m_now = float(meds_now[c])
         m0 = float(orig_meds[c])
         if m_now != 0 and m0 != 0:
             x[..., c] = ((m_now - 1) * m0 * x[..., c]) / (
@@ -338,13 +342,10 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
 
     ort = _get_ort(status_cb=status_cb)
 
-    try:
-        rt = _user_runtime_dir()
-        vpy = _venv_paths(rt)["python"]
-        ok, cuda_tag, err = _check_cuda_in_venv(vpy, status_cb=status_cb)
-    except Exception:
-        pass
-
+    # No _check_cuda_in_venv() here. It started a second Python process and
+    # imported torch in it on EVERY run (4-5 s on an RTX 3070 Ti), cached
+    # models or not, and nothing read its answer: the backend is picked below
+    # from the in-process torch.cuda.is_available().
 
     if use_gpu:
         try:
@@ -747,13 +748,19 @@ def _recommended_batch_size(
     if models.is_onnx:
         return 1
     dev = _device_type(models.device)
+    # The stellar and non-stellar passes share one batch size. Under fp16
+    # autocast cuDNN compiles kernels for each new input shape, ~3.5 s apiece
+    # on an RTX 3070 Ti and again every session; the two nets share their conv
+    # shapes, so a common batch halves those compiles. The non-stellar sizes
+    # were kept: per-tile time is the same at 12 and 16 (12 ms, measured) and
+    # 12 needs 250 MB less VRAM.
     if dev == "cuda":
-        if chunk_size <= 256:  return 16 if not psf else 12
-        if chunk_size <= 384:  return 8  if not psf else 6
-        if chunk_size <= 512:  return 4  if not psf else 3
+        if chunk_size <= 256:  return 12
+        if chunk_size <= 384:  return 6
+        if chunk_size <= 512:  return 3
         return 2
     if dev == "mps":
-        if chunk_size <= 256:  return 4 if not psf else 3
+        if chunk_size <= 256:  return 3
         return 2
     if dev == "dml":
         # Explicit, not incidental. DirectML has no autocast (fp32 only) and is
@@ -762,6 +769,89 @@ def _recommended_batch_size(
         # chunk_size — see _cap_chunk_size_for_device in _sharpen_plane.
         return 1
     return 1
+
+
+def _batch_target_hw(orig_shapes) -> tuple[int, int]:
+    """(H, W) a batch is padded to: its largest tile, rounded up to a multiple
+    of 16 so the U-Net's stride-2 stages stay aligned. Shared by the inference
+    loops and _planned_batch_shapes, so a warm-up builds exactly their shapes."""
+    target_h = max(int(sh[0]) for sh in orig_shapes)
+    target_w = max(int(sh[1]) for sh in orig_shapes)
+    return ((target_h + 15) // 16) * 16, ((target_w + 15) // 16) * 16
+
+
+def _planned_batch_shapes(tile_shapes, batch_size: int) -> set:
+    """The (B, H, W) inputs _infer_chunks_batched / _infer_chunks_psf_batched
+    feed the net for these tiles: each batch padded by _batch_target_hw, and a
+    short last batch filled to batch_size (fill_batch) when there is more than
+    one batch."""
+    n = len(tile_shapes)
+    bs = max(1, int(batch_size))
+    out = set()
+    for s in range(0, n, bs):
+        batch = tile_shapes[s:s + bs]
+        out.add(((bs if n > bs else len(batch)),) + _batch_target_hw(batch))
+    return out
+
+
+def warm_up(image_hw, *, use_gpu: bool = True, mode: str = "Both", chunk_size: int = 256,
+            overlap: int = 64, execution_mode: str = "auto", batch_size_override: int = 0,
+            stellar_correct_mode: str = "sharpen_only", correct_model_version: str = "V2 (latest)",
+            should_stop=lambda: False) -> int:
+    """
+    Load the models and build the fp16 kernels a sharpen run on an image this
+    size will use, so the run itself finds them ready. Run it on the GPU
+    thread (warmup.py does): kernels built on any other thread are not reused.
+    Mirrors sharpen_image_array (16 px border) and _sharpen_plane (tile grid,
+    batch size). Returns the number of input shapes warmed.
+    """
+    models = load_sharpen_models(use_gpu=bool(use_gpu), status_cb=lambda s: None)
+    if models.is_onnx or _device_type(models.device) != "cuda":
+        return 0                      # the per-shape compile is cuDNN's
+    torch, dev = models.torch, models.device
+
+    if execution_mode == "compatibility":
+        chunk_size = min(int(chunk_size), 256)
+    chunk = _cap_chunk_size_for_device(dev, max(64, min(1024, int(chunk_size))))
+    overlap = max(0, min(chunk - 1, int(overlap)))
+    H, W = int(image_hw[0]) + 32, int(image_hw[1]) + 32
+    tiles = [(ei - i, ej - j) for (i, j, ei, ej, _) in _chunk_coords_with_overlap(H, W, chunk, overlap)]
+
+    # (net, takes a PSF input, built from one plane expanded to 3 channels)
+    nets = []
+    scm = str(stellar_correct_mode).lower()
+    if scm in ("correct_only", "correct_sharpen"):    # _correct_rgb_image's pre-pass
+        ver = str(correct_model_version).lower()
+        corr = (models.correct_v2 if ("v2" in ver and models.correct_v2 is not None)
+                else (models.correct if models.correct is not None else models.correct_v2))
+        if corr is not None:
+            nets.append((corr, False, False))
+    if scm != "correct_only":
+        if mode in ("Stellar Only", "Both"):
+            nets.append((models.stellar, False, True))
+        if mode in ("Non-Stellar Only", "Both") and models.ns_cond is not None:
+            nets.append((models.ns_cond, True, True))
+    done = 0
+    for net, psf, expanded in nets:
+        bs = _recommended_batch_size(models, chunk, psf=psf, execution_mode=execution_mode,
+                                     batch_size_override=batch_size_override)
+        for B, h, w in sorted(_planned_batch_shapes(tiles, bs)):
+            if should_stop():
+                return done
+            # Built the way the loops build theirs: the mono loops expand one
+            # (B,1,H,W) plane to 3 channels, the correction loop passes RGB.
+            if expanded:
+                x = torch.zeros((B, 1, h, w), device=dev, dtype=torch.float32).expand(-1, 3, -1, -1)
+            else:
+                x = torch.zeros((B, 3, h, w), device=dev, dtype=torch.float32)
+            with torch.no_grad(), _autocast_context(torch, dev):
+                if psf:
+                    net(x, torch.full((B, 1), 0.5, device=dev, dtype=torch.float32))
+                else:
+                    net(x)
+            torch.cuda.synchronize()
+            done += 1
+    return done
 
 
 def _encode_psf_log2_0_1(psf: float, psf_min: float = 1.0, psf_max: float = 8.0) -> float:
@@ -798,10 +888,7 @@ def _infer_chunks_batched_rgb(
                 batch = chunks_hwc[s:s + bs]
 
                 orig_shapes = [(c.shape[0], c.shape[1]) for c in batch]
-                target_h = max(sh[0] for sh in orig_shapes)
-                target_w = max(sh[1] for sh in orig_shapes)
-                target_h = ((target_h + 15) // 16) * 16
-                target_w = ((target_w + 15) // 16) * 16
+                target_h, target_w = _batch_target_hw(orig_shapes)
 
                 # Build (B, 3, H, W) tensor
                 padded = []
@@ -813,12 +900,13 @@ def _infer_chunks_batched_rgb(
                         c = np.pad(c, ((0, ph), (0, pw), (0, 0)), mode="reflect")
                     padded.append(np.ascontiguousarray(np.transpose(c, (2, 0, 1))))  # HWC->CHW
 
-                arr = np.stack(padded, axis=0)  # (B, 3, H, W)
+                arr = fill_batch(np.stack(padded, axis=0),
+                                 bs, len(chunks_hwc))        # (B, 3, H, W)
                 t = np_to_torch(arr, device=dev, dtype=torch.float32, torch=torch)
 
                 with torch.no_grad(), _autocast_context(torch, dev):
                     y = model(t)                          # (B, 3, H, W)
-                    y = torch_to_np(y.detach().float())   # (B, 3, H, W)
+                    y = torch_to_np(y[:len(batch)].detach().float())   # not the fill
 
                 for bi in range(len(batch)):
                     oh, ow = orig_shapes[bi]
@@ -923,11 +1011,7 @@ def _infer_chunks_batched(
                 batch = chunks2d[s:s + bs]
 
                 orig_shapes = [(np.asarray(ch, np.float32).shape) for ch in batch]
-                target_h = max(sh[0] for sh in orig_shapes)
-                target_w = max(sh[1] for sh in orig_shapes)
-                # Round up to multiple of 16 so U-Net stride-2 stages stay aligned
-                target_h = ((target_h + 15) // 16) * 16
-                target_w = ((target_w + 15) // 16) * 16
+                target_h, target_w = _batch_target_hw(orig_shapes)
 
                 padded = []
                 for ch in batch:
@@ -938,13 +1022,14 @@ def _infer_chunks_batched(
                         c = np.pad(c, ((0, ph), (0, pw)), mode="reflect")
                     padded.append(np.ascontiguousarray(c))
 
-                arr = np.stack(padded, axis=0)[:, None, :, :]  # (B,1,H,W)
+                arr = fill_batch(np.stack(padded, axis=0)[:, None, :, :],
+                                 bs, len(chunks2d))      # (B,1,H,W)
                 t = np_to_torch(arr, device=dev, dtype=torch.float32, torch=torch)
                 t_rgb = t.expand(-1, 3, -1, -1)
 
                 with torch.no_grad(), _autocast_context(torch, dev):
                     y = model(t_rgb)
-                    y = torch_to_np(y[:, 0].detach().float())
+                    y = torch_to_np(y[:len(batch), 0].detach().float())   # not the fill
 
                 for bi, out_ch in enumerate(y):
                     oh, ow = orig_shapes[bi]
@@ -1018,11 +1103,7 @@ def _infer_chunks_psf_batched(
                 psf_batch   = psf01_list[s:s + bs]
 
                 orig_shapes = [(np.asarray(ch, np.float32).shape) for ch in batch]
-                target_h = max(sh[0] for sh in orig_shapes)
-                target_w = max(sh[1] for sh in orig_shapes)
-                # Round up to multiple of 16 so U-Net stride-2 stages stay aligned
-                target_h = ((target_h + 15) // 16) * 16
-                target_w = ((target_w + 15) // 16) * 16
+                target_h, target_w = _batch_target_hw(orig_shapes)
 
                 padded = []
                 for ch in batch:
@@ -1033,8 +1114,10 @@ def _infer_chunks_psf_batched(
                         c = np.pad(c, ((0, ph), (0, pw)), mode="reflect")
                     padded.append(np.ascontiguousarray(c))
 
-                arr = np.stack(padded, axis=0)[:, None, :, :]  # (B,1,H,W)
-                psf_arr = np.array([[p] for p in psf_batch], dtype=np.float32)  # (B,1)
+                arr = fill_batch(np.stack(padded, axis=0)[:, None, :, :],
+                                 bs, len(chunks2d))      # (B,1,H,W)
+                psf_arr = fill_batch(np.array([[p] for p in psf_batch], dtype=np.float32),
+                                     bs, len(chunks2d))  # (B,1)
 
                 t     = np_to_torch(arr, device=dev, dtype=torch.float32, torch=torch)
                 t_rgb = t.expand(-1, 3, -1, -1)
@@ -1042,7 +1125,7 @@ def _infer_chunks_psf_batched(
 
                 with torch.no_grad(), _autocast_context(torch, dev):
                     y = model(t_rgb, psf_t)
-                    y = torch_to_np(y[:, 0].detach().float())
+                    y = torch_to_np(y[:len(batch), 0].detach().float())   # not the fill
 
                 for bi, out_ch in enumerate(y):
                     oh, ow = orig_shapes[bi]
@@ -1625,6 +1708,7 @@ def _sharpen_plane(models: SharpenModels,
     return plane
 
 
+@gpu_thread_entry        # one thread for all runs: its compiled fp16 kernels persist (_gpu_thread)
 def sharpen_rgb01(
     image_rgb01: np.ndarray,
     *,

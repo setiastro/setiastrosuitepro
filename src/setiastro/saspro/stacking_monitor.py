@@ -102,6 +102,10 @@ def _r(pat: str, op: str, st: str, grp: Optional[int] = None):
 _r(r"Starting Master Dark",                         "Master Darks",      _ST_RUNNING)
 _r(r"🟢 Processing \d+ darks for (.+?) in session", "Master Darks",      _ST_RUNNING, 1)
 _r(r"✅ Master Dark saved and added to UI",          "Master Darks",      _ST_OK)
+# Master darks save in the background too (2026-11-24), same scheme as the
+# flats below: "queued" ends a group, "All master darks saved" ends the run.
+_r(r"✅ Master Dark queued",                         "Master Darks",      _ST_OK)
+_r(r"✅ All master darks saved",                     "Master Darks",      _ST_OK)
 _r(r"⚠️.*dark.*skip",                               "Master Darks",      _ST_WARN)
 
 # ── Master flat ───────────────────────────────────────────────────────────
