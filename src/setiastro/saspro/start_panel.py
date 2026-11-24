@@ -45,6 +45,7 @@ RELEASES_URL = "https://github.com/setiastro/setiastrosuitepro/releases/latest"
 TUTORIAL_URL = "https://youtu.be/zBUOZl2OgaY"     # the welcome window's beginner video
 
 RECENTS = 4                      # shown
+PROJECTS = 10                    # in the popup; File > Open Recent Projects has the rest
 THUMB = QSize(184, 112)          # logical size; the files hold twice that
 WIDTH = 840
 GAP = 10                         # kept clear around shortcuts and cards
@@ -70,6 +71,10 @@ QPushButton#sp_tile[main="true"] { border: none;
 QPushButton#sp_tile[main="true"]:hover, QPushButton#sp_tile[main="true"]:focus {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4455cc, stop:1 #6677ee); }
 QPushButton#sp_tile[main="true"] #sp_tile_s { color: #cfd6ff; }
+QPushButton#sp_proj { background: transparent; border: none; border-radius: 7px; }
+QPushButton#sp_proj:hover, QPushButton#sp_proj:focus { background-color: #25254a; }
+#sp_proj_more { color: #8fa0ff; font-size: 13px; background: transparent; }
+#sp_rule { background-color: #32325a; border: none; }
 QPushButton#sp_recent { background: transparent; border: none; border-radius: 9px; }
 QPushButton#sp_recent:hover, QPushButton#sp_recent:focus { background-color: #25254a; }
 QPushButton#sp_link { background: transparent; border: none; color: #8fa0ff; font-size: 12px; padding: 2px; }
@@ -419,35 +424,42 @@ class _Tile(QPushButton):
                 text, Qt.TextElideMode.ElideRight, max(1, room)))
 
 
-class _Choices(QFrame):
-    """A small popup under a tile: one tile for each way to do it. Closes on a
-    choice, a click anywhere else, or Esc."""
+class _Popup(QFrame):
+    """A small popup by a tile or link. Closes on a choice, a click anywhere
+    else, or Esc; the arrow keys go up and down it."""
 
-    def __init__(self, anchor, choices, parent):
+    def __init__(self, parent):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.NoDropShadowWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)   # round corners
         # The click that closes it stops there: on the tile, it would reopen.
         self.setAttribute(Qt.WidgetAttribute.WA_NoMouseReplay, True)
         self.setStyleSheet(_STYLE)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(8)
-        self.tiles = []
-        for icon, title, sub, slot in choices:
-            t = _Tile(icon, title, sub, lambda s=slot: self._choose(s))
-            t.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            t.setAutoDefault(True)               # Enter as well as Space
-            lay.addWidget(t)
-            self.tiles.append(t)
-        self.setFixedWidth(max(250, anchor.width()))
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(8, 8, 8, 8)
+        self.lay.setSpacing(8)
+        self.tiles = []                          # the first has the focus
+
+    def _show_by(self, anchor, width, right=False):
+        """Under `anchor`, or over it without the room. `right`: their right
+        edges line up (a link near the panel's edge)."""
+        self.setFixedWidth(width)
         self.adjustSize()
-        under = anchor.mapToGlobal(QPoint(0, anchor.height() + 6))
+        x = anchor.width() - width if right else 0
+        under = anchor.mapToGlobal(QPoint(x, anchor.height() + 6))
         screen = anchor.screen().availableGeometry()
         if under.y() + self.height() > screen.bottom():
-            under = anchor.mapToGlobal(QPoint(0, -self.height() - 6))
+            under = anchor.mapToGlobal(QPoint(x, -self.height() - 6))
         under.setX(max(screen.left(), min(under.x(), screen.right() - self.width())))
+        under.setY(max(screen.top(), under.y()))     # a short screen: over the anchor
         self.move(under)
+
+    def keyPressEvent(self, ev):
+        # A button leaves Up and Down to its parent.
+        if ev.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            self.focusNextPrevChild(ev.key() == Qt.Key.Key_Down)
+            return
+        super().keyPressEvent(ev)
 
     def paintEvent(self, _ev):
         # Not in the style sheet: Qt leaves the background of a translucent
@@ -466,6 +478,91 @@ class _Choices(QFrame):
     def _choose(self, slot):
         self.close()
         QTimer.singleShot(0, slot)               # once the popup is gone
+
+
+class _Choices(_Popup):
+    """Under a tile: one tile for each way to do it."""
+
+    def __init__(self, anchor, choices, parent):
+        super().__init__(parent)
+        for icon, title, sub, slot in choices:
+            t = _Tile(icon, title, sub, lambda s=slot: self._choose(s))
+            t.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            t.setAutoDefault(True)               # Enter as well as Space
+            self.lay.addWidget(t)
+            self.tiles.append(t)
+        self._show_by(anchor, max(250, anchor.width()))
+
+
+class _ProjectRow(QPushButton):
+    """One recent project: its name, and the folder it is in."""
+
+    def __init__(self, text, sub, slot, name="sp_tile_t"):
+        super().__init__()
+        self.setObjectName("sp_proj")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAutoDefault(True)                # Enter as well as Space
+        self.setAccessibleName(f"{text}. {sub}" if sub else text)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(12, 6, 12, 6)
+        col.setSpacing(1)
+        self._texts = []                         # (label, its full text, where it's cut)
+        for t, obj, cut in ((text, name, Qt.TextElideMode.ElideRight),
+                            (sub, "sp_tile_s", Qt.TextElideMode.ElideMiddle)):
+            if t:
+                lab = _label(t, obj)
+                lab.setMinimumWidth(1)           # the popup's width decides
+                col.addWidget(lab)
+                self._texts.append((lab, t, cut))
+        self.clicked.connect(lambda: slot())
+
+    def sizeHint(self):
+        # A button's own is for its text, and this one has none: the labels'.
+        lay = self.layout()
+        return QSize(lay.totalMinimumSize().width(), lay.totalSizeHint().height())
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        room = self.width() - 24
+        for lab, text, cut in self._texts:
+            lab.ensurePolished()
+            lab.setText(QFontMetrics(lab.font()).elidedText(text, cut, max(1, room)))
+
+
+class _Projects(_Popup):
+    """By "Open a project…": the recent projects, as File > Open Recent
+    Projects lists them, then a way to look for any other. Nothing here asks
+    whether a file is there (a drive that isn't would hang the window): opening
+    one that is gone offers to take it off the list."""
+
+    def __init__(self, anchor, paths, open_one, browse, parent):
+        super().__init__(parent)
+        self.lay.setSpacing(2)
+        head = _label(_t("RECENT PROJECTS"), "sp_k")
+        head.setContentsMargins(12, 4, 12, 4)
+        self.lay.addWidget(head)
+        for p in paths:
+            name = os.path.splitext(os.path.basename(p))[0] or p
+            row = _ProjectRow(name, os.path.dirname(p),
+                              lambda p=p: self._choose(lambda: open_one(p)))
+            row.setToolTip(p)
+            self.lay.addWidget(row)
+            self.tiles.append(row)
+        rule = QFrame()
+        rule.setObjectName("sp_rule")
+        rule.setFixedHeight(1)
+        self.lay.addSpacing(4)
+        self.lay.addWidget(rule)
+        self.lay.addSpacing(4)
+        more = _ProjectRow(_t("Browse for a project…"), "", lambda: self._choose(browse),
+                           name="sp_proj_more")
+        self.lay.addWidget(more)
+        self.tiles.append(more)
+        self._show_by(anchor, 380, right=True)
 
 
 class _Recent(QPushButton):
@@ -653,7 +750,8 @@ class StartPanel(QFrame):
                               "sp_s"))
         foot.addStretch(1)
         foot.setSpacing(16)
-        foot.addWidget(_link(_t("Open a project…"), self._runs(mw.act_project_load.trigger)))
+        self._project_link = _link(_t("Open a project…"), self._open_project)
+        foot.addWidget(self._project_link)
         foot.addWidget(_link(_t("What's new"), self._runs(
             lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL)))))
         root.addLayout(foot)
@@ -714,6 +812,20 @@ class StartPanel(QFrame):
     def _show_choices(self, anchor, choices):
         choices = [(icon, title, sub, self._runs(slot)) for icon, title, sub, slot in choices]
         pop = _Choices(anchor, choices, self)
+        pop.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        pop.show()
+
+    def _open_project(self):
+        """The recent projects in a popup by the link; with none yet, straight
+        to the file prompt."""
+        mw = self._mw
+        paths = list(getattr(mw, "_recent_project_paths", []) or [])[:PROJECTS]
+        if not paths:
+            self._run(mw.act_project_load.trigger)
+            return
+        pop = _Projects(self._project_link, paths,
+                        lambda p: self._run(lambda: mw._open_recent_project(p)),
+                        self._runs(mw.act_project_load.trigger), self)
         pop.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         pop.show()
 
