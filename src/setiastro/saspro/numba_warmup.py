@@ -91,7 +91,7 @@ def _do_warmup():
             subtract_dark,
             # Statistical operations
             kappa_sigma_clip_weighted,
-            windsorized_sigma_clip_weighted,
+            winsorized_sigma_clip_weighted,
         )
 
         # Create small dummy arrays for warmup
@@ -122,7 +122,7 @@ def _do_warmup():
             (subtract_dark, [dummy_3d_mono, dummy_mono]),
             # Statistical operations (with multiple frames)
             (kappa_sigma_clip_weighted, [dummy_3d_mono, np.ones(8)]),
-            (windsorized_sigma_clip_weighted, [dummy_3d_mono, np.ones(8)]),
+            (winsorized_sigma_clip_weighted, [dummy_3d_mono, np.ones(8)]),
         ]
 
         for func, args in warmup_funcs:

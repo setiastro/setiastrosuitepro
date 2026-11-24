@@ -261,7 +261,7 @@ class _SplitPreviewWidget(QWidget):
         if self._before is None:
             p.setPen(QColor(100, 100, 110))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                       "Open an image to see the preview.")
+                       self.tr("Open an image to see the preview."))
             p.end()
             return
 
@@ -301,13 +301,13 @@ class _SplitPreviewWidget(QWidget):
             p.fillRect(QRectF(r.left() + 4, r.top() + 4, lbl_r, 18),
                        QColor(0, 0, 0, 100))
             p.drawText(QRectF(r.left() + 4, r.top() + 4, lbl_r, 18),
-                       Qt.AlignmentFlag.AlignCenter, "Before")
+                       Qt.AlignmentFlag.AlignCenter, self.tr("Before"))
         if r.right() - split_x > lbl_r + 4:
             p.setPen(QColor(200, 200, 200, 180))
             p.fillRect(QRectF(r.right() - lbl_r - 4, r.top() + 4, lbl_r, 18),
                        QColor(0, 0, 0, 100))
             p.drawText(QRectF(r.right() - lbl_r - 4, r.top() + 4, lbl_r, 18),
-                       Qt.AlignmentFlag.AlignCenter, "After")
+                       Qt.AlignmentFlag.AlignCenter, self.tr("After"))
         p.end()
 
     def mousePressEvent(self, ev):
@@ -585,9 +585,9 @@ class HueCurveCanvas(QWidget):
         idx = self._hit_test(pos)
         menu = QMenu(self)
         if idx is not None and 0 < idx < len(self._pts) - 1:
-            menu.addAction("Delete point").triggered.connect(
+            menu.addAction(self.tr("Delete point")).triggered.connect(
                 lambda: self._delete_point(idx))
-        menu.addAction("Reset curve").triggered.connect(self.reset_points)
+        menu.addAction(self.tr("Reset curve")).triggered.connect(self.reset_points)
         menu.exec(ev.globalPos())
 
     def _delete_point(self, idx: int):
@@ -651,7 +651,7 @@ class SatChromaTool(QDialog):
         self.document = document
         self.settings = QSettings("SetiAstro", "SASpro")
 
-        self.setWindowTitle("Saturation / Chroma Tool")
+        self.setWindowTitle(self.tr("Saturation / Chroma Tool"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -731,28 +731,28 @@ class SatChromaTool(QDialog):
         left_lay.setSpacing(5)
 
         mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Mode:"))
+        mode_row.addWidget(QLabel(self.tr("Mode:")))
         self.combo_mode = QComboBox(self)
         self.combo_mode.addItems(["Saturation  (HSV)", "Chroma  (CIE Lab)"])
-        self.combo_mode.setToolTip(
+        self.combo_mode.setToolTip(self.tr(
             "Saturation (HSV): adjusts colour purity in HSV.\n"
             "Chroma (Lab): adjusts perceptual colour strength — less hue shift."
-        )
+        ))
         self.combo_mode.currentIndexChanged.connect(self._on_changed)
         mode_row.addWidget(self.combo_mode, 1)
         left_lay.addLayout(mode_row)
 
-        left_lay.addWidget(QLabel(
+        left_lay.addWidget(QLabel(self.tr(
             "<span style='color:#777; font-size:10px;'>"
             "Drag · Click to add · Dbl-click to delete · Endpoints linked</span>"
-        ))
+        )))
 
         self.canvas = HueCurveCanvas(self)
         self.canvas.curve_changed.connect(self._on_changed)
         left_lay.addWidget(self.canvas, 1)
 
         str_row = QHBoxLayout()
-        str_row.addWidget(QLabel("Global strength:"))
+        str_row.addWidget(QLabel(self.tr("Global strength:")))
         self.sld_strength = QSlider(Qt.Orientation.Horizontal, self)
         self.sld_strength.setRange(0, 300)
         self.sld_strength.setValue(100)
@@ -769,7 +769,7 @@ class SatChromaTool(QDialog):
         self.spin_strength.valueChanged.connect(self._on_changed)
         self.sld_strength.valueChanged.connect(self._on_changed)   
 
-        btn_reset = QPushButton("Reset Curve")
+        btn_reset = QPushButton(self.tr("Reset Curve"))
         btn_reset.setFixedWidth(88)
         btn_reset.clicked.connect(self.canvas.reset_points)
 
@@ -779,13 +779,13 @@ class SatChromaTool(QDialog):
         left_lay.addLayout(str_row)
 
         opt_row = QHBoxLayout()
-        self.chk_mask = QCheckBox("Respect active mask", self)
+        self.chk_mask = QCheckBox(self.tr("Respect active mask"), self)
         self.chk_mask.setChecked(True)
-        self.chk_live = QCheckBox("Live preview", self)
+        self.chk_live = QCheckBox(self.tr("Live preview"), self)
         self.chk_live.setChecked(True)
         self.chk_live.toggled.connect(self._on_live_toggled)
 
-        self.btn_prev = QPushButton("Preview")
+        self.btn_prev = QPushButton(self.tr("Preview"))
         self.btn_prev.clicked.connect(self._update_preview)
 
         opt_row.addWidget(self.chk_mask)
@@ -794,7 +794,7 @@ class SatChromaTool(QDialog):
         opt_row.addWidget(self.btn_prev)
         left_lay.addLayout(opt_row)
 
-        self.lbl_status = QLabel("Ready.", self)
+        self.lbl_status = QLabel(self.tr("Ready."), self)
         self.lbl_status.setStyleSheet("color: #777; font-size: 10px;")
         left_lay.addWidget(self.lbl_status)
 
@@ -804,10 +804,10 @@ class SatChromaTool(QDialog):
         left_lay.addWidget(line)
 
         btn_row = QHBoxLayout()
-        self.btn_apply = QPushButton("Apply to Document")
+        self.btn_apply = QPushButton(self.tr("Apply to Document"))
         self.btn_apply.setDefault(True)
         self.btn_apply.clicked.connect(self._apply)
-        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
         self.btn_cancel.clicked.connect(self.close)
         btn_row.addStretch(1)
         btn_row.addWidget(self.btn_apply)
@@ -855,11 +855,11 @@ class SatChromaTool(QDialog):
         right_lay.setSpacing(4)
 
         prev_hdr_row = QHBoxLayout()
-        prev_hdr = QLabel("Preview", self)
+        prev_hdr = QLabel(self.tr("Preview"), self)
         prev_hdr.setStyleSheet("color: #999; font-size: 10px; font-weight: bold;")
-        btn_fit = QPushButton("Fit")
+        btn_fit = QPushButton(self.tr("Fit"))
         btn_fit.setFixedWidth(50)
-        btn_fit.setToolTip("Reset zoom/pan to fit the preview.\n(Double-click the preview also does this.)")
+        btn_fit.setToolTip(self.tr("Reset zoom/pan to fit the preview.\n(Double-click the preview also does this.)"))
         btn_fit.clicked.connect(self._fit_preview_view)
         prev_hdr_row.addWidget(prev_hdr)
         prev_hdr_row.addStretch(1)
@@ -935,14 +935,14 @@ class SatChromaTool(QDialog):
         self._preview_busy = True
         self.btn_prev.setEnabled(False)
         try:
-            self.lbl_status.setText("Updating preview…")
+            self.lbl_status.setText(self.tr("Updating preview…"))
             out   = self._process(self._preview_src)
             out   = self._blend_mask(out, self._preview_src, use_full_res=False)
             after = _arr_to_pixmap(out)
             self.preview.set_after(after)
-            self.lbl_status.setText("Preview updated.")
+            self.lbl_status.setText(self.tr("Preview updated."))
         except Exception as e:
-            self.lbl_status.setText(f"Preview error: {e}")
+            self.lbl_status.setText(self.tr("Preview error: {0}").format(e))
         finally:
             self._preview_busy = False
             self.btn_prev.setEnabled(True)
@@ -978,7 +978,7 @@ class SatChromaTool(QDialog):
 
     def _apply(self):
         if self.document is None or self._source is None:
-            QMessageBox.information(self, "SatChroma", "No document loaded.")
+            QMessageBox.information(self, "SatChroma", self.tr("No document loaded."))
             return
         if self._apply_thread is not None:
             return  # already running
@@ -988,7 +988,7 @@ class SatChromaTool(QDialog):
             mask       = self._get_full_res_mask()
             mode_index = self.combo_mode.currentIndex()
 
-            self.lbl_status.setText("Applying — processing full-resolution image…")
+            self.lbl_status.setText(self.tr("Applying — processing full-resolution image…"))
             self._set_apply_controls_enabled(False)
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
@@ -1025,7 +1025,7 @@ class SatChromaTool(QDialog):
         QApplication.restoreOverrideCursor()
 
         if not ok:
-            self.lbl_status.setText("Apply failed.")
+            self.lbl_status.setText(self.tr("Apply failed."))
             QMessageBox.critical(self, "SatChroma", message)
             return
 
@@ -1048,10 +1048,10 @@ class SatChromaTool(QDialog):
             self.document.apply_edit(out, metadata=meta,
                                      step_name=f"SatChroma — {mode_name}")
             self._load_source(out.copy())
-            self.lbl_status.setText("Applied.")
+            self.lbl_status.setText(self.tr("Applied."))
         except Exception:
             import traceback
-            self.lbl_status.setText("Apply failed.")
+            self.lbl_status.setText(self.tr("Apply failed."))
             QMessageBox.critical(self, "SatChroma", traceback.format_exc())
 
     # ── preset save / load ───────────────────────────────────
@@ -1107,11 +1107,23 @@ class SatChromaTool(QDialog):
             pass
 
     def closeEvent(self, event):
+        # _apply_thread is a child of this WA_DeleteOnClose dialog: closing
+        # during Apply would destroy a running QThread (qFatal, silent exit).
+        # The full-res apply cannot be interrupted, so stay open until it ends.
+        if self._apply_thread is not None:
+            event.ignore()
+            return
         try:
             self.settings.setValue("satchroma/geometry", self.saveGeometry())
         except Exception:
             pass
         super().closeEvent(event)
+
+    def reject(self):
+        # Esc deletes a WA_DeleteOnClose dialog without a closeEvent.
+        if self._apply_thread is not None:
+            return
+        super().reject()
 
 
 # ─────────────────────────────────────────────────────────────

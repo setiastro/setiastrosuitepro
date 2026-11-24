@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, List, Tuple
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QT_TRANSLATE_NOOP
 from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QProgressDialog, QApplication,
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
@@ -30,7 +30,7 @@ class FitsBundleExportDialog(QDialog):
 
     def __init__(self, parent, entries: Sequence[dict], active_doc=None):
         super().__init__(parent)
-        self.setWindowTitle("Export Bundled FITS")
+        self.setWindowTitle(self.tr("Export Bundled FITS"))
         self.resize(620, 460)
 
         self._entries = list(entries)
@@ -39,9 +39,9 @@ class FitsBundleExportDialog(QDialog):
         lay = QVBoxLayout(self)
 
         info = QLabel(
-            "Choose which open views to include in the FITS bundle.\n"
+            self.tr("Choose which open views to include in the FITS bundle.\n"
             "Checked items will be written as HDUs.\n"
-            "Image views become image HDUs. Table views become FITS table HDUs."
+            "Image views become image HDUs. Table views become FITS table HDUs.")
         )
         info.setWordWrap(True)
         lay.addWidget(info)
@@ -52,11 +52,11 @@ class FitsBundleExportDialog(QDialog):
         for ent in self._entries:
             doc = ent.get("doc")
             title = str(ent.get("title") or "Untitled")
-            tag = str(ent.get("tag") or "View")
+            tag = self.tr(str(ent.get("tag") or QT_TRANSLATE_NOOP("FitsBundleExportDialog", "View")))
 
             label = f"[{tag}] {title}"
             if doc is active_doc:
-                label += "  [Active]"
+                label += self.tr("  [Active]")
 
             item = QListWidgetItem(label, self.list_docs)
             item.setFlags(
@@ -70,9 +70,9 @@ class FitsBundleExportDialog(QDialog):
 
         row = QHBoxLayout()
 
-        self.btn_all = QPushButton("Select All", self)
-        self.btn_none = QPushButton("Select None", self)
-        self.btn_active = QPushButton("Active Only", self)
+        self.btn_all = QPushButton(self.tr("Select All"), self)
+        self.btn_none = QPushButton(self.tr("Select None"), self)
+        self.btn_active = QPushButton(self.tr("Active Only"), self)
 
         self.btn_all.clicked.connect(self._select_all)
         self.btn_none.clicked.connect(self._select_none)
@@ -127,15 +127,15 @@ class FitsBundleExportDialog(QDialog):
 class _FitsBundleDialog(QDialog):
     def __init__(self, parent, entries: list[dict], active_index: int = -1):
         super().__init__(parent)
-        self.setWindowTitle("Export FITS Bundle")
+        self.setWindowTitle(self.tr("Export FITS Bundle"))
 
         self._entries = list(entries)
 
         lay = QVBoxLayout(self)
 
         lbl = QLabel(
-            "Choose which open image views to bundle into the FITS file.\n"
-            "The first checked item becomes the Primary HDU."
+            self.tr("Choose which open image views to bundle into the FITS file.\n"
+            "The first checked item becomes the Primary HDU.")
         )
         lbl.setWordWrap(True)
         lay.addWidget(lbl)
@@ -144,7 +144,7 @@ class _FitsBundleDialog(QDialog):
         lay.addWidget(self.listw, 1)
 
         for i, ent in enumerate(self._entries):
-            title = ent.get("title") or f"Image {i+1}"
+            title = ent.get("title") or self.tr("Image {0}").format(i+1)
             item = QListWidgetItem(title)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
 
@@ -156,10 +156,10 @@ class _FitsBundleDialog(QDialog):
             self.listw.setCurrentRow(active_index)
 
         row = QHBoxLayout()
-        btn_all = QPushButton("Select All", self)
-        btn_none = QPushButton("Select None", self)
-        btn_up = QPushButton("Move Up", self)
-        btn_down = QPushButton("Move Down", self)
+        btn_all = QPushButton(self.tr("Select All"), self)
+        btn_none = QPushButton(self.tr("Select None"), self)
+        btn_up = QPushButton(self.tr("Move Up"), self)
+        btn_down = QPushButton(self.tr("Move Down"), self)
 
         btn_all.clicked.connect(self._select_all)
         btn_none.clicked.connect(self._select_none)
@@ -366,13 +366,13 @@ class FileMixin:
 
             if img is not None:
                 kind = "image"
-                tag = "Image"
+                tag = QT_TRANSLATE_NOOP("FitsBundleExportDialog", "Image")
             elif rows is not None and headers is not None:
                 kind = "table"
                 if str(meta.get("doc_subtype", "")).lower() == "vector":
-                    tag = "Vector Table"
+                    tag = QT_TRANSLATE_NOOP("FitsBundleExportDialog", "Vector Table")
                 else:
-                    tag = "Table"
+                    tag = QT_TRANSLATE_NOOP("FitsBundleExportDialog", "Table")
             else:
                 continue
 
@@ -447,7 +447,7 @@ class FileMixin:
             QMessageBox.critical(
                 self,
                 self.tr("Create Table"),
-                f"Failed to create table document:\n\n{type(e).__name__}: {e}",
+                self.tr("Failed to create table document:\n\n{0}: {1}").format(type(e).__name__, e),
             )
             return
 
@@ -466,8 +466,7 @@ class FileMixin:
             QMessageBox.critical(
                 self,
                 self.tr("Create Table"),
-                f"Table document was created, but the table view failed to open:\n\n"
-                f"{type(e).__name__}: {e}",
+                self.tr("Table document was created, but the table view failed to open:\n\n{0}: {1}").format(type(e).__name__, e),
             )
             return
     
@@ -657,7 +656,7 @@ class FileMixin:
                         self._open_pdf(p)
                         continue
                     _syq_busy = (
-                        self._show_bundle_busy("Unpacking and Opening Bundled File...")
+                        self._show_bundle_busy(self.tr("Unpacking and Opening Bundled File..."))
                         if p.lower().endswith(".syq") else None
                     )
                     try:
@@ -724,16 +723,16 @@ class FileMixin:
             import pypdfium2 as pdfium
         except ImportError:
             QMessageBox.warning(
-                self, "PDF Support",
-                "pypdfium2 is required to open PDF files.\n\n"
-                "Install it with:  pip install pypdfium2"
+                self, self.tr("PDF Support"),
+                self.tr("pypdfium2 is required to open PDF files.\n\n"
+                "Install it with:  pip install pypdfium2")
             )
             return
 
         try:
             pdf = pdfium.PdfDocument(path)
         except Exception as e:
-            QMessageBox.critical(self, "Open PDF", f"Failed to open PDF:\n{e}")
+            QMessageBox.critical(self, self.tr("Open PDF"), self.tr("Failed to open PDF:\n{0}").format(e))
             return
 
         n_pages = len(pdf)
@@ -744,8 +743,8 @@ class FileMixin:
         if n_pages > 1:
             from PyQt6.QtWidgets import QInputDialog
             dpi, ok = QInputDialog.getInt(
-                self, "Open PDF",
-                f"PDF has {n_pages} pages. Render DPI:",
+                self, self.tr("Open PDF"),
+                self.tr("PDF has {0} pages. Render DPI:").format(n_pages),
                 150, 72, 600, 50
             )
             if not ok:
@@ -999,7 +998,7 @@ class FileMixin:
                 self._rebuild_recent_menus()
             return
 
-        if not self._prepare_for_project_load("Load Project"):
+        if not self._prepare_for_project_load(self.tr("Load Project")):
             return
 
         self._do_load_project_path(path)
@@ -1093,7 +1092,7 @@ class FileMixin:
 
     def _load_project(self):
         # warn / clear current desktop
-        if not self._prepare_for_project_load("Load Project"):
+        if not self._prepare_for_project_load(self.tr("Load Project")):
             return
 
         path, _ = QFileDialog.getOpenFileName(

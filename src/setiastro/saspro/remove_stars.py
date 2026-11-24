@@ -12,7 +12,7 @@ import stat
 import tempfile
 import numpy as np
 
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSettings, QUrl
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QSettings, QUrl, QCoreApplication
 from PyQt6.QtWidgets import (
     QInputDialog, QMessageBox, QFileDialog,QGroupBox,
     QDialog, QVBoxLayout, QTextEdit, QPushButton, QProgressBar, QDoubleSpinBox,
@@ -37,6 +37,11 @@ except Exception:
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
 from setiastro.saspro.resources import get_resources, starnet_path, get_icons, rcastro_path, syqon_path
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("RemoveStars", text)
+
 
 _ENABLE_SYQON = True  # flip to True only after you get permission
 
@@ -364,7 +369,7 @@ def remove_stars(main, target_doc=None):
         current_index = 0
 
     label, ok = QInputDialog.getItem(
-        main, "Select Star Removal Tool", "Choose a tool:", labels, current_index, False
+        main, _tr("Select Star Removal Tool"), _tr("Choose a tool:"), labels, current_index, False
     )
     if not ok:
         return
@@ -385,7 +390,7 @@ def remove_stars(main, target_doc=None):
             doc = doc()
 
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "No Image", "Please load an image before removing stars.")
+        QMessageBox.warning(main, _tr("No Image"), _tr("Please load an image before removing stars."))
         return
 
     fn = globals().get(tool["runner"])
@@ -751,9 +756,9 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QIcon
 
 class SyQonLivePreviewWindow(QDialog):
-    def __init__(self, parent=None, *, title="SyQon Live Preview", icon: QIcon | None = None):
+    def __init__(self, parent=None, *, title=None, icon: QIcon | None = None):
         super().__init__(parent)
-        self.setWindowTitle(title)
+        self.setWindowTitle(title if title is not None else self.tr("SyQon Live Preview"))
         self.setModal(False)
         self.setMinimumSize(520, 420)
         try:
@@ -825,7 +830,7 @@ class SyQonStarlessDialog(QDialog):
         except Exception:
             pass
 
-        self.lbl = QLabel("Checking SyQon model…", self)
+        self.lbl = QLabel(self.tr("Checking SyQon model…"), self)
         self.lbl.setWordWrap(True)
         lay.addWidget(self.lbl)
 
@@ -836,16 +841,16 @@ class SyQonStarlessDialog(QDialog):
         lay.addWidget(self.pbar)
 
         self.cmb_engine = QComboBox(self)
-        self.cmb_engine.addItem("SyQon Model (Integrated)", userData="integrated")
-        self.cmb_engine.addItem("Starless Standalone CLI",  userData="standalone_cli")
-        self.lbl_cli_path  = QLabel("Standalone executable:", self)
+        self.cmb_engine.addItem(self.tr("SyQon Model (Integrated)"), userData="integrated")
+        self.cmb_engine.addItem(self.tr("Starless Standalone CLI"),  userData="standalone_cli")
+        self.lbl_cli_path  = QLabel(self.tr("Standalone executable:"), self)
         self.edt_cli_path  = QLineEdit(self)
-        self.btn_cli_browse = QPushButton("Browse…", self)
+        self.btn_cli_browse = QPushButton(self.tr("Browse…"), self)
         self.btn_cli_browse.clicked.connect(self._browse_cli_exe)
 
-        eng_box = QGroupBox("Engine", self)
+        eng_box = QGroupBox(self.tr("Engine"), self)
         eng_lay = QFormLayout(eng_box)
-        eng_lay.addRow("Processing engine:", self.cmb_engine)
+        eng_lay.addRow(self.tr("Processing engine:"), self.cmb_engine)
         cli_row = QHBoxLayout()
         cli_row.addWidget(self.edt_cli_path, 1)
         cli_row.addWidget(self.btn_cli_browse)
@@ -853,7 +858,7 @@ class SyQonStarlessDialog(QDialog):
         lay.addWidget(eng_box)
 
         # --- model box ---
-        self.model_box = QGroupBox("Model", self)
+        self.model_box = QGroupBox(self.tr("Model"), self)
         model_lay = QVBoxLayout(self.model_box)
 
         self.lbl_model_path = QLabel("", self)
@@ -866,13 +871,13 @@ class SyQonStarlessDialog(QDialog):
             self.cmb_model.addItem(_SYQON_MODEL_LABELS[key], userData=key)
         self.cmb_model.setCurrentIndex(0)
 
-        model_lay.addWidget(QLabel("Model variant:", self))
+        model_lay.addWidget(QLabel(self.tr("Model variant:"), self))
         model_lay.addWidget(self.cmb_model)
 
         row = QHBoxLayout()
-        self.btn_buy     = QPushButton("Get Starless Model Here…", self)
-        self.btn_install = QPushButton("Install Downloaded Model…", self)
-        self.btn_remove  = QPushButton("Remove Model", self)
+        self.btn_buy     = QPushButton(self.tr("Get Starless Model Here…"), self)
+        self.btn_install = QPushButton(self.tr("Install Downloaded Model…"), self)
+        self.btn_remove  = QPushButton(self.tr("Remove Model"), self)
 
         self.btn_buy.clicked.connect(self._open_buy_page)
         self.btn_install.clicked.connect(self._install_model)
@@ -895,7 +900,7 @@ class SyQonStarlessDialog(QDialog):
         self.spin_shadow.setRange(0.5, 5.0);   self.spin_shadow.setSingleStep(0.1)
         self.spin_shadow.setDecimals(1)
 
-        self.chk_mtf = QCheckBox("Apply temporary stretch for model (recommended)", self)
+        self.chk_mtf = QCheckBox(self.tr("Apply temporary stretch for model (recommended)"), self)
         self.chk_mtf.setChecked(True)
 
         self.spin_mtf_median = QDoubleSpinBox(self)
@@ -903,35 +908,35 @@ class SyQonStarlessDialog(QDialog):
         self.spin_mtf_median.setSingleStep(0.01)
         self.spin_mtf_median.setDecimals(3)
         self.spin_mtf_median.setValue(0.10)
-        self.lbl_mtf_median = QLabel("Temp stretch target median:", self)
+        self.lbl_mtf_median = QLabel(self.tr("Temp stretch target median:"), self)
 
         self._auto_bg = _syqon_compute_target_bg_from_doc(doc)
-        self.lbl_target_bg = QLabel("Target background:", self)
+        self.lbl_target_bg = QLabel(self.tr("Target background:"), self)
         self.spin_bg = QDoubleSpinBox(self)
         self.spin_bg.setRange(0.01, 0.50); self.spin_bg.setSingleStep(0.01)
         self.spin_bg.setDecimals(3);       self.spin_bg.setValue(self._auto_bg)
 
-        self.chk_show_bg = QCheckBox("Advanced: show Target Background control", self)
+        self.chk_show_bg = QCheckBox(self.tr("Advanced: show Target Background control"), self)
         self.chk_show_bg.setChecked(False)
         self.chk_show_bg.toggled.connect(self._toggle_bg)
 
-        self.chk_make_stars = QCheckBox("Also create stars-only document (_stars)", self)
+        self.chk_make_stars = QCheckBox(self.tr("Also create stars-only document (_stars)"), self)
         self.chk_make_stars.setChecked(True)
-        self.chk_pad = QCheckBox("Pad edges (improves edge star removal)", self)
+        self.chk_pad = QCheckBox(self.tr("Pad edges (improves edge star removal)"), self)
         self.chk_pad.setChecked(True)
-        self.chk_amp = QCheckBox("Use AMP (mixed precision) — faster on some GPUs", self)
+        self.chk_amp = QCheckBox(self.tr("Use AMP (mixed precision) — faster on some GPUs"), self)
         self.chk_amp.setChecked(False)
         self.chk_rgb_perchan = QCheckBox(
-            "RGB + Per-Channel mode (may improve colour accuracy)", self
+            self.tr("RGB + Per-Channel mode (may improve colour accuracy)"), self
         )
         self.chk_rgb_perchan.setChecked(False)
-        self.chk_rgb_perchan.setToolTip(
+        self.chk_rgb_perchan.setToolTip(self.tr(
             "Runs the model twice: once on the full RGB image and once per channel independently.\n"
             "The two results are averaged, then Lab chroma correction is applied.\n"
             "Can reduce colour fringing on narrowband or colour-imbalanced images.\n"
             "Takes approximately 4× longer than standard mode.\n"
             "Note: not available for AxiomV3 (model uses internal per-tile normalisation)."
-        )
+        ))
         self.spin_pad = QSpinBox(self)
         self.spin_pad.setRange(0, 1024); self.spin_pad.setSingleStep(16)
         self.spin_pad.setValue(256)
@@ -970,11 +975,11 @@ class SyQonStarlessDialog(QDialog):
             self.spin_pad.setValue(256)
             self.cmb_stars_extract.setCurrentText("unscreen")
 
-        form.addRow("Tile size:", self.spin_tile)
-        form.addRow("Overlap:",   self.spin_overlap)
+        form.addRow(self.tr("Tile size:"), self.spin_tile)
+        form.addRow(self.tr("Overlap:"),   self.spin_overlap)
         self.spin_shadow.hide()
 
-        self.lbl_bginfo = QLabel(f"Target background (auto): {self._auto_bg:.3f}", self)
+        self.lbl_bginfo = QLabel(self.tr("Target background (auto): {0:.3f}").format(self._auto_bg), self)
         form.addRow(self.lbl_bginfo)
         form.addRow(self.lbl_target_bg, self.spin_bg)
         form.addRow("", self.chk_show_bg)
@@ -982,19 +987,19 @@ class SyQonStarlessDialog(QDialog):
         form.addRow(self.lbl_mtf_median, self.spin_mtf_median)
         form.addRow("", self.chk_make_stars)
         form.addRow("", self.chk_pad)
-        form.addRow("Pad pixels:", self.spin_pad)
+        form.addRow(self.tr("Pad pixels:"), self.spin_pad)
         form.addRow("", self.chk_amp)
-        form.addRow("", self.chk_rgb_perchan)  
-        form.addRow("Stars-only extraction:", self.cmb_stars_extract)
+        form.addRow("", self.chk_rgb_perchan)
+        form.addRow(self.tr("Stars-only extraction:"), self.cmb_stars_extract)
 
-        self.chk_live_preview = QCheckBox("Live tile preview (slower)", self)
+        self.chk_live_preview = QCheckBox(self.tr("Live tile preview (slower)"), self)
         self.chk_live_preview.setChecked(False)
         lay.addWidget(self.chk_live_preview)
         lay.addWidget(formw)
 
         btns = QHBoxLayout()
-        self.btn_process = QPushButton("Process", self)
-        self.btn_close   = QPushButton("Close", self)
+        self.btn_process = QPushButton(self.tr("Process"), self)
+        self.btn_close   = QPushButton(self.tr("Close"), self)
         self.btn_process.clicked.connect(self._process)
         self.btn_close.clicked.connect(self.close)
         btns.addWidget(self.btn_process)
@@ -1123,7 +1128,7 @@ class SyQonStarlessDialog(QDialog):
         if not start:
             start = self.edt_cli_path.text().strip()
         filt = "Executable (*.exe)" if os.name == "nt" else "All Files (*)"
-        path, _ = QFileDialog.getOpenFileName(self, "Select Starless Standalone Executable", start, filt)
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select Starless Standalone Executable"), start, filt)
         if path:
             self.edt_cli_path.setText(path)
             if s:
@@ -1178,7 +1183,7 @@ class SyQonStarlessDialog(QDialog):
             return
         if self.preview_win is None:
             self.preview_win = SyQonLivePreviewWindow(
-                parent=self, title="SyQon Live Preview", icon=self.windowIcon()
+                parent=self, title=self.tr("SyQon Live Preview"), icon=self.windowIcon()
             )
             self.preview_win.finished.connect(lambda *_: self.chk_live_preview.setChecked(False))
         self.preview_win.show()
@@ -1388,7 +1393,7 @@ class SyQonStarlessDialog(QDialog):
             pass
 
         self._set_busy(False)
-        self.lbl.setText("Complete!")
+        self.lbl.setText(self.tr("Complete!"))
         # Only close if running as a real dialog, not embedded in SyQon Tools hub
         if self.windowFlags() & Qt.WindowType.Dialog:
             self.close()
@@ -1422,41 +1427,41 @@ class SyQonStarlessDialog(QDialog):
                 os.path.isfile(exe_path) or os.path.isdir(exe_path)
             )
             if exe_exists:
-                self.lbl.setText("Ready (Starless Standalone CLI selected).")
+                self.lbl.setText(self.tr("Ready (Starless Standalone CLI selected)."))
                 self.btn_process.setEnabled(True)
             else:
-                self.lbl.setText(
+                self.lbl.setText(self.tr(
                     "Starless Standalone CLI mode is selected.\n\n"
                     "Please choose the standalone Starless executable with the Browse button."
-                )
+                ))
                 self.btn_process.setEnabled(True)
             return
         self.btn_process.setEnabled(True)
-    
+
         mk    = self._model_kind()
         dst   = self._model_dst_path()
         label = _SYQON_MODEL_LABELS.get(mk, mk)
-    
+
         if self._have_model():
-            self.lbl_model_path.setText(f"Installed model path:\n{str(dst)}")
-    
+            self.lbl_model_path.setText(self.tr("Installed model path:\n{0}").format(str(dst)))
+
             # Show Signal status for AxiomV2.2 only
             if mk == "axiomv2.2":
                 sig_ok = _syqon_have_signal(self.data_dir)
-                sig_status = "Signal 1.0: installed ✓" if sig_ok else "Signal 1.0: not installed (optional but recommended)"
-                self.lbl.setText(f"Ready ({label} model installed).\n{sig_status}")
+                sig_status = self.tr("Signal 1.0: installed ✓") if sig_ok else self.tr("Signal 1.0: not installed (optional but recommended)")
+                self.lbl.setText(self.tr("Ready ({0} model installed).\n{1}").format(label, sig_status))
             else:
-                self.lbl.setText(f"Ready ({label} model installed).")
-    
+                self.lbl.setText(self.tr("Ready ({0} model installed).").format(label))
+
             self.btn_process.setEnabled(True)
             self.btn_remove.setEnabled(True)
         else:
-            self.lbl_model_path.setText("Model not installed.")
-            self.lbl.setText(
-                f"{label} model is not installed.\n\n"
+            self.lbl_model_path.setText(self.tr("Model not installed."))
+            self.lbl.setText(self.tr(
+                "{0} model is not installed.\n\n"
                 "1) Click \"Get Starless Model Here…\" to purchase/download it.\n"
                 "2) Then click \"Install Downloaded Model…\" and select the downloaded file."
-            )
+            ).format(label))
             self.btn_process.setEnabled(True)
             self.btn_remove.setEnabled(False)
     
@@ -1471,9 +1476,9 @@ class SyQonStarlessDialog(QDialog):
         if not url:
             QMessageBox.information(
                 self, "SyQon",
-                "SyQon purchase URL is not configured yet.\n\n"
+                self.tr("SyQon purchase URL is not configured yet.\n\n"
                 "Please obtain the model from SyQon directly, then use:\n"
-                "\"Install Downloaded Model…\" and select the appropriate model file."
+                "\"Install Downloaded Model…\" and select the appropriate model file.")
             )
             return
         QDesktopServices.openUrl(QUrl(url))
@@ -1483,32 +1488,32 @@ class SyQonStarlessDialog(QDialog):
         import shutil
         mk    = self._model_kind()
         label = _SYQON_MODEL_LABELS.get(mk, mk)
-    
+
         src_path, _ = QFileDialog.getOpenFileName(
-            self, f"Select SyQon {label} Model File", "",
+            self, self.tr("Select SyQon {0} Model File").format(label), "",
             "Model Files (*.pt *.pth *.bin);;All Files (*)"
         )
         if not src_path:
             return
-    
+
         src = Path(src_path)
         if not src.exists():
-            QMessageBox.warning(self, "SyQon", "Selected file does not exist.")
+            QMessageBox.warning(self, "SyQon", self.tr("Selected file does not exist."))
             return
-    
+
         dst = _syqon_model_path(self.data_dir, mk)
         dst.parent.mkdir(parents=True, exist_ok=True)
-    
+
         self.pbar.setVisible(True)
         self.pbar.setRange(0, 0)
-        self.lbl.setText(f"Installing {label} model…")
+        self.lbl.setText(self.tr("Installing {0} model…").format(label))
         QApplication.processEvents()
-    
+
         try:
             shutil.copy2(str(src), str(dst))
         except Exception as e:
             self.pbar.setVisible(False)
-            QMessageBox.critical(self, "SyQon", f"Failed to install model:\n{e}")
+            QMessageBox.critical(self, "SyQon", self.tr("Failed to install model:\n{0}").format(e))
             self._refresh_state()
             return
     
@@ -1524,16 +1529,16 @@ class SyQonStarlessDialog(QDialog):
         if mk == "axiomv2.2":
             reply = QMessageBox.question(
                 self,
-                "Install Signal 1.0?",
-                "Axiom V2.2 works with Signal 1.0 for star-core inpainting.\n\n"
+                self.tr("Install Signal 1.0?"),
+                self.tr("Axiom V2.2 works with Signal 1.0 for star-core inpainting.\n\n"
                 "Would you like to install the Signal 1.0 model now?\n"
-                "(You can install it later via Install Downloaded Model…)",
+                "(You can install it later via Install Downloaded Model…)"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
             if reply == QMessageBox.StandardButton.Yes:
                 sig_src_path, _ = QFileDialog.getOpenFileName(
-                    self, "Select Signal 1.0 Model File (signal_v1.pt)", "",
+                    self, self.tr("Select Signal 1.0 Model File (signal_v1.pt)"), "",
                     "Model Files (*.pt *.pth *.bin);;All Files (*)"
                 )
                 if sig_src_path:
@@ -1541,18 +1546,18 @@ class SyQonStarlessDialog(QDialog):
                     sig_dst = _syqon_signal_path(self.data_dir)
                     self.pbar.setVisible(True)
                     self.pbar.setRange(0, 0)
-                    self.lbl.setText("Installing Signal 1.0 model…")
+                    self.lbl.setText(self.tr("Installing Signal 1.0 model…"))
                     QApplication.processEvents()
                     try:
                         shutil.copy2(str(sig_src), str(sig_dst))
-                        self.lbl.setText("Signal 1.0 model installed.")
+                        self.lbl.setText(self.tr("Signal 1.0 model installed."))
                         if s:
                             s.setValue("syqon/signal_installed_path", str(sig_dst))
                     except Exception as e:
-                        QMessageBox.warning(self, "SyQon", f"Signal 1.0 install failed:\n{e}")
+                        QMessageBox.warning(self, "SyQon", self.tr("Signal 1.0 install failed:\n{0}").format(e))
                     self.pbar.setVisible(False)
-    
-        self.lbl.setText(f"{label} model installed.")
+
+        self.lbl.setText(self.tr("{0} model installed.").format(label))
         self._refresh_state()
 
 
@@ -1563,7 +1568,7 @@ class SyQonStarlessDialog(QDialog):
             return
 
         reply = QMessageBox.question(
-            self, "Remove Model", "Remove the installed SyQon model from disk?",
+            self, self.tr("Remove Model"), self.tr("Remove the installed SyQon model from disk?"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -1605,7 +1610,7 @@ class SyQonStarlessDialog(QDialog):
         tile    = int(self.spin_tile.value())
         overlap = int(self.spin_overlap.value())
         if overlap >= tile:
-            QMessageBox.warning(self, "SyQon", "Overlap must be smaller than tile size.")
+            QMessageBox.warning(self, "SyQon", self.tr("Overlap must be smaller than tile size."))
             return
 
         pad_edges  = bool(self.chk_pad.isChecked())
@@ -1648,7 +1653,7 @@ class SyQonStarlessDialog(QDialog):
             pass
 
         self._set_busy(True)
-        self.lbl.setText("Processing…")
+        self.lbl.setText(self.tr("Processing…"))
 
         # --- Standalone CLI (SyQonStarless.exe / .app -- real C++ build) ---
         if engine_mode == "standalone_cli":
@@ -1659,7 +1664,7 @@ class SyQonStarlessDialog(QDialog):
                 exe_path = os.path.join(exe_path, "Contents", "MacOS", app_name)
             if not exe_path or not (os.path.isfile(exe_path) or os.path.isdir(exe_path)):
                 self._set_busy(False)
-                QMessageBox.warning(self, "SyQon", "Please select a valid Starless Standalone executable.")
+                QMessageBox.warning(self, "SyQon", self.tr("Please select a valid Starless Standalone executable."))
                 return
  
             # The real C++ CLI has no MTF/AMP/channel-mode/pad flags --
@@ -1696,7 +1701,7 @@ class SyQonStarlessDialog(QDialog):
         # --- Integrated model ---
         if not self._have_model():
             self._set_busy(False)
-            QMessageBox.warning(self, "SyQon", "SyQon model is not installed. Install it first.")
+            QMessageBox.warning(self, "SyQon", self.tr("SyQon model is not installed. Install it first."))
             return
 
         ckpt_path  = str(self._model_dst_path())
@@ -1776,7 +1781,7 @@ def open_syqon_starless_with_preset(main, doc, preset: dict | None = None):
     if not _ENABLE_SYQON:
         QMessageBox.information(
             main, "SyQon",
-            "SyQon is disabled until permission/licensing is confirmed."
+            _tr("SyQon is disabled until permission/licensing is confirmed.")
         )
         return None
     dlg = SyQonStarlessDialog(main, doc, parent=main, icon=QIcon(starnet_path))
@@ -1880,7 +1885,7 @@ class _SyQonStandaloneCLIThread(QThread):
                     if m:
                         pct = int(m.group(1))
                         # Don't emit 100 yet -- wait until file exists
-                        self._emit(min(pct, 99), "SyQon Starless processing…")
+                        self._emit(min(pct, 99), self.tr("SyQon Starless processing…"))
                         continue
                     # Parse stage label for status text
                     m = re_stage.search(line)
@@ -1913,7 +1918,7 @@ class _SyQonStandaloneCLIThread(QThread):
             self._tmp_out  = str(tmpdir / f"starless_{in_base}.tif")
             self._tmp_mask = str(tmpdir / f"starmask_{in_base}.tif")
 
-            self._emit(2, "Writing temp image for Starless…")
+            self._emit(2, self.tr("Writing temp image for Starless…"))
             save_image(
                 self.input_rgb01,
                 self._tmp_in,
@@ -1944,7 +1949,7 @@ class _SyQonStandaloneCLIThread(QThread):
             print("\n[Starless CLI launch]", flush=True)
             print("CMD:", " ".join(cmd), flush=True)
 
-            self._emit(5, "Opening SyQon Starless…")
+            self._emit(5, self.tr("Opening SyQon Starless…"))
 
             self._p = subprocess.Popen(
                 cmd,
@@ -1991,7 +1996,7 @@ class _SyQonStandaloneCLIThread(QThread):
                     "(cancelled, or processing was not completed)."
                 )
 
-            self._emit(95, "Loading Starless output…")
+            self._emit(95, self.tr("Loading Starless output…"))
             starless_rgb01, _, _, _ = load_image(self._tmp_out)
             if starless_rgb01 is None:
                 raise RuntimeError("Standalone CLI output could not be loaded.")
@@ -2022,7 +2027,7 @@ class _SyQonStandaloneCLIThread(QThread):
             except Exception:
                 pass
 
-            self._emit(100, "Standalone CLI: complete")
+            self._emit(100, self.tr("Standalone CLI: complete"))
             self.result.emit(starless_rgb01, stars_rgb01, info, "")
 
         except Exception as e:
@@ -2088,7 +2093,7 @@ def _run_starnet(main, doc, icon_path=None):
                            ("starnet/exe_path", "paths/starnet"), "")
     if not exe or not os.path.exists(exe):
         exe_path, _ = QFileDialog.getOpenFileName(
-            main, "Select StarNet Executable", "", "Executable Files (*)"
+            main, _tr("Select StarNet Executable"), "", "Executable Files (*)"
         )
         if not exe_path:
             return
@@ -2104,14 +2109,14 @@ def _run_starnet(main, doc, icon_path=None):
     sysname = platform.system()
     if sysname not in ("Windows", "Darwin", "Linux"):
         QMessageBox.critical(
-            main, "Unsupported OS",
-            f"The current operating system '{sysname}' is not supported."
+            main, _tr("Unsupported OS"),
+            _tr("The current operating system '{0}' is not supported.").format(sysname)
         )
         return
 
     # --- Ask linearity (SASv2 behavior)
     reply = QMessageBox.question(
-        main, "Image Linearity", "Is the current image linear?",
+        main, _tr("Image Linearity"), _tr("Is the current image linear?"),
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         QMessageBox.StandardButton.No
     )
@@ -2205,7 +2210,7 @@ def _run_starnet(main, doc, icon_path=None):
             original_header=None, is_mono=False, image_meta=None, file_meta=None
         )
     except Exception as e:
-        QMessageBox.critical(main, "StarNet", f"Failed to write input TIFF:\n{e}")
+        QMessageBox.critical(main, "StarNet", _tr("Failed to write input TIFF:\n{0}").format(e))
         return
 
     # --- Build command
@@ -2235,8 +2240,8 @@ def _run_starnet(main, doc, icon_path=None):
             command = [exe, input_image_path, output_image_path]
 
     # --- Progress dialog + worker
-    dlg = _ProcDialog(main, title="StarNet Progress")
-    dlg.reset_progress("Starting StarNet…")
+    dlg = _ProcDialog(main, title=_tr("StarNet Progress"))
+    dlg.reset_progress(_tr("Starting StarNet…"))
     dlg.pbar.setRange(0, 100)
     dlg.pbar.setValue(0)
     dlg.pbar.setFormat("0%")
@@ -2251,23 +2256,25 @@ def _run_starnet(main, doc, icon_path=None):
     tile_total = {"n": 0}
     last_pct = {"v": -1}
 
+    # The tests below match StarNet's own (English) stdout; only the returned
+    # stage label is display text.
     def _stage_from_line(low: str) -> str | None:
         if "reading input image" in low:
-            return "Reading input image…"
+            return _tr("Reading input image…")
         if ("bits per sample" in low) or ("samples per pixel" in low) or ("height:" in low) or ("width:" in low):
-            return "Inspecting input…"
+            return _tr("Inspecting input…")
         if "restoring neural network checkpoint" in low:
-            return "Loading model checkpoint…"
+            return _tr("Loading model checkpoint…")
         if "created device" in low and "gpu" in low:
-            return "Initializing GPU…"
+            return _tr("Initializing GPU…")
         if "loaded cudnn version" in low:
-            return "Initializing cuDNN…"
+            return _tr("Initializing cuDNN…")
         if "total number of tiles" in low:
-            return "Tiling image…"
+            return _tr("Tiling image…")
         if "% finished" in low:
-            return "Processing tiles…"
+            return _tr("Processing tiles…")
         if "writing" in low or "saving" in low:
-            return "Writing output…"
+            return _tr("Writing output…")
         return None
 
     def _is_noise(low: str) -> bool:
@@ -2311,9 +2318,9 @@ def _run_starnet(main, doc, icon_path=None):
                     last_pct["v"] = pct
                     if tile_total["n"] > 0:
                         done = int(round(tile_total["n"] * (pct / 100.0)))
-                        dlg.set_progress(done, tile_total["n"], "Processing tiles…")
+                        dlg.set_progress(done, tile_total["n"], _tr("Processing tiles…"))
                     else:
-                        dlg.set_progress(pct, 100, "Processing…")
+                        dlg.set_progress(pct, 100, _tr("Processing…"))
             except Exception:
                 pass
 
@@ -2327,7 +2334,7 @@ def _run_starnet(main, doc, icon_path=None):
     def _on_finish(rc: int):
         try:
             # snap to 100% for UX (even if StarNet ended abruptly, it will be overwritten by error handling)
-            dlg.set_progress(100, 100, "StarNet finished. Loading output…")
+            dlg.set_progress(100, 100, _tr("StarNet finished. Loading output…"))
         except Exception:
             pass
         _on_starnet_finished(main, doc, rc, dlg, input_image_path, output_image_path, did_stretch)
@@ -2347,7 +2354,7 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
     from setiastro.saspro.imageops.stretch import stretch_mono_image  # used for statistical inverse
     try:
         dialog.pbar.setRange(0, 100)
-        dialog.set_progress(100, 100, "StarNet finished. Loading output…")
+        dialog.set_progress(100, 100, _tr("StarNet finished. Loading output…"))
     except Exception:
         pass
     def _first_nonzero_bp_per_channel(img3: np.ndarray) -> np.ndarray:
@@ -2361,13 +2368,13 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
     dialog.append_text(f"\nProcess finished with return code {return_code}.\n")
     _tmp_dir = os.path.dirname(input_path)
     if return_code != 0:
-        QMessageBox.critical(main, "StarNet Error", f"StarNet failed with return code {return_code}.")
+        QMessageBox.critical(main, _tr("StarNet Error"), _tr("StarNet failed with return code {0}.").format(return_code))
         _safe_rm(input_path); _safe_rm(output_path)
         _safe_rmdir(_tmp_dir)
         dialog.close()
         return
     if not os.path.exists(output_path):
-        QMessageBox.critical(main, "StarNet Error", "Starless image was not created.")
+        QMessageBox.critical(main, _tr("StarNet Error"), _tr("Starless image was not created."))
         _safe_rm(input_path)
         _safe_rmdir(_tmp_dir)
         dialog.close()
@@ -2377,7 +2384,7 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
     _safe_rm(input_path); _safe_rm(output_path)
     _safe_rmdir(_tmp_dir)
     if starless_rgb is None:
-        QMessageBox.critical(main, "StarNet Error", "Failed to load starless image.")
+        QMessageBox.critical(main, _tr("StarNet Error"), _tr("Failed to load starless image."))
         dialog.close()
         return
 
@@ -2552,7 +2559,7 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
         if hasattr(main, "_log"):
             main._log("Stars Removed (StarNet)")
     except Exception as e:
-        QMessageBox.critical(main, "StarNet Error", f"Failed to apply starless result:\n{e}")
+        QMessageBox.critical(main, _tr("StarNet Error"), _tr("Failed to apply starless result:\n{0}").format(e))
 
     dialog.append_text("Temporary files cleaned up.\n")
     dialog.close()
@@ -2673,7 +2680,7 @@ def _darkstar_run_from_dialog(main, doc, cfg):
         compatibility_mode=bool(compatibility_mode),
     )
     
-    dlg = _ProcDialog(main, title="Dark Star Progress")
+    dlg = _ProcDialog(main, title=_tr("Dark Star Progress"))
     dlg.append_text("Starting Dark Star (engine)…\n")
 
     thr = _DarkStarThread(x, params, parent=dlg)
@@ -2683,7 +2690,7 @@ def _darkstar_run_from_dialog(main, doc, cfg):
 
     def _on_done(starless, stars_only, was_mono, err):
         if err:
-            QMessageBox.critical(main, "Dark Star Error", f"Dark Star failed:\n{err}")
+            QMessageBox.critical(main, _tr("Dark Star Error"), _tr("Dark Star failed:\n{0}").format(err))
             dlg.close()
             return
         # Remove UI-level reflect padding
@@ -2693,7 +2700,7 @@ def _darkstar_run_from_dialog(main, doc, cfg):
                 if stars_only is not None:
                     stars_only = _crop_unpad(stars_only, edge_padding, orig_h, orig_w)
             except Exception as e:
-                QMessageBox.critical(main, "Dark Star Error", f"Failed to crop padded result:\n{e}")
+                QMessageBox.critical(main, _tr("Dark Star Error"), _tr("Failed to crop padded result:\n{0}").format(e))
                 dlg.close()
                 return
         # Engine returns float32 [0..1]; if we normalized >1, restore scale if you want.
@@ -2795,7 +2802,7 @@ def _darkstar_run_from_dialog(main, doc, cfg):
             if hasattr(main, "_log"):
                 main._log("Stars Removed (DarkStar)")
         except Exception as e:
-            QMessageBox.critical(main, "Dark Star Error", f"Failed to apply result:\n{e}")
+            QMessageBox.critical(main, _tr("Dark Star Error"), _tr("Failed to apply result:\n{0}").format(e))
 
         dlg.append_text("Done.\n")
         dlg.close()
@@ -2901,6 +2908,31 @@ def _derive_view_base_title(main, doc) -> str:
 # ------------------------------------------------------------
 # New document helper
 # ------------------------------------------------------------
+def _share_display_stretch(main, parent_doc, new_doc):
+    """A star-removal by-product (the stars-only image, or the other half of a
+    split) shows through the parent view's Display-Stretch: the parent's own
+    stretch if it had one on, none if not. Never one measured from its own
+    mostly-black pixels. Used by StarNet, DarkStar, SyQon and RC Astro."""
+    try:
+        find = getattr(main, "_find_subwindow_for_doc", None)
+        if find is None or parent_doc is None or new_doc is None:
+            return
+        src_sw = find(parent_doc)
+        if src_sw is None:                      # a view proxy: look up what it points at
+            tgt = getattr(parent_doc, "_target", None)
+            if callable(tgt):
+                src_sw = find(tgt())
+        dst_sw = find(new_doc)
+        src = src_sw.widget() if src_sw is not None else None
+        dst = dst_sw.widget() if dst_sw is not None else None
+        if src is None or dst is None or src is dst:
+            return
+        if hasattr(dst, "borrow_display_stretch"):
+            dst.borrow_display_stretch(src)
+    except Exception:
+        pass
+
+
 def _push_as_new_doc(main, doc, arr: np.ndarray, title_suffix="_stars", source="Stars-Only"):
     dm = getattr(main, "docman", None)
     if not dm or not hasattr(dm, "open_array"):
@@ -2923,6 +2955,7 @@ def _push_as_new_doc(main, doc, arr: np.ndarray, title_suffix="_stars", source="
         newdoc = dm.open_array(arr.astype(np.float32, copy=False), metadata=meta, title=title)
         if hasattr(main, "_spawn_subwindow_for"):
             main._spawn_subwindow_for(newdoc)
+        _share_display_stretch(main, doc, newdoc)
     except Exception:
         pass
 
@@ -3062,9 +3095,9 @@ class _ProcThread(QThread):
         self.finished_signal.emit(rc)
 
 class _ProcDialog(QDialog):
-    def __init__(self, parent, title="Process"):
+    def __init__(self, parent, title=None):
         super().__init__(parent)
-        self.setWindowTitle(title)
+        self.setWindowTitle(title if title is not None else self.tr("Process"))
         self.setMinimumSize(600, 460)
 
         self._last_pct = -1  # for throttling UI updates
@@ -3089,7 +3122,7 @@ class _ProcDialog(QDialog):
         lay.addWidget(self.text, 1)
 
         # --- cancel ---
-        self.cancel_button = QPushButton("Cancel", self)
+        self.cancel_button = QPushButton(self.tr("Cancel"), self)
         lay.addWidget(self.cancel_button)
 
     def append_text(self, s: str):
@@ -3181,12 +3214,12 @@ class DarkStarConfigDialog(QDialog):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("CosmicClarity Dark Star Settings")
+        self.setWindowTitle(self.tr("CosmicClarity Dark Star Settings"))
 
         settings = QSettings()
         self.icons = get_icons()
 
-        self.chk_disable_gpu = QCheckBox("Disable GPU")
+        self.chk_disable_gpu = QCheckBox(self.tr("Disable GPU"))
         self.chk_disable_gpu.setChecked(False)
 
         self.cmb_mode = QComboBox()
@@ -3194,14 +3227,14 @@ class DarkStarConfigDialog(QDialog):
         self.cmb_mode.setCurrentText(str(settings.value("darkstar/mode", "unscreen")))
 
         self.cmb_processing = QComboBox()
-        self.cmb_processing.addItem("Mono AI per channel", "mono_per_channel")
-        self.cmb_processing.addItem("Hybrid Luma + Color (best balance)", "hybrid_luma_color")
-        self.cmb_processing.addItem("Color AI only", "color_only")
+        self.cmb_processing.addItem(self.tr("Mono AI per channel"), "mono_per_channel")
+        self.cmb_processing.addItem(self.tr("Hybrid Luma + Color (best balance)"), "hybrid_luma_color")
+        self.cmb_processing.addItem(self.tr("Color AI only"), "color_only")
         saved_processing = str(settings.value("darkstar/processing_path", "hybrid_luma_color"))
         idx = max(0, self.cmb_processing.findData(saved_processing))
         self.cmb_processing.setCurrentIndex(idx)
 
-        self.chk_show_stars = QCheckBox("Show Extracted Stars")
+        self.chk_show_stars = QCheckBox(self.tr("Show Extracted Stars"))
         self.chk_show_stars.setChecked(bool(settings.value("darkstar/show_extracted_stars", True, type=bool)))
 
         self.cmb_chunk_size = QComboBox()
@@ -3240,15 +3273,15 @@ class DarkStarConfigDialog(QDialog):
         idx = max(0, self.cmb_padding.findData(saved_padding))
         self.cmb_padding.setCurrentIndex(idx)
 
-        self.chk_compatibility = QCheckBox("GPU Compatibility Mode")
+        self.chk_compatibility = QCheckBox(self.tr("GPU Compatibility Mode"))
         self.chk_compatibility.setChecked(bool(settings.value("darkstar/compatibility_mode", False, type=bool)))
 
         form = QFormLayout()
-        form.addRow("Star Removal Mode:", self.cmb_mode)
-        form.addRow("Processing Path:", self.cmb_processing)
-        form.addRow("Chunk Size (power of two):", self.cmb_chunk_size)
-        form.addRow("Overlap (%):", self.cmb_overlap)
-        form.addRow("Edge Padding:", self.cmb_padding)
+        form.addRow(self.tr("Star Removal Mode:"), self.cmb_mode)
+        form.addRow(self.tr("Processing Path:"), self.cmb_processing)
+        form.addRow(self.tr("Chunk Size (power of two):"), self.cmb_chunk_size)
+        form.addRow(self.tr("Overlap (%):"), self.cmb_overlap)
+        form.addRow(self.tr("Edge Padding:"), self.cmb_padding)
         form.addRow("", self.chk_compatibility)
         form.addRow("", self.chk_disable_gpu)
         form.addRow("", self.chk_show_stars)
@@ -3376,22 +3409,21 @@ def _ensure_darkstar_model_available(parent=None) -> bool:
     try:
         R = get_resources()
         mono_pth = str(R.CC_DARKSTAR_MONO_PTH)
+    except FileNotFoundError:
+        mono_pth = ""                    # the lookup raises when it isn't installed
     except Exception as e:
         QMessageBox.warning(
             parent,
-            "Dark Star Model Missing",
-            f"Could not resolve Dark Star model paths.\n\n{e}",
+            _tr("Dark Star Model Missing"),
+            _tr("Could not resolve Dark Star model paths.\n\n{0}").format(e),
         )
         return False
 
     if not mono_pth or not os.path.exists(mono_pth):
-        QMessageBox.warning(
-            parent,
-            "Dark Star Model Missing",
-            "The required Dark Star mono model is not installed yet:\n\n"
-            f"{mono_pth}\n\n"
-            "Please install or download the Dark Star models, then try again.",
-        )
+        from setiastro.saspro.setup_center import offer_setup
+        offer_setup(parent, "models", "Dark Star",
+                    _tr("Dark Star needs its AI models, and they are not installed yet."),
+                    str(mono_pth or ""))
         return False
 
     return True
@@ -3492,9 +3524,9 @@ def _run_sxt(main, doc, icon_path=None):
     if not exe or not os.path.exists(exe):
         QMessageBox.warning(
             main, "StarXTerminator",
-            "RC-Astro executable not set.\n\n"
+            _tr("RC-Astro executable not set.\n\n"
             "Open RC-Astro Tools from the toolbar and browse for the\n"
-            "rc-astro executable first, then try again."
+            "rc-astro executable first, then try again.")
         )
         return
 

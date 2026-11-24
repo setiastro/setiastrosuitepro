@@ -69,7 +69,7 @@ class NBtoRGBStars(QWidget):
     def __init__(self, doc_manager=None, parent=None, icon_path: str | None = None):
         super().__init__(parent)
         self.doc_manager = doc_manager
-        self.setWindowTitle("NB→RGB Stars")
+        self.setWindowTitle(self.tr("NB→RGB Stars"))
 
         if icon_path:
             try:
@@ -156,9 +156,9 @@ class NBtoRGBStars(QWidget):
                     w.blockSignals(False)
 
             # refresh labels
-            self.lbl_ratio.setText(f"Ha:OIII ratio = {self.sld_ratio.value()/100:.2f}")
-            self.lbl_stretch.setText(f"Stretch factor = {self.sld_stretch.value()/100:.2f}")
-            self.lbl_sat.setText(f"Saturation = {self.sld_sat.value()/100:.2f}×")
+            self.lbl_ratio.setText(self.tr("Ha:OIII ratio = {0:.2f}").format(self.sld_ratio.value()/100))
+            self.lbl_stretch.setText(self.tr("Stretch factor = {0:.2f}").format(self.sld_stretch.value()/100))
+            self.lbl_sat.setText(self.tr("Saturation = {0:.2f}×").format(self.sld_sat.value()/100))
 
         finally:
             self._restoring_ui = False
@@ -212,22 +212,22 @@ class NBtoRGBStars(QWidget):
         left = QVBoxLayout()
         left_host = QWidget(self); left_host.setLayout(left); left_host.setFixedWidth(320)
 
-        left.addWidget(QLabel(
+        left.addWidget(QLabel(self.tr(
             "<b>NB→RGB Stars</b><br>"
             "Load Ha / OIII / (optional SII) and/or OSC stars.<br>"
             "Tune ratio and preview; push to a new view."
-        ))
+        )))
 
         # Load buttons + status labels
-        self.btn_ha   = QPushButton("Load Ha…");   self.btn_ha.clicked.connect(lambda: self._load_channel("Ha"))
-        self.btn_oiii = QPushButton("Load OIII…"); self.btn_oiii.clicked.connect(lambda: self._load_channel("OIII"))
-        self.btn_sii  = QPushButton("Load SII (optional)…");  self.btn_sii.clicked.connect(lambda: self._load_channel("SII"))
-        self.btn_osc  = QPushButton("Load OSC stars (optional)…"); self.btn_osc.clicked.connect(lambda: self._load_channel("OSC"))
+        self.btn_ha   = QPushButton(self.tr("Load Ha…"));   self.btn_ha.clicked.connect(lambda: self._load_channel("Ha"))
+        self.btn_oiii = QPushButton(self.tr("Load OIII…")); self.btn_oiii.clicked.connect(lambda: self._load_channel("OIII"))
+        self.btn_sii  = QPushButton(self.tr("Load SII (optional)…"));  self.btn_sii.clicked.connect(lambda: self._load_channel("SII"))
+        self.btn_osc  = QPushButton(self.tr("Load OSC stars (optional)…")); self.btn_osc.clicked.connect(lambda: self._load_channel("OSC"))
 
-        self.lbl_ha   = QLabel("No Ha loaded.")
-        self.lbl_oiii = QLabel("No OIII loaded.")
-        self.lbl_sii  = QLabel("No SII loaded.")
-        self.lbl_osc  = QLabel("No OSC stars loaded.")
+        self.lbl_ha   = QLabel(self.tr("No {0} loaded.").format("Ha"))
+        self.lbl_oiii = QLabel(self.tr("No {0} loaded.").format("OIII"))
+        self.lbl_sii  = QLabel(self.tr("No {0} loaded.").format("SII"))
+        self.lbl_osc  = QLabel(self.tr("No OSC stars loaded."))
 
         for lab in (self.lbl_ha, self.lbl_oiii, self.lbl_sii, self.lbl_osc):
             lab.setWordWrap(True); lab.setStyleSheet("color:#888; margin-left:8px;")
@@ -240,48 +240,48 @@ class NBtoRGBStars(QWidget):
 
         # Ratio (Ha to OIII)
         row = QHBoxLayout()
-        self.lbl_ratio = QLabel("Ha:OIII ratio = 0.30")
+        self.lbl_ratio = QLabel(self.tr("Ha:OIII ratio = {0:.2f}").format(0.30))
         self.sld_ratio = QSlider(Qt.Orientation.Horizontal); self.sld_ratio.setRange(0, 100); self.sld_ratio.setValue(self.DEFAULT_RATIO)
-        self.sld_ratio.valueChanged.connect(lambda v: self.lbl_ratio.setText(f"Ha:OIII ratio = {v/100:.2f}"))
+        self.sld_ratio.valueChanged.connect(lambda v: self.lbl_ratio.setText(self.tr("Ha:OIII ratio = {0:.2f}").format(v/100)))
         row.addWidget(self.lbl_ratio); left.addLayout(row)
         left.addWidget(self.sld_ratio)
 
         # Star Stretch
-        self.chk_star_stretch = QCheckBox("Enable star stretch"); self.chk_star_stretch.setChecked(self.DEFAULT_STAR_STRETCH)
+        self.chk_star_stretch = QCheckBox(self.tr("Enable star stretch")); self.chk_star_stretch.setChecked(self.DEFAULT_STAR_STRETCH)
         left.addWidget(self.chk_star_stretch)
 
         row2 = QHBoxLayout()
-        self.lbl_stretch = QLabel("Stretch factor = 5.00")
+        self.lbl_stretch = QLabel(self.tr("Stretch factor = {0:.2f}").format(5.00))
         self.sld_stretch = QSlider(Qt.Orientation.Horizontal); self.sld_stretch.setRange(0, 800); self.sld_stretch.setValue(self.DEFAULT_STRETCH)
-        self.sld_stretch.valueChanged.connect(lambda v: self.lbl_stretch.setText(f"Stretch factor = {v/100:.2f}"))
+        self.sld_stretch.valueChanged.connect(lambda v: self.lbl_stretch.setText(self.tr("Stretch factor = {0:.2f}").format(v/100)))
         row2.addWidget(self.lbl_stretch); left.addLayout(row2)
         left.addWidget(self.sld_stretch)
 
         row3 = QHBoxLayout()
-        self.lbl_sat = QLabel("Saturation = 1.00×")
+        self.lbl_sat = QLabel(self.tr("Saturation = {0:.2f}×").format(1.00))
         self.sld_sat = QSlider(Qt.Orientation.Horizontal)
         self.sld_sat.setRange(0, 300)         # 0.00× … 3.00×
         self.sld_sat.setValue(self.DEFAULT_SAT)            # 1.00× by default
-        self.sld_sat.valueChanged.connect(lambda v: self.lbl_sat.setText(f"Saturation = {v/100:.2f}×"))
+        self.sld_sat.valueChanged.connect(lambda v: self.lbl_sat.setText(self.tr("Saturation = {0:.2f}×").format(v/100)))
         row3.addWidget(self.lbl_sat)
         left.addLayout(row3)
         left.addWidget(self.sld_sat)
 
         # Actions
         act = QHBoxLayout()
-        self.btn_preview = QPushButton("Preview Combine"); self.btn_preview.clicked.connect(self._preview_combine)
-        self.btn_push = QPushButton("Push Final to New View"); self.btn_push.clicked.connect(self._push_final)
+        self.btn_preview = QPushButton(self.tr("Preview Combine")); self.btn_preview.clicked.connect(self._preview_combine)
+        self.btn_push = QPushButton(self.tr("Push Final to New View")); self.btn_push.clicked.connect(self._push_final)
         act.addWidget(self.btn_preview); act.addWidget(self.btn_push)
         left.addLayout(act)
 
         from setiastro.saspro.resources import get_resources
 
         clr_row = QHBoxLayout()
-        self.btn_reset = QPushButton("Reset Adjustments")
-        self.btn_reset.setToolTip("Restore ratio, star stretch, stretch factor and\n"
-                                  "saturation to their defaults (loaded images are kept).")
+        self.btn_reset = QPushButton(self.tr("Reset Adjustments"))
+        self.btn_reset.setToolTip(self.tr("Restore ratio, star stretch, stretch factor and\n"
+                                  "saturation to their defaults (loaded images are kept)."))
         self.btn_reset.clicked.connect(self._reset_adjustments)
-        self.btn_clear = QPushButton("Clear Inputs")
+        self.btn_clear = QPushButton(self.tr("Clear Inputs"))
         self.btn_clear.clicked.connect(self._clear_inputs)
         clr_row.addWidget(self.btn_reset)
         clr_row.addWidget(self.btn_clear)
@@ -307,9 +307,9 @@ class NBtoRGBStars(QWidget):
 
         tools = QHBoxLayout()
 
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         self.btn_zoom_in.clicked.connect(lambda: self._zoom_at(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom_at(0.8))
@@ -407,10 +407,10 @@ class NBtoRGBStars(QWidget):
         if text:
             lab.setText(text); lab.setStyleSheet("color:#2a7; font-weight:600; margin-left:8px;")
         else:
-            lab.setText(f"No {which} loaded."); lab.setStyleSheet("color:#888; margin-left:8px;")
+            lab.setText(self.tr("No {0} loaded.").format(which)); lab.setStyleSheet("color:#888; margin-left:8px;")
 
     def _load_channel(self, which: str):
-        src, ok = QInputDialog.getItem(self, f"Load {which}", "Source:", ["From View", "From File"], 0, False)
+        src, ok = QInputDialog.getItem(self, self.tr("Load {0}").format(which), self.tr("Source:"), ["From View", "From File"], 0, False)
         if not ok: return
 
         out = self._load_from_view(which) if src == "From View" else self._load_from_file(which)
@@ -430,16 +430,16 @@ class NBtoRGBStars(QWidget):
 
         setattr(self, f"_file_{which.lower()}", path)
         self._set_status_label(which, label)
-        self.status.setText(f"{which} loaded ({'mono' if img.ndim==2 else 'RGB'}) shape={img.shape}")
+        self.status.setText(self.tr("{0} loaded ({1}) shape={2}").format(which, self.tr("mono") if img.ndim==2 else "RGB", img.shape))
 
     def _load_from_view(self, which):
         views = self._list_open_views()
         if not views:
-            QMessageBox.warning(self, "No Views", "No open image views found.")
+            QMessageBox.warning(self, self.tr("No Views"), self.tr("No open image views found."))
             return None
 
         labels = [lab for lab, _ in views]
-        choice, ok = QInputDialog.getItem(self, f"Select View for {which}", "Choose a view:", labels, 0, False)
+        choice, ok = QInputDialog.getItem(self, self.tr("Select View for {0}").format(which), self.tr("Choose a view:"), labels, 0, False)
         if not ok or not choice:
             return None
 
@@ -448,7 +448,7 @@ class NBtoRGBStars(QWidget):
         doc = getattr(view, "document", None)
 
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "Empty View", "Selected view has no image.")
+            QMessageBox.warning(self, self.tr("Empty View"), self.tr("Selected view has no image."))
             return None
 
         img = doc.image
@@ -457,24 +457,24 @@ class NBtoRGBStars(QWidget):
         bit_depth = meta.get("bit_depth", "Unknown")
         is_mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
         path = meta.get("file_path", None)
-        return img, header, bit_depth, is_mono, path, f"From View: {choice}"
+        return img, header, bit_depth, is_mono, path, self.tr("From View: {0}").format(choice)
 
     def _load_from_file(self, which):
         filt = "Images (*.png *.tif *.tiff *.fits *.fit *.xisf)"
-        path, _ = QFileDialog.getOpenFileName(self, f"Select {which} File", "", filt)
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select {0} File").format(which), "", filt)
         if not path: return None
         img, header, bit_depth, is_mono = legacy_load_image(path)
         if img is None:
-            QMessageBox.critical(self, "Load Error", f"Could not load {os.path.basename(path)}"); return None
-        return img, header, bit_depth, is_mono, path, f"From File: {os.path.basename(path)}"
+            QMessageBox.critical(self, self.tr("Load Error"), self.tr("Could not load {0}").format(os.path.basename(path))); return None
+        return img, header, bit_depth, is_mono, path, self.tr("From File: {0}").format(os.path.basename(path))
 
     # ---------- combine / preview ----------
     def _preview_combine(self):
         if (self.osc is None) and not (self.ha is not None and self.oiii is not None):
-            QMessageBox.warning(self, "Missing Images", "Load OSC, or Ha+OIII (SII optional).")
+            QMessageBox.warning(self, self.tr("Missing Images"), self.tr("Load OSC, or Ha+OIII (SII optional)."))
             return
 
-        self._spinner_on("Combining…")
+        self._spinner_on(self.tr("Combining…"))
         thr = _NBCombineJob(self._combine_job, dict(
             ha=self.ha, oiii=self.oiii, sii=self.sii, osc=self.osc,
             ratio=self.sld_ratio.value() / 100.0,
@@ -491,11 +491,11 @@ class NBtoRGBStars(QWidget):
             return                       # closed while it ran
         try:
             if "error" in res:
-                QMessageBox.critical(self, "Combine Error", res["error"])
+                QMessageBox.critical(self, self.tr("Combine Error"), res["error"])
                 return
             self.final = res["final"]
             self._set_preview_image(res["qimg"])
-            self.status.setText("Preview updated.")
+            self.status.setText(self.tr("Preview updated."))
         finally:
             self._spinner_off()
 
@@ -672,7 +672,7 @@ class NBtoRGBStars(QWidget):
         self.preview.clear(); self._base_pm = None
         for which in ("Ha","OIII","SII","OSC"):
             self._set_status_label(which, None)
-        self.status.setText("Cleared inputs.")
+        self.status.setText(self.tr("Cleared inputs."))
 
     def _reset_adjustments(self):
         """Restore the ratio / star-stretch / stretch / saturation controls to defaults.
@@ -693,9 +693,9 @@ class NBtoRGBStars(QWidget):
                 w.blockSignals(False)
 
         # Signals were blocked, so refresh the value labels ourselves.
-        self.lbl_ratio.setText(f"Ha:OIII ratio = {self.sld_ratio.value()/100:.2f}")
-        self.lbl_stretch.setText(f"Stretch factor = {self.sld_stretch.value()/100:.2f}")
-        self.lbl_sat.setText(f"Saturation = {self.sld_sat.value()/100:.2f}×")
+        self.lbl_ratio.setText(self.tr("Ha:OIII ratio = {0:.2f}").format(self.sld_ratio.value()/100))
+        self.lbl_stretch.setText(self.tr("Stretch factor = {0:.2f}").format(self.sld_stretch.value()/100))
+        self.lbl_sat.setText(self.tr("Saturation = {0:.2f}×").format(self.sld_sat.value()/100))
 
         self._save_ui_state()
 
@@ -704,7 +704,7 @@ class NBtoRGBStars(QWidget):
         if self.final is not None:
             self._preview_combine()
         else:
-            self.status.setText("Adjustments reset to defaults.")
+            self.status.setText(self.tr("Adjustments reset to defaults."))
 
     @staticmethod
     def _as_float01(arr):
@@ -864,11 +864,11 @@ class NBtoRGBStars(QWidget):
 
     def _push_final(self):
         if self.final is None:
-            QMessageBox.warning(self, "No Image", "Preview first, then push."); return
+            QMessageBox.warning(self, self.tr("No Image"), self.tr("Preview first, then push.")); return
         mw = self._find_main_window()
         dm = getattr(mw, "docman", None)
         if not mw or not dm:
-            QMessageBox.critical(self, "UI", "Main window or DocManager not available."); return
+            QMessageBox.critical(self, "UI", self.tr("Main window or DocManager not available.")); return
         title = "NB→RGB Stars"
         try:
             if hasattr(dm, "open_array"):
@@ -882,9 +882,9 @@ class NBtoRGBStars(QWidget):
             else:
                 from setiastro.saspro.subwindow import ImageSubWindow
                 sw = ImageSubWindow(doc, parent=mw); sw.setWindowTitle(title); sw.show()
-            self.status.setText("Opened final composite in a new view.")
+            self.status.setText(self.tr("Opened final composite in a new view."))
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to open new view:\n{e}")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to open new view:\n{0}").format(e))
 
     # ---------- event filter (zoom/pan like PPP) ----------
     def eventFilter(self, obj, ev):

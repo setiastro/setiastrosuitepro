@@ -234,7 +234,7 @@ class StatisticalStretchDialog(QDialog):
 
         # ── Auto-refresh toggle ───────────────────────────────────────────
         self.chk_auto_refresh = QCheckBox(self.tr("Auto-refresh preview"))
-        self.chk_auto_refresh.setChecked(False)
+        self.chk_auto_refresh.setChecked(True)
         self.chk_auto_refresh.setToolTip(self.tr(
             "When enabled, any control change automatically updates the preview.\n"
             "A fast downsampled preview fires quickly; full-res follows after a short settle."
@@ -409,10 +409,10 @@ class StatisticalStretchDialog(QDialog):
 
         # Zoom buttons
         zoom_row = QHBoxLayout()
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
         self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit"))
         zoom_row.addStretch(1)
         for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_100, self.btn_zoom_fit):
             zoom_row.addWidget(b)
@@ -724,7 +724,7 @@ class StatisticalStretchDialog(QDialog):
             btn = getattr(self, f"btn_recall_{slot}")
             btn.setEnabled(True)
             btn.setStyleSheet(self._GOLD_STYLE)
-            btn.setToolTip(self.tr(f"Recall: target={p['target_median']:.3f}"))
+            btn.setToolTip(self.tr("Recall: target={0:.3f}").format(p['target_median']))
         except Exception:
             pass
         try:
@@ -966,7 +966,7 @@ class StatisticalStretchDialog(QDialog):
                     if btn is not None:
                         btn.setEnabled(True)
                         btn.setStyleSheet(self._GOLD_STYLE)
-                        btn.setToolTip(self.tr(f"Recall: target={v.get('target_median', 0):.3f}"))
+                        btn.setToolTip(self.tr("Recall: target={0:.3f}").format(v.get('target_median', 0)))
                     store_btn = getattr(self, f"btn_store_{slot}", None)
                     if store_btn is not None:
                         store_btn.setStyleSheet(self._GOLD_STYLE)
@@ -982,7 +982,13 @@ class StatisticalStretchDialog(QDialog):
             # the preview showing the settings from before the drag ended.
             self._preview_pending = True
             return
-        self._full_timer.start()
+        t = getattr(self, "_full_timer", None)
+        if t is None:
+            # A control set during __init__, before the timers exist. With
+            # auto-refresh on, __init__ starts the first preview itself once
+            # they do, so nothing is lost by skipping this one.
+            return
+        t.start()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -1009,7 +1015,7 @@ class StatisticalStretchDialog(QDialog):
         self.spin_target.blockSignals(False)
         self.sld_target.blockSignals(False)
 
-        self.chk_auto_refresh.setChecked(bool(s.value("stat_stretch/auto_refresh", False, type=bool)))
+        self.chk_auto_refresh.setChecked(bool(s.value("stat_stretch/auto_refresh", True, type=bool)))
         self.chk_linked.setChecked(bool(s.value("stat_stretch/linked", False, type=bool)))
         self.chk_normalize.setChecked(bool(s.value("stat_stretch/normalize", False, type=bool)))
         self.sld_bp.setValue(int(s.value("stat_stretch/blackpoint_sigma_x100", 500)))
@@ -1317,7 +1323,7 @@ class StatisticalStretchDialog(QDialog):
             self.lbl_clipstats.setText(self.tr("No image loaded."))
             return
         if isinstance(nums, Exception):
-            self.lbl_clipstats.setText(self.tr(f"Clip stats failed: {nums}"))
+            self.lbl_clipstats.setText(self.tr("Clip stats failed: {0}").format(nums))
             return
         bp, bp3, clipped_count, total, masked = nums
         no_black_clip, luma_only, linked = snap["no_black_clip"], snap["luma_only"], snap["linked"]
@@ -1328,7 +1334,7 @@ class StatisticalStretchDialog(QDialog):
         if masked is not None:
             aff_clip, aff_total = masked
             aff_pct = 100.0 * aff_clip / max(1, aff_total)
-            masked_note = self.tr(f" | masked area: {aff_clip:,}/{aff_total:,} ({aff_pct:.4f}%)")
+            masked_note = self.tr(" | masked area: {0:,}/{1:,} ({2:.4f}%)").format(aff_clip, aff_total, aff_pct)
 
         if is_mono:
             mode_lbl = self.tr("Mono")
@@ -1341,28 +1347,31 @@ class StatisticalStretchDialog(QDialog):
 
         if no_black_clip:
             if is_mono:
-                bp_text = self.tr(f"min={float(bp):.6f}")
+                bp_text = self.tr("min={0:.6f}").format(float(bp))
             else:
                 if luma_only or linked:
-                    bp_text = self.tr(f"L min={float(bp):.6f}")
+                    bp_text = self.tr("L min={0:.6f}").format(float(bp))
                 else:
                     bp_text = self.tr(
-                        f"R min={float(bp3[0]):.6f}, G min={float(bp3[1]):.6f}, B min={float(bp3[2]):.6f}"
-                    )
+                        "R min={0:.6f}, G min={1:.6f}, B min={2:.6f}"
+                    ).format(float(bp3[0]), float(bp3[1]), float(bp3[2]))
             self.lbl_clipstats.setText(
-                self.tr(f"Black clipping disabled ({mode_lbl}). Threshold={bp_text}: "
-                        f"{clipped_count:,}/{total:,} pixels ({pct:.4f}%)") + masked_note
+                self.tr("Black clipping disabled ({0}). Threshold={1}: "
+                        "{2:,}/{3:,} pixels ({4:.4f}%)").format(
+                            mode_lbl, bp_text, clipped_count, total, pct) + masked_note
             )
             return
 
         if (snap["ndim"] == 3 and snap["nch"] == 3) and not (luma_only or linked):
-            bp_disp = self.tr(f"R={float(bp3[0]):.6f}, G={float(bp3[1]):.6f}, B={float(bp3[2]):.6f}")
+            bp_disp = self.tr("R={0:.6f}, G={1:.6f}, B={2:.6f}").format(
+                float(bp3[0]), float(bp3[1]), float(bp3[2]))
         else:
-            bp_disp = self.tr(f"{float(bp):.6f}")
+            bp_disp = f"{float(bp):.6f}"
 
         self.lbl_clipstats.setText(
-            self.tr(f"Black clip ({mode_lbl}) @ {bp_disp}: "
-                    f"{clipped_count:,}/{total:,} pixels ({pct:.4f}%)") + masked_note
+            self.tr("Black clip ({0}) @ {1}: "
+                    "{2:,}/{3:,} pixels ({4:.4f}%)").format(
+                        mode_lbl, bp_disp, clipped_count, total, pct) + masked_note
         )
 
     # ── Job management ────────────────────────────────────────────────────────
@@ -1384,7 +1393,7 @@ class StatisticalStretchDialog(QDialog):
         self._set_controls_enabled(False)
         self._show_busy(
             "Statistical Stretch",
-            "Processing preview…" if mode == "preview" else "Applying stretch…"
+            self.tr("Processing preview…") if mode == "preview" else self.tr("Applying stretch…")
         )
 
         self._thread = QThread(self._main)
@@ -1670,11 +1679,11 @@ class StatisticalStretchDialog(QDialog):
 
         try:
             if err:
-                QMessageBox.warning(self, "Stretch failed", err)
+                QMessageBox.warning(self, self.tr("Stretch failed"), err)
                 return
 
             if out is None:
-                QMessageBox.information(self, "No image", "No image is loaded in the active document.")
+                QMessageBox.information(self, self.tr("No image"), self.tr("No image is loaded in the active document."))
                 return
 
             if getattr(self, "_job_mode", "") == "preview":

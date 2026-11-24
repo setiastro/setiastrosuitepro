@@ -108,7 +108,7 @@ class StatusLogDock(QDockWidget):
         )
         lay.addWidget(self.view, 1)
         row = QHBoxLayout()
-        btn_clear = QPushButton("Clear", w)
+        btn_clear = QPushButton(self.tr("Clear"), w)
         btn_clear.clicked.connect(self.view.clear)
         row.addWidget(btn_clear)
         row.addStretch(1)

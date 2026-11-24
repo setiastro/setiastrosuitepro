@@ -502,7 +502,7 @@ class SelectiveColorCorrection(QDialog):
         self.docman = doc_manager
         self.document = document
         if self.document is None or getattr(self.document, "image", None) is None:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             self.close(); return
 
         # one full-frame copy (np.clip makes it); astype() + .copy() made two more
@@ -566,11 +566,11 @@ class SelectiveColorCorrection(QDialog):
             disp = getattr(self.document, "display_name", lambda: "Image")()
         except Exception:
             disp = "Image"
-        self.lbl_target = QLabel(f"Target View:  <b>{disp}</b>")
+        self.lbl_target = QLabel(self.tr("Target View:  <b>{0}</b>").format(disp))
         left_outer.addWidget(self.lbl_target)
 
         # Small/fast preview toggle
-        self.cb_small_preview = QCheckBox("Small-sized Preview (fast)")
+        self.cb_small_preview = QCheckBox(self.tr("Small-sized Preview (fast)"))
         self.cb_small_preview.setChecked(True)
         self.cb_small_preview.toggled.connect(self._recompute_mask_and_preview)
         left_outer.addWidget(self.cb_small_preview)
@@ -589,7 +589,7 @@ class SelectiveColorCorrection(QDialog):
         gl.setVerticalSpacing(8)
 
         # Row 0: Preset
-        gl.addWidget(QLabel("Preset:"), 0, 0)
+        gl.addWidget(QLabel(self.tr("Preset:")), 0, 0)
         self.dd_preset = QComboBox()
         self.dd_preset.addItems(["Custom"] + list(_PRESETS.keys()))
         self.dd_preset.currentTextChanged.connect(self._on_preset_change)
@@ -644,44 +644,44 @@ class SelectiveColorCorrection(QDialog):
             return sld, spn
 
         # Rows 1–2: Hue Start/End
-        self.sl_h1, self.sp_h1 = _deg_pair(gl, "Hue start (°):", 1)
-        self.sl_h2, self.sp_h2 = _deg_pair(gl, "Hue end (°):",   2)
+        self.sl_h1, self.sp_h1 = _deg_pair(gl, self.tr("Hue start (°):"), 1)
+        self.sl_h2, self.sp_h2 = _deg_pair(gl, self.tr("Hue end (°):"),   2)
         self.sp_h1.setValue(65); self.sp_h2.setValue(158)
 
         # Row 3: chroma + lightness
-        gl.addWidget(QLabel("Min chroma:"), 3, 2)
+        gl.addWidget(QLabel(self.tr("Min chroma:")), 3, 2)
         self.ds_minC = QDoubleSpinBox(); self.ds_minC.setRange(0,1); self.ds_minC.setSingleStep(0.05); self.ds_minC.setValue(0.05)
 
         self.ds_minC.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_minC, 3, 3)
 
-        gl.addWidget(QLabel("Lightness min/max:"), 3, 4)
+        gl.addWidget(QLabel(self.tr("Lightness min/max:")), 3, 4)
         self.ds_minL = QDoubleSpinBox(); self.ds_minL.setRange(0,1); self.ds_minL.setSingleStep(0.05); self.ds_minL.setValue(0.0)
         self.ds_maxL = QDoubleSpinBox(); self.ds_maxL.setRange(0,1); self.ds_maxL.setSingleStep(0.05); self.ds_maxL.setValue(1.0)
         self.ds_minL.valueChanged.connect(self._schedule_mask)
         self.ds_maxL.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_minL, 3, 5)
-        gl.addWidget(QLabel("to"), 3, 6)
+        gl.addWidget(QLabel(self.tr("to")), 3, 6)
         gl.addWidget(self.ds_maxL, 3, 7)
 
         # Row 4: smoothness + invert
-        gl.addWidget(QLabel("Smoothness (deg):"), 4, 2)
+        gl.addWidget(QLabel(self.tr("Smoothness (deg):")), 4, 2)
         self.ds_smooth = QDoubleSpinBox(); self.ds_smooth.setRange(0,60); self.ds_smooth.setSingleStep(1.0); self.ds_smooth.setValue(10.0)
         self.ds_smooth.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_smooth, 4, 3)
 
-        self.cb_invert = QCheckBox("Invert hue range")
+        self.cb_invert = QCheckBox(self.tr("Invert hue range"))
         self.cb_invert.setChecked(False)
         self.cb_invert.toggled.connect(self._recompute_mask_and_preview)
         gl.addWidget(self.cb_invert, 4, 4, 1, 3)
 
         # Row 5: shadows/highlights + intensity
-        gl.addWidget(QLabel("Shadows:"), 5, 2)
+        gl.addWidget(QLabel(self.tr("Shadows:")), 5, 2)
         self.ds_sh = QDoubleSpinBox(); self.ds_sh.setRange(0,1); self.ds_sh.setSingleStep(0.05); self.ds_sh.setValue(0.0)
         self.ds_sh.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_sh, 5, 3)
 
-        gl.addWidget(QLabel("Highlights:"), 5, 4)
+        gl.addWidget(QLabel(self.tr("Highlights:")), 5, 4)
         self.ds_hi = QDoubleSpinBox(); self.ds_hi.setRange(0,1); self.ds_hi.setSingleStep(0.05); self.ds_hi.setValue(1.0)
         self.ds_hi.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_hi, 5, 5)
@@ -690,43 +690,43 @@ class SelectiveColorCorrection(QDialog):
         self.ds_bal.valueChanged.connect(self._schedule_mask)
         self.ds_bal.setVisible(False)  # used in math, hidden in UI
 
-        gl.addWidget(QLabel("Intensity:"), 5, 6)
+        gl.addWidget(QLabel(self.tr("Intensity:")), 5, 6)
         self.ds_int = QDoubleSpinBox(); self.ds_int.setRange(0, 2.0); self.ds_int.setSingleStep(0.05); self.ds_int.setValue(1.0)
         self.ds_int.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.ds_int, 5, 7)
 
         # Row 6: blur + overlay
-        gl.addWidget(QLabel("Edge blur (px):"), 6, 2)
+        gl.addWidget(QLabel(self.tr("Edge blur (px):")), 6, 2)
         self.sb_blur = QSpinBox(); self.sb_blur.setRange(0, 150); self.sb_blur.setValue(0)
         self.sb_blur.valueChanged.connect(self._schedule_mask)
         gl.addWidget(self.sb_blur, 6, 3)
 
-        self.cb_show_mask = QCheckBox("Show mask overlay")
+        self.cb_show_mask = QCheckBox(self.tr("Show mask overlay"))
         self.cb_show_mask.setChecked(False)
         self.cb_show_mask.toggled.connect(self._update_preview_pixmap)
         gl.addWidget(self.cb_show_mask, 6, 4, 1, 2)
 
         # Soft (proportional) mask: weight by how strongly each pixel matches the
         # selected color instead of a hard in/out selection -> fewer blobby edges.
-        self.cb_soft_mask = QCheckBox("Soft (proportional)")
+        self.cb_soft_mask = QCheckBox(self.tr("Soft (proportional)"))
         self.cb_soft_mask.setChecked(False)
-        self.cb_soft_mask.setToolTip(
+        self.cb_soft_mask.setToolTip(self.tr(
             "Weight the mask continuously instead of a hard in/out selection. "
             "Softens blobby, hard-edged corrections."
-        )
+        ))
         self.cb_soft_mask.toggled.connect(self._recompute_mask_and_preview)
 
         # What the soft mask is proportional to. Shares the checkbox's grid
         # cell so the rest of the layout does not move.
         self.dd_soft_by = QComboBox()
         self.dd_soft_by.addItems(["Chromaticity", "Lightness"])
-        self.dd_soft_by.setToolTip(
+        self.dd_soft_by.setToolTip(self.tr(
             "Chromaticity: the more vivid a pixel's colour, the more of the "
             "correction it gets; the lightness limits are feathered.\n"
             "Lightness: the brighter the pixel, the more it gets -- none at "
             "Lightness min, full at Lightness max (at 0 to 1 that is a "
             "luminosity mask). Min chroma becomes a plain cut-off."
-        )
+        ))
         self.dd_soft_by.setEnabled(False)
         self.dd_soft_by.currentIndexChanged.connect(self._recompute_mask_and_preview)
         self.cb_soft_mask.toggled.connect(self.dd_soft_by.setEnabled)
@@ -736,21 +736,21 @@ class SelectiveColorCorrection(QDialog):
         soft_lay.setContentsMargins(0, 0, 0, 0)
         soft_lay.setSpacing(4)
         soft_lay.addWidget(self.cb_soft_mask)
-        soft_lay.addWidget(QLabel("by"))
+        soft_lay.addWidget(QLabel(self.tr("by")))
         soft_lay.addWidget(self.dd_soft_by, 1)
         gl.addWidget(soft_row, 6, 6, 1, 2)
 
         # Row 7: imported mask
-        self.cb_use_imported = QCheckBox("Use imported mask")
+        self.cb_use_imported = QCheckBox(self.tr("Use imported mask"))
         self.cb_use_imported.setChecked(False)
         self.cb_use_imported.toggled.connect(self._on_use_imported_mask_toggled)
         gl.addWidget(self.cb_use_imported, 7, 2, 1, 2)
 
-        self.btn_import_mask = QPushButton("Pick mask from view…")
+        self.btn_import_mask = QPushButton(self.tr("Pick mask from view…"))
         self.btn_import_mask.clicked.connect(self._import_mask_from_view)
         gl.addWidget(self.btn_import_mask, 7, 4, 1, 2)
 
-        self.lbl_imported_mask = QLabel("No imported mask")
+        self.lbl_imported_mask = QLabel(self.tr("No imported mask"))
         gl.addWidget(self.lbl_imported_mask, 7, 6, 1, 2)
 
         # Column sizing
@@ -765,29 +765,29 @@ class SelectiveColorCorrection(QDialog):
         # CMY
         gb_cmy = QGroupBox(self.tr("Complementary colors (CMY)"))
         glc = QGridLayout(gb_cmy)
-        self.sl_c, self.ds_c = self._slider_pair(glc, "Cyan:",    0)
-        self.sl_m, self.ds_m = self._slider_pair(glc, "Magenta:", 1)
-        self.sl_y, self.ds_y = self._slider_pair(glc, "Yellow:",  2)
+        self.sl_c, self.ds_c = self._slider_pair(glc, self.tr("Cyan:"),    0)
+        self.sl_m, self.ds_m = self._slider_pair(glc, self.tr("Magenta:"), 1)
+        self.sl_y, self.ds_y = self._slider_pair(glc, self.tr("Yellow:"),  2)
         left.addWidget(gb_cmy)
 
         # RGB
         gb_rgb = QGroupBox(self.tr("RGB Colors"))
         glr = QGridLayout(gb_rgb)
-        self.sl_r, self.ds_r = self._slider_pair(glr, "Red:",   0)
-        self.sl_g, self.ds_g = self._slider_pair(glr, "Green:", 1)
-        self.sl_b, self.ds_b = self._slider_pair(glr, "Blue:",  2)
+        self.sl_r, self.ds_r = self._slider_pair(glr, self.tr("Red:"),   0)
+        self.sl_g, self.ds_g = self._slider_pair(glr, self.tr("Green:"), 1)
+        self.sl_b, self.ds_b = self._slider_pair(glr, self.tr("Blue:"),  2)
         left.addWidget(gb_rgb)
 
         # LSC
         gb_lsc = QGroupBox(self.tr("Luminance, Chroma/Saturation, Contrast"))
         gll = QGridLayout(gb_lsc)
-        self.sl_l, self.ds_l           = self._slider_pair(gll, "Luminance:",  0)
-        self.sl_chroma, self.ds_chroma = self._slider_pair(gll, "Chroma (L-preserving):", 1)
-        self.sl_s, self.ds_s           = self._slider_pair(gll, "Saturation (HSV S):", 2)
-        self.sl_c2, self.ds_c2         = self._slider_pair(gll, "Contrast:",  3)
-        gll.addWidget(QLabel("Color boost mode:"), 4, 0)
+        self.sl_l, self.ds_l           = self._slider_pair(gll, self.tr("Luminance:"),  0)
+        self.sl_chroma, self.ds_chroma = self._slider_pair(gll, self.tr("Chroma (L-preserving):"), 1)
+        self.sl_s, self.ds_s           = self._slider_pair(gll, self.tr("Saturation (HSV S):"), 2)
+        self.sl_c2, self.ds_c2         = self._slider_pair(gll, self.tr("Contrast:"),  3)
+        gll.addWidget(QLabel(self.tr("Color boost mode:")), 4, 0)
         self.dd_color_mode = QComboBox()
-        self.dd_color_mode.addItems(["Chroma (L-preserving)", "Saturation (HSV S)"])
+        self.dd_color_mode.addItems([self.tr("Chroma (L-preserving)"), self.tr("Saturation (HSV S)")])
         self.dd_color_mode.setCurrentIndex(0)
         self.dd_color_mode.currentIndexChanged.connect(self._update_color_mode_enabled)
         gll.addWidget(self.dd_color_mode, 4, 1, 1, 2)
@@ -803,23 +803,23 @@ class SelectiveColorCorrection(QDialog):
         left_outer.addWidget(left_scroll, 1)
 
         # Live toggle (non-scroll)
-        self.cb_live = QCheckBox("Preview changed image")
+        self.cb_live = QCheckBox(self.tr("Preview changed image"))
         self.cb_live.setChecked(True)
         self.cb_live.toggled.connect(self._update_preview_pixmap)
         left_outer.addWidget(self.cb_live)
 
         # Buttons row (non-scroll)
         row = QHBoxLayout()
-        self.btn_apply = QPushButton("Apply")
+        self.btn_apply = QPushButton(self.tr("Apply"))
         self.btn_apply.clicked.connect(self._apply_to_document)
-        self.btn_push = QPushButton("Apply as New Document")
+        self.btn_push = QPushButton(self.tr("Apply as New Document"))
         self.btn_push.clicked.connect(self._apply_as_new_doc)
-        self.btn_export_mask = QPushButton("Export Mask")
+        self.btn_export_mask = QPushButton(self.tr("Export Mask"))
         self.btn_export_mask.clicked.connect(self._export_mask_doc)
-        self.btn_reset = QPushButton("↺ Reset")
+        self.btn_reset = QPushButton(self.tr("↺ Reset"))
         self.btn_reset.clicked.connect(self._reset_controls)
-        self.btn_clear_region = QPushButton("✕ Clear Region Mask")
-        self.btn_clear_region.setToolTip("Remove the freehand region constraint")
+        self.btn_clear_region = QPushButton(self.tr("✕ Clear Region Mask"))
+        self.btn_clear_region.setToolTip(self.tr("Remove the freehand region constraint"))
         self.btn_clear_region.clicked.connect(self._clear_region_mask)
         self.btn_clear_region.setEnabled(False)        
         row.addWidget(self.btn_apply)
@@ -844,10 +844,10 @@ class SelectiveColorCorrection(QDialog):
         # Zoom toolbar (themed)
         zoom_row = QHBoxLayout()
 
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
         self.btn_zoom_1   = themed_toolbtn("zoom-original", "1:1")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit"))
 
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.btn_zoom_in)
@@ -858,13 +858,13 @@ class SelectiveColorCorrection(QDialog):
         zoom_row.addWidget(self.btn_doc_help)
         right.addLayout(zoom_row)
 
-        self.lbl_help = QLabel(
+        self.lbl_help = QLabel(self.tr(
             "🖱️ <b>Click</b>: show hue  &nbsp;•&nbsp; "
             "<b>Shift+Click</b>: select that color  &nbsp;•&nbsp; "
             "<b>Ctrl+Drag</b>: pan  &nbsp;•&nbsp; "
             "<b>Alt+Drag</b>: draw region mask  &nbsp;•&nbsp; "
             "<b>Wheel</b>: zoom"
-        )
+        ))
 
         self.lbl_help.setWordWrap(True)
         self.lbl_help.setTextFormat(Qt.TextFormat.RichText)
@@ -884,19 +884,19 @@ class SelectiveColorCorrection(QDialog):
         vp.setMouseTracking(True)
         vp.installEventFilter(self)
 
-        self.lbl_preview.setToolTip(
+        self.lbl_preview.setToolTip(self.tr(
             "Click to sample hue.\n"
             "Ctrl + Click & Drag to pan.\n"
             "Mouse Wheel to zoom."
-        )
-        self.btn_zoom_in.setToolTip("Zoom in (centers view)")
-        self.btn_zoom_out.setToolTip("Zoom out (centers view)")
-        self.btn_zoom_1.setToolTip("Reset zoom to 1:1")
+        ))
+        self.btn_zoom_in.setToolTip(self.tr("Zoom in (centers view)"))
+        self.btn_zoom_out.setToolTip(self.tr("Zoom out (centers view)"))
+        self.btn_zoom_1.setToolTip(self.tr("Reset zoom to 1:1"))
 
         # Hue readout
-        self.lbl_hue_readout = QLabel("Picked hue: —")
+        self.lbl_hue_readout = QLabel(self.tr("Picked hue: —"))
         right.addWidget(self.lbl_hue_readout)
-        self.lbl_region_readout = QLabel("Region mask: none  (Alt+Drag to draw)")
+        self.lbl_region_readout = QLabel(self.tr("Region mask: none  (Alt+Drag to draw)"))
         self.lbl_region_readout.setStyleSheet("color: #888; font-size: 11px;")
         right.addWidget(self.lbl_region_readout)
         # Splitter stretch: make preview greedy
@@ -963,7 +963,7 @@ class SelectiveColorCorrection(QDialog):
         self._region_mask_full = None
         self._lasso_points = []
         self._lasso_overlay = None
-        self.lbl_region_readout.setText("Region mask: none  (Alt+Drag to draw)")
+        self.lbl_region_readout.setText(self.tr("Region mask: none  (Alt+Drag to draw)"))
         self.btn_clear_region.setEnabled(False)
         self._recompute_mask_and_preview()
 
@@ -1466,9 +1466,9 @@ class SelectiveColorCorrection(QDialog):
                         self._region_mask_full = np.clip(
                             region_full.astype(np.float32), 0.0, 1.0)
                         n_pts = len(self._lasso_points)
-                        self.lbl_region_readout.setText(
-                            f"Region mask: active ({n_pts} points)  "
-                            f"— click '✕ Clear Region Mask' to remove")
+                        self.lbl_region_readout.setText(self.tr(
+                            "Region mask: active ({0} points)  "
+                            "— click '✕ Clear Region Mask' to remove").format(n_pts))
                         self.btn_clear_region.setEnabled(True)
 
                 self._lasso_points = []
@@ -1515,7 +1515,7 @@ class SelectiveColorCorrection(QDialog):
                 hue = self._sample_hue_deg_from_base(x, y)
                 if hue is not None:
                     self.hue_wheel.setPickedHue(hue)
-                    self.lbl_hue_readout.setText(f"Picked hue: {hue:.1f}°")
+                    self.lbl_hue_readout.setText(self.tr("Picked hue: {0:.1f}°").format(hue))
                     if ev.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                         half = 15
                         self.hue_wheel.setRange(int((hue-half) % 360), int((hue+half) % 360))
@@ -1712,7 +1712,7 @@ class SelectiveColorCorrection(QDialog):
         if self._use_imported_mask and self._imported_mask_full is None:
             self._use_imported_mask = False
             self.cb_use_imported.setChecked(False)
-            QMessageBox.information(self, "No imported mask", "Pick a mask view first.")
+            QMessageBox.information(self, self.tr("No imported mask"), self.tr("Pick a mask view first."))
             return
 
         # just rebuild preview with the external mask
@@ -1720,7 +1720,7 @@ class SelectiveColorCorrection(QDialog):
 
     def _import_mask_from_view(self):
         if self.docman is None:
-            QMessageBox.information(self, "No document manager", "Cannot import without a document manager.")
+            QMessageBox.information(self, self.tr("No document manager"), self.tr("Cannot import without a document manager."))
             return
 
         # get ALL docs user currently has open (renamed, FITS layers, XISF layers, duplicates, etc.)
@@ -1729,7 +1729,7 @@ class SelectiveColorCorrection(QDialog):
         img_docs = [d for d in docs if hasattr(d, "image") and d.image is not None]
 
         if not img_docs:
-            QMessageBox.information(self, "No views", "There are no image views to import a mask from.")
+            QMessageBox.information(self, self.tr("No views"), self.tr("There are no image views to import a mask from."))
             return
 
         # build names as the user sees them
@@ -1744,8 +1744,8 @@ class SelectiveColorCorrection(QDialog):
         from PyQt6.QtWidgets import QInputDialog
         choice, ok = QInputDialog.getItem(
             self,
-            "Pick mask view",
-            "Open image views:",
+            self.tr("Pick mask view"),
+            self.tr("Open image views:"),
             items,
             0,
             False
@@ -1761,7 +1761,7 @@ class SelectiveColorCorrection(QDialog):
                 break
 
         if sel_doc is None or getattr(sel_doc, "image", None) is None:
-            QMessageBox.warning(self, "Import failed", "Selected view has no image.")
+            QMessageBox.warning(self, self.tr("Import failed"), self.tr("Selected view has no image."))
             return
 
         mask_img = np.clip(sel_doc.image.astype(np.float32), 0.0, 1.0)
@@ -1788,7 +1788,7 @@ class SelectiveColorCorrection(QDialog):
         # store
         self._imported_mask_full = mask_full
         self._imported_mask_name = choice
-        self.lbl_imported_mask.setText(f"Imported: {choice}")
+        self.lbl_imported_mask.setText(self.tr("Imported: {0}").format(choice))
 
         # auto-enable
         self.cb_use_imported.setChecked(True)
@@ -1887,12 +1887,12 @@ class SelectiveColorCorrection(QDialog):
 
     def _export_mask_doc(self):
         if self.docman is None:
-            QMessageBox.information(self, "No document manager", "Cannot export mask without a document manager.")
+            QMessageBox.information(self, self.tr("No document manager"), self.tr("Cannot export mask without a document manager."))
             return
 
         base = self.img
         if base is None:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
 
         mask = self._build_mask(base)          # H x W, float32, 0..1
@@ -1903,7 +1903,7 @@ class SelectiveColorCorrection(QDialog):
         try:
             self.docman.open_array(mask_rgb, title=title)
         except Exception as e:
-            QMessageBox.warning(self, "Export failed", str(e))
+            QMessageBox.warning(self, self.tr("Export failed"), str(e))
 
 
     def _build_mask(self, base: np.ndarray) -> np.ndarray:
@@ -1959,7 +1959,7 @@ class SelectiveColorCorrection(QDialog):
         try:
             result = self._apply_fullres()
         except Exception as e:
-            QMessageBox.warning(self, "Error", str(e)); return
+            QMessageBox.warning(self, self.tr("Error"), str(e)); return
         try:
             self._save_window_state()
         except Exception:
@@ -1984,7 +1984,7 @@ class SelectiveColorCorrection(QDialog):
         try:
             result = self._apply_fullres()
         except Exception as e:
-            QMessageBox.warning(self, "Error", str(e)); return
+            QMessageBox.warning(self, self.tr("Error"), str(e)); return
         try:
             self._save_window_state()
         except Exception:
@@ -2002,7 +2002,7 @@ class SelectiveColorCorrection(QDialog):
                 disp = getattr(self.document, "display_name", lambda: "Image")()
             except Exception:
                 disp = "Image"
-            self.lbl_target.setText(f"Target View:  <b>{disp}</b>")
+            self.lbl_target.setText(self.tr("Target View:  <b>{0}</b>").format(disp))
 
         # new working base is the processed pixels either way
         self.img = np.clip(np.asarray(result, dtype=np.float32), 0.0, 1.0)

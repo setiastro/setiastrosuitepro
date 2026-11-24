@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 
-from PyQt6.QtCore import Qt, QPointF, QRectF, QEvent, QTimer
+from PyQt6.QtCore import Qt, QPointF, QRectF, QEvent, QTimer, QCoreApplication
 from PyQt6.QtGui import QImage, QPixmap, QPen, QColor, QIcon, QPainter
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QGraphicsView, QGraphicsScene,
@@ -14,6 +14,10 @@ from setiastro.saspro.imageops.stretch import stretch_color_image
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("BackgroundNeutral", text)
 
 
 
@@ -375,7 +379,7 @@ class BackgroundNeutralizationDialog(QDialog):
 
         # --- main layout ---
         layout = QVBoxLayout(self)
-        instruction = QLabel("Draw a sample box or click ‘Find Background’ to auto-select.")
+        instruction = QLabel(self.tr("Draw a sample box or click ‘Find Background’ to auto-select."))
         layout.addWidget(instruction)
         layout.addWidget(self.graphics_view, 1)
 
@@ -395,9 +399,9 @@ class BackgroundNeutralizationDialog(QDialog):
         # Zoom row (standardized themed toolbuttons)
         zoom_row = QHBoxLayout()
 
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to View")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit to View"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
 
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.btn_fit)
@@ -477,7 +481,7 @@ class BackgroundNeutralizationDialog(QDialog):
 
         img = self._doc_image_normalized()
         if img is None or img.size == 0:
-            QMessageBox.warning(self, "No Image", "Open an image first.")
+            QMessageBox.warning(self, self.tr("No Image"), self.tr("Open an image first."))
             self.reject()
             return
 
@@ -510,7 +514,7 @@ class BackgroundNeutralizationDialog(QDialog):
 
     def _toggle_auto_stretch(self):
         self.auto_stretch = not self.auto_stretch
-        self.btn_toggle_stretch.setText("Toggle Auto-Stretch")
+        self.btn_toggle_stretch.setText(self.tr("Toggle Auto-Stretch"))
         self._load_image()
 
     # ---------- zoom ----------
@@ -537,7 +541,7 @@ class BackgroundNeutralizationDialog(QDialog):
                 if self.selection_item:
                     self.scene.removeItem(self.selection_item)
                 if self.current_rect_scene.width() < 10 or self.current_rect_scene.height() < 10:
-                    QMessageBox.warning(self, "Selection Too Small", "Please draw a larger selection box.")
+                    QMessageBox.warning(self, self.tr("Selection Too Small"), self.tr("Please draw a larger selection box."))
                     self.selection_item = None
                     self.current_rect_scene = QRectF()
                 else:
@@ -587,7 +591,7 @@ class BackgroundNeutralizationDialog(QDialog):
     def _on_find_background(self):
         img = self._doc_image_normalized()
         if img.ndim != 3 or img.shape[2] != 3:
-            QMessageBox.warning(self, "Not RGB", "Background Neutralization supports RGB images.")
+            QMessageBox.warning(self, self.tr("Not RGB"), self.tr("Background Neutralization supports RGB images."))
             return
 
         x, y, w, h = auto_rect_50x50(img)
@@ -706,12 +710,12 @@ class BackgroundNeutralizationDialog(QDialog):
         try:
             rect = self._scene_rect_to_image_rect()
         except Exception as e:
-            QMessageBox.warning(self, "No Selection", str(e))
+            QMessageBox.warning(self, self.tr("No Selection"), str(e))
             return
 
         img = self._doc_image_normalized()
         if img.ndim != 3 or img.shape[2] != 3:
-            QMessageBox.warning(self, "Not RGB", "Background Neutralization supports RGB images.")
+            QMessageBox.warning(self, self.tr("Not RGB"), self.tr("Background Neutralization supports RGB images."))
             return
 
         out = background_neutralize_rgb(img, rect)
@@ -879,7 +883,7 @@ def run_background_neutral_via_preset(main, preset=None, target_doc=None):
     main, doc, _dm = normalize_headless_main(main, target_doc)
 
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main or None, "Background Neutralization", "Load an image first.")
+        QMessageBox.warning(main or None, _tr("Background Neutralization"), _tr("Load an image first."))
         return
 
     apply_background_neutral_to_doc(doc, p)

@@ -23,107 +23,112 @@ from __future__ import annotations
 import os
 import sys
 
-from PyQt6.QtCore import Qt, QSize, QUrl
+from PyQt6.QtCore import Qt, QSize, QUrl, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QPen, QColor, QPalette, QImage
 from PyQt6.QtWidgets import (
     QToolButton, QDialog, QVBoxLayout, QHBoxLayout, QTextBrowser,
     QPushButton, QWidget,
 )
 
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("HelpSupport", text)
+
 # doc_id -> display title. Unknown ids fall back to a title-cased id.
 _DOC_TITLES: dict[str, str] = {
-    "crop": "Crop Tool",
-    "histogram": "Histogram Viewer",
-    "pedestal": "Remove Pedestal",
-    "linear_fit": "Linear Fit",
-    "stat_stretch": "Statistical Stretch",
-    "star_stretch": "Star Stretch",
-    "levels": "Levels (Histogram Transform)",
-    "curves": "Curves Editor",
-    "ghs": "Hyperbolic Stretch",
-    "satchroma": "Saturation / Chroma",
-    "abe": "Automatic Background Extraction (ADBE)",
-    "srgc": "Survey Reference Gradient Correction (SRGC)",
+    "crop": QT_TRANSLATE_NOOP("HelpSupport", "Crop Tool"),
+    "histogram": QT_TRANSLATE_NOOP("HelpSupport", "Histogram Viewer"),
+    "pedestal": QT_TRANSLATE_NOOP("HelpSupport", "Remove Pedestal"),
+    "linear_fit": QT_TRANSLATE_NOOP("HelpSupport", "Linear Fit"),
+    "stat_stretch": QT_TRANSLATE_NOOP("HelpSupport", "Statistical Stretch"),
+    "star_stretch": QT_TRANSLATE_NOOP("HelpSupport", "Star Stretch"),
+    "levels": QT_TRANSLATE_NOOP("HelpSupport", "Levels (Histogram Transform)"),
+    "curves": QT_TRANSLATE_NOOP("HelpSupport", "Curves Editor"),
+    "ghs": QT_TRANSLATE_NOOP("HelpSupport", "Hyperbolic Stretch"),
+    "satchroma": QT_TRANSLATE_NOOP("HelpSupport", "Saturation / Chroma"),
+    "abe": QT_TRANSLATE_NOOP("HelpSupport", "Automatic Background Extraction (ADBE)"),
+    "srgc": QT_TRANSLATE_NOOP("HelpSupport", "Survey Reference Gradient Correction (SRGC)"),
     "graxpert": "GraXpert",
-    "cosmetic_correction": "Cosmetic Correction",
-    "remove_stars": "Remove Stars",
-    "add_stars": "Add Stars",
-    "background_neutral": "Background Neutralization",
-    "white_balance": "White Balance",
-    "sfcc": "Spectral Flux Color Calibration (SFCC)",
-    "sssc": "Spectrophotometric Standard Star Calibration (SSSC)",
-    "curve_manager": "Filter / Sensor Curve Manager",
-    "remove_green": "Remove Green (SCNR)",
-    "convo": "Convolution / Deconvolution",
-    "luminance_recombine": "Recombine Luminance",
-    "rgb_combination": "RGB Combination",
-    "blemish_blaster": "Blemish Blaster",
-    "clone_stamp": "Clone Stamp",
-    "wavescale_hdr": "WaveScale HDR",
-    "wavescale_dark_enhance": "WaveScale Dark Enhancer",
+    "cosmetic_correction": QT_TRANSLATE_NOOP("HelpSupport", "Cosmetic Correction"),
+    "remove_stars": QT_TRANSLATE_NOOP("HelpSupport", "Remove Stars"),
+    "add_stars": QT_TRANSLATE_NOOP("HelpSupport", "Add Stars"),
+    "background_neutral": QT_TRANSLATE_NOOP("HelpSupport", "Background Neutralization"),
+    "white_balance": QT_TRANSLATE_NOOP("HelpSupport", "White Balance"),
+    "sfcc": QT_TRANSLATE_NOOP("HelpSupport", "Spectral Flux Color Calibration (SFCC)"),
+    "sssc": QT_TRANSLATE_NOOP("HelpSupport", "Spectrophotometric Standard Star Calibration (SSSC)"),
+    "curve_manager": QT_TRANSLATE_NOOP("HelpSupport", "Filter / Sensor Curve Manager"),
+    "remove_green": QT_TRANSLATE_NOOP("HelpSupport", "Remove Green (SCNR)"),
+    "convo": QT_TRANSLATE_NOOP("HelpSupport", "Convolution / Deconvolution"),
+    "luminance_recombine": QT_TRANSLATE_NOOP("HelpSupport", "Recombine Luminance"),
+    "rgb_combination": QT_TRANSLATE_NOOP("HelpSupport", "RGB Combination"),
+    "blemish_blaster": QT_TRANSLATE_NOOP("HelpSupport", "Blemish Blaster"),
+    "clone_stamp": QT_TRANSLATE_NOOP("HelpSupport", "Clone Stamp"),
+    "wavescale_hdr": QT_TRANSLATE_NOOP("HelpSupport", "WaveScale HDR"),
+    "wavescale_dark_enhance": QT_TRANSLATE_NOOP("HelpSupport", "WaveScale Dark Enhancer"),
     "clahe": "CLAHE",
-    "nbextract": "Narrowband Channel Extractor (NBExtract)",
-    "texture_clarity": "Texture and Clarity",
-    "fx": "FX Module",
-    "morphology": "Morphological Operations",
-    "pixel_math": "Pixel Math",
-    "signature_insert": "Signature / Insert",
+    "nbextract": QT_TRANSLATE_NOOP("HelpSupport", "Narrowband Channel Extractor (NBExtract)"),
+    "texture_clarity": QT_TRANSLATE_NOOP("HelpSupport", "Texture and Clarity"),
+    "fx": QT_TRANSLATE_NOOP("HelpSupport", "FX Module"),
+    "morphology": QT_TRANSLATE_NOOP("HelpSupport", "Morphological Operations"),
+    "pixel_math": QT_TRANSLATE_NOOP("HelpSupport", "Pixel Math"),
+    "signature_insert": QT_TRANSLATE_NOOP("HelpSupport", "Signature / Insert"),
     "halo_b_gon": "Halo-B-Gon",
-    "blink": "Blink Comparator",
-    "perfect_palette_picker": "Perfect Palette Picker",
-    "nb_rgb_stars": "NB→RGB Stars",
-    "nb_normalization": "Narrowband Normalization",
-    "selective_color": "Selective Color Correction",
-    "selective_luma": "Selective Luminance Correction",
-    "frequency_separation": "Frequency Separation",
-    "multiscale_decomp": "Multiscale Decomposition",
-    "stacking_suite": "Stacking Suite",
-    "magnitude_tool": "Magnitude / Surface Brightness Tool",
-    "continuum_subtract": "Continuum Subtraction",
-    "narrowband_integration": "Narrowband Integration",
-    "snr_tool": "Object SNR Tool",
-    "image_peeker": "Image Peeker",
-    "image_combine": "Image Combine",
-    "hdr_composition": "HDR Composition",
-    "dither_analysis": "Dither Analysis",
-    "live_stacking": "Live Stacking",
-    "psf_viewer": "PSF Viewer",
-    "planet_projection": "3D Projection",
-    "planetary_viewer": "Planetary Stacker Viewer",
-    "planetary_stacker": "Planetary Stacker",
-    "planetary_batch": "Batch Planetary Stacker",
-    "flythrough": "Nebula Flythrough",
-    "unwarp": "Astrometric Unwarp",
-    "plate_solver": "Plate Solver",
-    "star_alignment": "Stellar Alignment",
-    "star_registration": "Star Registration",
-    "mosaic_master": "Mosaic Master",
-    "rgb_align": "RGB Align",
-    "surface_mosaic": "Surface Mosaic",
-    "exoplanet": "Exoplanet Transit Detector",
-    "supernova_asteroid_hunter": "Supernova / Asteroid Hunter",
-    "glimr": "GLIMR — Galaxy Isophote Modeler",
-    "star_spikes": "Diffraction Spikes",
-    "finder_chart": "Finder Chart",
-    "gaia_database": "Gaia DR3 Library",
-    "whats_in_my_sky": "What's In My Sky",
-    "mask_creation": "Mask Creation",
-    "function_bundles": "Function Bundles",
-    "view_bundles": "View Bundles",
-    "whats_in_my_image": "What's In My Image",
-    "workflow_assistant": "Workflow Assistant",
-    "layers": "Layers Dock",
-    "debayer": "Debayer",
-    "aberration_ai": "R.A.'s Aberration Correction (AI)",
+    "blink": QT_TRANSLATE_NOOP("HelpSupport", "Blink Comparator"),
+    "perfect_palette_picker": QT_TRANSLATE_NOOP("HelpSupport", "Perfect Palette Picker"),
+    "nb_rgb_stars": QT_TRANSLATE_NOOP("HelpSupport", "NB→RGB Stars"),
+    "nb_normalization": QT_TRANSLATE_NOOP("HelpSupport", "Narrowband Normalization"),
+    "selective_color": QT_TRANSLATE_NOOP("HelpSupport", "Selective Color Correction"),
+    "selective_luma": QT_TRANSLATE_NOOP("HelpSupport", "Selective Luminance Correction"),
+    "frequency_separation": QT_TRANSLATE_NOOP("HelpSupport", "Frequency Separation"),
+    "multiscale_decomp": QT_TRANSLATE_NOOP("HelpSupport", "Multiscale Decomposition"),
+    "stacking_suite": QT_TRANSLATE_NOOP("HelpSupport", "Stacking Suite"),
+    "magnitude_tool": QT_TRANSLATE_NOOP("HelpSupport", "Magnitude / Surface Brightness Tool"),
+    "continuum_subtract": QT_TRANSLATE_NOOP("HelpSupport", "Continuum Subtraction"),
+    "narrowband_integration": QT_TRANSLATE_NOOP("HelpSupport", "Narrowband Integration"),
+    "snr_tool": QT_TRANSLATE_NOOP("HelpSupport", "Object SNR Tool"),
+    "image_peeker": QT_TRANSLATE_NOOP("HelpSupport", "Image Peeker"),
+    "image_combine": QT_TRANSLATE_NOOP("HelpSupport", "Image Combine"),
+    "hdr_composition": QT_TRANSLATE_NOOP("HelpSupport", "HDR Composition"),
+    "dither_analysis": QT_TRANSLATE_NOOP("HelpSupport", "Dither Analysis"),
+    "live_stacking": QT_TRANSLATE_NOOP("HelpSupport", "Live Stacking"),
+    "quick_stack": QT_TRANSLATE_NOOP("HelpSupport", "Quick Stack"),
+    "psf_viewer": QT_TRANSLATE_NOOP("HelpSupport", "PSF Viewer"),
+    "planet_projection": QT_TRANSLATE_NOOP("HelpSupport", "3D Projection"),
+    "planetary_viewer": QT_TRANSLATE_NOOP("HelpSupport", "Planetary Stacker Viewer"),
+    "planetary_stacker": QT_TRANSLATE_NOOP("HelpSupport", "Planetary Stacker"),
+    "planetary_batch": QT_TRANSLATE_NOOP("HelpSupport", "Batch Planetary Stacker"),
+    "flythrough": QT_TRANSLATE_NOOP("HelpSupport", "Nebula Flythrough"),
+    "unwarp": QT_TRANSLATE_NOOP("HelpSupport", "Astrometric Unwarp"),
+    "plate_solver": QT_TRANSLATE_NOOP("HelpSupport", "Plate Solver"),
+    "star_alignment": QT_TRANSLATE_NOOP("HelpSupport", "Stellar Alignment"),
+    "star_registration": QT_TRANSLATE_NOOP("HelpSupport", "Star Registration"),
+    "mosaic_master": QT_TRANSLATE_NOOP("HelpSupport", "Mosaic Master"),
+    "rgb_align": QT_TRANSLATE_NOOP("HelpSupport", "RGB Align"),
+    "surface_mosaic": QT_TRANSLATE_NOOP("HelpSupport", "Surface Mosaic"),
+    "exoplanet": QT_TRANSLATE_NOOP("HelpSupport", "Exoplanet Transit Detector"),
+    "supernova_asteroid_hunter": QT_TRANSLATE_NOOP("HelpSupport", "Supernova / Asteroid Hunter"),
+    "glimr": QT_TRANSLATE_NOOP("HelpSupport", "GLIMR — Galaxy Isophote Modeler"),
+    "star_spikes": QT_TRANSLATE_NOOP("HelpSupport", "Diffraction Spikes"),
+    "finder_chart": QT_TRANSLATE_NOOP("HelpSupport", "Finder Chart"),
+    "gaia_database": QT_TRANSLATE_NOOP("HelpSupport", "Gaia DR3 Library"),
+    "whats_in_my_sky": QT_TRANSLATE_NOOP("HelpSupport", "What's In My Sky"),
+    "mask_creation": QT_TRANSLATE_NOOP("HelpSupport", "Mask Creation"),
+    "function_bundles": QT_TRANSLATE_NOOP("HelpSupport", "Function Bundles"),
+    "view_bundles": QT_TRANSLATE_NOOP("HelpSupport", "View Bundles"),
+    "whats_in_my_image": QT_TRANSLATE_NOOP("HelpSupport", "What's In My Image"),
+    "workflow_assistant": QT_TRANSLATE_NOOP("HelpSupport", "Workflow Assistant"),
+    "layers": QT_TRANSLATE_NOOP("HelpSupport", "Layers Dock"),
+    "debayer": QT_TRANSLATE_NOOP("HelpSupport", "Debayer"),
+    "aberration_ai": QT_TRANSLATE_NOOP("HelpSupport", "R.A.'s Aberration Correction (AI)"),
     "cosmic_clarity": "Cosmic Clarity",
-    "cosmic_clarity_satellite": "Cosmic Clarity — Satellite Removal",
-    "image_view": "The Image View",
+    "cosmic_clarity_satellite": QT_TRANSLATE_NOOP("HelpSupport", "Cosmic Clarity — Satellite Removal"),
+    "image_view": QT_TRANSLATE_NOOP("HelpSupport", "The Image View"),
 }
 
 
 def _doc_title(doc_id: str) -> str:
     if doc_id in _DOC_TITLES:
-        return _DOC_TITLES[doc_id]
+        return _tr(_DOC_TITLES[doc_id])
     nice = doc_id.replace("_", " ").replace("-", " ").strip().title()
     return nice or doc_id
 
@@ -329,7 +334,7 @@ def make_help_button(doc_id: str, parent=None, size: int = 18) -> QToolButton:
         icon = _page_glyph_icon(parent, size)
     btn.setIcon(icon)
 
-    btn.setToolTip(btn.tr("Open documentation for {0}").format(_doc_title(doc_id)))
+    btn.setToolTip(_tr("Open documentation for {0}").format(_doc_title(doc_id)))
     btn.clicked.connect(lambda _=False: show_tool_doc(doc_id, parent))
     return btn
 
@@ -367,7 +372,7 @@ def load_doc_into(browser: QTextBrowser, doc_id: str, html_path) -> bool:
     title = _doc_title(doc_id)
     browser.setHtml(
         f"<h2>{title}</h2>"
-        f"<p>Documentation for this tool isn't available yet.</p>"
+        + _tr("<p>Documentation for this tool isn't available yet.</p>")
     )
     return False
 

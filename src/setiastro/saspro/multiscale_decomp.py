@@ -1096,7 +1096,7 @@ class MultiscaleDecompDialog(QDialog):
         # True when constructed for a headless preset apply (drop-on-image):
         # skip the modal init progress + initial preview, and don't persist geometry.
         self._headless = bool(headless)
-        self.setWindowTitle("Multiscale Decomposition")
+        self.setWindowTitle(self.tr("Multiscale Decomposition"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -1242,7 +1242,7 @@ class MultiscaleDecompDialog(QDialog):
 
         left.addWidget(self.view)
         # Busy overlay (shown during recompute)
-        self.busy_label = QLabel("Computing…", self.view.viewport())
+        self.busy_label = QLabel(self.tr("Computing…"), self.view.viewport())
         self.busy_label.setStyleSheet("""
             QLabel {
                 background: rgba(0,0,0,140);
@@ -1257,7 +1257,7 @@ class MultiscaleDecompDialog(QDialog):
         # --- Spinner (animated) ---
         self.busy_spinner = QLabel()
         self.busy_spinner.setFixedSize(20, 20)
-        self.busy_spinner.setToolTip("Computing…")
+        self.busy_spinner.setToolTip(self.tr("Computing…"))
         self.busy_spinner.setVisible(False)
 
         gif_path = get_resources().SPINNER_GIF  # <- canonical, works frozen/dev
@@ -1275,15 +1275,15 @@ class MultiscaleDecompDialog(QDialog):
 
         self.zoom_out_btn = QToolButton()
         self.zoom_out_btn.setIcon(QIcon.fromTheme("zoom-out"))
-        self.zoom_out_btn.setToolTip("Zoom Out")
+        self.zoom_out_btn.setToolTip(self.tr("Zoom Out"))
 
         self.zoom_in_btn = QToolButton()
         self.zoom_in_btn.setIcon(QIcon.fromTheme("zoom-in"))
-        self.zoom_in_btn.setToolTip("Zoom In")
+        self.zoom_in_btn.setToolTip(self.tr("Zoom In"))
 
         self.fit_btn = QToolButton()
         self.fit_btn.setIcon(QIcon.fromTheme("zoom-fit-best"))
-        self.fit_btn.setToolTip("Fit to Preview")
+        self.fit_btn.setToolTip(self.tr("Fit to Preview"))
 
         self.one_to_one_btn = QToolButton()
         self.one_to_one_btn.setIcon(QIcon.fromTheme("zoom-original"))
@@ -1310,7 +1310,7 @@ class MultiscaleDecompDialog(QDialog):
         right_widget = QWidget(self)
         right = QVBoxLayout(right_widget)
 
-        gb_global = QGroupBox("Global")
+        gb_global = QGroupBox(self.tr("Global"))
         form = QFormLayout(gb_global)
 
         self.spin_layers = QSpinBox()
@@ -1322,50 +1322,50 @@ class MultiscaleDecompDialog(QDialog):
         self.spin_sigma.setSingleStep(0.1)
         self.spin_sigma.setValue(self.base_sigma)
 
-        self.cb_linked_rgb = QCheckBox("Linked RGB (apply same params to all channels)")
+        self.cb_linked_rgb = QCheckBox(self.tr("Linked RGB (apply same params to all channels)"))
         self.cb_linked_rgb.setChecked(True)
 
         # NEW: Fast ROI preview
-        self.cb_fast_roi_preview = QCheckBox("Fast ROI preview (compute visible area only)")
+        self.cb_fast_roi_preview = QCheckBox(self.tr("Fast ROI preview (compute visible area only)"))
         self.cb_fast_roi_preview.setChecked(True)
         self.cb_fast_roi_preview.setToolTip(
-            "When enabled, preview only computes the currently visible region (with padding for blur).\n"
-            "Apply/Send-to-Doc always computes the full image."
+            self.tr("When enabled, preview only computes the currently visible region (with padding for blur).\n"
+            "Apply/Send-to-Doc always computes the full image.")
         )
-        self.cb_autostretch = QCheckBox("Auto-stretch preview")
+        self.cb_autostretch = QCheckBox(self.tr("Auto-stretch preview"))
         self.cb_autostretch.setChecked(False)
         self.cb_autostretch.setToolTip(
-            "Stretch the preview for visibility. Does not affect Apply or Send to Document — "
-            "those always use linear data."
+            self.tr("Stretch the preview for visibility. Does not affect Apply or Send to Document — "
+            "those always use linear data.")
         )
         form.addRow(self.cb_autostretch)
         self.combo_mode = QComboBox()
         self.combo_mode.addItems(["μ–σ Thresholding", "Linear"])
         self.combo_mode.setCurrentText("μ–σ Thresholding")
         self.combo_mode.setToolTip(
-            "Multiscale mode:\n"
+            self.tr("Multiscale mode:\n"
             "• μ–σ Thresholding: σ-based thresholding + denoise and gain (nonlinear).\n"
-            "• Linear: strictly linear multiscale transform; only Gain is applied."
+            "• Linear: strictly linear multiscale transform; only Gain is applied.")
         )
 
         self.combo_preview = QComboBox()
         self._refresh_preview_combo()
 
-        form.addRow("Layers:", self.spin_layers)
-        form.addRow("Base sigma:", self.spin_sigma)
+        form.addRow(self.tr("Layers:"), self.spin_layers)
+        form.addRow(self.tr("Base sigma:"), self.spin_sigma)
         form.addRow(self.cb_linked_rgb)
         form.addRow(self.cb_fast_roi_preview)
-        form.addRow("Mode:", self.combo_mode)
-        form.addRow("Layer preview:", self.combo_preview)
+        form.addRow(self.tr("Mode:"), self.combo_mode)
+        form.addRow(self.tr("Layer preview:"), self.combo_preview)
 
         right.addWidget(gb_global)
 
         # Layers table
-        gb_layers = QGroupBox("Layers")
+        gb_layers = QGroupBox(self.tr("Layers"))
         v = QVBoxLayout(gb_layers)
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            ["On", "Layer", "Scale", "Gain", "Thr (σ)", "Amt", "NR", "Type"]
+            [self.tr("On"), self.tr("Layer"), self.tr("Scale"), self.tr("Gain"), self.tr("Thr (σ)"), self.tr("Amt"), self.tr("NR"), self.tr("Type")]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
@@ -1374,9 +1374,9 @@ class MultiscaleDecompDialog(QDialog):
         right.addWidget(gb_layers, stretch=1)
 
         # Per-layer editor...
-        gb_edit = QGroupBox("Selected Layer")
+        gb_edit = QGroupBox(self.tr("Selected Layer"))
         ef = QFormLayout(gb_edit)
-        self.lbl_sel = QLabel("Layer: —")
+        self.lbl_sel = QLabel(self.tr("Layer: —"))
 
         # --- Spin boxes ---
         self.spin_gain = QDoubleSpinBox()
@@ -1384,8 +1384,8 @@ class MultiscaleDecompDialog(QDialog):
         self.spin_gain.setSingleStep(0.05)
         self.spin_gain.setValue(1.0)
         self.spin_gain.setToolTip(
-            "Gain: multiplies the detail coefficients on this layer.\n"
-            "1.0 = unchanged, >1.0 boosts detail, <1.0 reduces it."
+            self.tr("Gain: multiplies the detail coefficients on this layer.\n"
+            "1.0 = unchanged, >1.0 boosts detail, <1.0 reduces it.")
         )
 
         self.spin_thr = QDoubleSpinBox()
@@ -1393,16 +1393,16 @@ class MultiscaleDecompDialog(QDialog):
         self.spin_thr.setSingleStep(0.1)
         self.spin_thr.setDecimals(2)
         self.spin_thr.setToolTip(
-            "Threshold (σ): soft threshold level in units of this layer's noise σ.\n"
-            "0 = no thresholding; 1–3 ≈ mild to strong suppression of small coefficients."
+            self.tr("Threshold (σ): soft threshold level in units of this layer's noise σ.\n"
+            "0 = no thresholding; 1–3 ≈ mild to strong suppression of small coefficients.")
         )
 
         self.spin_amt = QDoubleSpinBox()
         self.spin_amt.setRange(0.0, 1.0)
         self.spin_amt.setSingleStep(0.05)
         self.spin_amt.setToolTip(
-            "Amount: blend factor toward the thresholded version of the layer.\n"
-            "0 = ignore thresholding, 1 = fully use the thresholded layer."
+            self.tr("Amount: blend factor toward the thresholded version of the layer.\n"
+            "0 = ignore thresholding, 1 = fully use the thresholded layer.")
         )
 
         self.spin_denoise = QDoubleSpinBox()
@@ -1410,8 +1410,8 @@ class MultiscaleDecompDialog(QDialog):
         self.spin_denoise.setSingleStep(0.05)
         self.spin_denoise.setValue(0.0)
         self.spin_denoise.setToolTip(
-            "Denoise: extra multiscale noise reduction on this layer.\n"
-            "0 = off, 1 = strong NR (≈3σ soft threshold blended in)."
+            self.tr("Denoise: extra multiscale noise reduction on this layer.\n"
+            "0 = off, 1 = strong NR (≈3σ soft threshold blended in).")
         )
 
         # --- Sliders (int ranges, mapped to spins) ---
@@ -1437,36 +1437,36 @@ class MultiscaleDecompDialog(QDialog):
         gain_row = QHBoxLayout()
         gain_row.addWidget(self.slider_gain)
         gain_row.addWidget(self.spin_gain)
-        ef.addRow("Gain:", gain_row)
+        ef.addRow(self.tr("Gain:"), gain_row)
 
         thr_row = QHBoxLayout()
         thr_row.addWidget(self.slider_thr)
         thr_row.addWidget(self.spin_thr)
-        ef.addRow("Threshold (σ):", thr_row)
+        ef.addRow(self.tr("Threshold (σ):"), thr_row)
 
         amt_row = QHBoxLayout()
         amt_row.addWidget(self.slider_amt)
         amt_row.addWidget(self.spin_amt)
-        ef.addRow("Amount:", amt_row)
+        ef.addRow(self.tr("Amount:"), amt_row)
 
         dn_row = QHBoxLayout()
         dn_row.addWidget(self.slider_denoise)
         dn_row.addWidget(self.spin_denoise)
-        ef.addRow("Denoise:", dn_row)
+        ef.addRow(self.tr("Denoise:"), dn_row)
 
         right.addWidget(gb_edit)
 
         # Buttons...
         btn_row = QHBoxLayout()
-        self.btn_apply = QPushButton("Apply to Document")
-        self.btn_detail_new = QPushButton("Send to New Document")
-        self.btn_split_layers = QPushButton("Split Layers to Documents")
-        self.btn_reset = QPushButton("Reset")
+        self.btn_apply = QPushButton(self.tr("Apply to Document"))
+        self.btn_detail_new = QPushButton(self.tr("Send to New Document"))
+        self.btn_split_layers = QPushButton(self.tr("Split Layers to Documents"))
+        self.btn_reset = QPushButton(self.tr("Reset"))
         self.btn_reset.setToolTip(
-            "Restore layer count, base sigma, mode, Linked RGB and every layer's\n"
-            "settings to the defaults. Preview options are left as they are."
+            self.tr("Restore layer count, base sigma, mode, Linked RGB and every layer's\n"
+            "settings to the defaults. Preview options are left as they are.")
         )
-        self.btn_close = QPushButton("Close")
+        self.btn_close = QPushButton(self.tr("Close"))
 
         # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
         # Captures the live UI via _multiscale_params(). Dropped on empty
@@ -1477,9 +1477,9 @@ class MultiscaleDecompDialog(QDialog):
             self._multiscale_params,
             icon=QIcon(multiscale_decomp_path),
             tooltip=(
-                "Drag to the canvas to create a Multiscale Decomposition shortcut\n"
+                self.tr("Drag to the canvas to create a Multiscale Decomposition shortcut\n"
                 "with these exact settings.\n"
-                "Drop directly on an image to apply them headlessly."
+                "Drop directly on an image to apply them headlessly.")
             ),
             parent=self,
         )
@@ -2397,7 +2397,7 @@ class MultiscaleDecompDialog(QDialog):
     @contextmanager
     def _busy_popup(self, text: str):
         dlg = QProgressDialog(text, "", 0, 0, self)
-        dlg.setWindowTitle("Multiscale Decomposition")
+        dlg.setWindowTitle(self.tr("Multiscale Decomposition"))
         dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
         dlg.setCancelButton(None)
         dlg.setMinimumDuration(0)
@@ -2429,7 +2429,7 @@ class MultiscaleDecompDialog(QDialog):
         self._selected_layer = idx
 
         if idx == self.layers:
-            self.lbl_sel.setText("Layer: R (Residual)")
+            self.lbl_sel.setText(self.tr("Layer: R (Residual)"))
             for w in (self.spin_gain, self.spin_thr, self.spin_amt, self.spin_denoise,
                     self.slider_gain, self.slider_thr, self.slider_amt, self.slider_denoise):
                 w.setEnabled(False)
@@ -2440,7 +2440,7 @@ class MultiscaleDecompDialog(QDialog):
             w.setEnabled(True)
 
         cfg = self.cfgs[idx]
-        self.lbl_sel.setText(f"Layer: {idx+1} / {self.layers}")
+        self.lbl_sel.setText(self.tr("Layer: {0} / {1}").format(idx+1, self.layers))
 
         # spins + sliders in sync
         self.spin_gain.blockSignals(True)
@@ -2525,10 +2525,10 @@ class MultiscaleDecompDialog(QDialog):
         self.combo_preview.blockSignals(True)
         try:
             self.combo_preview.clear()
-            self.combo_preview.addItem("Final", userData="final")
-            self.combo_preview.addItem("R (Residual)", userData="residual")
+            self.combo_preview.addItem(self.tr("Final"), userData="final")
+            self.combo_preview.addItem(self.tr("R (Residual)"), userData="residual")
             for i in range(self.layers):
-                self.combo_preview.addItem(f"Detail Layer {i+1}", userData=i)
+                self.combo_preview.addItem(self.tr("Detail Layer {0}").format(i+1), userData=i)
         finally:
             self.combo_preview.blockSignals(False)
 
@@ -2637,11 +2637,11 @@ class MultiscaleDecompDialog(QDialog):
         if not self._headless:
             try: self._save_window_state()
             except Exception: pass
-            self._start_action("apply", "Applying multiscale result to document…")
+            self._start_action("apply", self.tr("Applying multiscale result to document…"))
             return
         # Headless preset apply: the caller disposes of the dialog right after,
         # so the work happens here.
-        with self._busy_popup("Applying multiscale result to document…"):
+        with self._busy_popup(self.tr("Applying multiscale result to document…")):
             self._recompute_decomp(force=False)
             if self._cached_layers is None or self._cached_residual is None:
                 return
@@ -2666,7 +2666,7 @@ class MultiscaleDecompDialog(QDialog):
             else:
                 self._doc.image = out_final
         except Exception as e:
-            QMessageBox.critical(self, "Multiscale Decomposition", f"Failed to write to document:\n{e}")
+            QMessageBox.critical(self, self.tr("Multiscale Decomposition"), self.tr("Failed to write to document:\n{0}").format(e))
             return
 
         if hasattr(self.parent(), "_refresh_active_view"):
@@ -2720,9 +2720,9 @@ class MultiscaleDecompDialog(QDialog):
         if getattr(self, "_closing", False) or self._action_kind is not None:
             return
         if kind in ("send", "split") and self._get_doc_manager() is None:
-            msg = ("No DocManager available to create a new document." if kind == "send"
-                   else "No DocManager available to create new documents.")
-            QMessageBox.warning(self, "Multiscale Decomposition", msg)
+            msg = (self.tr("No DocManager available to create a new document.") if kind == "send"
+                   else self.tr("No DocManager available to create new documents."))
+            QMessageBox.warning(self, self.tr("Multiscale Decomposition"), msg)
             return
         self._action_kind = kind
         self._open_action_progress(text)
@@ -2730,7 +2730,7 @@ class MultiscaleDecompDialog(QDialog):
 
     def _open_action_progress(self, text: str):
         dlg = QProgressDialog(text, "", 0, 0, self)
-        dlg.setWindowTitle("Multiscale Decomposition")
+        dlg.setWindowTitle(self.tr("Multiscale Decomposition"))
         dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
         dlg.setCancelButton(None)
         dlg.setMinimumDuration(0)
@@ -2763,8 +2763,8 @@ class MultiscaleDecompDialog(QDialog):
         if not self._decomp_ready():
             if self._decomp_failed_key == self._decomp_key():
                 self._end_action()
-                QMessageBox.critical(self, "Multiscale Decomposition",
-                                     "Could not compute the multiscale decomposition.")
+                QMessageBox.critical(self, self.tr("Multiscale Decomposition"),
+                                     self.tr("Could not compute the multiscale decomposition."))
             else:
                 self._request_decomp(self._start_action_job)
             return
@@ -2792,25 +2792,25 @@ class MultiscaleDecompDialog(QDialog):
         if self._closing:
             return
         self._end_action()
-        QMessageBox.critical(self, "Multiscale Decomposition",
-                             f"Failed to compute the multiscale result:\n{msg}")
+        QMessageBox.critical(self, self.tr("Multiscale Decomposition"),
+                             self.tr("Failed to compute the multiscale result:\n{0}").format(msg))
 
     def _send_detail_to_new_doc(self):
-        self._start_action("send", "Creating new document from multiscale result…")
+        self._start_action("send", self.tr("Creating new document from multiscale result…"))
 
     def _finish_send(self, out_final: np.ndarray):
         dm = self._get_doc_manager()
         if dm is None:
-            QMessageBox.warning(self, "Multiscale Decomposition",
-                                "No DocManager available to create a new document.")
+            QMessageBox.warning(self, self.tr("Multiscale Decomposition"),
+                                self.tr("No DocManager available to create a new document."))
             return
         title = "Multiscale Result"
         meta = self._build_new_doc_metadata(title, out_final)
         try:
             dm.create_document(out_final, metadata=meta, name=title)
         except Exception as e:
-            QMessageBox.critical(self, "Multiscale Decomposition",
-                                 f"Failed to create new document:\n{e}")
+            QMessageBox.critical(self, self.tr("Multiscale Decomposition"),
+                                 self.tr("Failed to create new document:\n{0}").format(e))
 
     def _split_layers_to_docs(self):
         """
@@ -2820,7 +2820,7 @@ class MultiscaleDecompDialog(QDialog):
               vis = 0.5 + layer*4.0
         - Residual layer is just the residual itself (0..1 clipped).
         """
-        self._start_action("split", "Splitting layers into documents…")
+        self._start_action("split", self.tr("Splitting layers into documents…"))
 
     def _finish_split(self, result):
         entries, (r_title, res_final) = result
@@ -2828,8 +2828,8 @@ class MultiscaleDecompDialog(QDialog):
         if dm is None:
             QMessageBox.warning(
                 self,
-                "Multiscale Decomposition",
-                "No DocManager available to create new documents."
+                self.tr("Multiscale Decomposition"),
+                self.tr("No DocManager available to create new documents.")
             )
             return
 
@@ -2841,8 +2841,8 @@ class MultiscaleDecompDialog(QDialog):
             except Exception as e:
                 QMessageBox.critical(
                     self,
-                    "Multiscale Decomposition",
-                    f"Failed to create document for layer {i+1}:\n{e}"
+                    self.tr("Multiscale Decomposition"),
+                    self.tr("Failed to create document for layer {0}:\n{1}").format(i+1, e)
                 )
                 # right now we stop on first hard failure.
                 return
@@ -2854,8 +2854,8 @@ class MultiscaleDecompDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(
                 self,
-                "Multiscale Decomposition",
-                f"Failed to create residual-layer document:\n{e}"
+                self.tr("Multiscale Decomposition"),
+                self.tr("Failed to create residual-layer document:\n{0}").format(e)
             )
 
 
@@ -3034,13 +3034,13 @@ class _MultiScaleDecompPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Multiscale Decomposition — Preset")
+        self.setWindowTitle(self.tr("Multiscale Decomposition — Preset"))
         init = dict(initial or {})
 
         v = QVBoxLayout(self)
 
         # ---- Global ----
-        gb = QGroupBox("Global")
+        gb = QGroupBox(self.tr("Global"))
         form = QFormLayout(gb)
 
         self.sp_layers = QSpinBox()
@@ -3053,22 +3053,22 @@ class _MultiScaleDecompPresetDialog(QDialog):
         self.sp_sigma.setSingleStep(0.1)
         self.sp_sigma.setValue(float(init.get("base_sigma", 1.0)))
 
-        self.cb_linked = QCheckBox("Linked RGB channels")
+        self.cb_linked = QCheckBox(self.tr("Linked RGB channels"))
         self.cb_linked.setChecked(bool(init.get("linked_rgb", True)))
 
-        form.addRow("Layers:", self.sp_layers)
-        form.addRow("Base sigma:", self.sp_sigma)
+        form.addRow(self.tr("Layers:"), self.sp_layers)
+        form.addRow(self.tr("Base sigma:"), self.sp_sigma)
         form.addRow("", self.cb_linked)
 
         v.addWidget(gb)
 
         # ---- Layers ----
-        gb_layers = QGroupBox("Per-Layer Settings")
+        gb_layers = QGroupBox(self.tr("Per-Layer Settings"))
         lv = QVBoxLayout(gb_layers)
 
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["On", "Layer", "Gain", "Thr (σ)", "Amount", "Denoise"]
+            [self.tr("On"), self.tr("Layer"), self.tr("Gain"), self.tr("Thr (σ)"), self.tr("Amount"), self.tr("Denoise")]
         )
 
         self.table.verticalHeader().setVisible(False)
@@ -3078,8 +3078,8 @@ class _MultiScaleDecompPresetDialog(QDialog):
 
         # ---- Buttons ----
         btns = QHBoxLayout()
-        ok = QPushButton("OK")
-        cancel = QPushButton("Cancel")
+        ok = QPushButton(self.tr("OK"))
+        cancel = QPushButton(self.tr("Cancel"))
         btns.addStretch(1)
         btns.addWidget(ok)
         btns.addWidget(cancel)

@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent, QPoint, QRect, QSize
+from PyQt6.QtCore import Qt, QTimer, QSettings, QEvent, QPoint, QRect, QSize, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
@@ -91,7 +91,7 @@ class _TrimExportWorker(QObject):
             self.finished.emit(self._out_path)
 
         except Exception as e:
-            msg = str(e) if e is not None else "Unknown error"
+            msg = str(e) if e is not None else self.tr("Unknown error")
             if "CANCELLED_BY_USER" in msg:
                 self.canceled.emit()
             else:
@@ -144,11 +144,13 @@ _IS_MAC = (_platform.system() == "Darwin")
 # On macOS Qt swaps Control<->Meta, and AppKit delivers Ctrl+LeftClick as RightButton.
 # Both physical Ctrl (MetaModifier) and Cmd (ControlModifier) are accepted by the
 # event filter, plus Shift + right-drag.
-ANCHOR_GESTURE_SHORT = "⌃⇧-drag" if _IS_MAC else "Ctrl+Shift+drag"
+# UI sites translate this with context "SerViewer".
+ANCHOR_GESTURE_SHORT = (QT_TRANSLATE_NOOP("SerViewer", "⌃⇧-drag") if _IS_MAC
+                        else QT_TRANSLATE_NOOP("SerViewer", "Ctrl+Shift+drag"))
 ANCHOR_GESTURE_LONG = (
-    "⌃⇧-drag (Control+Shift+drag), ⌘⇧-drag, or Shift + right-drag"
+    QT_TRANSLATE_NOOP("SerViewer", "⌃⇧-drag (Control+Shift+drag), ⌘⇧-drag, or Shift + right-drag")
     if _IS_MAC else
-    "Ctrl+Shift+drag"
+    QT_TRANSLATE_NOOP("SerViewer", "Ctrl+Shift+drag")
 )
 
 class SERViewer(QDialog):
@@ -164,7 +166,7 @@ class SERViewer(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Planetary Stacker Viewer")
+        self.setWindowTitle(self.tr("Planetary Stacker Viewer"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -215,8 +217,8 @@ class SERViewer(QDialog):
 
         # Top controls (left)
         top = QHBoxLayout()
-        self.btn_open = QPushButton("Open SER/AVI/Frames…", self)
-        self.btn_play = QPushButton("Play", self)
+        self.btn_open = QPushButton(self.tr("Open SER/AVI/Frames…"), self)
+        self.btn_play = QPushButton(self.tr("Play"), self)
         self.btn_play.setEnabled(False)
 
         top.addWidget(self.btn_open)
@@ -224,7 +226,7 @@ class SERViewer(QDialog):
         top.addStretch(1)
         left.addLayout(top)
 
-        self.lbl_info = QLabel("No SER/AVI/Frames loaded.", self)
+        self.lbl_info = QLabel(self.tr("No SER/AVI/Frames loaded."), self)
         self.lbl_info.setStyleSheet("color:#888;")
         self.lbl_info.setWordWrap(True)
         left.addWidget(self.lbl_info)
@@ -240,7 +242,7 @@ class SERViewer(QDialog):
         left.addLayout(scrub)
 
         # Trim Options (right)
-        trim = QGroupBox("Trim", self)
+        trim = QGroupBox(self.tr("Trim"), self)
         tform = QFormLayout(trim)
 
         self.spin_trim_start = QSpinBox(self)
@@ -248,11 +250,11 @@ class SERViewer(QDialog):
         self.spin_trim_start.setRange(0, 0)
         self.spin_trim_end.setRange(0, 0)
 
-        self.btn_save_trimmed = QPushButton("Save Trimmed SER…", self)
+        self.btn_save_trimmed = QPushButton(self.tr("Save Trimmed SER…"), self)
         self.btn_save_trimmed.setEnabled(False)
 
-        tform.addRow("Start frame", self.spin_trim_start)
-        tform.addRow("End frame", self.spin_trim_end)
+        tform.addRow(self.tr("Start frame"), self.spin_trim_start)
+        tform.addRow(self.tr("End frame"), self.spin_trim_end)
         tform.addRow("", self.btn_save_trimmed)
 
         
@@ -284,10 +286,10 @@ class SERViewer(QDialog):
 
         # Zoom buttons (NOW under preview, centered)
         zoom_row = QHBoxLayout()
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
         self.btn_zoom_1_1  = themed_toolbtn("zoom-original", "1:1")
-        self.btn_zoom_fit  = themed_toolbtn("zoom-fit-best", "Fit")
+        self.btn_zoom_fit  = themed_toolbtn("zoom-fit-best", self.tr("Fit"))
 
         zoom_row.addStretch(1)
         for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_1_1, self.btn_zoom_fit):
@@ -301,18 +303,18 @@ class SERViewer(QDialog):
         root.addLayout(right, 0)
 
         # Preview Options (right)
-        opts = QGroupBox("Preview Options", self)
+        opts = QGroupBox(self.tr("Preview Options"), self)
         form = QFormLayout(opts)
         right.addWidget(trim, 0)
-        self.chk_roi = QCheckBox("Use ROI (crop for preview)", self)
+        self.chk_roi = QCheckBox(self.tr("Use ROI (crop for preview)"), self)
 
-        self.chk_debayer = QCheckBox("Debayer (Bayer SER)", self)
+        self.chk_debayer = QCheckBox(self.tr("Debayer (Bayer SER)"), self)
         self.chk_debayer.setChecked(True)
         self.cmb_bayer = QComboBox(self)
         self.cmb_bayer.addItems(["AUTO", "RGGB", "GRBG", "GBRG", "BGGR"])
         self.cmb_bayer.setCurrentText("AUTO")  # ✅ default for raw mosaic AVI
 
-        self.chk_autostretch = QCheckBox("Autostretch preview (linked)", self)
+        self.chk_autostretch = QCheckBox(self.tr("Autostretch preview (linked)"), self)
         self.chk_autostretch.setChecked(False)
 
         # ROI controls
@@ -327,47 +329,48 @@ class SERViewer(QDialog):
         row1.setContentsMargins(0, 0, 0, 0)
         row1.addWidget(QLabel("x:", self)); row1.addWidget(self.spin_x)
         row1.addWidget(QLabel("y:", self)); row1.addWidget(self.spin_y)
-        form.addRow("ROI origin", row1)
+        form.addRow(self.tr("ROI origin"), row1)
 
         row2 = QHBoxLayout()
         row2.setContentsMargins(0, 0, 0, 0)
         row2.addWidget(QLabel("w:", self)); row2.addWidget(self.spin_w)
         row2.addWidget(QLabel("h:", self)); row2.addWidget(self.spin_h)
-        form.addRow("ROI size", row2)
+        form.addRow(self.tr("ROI size"), row2)
 
         form.addRow("", self.chk_debayer)
-        form.addRow("Bayer pattern", self.cmb_bayer)        
+        form.addRow(self.tr("Bayer pattern"), self.cmb_bayer)        
         form.addRow("", self.chk_autostretch)
 
         # --- Preview tone controls (DISPLAY ONLY) ---
         self.sld_brightness = QSlider(Qt.Orientation.Horizontal, self)
         self.sld_brightness.setRange(-100, 100)   # maps to -0.25 .. +0.25
         self.sld_brightness.setValue(0)
-        self.sld_brightness.setToolTip("Preview brightness (display only)")
+        self.sld_brightness.setToolTip(self.tr("Preview brightness (display only)"))
 
         self.sld_gamma = QSlider(Qt.Orientation.Horizontal, self)
         self.sld_gamma.setRange(30, 300)          # 0.30 .. 3.00
         self.sld_gamma.setValue(100)              # 1.00
-        self.sld_gamma.setToolTip("Preview gamma (display only)")
+        self.sld_gamma.setToolTip(self.tr("Preview gamma (display only)"))
 
-        form.addRow("Brightness", self.sld_brightness)
-        form.addRow("Gamma", self.sld_gamma)
+        form.addRow(self.tr("Brightness"), self.sld_brightness)
+        form.addRow(self.tr("Gamma"), self.sld_gamma)
 
         right.addWidget(opts, 0)
 
         # Stacking Options (right)
-        stack = QGroupBox("Stacking Options", self)
+        stack = QGroupBox(self.tr("Stacking Options"), self)
         sform = QFormLayout(stack)
 
         self.cmb_track = QComboBox(self)
         self.cmb_track.addItems(["Planetary", "Surface", "Off"])
         self.cmb_track.setCurrentText("Planetary")
         self.cmb_track.setToolTip(
-            "Planetary: tracks planets/disks by brightness threshold centroid.\n"
-            "Surface: tracks by surface features — use for the Moon, Sun, or\n"
-            "         objects filling a large portion of the frame.\n"
-            f"         Set a surface anchor with {ANCHOR_GESTURE_SHORT}.\n"
-            "Off: no tracking (stack without alignment)."
+            self.tr("Planetary: tracks planets/disks by brightness threshold centroid.\n"
+                    "Surface: tracks by surface features — use for the Moon, Sun, or\n"
+                    "         objects filling a large portion of the frame.\n"
+                    "         Set a surface anchor with {0}.\n"
+                    "Off: no tracking (stack without alignment).").format(
+                QCoreApplication.translate("SerViewer", ANCHOR_GESTURE_SHORT))
         )
 
         self.spin_keep = QDoubleSpinBox(self)
@@ -376,26 +379,27 @@ class SERViewer(QDialog):
         self.spin_keep.setSingleStep(1.0)
         self.spin_keep.setValue(20.0)
 
-        self.lbl_anchor = QLabel("Surface anchor: (not set)", self)
+        self.lbl_anchor = QLabel(self.tr("Surface anchor: (not set)"), self)
         self.lbl_anchor.setStyleSheet("color:#888;")
         self.lbl_anchor.setWordWrap(True)
         self.lbl_anchor.setToolTip(
-            "Surface tracking needs an anchor patch.\n"
-            f"{ANCHOR_GESTURE_LONG} to define it (within ROI)."
+            self.tr("Surface tracking needs an anchor patch.\n"
+                    "{0} to define it (within ROI).").format(
+                QCoreApplication.translate("SerViewer", ANCHOR_GESTURE_LONG))
         )
 
-        self.btn_stack = QPushButton("Open Stacker…", self)
+        self.btn_stack = QPushButton(self.tr("Open Stacker…"), self)
         self.btn_stack.setEnabled(False)
-        self.btn_batch = QPushButton("Batch Stack…", self)
+        self.btn_batch = QPushButton(self.tr("Batch Stack…"), self)
         self.btn_batch.setEnabled(True)
 
         # Planetary detection controls
         self.sld_simple_thresh = QSlider(Qt.Orientation.Horizontal, self)
         self.sld_simple_thresh.setRange(0, 100)
         self.sld_simple_thresh.setValue(5)
-        self.sld_simple_thresh.setToolTip(
+        self.sld_simple_thresh.setToolTip(self.tr(
             "Brightness threshold (0–1). Pixels above this are used to find the planet center."
-        )
+        ))
 
         def _on_simple_thresh_changed(v):
             self.lbl_simple_thresh.setText(f"{v/100:.2f}")
@@ -408,7 +412,7 @@ class SERViewer(QDialog):
         self.spin_simple_thresh.setSingleStep(0.01)
         self.spin_simple_thresh.setValue(0.05)
         self.spin_simple_thresh.setFixedWidth(64)
-        self.spin_simple_thresh.setToolTip("Brightness threshold (0–1)")
+        self.spin_simple_thresh.setToolTip(self.tr("Brightness threshold (0–1)"))
 
         def _on_thresh_slider(v):
             self.spin_simple_thresh.blockSignals(True)
@@ -433,17 +437,17 @@ class SERViewer(QDialog):
         w_thresh = QWidget()
         w_thresh.setLayout(row_thresh)
 
-        self.chk_planet_norm = QCheckBox("Normalize image before detection")
+        self.chk_planet_norm = QCheckBox(self.tr("Normalize image before detection"))
         self.chk_planet_norm.setChecked(False)
-        self.chk_planet_norm.setToolTip(
+        self.chk_planet_norm.setToolTip(self.tr(
             "Normalize pixel values before thresholding. "
             "Helps with very dim planets. Leave off for typical bright targets."
-        )
+        ))
         self.chk_planet_norm.toggled.connect(self._refresh)
 
-        sform.addRow("Tracking", self.cmb_track)
-        sform.addRow("Keep %", self.spin_keep)
-        sform.addRow("Threshold", w_thresh)
+        sform.addRow(self.tr("Tracking"), self.cmb_track)
+        sform.addRow(self.tr("Keep %"), self.spin_keep)
+        sform.addRow(self.tr("Threshold"), w_thresh)
         sform.addRow("", self.chk_planet_norm)
         sform.addRow("", self.lbl_anchor)
         sform.addRow("", self.btn_stack)
@@ -743,12 +747,14 @@ class SERViewer(QDialog):
     def _update_anchor_label(self):
         a = getattr(self, "_surface_anchor", None)
         if a is None:
-            self.lbl_anchor.setText(f"Surface anchor: (not set)  •  {ANCHOR_GESTURE_SHORT} to set")
+            self.lbl_anchor.setText(self.tr("Surface anchor: (not set)  •  {0} to set").format(
+                QCoreApplication.translate("SerViewer", ANCHOR_GESTURE_SHORT)))
             self.lbl_anchor.setStyleSheet("color:#888;")
         else:
             x, y, w, h = a
             self.lbl_anchor.setText(
-                f"Surface anchor: x={x}, y={y}, w={w}, h={h}  •  {ANCHOR_GESTURE_SHORT} to change"
+                self.tr("Surface anchor: x={0}, y={1}, w={2}, h={3}  •  {4} to change").format(
+                    x, y, w, h, QCoreApplication.translate("SerViewer", ANCHOR_GESTURE_SHORT))
             )
             self.lbl_anchor.setStyleSheet("color:#4a4;")
 
@@ -756,7 +762,8 @@ class SERViewer(QDialog):
         mode = self._track_mode_value()
         self._update_anchor_label()
         if mode == "surface" and self._surface_anchor is None:
-            self.lbl_anchor.setText(f"Surface anchor: REQUIRED  •  {ANCHOR_GESTURE_SHORT} to set")
+            self.lbl_anchor.setText(self.tr("Surface anchor: REQUIRED  •  {0} to set").format(
+                QCoreApplication.translate("SerViewer", ANCHOR_GESTURE_SHORT)))
             self.lbl_anchor.setStyleSheet("color:#c66;")
         self._refresh()
     
@@ -1031,7 +1038,8 @@ class SERViewer(QDialog):
             self._render_last()
             self.lbl_info.setText(
                 self.lbl_info.text()
-                + f"<br><b>Stacked (from stacker):</b> kept {diag.get('frames_kept')} / {diag.get('frames_total')}"
+                + self.tr("<br><b>Stacked (from stacker):</b> kept {0} / {1}").format(
+                    diag.get('frames_kept'), diag.get('frames_total'))
             )
         except Exception:
             pass
@@ -1277,7 +1285,7 @@ class SERViewer(QDialog):
         # Let user either:
         # - pick a single SER/AVI
         # - OR multi-select images for a sequence
-        dlg = QFileDialog(self, "Open Planetary Frames")
+        dlg = QFileDialog(self, self.tr("Open Planetary Frames"))
         if start_dir:
             dlg.setDirectory(start_dir)
         dlg.setFileMode(QFileDialog.FileMode.ExistingFiles)
@@ -1325,8 +1333,8 @@ class SERViewer(QDialog):
         open_spec = files_sorted[0] if len(files_sorted) == 1 else files_sorted
         n_frames_hint = len(files_sorted)
 
-        pd = QProgressDialog("Loading frames…", None, 0, max(1, n_frames_hint), self)
-        pd.setWindowTitle("Opening")
+        pd = QProgressDialog(self.tr("Loading frames…"), None, 0, max(1, n_frames_hint), self)
+        pd.setWindowTitle(self.tr("Opening"))
         pd.setWindowModality(Qt.WindowModality.WindowModal)
         pd.setCancelButton(None)          # non-cancelable (per spec)
         pd.setAutoClose(False)
@@ -1347,7 +1355,7 @@ class SERViewer(QDialog):
             if pd.maximum() != total:
                 pd.setMaximum(total)
             pd.setValue(int(done))
-            pd.setLabelText(f"Loading frames… {int(done)}/{total}")
+            pd.setLabelText(self.tr("Loading frames… {0}/{1}").format(int(done), total))
 
         @pyqtSlot(object)
         def _on_open_finished(src):
@@ -1373,8 +1381,8 @@ class SERViewer(QDialog):
         pd.close()
 
         if result["err"] is not None or result["src"] is None:
-            QMessageBox.critical(self, "SER Viewer",
-                                 f"Failed to open:\n{result['err'] or 'unknown error'}")
+            QMessageBox.critical(self, self.tr("SER Viewer"),
+                                 self.tr("Failed to open:\n{0}").format(result['err'] or self.tr("unknown error")))
             self.reader = None
             return
 
@@ -1389,18 +1397,19 @@ class SERViewer(QDialog):
         src_kind = getattr(m, "source_kind", "unknown")
         extra = ""
         if src_kind == "sequence":
-            extra = f" • sequence={m.frames}"
+            extra = self.tr(" • sequence={0}").format(m.frames)
         elif src_kind == "avi":
-            extra = f" • video={m.frames}"
+            extra = self.tr(" • video={0}").format(m.frames)
         elif src_kind == "ser":
-            extra = f" • frames={m.frames}"
+            extra = self.tr(" • frames={0}").format(m.frames)
         else:
-            extra = f" • frames={m.frames}"
+            extra = self.tr(" • frames={0}").format(m.frames)
 
         self.lbl_info.setText(
-            f"<b>{base}</b><br>"
-            f"{m.width}×{m.height}{extra} • depth={m.pixel_depth}-bit • format={m.color_name}"
-            + (" • timestamps" if getattr(m, "has_timestamps", False) else "")
+            self.tr("<b>{0}</b><br>"
+                    "{1}×{2}{3} • depth={4}-bit • format={5}").format(
+                base, m.width, m.height, extra, m.pixel_depth, m.color_name)
+            + (self.tr(" • timestamps") if getattr(m, "has_timestamps", False) else "")
         )
 
         self._cur = 0
@@ -1433,7 +1442,7 @@ class SERViewer(QDialog):
         self.btn_stack.setEnabled(True)  # (see note below about stacker input)
         self._surface_anchor = None
         self._update_anchor_label()
-        self.btn_play.setText("Play")
+        self.btn_play.setText(self.tr("Play"))
         self._playing = False
 
         self._refresh()
@@ -1446,8 +1455,8 @@ class SERViewer(QDialog):
                 self.cmb_bayer.setCurrentText("RGGB")
                 self.lbl_info.setText(
                     self.lbl_info.text()
-                    + "<br><span style='color:#f90;'>⚠ Bayer pattern detected — defaulting to RGGB. "
-                    "If colours look wrong, change the Bayer pattern dropdown to match your camera sensor.</span>"
+                    + self.tr("<br><span style='color:#f90;'>⚠ Bayer pattern detected — defaulting to RGGB. "
+                              "If colours look wrong, change the Bayer pattern dropdown to match your camera sensor.</span>")
                 )
                 
     def _open_batch_clicked(self):
@@ -1512,7 +1521,7 @@ class SERViewer(QDialog):
         if self.reader is None:
             return
         self._playing = not self._playing
-        self.btn_play.setText("Pause" if self._playing else "Play")
+        self.btn_play.setText(self.tr("Pause") if self._playing else self.tr("Play"))
         if self._playing:
             self._timer.start()
         else:
@@ -1631,7 +1640,7 @@ class SERViewer(QDialog):
 
         out_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Trimmed SER",
+            self.tr("Save Trimmed SER"),
             default_path,
             "SER Videos (*.ser)"
         )
@@ -1658,8 +1667,8 @@ class SERViewer(QDialog):
         self.btn_stack.setEnabled(False)
 
         #sasprogress dialog
-        pd = QProgressDialog("Exporting trimmed SER…", "Cancel", 0, total, self)
-        pd.setWindowTitle("Saving Trimmed SER")
+        pd = QProgressDialog(self.tr("Exporting trimmed SER…"), self.tr("Cancel"), 0, total, self)
+        pd.setWindowTitle(self.tr("Saving Trimmed SER"))
         pd.setWindowModality(Qt.WindowModality.WindowModal)
         pd.setAutoClose(False)
         pd.setAutoReset(False)
@@ -1689,8 +1698,8 @@ class SERViewer(QDialog):
         def _on_cancel():
             try:
                 worker.request_cancel()
-                pd.setLabelText("Canceling… (finishing current frame)")
-                pd.setCancelButtonText("Canceling…")
+                pd.setLabelText(self.tr("Canceling… (finishing current frame)"))
+                pd.setCancelButtonText(self.tr("Canceling…"))
                 pd.setEnabled(False)  # prevents repeated clicks
             except Exception:
                 pass
@@ -1702,7 +1711,7 @@ class SERViewer(QDialog):
             try:
                 pd.setMaximum(int(tot))
                 pd.setValue(int(done))
-                pd.setLabelText(f"Exporting trimmed SER… {done}/{tot}")
+                pd.setLabelText(self.tr("Exporting trimmed SER… {0}/{1}").format(done, tot))
             except Exception:
                 pass
         worker.progress.connect(_on_progress)
@@ -1731,8 +1740,9 @@ class SERViewer(QDialog):
                 # Ask whether to open the newly saved SER
                 resp = QMessageBox.question(
                     self,
-                    "Trim",
-                    f"Saved trimmed SER:\n{path}\n\nFrames: {start}..{end} ({total})\n\nOpen it now?",
+                    self.tr("Trim"),
+                    self.tr("Saved trimmed SER:\n{0}\n\nFrames: {1}..{2} ({3})\n\nOpen it now?").format(
+                        path, start, end, total),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.Yes,
                 )
@@ -1760,16 +1770,17 @@ class SERViewer(QDialog):
 
                         src_kind = getattr(m, "source_kind", "unknown")
                         if src_kind == "sequence":
-                            extra = f" • sequence={m.frames}"
+                            extra = self.tr(" • sequence={0}").format(m.frames)
                         elif src_kind == "avi":
-                            extra = f" • video={m.frames}"
+                            extra = self.tr(" • video={0}").format(m.frames)
                         else:
-                            extra = f" • frames={m.frames}"
+                            extra = self.tr(" • frames={0}").format(m.frames)
 
                         self.lbl_info.setText(
-                            f"<b>{base}</b><br>"
-                            f"{m.width}×{m.height}{extra} • depth={m.pixel_depth}-bit • format={m.color_name}"
-                            + (" • timestamps" if getattr(m, "has_timestamps", False) else "")
+                            self.tr("<b>{0}</b><br>"
+                                    "{1}×{2}{3} • depth={4}-bit • format={5}").format(
+                                base, m.width, m.height, extra, m.pixel_depth, m.color_name)
+                            + (self.tr(" • timestamps") if getattr(m, "has_timestamps", False) else "")
                         )
 
                         self._cur = 0
@@ -1800,21 +1811,22 @@ class SERViewer(QDialog):
                         self.btn_stack.setEnabled(True)
                         self._surface_anchor = None
                         self._update_anchor_label()
-                        self.btn_play.setText("Play")
+                        self.btn_play.setText(self.tr("Play"))
                         self._playing = False
 
                         self._fit_mode = True
                         self._refresh()
 
                     except Exception as e:
-                        QMessageBox.warning(self, "Trim", f"Saved, but failed to open:\n{e}")
+                        QMessageBox.warning(self, self.tr("Trim"), self.tr("Saved, but failed to open:\n{0}").format(e))
 
                 else:
                     # Just inform (optional; you can remove this if you prefer quieter UX)
                     QMessageBox.information(
                         self,
-                        "Trim",
-                        f"Saved trimmed SER:\n{path}\n\nFrames: {start}..{end} ({total})"
+                        self.tr("Trim"),
+                        self.tr("Saved trimmed SER:\n{0}\n\nFrames: {1}..{2} ({3})").format(
+                            path, start, end, total)
                     )
 
             finally:
@@ -1829,7 +1841,7 @@ class SERViewer(QDialog):
         def _on_failed(err: str):
             try:
                 _cleanup_ui()
-                QMessageBox.critical(self, "Trim", f"Failed to save trimmed SER:\n{err}")
+                QMessageBox.critical(self, self.tr("Trim"), self.tr("Failed to save trimmed SER:\n{0}").format(err))
             finally:
                 try:
                     thread.quit()
@@ -1841,7 +1853,7 @@ class SERViewer(QDialog):
         def _on_canceled():
             try:
                 _cleanup_ui()
-                QMessageBox.information(self, "Trim", "Export canceled.")
+                QMessageBox.information(self, self.tr("Trim"), self.tr("Export canceled."))
             finally:
                 try:
                     thread.quit()
@@ -1877,7 +1889,7 @@ class SERViewer(QDialog):
                 bayer_pattern=self.cmb_bayer.currentText(),
             )
         except Exception as e:
-            QMessageBox.warning(self, "SER Viewer", f"Frame read failed:\n{e}")
+            QMessageBox.warning(self, self.tr("SER Viewer"), self.tr("Frame read failed:\n{0}").format(e))
             return
 
         # Autostretch preview (linked)

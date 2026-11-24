@@ -191,8 +191,12 @@ def xtrans_linear(path: str):
 # Load + calibrate
 # ─────────────────────────────────────────────────────────────────────────────
 def load_calibrated(path, *, mono_color_mode=False, dark=None, flat=None, flats=None,
-                    debayer_method: str = "rcd"):
+                    debayer_method: str = "rcd", mosaic_fn=None):
     """Load one frame LINEAR, calibrated on the mosaic, then debayered.
+
+    mosaic_fn: called on the frame in place of the dark/flat steps, before the
+    debayer (Quick Stack's own calibration). Not called for X-Trans, which is
+    already demosaiced when it gets here.
 
     Returns (img, header, mono_key, why, notes): img (H,W) or (H,W,3)
     float32, or None with `why` when the frame can't be used. notes is a list
@@ -239,6 +243,8 @@ def load_calibrated(path, *, mono_color_mode=False, dark=None, flat=None, flats=
     if mono_color_mode and img.ndim == 2 and bayer is None and header.get("FILTER"):
         mono_key = filter_key(header)
 
+    if calibrate and mosaic_fn is not None:
+        img = mosaic_fn(img)
     if calibrate:
         if dark is not None:
             md = match_master_to_image(dark, img).astype(np.float32, copy=False)

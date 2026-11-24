@@ -42,7 +42,7 @@ import json
 import platform
 from typing import Optional, List, Dict, Any
 
-from PyQt6.QtCore import Qt, QSize, QMimeData, QPoint, QRect, QSettings
+from PyQt6.QtCore import Qt, QSize, QMimeData, QPoint, QRect, QSettings, QCoreApplication
 from PyQt6.QtGui import (
     QAction, QIcon, QPixmap, QDrag, QDragEnterEvent, QDropEvent,
     QMouseEvent, QContextMenuEvent,
@@ -205,11 +205,11 @@ class _TableIcon(QToolButton):
         self.customContextMenuRequested.connect(self._context_menu)
         # Full label goes in the tooltip; visible text is elided to fit.
         self.setToolTip(
-            f"{label}\n"
-            f"• Double-click: run\n"
-            f"• Drag onto a view: apply headlessly\n"
-            f"• Drag onto the canvas: create desktop shortcut\n"
-            f"• Right-click: options"
+            self.tr("{0}\n"
+            "• Double-click: run\n"
+            "• Drag onto a view: apply headlessly\n"
+            "• Drag onto the canvas: create desktop shortcut\n"
+            "• Right-click: options").format(label)
         )
         self._apply_label_text()
         self._press_pos: QPoint | None = None
@@ -256,11 +256,11 @@ class _TableIcon(QToolButton):
         self._apply_label_text()
         # Keep the full name available in the tooltip
         self.setToolTip(
-            f"{label}\n"
-            f"• Double-click: run\n"
-            f"• Drag onto a view: apply headlessly\n"
-            f"• Drag onto the canvas: create desktop shortcut\n"
-            f"• Right-click: options"
+            self.tr("{0}\n"
+            "• Double-click: run\n"
+            "• Drag onto a view: apply headlessly\n"
+            "• Drag onto the canvas: create desktop shortcut\n"
+            "• Right-click: options").format(label)
         )
         self._panel.save()
 
@@ -367,15 +367,15 @@ class _TableIcon(QToolButton):
         except Exception:
             _open_preset_editor_for_command = None
         if _open_preset_editor_for_command is None:
-            QMessageBox.information(self, "Edit Preset",
-                                    "No preset editor available for this command.")
+            QMessageBox.information(self, self.tr("Edit Preset"),
+                                    self.tr("No preset editor available for this command."))
             return
         try:
             new_preset = _open_preset_editor_for_command(
                 self._panel, self.command_id, self._preset or {}
             )
         except Exception as e:
-            QMessageBox.warning(self, "Edit Preset", f"Editor failed:\n{e}")
+            QMessageBox.warning(self, self.tr("Edit Preset"), self.tr("Editor failed:\n{0}").format(e))
             return
         if new_preset is not None:
             self.set_preset(new_preset)
@@ -407,7 +407,7 @@ class _TableIcon(QToolButton):
                         break
                 mgr.save_shortcuts()
         except Exception as e:
-            QMessageBox.warning(self, "Copy to Canvas", f"Failed:\n{e}")
+            QMessageBox.warning(self, self.tr("Copy to Canvas"), self.tr("Failed:\n{0}").format(e))
 
     def _delete(self):
         self._panel.remove_icon(self)
@@ -489,8 +489,8 @@ class _CategoryHeader(QLabel):
         if len(self._cat._icons) > 0:
             ret = QMessageBox.question(
                 self, self.tr("Delete Category"),
-                self.tr(f"Delete “{self._cat.name()}” and its "
-                        f"{len(self._cat._icons)} icon(s)?"),
+                self.tr("Delete “{0}” and its "
+                        "{1} icon(s)?").format(self._cat.name(), len(self._cat._icons)),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -623,7 +623,7 @@ class _Category:
 
         # Per-category "add" button — appears at the end of the body
         self._add_btn = QToolButton(self._container)
-        self._add_btn.setText(self._panel.tr("+ Add item"))
+        self._add_btn.setText(QCoreApplication.translate("IconTablePanel", "+ Add item"))
         self._add_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self._add_btn.setStyleSheet("QToolButton { color: #8fb8ff; padding: 2px 6px; }")
         self._add_btn.clicked.connect(lambda: self._panel._prompt_add_item(self))
@@ -1009,7 +1009,7 @@ class IconTablePanel(QDialog):
         if name in existing:
             ret = QMessageBox.question(
                 self, self.tr("Overwrite Table"),
-                self.tr(f"“{name}” already exists.  Overwrite it?"),
+                self.tr("“{0}” already exists.  Overwrite it?").format(name),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -1028,7 +1028,7 @@ class IconTablePanel(QDialog):
             s.sync()
         except Exception as e:
             QMessageBox.warning(self, self.tr("Save Table"),
-                                self.tr(f"Save failed:\n{e}"))
+                                self.tr("Save failed:\n{0}").format(e))
             return
 
         # Bookkeeping
@@ -1067,12 +1067,12 @@ class IconTablePanel(QDialog):
             raw = s.value(f"{self._SAVED_KEY_PREFIX}{name}", "", type=str) or ""
             if not raw:
                 QMessageBox.warning(self, self.tr("Load Table"),
-                                    self.tr(f"“{name}” could not be found."))
+                                    self.tr("“{0}” could not be found.").format(name))
                 return
             data = json.loads(raw)
         except Exception as e:
             QMessageBox.warning(self, self.tr("Load Table"),
-                                self.tr(f"Load failed:\n{e}"))
+                                self.tr("Load failed:\n{0}").format(e))
             return
 
         # Wipe current state (widgets + uid map) — but don't touch saved
@@ -1095,7 +1095,7 @@ class IconTablePanel(QDialog):
                 self._categories.append(cat)
         except Exception as e:
             QMessageBox.warning(self, self.tr("Load Table"),
-                                self.tr(f"Layout parse failed:\n{e}"))
+                                self.tr("Layout parse failed:\n{0}").format(e))
             self._categories = []
         self._rebuild()
         self.save()   # persist the newly-loaded layout as "current"
@@ -1109,7 +1109,7 @@ class IconTablePanel(QDialog):
     def _delete_saved_table(self, name: str):
         ret = QMessageBox.question(
             self, self.tr("Delete Saved Table"),
-            self.tr(f"Delete the saved table “{name}”?  This cannot be undone."),
+            self.tr("Delete the saved table “{0}”?  This cannot be undone.").format(name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1123,7 +1123,7 @@ class IconTablePanel(QDialog):
             s.sync()
         except Exception as e:
             QMessageBox.warning(self, self.tr("Delete Saved Table"),
-                                self.tr(f"Delete failed:\n{e}"))
+                                self.tr("Delete failed:\n{0}").format(e))
             return
         try:
             if hasattr(self.main_window, "_log"):
@@ -1141,10 +1141,10 @@ class IconTablePanel(QDialog):
         ret = QMessageBox.question(
             self, self.tr("Clear Table"),
             self.tr(
-                f"Remove all {total_icons} icon(s) from the current table?\n\n"
+                "Remove all {0} icon(s) from the current table?\n\n"
                 "Categories will be kept.  Saved tables are not affected — "
                 "you can restore them from Load ▾."
-            ),
+            ).format(total_icons),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

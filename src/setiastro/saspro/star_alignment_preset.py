@@ -12,7 +12,11 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QAbstractItemView, QHBoxLayout, QVBoxLayout,
     QLabel, QProgressBar, QApplication, QGroupBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QCoreApplication
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("StarAlignmentPreset", text)
 
 
 class _StarAlignmentProgress:
@@ -49,7 +53,7 @@ class _StarAlignmentProgress:
             pass
         v = QVBoxLayout(self._dlg)
         v.setContentsMargins(20, 18, 20, 18)
-        self._lbl = QLabel("Starting Star Alignment…")
+        self._lbl = QLabel(_tr("Starting Star Alignment…"))
         self._lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v.addWidget(self._lbl)
         self._bar = QProgressBar()
@@ -220,7 +224,7 @@ class StarAlignmentPresetDialog(QDialog):
     """
     def __init__(self, parent: QWidget | None = None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Star Alignment — Preset")
+        self.setWindowTitle(self.tr("Star Alignment — Preset"))
         init = dict(initial or {})
 
         self.cmb_mode = QComboBox()
@@ -228,7 +232,7 @@ class StarAlignmentPresetDialog(QDialog):
         self.cmb_mode.setCurrentText(str(init.get("ref_mode", "active")).lower())
 
         self.edt_name = QLineEdit()
-        self.edt_name.setPlaceholderText("Exact view title (case-insensitive)")
+        self.edt_name.setPlaceholderText(self.tr("Exact view title (case-insensitive)"))
         self.edt_name.setText(str(init.get("ref_name", "")))
         # Pick-from-list shortcut — the typing-only field was annoying when
         # the view's visible title has long project-specific prefixes or
@@ -238,31 +242,31 @@ class StarAlignmentPresetDialog(QDialog):
         # text that lands in the preset is the one the resolver's exact
         # match will succeed on first hop. Also auto-switches ref_mode to
         # view_name so the user doesn't have to click the combo first.
-        self.btn_pick_view = QPushButton("Pick…")
-        self.btn_pick_view.setToolTip(
+        self.btn_pick_view = QPushButton(self.tr("Pick…"))
+        self.btn_pick_view.setToolTip(self.tr(
             "Pick an open view by name. Fills the text field with the view's "
             "title and sets the reference mode to 'view_name' automatically."
-        )
+        ))
         self.btn_pick_view.clicked.connect(self._pick_view)
 
         self.edt_file = QLineEdit()
         self.edt_file.setPlaceholderText("/absolute/path/to/reference.fits|fit|xisf|tif")
         self.edt_file.setText(str(init.get("ref_file", "")))
-        self.btn_browse = QPushButton("Browse…")
+        self.btn_browse = QPushButton(self.tr("Browse…"))
         def _pick_file():
-            p, _ = QFileDialog.getOpenFileName(self, "Choose reference file", "",
+            p, _ = QFileDialog.getOpenFileName(self, self.tr("Choose reference file"), "",
                 "Images (*.fits *.fit *.xisf *.tif *.tiff *.png *.jpg);;All Files (*)")
             if p:
                 self.edt_file.setText(p)
         self.btn_browse.clicked.connect(_pick_file)
 
-        self.chk_overwrite = QCheckBox("Overwrite target view")
+        self.chk_overwrite = QCheckBox(self.tr("Overwrite target view"))
         self.chk_overwrite.setChecked(bool(init.get("overwrite", False)))
 
         self.spin_down = QSpinBox()
         self.spin_down.setRange(1, 8)
         self.spin_down.setValue(int(init.get("downsample", 2)))
-        self.spin_down.setToolTip("Downsample factor during transform solve (speed vs precision)")
+        self.spin_down.setToolTip(self.tr("Downsample factor during transform solve (speed vs precision)"))
 
         # ---- Advanced alignment settings (parity with the live Star
         # Alignment dialog, minus Trial Detect — this is a static-preset
@@ -272,111 +276,111 @@ class StarAlignmentPresetDialog(QDialog):
         # overwrite, and the rest only matter for tricky frames. ----
         self.cmb_method = QComboBox()
         self.cmb_method.addItems([
-            "Stellar (astroalign)",
-            "WCS (plate-solve reproject)",
-            "WCS → Stellar refine",
+            self.tr("Stellar (astroalign)"),
+            self.tr("WCS (plate-solve reproject)"),
+            self.tr("WCS → Stellar refine"),
         ])
         _METHOD_TO_IDX = {"stellar": 0, "wcs": 1, "wcs_stellar": 2}
         self.cmb_method.setCurrentIndex(
             _METHOD_TO_IDX.get(str(init.get("method",
                 _DEFAULT_ALIGN_SETTINGS["method"])).lower(), 0)
         )
-        self.cmb_method.setToolTip(
+        self.cmb_method.setToolTip(self.tr(
             "Alignment method applied to the dropped target.\n"
             " • Stellar: fast; detects stars with astroalign.\n"
             " • WCS: reprojects via the per-frame plate solve (needs WCS\n"
             "   in BOTH reference and target headers).\n"
             " • WCS → Stellar: WCS for coarse alignment, astroalign refine on top."
-        )
+        ))
 
         self.cmb_model = QComboBox()
         self.cmb_model.addItems([
-            "Affine (fast)",
-            "Homography (projective)",
-            "Polynomial (order 3)",
-            "Polynomial (order 4)",
+            self.tr("Affine (fast)"),
+            self.tr("Homography (projective)"),
+            self.tr("Polynomial (order 3)"),
+            self.tr("Polynomial (order 4)"),
         ])
         _MODEL_TO_IDX = {"affine": 0, "homography": 1, "poly3": 2, "poly4": 3}
         self.cmb_model.setCurrentIndex(
             _MODEL_TO_IDX.get(str(init.get("model",
                 _DEFAULT_ALIGN_SETTINGS["model"])).lower(), 0)
         )
-        self.cmb_model.setToolTip(
+        self.cmb_model.setToolTip(self.tr(
             "Transform model for the final warp.\n"
             " • Affine: fast; good for well-matched optics.\n"
             " • Homography: handles perspective shear / meridian flips.\n"
             " • Polynomial 3/4: fits radial / mild field distortion."
-        )
+        ))
 
         self.spin_det_sigma = QDoubleSpinBox()
         self.spin_det_sigma.setRange(1.0, 200.0)
         self.spin_det_sigma.setDecimals(1); self.spin_det_sigma.setSingleStep(1.0)
         self.spin_det_sigma.setValue(float(init.get("det_sigma",
             _DEFAULT_ALIGN_SETTINGS["det_sigma"])))
-        self.spin_det_sigma.setToolTip(
+        self.spin_det_sigma.setToolTip(self.tr(
             "Star detection threshold (σ above background). Lower = more\n"
             "stars (may include noise). Higher = only bright stars."
-        )
+        ))
 
         self.spin_min_area = QSpinBox()
         self.spin_min_area.setRange(1, 100)
         self.spin_min_area.setValue(int(init.get("min_area",
             _DEFAULT_ALIGN_SETTINGS["min_area"])))
-        self.spin_min_area.setToolTip(
+        self.spin_min_area.setToolTip(self.tr(
             "Minimum connected-pixel area for a detection. Smaller = includes\n"
             "faint/undersampled stars; larger = rejects noise and hot pixels."
-        )
+        ))
 
         self.spin_maxcp = QSpinBox()
         self.spin_maxcp.setRange(20, 2000); self.spin_maxcp.setSingleStep(10)
         self.spin_maxcp.setValue(int(init.get("max_control_points",
             _DEFAULT_ALIGN_SETTINGS["max_control_points"])))
-        self.spin_maxcp.setToolTip(
+        self.spin_maxcp.setToolTip(self.tr(
             "Cap on matched stars (astroalign max_control_points). 250 is a\n"
             "balanced default; raise for crowded fields."
-        )
+        ))
 
         self.spin_h_reproj = QDoubleSpinBox()
         self.spin_h_reproj.setRange(0.1, 10.0); self.spin_h_reproj.setDecimals(2)
         self.spin_h_reproj.setSingleStep(0.1)
         self.spin_h_reproj.setValue(float(init.get("h_reproj",
             _DEFAULT_ALIGN_SETTINGS["h_reproj"])))
-        self.spin_h_reproj.setToolTip(
+        self.spin_h_reproj.setToolTip(self.tr(
             "RANSAC inlier threshold (px). ONLY used when Model = Homography."
-        )
+        ))
 
         self.spin_limit_stars = QSpinBox()
         self.spin_limit_stars.setRange(50, 5000); self.spin_limit_stars.setSingleStep(50)
         self.spin_limit_stars.setValue(int(init.get("limit_stars",
             _DEFAULT_ALIGN_SETTINGS["limit_stars"])))
-        self.spin_limit_stars.setToolTip(
+        self.spin_limit_stars.setToolTip(self.tr(
             "Hard cap on stars used for matching per frame. Reserved for parity\n"
             "with Stacking Suite — astroalign honours max_control_points above."
-        )
+        ))
 
         self.spin_min_fwhm = QDoubleSpinBox()
         self.spin_min_fwhm.setRange(0.1, 10.0); self.spin_min_fwhm.setDecimals(2)
         self.spin_min_fwhm.setSingleStep(0.1)
         self.spin_min_fwhm.setValue(float(init.get("min_fwhm",
             _DEFAULT_ALIGN_SETTINGS["min_fwhm"])))
-        self.spin_min_fwhm.setToolTip(
+        self.spin_min_fwhm.setToolTip(self.tr(
             "Reject detections narrower than this FWHM (filters hot pixels\n"
             "and cosmic ray hits). Parity with Stacking Suite."
-        )
+        ))
 
         self.spin_max_ellip = QDoubleSpinBox()
         self.spin_max_ellip.setRange(0.0, 1.0); self.spin_max_ellip.setDecimals(2)
         self.spin_max_ellip.setSingleStep(0.05)
         self.spin_max_ellip.setValue(float(init.get("max_ellipticity",
             _DEFAULT_ALIGN_SETTINGS["max_ellipticity"])))
-        self.spin_max_ellip.setToolTip(
+        self.spin_max_ellip.setToolTip(self.tr(
             "Reject detections more elliptical than this (1 - b/a).\n"
             "Lower = strict (rejects slightly trailed stars). Parity with\n"
             "Stacking Suite."
-        )
+        ))
 
         lay = QFormLayout(self)
-        lay.addRow("Reference mode:", self.cmb_mode)
+        lay.addRow(self.tr("Reference mode:"), self.cmb_mode)
         # View-name row: text field + "Pick…" button side by side. The HBox
         # keeps them on a single QFormLayout row with the "View name" label
         # on the left (unlike the file row's nested-QFormLayout trick, which
@@ -385,18 +389,18 @@ class StarAlignmentPresetDialog(QDialog):
         rn = QHBoxLayout(row_name); rn.setContentsMargins(0, 0, 0, 0); rn.setSpacing(6)
         rn.addWidget(self.edt_name, 1)
         rn.addWidget(self.btn_pick_view, 0)
-        lay.addRow("View name (if view_name):", row_name)
+        lay.addRow(self.tr("View name (if view_name):"), row_name)
         rowf = QWidget(); rf = QFormLayout(rowf); rf.setContentsMargins(0,0,0,0)
         rf.addRow(self.edt_file, self.btn_browse)
-        lay.addRow("File (if file):", rowf)
+        lay.addRow(self.tr("File (if file):"), rowf)
         lay.addRow(self.chk_overwrite)
-        lay.addRow("Downsample factor:", self.spin_down)
+        lay.addRow(self.tr("Downsample factor:"), self.spin_down)
 
         # Build the Advanced group as a collapsible QGroupBox and add it as
         # a full-width row (passing a single widget to QFormLayout.addRow
         # drops the label column, which is what we want here — the group's
         # title serves as the label).
-        self.grp_advanced = QGroupBox("Advanced — Alignment Settings")
+        self.grp_advanced = QGroupBox(self.tr("Advanced — Alignment Settings"))
         self.grp_advanced.setCheckable(True)
         # Opens collapsed by default so first-time preset editors don't see
         # eight knobs they don't need. Users editing a preset that already
@@ -406,15 +410,15 @@ class StarAlignmentPresetDialog(QDialog):
         _agl = QFormLayout(self.grp_advanced)
         _agl.setContentsMargins(10, 6, 10, 6)
         _agl.setVerticalSpacing(4)
-        _agl.addRow("Method:",                     self.cmb_method)
-        _agl.addRow("Model:",                      self.cmb_model)
-        _agl.addRow("Detection threshold (σ):",    self.spin_det_sigma)
-        _agl.addRow("Min area (px):",              self.spin_min_area)
-        _agl.addRow("Max control points:",         self.spin_maxcp)
-        _agl.addRow("Max stars (limit):",          self.spin_limit_stars)
-        _agl.addRow("Min FWHM (px):",              self.spin_min_fwhm)
-        _agl.addRow("Max ellipticity:",            self.spin_max_ellip)
-        _agl.addRow("Homog. RANSAC reproj (px):",  self.spin_h_reproj)
+        _agl.addRow(self.tr("Method:"),                     self.cmb_method)
+        _agl.addRow(self.tr("Model:"),                      self.cmb_model)
+        _agl.addRow(self.tr("Detection threshold (σ):"),    self.spin_det_sigma)
+        _agl.addRow(self.tr("Min area (px):"),              self.spin_min_area)
+        _agl.addRow(self.tr("Max control points:"),         self.spin_maxcp)
+        _agl.addRow(self.tr("Max stars (limit):"),          self.spin_limit_stars)
+        _agl.addRow(self.tr("Min FWHM (px):"),              self.spin_min_fwhm)
+        _agl.addRow(self.tr("Max ellipticity:"),            self.spin_max_ellip)
+        _agl.addRow(self.tr("Homog. RANSAC reproj (px):"),  self.spin_h_reproj)
         lay.addRow(self.grp_advanced)
 
         # Enable/disable Advanced fields that only apply to certain Method
@@ -493,10 +497,10 @@ class StarAlignmentPresetDialog(QDialog):
         app = _find_main_window(self)
         if app is None:
             QMessageBox.information(
-                self, "Pick View",
-                "Cannot enumerate open views from here — the preset dialog "
-                "doesn't have a path to the main window.\n\n"
-                "Type the view's exact title in the field instead."
+                self, self.tr("Pick View"),
+                self.tr("Cannot enumerate open views from here — the preset dialog "
+                        "doesn't have a path to the main window.\n\n"
+                        "Type the view's exact title in the field instead.")
             )
             return
 
@@ -504,19 +508,19 @@ class StarAlignmentPresetDialog(QDialog):
                  if d is not None and getattr(d, "image", None) is not None]
         if not views:
             QMessageBox.information(
-                self, "No Views",
-                "No open views have image data available to use as a reference.\n\n"
-                "Open an image first, then try again."
+                self, self.tr("No Views"),
+                self.tr("No open views have image data available to use as a reference.\n\n"
+                        "Open an image first, then try again.")
             )
             return
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("Pick Reference View")
+        dlg.setWindowTitle(self.tr("Pick Reference View"))
         dlg.setMinimumWidth(380)
         vb = QVBoxLayout(dlg)
-        vb.addWidget(QLabel(
+        vb.addWidget(QLabel(self.tr(
             "Select which open view should be the reference image:"
-        ))
+        )))
 
         lst = QListWidget(dlg)
         lst.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -633,8 +637,8 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
     # The splash is parented to the main window when available so modality
     # and taskbar grouping match the rest of SASpro. On a headless unit
     # test (no main window), it floats as a top-level dialog.
-    with _StarAlignmentProgress(parent=app, title="Star Alignment") as _progress:
-        _progress.phase("Loading target image…")
+    with _StarAlignmentProgress(parent=app, title=_tr("Star Alignment")) as _progress:
+        _progress.phase(_tr("Loading target image…"))
 
         # ---- resolve target image ----
         if target_doc is None or getattr(target_doc, "image", None) is None:
@@ -661,7 +665,7 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
 
         if mode == "file":
             path = pp.get("ref_file") or ""
-            _progress.phase(f"Loading reference file: {os.path.basename(path) if path else '(unset)'}")
+            _progress.phase(_tr("Loading reference file: {0}").format(os.path.basename(path) if path else _tr('(unset)')))
             if not path or not os.path.exists(path):
                 raise RuntimeError("Reference file does not exist.")
             ref, _, _, _ = load_image(path)
@@ -673,7 +677,7 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
         elif mode == "view_name":
             # NEW: resolve against visible titles (per-view overrides) w/ normalization
             raw_name = (pp.get("ref_name") or "").strip()
-            _progress.phase(f"Resolving reference view: {raw_name or '(unset)'}")
+            _progress.phase(_tr("Resolving reference view: {0}").format(raw_name or _tr('(unset)')))
             if not raw_name:
                 raise RuntimeError("Reference view name is empty.")
 
@@ -694,7 +698,7 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
             ref_name = ref_name or (_doc_display_name(ref_doc) or "Reference")
 
         else:  # "active" (default) → use the app's active subwindow doc
-            _progress.phase("Reading active view as reference…")
+            _progress.phase(_tr("Reading active view as reference…"))
             sw = getattr(app, "mdi", None).activeSubWindow() if getattr(app, "mdi", None) else None
             if sw is None:
                 raise RuntimeError("No active view to use as reference.")
@@ -719,8 +723,8 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
 
         ds = int(max(1, pp.get("downsample", 2)))
         _progress.phase(
-            f"Preparing images (ds={ds})…" if ds > 1
-            else "Preparing images (grayscale)…"
+            _tr("Preparing images (ds={0})…").format(ds) if ds > 1
+            else _tr("Preparing images (grayscale)…")
         )
         ref_g = _to_gray(ref); tgt_g = _to_gray(tgt)
         if ds > 1:
@@ -751,7 +755,7 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
         # here we do it once for the single dropped target.
         aligned = None
         if method in ("wcs", "wcs_stellar"):
-            _progress.phase("WCS: resolving plate solves…")
+            _progress.phase(_tr("WCS: resolving plate solves…"))
             try:
                 from setiastro.saspro.star_alignment import (
                     _wcs_from_header, wcs_reproject_align,
@@ -788,7 +792,7 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
                     "(or switch Method to Stellar in the preset)."
                 )
 
-            _progress.phase("WCS: reprojecting target onto reference grid…")
+            _progress.phase(_tr("WCS: reprojecting target onto reference grid…"))
             H_ref, W_ref = ref.shape[:2]
             aligned = wcs_reproject_align(
                 tgt, tgt_wcs, ref_wcs, (H_ref, W_ref),
@@ -830,10 +834,10 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
             last = None
             M = None
             for i, kw in enumerate(tries, start=1):
-                tag = "preset" if i == 1 else f"fallback {i-1}/{len(tries)-1}"
+                tag = _tr("preset") if i == 1 else _tr("fallback {0}/{1}").format(i-1, len(tries)-1)
                 _progress.phase(
-                    f"Finding transform ({tag}, σ={kw['detection_sigma']}, "
-                    f"min_area={kw['min_area']})…"
+                    _tr("Finding transform ({0}, σ={1}, "
+                        "min_area={2})…").format(tag, kw['detection_sigma'], kw['min_area'])
                 )
                 try:
                     T, _ = astroalign.find_transform(
@@ -867,7 +871,7 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
             H, W = ref_g.shape[:2]
             warp_src = aligned if (method == "wcs_stellar" and aligned is not None) else tgt
             if warp_src.ndim == 2:
-                _progress.phase("Warping target to reference grid…")
+                _progress.phase(_tr("Warping target to reference grid…"))
                 aligned = cv2.warpAffine(
                     warp_src, M, (W, H),
                     flags=cv2.INTER_LANCZOS4,
@@ -882,7 +886,7 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
                              else [f"ch{i}" for i in range(warp_src.shape[2])])
                 for i in range(warp_src.shape[2]):
                     label = ch_labels[i] if i < len(ch_labels) else f"ch{i}"
-                    _progress.phase(f"Warping target ({label}) to reference grid…")
+                    _progress.phase(_tr("Warping target ({0}) to reference grid…").format(label))
                     planes.append(cv2.warpAffine(
                         warp_src[..., i], M, (W, H),
                         flags=cv2.INTER_LANCZOS4,
@@ -899,7 +903,7 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
         # ---- write back (overwrite or new view) ----
         overwrite = bool(pp.get("overwrite", False))
         if overwrite:
-            _progress.phase(f"Writing back → {ref_name} (overwriting target view)…")
+            _progress.phase(_tr("Writing back → {0} (overwriting target view)…").format(ref_name))
             if hasattr(target_doc, "set_image"):
                 target_doc.set_image(aligned, step_name=f"Star Alignment → {ref_name}")
             else:
@@ -910,7 +914,7 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
             except Exception:
                 pass
         else:
-            _progress.phase(f"Opening new view → {ref_name}…")
+            _progress.phase(_tr("Opening new view → {0}…").format(ref_name))
             dm = getattr(app, "docman", None) or getattr(app, "doc_manager", None)
             if dm is None:
                 raise RuntimeError("Document manager not available.")

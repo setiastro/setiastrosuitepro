@@ -24,6 +24,7 @@ from itertools import combinations
 from typing import Optional, List, Tuple, Dict, Any, Callable
 from setiastro.saspro.help_support import make_help_button
 import numpy as np
+from PyQt6.QtCore import QCoreApplication
 
 try:
     import cv2
@@ -56,6 +57,10 @@ from setiastro.saspro.ser_stacker import (
     _quality_score,               # per-tile sharpness/feature richness
     _downsample_mono01,           # mono + downsample helper
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("SurfaceMosaic", text)
 
 
 # ===========================================================================
@@ -1054,13 +1059,13 @@ def build_overlap_graph(tiles: List[Tile], cfg: SurfaceMosaicConfig,
                     results[idx] = got
                     done += 1
                     if progress_cb:
-                        progress_cb(done, len(combos), "Matching tiles")
+                        progress_cb(done, len(combos), _tr("Matching tiles"))
         else:
             for item in enumerate(combos):
                 idx, got = match_job(item)
                 results[idx] = got
                 if progress_cb:
-                    progress_cb(idx + 1, len(combos), "Matching tiles")
+                    progress_cb(idx + 1, len(combos), _tr("Matching tiles"))
     finally:
         try:
             if old_threads is not None:
@@ -1081,7 +1086,7 @@ def build_overlap_graph(tiles: List[Tile], cfg: SurfaceMosaicConfig,
         pairs.extend(_limb_edges(tiles, cfg, have))
 
     if progress_cb:
-        progress_cb(len(combos), len(combos), "Matching tiles")
+        progress_cb(len(combos), len(combos), _tr("Matching tiles"))
     return pairs
 
 
@@ -1908,12 +1913,12 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
                     prewarped[k] = fut.result()
                     done += 1
                     if progress_cb:
-                        progress_cb(done, len(order), "Warping tiles")
+                        progress_cb(done, len(order), _tr("Warping tiles"))
         else:
             for i, k in enumerate(order):
                 prewarped[k] = _prewarp_tile(tiles[k], cfg, ox, oy, cw, ch, want_color)
                 if progress_cb:
-                    progress_cb(i + 1, len(order), "Warping tiles")
+                    progress_cb(i + 1, len(order), _tr("Warping tiles"))
     finally:
         try:
             if old_threads is not None:
@@ -1926,7 +1931,7 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
     try:
         for step, k in enumerate(order):
             if progress_cb:
-                progress_cb(step, len(order), "Compositing")
+                progress_cb(step, len(order), _tr("Compositing"))
             pw = prewarped.get(k)
             prewarped[k] = None
             if pw is None:
@@ -2009,7 +2014,7 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
             mosaic = mosaic[:, :, 0]
 
     if progress_cb:
-        progress_cb(len(order), len(order), "Compositing")
+        progress_cb(len(order), len(order), _tr("Compositing"))
 
     return MosaicResult(image=mosaic, coverage=coverage, tiles=tiles,
                         pairs=[], origin=(ox, oy))
@@ -2030,10 +2035,10 @@ def run_surface_mosaic(tiles: List[Tile], cfg: Optional[SurfaceMosaicConfig] = N
         if progress_cb:
             progress_cb(a, b, label)
 
-    _phase(0, 1, "Detecting overlaps")
+    _phase(0, 1, _tr("Detecting overlaps"))
     pairs = build_overlap_graph(tiles, cfg, progress_cb=progress_cb)
 
-    _phase(0, 1, "Solving global placement")
+    _phase(0, 1, _tr("Solving global placement"))
     unplaced = global_bundle_adjust(tiles, pairs, cfg)
     unplaced_set = set(unplaced)
     placed = [t for i, t in enumerate(tiles) if i not in unplaced_set]
@@ -2045,7 +2050,7 @@ def run_surface_mosaic(tiles: List[Tile], cfg: Optional[SurfaceMosaicConfig] = N
             "mosaic was produced. This usually means too little overlap or too "
             "little structure (poor seeing). Try more overlap or sharper panels.")
 
-    _phase(0, 1, "Equalising brightness")
+    _phase(0, 1, _tr("Equalising brightness"))
     # pairs index into the full tile list; unplaced tiles appear in no pair, so
     # running on `tiles` is correct — but they're excluded from the radial model
     # since they have no valid pose
@@ -2131,7 +2136,7 @@ if _HAVE_QT:
             if res is None or not tiles:
                 p.setPen(faint)
                 p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                           "Run a mosaic to see the tile layout")
+                           self.tr("Run a mosaic to see the tile layout"))
                 p.end()
                 return
 
@@ -2192,7 +2197,7 @@ if _HAVE_QT:
                 p.setBrush(QBrush(QColor(r, g, b)))
                 p.setPen(QPen(QColor(255, 255, 255, 210), 1))
                 p.drawEllipse(QPointF(*ctr), 3.5, 3.5)
-                name = (tiles[i].name or f"tile {i}")
+                name = (tiles[i].name or self.tr("tile {0}").format(i))
                 if len(name) > 18:
                     name = name[:17] + "…"
                 if tiles[i].idx == anchor:
@@ -2202,8 +2207,9 @@ if _HAVE_QT:
 
             # header
             p.setPen(faint)
-            p.drawText(8, 16, f"Tile layout — {len(tiles)} tiles, "
-                              f"{len(getattr(res, 'pairs', None) or [])} overlaps")
+            p.drawText(8, 16, self.tr("Tile layout — {0} tiles, "
+                                      "{1} overlaps").format(
+                len(tiles), len(getattr(res, 'pairs', None) or [])))
             p.end()
 
 
@@ -2237,7 +2243,7 @@ if _HAVE_QT:
         """
         def __init__(self, doc_manager=None, parent=None):
             super().__init__(parent)
-            self.setWindowTitle("Surface Mosaic (Lunar / Solar / Planetary)")
+            self.setWindowTitle(self.tr("Surface Mosaic (Lunar / Solar / Planetary)"))
             self.doc_manager = doc_manager
             self._worker: Optional[SurfaceMosaicWorker] = None
             self._views: List[Tuple[str, Any]] = []
@@ -2271,17 +2277,17 @@ if _HAVE_QT:
 
             # ---- left column: view selection + options + run ----
             left = QVBoxLayout()
-            left.addWidget(QLabel("Select the open views to mosaic (finished per-panel stacks):"))
+            left.addWidget(QLabel(self.tr("Select the open views to mosaic (finished per-panel stacks):")))
 
             self.view_list = QListWidget()
             self.view_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
             left.addWidget(self.view_list, 1)
 
             btn_row = QHBoxLayout()
-            self.btn_refresh = QPushButton("Refresh views")
+            self.btn_refresh = QPushButton(self.tr("Refresh views"))
             self.btn_refresh.clicked.connect(self.refresh_views)
             btn_row.addWidget(self.btn_refresh)
-            self.btn_selectall = QPushButton("Select all")
+            self.btn_selectall = QPushButton(self.tr("Select all"))
             self.btn_selectall.clicked.connect(self._toggle_select_all)
             btn_row.addWidget(self.btn_selectall)
             btn_row.addStretch(1)
@@ -2290,20 +2296,20 @@ if _HAVE_QT:
             self.view_list.itemChanged.connect(self._update_selectall_label)
 
             opt_row = QHBoxLayout()
-            self.chk_rotation = QCheckBox("Solve rotation")
+            self.chk_rotation = QCheckBox(self.tr("Solve rotation"))
             self.chk_rotation.setChecked(False)
-            self.chk_photo = QCheckBox("Equalise brightness")
+            self.chk_photo = QCheckBox(self.tr("Equalise brightness"))
             self.chk_photo.setChecked(True)
-            self.chk_localwarp = QCheckBox("Local seam warp")
+            self.chk_localwarp = QCheckBox(self.tr("Local seam warp"))
             self.chk_localwarp.setChecked(True)
             opt_row.addWidget(self.chk_rotation)
             opt_row.addWidget(self.chk_photo)
             opt_row.addWidget(self.chk_localwarp)
             opt_row.addStretch(1)
-            opt_row.addWidget(QLabel("Blend Type:"))
+            opt_row.addWidget(QLabel(self.tr("Blend Type:")))
             self.cmb_blend = QComboBox()
             # display label -> internal cfg.blend key
-            self.cmb_blend.addItem("Feather", "feather")
+            self.cmb_blend.addItem(self.tr("Feather"), "feather")
             self.cmb_blend.addItem("MultiBandBlender", "multiband")
             opt_row.addWidget(self.cmb_blend)
             left.addLayout(opt_row)
@@ -2316,19 +2322,19 @@ if _HAVE_QT:
             left.addWidget(self.status)
 
             run_row = QHBoxLayout()
-            self.btn_advanced = QPushButton("Advanced…")
+            self.btn_advanced = QPushButton(self.tr("Advanced…"))
             self.btn_advanced.clicked.connect(self._open_advanced)
             run_row.addWidget(self.btn_advanced)
             run_row.addStretch(1)
             run_row.addWidget(make_help_button("surface_mosaic", self))
-            self.btn_run = QPushButton("Build Mosaic")
+            self.btn_run = QPushButton(self.tr("Build Mosaic"))
             self.btn_run.clicked.connect(self._on_run)
             run_row.addWidget(self.btn_run)
             left.addLayout(run_row)
 
             # ---- right column: tile layout overview ----
             right = QVBoxLayout()
-            right.addWidget(QLabel("Tile layout:"))
+            right.addWidget(QLabel(self.tr("Tile layout:")))
             self.layout_view = TileLayoutView()
             self.layout_view.setMinimumWidth(320)
             right.addWidget(self.layout_view, 1)
@@ -2355,7 +2361,7 @@ if _HAVE_QT:
                 it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 it.setCheckState(Qt.CheckState.Unchecked)
                 self.view_list.addItem(it)
-            self.status.setText(f"{len(self._views)} open view(s).")
+            self.status.setText(self.tr("{0} open view(s).").format(len(self._views)))
             self._update_selectall_label()
 
         def _checked_count(self) -> int:
@@ -2377,7 +2383,7 @@ if _HAVE_QT:
         def _update_selectall_label(self, *_):
             n = self.view_list.count()
             all_checked = (n > 0 and self._checked_count() == n)
-            self.btn_selectall.setText("Select none" if all_checked else "Select all")
+            self.btn_selectall.setText(self.tr("Select none") if all_checked else self.tr("Select all"))
             self.btn_selectall.setEnabled(n > 0)
 
         def _selected_views(self) -> List[Tuple[str, Any]]:
@@ -2401,26 +2407,26 @@ if _HAVE_QT:
         # ---- advanced parameters ----
         def _open_advanced(self):
             dlg = QDialog(self)
-            dlg.setWindowTitle("Advanced — Surface Mosaic")
+            dlg.setWindowTitle(self.tr("Advanced — Surface Mosaic"))
             v = QVBoxLayout(dlg)
 
             # matching enhancement (the soft-data fix)
             _MAXL = 8
-            gb_match = QGroupBox("Matching enhancement (soft / unsharpened stacks)")
+            gb_match = QGroupBox(self.tr("Matching enhancement (soft / unsharpened stacks)"))
             fm = QFormLayout(gb_match)
-            chk_enh = QCheckBox("Enable structure boost for matching")
+            chk_enh = QCheckBox(self.tr("Enable structure boost for matching"))
             chk_enh.setChecked(bool(self._adv["enhance_matching"]))
             fm.addRow(chk_enh)
             sp_layers = QSpinBox(); sp_layers.setRange(2, _MAXL)
             sp_layers.setValue(int(self._adv["match_msd_layers"]))
-            fm.addRow("Decomposition layers:", sp_layers)
+            fm.addRow(self.tr("Decomposition layers:"), sp_layers)
 
             gains0 = list(self._adv["match_msd_gains"])
             gain_spins = []
             for i in range(_MAXL):
                 sp = QDoubleSpinBox(); sp.setRange(0.0, 30.0); sp.setSingleStep(0.5)
                 sp.setValue(float(gains0[i]) if i < len(gains0) else 1.0)
-                fm.addRow(f"Layer {i + 1} gain ({2 ** i}px):", sp)
+                fm.addRow(self.tr("Layer {0} gain ({1}px):").format(i + 1, 2 ** i), sp)
                 gain_spins.append(sp)
 
             def _update_layer_rows():
@@ -2437,69 +2443,69 @@ if _HAVE_QT:
             v.addWidget(gb_match)
 
             # matching robustness
-            gb_reg = QGroupBox("Registration")
+            gb_reg = QGroupBox(self.tr("Registration"))
             fr = QFormLayout(gb_reg)
             sp_orb = QSpinBox(); sp_orb.setRange(500, 20000); sp_orb.setSingleStep(500)
             sp_orb.setValue(int(self._adv["orb_features"]))
-            fr.addRow("ORB features:", sp_orb)
+            fr.addRow(self.tr("ORB features:"), sp_orb)
             sp_fmax = QSpinBox(); sp_fmax.setRange(400, 8000); sp_fmax.setSingleStep(100)
             sp_fmax.setValue(int(self._adv["feature_max_dim"]))
-            fr.addRow("Feature detect max dim (px):", sp_fmax)
+            fr.addRow(self.tr("Feature detect max dim (px):"), sp_fmax)
             sp_lowe = QDoubleSpinBox(); sp_lowe.setRange(0.5, 0.95); sp_lowe.setSingleStep(0.05)
             sp_lowe.setValue(float(self._adv["lowe_ratio"]))
-            fr.addRow("Lowe ratio (higher = looser):", sp_lowe)
+            fr.addRow(self.tr("Lowe ratio (higher = looser):"), sp_lowe)
             sp_inl = QSpinBox(); sp_inl.setRange(4, 200)
             sp_inl.setValue(int(self._adv["min_inliers"]))
-            fr.addRow("Min inliers:", sp_inl)
+            fr.addRow(self.tr("Min inliers:"), sp_inl)
             sp_ran = QDoubleSpinBox(); sp_ran.setRange(0.5, 10.0); sp_ran.setSingleStep(0.5)
             sp_ran.setValue(float(self._adv["ransac_thresh"]))
-            fr.addRow("RANSAC threshold (px):", sp_ran)
+            fr.addRow(self.tr("RANSAC threshold (px):"), sp_ran)
             sp_ovl = QSpinBox(); sp_ovl.setRange(8, 512); sp_ovl.setSingleStep(8)
             sp_ovl.setValue(int(self._adv["min_overlap_px"]))
-            fr.addRow("Min overlap for refine (px):", sp_ovl)
+            fr.addRow(self.tr("Min overlap for refine (px):"), sp_ovl)
             sp_ncc = QDoubleSpinBox(); sp_ncc.setRange(0.0, 0.9); sp_ncc.setSingleStep(0.05)
             sp_ncc.setValue(float(self._adv["min_overlap_ncc"]))
-            fr.addRow("Min overlap NCC (reject ghosts):", sp_ncc)
-            chk_sift = QCheckBox("SIFT feature fallback (soft texture)")
+            fr.addRow(self.tr("Min overlap NCC (reject ghosts):"), sp_ncc)
+            chk_sift = QCheckBox(self.tr("SIFT feature fallback (soft texture)"))
             chk_sift.setChecked(bool(self._adv["sift_fallback"]))
             fr.addRow(chk_sift)
-            chk_pc = QCheckBox("Correlation-search fallback (no features)")
+            chk_pc = QCheckBox(self.tr("Correlation-search fallback (no features)"))
             chk_pc.setChecked(bool(self._adv["phasecorr_fallback"]))
             fr.addRow(chk_pc)
-            chk_limb = QCheckBox("Limb fallback (align disk edge; rotation off only)")
+            chk_limb = QCheckBox(self.tr("Limb fallback (align disk edge; rotation off only)"))
             chk_limb.setChecked(bool(self._adv["limb_fallback"]))
             fr.addRow(chk_limb)
             v.addWidget(gb_reg)
 
             # seam / local warp
-            gb_seam = QGroupBox("Seam / local warp")
+            gb_seam = QGroupBox(self.tr("Seam / local warp"))
             fs = QFormLayout(gb_seam)
             sp_lwms = QDoubleSpinBox(); sp_lwms.setRange(0.0, 5.0); sp_lwms.setSingleStep(0.1)
             sp_lwms.setValue(float(self._adv["local_warp_min_shift"]))
-            fs.addRow("Local-warp min shift (px):", sp_lwms)
+            fs.addRow(self.tr("Local-warp min shift (px):"), sp_lwms)
             v.addWidget(gb_seam)
 
             # brightness / blending
-            gb_bl = QGroupBox("Brightness / Blending")
+            gb_bl = QGroupBox(self.tr("Brightness / Blending"))
             fb = QFormLayout(gb_bl)
             sp_bands = QSpinBox(); sp_bands.setRange(1, 10)
             sp_bands.setValue(int(self._adv["multiband_bands"]))
-            fb.addRow("Multiband bands:", sp_bands)
-            chk_radial = QCheckBox("Radial disk brightness model (auto when limb found)")
+            fb.addRow(self.tr("Multiband bands:"), sp_bands)
+            chk_radial = QCheckBox(self.tr("Radial disk brightness model (auto when limb found)"))
             chk_radial.setChecked(bool(self._adv["radial_model"]))
             fb.addRow(chk_radial)
-            chk_grad = QCheckBox("Per-tile gradient surface fit (match panel gradients)")
+            chk_grad = QCheckBox(self.tr("Per-tile gradient surface fit (match panel gradients)"))
             chk_grad.setChecked(bool(self._adv["gradient_fit"]))
             fb.addRow(chk_grad)
             v.addWidget(gb_bl)
 
             # danger zone
-            gb_danger = QGroupBox("Don't touch unless you know what you're doing")
+            gb_danger = QGroupBox(self.tr("Don't touch unless you know what you're doing"))
             fd = QFormLayout(gb_danger)
             sp_ap = QSpinBox(); sp_ap.setRange(16, 256); sp_ap.setSingleStep(8)
             sp_ap.setValue(int(self._adv["ap_size"]))
-            fd.addRow("Seam-warp patch size (px):", sp_ap)
-            chk_qseam = QCheckBox("Quality-weighted seam (sharper tile wins)")
+            fd.addRow(self.tr("Seam-warp patch size (px):"), sp_ap)
+            chk_qseam = QCheckBox(self.tr("Quality-weighted seam (sharper tile wins)"))
             chk_qseam.setChecked(bool(self._adv["quality_weighted_seam"]))
             fd.addRow(chk_qseam)
             v.addWidget(gb_danger)
@@ -2567,15 +2573,15 @@ if _HAVE_QT:
         def _on_run(self):
             sel = self._selected_views()
             if len(sel) < 2:
-                QMessageBox.warning(self, "Pick tiles", "Select at least two views.")
+                QMessageBox.warning(self, self.tr("Pick tiles"), self.tr("Select at least two views."))
                 return
             tiles = tiles_from_selection(sel)
             if len(tiles) < 2:
-                QMessageBox.warning(self, "No images", "Selected views had no images.")
+                QMessageBox.warning(self, self.tr("No images"), self.tr("Selected views had no images."))
                 return
 
             self.btn_run.setEnabled(False)
-            self.status.setText("Working…")
+            self.status.setText(self.tr("Working…"))
             self.layout_view.clear()
             self._worker = SurfaceMosaicWorker(tiles, self._cfg_from_ui())
             self._worker.progress.connect(self._on_progress)
@@ -2596,24 +2602,24 @@ if _HAVE_QT:
                 push_mosaic_to_view(result.image, title="Surface Mosaic",
                                     doc_manager=self.doc_manager)
                 if unplaced:
-                    self.status.setText(f"Mosaic opened — {len(unplaced)} tile(s) excluded (no match).")
+                    self.status.setText(self.tr("Mosaic opened — {0} tile(s) excluded (no match).").format(len(unplaced)))
                     names = "\n".join(f"  • {n}" for n in unplaced)
                     QMessageBox.warning(
-                        self, "Some tiles could not be matched",
-                        "These tiles didn't share a reliable overlap with the rest and were "
-                        "left out of the mosaic:\n\n" + names +
-                        "\n\nThis usually means too little overlap or too little structure "
-                        "(poor seeing). Try more overlap, sharper panels, or the fallback / "
-                        "matching-boost options in Advanced.")
+                        self, self.tr("Some tiles could not be matched"),
+                        self.tr("These tiles didn't share a reliable overlap with the rest and were "
+                                "left out of the mosaic:\n\n{0}"
+                                "\n\nThis usually means too little overlap or too little structure "
+                                "(poor seeing). Try more overlap, sharper panels, or the fallback / "
+                                "matching-boost options in Advanced.").format(names))
                 else:
-                    self.status.setText("Mosaic opened in a new view.")
+                    self.status.setText(self.tr("Mosaic opened in a new view."))
             except Exception as e:
-                QMessageBox.critical(self, "Open failed", str(e))
-                self.status.setText("Mosaic built, but couldn't open a view.")
+                QMessageBox.critical(self, self.tr("Open failed"), str(e))
+                self.status.setText(self.tr("Mosaic built, but couldn't open a view."))
             self._worker = None
 
         def _on_fail(self, msg: str):
             self.btn_run.setEnabled(True)
-            self.status.setText("Failed.")
-            QMessageBox.critical(self, "Mosaic failed", msg)
+            self.status.setText(self.tr("Failed."))
+            QMessageBox.critical(self, self.tr("Mosaic failed"), msg)
             self._worker = None

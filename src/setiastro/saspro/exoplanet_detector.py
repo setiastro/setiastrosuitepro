@@ -565,8 +565,8 @@ def _rescale_header_for_binning(hdr, bin_factor: int = 2):
     straight off the file describes the unbinned frame. plate_solver reads
     it for the pixel-scale hint it cannot solve without
     (_estimate_scale_arcsec_from_header: WCS/CD, then CDELT, then
-    PIXSCALE-style keys, then XPIXSZ * XBINNING / FOCALLEN), so uncorrected
-    it is told the scale is half what it really is.
+    PIXSCALE-style keys, then XPIXSZ / FOCALLEN), so uncorrected it is told
+    the scale is half what it really is.
 
     What changes, and why:
 
@@ -578,10 +578,14 @@ def _rescale_header_for_binning(hdr, bin_factor: int = 2):
       CD, CDELT    x b   one binned pixel spans b unbinned ones.
       PIXSCALE,
       SECPIX, ...  x b   the same statement, made directly in arcsec/px.
+      XPIXSZ,
+      YPIXSZ       x b   the size of one pixel of the image as it is; the
+                         solver uses it as written (it already includes any
+                         camera binning) and computes XPIXSZ / FOCALLEN.
       XBINNING,
-      YBINNING     x b   this is where the solver expects a binning factor
-                         to live: it computes XPIXSZ * XBINNING / FOCALLEN.
-                         Scaling XPIXSZ as well would square the correction.
+      YBINNING     x b   the solver multiplies only the native PIXSIZE1/2 by
+                         these, so they must grow too for a header that has
+                         PIXSIZE1 and no XPIXSZ.
 
     SIP is dropped rather than rescaled. Those coefficients carry units of
     unbinned pixels to the (p+q)th power, so a correct rescale is
@@ -605,7 +609,7 @@ def _rescale_header_for_binning(hdr, bin_factor: int = 2):
 
     for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2", "CDELT1", "CDELT2",
               "PIXSCALE", "SECPIX", "SECPIX1", "SECPIX2",
-              "SCALE", "PLATESCL", "PLTSCALE"):
+              "SCALE", "PLATESCL", "PLTSCALE", "XPIXSZ", "YPIXSZ"):
         if k in out:
             try:
                 out[k] = float(out[k]) * b
@@ -974,19 +978,19 @@ class ReferenceOverlayDialog(QDialog):
 
         btns = QHBoxLayout()
 
-        self.zoom_in_btn = QPushButton("Zoom In")
+        self.zoom_in_btn = QPushButton(self.tr("Zoom In"))
         self.zoom_in_btn.clicked.connect(lambda: self.view.scale(1.2, 1.2))
         btns.addWidget(self.zoom_in_btn)
 
-        self.zoom_out_btn = QPushButton("Zoom Out")
+        self.zoom_out_btn = QPushButton(self.tr("Zoom Out"))
         self.zoom_out_btn.clicked.connect(lambda: self.view.scale(1/1.2, 1/1.2))
         btns.addWidget(self.zoom_out_btn)
 
-        self.reset_btn = QPushButton("Reset Zoom")
+        self.reset_btn = QPushButton(self.tr("Reset Zoom"))
         self.reset_btn.clicked.connect(self._fit_to_100pct)
         btns.addWidget(self.reset_btn)
 
-        self.fit_btn = QPushButton("Fit to Window")
+        self.fit_btn = QPushButton(self.tr("Fit to Window"))
         self.fit_btn.clicked.connect(self._fit_to_window)
         btns.addWidget(self.fit_btn)
 
@@ -1003,7 +1007,7 @@ class ReferenceOverlayDialog(QDialog):
         self.resize(800, 600)
 
     def _update_stretch_button_text(self):
-        self.stretch_btn.setText(f"Stretch: {'ON' if self.autostretch else 'OFF'}")
+        self.stretch_btn.setText(self.tr("Stretch: ON") if self.autostretch else self.tr("Stretch: OFF"))
 
     def _normalize_to_u8_linear(self, img: np.ndarray) -> np.ndarray:
         """
@@ -1325,15 +1329,15 @@ class ExoPlanetWindow(QDialog):
         mode_layout.addStretch()
         self.force_solve_cb = QCheckBox(self.tr("Force blind plate solve"))
         self.force_solve_cb.setChecked(False)
-        self.force_solve_cb.setToolTip(
+        self.force_solve_cb.setToolTip(self.tr(
             "Always run the plate solver, even if a valid WCS already exists in the file header.\n"
             "Use this when the embedded WCS is inaccurate or from an unreliable source."
-        )
+        ))
         mode_layout.addWidget(self.force_solve_cb)
         mode_layout.addStretch()   # move this addStretch() to after the checkbox        
         self.wrench_button = QToolButton()
         self.wrench_button.setIcon(QIcon(self.wrench_path))
-        self.wrench_button.setToolTip("Settings…")
+        self.wrench_button.setToolTip(self.tr("Settings…"))
         self.wrench_button.setStyleSheet("""
             QToolButton {
                 background-color: #FF4500;
@@ -1357,8 +1361,8 @@ class ExoPlanetWindow(QDialog):
             w.clicked.connect(self.load_masters)
             w.hide()
             cal_layout.addWidget(w)
-        self.dark_status_label = QLabel("Dark: ❌");  self.dark_status_label.hide()
-        self.flat_status_label = QLabel("Flat: ❌");  self.flat_status_label.hide()
+        self.dark_status_label = QLabel(self.tr("Dark: ❌"));  self.dark_status_label.hide()
+        self.flat_status_label = QLabel(self.tr("Flat: ❌"));  self.flat_status_label.hide()
         cal_layout.addWidget(self.dark_status_label)
         cal_layout.addWidget(self.flat_status_label)
         cal_layout.addStretch()
@@ -1366,7 +1370,7 @@ class ExoPlanetWindow(QDialog):
         # — Status & Progress —
         # Word-wrapped: the screening summary runs to ~1700 px on one line,
         # and an unwrapped QLabel makes that the window's minimum width.
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel(self.tr("Ready"))
         self.status_label.setWordWrap(True)
         self.status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.progress_bar = QProgressBar()
@@ -1383,15 +1387,15 @@ class ExoPlanetWindow(QDialog):
         self.calibrate_btn.clicked.connect(self.calibrate_and_align)
         self.measure_btn.     clicked.connect(self.detect_stars)
         self.detrend_combo = QComboBox()
-        self.detrend_combo.addItems(["No Detrend", "Linear", "Quadratic", "Airmass"])
-        self.detrend_combo.setToolTip(
+        self.detrend_combo.addItems([self.tr("No Detrend"), self.tr("Linear"), self.tr("Quadratic"), self.tr("Airmass")])
+        self.detrend_combo.setToolTip(self.tr(
             "Baseline removed from every differential light curve, fitted in\n"
             "TIME with 3σ clipping.  The dip search fits the same baseline\n"
             "jointly with the dip, so detection never relies on the divided\n"
             "curve.  Quadratic can absorb part of a transit that sits mid-\n"
             "night; Airmass (EXOTIC's systematics term) is the physical choice\n"
-            "and falls back to Linear when there is no airmass information.")
-        self.save_aligned_btn = QPushButton("Save Aligned Frames…")
+            "and falls back to Linear when there is no airmass information."))
+        self.save_aligned_btn = QPushButton(self.tr("Save Aligned Frames…"))
         self.save_aligned_btn.clicked.connect(self.save_aligned_frames)
 
         top_layout.addWidget(self.load_raw_btn)
@@ -1399,20 +1403,20 @@ class ExoPlanetWindow(QDialog):
         top_layout.addWidget(self.calibrate_btn)
         top_layout.addWidget(self.measure_btn)
         top_layout.addStretch()
-        self.night_label = QLabel("Night:")
+        self.night_label = QLabel(self.tr("Night:"))
         self.night_combo = QComboBox()
-        self.night_combo.addItem("All nights", None)
-        self.night_combo.setToolTip(
+        self.night_combo.addItem(self.tr("All nights"), None)
+        self.night_combo.setToolTip(self.tr(
             "Frames are grouped into observing nights (local noon to noon, per\n"
             "telescope). Pick one night to plot and screen it on its own; the\n"
             "list's σ and flags, the overlay and Fit Transit follow the choice.\n"
-            "All nights plots every night with the daytime gaps collapsed.")
+            "All nights plots every night with the daytime gaps collapsed."))
         self.night_combo.currentIndexChanged.connect(self.on_night_changed)
         self.night_label.setVisible(False)
         self.night_combo.setVisible(False)
         top_layout.addWidget(self.night_label)
         top_layout.addWidget(self.night_combo)
-        top_layout.addWidget(QLabel("Detrend:"))
+        top_layout.addWidget(QLabel(self.tr("Detrend:")))
         top_layout.addWidget(self.detrend_combo)
         top_layout.addWidget(self.save_aligned_btn)
 
@@ -1431,39 +1435,39 @@ class ExoPlanetWindow(QDialog):
             }
         """)
         middle.addWidget(self.star_list)
-        self.plot_widget = pg.PlotWidget(title="Light Curves")
+        self.plot_widget = pg.PlotWidget(title=self.tr("Light Curves"))
         self.plot_widget.addLegend()
         # Graphical (pyqtgraph, interactive) or Scientific (matplotlib,
         # publication style); the matplotlib canvas is built on first use.
         ps = self._plot_settings()
         prow = QHBoxLayout()
         prow.setContentsMargins(0, 0, 0, 0)
-        prow.addWidget(QLabel("Plot:"))
+        prow.addWidget(QLabel(self.tr("Plot:")))
         self.plot_style_combo = QComboBox()
-        self.plot_style_combo.addItem("Graphical", "graphical")
-        self.plot_style_combo.addItem("Scientific", "scientific")
-        self.plot_style_combo.setToolTip(
+        self.plot_style_combo.addItem(self.tr("Graphical"), "graphical")
+        self.plot_style_combo.addItem(self.tr("Scientific"), "scientific")
+        self.plot_style_combo.setToolTip(self.tr(
             "Graphical: the interactive dark plot.\n"
             "Scientific: publication-style figure -- every point with its\n"
             "error bar, binned points with propagated errors, BJD_TDB time\n"
             "axis, one panel per night.  Save Plot writes it as a 300 dpi\n"
-            "PNG, PDF or SVG.")
+            "PNG, PDF or SVG."))
         self.plot_units_label = QLabel("Y:")
         self.plot_units_combo = QComboBox()
-        self.plot_units_combo.addItem("Relative flux", "flux")
-        self.plot_units_combo.addItem("Δ magnitude", "mag")
-        self.plot_units_combo.setToolTip(
+        self.plot_units_combo.addItem(self.tr("Relative flux"), "flux")
+        self.plot_units_combo.addItem(self.tr("Δ magnitude"), "mag")
+        self.plot_units_combo.setToolTip(self.tr(
             "Scientific plot y axis: relative flux, or differential magnitude\n"
-            "(-2.5 log10 of the relative flux; brighter is up).")
+            "(-2.5 log10 of the relative flux; brighter is up)."))
         self.plot_bin_combo = QComboBox()
-        for lab, mins in (("No bins", 0), ("5-min bins", 5), ("10-min bins", 10),
-                          ("15-min bins", 15), ("30-min bins", 30)):
+        for lab, mins in ((self.tr("No bins"), 0), (self.tr("5-min bins"), 5), (self.tr("10-min bins"), 10),
+                          (self.tr("15-min bins"), 15), (self.tr("30-min bins"), 30)):
             self.plot_bin_combo.addItem(lab, mins)
-        self.plot_bin_combo.setToolTip(
+        self.plot_bin_combo.setToolTip(self.tr(
             "Binned points: inverse-variance weighted mean per bin.  The error\n"
             "bar is the propagated error, scaled up by the bin's own scatter\n"
-            "when the points disagree more than their error bars allow.")
-        self.save_plot_btn = QPushButton("Save Plot…")
+            "when the points disagree more than their error bars allow."))
+        self.save_plot_btn = QPushButton(self.tr("Save Plot…"))
         self.save_plot_btn.clicked.connect(self.save_plot)
         for cb, key, default in ((self.plot_style_combo, "Exoplanet/plot_style", "graphical"),
                                  (self.plot_units_combo, "Exoplanet/plot_units", "flux"),
@@ -1506,27 +1510,27 @@ class ExoPlanetWindow(QDialog):
 
         # — Bottom rows —
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Min depth / amplitude (ppt):"))
+        row1.addWidget(QLabel(self.tr("Min depth / amplitude (ppt):")))
         self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
         self.threshold_slider.setRange(0, 100)
         self.threshold_slider.setValue(5)
-        self.threshold_slider.setToolTip(
+        self.threshold_slider.setToolTip(self.tr(
             "A star is flagged when its best single dip is at least this deep\n"
             "(DIP), or its smoothed light curve spans at least this much (VAR),\n"
             "AND the signal clears the significance below.  Hot Jupiters are\n"
-            "typically 5-25 ppt deep.")
+            "typically 5-25 ppt deep."))
         row1.addWidget(self.threshold_slider)
         self.threshold_value_label = QLabel(f"{self.threshold_slider.value()} ppt")
         row1.addWidget(self.threshold_value_label)
 
         row1.addSpacing(16)
-        row1.addWidget(QLabel("Min significance (σ):"))
+        row1.addWidget(QLabel(self.tr("Min significance (σ):")))
         self.temporal_snr_spin = QDoubleSpinBox()
         self.temporal_snr_spin.setRange(0.0, 100.0)
         self.temporal_snr_spin.setSingleStep(0.5)
         self.temporal_snr_spin.setValue(7.0)
         self.temporal_snr_spin.setDecimals(1)
-        self.temporal_snr_spin.setToolTip(
+        self.temporal_snr_spin.setToolTip(self.tr(
             "DIP: signal-to-noise of the best box-shaped dip, fitted jointly\n"
             "with the detrend baseline, against white noise PLUS the red noise\n"
             "measured at the dip's own duration (Pont et al. 2006).  Correlated\n"
@@ -1535,33 +1539,33 @@ class ExoPlanetWindow(QDialog):
             "(how much more alike neighbouring points are than white noise\n"
             "allows).\n\n"
             "~7σ is the usual single-transit detection threshold."
-        )
+        ))
         self.temporal_snr_spin.valueChanged.connect(
             lambda _: self.apply_threshold(self.threshold_slider.value())
         )
         row1.addWidget(self.temporal_snr_spin)
 
         row1.addStretch()
-        self.identify_btn = QPushButton("Identify Star…")
+        self.identify_btn = QPushButton(self.tr("Identify Star…"))
         self.identify_btn.clicked.connect(self.on_identify_star)
         row1.addWidget(self.identify_btn)
-        self.find_star_btn = QPushButton("Find Star…")
-        self.find_star_btn.setToolTip(
+        self.find_star_btn = QPushButton(self.tr("Find Star…"))
+        self.find_star_btn.setToolTip(self.tr(
             "Look up a star by name (SIMBAD-resolvable — e.g. V336 Aps,\n"
             "HD 12345, TYC 9256-617-1, Gaia DR3 …). Selects the closest\n"
             "detected star in the list."
-        )
+        ))
         self.find_star_btn.clicked.connect(self.on_find_star_by_name)
         row1.addWidget(self.find_star_btn)
-        self.show_ensemble_btn = QPushButton("Show Ensemble Members")
+        self.show_ensemble_btn = QPushButton(self.tr("Show Ensemble Members"))
         self.show_ensemble_btn.clicked.connect(self.show_ensemble_members)
-        self.analyze_btn = QPushButton("Analyze Star…")
+        self.analyze_btn = QPushButton(self.tr("Analyze Star…"))
         self.analyze_btn.clicked.connect(self.on_analyze)
-        self.fit_transit_btn = QPushButton("Fit Transit…")
-        self.fit_transit_btn.setToolTip(
+        self.fit_transit_btn = QPushButton(self.tr("Fit Transit…"))
+        self.fit_transit_btn.setToolTip(self.tr(
             "EXOTIC-style transit fit of the selected star: archive priors,\n"
             "aperture and comparison-set optimisation, transit x airmass\n"
-            "model, MCMC uncertainties, BJD_TDB, AAVSO Exoplanet report.")
+            "model, MCMC uncertainties, BJD_TDB, AAVSO Exoplanet report."))
         self.fit_transit_btn.clicked.connect(self.on_fit_transit)
         self.fit_transit_btn.setEnabled(False)
 
@@ -1572,14 +1576,14 @@ class ExoPlanetWindow(QDialog):
         row2.addWidget(self.show_ensemble_btn)
         row2.addWidget(self.analyze_btn)
         row2.addWidget(self.fit_transit_btn)
-        self.fetch_tesscut_btn = QPushButton("Query TESScut Light Curve")
+        self.fetch_tesscut_btn = QPushButton(self.tr("Query TESScut Light Curve"))
         self.fetch_tesscut_btn.setEnabled(False)
         self.fetch_tesscut_btn.clicked.connect(self.query_tesscut)
         row2.addWidget(self.fetch_tesscut_btn)
-        self.export_btn = QPushButton("Export CSV/FITS")
+        self.export_btn = QPushButton(self.tr("Export CSV/FITS"))
         self.export_btn.clicked.connect(self.export_data)
         row2.addWidget(self.export_btn)
-        self.export_aavso_btn = QPushButton("Export → AAVSO")
+        self.export_aavso_btn = QPushButton(self.tr("Export → AAVSO"))
         self.export_aavso_btn.clicked.connect(self.export_to_aavso)
         row2.addWidget(self.export_aavso_btn)
 
@@ -1615,41 +1619,41 @@ class ExoPlanetWindow(QDialog):
 
     def open_settings(self):
         dlg = QDialog(self)
-        dlg.setWindowTitle("Photometry & Analysis Settings")
+        dlg.setWindowTitle(self.tr("Photometry & Analysis Settings"))
         layout = QVBoxLayout(dlg)
 
-        photo_box = QGroupBox("Photometry")
+        photo_box = QGroupBox(self.tr("Photometry"))
         fb = QFormLayout(photo_box)
         self.sep_spin = QDoubleSpinBox(); self.sep_spin.setRange(1.0, 20.0); self.sep_spin.setSingleStep(0.5); self.sep_spin.setValue(self.sep_threshold)
-        fb.addRow("SEP detection σ:", self.sep_spin)
+        fb.addRow(self.tr("SEP detection σ:"), self.sep_spin)
         self.border_spin = QDoubleSpinBox(); self.border_spin.setRange(0.0, 0.5); self.border_spin.setSingleStep(0.01); self.border_spin.setValue(self.border_fraction)
-        fb.addRow("Border fraction:", self.border_spin)
+        fb.addRow(self.tr("Border fraction:"), self.border_spin)
         self.aperture_combo = QComboBox()
-        self.aperture_combo.addItem("Auto (lowest ensemble scatter)", 0.0)
+        self.aperture_combo.addItem(self.tr("Auto (lowest ensemble scatter)"), 0.0)
         for _m in xphot.APERTURE_MULTS:
             self.aperture_combo.addItem(f"{_m:g} × FWHM", float(_m))
         _ai = self.aperture_combo.findData(float(getattr(self, "aperture_mult", 0.0) or 0.0))
         self.aperture_combo.setCurrentIndex(_ai if _ai >= 0 else 0)
-        self.aperture_combo.setToolTip(
+        self.aperture_combo.setToolTip(self.tr(
             "Every radius in the grid is measured; this picks the one used for\n"
             "the star list, plots and AAVSO export.  Auto chooses the radius\n"
             "that minimises the comparison stars' mutual scatter.  The transit\n"
-            "fit re-optimises the radius for its own target.")
-        fb.addRow("Aperture radius:", self.aperture_combo)
-        self.recenter_cb = QCheckBox("Recentre apertures on each frame")
+            "fit re-optimises the radius for its own target."))
+        fb.addRow(self.tr("Aperture radius:"), self.aperture_combo)
+        self.recenter_cb = QCheckBox(self.tr("Recentre apertures on each frame"))
         self.recenter_cb.setChecked(bool(getattr(self, "recenter_apertures", True)))
-        self.recenter_cb.setToolTip(
+        self.recenter_cb.setToolTip(self.tr(
             "Apertures always follow the field (per-frame affine from the star\n"
             "catalogues).  With this on, stars bright enough for a reliable\n"
-            "centroid are also individually recentred.")
+            "centroid are also individually recentred."))
         fb.addRow("", self.recenter_cb)
         self.egain_spin = QDoubleSpinBox()
         self.egain_spin.setRange(0.0, 100.0)
         self.egain_spin.setSingleStep(0.05)
         self.egain_spin.setDecimals(3)
         self.egain_spin.setValue(self._camera_gain_setting())
-        self.egain_spin.setSpecialValueText("Auto (from EGAIN header)")
-        self.egain_spin.setToolTip(
+        self.egain_spin.setSpecialValueText(self.tr("Auto (from EGAIN header)"))
+        self.egain_spin.setToolTip(self.tr(
             "Electrons per ADU at the gain setting you imaged with, read off "
             "the camera maker's gain chart (ZWO unity gain = 1.0). Used for "
             "the stars' own shot noise in the error bars and MERR.\n\n"
@@ -1658,15 +1662,15 @@ class ExoPlanetWindow(QDialog):
             "of bright stars.\n\n"
             "This is NOT the gain setting itself (0-500 on ZWO/QHY) — it is "
             "e-/ADU, typically 0.1-10. Set the ADC depth below too."
-        )
-        fb.addRow("Camera gain (e-/ADU):", self.egain_spin)
+        ))
+        fb.addRow(self.tr("Camera gain (e-/ADU):"), self.egain_spin)
         self.adc_combo = QComboBox()
-        self.adc_combo.addItem("Auto (from the raw frames)", "auto")
+        self.adc_combo.addItem(self.tr("Auto (from the raw frames)"), "auto")
         for _bits in (16, 14, 12, 10):
             self.adc_combo.addItem(f"{_bits}-bit", str(_bits))
         _ai = self.adc_combo.findData(str(self._adc_bits_setting()))
         self.adc_combo.setCurrentIndex(max(0, _ai))
-        self.adc_combo.setToolTip(
+        self.adc_combo.setToolTip(self.tr(
             "Bit depth of the camera's ADC in the mode you imaged in.\n\n"
             "Gain charts and EGAIN count the ADC's own steps. A 12-bit ADC "
             "is written into a 16-bit file ×16, so the gain is divided by "
@@ -1675,15 +1679,15 @@ class ExoPlanetWindow(QDialog):
             "only multiples of 16). Calibrated or registered float frames "
             "can't show it — set it here. ASI294MM: 12-bit unbinned "
             "(unlocked), 14-bit at bin 2."
-        )
-        fb.addRow("Camera ADC:", self.adc_combo)
+        ))
+        fb.addRow(self.tr("Camera ADC:"), self.adc_combo)
         self.bin_combo = QComboBox()
-        self.bin_combo.addItem("Auto (from the star size)", "auto")
+        self.bin_combo.addItem(self.tr("Auto (from the star size)"), "auto")
         for _b in (1, 2, 3, 4):
             self.bin_combo.addItem(f"{_b}×{_b}", str(_b))
         _bi = self.bin_combo.findData(str(self._bin_mode()))
         self.bin_combo.setCurrentIndex(_bi if _bi >= 0 else 0)
-        self.bin_combo.setToolTip(
+        self.bin_combo.setToolTip(self.tr(
             "Frames are averaged in b×b blocks as they load.  This does not add\n"
             "photometric signal-to-noise -- an aperture sums the same photons\n"
             "and read noise either way -- but it divides memory and time by b²,\n"
@@ -1691,58 +1695,58 @@ class ExoPlanetWindow(QDialog):
             "Auto measures the first frame: 1×1 when stars are under 3 px FWHM,\n"
             "otherwise the largest of 2-4 that keeps them at least 2.5 px.\n"
             "Raw colour mosaics always bin by an even factor.  Applies when\n"
-            "frames are next loaded.")
-        fb.addRow("Software binning:", self.bin_combo)
-        self.gpu_detect_cb = QCheckBox("Use the GPU for star detection")
+            "frames are next loaded."))
+        fb.addRow(self.tr("Software binning:"), self.bin_combo)
+        self.gpu_detect_cb = QCheckBox(self.tr("Use the GPU for star detection"))
         try:
             self.gpu_detect_cb.setChecked(bool(self._plot_settings().value(
                 "Exoplanet/gpu_detect", True, type=bool)))
         except Exception:
             self.gpu_detect_cb.setChecked(True)
-        self.gpu_detect_cb.setToolTip(
+        self.gpu_detect_cb.setToolTip(self.tr(
             "Per-frame star catalogues (field tracking, frame quality) from the\n"
             "GPU detector when a CUDA / DirectML / MPS device is available.  The\n"
             "stars to measure and the FWHM still come from SEP on the reference\n"
-            "frame.  Without a GPU, SEP runs in one worker process per core.")
+            "frame.  Without a GPU, SEP runs in one worker process per core."))
         fb.addRow("", self.gpu_detect_cb)
         layout.addWidget(photo_box)
 
-        ens_box = QGroupBox("Ensemble Normalization")
+        ens_box = QGroupBox(self.tr("Ensemble Normalization"))
         ef = QFormLayout(ens_box)
         self.ensemble_spin = QSpinBox(); self.ensemble_spin.setRange(1, 50); self.ensemble_spin.setValue(self.ensemble_k)
-        self.ensemble_spin.setToolTip(
+        self.ensemble_spin.setToolTip(self.tr(
             "Maximum number of comparison stars in the weighted ensemble.\n"
             "Candidates are the brightest unsaturated stars; each is weighted by\n"
             "1/σ² of its scatter against the others, and variables are rejected\n"
-            "iteratively before the best k are kept.")
-        ef.addRow("Max comparison stars:", self.ensemble_spin)
+            "iteratively before the best k are kept."))
+        ef.addRow(self.tr("Max comparison stars:"), self.ensemble_spin)
         layout.addWidget(ens_box)
 
-        scr_box = QGroupBox("Screening")
+        scr_box = QGroupBox(self.tr("Screening"))
         sf = QFormLayout(scr_box)
-        self.field_rel_cb = QCheckBox("Flag only stars that stand out from the field")
+        self.field_rel_cb = QCheckBox(self.tr("Flag only stars that stand out from the field"))
         self.field_rel_cb.setChecked(bool(getattr(self, "field_relative", True)))
-        self.field_rel_cb.setToolTip(
+        self.field_rel_cb.setToolTip(self.tr(
             "Each star's dip significance, von Neumann statistic and amplitude are\n"
             "compared with stars of similar brightness (median and robust spread\n"
             "within ±0.5 mag).  Systematics shared by the whole field -- seeing-\n"
             "dependent aperture loss, flat-field error, a meridian flip -- raise\n"
             "every star together; with this off they can flag the whole field.\n"
-            "The ppt and σ thresholds still apply on top.")
+            "The ppt and σ thresholds still apply on top."))
         sf.addRow("", self.field_rel_cb)
         self.field_sigma_spin = QDoubleSpinBox()
         self.field_sigma_spin.setRange(2.0, 30.0)
         self.field_sigma_spin.setSingleStep(0.5)
         self.field_sigma_spin.setValue(float(getattr(self, "field_sigma", 5.0)))
-        self.field_sigma_spin.setToolTip(
+        self.field_sigma_spin.setToolTip(self.tr(
             "How many robust σ (1.4826 × MAD) above stars of similar brightness a\n"
             "star's statistic must be.  Lower finds fainter signals and more false\n"
             "alarms; VaST's study found the best cut between ~4 and ~16 depending\n"
-            "on the statistic and the data.")
-        sf.addRow("Field outlier threshold (σ):", self.field_sigma_spin)
-        self.night_var_cb = QCheckBox("Flag night-to-night variability (long-period variables)")
+            "on the statistic and the data."))
+        sf.addRow(self.tr("Field outlier threshold (σ):"), self.field_sigma_spin)
+        self.night_var_cb = QCheckBox(self.tr("Flag night-to-night variability (long-period variables)"))
         self.night_var_cb.setChecked(self._night_check_setting())
-        self.night_var_cb.setToolTip(
+        self.night_var_cb.setToolTip(self.tr(
             "With two or more nights loaded, also flag stars whose nightly mean\n"
             "level changes well beyond the comparison stars' own night-to-night\n"
             "scatter -- Miras, semiregulars and other long-period variables.\n\n"
@@ -1750,37 +1754,37 @@ class ExoPlanetWindow(QDialog):
             "field residual that changes from night to night trips this test\n"
             "too.  On the NGC660 data 6 of the 18 stars along one edge of the\n"
             "frame were flagged this way, against 7 of the other 297.\n\n"
-            "Stars it flags are also kept out of the AAVSO comparison stars.")
+            "Stars it flags are also kept out of the AAVSO comparison stars."))
         sf.addRow("", self.night_var_cb)
         layout.addWidget(scr_box)
 
-        cds_box = QGroupBox("CDS / SIMBAD")
+        cds_box = QGroupBox(self.tr("CDS / SIMBAD"))
         cds_form = QFormLayout(cds_box)
 
         _pref, _pinned = cds_health.server_preference()
         self.cds_server_combo = QComboBox()
         self.cds_server_combo.addItem(
-            "Automatic (Strasbourg, then Harvard, then IDIA)", "")
+            self.tr("Automatic (Strasbourg, then Harvard, then IDIA)"), "")
         for _host in cds_health.MIRRORS:
             self.cds_server_combo.addItem(_host, _host)
         _i = self.cds_server_combo.findData(_pref)
         self.cds_server_combo.setCurrentIndex(_i if _i >= 0 else 0)
-        self.cds_server_combo.setToolTip(
+        self.cds_server_combo.setToolTip(self.tr(
             "Which SIMBAD mirror to try first.\n\n"
             "Harvard (simbad.harvard.edu) is the US mirror \u2014 the same "
             "machine the web UI calls simbad.cfa.harvard.edu. IDIA "
             "(simbad.idia.ac.za, South Africa) is an older copy: in November "
             "2026 its newest record was from April 2026, against October at "
             "Harvard, so it is tried last."
-        )
-        cds_form.addRow("SIMBAD mirror:", self.cds_server_combo)
+        ))
+        cds_form.addRow(self.tr("SIMBAD mirror:"), self.cds_server_combo)
 
-        self.cds_pin_cb = QCheckBox("Don't fall back to the other mirrors")
+        self.cds_pin_cb = QCheckBox(self.tr("Don't fall back to the other mirrors"))
         self.cds_pin_cb.setChecked(_pinned)
-        self.cds_pin_cb.setToolTip(
+        self.cds_pin_cb.setToolTip(self.tr(
             "If your network reaches one mirror and not the other, failing "
             "over just costs a timeout on every lookup."
-        )
+        ))
         cds_form.addRow("", self.cds_pin_cb)
 
         self.cds_vizier_combo = QComboBox()
@@ -1792,7 +1796,7 @@ class ExoPlanetWindow(QDialog):
             _vz_txt = ""
         _vz_now = _vz_txt.split("available via ", 1)[1] if "available via " in _vz_txt else ""
         self.cds_vizier_combo.addItem(
-            f"Automatic (now {_vz_now})" if _vz_now else "Automatic (fastest working mirror)", "")
+            self.tr("Automatic (now {0})").format(_vz_now) if _vz_now else self.tr("Automatic (fastest working mirror)"), "")
         for _host in cds_health.VIZIER_MIRRORS:
             self.cds_vizier_combo.addItem(_host, _host)
         # Select from the STORED PREFERENCE, never from the resolved host.
@@ -1815,7 +1819,7 @@ class ExoPlanetWindow(QDialog):
                     pass
         _vi = self.cds_vizier_combo.findData(_vz_pref) if _vz_pref else 0
         self.cds_vizier_combo.setCurrentIndex(_vi if _vi > 0 else 0)
-        self.cds_vizier_combo.setToolTip(
+        self.cds_vizier_combo.setToolTip(self.tr(
             "Which VizieR mirror serves APASS, UCAC4 and VSX -- the catalogs "
             "that supply comparison-star magnitudes for the ensemble zero "
             "point.\n\n"
@@ -1823,15 +1827,15 @@ class ExoPlanetWindow(QDialog):
             "query. A mirror picked here is tried FIRST, and every lookup "
             "still fails over to the others when it stops answering.\n\n"
             "SIMBAD lookups fall back to VSX, UCAC4 (VizieR) and Sesame name "
-            "resolution, which all run on these mirrors.")
-        cds_form.addRow("VizieR mirror (VSX, APASS):", self.cds_vizier_combo)
+            "resolution, which all run on these mirrors."))
+        cds_form.addRow(self.tr("VizieR mirror (VSX, APASS):"), self.cds_vizier_combo)
 
         self.cds_status_label = QLabel(
             cds_health.status_text() + "\n" + cds_health.vizier_status_text())
         self.cds_status_label.setWordWrap(True)
-        cds_form.addRow("Status:", self.cds_status_label)
+        cds_form.addRow(self.tr("Status:"), self.cds_status_label)
 
-        _test_btn = QPushButton("Test now")
+        _test_btn = QPushButton(self.tr("Test now"))
 
         def _test_cds():
             cds_health.set_server_preference(
@@ -1839,7 +1843,7 @@ class ExoPlanetWindow(QDialog):
                 pin=self.cds_pin_cb.isChecked(),
                 vizier=self.cds_vizier_combo.currentData() or "",
             )
-            self.cds_status_label.setText("Probing\u2026")
+            self.cds_status_label.setText(self.tr("Probing\u2026"))
             QApplication.processEvents()
             cds_health.probe(force=True)
             cds_health.vizier_probe(force=True)
@@ -1853,22 +1857,22 @@ class ExoPlanetWindow(QDialog):
 
         layout.addWidget(cds_box)
 
-        ana_box = QGroupBox("Analysis (period search)")
+        ana_box = QGroupBox(self.tr("Analysis (period search)"))
         form = QFormLayout(ana_box)
         self.ls_samp_spin = QSpinBox(); self.ls_samp_spin.setRange(1, 100); self.ls_samp_spin.setValue(self.ls_samples_per_peak)
-        form.addRow("LS samples / peak:", self.ls_samp_spin)
+        form.addRow(self.tr("LS samples / peak:"), self.ls_samp_spin)
         self.bls_min_spin = QDoubleSpinBox(); self.bls_min_spin.setRange(0.01, 10.0); self.bls_min_spin.setValue(self.bls_min_period)
-        form.addRow("BLS min period [d]:", self.bls_min_spin)
+        form.addRow(self.tr("BLS min period [d]:"), self.bls_min_spin)
         self.bls_max_spin = QDoubleSpinBox(); self.bls_max_spin.setRange(0.01, 10.0); self.bls_max_spin.setValue(self.bls_max_period)
-        form.addRow("BLS max period [d]:", self.bls_max_spin)
+        form.addRow(self.tr("BLS max period [d]:"), self.bls_max_spin)
         self.bls_nper_spin = QSpinBox(); self.bls_nper_spin.setRange(10, 20000); self.bls_nper_spin.setValue(self.bls_n_periods)
-        form.addRow("BLS # periods:", self.bls_nper_spin)
+        form.addRow(self.tr("BLS # periods:"), self.bls_nper_spin)
         self.bls_min_frac_spin = QDoubleSpinBox(); self.bls_min_frac_spin.setRange(0.0001, 1.0); self.bls_min_frac_spin.setSingleStep(0.001); self.bls_min_frac_spin.setValue(self.bls_duration_min_frac)
-        form.addRow("BLS min dur frac:", self.bls_min_frac_spin)
+        form.addRow(self.tr("BLS min dur frac:"), self.bls_min_frac_spin)
         self.bls_max_frac_spin = QDoubleSpinBox(); self.bls_max_frac_spin.setRange(0.01, 1.0); self.bls_max_frac_spin.setSingleStep(0.01); self.bls_max_frac_spin.setValue(self.bls_duration_max_frac)
-        form.addRow("BLS max dur frac:", self.bls_max_frac_spin)
+        form.addRow(self.tr("BLS max dur frac:"), self.bls_max_frac_spin)
         self.bls_ndur_spin = QSpinBox(); self.bls_ndur_spin.setRange(1, 200); self.bls_ndur_spin.setValue(self.bls_n_durations)
-        form.addRow("BLS # durations:", self.bls_ndur_spin)
+        form.addRow(self.tr("BLS # durations:"), self.bls_ndur_spin)
         layout.addWidget(ana_box)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -2081,7 +2085,7 @@ class ExoPlanetWindow(QDialog):
         if th is None:
             return
         if th.is_alive():
-            self.status_label.setText("Starting worker processes and the GPU…")
+            self.status_label.setText(self.tr("Starting worker processes and the GPU…"))
             while th.is_alive():
                 QApplication.processEvents()
                 th.join(0.05)
@@ -2190,7 +2194,7 @@ class ExoPlanetWindow(QDialog):
         n = len(paths)
         self._release_frames()
         self._start_warmup()                 # no-op if the file dialog started it
-        self.status_label.setText("Reading the first frame…")
+        self.status_label.setText(self.tr("Reading the first frame…"))
         QApplication.processEvents()
         img0 = hdr0 = None
         for p in paths[:5]:
@@ -2201,7 +2205,7 @@ class ExoPlanetWindow(QDialog):
             if img0 is not None:
                 break
         if img0 is None:
-            QMessageBox.warning(self, "Load Error", "None of the first frames could be read.")
+            QMessageBox.warning(self, self.tr("Load Error"), self.tr("None of the first frames could be read."))
             return 0
         img0 = np.asarray(img0, dtype=np.float32)
         b = self._choose_bin_factor(img0, hdr0)
@@ -2258,14 +2262,18 @@ class ExoPlanetWindow(QDialog):
                         else:
                             cats[i] = r.get("cat")
                     self.progress_bar.setValue(loaded[0])
-                    self.status_label.setText(f"Loaded {loaded[0]}/{n} frames…")
+                    self.status_label.setText(self.tr("Loaded {0}/{1} frames…").format(loaded[0], n))
                 QApplication.processEvents()
             return broken
 
-        how = f"{getattr(self, '_pool_n', n_work)} processes" if pool is not None else "threads"
-        self.status_label.setText(
-            f"Loading {n} frames — {b}×{b} software bin, {how}"
-            + (", GPU star detection" if use_gpu else "") + "…")
+        how = (self.tr("{0} processes").format(getattr(self, '_pool_n', n_work))
+               if pool is not None else self.tr("threads"))
+        if use_gpu:
+            self.status_label.setText(self.tr(
+                "Loading {0} frames — {1}×{1} software bin, {2}, GPU star detection…").format(n, b, how))
+        else:
+            self.status_label.setText(self.tr(
+                "Loading {0} frames — {1}×{1} software bin, {2}…").format(n, b, how))
         self.progress_bar.setVisible(True)
         self.progress_bar.setMaximum(n)
         self.progress_bar.setValue(0)
@@ -2323,8 +2331,8 @@ class ExoPlanetWindow(QDialog):
         self._set_frame_times(datelist)
         self.progress_bar.setVisible(False)
         if failed:
-            QMessageBox.warning(self, "Load Error",
-                                f"{len(failed)} of {n} frame(s) could not be loaded:\n"
+            QMessageBox.warning(self, self.tr("Load Error"),
+                                self.tr("{0} of {1} frame(s) could not be loaded:\n").format(len(failed), n)
                                 + "\n".join(failed[:15]) + ("\n…" if len(failed) > 15 else ""))
         return sum(im is not None for im in imgs)
 
@@ -2354,7 +2362,7 @@ class ExoPlanetWindow(QDialog):
                 means[i] = float(np.mean(_plane(i)))
         todo = [i for i in range(n) if images[i] is not None and cats[i] is None]
         if todo and self._gpu_detect_ok():
-            self.status_label.setText(f"Detecting stars on the GPU ({len(todo)} frames)…")
+            self.status_label.setText(self.tr("Detecting stars on the GPU ({0} frames)…").format(len(todo)))
             for k, i in enumerate(todo, 1):
                 cats[i] = self._gpu_catalog(_plane(i))
                 if k % 4 == 0 or k == len(todo):
@@ -2364,8 +2372,10 @@ class ExoPlanetWindow(QDialog):
         if todo:
             pool = self._get_pool(self._worker_count(len(todo), 3e8))
             self.status_label.setText(
-                f"Detecting stars (SEP) in {len(todo)} frames"
-                + (f", {getattr(self, '_pool_n', 0)} processes…" if pool is not None else "…"))
+                self.tr("Detecting stars (SEP) in {0} frames, {1} processes…").format(
+                    len(todo), getattr(self, '_pool_n', 0))
+                if pool is not None else
+                self.tr("Detecting stars (SEP) in {0} frames…").format(len(todo)))
             QApplication.processEvents()
             st = getattr(self, "_frame_store", None)
             sd = st.desc() if st is not None else None
@@ -2452,11 +2462,11 @@ class ExoPlanetWindow(QDialog):
         bds = [str(b or "") for b in (getattr(self, "_cached_bitdepths", None) or [])]
         is_int = any(b.endswith("-bit") or "unsigned" in b for b in bds if b)
         if is_int and not calibrated:
-            return ("raw frames: without a flat, dithers and meridian flips move stars across "
-                    "vignetting — calibrated (dark + flat) frames are preferred")
+            return self.tr("raw frames: without a flat, dithers and meridian flips move stars across "
+                           "vignetting — calibrated (dark + flat) frames are preferred")
         if registered:
-            return ("registered (resampled) frames work, but calibrated unregistered frames are "
-                    "preferred — the field is tracked, nothing needs resampling")
+            return self.tr("registered (resampled) frames work, but calibrated unregistered frames are "
+                           "preferred — the field is tracked, nothing needs resampling")
         return ""
 
     @staticmethod
@@ -2710,7 +2720,7 @@ class ExoPlanetWindow(QDialog):
         self._start_warmup()                 # overlaps the file dialog
         settings = QSettings()
         start_dir = settings.value("ExoPlanet/lastRawFolder", os.path.expanduser("~"), type=str)
-        paths, _ = QFileDialog.getOpenFileNames(self, "Select Raw Frames", start_dir, "FITS, TIFF or XISF (*.fit *.fits *.fts *.fz *.tif *.tiff *.xisf)")
+        paths, _ = QFileDialog.getOpenFileNames(self, self.tr("Select Raw Frames"), start_dir, "FITS, TIFF or XISF (*.fit *.fits *.fts *.fz *.tif *.tiff *.xisf)")
         if not paths: return
         settings.setValue("ExoPlanet/lastRawFolder", os.path.dirname(paths[0]))
 
@@ -2719,33 +2729,33 @@ class ExoPlanetWindow(QDialog):
         loaded = self._load_frames(paths, want_catalogs=False)
         # Raw frames are calibrated next; workers return for Measure.
         self._shutdown_pool()
-        self.status_label.setText(f"Loaded {loaded}/{len(paths)} raw frames "
-                                  f"({self.bin_factor}×{self.bin_factor} software bin)")
+        self.status_label.setText(self.tr("Loaded {0}/{1} raw frames "
+                                          "({2}×{2} software bin)").format(loaded, len(paths), self.bin_factor))
 
     def load_aligned_subs(self) -> bool:
         self._start_warmup()                 # overlaps the file dialog
         settings = QSettings()
         start_dir = settings.value("ExoPlanet/lastAlignedFolder", os.path.expanduser("~"), type=str)
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select Aligned Frames", start_dir,
+            self, self.tr("Select Aligned Frames"), start_dir,
             "FITS, TIFF or XISF (*.fit *.fits *.fts *.fz *.tif *.tiff *.xisf)"
         )
         if not paths:
-            self.status_label.setText("Load canceled.")
+            self.status_label.setText(self.tr("Load canceled."))
             return False
 
         settings.setValue("ExoPlanet/lastAlignedFolder", os.path.dirname(paths[0]))
 
         loaded = self._load_frames(paths, want_catalogs=True)
-        self.status_label.setText(f"Loaded {loaded}/{len(paths)} frames "
-                                  f"({self.bin_factor}×{self.bin_factor} software bin)")
+        self.status_label.setText(self.tr("Loaded {0}/{1} frames "
+                                          "({2}×{2} software bin)").format(loaded, len(paths), self.bin_factor))
         return loaded > 0
 
     def load_masters(self):
         settings = QSettings()
         last_master_dir = settings.value("ExoPlanet/lastMasterFolder", os.path.expanduser("~"), type=str)
         sender = self.sender()
-        dlg = QFileDialog(self, "Select Master File", last_master_dir, "FITS, TIFF or XISF (*.fit *.fits *.tif *.tiff *.xisf)")
+        dlg = QFileDialog(self, self.tr("Select Master File"), last_master_dir, "FITS, TIFF or XISF (*.fit *.fits *.tif *.tiff *.xisf)")
         dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
         if not dlg.exec(): return
         path = dlg.selectedFiles()[0]
@@ -2753,30 +2763,30 @@ class ExoPlanetWindow(QDialog):
 
         img, hdr, bit_depth, is_mono = load_image(path)
         if img is None:
-            QMessageBox.warning(self, "Load Error", f"Failed to load master file:\n{path}")
+            QMessageBox.warning(self, self.tr("Load Error"), self.tr("Failed to load master file:\n{0}").format(path))
             return
 
         img = img.astype(np.float32)
         # Kept unbinned too: the software bin is chosen when the frames load
         # (Auto), so the master is binned to match at calibration time.
-        kind = "dark" if "Dark" in sender.text() else "flat"
+        kind = "dark" if sender is self.load_darks_btn else "flat"
         self.__dict__.setdefault("_master_full", {})[kind] = img
         self.__dict__.setdefault("_master_cache", {}).clear()
         binned = self._master_binned(kind)
 
-        if "Dark" in sender.text():
+        if kind == "dark":
             if self.master_flat is not None and not self._shapes_compatible(binned, self.master_flat):
-                QMessageBox.warning(self, "Shape Mismatch", "This master dark (binned) doesn’t match your existing flat.")
+                QMessageBox.warning(self, self.tr("Shape Mismatch"), self.tr("This master dark (binned) doesn’t match your existing flat."))
                 return
             self.master_dark = binned
-            self.dark_status_label.setText("Dark: ✅")
+            self.dark_status_label.setText(self.tr("Dark: ✅"))
             self.dark_status_label.setStyleSheet("color: #00cc66; font-weight: bold;")
         else:
             if self.master_dark is not None and not self._shapes_compatible(self.master_dark, binned):
-                QMessageBox.warning(self, "Shape Mismatch", "This master flat (binned) doesn’t match your existing dark.")
+                QMessageBox.warning(self, self.tr("Shape Mismatch"), self.tr("This master flat (binned) doesn’t match your existing dark."))
                 return
             self.master_flat = binned
-            self.flat_status_label.setText("Flat: ✅")
+            self.flat_status_label.setText(self.tr("Flat: ✅"))
             self.flat_status_label.setStyleSheet("color: #00cc66; font-weight: bold;")
 
     def _try_wcs_from_header(self, hdr, plane):
@@ -2808,9 +2818,9 @@ class ExoPlanetWindow(QDialog):
 
     def calibrate_and_align(self):
         if not self._cached_images:
-            QMessageBox.warning(self, "Calibrate", "Load raw subs first.")
+            QMessageBox.warning(self, self.tr("Calibrate"), self.tr("Load raw subs first."))
             return
-        self.status_label.setText("Calibrating & aligning frames…")
+        self.status_label.setText(self.tr("Calibrating & aligning frames…"))
         self.progress_bar.setVisible(True)
         n = len(self._cached_images)
         self.progress_bar.setMaximum(n)
@@ -2851,13 +2861,13 @@ class ExoPlanetWindow(QDialog):
             QApplication.processEvents()
 
         self.progress_bar.setVisible(False)
-        self.status_label.setText("Calibration & alignment complete")
+        self.status_label.setText(self.tr("Calibration & alignment complete"))
 
     def save_aligned_frames(self):
         if not self._cached_images:
-            QMessageBox.warning(self, "Save Aligned Frames", "No images to save. Run Calibrate & Align first.")
+            QMessageBox.warning(self, self.tr("Save Aligned Frames"), self.tr("No images to save. Run Calibrate & Align first."))
             return
-        out_dir = QFileDialog.getExistingDirectory(self, "Choose Output Folder")
+        out_dir = QFileDialog.getExistingDirectory(self, self.tr("Choose Output Folder"))
         if not out_dir:
             return
         for i, orig_path in enumerate(self.image_paths):
@@ -2872,7 +2882,7 @@ class ExoPlanetWindow(QDialog):
                 img_array=img, filename=out_path, original_format=fmt, bit_depth=None,
                 original_header=hdr, is_mono=(img.ndim==2), image_meta=None, file_meta=None
             )
-        QMessageBox.information(self, "Save Complete", f"Saved {len(self._cached_images)} aligned frames to:\n{out_dir}")
+        QMessageBox.information(self, self.tr("Save Complete"), self.tr("Saved {0} aligned frames to:\n{1}").format(len(self._cached_images), out_dir))
 
     # --------------- Detection + Photometry ----------------
     def _seed_header_for_astap(self, ref_idx: int) -> fits.Header | None:
@@ -3167,13 +3177,13 @@ class ExoPlanetWindow(QDialog):
         """
         n_frames = len(self.image_paths)
         if n_frames == 0:
-            QMessageBox.warning(self, "Photometry", "Load frames first.")
+            QMessageBox.warning(self, self.tr("Photometry"), self.tr("Load frames first."))
             return
 
         # 0) ensure frames are cached (binned, with headers and saturation maps)
         if not getattr(self, "_cached_images", None) or len(self._cached_images) != n_frames:
             if self._load_frames(list(self.image_paths), want_catalogs=True) == 0:
-                QMessageBox.warning(self, "Photometry", "None of the frames could be loaded.")
+                QMessageBox.warning(self, self.tr("Photometry"), self.tr("None of the frames could be loaded."))
                 return
             n_frames = len(self.image_paths)
         if len(getattr(self, "_cached_satcoords", []) or []) != n_frames:
@@ -3183,7 +3193,7 @@ class ExoPlanetWindow(QDialog):
 
         images = self._cached_images
         if not any(im is not None for im in images):
-            QMessageBox.warning(self, "Photometry", "None of the frames could be loaded.")
+            QMessageBox.warning(self, self.tr("Photometry"), self.tr("None of the frames could be loaded."))
             return
 
         cpu_cnt = multiprocessing.cpu_count()
@@ -3192,7 +3202,7 @@ class ExoPlanetWindow(QDialog):
         # --- PASS 1: per-frame catalogues ----------------------------------
         # Made while loading when possible (GPU, or SEP in the load workers);
         # anything missing is detected here.
-        self.status_label.setText("Detecting stars…")
+        self.status_label.setText(self.tr("Detecting stars…"))
         self.progress_bar.setVisible(True)
         self.progress_bar.setMaximum(n_frames)
         self.progress_bar.setValue(0)
@@ -3207,7 +3217,7 @@ class ExoPlanetWindow(QDialog):
 
         ref_idx = max(range(n_frames), key=quality)
         if quality(ref_idx) < 0:
-            QMessageBox.warning(self, "No Stars", "No stars found in any frame.")
+            QMessageBox.warning(self, self.tr("No Stars"), self.tr("No stars found in any frame."))
             self.progress_bar.setVisible(False)
             self._shutdown_pool()
             return
@@ -3230,7 +3240,7 @@ class ExoPlanetWindow(QDialog):
         rc = cats[ref_idx]
         rc_phot, fw_scale = rc, 1.0
         if rc.get("src") == "gpu":
-            self.status_label.setText("Measuring the reference frame (SEP)…")
+            self.status_label.setText(self.tr("Measuring the reference frame (SEP)…"))
             QApplication.processEvents()
             sep_rc = self._sep_catalog(ref_idx)
             if sep_rc and sep_rc.get("n", 0) >= 3:
@@ -3245,7 +3255,7 @@ class ExoPlanetWindow(QDialog):
                        (ys_all > h * bf) & (ys_all < h * (1 - bf)))
         ref_xy = np.column_stack([xs_all[keep_border], ys_all[keep_border]])
         if len(ref_xy) == 0:
-            QMessageBox.warning(self, "No Stars", "No stars found inside the border margin.")
+            QMessageBox.warning(self, self.tr("No Stars"), self.tr("No stars found inside the border margin."))
             self.progress_bar.setVisible(False)
             self._shutdown_pool()
             return
@@ -3255,7 +3265,7 @@ class ExoPlanetWindow(QDialog):
         self.median_fwhm = fwhm
 
         # --- tracking ---------------------------------------------------------
-        self.status_label.setText("Tracking the field across frames…")
+        self.status_label.setText(self.tr("Tracking the field across frames…"))
         QApplication.processEvents()
         Ms, infos = xphot.compute_transforms(cats, ref_idx, tol=max(2.0, 1.5 * fwhm))
         self.frame_transforms, self.frame_track_info = Ms, infos
@@ -3282,8 +3292,11 @@ class ExoPlanetWindow(QDialog):
                   "gain in Settings for a complete error budget.")
         pool = self._get_pool(self._worker_count(n_frames, 3e8))
         self.status_label.setText(
-            f"Aperture photometry: {len(ref_xy)} stars × {n_frames} frames × {len(ap.radii)} radii"
-            + (f" ({getattr(self, '_pool_n', 0)} processes)…" if pool is not None else "…"))
+            self.tr("Aperture photometry: {0} stars × {1} frames × {2} radii ({3} processes)…").format(
+                len(ref_xy), n_frames, len(ap.radii), getattr(self, '_pool_n', 0))
+            if pool is not None else
+            self.tr("Aperture photometry: {0} stars × {1} frames × {2} radii…").format(
+                len(ref_xy), n_frames, len(ap.radii)))
         self.progress_bar.setMaximum(n_frames)
         self.progress_bar.setValue(0)
         QApplication.processEvents()
@@ -3312,7 +3325,7 @@ class ExoPlanetWindow(QDialog):
         self._shutdown_pool()
 
         # --- differential photometry -------------------------------------------
-        self.status_label.setText("Building the comparison ensemble…")
+        self.status_label.setText(self.tr("Building the comparison ensemble…"))
         QApplication.processEvents()
         t_days = self._frame_time_days()
         self._set_sessions()
@@ -3336,8 +3349,8 @@ class ExoPlanetWindow(QDialog):
             frac_ok = np.zeros(unusable.shape[0])
         keep = frac_ok >= 0.5
         if not np.any(keep):
-            QMessageBox.warning(self, "Photometry",
-                                "No star was measurable in at least half of the frames.")
+            QMessageBox.warning(self, self.tr("Photometry"),
+                                self.tr("No star was measurable in at least half of the frames."))
             self.progress_bar.setVisible(False)
             return
         self._apply_star_subset(cube, dr, ref_xy, keep)
@@ -3354,7 +3367,7 @@ class ExoPlanetWindow(QDialog):
         # tracked per-frame positions.
         self._run_multiband_photometry(self.phot_cube.x, self.phot_cube.y, keep_mask=None)
 
-        self.status_label.setText("Screening light curves…")
+        self.status_label.setText(self.tr("Screening light curves…"))
         QApplication.processEvents()
         self._refresh_detrend_and_screen()
         self._populate_star_list()
@@ -3366,17 +3379,19 @@ class ExoPlanetWindow(QDialog):
         self.fit_transit_btn.setEnabled(True)
         self._on_threshold_changed(self.threshold_slider.value())
         n_bad = int(np.count_nonzero(np.all((self.flags & xphot.FLAG_BADFRAME) != 0, axis=0)))
-        msg = (f"{len(self.star_positions)} stars · ensemble of {len(self.comp_stars)} comps"
-               f" ({len(self.rejected_comps)} rejected as variable/noisy) · aperture "
-               f"r={self.aperture_radius:.2f}px · FWHM {fwhm:.2f}px")
+        msg = self.tr("{0} stars · ensemble of {1} comps"
+                      " ({2} rejected as variable/noisy) · aperture "
+                      "r={3:.2f}px · FWHM {4:.2f}px").format(
+            len(self.star_positions), len(self.comp_stars), len(self.rejected_comps),
+            self.aperture_radius, fwhm)
         if n_fail:
-            msg += f" · tracking failed on {n_fail} frame(s)"
+            msg += self.tr(" · tracking failed on {0} frame(s)").format(n_fail)
         if n_bad:
-            msg += f" · {n_bad} frame(s) rejected"
+            msg += self.tr(" · {0} frame(s) rejected").format(n_bad)
         if self.times is None:
-            msg += " · no timestamps: x-axis is frame number"
+            msg += self.tr(" · no timestamps: x-axis is frame number")
         if np.any(getattr(self, "side_idx", None) if getattr(self, "side_idx", None) is not None else []):
-            msg += f" · meridian flip handled ({self.side_how})"
+            msg += self.tr(" · meridian flip handled ({0})").format(self.side_how)
         note = self._input_frames_note()
         if note:
             msg += " · " + note
@@ -3422,13 +3437,13 @@ class ExoPlanetWindow(QDialog):
                 jd, getattr(self, "_cached_headers", None))
         else:
             self.session_idx = np.zeros(n, dtype=int)
-            self.sessions = [{"index": 0, "label": f"All frames — {n} frames",
+            self.sessions = [{"index": 0, "label": self.tr("All frames — {0} frames").format(n),
                               "date": "", "instrument": "", "start_jd": float("nan"),
                               "end_jd": float("nan"), "n": n}]
         self.screen_by_session = {}
         self.night_combo.blockSignals(True)
         self.night_combo.clear()
-        self.night_combo.addItem(f"All nights ({len(self.sessions)})", None)
+        self.night_combo.addItem(self.tr("All nights ({0})").format(len(self.sessions)), None)
         for s in self.sessions:
             self.night_combo.addItem(s["label"], int(s["index"]))
         self.night_combo.setCurrentIndex(0)
@@ -3684,7 +3699,7 @@ class ExoPlanetWindow(QDialog):
         """Plot / dialog name for a star: its identified name once Identify
         or Find Star has named it, keeping the list number for reference."""
         name = self.star_names.get(int(idx))
-        return f"{name} (#{idx})" if name else f"Star #{idx}"
+        return f"{name} (#{idx})" if name else self.tr("Star #{0}").format(idx)
 
     def _set_star_name(self, idx: int, name: str):
         """Remember a star's name and show it in the list and the plots."""
@@ -3742,7 +3757,7 @@ class ExoPlanetWindow(QDialog):
     def on_fit_transit(self):
         sels = self.star_list.selectedItems()
         if len(sels) != 1:
-            QMessageBox.information(self, "Fit Transit", "Select exactly one star (the transit host).")
+            QMessageBox.information(self, self.tr("Fit Transit"), self.tr("Select exactly one star (the transit host)."))
             return
         idx = sels[0].data(Qt.ItemDataRole.UserRole)
         ctx = self._transit_context(idx)
@@ -3757,13 +3772,13 @@ class ExoPlanetWindow(QDialog):
     def _transit_context(self, idx: int):
         cube = self.phot_cube
         if cube is None:
-            QMessageBox.warning(self, "Fit Transit", "Run photometry first.")
+            QMessageBox.warning(self, self.tr("Fit Transit"), self.tr("Run photometry first."))
             return None
         jd = self._frame_jd_utc
         if jd is None or len(jd) != cube.flux.shape[2] or not np.all(np.isfinite(jd)):
-            QMessageBox.warning(self, "Fit Transit",
-                                "Some frames have no usable timestamp (DATE-OBS / MJD-OBS), "
-                                "so a transit time can't be measured.")
+            QMessageBox.warning(self, self.tr("Fit Transit"),
+                                self.tr("Some frames have no usable timestamp (DATE-OBS / MJD-OBS), "
+                                        "so a transit time can't be measured."))
             return None
         radec = None
         try:
@@ -3878,11 +3893,11 @@ class ExoPlanetWindow(QDialog):
                 # Ask the user whether to reuse the existing WCS or re-solve
                 ans = QMessageBox.question(
                     self,
-                    "WCS Found",
-                    "A valid WCS solution was found in the image header.\n\n"
-                    "Use the existing WCS?\n\n"
-                    "• Yes — use the header WCS as-is (fast)\n"
-                    "• No  — run the plate solver to get a fresh solution",
+                    self.tr("WCS Found"),
+                    self.tr("A valid WCS solution was found in the image header.\n\n"
+                            "Use the existing WCS?\n\n"
+                            "• Yes — use the header WCS as-is (fast)\n"
+                            "• No  — run the plate solver to get a fresh solution"),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.Yes,
                 )
@@ -3908,16 +3923,16 @@ class ExoPlanetWindow(QDialog):
  
                     ra_str  = "nan" if self.wcs_ra  is None else f"{self.wcs_ra:.5f}"
                     dec_str = "nan" if self.wcs_dec is None else f"{self.wcs_dec:.5f}"
-                    self.status_label.setText(f"WCS from header: RA={ra_str}, Dec={dec_str}")
+                    self.status_label.setText(self.tr("WCS from header: RA={0}, Dec={1}").format(ra_str, dec_str))
                     self.fetch_tesscut_btn.setEnabled(True)
                     return
                 # else: fall through to plate solve below
         else:
             if force_solve:
-                self.status_label.setText("Force blind solve enabled — ignoring any existing WCS…")
+                self.status_label.setText(self.tr("Force blind solve enabled — ignoring any existing WCS…"))
             else:
-                self.status_label.setText(
-                    "XISF source detected — skipping approximate WCS, running plate solve…")
+                self.status_label.setText(self.tr(
+                    "XISF source detected — skipping approximate WCS, running plate solve…"))
             QApplication.processEvents()
 
 
@@ -3992,13 +4007,13 @@ class ExoPlanetWindow(QDialog):
                 # than leaving the user with nothing at all
                 ans = QMessageBox.question(
                     self,
-                    "Plate Solve Failed",
-                    f"Plate solving failed:\n{res}\n\n"
-                    "The loaded files are XISF — the embedded WCS is an approximation "
-                    "of PixInsight's TPS solution and may be off by 10–30 arcsec in the "
-                    "frame corners.\n\n"
-                    "Use the approximate XISF WCS anyway? Star matching may fail for "
-                    "some targets near the edges.",
+                    self.tr("Plate Solve Failed"),
+                    self.tr("Plate solving failed:\n{0}\n\n"
+                            "The loaded files are XISF — the embedded WCS is an approximation "
+                            "of PixInsight's TPS solution and may be off by 10–30 arcsec in the "
+                            "frame corners.\n\n"
+                            "Use the approximate XISF WCS anyway? Star matching may fail for "
+                            "some targets near the edges.").format(res),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No,
                 )
@@ -4019,9 +4034,9 @@ class ExoPlanetWindow(QDialog):
                             self.wcs_dec = float(center.dec.deg)
                         except Exception:
                             self.wcs_ra = self.wcs_dec = None
-                        self.status_label.setText(
+                        self.status_label.setText(self.tr(
                             "⚠️ Using approximate XISF WCS (star matching may be imprecise)"
-                        )
+                        ))
                         self.fetch_tesscut_btn.setEnabled(True)
                         return
             if approx_wcs is not None:
@@ -4036,14 +4051,14 @@ class ExoPlanetWindow(QDialog):
                     self.wcs_ra, self.wcs_dec = float(center.ra.deg), float(center.dec.deg)
                 except Exception:
                     self.wcs_ra = self.wcs_dec = None
-                self.status_label.setText(
+                self.status_label.setText(self.tr(
                     "⚠️ Plate solve failed — using the mount-pointing WCS from the header "
                     "(arcminutes off: fine for BJD/airmass, unreliable for star identification "
-                    "and catalogue magnitudes)")
+                    "and catalogue magnitudes)"))
                 print(f"[Exoplanet] plate solve failed ({res}); using the approximate header WCS")
                 self.fetch_tesscut_btn.setEnabled(True)
                 return
-            QMessageBox.critical(self, "Plate Solve", f"Plate solving failed:\n{res}")
+            QMessageBox.critical(self, self.tr("Plate Solve"), self.tr("Plate solving failed:\n{0}").format(res))
             self._wcs = None
             self.fetch_tesscut_btn.setEnabled(False)
             return
@@ -4052,7 +4067,7 @@ class ExoPlanetWindow(QDialog):
         self._wcs = doc.metadata.get("wcs", None)
         self._wcs_bin_factor = 1  # solver worked on binned plane → WCS is in binned coords        
         if self._wcs is None or not getattr(self._wcs, "has_celestial", False):
-            QMessageBox.warning(self, "Plate Solve", "Solver finished but no usable WCS was found.")
+            QMessageBox.warning(self, self.tr("Plate Solve"), self.tr("Solver finished but no usable WCS was found."))
             self.fetch_tesscut_btn.setEnabled(False)
             self._wcs = None
             return
@@ -4067,7 +4082,7 @@ class ExoPlanetWindow(QDialog):
 
         ra_str  = "nan" if self.wcs_ra  is None else f"{self.wcs_ra:.5f}"
         dec_str = "nan" if self.wcs_dec is None else f"{self.wcs_dec:.5f}"
-        self.status_label.setText(f"WCS solved: RA={ra_str}, Dec={dec_str}")
+        self.status_label.setText(self.tr("WCS solved: RA={0}, Dec={1}").format(ra_str, dec_str))
         self.fetch_tesscut_btn.setEnabled(True)
 
     # ---------------- Plotting & helpers ----------------
@@ -4206,7 +4221,7 @@ class ExoPlanetWindow(QDialog):
         n = 0 if self.fluxes is None else self.fluxes.shape[1]
         jd = self._frame_jd_utc
         if jd is None or len(jd) != n or n == 0 or not np.all(np.isfinite(jd)):
-            return None, "Frame number", "frame"
+            return None, self.tr("Frame number"), "frame"
         ra, dec = getattr(self, "wcs_ra", None), getattr(self, "wcs_dec", None)
         key = (n, float(jd[0]), float(jd[-1]), ra, dec)
         if self._sci_time_cache is not None and self._sci_time_cache[0] == key:
@@ -4221,7 +4236,7 @@ class ExoPlanetWindow(QDialog):
                 tt, kind = np.asarray(jd, dtype=np.float64), "JD_UTC"
         off = float(np.floor(np.nanmin(tt)))
         label = (r"BJD$_\mathrm{TDB}$" if kind == "BJD_TDB" else r"JD$_\mathrm{UTC}$") \
-            + f" − {off:.0f}  (mid-exposure)"
+            + self.tr(" − {0:.0f}  (mid-exposure)").format(off)
         out = (tt - off, label, kind)
         self._sci_time_cache = (key, out)
         return out
@@ -4245,11 +4260,11 @@ class ExoPlanetWindow(QDialog):
         fig = w.figure
         inds = [it.data(Qt.ItemDataRole.UserRole) for it in self.star_list.selectedItems()]
         if self.fluxes is None:
-            sciplot.draw_message(fig, "Load frames and run photometry")
+            sciplot.draw_message(fig, self.tr("Load frames and run photometry"))
             w.refresh()
             return
         if not inds:
-            sciplot.draw_message(fig, "Select a star in the list")
+            sciplot.draw_message(fig, self.tr("Select a star in the list"))
             w.refresh()
             return
         n_frames = self.fluxes.shape[1]
@@ -4263,7 +4278,7 @@ class ExoPlanetWindow(QDialog):
             tx = np.arange(n_frames, dtype=np.float64)
         bmin = self._bin_minutes()
         bin_w = (bmin / 1440.0) if has_t else (5.0 if bmin else 0.0)
-        bin_label = (f"{bmin}-min bins" if has_t else "5-frame bins") if bmin else ""
+        bin_label = (self.tr("{0}-min bins").format(bmin) if has_t else self.tr("5-frame bins")) if bmin else ""
 
         panels = None
         if has_t and active is None and 1 < len(self.sessions) <= 6:
@@ -4284,7 +4299,7 @@ class ExoPlanetWindow(QDialog):
                 else np.zeros(n_frames, dtype=np.int16)
             good = np.isfinite(f) & (fl == 0) & fmask
             rej = np.isfinite(f) & (fl != 0) & fmask
-            tag = " (comp)" if idx in getattr(self, "comp_stars", []) else ""
+            tag = self.tr(" (comp)") if idx in getattr(self, "comp_stars", []) else ""
             series.append({"label": (self.star_names.get(idx) or f"#{idx}") + tag,
                            "x": tx[good], "y": f[good],
                            "err": (e[good] if e is not None else None), "group": S[good],
@@ -4306,8 +4321,8 @@ class ExoPlanetWindow(QDialog):
                 parts.append(f"σ = {m['rms_ppt']:.2f} ppt")
             vt = (getattr(self, "dip_vetoes", None) or {}).get(idx)
             if vt is not None:
-                parts.append(f"dip withdrawn: {vt[1]:.0f} ppt at r = {vt[3]:.1f} px, "
-                             f"{vt[2]:.0f} ppt at r = {vt[4]:.1f} px (PSF change)")
+                parts.append(self.tr("dip withdrawn: {0:.0f} ppt at r = {1:.1f} px, "
+                                     "{2:.0f} ppt at r = {3:.1f} px (PSF change)").format(vt[1], vt[3], vt[2], vt[4]))
             title = "  ·  ".join(parts)
             if (has_t and m and self._has_dip_flag(idx)
                     and np.isfinite(m.get("dip_t", np.nan)) and m.get("dip_snr", 0) > 0):
@@ -4321,10 +4336,10 @@ class ExoPlanetWindow(QDialog):
                 if xs.size:
                     lo, hi = max(lo, float(xs.min())), min(hi, float(xs.max()))
                 if hi > lo:
-                    spans.append((lo, hi, f"candidate dip ({m['dip_depth_ppt']:.1f} ppt, "
-                                          f"{m['dip_snr']:.1f}σ)"))
+                    spans.append((lo, hi, self.tr("candidate dip ({0:.1f} ppt, "
+                                                  "{1:.1f}σ)").format(m['dip_depth_ppt'], m['dip_snr'])))
         elif len(inds) > sciplot.MAX_SERIES:
-            title = f"First {sciplot.MAX_SERIES} of {len(inds)} selected stars"
+            title = self.tr("First {0} of {1} selected stars").format(sciplot.MAX_SERIES, len(inds))
 
         sciplot.draw_light_curves(fig, series, panels=panels,
                                   units=str(self.plot_units_combo.currentData()),
@@ -4337,7 +4352,7 @@ class ExoPlanetWindow(QDialog):
         sci = self._plot_style() == "scientific" and self.sci_plot is not None
         if sci:
             path, filt = QFileDialog.getSaveFileName(
-                self, "Save Plot", "light_curve.png",
+                self, self.tr("Save Plot"), "light_curve.png",
                 "PNG image, 300 dpi (*.png);;PDF (*.pdf);;SVG (*.svg)")
             if not path:
                 return
@@ -4346,17 +4361,17 @@ class ExoPlanetWindow(QDialog):
             try:
                 self.sci_plot.save(path)
             except Exception as e:
-                QMessageBox.warning(self, "Save Plot", f"Could not save the plot:\n{e}")
+                QMessageBox.warning(self, self.tr("Save Plot"), self.tr("Could not save the plot:\n{0}").format(e))
                 return
         else:
-            path, _ = QFileDialog.getSaveFileName(self, "Save Plot", "light_curve.png",
+            path, _ = QFileDialog.getSaveFileName(self, self.tr("Save Plot"), "light_curve.png",
                                                   "PNG (*.png)")
             if not path:
                 return
             if not path.lower().endswith(".png"):
                 path += ".png"
             self.plot_widget.grab().save(path)
-        self.status_label.setText(f"Saved plot → {path}")
+        self.status_label.setText(self.tr("Saved plot → {0}").format(path))
 
     def update_plot_for_selection(self):
         """Redraw light curves for the selected stars (selected night, or all)."""
@@ -4373,20 +4388,20 @@ class ExoPlanetWindow(QDialog):
         S = (np.asarray(self.session_idx) if self.session_idx is not None
              and len(self.session_idx) == n_frames else np.zeros(n_frames, dtype=int))
         if not has_t:
-            bottom_label = "Frame"
+            bottom_label = self.tr("Frame")
         elif active is not None:
-            bottom_label = ("Hours since the night's first frame (mid-exposure UTC) — "
-                            f"{self.sessions[active]['label']}")
+            bottom_label = self.tr("Hours since the night's first frame (mid-exposure UTC) — "
+                                   "{0}").format(self.sessions[active]['label'])
         elif len(self.sessions) > 1:
-            bottom_label = "Hours within each night (daytime gaps collapsed; dashed line = next night)"
+            bottom_label = self.tr("Hours within each night (daytime gaps collapsed; dashed line = next night)")
         else:
-            bottom_label = "Hours since first frame (mid-exposure UTC)"
+            bottom_label = self.tr("Hours since first frame (mid-exposure UTC)")
 
         self.plot_widget.clear()
         self.plot_widget.addLegend()
         self.plot_widget.setLabel('bottom', bottom_label)
-        self.plot_widget.setLabel('left', 'Relative Flux')
-        self._set_graph_title("Light Curves")
+        self.plot_widget.setLabel('left', self.tr('Relative Flux'))
+        self._set_graph_title(self.tr("Light Curves"))
 
         inds = [it.data(Qt.ItemDataRole.UserRole) for it in self.star_list.selectedItems()]
         if not inds:
@@ -4421,7 +4436,7 @@ class ExoPlanetWindow(QDialog):
                                                              pen=pg.mkPen(color, width=1)))
                 self.plot_widget.plot(tb, yb, pen=pg.mkPen(color, width=2),
                                       symbol='o', symbolSize=6, symbolBrush=pg.mkBrush(color),
-                                      name=((f"{bmin}-min bins" if has_t else "5-frame bins")
+                                      name=((self.tr("{0}-min bins").format(bmin) if has_t else self.tr("5-frame bins"))
                                             if first_bins else None))
                 first_bins = False
             if not single:
@@ -4430,7 +4445,7 @@ class ExoPlanetWindow(QDialog):
             if np.any(rejected):
                 self.plot_widget.plot(x_all[rejected], f[rejected], pen=None, symbol='x',
                                       symbolSize=7, symbolPen=pg.mkPen((255, 80, 80)),
-                                      name="rejected")
+                                      name=self.tr("rejected"))
             scr = self._active_screen()
             m = scr.get(idx, {}) if isinstance(scr, dict) else {}
             title = self._star_label(idx)
@@ -4438,10 +4453,10 @@ class ExoPlanetWindow(QDialog):
             if m:
                 title += f" — σ {m.get('rms_ppt', np.nan):.2f} ppt"
                 if np.isfinite(m.get("dip_t", np.nan)) and m.get("dip_snr", 0) > 0:
-                    detail = (f"best dip {m['dip_depth_ppt']:.1f} ppt at "
-                              f"{m['dip_snr']:.1f}σ ({m['dip_dur_h']:.2f} h)")
+                    detail = self.tr("best dip {0:.1f} ppt at "
+                                     "{1:.1f}σ ({2:.2f} h)").format(m['dip_depth_ppt'], m['dip_snr'], m['dip_dur_h'])
                     if idx in (getattr(self, "dip_vetoes", None) or {}):
-                        detail += " — withdrawn: fades in a bigger aperture (PSF change)"
+                        detail += self.tr(" — withdrawn: fades in a bigger aperture (PSF change)")
                     if self._has_dip_flag(idx) and has_t:
                         c = to_x(m["dip_t"])
                         d = m["dip_dur_h"]
@@ -4583,11 +4598,18 @@ class ExoPlanetWindow(QDialog):
                 _f, d0, d1, r0, r1 = vetoes[i]
                 why = "blend/PSF" if i in blends else "PSF"
                 tags.append(f"dip ✗ {why} {d0:.0f}→{d1:.0f} ppt")
-                tip = (f"Dip withdrawn: {d0:.0f} ppt deep in the r = {r0:.1f} px photometry "
-                       f"aperture, {d1:.0f} ppt at r = {r1:.1f} px.\nA real eclipse dims the "
-                       "whole star, so its depth is the same in any aperture; this is a PSF "
-                       "change\n(focus, post-flip settling, corner coma)"
-                       + (" or the brighter neighbour." if i in blends else "."))
+                if i in blends:
+                    tip = self.tr("Dip withdrawn: {0:.0f} ppt deep in the r = {1:.1f} px photometry "
+                                  "aperture, {2:.0f} ppt at r = {3:.1f} px.\nA real eclipse dims the "
+                                  "whole star, so its depth is the same in any aperture; this is a PSF "
+                                  "change\n(focus, post-flip settling, corner coma)"
+                                  " or the brighter neighbour.").format(d0, r0, d1, r1)
+                else:
+                    tip = self.tr("Dip withdrawn: {0:.0f} ppt deep in the r = {1:.1f} px photometry "
+                                  "aperture, {2:.0f} ppt at r = {3:.1f} px.\nA real eclipse dims the "
+                                  "whole star, so its depth is the same in any aperture; this is a PSF "
+                                  "change\n(focus, post-flip settling, corner coma)"
+                                  ".").format(d0, r0, d1, r1)
             self._list_tags[i] = tags
             item.setToolTip(tip)
             item.setText(self._star_item_text(i, tags))
@@ -4598,13 +4620,19 @@ class ExoPlanetWindow(QDialog):
         n_var = sum(1 for v in kinds.values() if "VAR" in v)
         n_nvar = sum(1 for v in kinds.values() if "VAR night-to-night" in v)
         act = self._active_session()
-        where = "" if act is None else f" on {self.sessions[act].get('date') or 'this night'}"
+        if act is None:
+            head = self.tr("{0} star(s) flagged (≥ {1} ppt, ≥ {2:.1f}σ").format(
+                len(flagged), ppt_threshold, sig)
+        else:
+            head = self.tr("{0} star(s) flagged on {1} (≥ {2} ppt, ≥ {3:.1f}σ").format(
+                len(flagged), self.sessions[act].get('date') or self.tr('this night'), ppt_threshold, sig)
         self.status_label.setText(
-            f"{len(flagged)} star(s) flagged{where} (≥ {ppt_threshold} ppt, ≥ {sig:.1f}σ"
-            + (f", ≥ {a_f:g}σ above the field" if rel_on else "") + "): "
-            f"{n_dip} dip, {n_var} variable" + (f", {n_nvar} night-to-night" if n_nvar else "")
-            + (f"; {len(vetoes)} dip(s) withdrawn — depth fades in a bigger aperture "
-               "(PSF change, not an eclipse)" if vetoes else "")
+            head
+            + (self.tr(", ≥ {0:g}σ above the field").format(a_f) if rel_on else "") + "): "
+            + self.tr("{0} dip, {1} variable").format(n_dip, n_var)
+            + (self.tr(", {0} night-to-night").format(n_nvar) if n_nvar else "")
+            + (self.tr("; {0} dip(s) withdrawn — depth fades in a bigger aperture "
+                       "(PSF change, not an eclipse)").format(len(vetoes)) if vetoes else "")
             + (f" — {self._photometry_status}" if getattr(self, "_photometry_status", "") else ""))
 
     def moving_average(self, curve, window=5):
@@ -4622,7 +4650,7 @@ class ExoPlanetWindow(QDialog):
     # of single-threaded C with the GUI frozen and Ctrl+C ignored.
     BLS_MAX_PERIODS = 100_000
 
-    def _bls_scan(self, model, periods_d, dur_d, oversample, what="trial periods"):
+    def _bls_scan(self, model, periods_d, dur_d, oversample, what=None):
         """
         BoxLeastSquares.power over `periods_d`, in chunks on a thread pool.
         astropy's BLS releases the GIL, so the chunks run in parallel and the
@@ -4631,6 +4659,8 @@ class ExoPlanetWindow(QDialog):
         transit_time, depth), or None when cancelled.
         """
         from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+        if what is None:
+            what = self.tr("trial periods")
         periods_d = np.asarray(periods_d, dtype=np.float64)
         n = int(periods_d.size)
         n_chunks = int(min(400, max(1, n // 250)))
@@ -4638,8 +4668,8 @@ class ExoPlanetWindow(QDialog):
         workers = max(1, min(16, (os.cpu_count() or 2) - 1, n_chunks))
         dlg = None
         if n > 2000:
-            dlg = QProgressDialog(f"Box least squares: {n:,} {what}…", "Cancel", 0, n_chunks, self)
-            dlg.setWindowTitle("Analyze Star")
+            dlg = QProgressDialog(self.tr("Box least squares: {0:,} {1}…").format(n, what), self.tr("Cancel"), 0, n_chunks, self)
+            dlg.setWindowTitle(self.tr("Analyze Star"))
             dlg.setWindowModality(Qt.WindowModality.WindowModal)
             dlg.setMinimumDuration(300)
             dlg.setValue(0)
@@ -4990,7 +5020,7 @@ class ExoPlanetWindow(QDialog):
     def on_analyze(self):
         sels = self.star_list.selectedItems()
         if len(sels) != 1:
-            QMessageBox.information(self, "Analyze", "Please select exactly one star.")
+            QMessageBox.information(self, self.tr("Analyze"), self.tr("Please select exactly one star."))
             return
         idx = sels[0].data(Qt.ItemDataRole.UserRole)
 
@@ -5002,7 +5032,7 @@ class ExoPlanetWindow(QDialog):
         f_good    = f_all[good]
 
         if len(t_jd_good) < 10:
-            QMessageBox.warning(self, "Analyze", "Not enough good points to analyze.")
+            QMessageBox.warning(self, self.tr("Analyze"), self.tr("Not enough good points to analyze."))
             return
 
         # ── 2. Lomb-Scargle on relative MJD (unit-median flux) ───────────────
@@ -5050,7 +5080,7 @@ class ExoPlanetWindow(QDialog):
                     f_bls[S_good == k] /= float(np.median(f_bls[mk]))
         t_clean, y_clean = _prepare_search_lightcurve(t_jd_good, f_bls)
         if t_clean.size < 20:
-            QMessageBox.warning(self, "Analyze", "Too few clean points for BLS.")
+            QMessageBox.warning(self, self.tr("Analyze"), self.tr("Too few clean points for BLS."))
             return
 
         baseline_days = float(np.ptp(t_clean))
@@ -5099,7 +5129,7 @@ class ExoPlanetWindow(QDialog):
             print(f"[Analyze] BLS: {nf_full:,} periods at full resolution over a "
                   f"{baseline_days:.1f} d baseline; scanning {nf:,}, then refining the peaks")
         prev_status = self.status_label.text()
-        self.status_label.setText(f"Analyzing star #{idx}: box least squares…")
+        self.status_label.setText(self.tr("Analyzing star #{0}: box least squares…").format(idx))
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             result = self._bls_scan(bls_model, 1.0 / np.linspace(f_hi, f_lo, nf), dur_grid,
@@ -5107,7 +5137,7 @@ class ExoPlanetWindow(QDialog):
         finally:
             QApplication.restoreOverrideCursor()
         if result is None:
-            self.status_label.setText("Analysis cancelled.")
+            self.status_label.setText(self.tr("Analysis cancelled."))
             return
 
         power_raw = np.asarray(result.power, float).ravel()
@@ -5116,7 +5146,7 @@ class ExoPlanetWindow(QDialog):
                                 else result.period, float).ravel()
 
         if power_raw.size == 0 or not np.any(np.isfinite(power_raw)):
-            QMessageBox.warning(self, "Analyze", "BLS returned no usable power spectrum.")
+            QMessageBox.warning(self, self.tr("Analyze"), self.tr("BLS returned no usable power spectrum."))
             return
 
         bg_raw, power_white = _whiten_periodogram(power_raw)
@@ -5169,9 +5199,9 @@ class ExoPlanetWindow(QDialog):
             try:
                 refined = self._bls_scan(bls_model, np.concatenate([w[2] for w in windows]),
                                          dur_grid, oversample=5,
-                                         what="periods around the strongest peaks")
+                                         what=self.tr("periods around the strongest peaks"))
                 if refined is None:
-                    self.status_label.setText("Analysis cancelled.")
+                    self.status_label.setText(self.tr("Analysis cancelled."))
                     return
             except Exception as e:
                 print(f"[Analyze] BLS refinement failed: {e}")
@@ -5301,7 +5331,8 @@ class ExoPlanetWindow(QDialog):
 
         # ── 6. Build dialog ───────────────────────────────────────────────────
         dlg = QDialog(self)
-        dlg.setWindowTitle(f"Analysis: {self._star_label(idx)}  |  P = {best_period_d:.4f} d  |  SDE = {best_sde:.1f}")
+        dlg.setWindowTitle(self.tr("Analysis: {0}  |  P = {1:.4f} d  |  SDE = {2:.1f}").format(
+            self._star_label(idx), best_period_d, best_sde))
         layout = QVBoxLayout(dlg)
 
         # Summary label
@@ -5309,20 +5340,20 @@ class ExoPlanetWindow(QDialog):
         depth_ppt = depth_plot * 1000.0
         n_dips   = len(dip_events)
         alias_pen = _alias_penalty(best_period_d)
-        summary = (
-            f"BLS — Period: {best_period_d:.5f} d   "
-            f"Box duration: {dur_hr:.2f} h   "
-            f"Box depth: {depth_ppt:.2f} ppt   "
-            f"SDE: {best_sde:.1f}   "
-            f"Alias penalty: {alias_pen:.2f}   "
-            f"Night dips detected: {n_dips}"
-        )
+        summary = self.tr(
+            "BLS — Period: {0:.5f} d   "
+            "Box duration: {1:.2f} h   "
+            "Box depth: {2:.2f} ppt   "
+            "SDE: {3:.1f}   "
+            "Alias penalty: {4:.2f}   "
+            "Night dips detected: {5}"
+        ).format(best_period_d, dur_hr, depth_ppt, best_sde, alias_pen, n_dips)
         warn = []
         if fold:
             def pm(v, s, fmt):
                 if not np.isfinite(s):
                     return f"{v:{fmt}}"
-                return f"{v:{fmt}}" + (f" ± {s:{fmt}}" if s <= 3.0 * abs(v) else " (unconstrained)")
+                return f"{v:{fmt}}" + (f" ± {s:{fmt}}" if s <= 3.0 * abs(v) else self.tr(" (unconstrained)"))
 
             # Which nights the transits come from, and the aperture test on each:
             # a dip that fades in a bigger aperture is a PSF change, and a
@@ -5346,66 +5377,77 @@ class ExoPlanetWindow(QDialog):
                     except Exception:
                         ap = None
                     if ap is not None and ap[0]:
-                        warn.append(f"The {ev_dates[-1]} transit fades in a bigger aperture "
-                                    f"({ap[1]:.0f} → {ap[2]:.0f} ppt at r = {ap[3]:.1f} → "
-                                    f"{ap[4]:.1f} px): a PSF change, not an eclipse.")
+                        warn.append(self.tr("The {0} transit fades in a bigger aperture "
+                                            "({1:.0f} → {2:.0f} ppt at r = {3:.1f} → "
+                                            "{4:.1f} px): a PSF change, not an eclipse.").format(
+                            ev_dates[-1], ap[1], ap[2], ap[3], ap[4]))
             n_ev = len(fold["events"])
             if n_ev == 0:
-                warn.insert(0, "No night covers the transit itself.")
+                warn.insert(0, self.tr("No night covers the transit itself."))
             oe = fold.get("odd_even")
             if oe is not None and oe["sigma"] > 3.0:
-                warn.append(f"Odd and even transits differ by {oe['sigma']:.1f}σ "
-                            f"({oe['odd_ppt']:.0f} vs {oe['even_ppt']:.0f} ppt).  Either they "
-                            "are an eclipsing binary's primary and secondary eclipses (true "
-                            f"period 2 × P = {2.0 * best_period_d:.5f} d), or the period is "
-                            "wrong and one set isn't a transit at all.")
+                warn.append(self.tr("Odd and even transits differ by {0:.1f}σ "
+                                    "({1:.0f} vs {2:.0f} ppt).  Either they "
+                                    "are an eclipsing binary's primary and secondary eclipses (true "
+                                    "period 2 × P = {3:.5f} d), or the period is "
+                                    "wrong and one set isn't a transit at all.").format(
+                    oe['sigma'], oe['odd_ppt'], oe['even_ppt'], 2.0 * best_period_d))
             summary += (
-                f"\nTransit model (limb-darkened, u1 {fold['u1']:.3f}, u2 {fold['u2']:.3f} fixed) — "
-                f"Rp/R* {pm(fold['rp'], fold['rp_err'], '.4f')}   "
-                f"depth {fold['depth_ppt']:.2f} ppt   T14 {fold['t14_h']:.2f} h   "
-                f"b {fold['b']:.2f}   a/R* {fold['ars']:.1f}   "
-                f"Tc {pm(fold['tc'], fold['tc_err'], '.5f')} JD_UTC   "
-                f"model vs flat line {fold['snr']:.1f}σ   "
-                f"residual RMS {fold['rms_ppt']:.2f} ppt/point"
-                + (f", {fold['rms10_ppt']:.2f} ppt per 10 min"
+                self.tr("\nTransit model (limb-darkened, u1 {0:.3f}, u2 {1:.3f} fixed) — "
+                        "Rp/R* {2}   "
+                        "depth {3:.2f} ppt   T14 {4:.2f} h   "
+                        "b {5:.2f}   a/R* {6:.1f}   "
+                        "Tc {7} JD_UTC   "
+                        "model vs flat line {8:.1f}σ   "
+                        "residual RMS {9:.2f} ppt/point").format(
+                    fold['u1'], fold['u2'], pm(fold['rp'], fold['rp_err'], '.4f'),
+                    fold['depth_ppt'], fold['t14_h'], fold['b'], fold['ars'],
+                    pm(fold['tc'], fold['tc_err'], '.5f'), fold['snr'], fold['rms_ppt'])
+                + (self.tr(", {0:.2f} ppt per 10 min").format(fold['rms10_ppt'])
                    if np.isfinite(fold['rms10_ppt']) else ""))
             if n_ev == 1:
                 # The usual case: one dip, then the hunt for the next one.
-                summary += (f"\nSingle transit, {ev_dates[0]} ({fold['n_in']} points in transit): "
-                            "Tc, depth and T14 above are its measurement.  One transit doesn't "
-                            f"fix the period: {best_period_d:.5f} d is just a period the other "
-                            "nights don't rule out, and the next transit may be weeks or months "
-                            "away.")
+                summary += self.tr("\nSingle transit, {0} ({1} points in transit): "
+                                   "Tc, depth and T14 above are its measurement.  One transit doesn't "
+                                   "fix the period: {2:.5f} d is just a period the other "
+                                   "nights don't rule out, and the next transit may be weeks or months "
+                                   "away.").format(ev_dates[0], fold['n_in'], best_period_d)
             else:
-                summary += (f"\nIn transit: {fold['n_in']} points from {n_ev} transits"
+                summary += (self.tr("\nIn transit: {0} points from {1} transits").format(fold['n_in'], n_ev)
                             + (f" ({', '.join(ev_dates)})" if ev_dates else ""))
             for nt in fold.get("notes", []):
                 if nt[0] == "night":
                     s = nt[1]
                     date = (self.sessions[s].get("date") if 0 <= s < len(self.sessions or [])
-                            else "") or f"night {s + 1}"
-                    summary += (f"\n{date} left out ({nt[2]} frames): every frame is inside the "
-                                "transit, so the night has no baseline.")
+                            else "") or self.tr("night {0}").format(s + 1)
+                    summary += self.tr("\n{0} left out ({1} frames): every frame is inside the "
+                                       "transit, so the night has no baseline.").format(date, nt[2])
                 elif nt[0] == "orphan":
-                    summary += (f"\n{nt[2]} frames left out: the meridian flip falls inside the "
-                                "transit, and no other night has both pier sides to measure the "
-                                "flip step from.")
+                    summary += self.tr("\n{0} frames left out: the meridian flip falls inside the "
+                                       "transit, and no other night has both pier sides to measure the "
+                                       "flip step from.").format(nt[2])
                 elif nt[0] == "step":
-                    summary += (f"\nFlip inside the transit on {nt[1]} night"
-                                + ("s" if nt[1] != 1 else "")
-                                + f": the far pier side is set by the flip step from the other "
-                                  f"nights ({(nt[2] - 1.0) * 1e3:+.1f} ppt).")
+                    if nt[1] != 1:
+                        summary += self.tr("\nFlip inside the transit on {0} nights"
+                                           ": the far pier side is set by the flip step from the other "
+                                           "nights ({1:+.1f} ppt).").format(nt[1], (nt[2] - 1.0) * 1e3)
+                    else:
+                        summary += self.tr("\nFlip inside the transit on {0} night"
+                                           ": the far pier side is set by the flip step from the other "
+                                           "nights ({1:+.1f} ppt).").format(nt[1], (nt[2] - 1.0) * 1e3)
             if oe is not None:
-                summary += (f"\nOdd/even transits: {oe['odd_ppt']:.1f} ± {oe['odd_err']:.1f} vs "
-                            f"{oe['even_ppt']:.1f} ± {oe['even_err']:.1f} ppt "
-                            f"({oe['n_odd']} odd, {oe['n_even']} even, red-noise β "
-                            f"{oe['beta']:.2f}) — {oe['sigma']:.1f}σ apart")
+                summary += self.tr("\nOdd/even transits: {0:.1f} ± {1:.1f} vs "
+                                   "{2:.1f} ± {3:.1f} ppt "
+                                   "({4} odd, {5} even, red-noise β "
+                                   "{6:.2f}) — {7:.1f}σ apart").format(
+                    oe['odd_ppt'], oe['odd_err'], oe['even_ppt'], oe['even_err'],
+                    oe['n_odd'], oe['n_even'], oe['beta'], oe['sigma'])
             if fold["rp"] >= 0.3 or fold["b"] >= 0.9:
-                warn.append("Deep or V-shaped: typical of an eclipsing binary.  An EW's two "
-                            "eclipses fold onto one at half the period — check the light curve "
-                            "at 2 × P.")
+                warn.append(self.tr("Deep or V-shaped: typical of an eclipsing binary.  An EW's two "
+                                    "eclipses fold onto one at half the period — check the light curve "
+                                    "at 2 × P."))
         else:
-            summary += "\nNo transit model: the fold shows the BLS box only."
+            summary += self.tr("\nNo transit model: the fold shows the BLS box only.")
         lbl = QLabel(summary)
         lbl.setWordWrap(True)
         lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -5422,54 +5464,54 @@ class ExoPlanetWindow(QDialog):
         layout.addWidget(tabs)
 
         # ── Tab 1: Lomb-Scargle ───────────────────────────────────────────────
-        pg_ls = pg.PlotWidget(title="Lomb–Scargle Periodogram")
+        pg_ls = pg.PlotWidget(title=self.tr("Lomb–Scargle Periodogram"))
         pg_ls.plot(periods_ls, power_ls, pen=pg.mkPen("w", width=1))
         pg_ls.addLine(x=best_ls_period,
                     pen=pg.mkPen("y", style=Qt.PenStyle.DashLine, width=2))
-        pg_ls.setLabel("bottom", "Period [d]")
-        pg_ls.setLabel("left", "LS Power")
+        pg_ls.setLabel("bottom", self.tr("Period [d]"))
+        pg_ls.setLabel("left", self.tr("LS Power"))
         pg_ls.showGrid(True, True, alpha=0.3)
         tabs.addTab(pg_ls, "Lomb-Scargle")
 
         # ── Tab 2: BLS Periodogram (whitened) ────────────────────────────────
-        pg_bls = pg.PlotWidget(title="BLS Periodogram (whitened SNR)")
+        pg_bls = pg.PlotWidget(title=self.tr("BLS Periodogram (whitened SNR)"))
         pg_bls.plot(periods_bls, power_metric, pen=pg.mkPen("c", width=1))
         pg_bls.addLine(x=best_period_d,
                     pen=pg.mkPen("r", style=Qt.PenStyle.DashLine, width=2))
-        pg_bls.setLabel("bottom", "Period [d]")
-        pg_bls.setLabel("left", "Whitened Power")
+        pg_bls.setLabel("bottom", self.tr("Period [d]"))
+        pg_bls.setLabel("left", self.tr("Whitened Power"))
         pg_bls.showGrid(True, True, alpha=0.3)
-        tabs.addTab(pg_bls, "BLS Periodogram")
+        tabs.addTab(pg_bls, self.tr("BLS Periodogram"))
 
         # ── Tab 3: Phase fold ─────────────────────────────────────────────────
         # Same look as Fit Transit: detrended points, binned means with their
         # errors, the transit model, residuals underneath on a linked axis.
         n_nt = fold["n_nights"] if fold else 0
         pg_fold = pg.PlotWidget(
-            title=f"{self._star_label(idx)} — folded at P = {best_period_d:.5f} d"
-                  + (f" ({n_nt} nights)" if n_nt > 1 else "")
-                  + (" — detrended, transit masked" if fold else ""))
+            title=self.tr("{0} — folded at P = {1:.5f} d").format(self._star_label(idx), best_period_d)
+                  + (self.tr(" ({0} nights)").format(n_nt) if n_nt > 1 else "")
+                  + (self.tr(" — detrended, transit masked") if fold else ""))
         pg_fold.addLegend(offset=(10, 10))
         pg_fold.plot(fx[fused], fy[fused], pen=None, symbol="o", symbolSize=4,
                      symbolBrush=pg.mkBrush(150, 190, 255, 130), symbolPen=None,
-                     name="detrended" if fold else "BLS input")
+                     name=self.tr("detrended") if fold else self.tr("BLS input"))
         if np.any(~fused):
             pg_fold.plot(fx[~fused], fy[~fused], pen=None, symbol="x", symbolSize=8,
-                         symbolPen=pg.mkPen((255, 80, 80)), name="clipped")
+                         symbolPen=pg.mkPen((255, 80, 80)), name=self.tr("clipped"))
         if bx.size > 0:
             pg_fold.addItem(pg.ErrorBarItem(x=bx, y=by, height=2 * be,
                                             pen=pg.mkPen((255, 210, 80), width=1)))
             pg_fold.plot(bx, by, pen=None, symbol="o", symbolSize=7,
                          symbolBrush=pg.mkBrush(255, 210, 80), symbolPen=None,
-                         name=f"{bin_min:.0f}-min bins" if bin_min >= 10 else f"{bin_min:.1f}-min bins")
+                         name=self.tr("{0:.0f}-min bins").format(bin_min) if bin_min >= 10 else self.tr("{0:.1f}-min bins").format(bin_min))
         pg_fold.plot(box_x, box_y,
                      pen=pg.mkPen((200, 200, 200), width=1, style=Qt.PenStyle.DashLine),
-                     name="BLS box")
+                     name=self.tr("BLS box"))
         if fold:
             pg_fold.plot(fold["model_x_h"], fold["model_y"],
-                         pen=pg.mkPen((255, 90, 90), width=2), name="transit model")
-        pg_fold.setLabel("bottom", "Hours from mid-transit")
-        pg_fold.setLabel("left", "Relative flux")
+                         pen=pg.mkPen((255, 90, 90), width=2), name=self.tr("transit model"))
+        pg_fold.setLabel("bottom", self.tr("Hours from mid-transit"))
+        pg_fold.setLabel("left", self.tr("Relative flux"))
         pg_fold.showGrid(True, True, alpha=0.3)
         # Open on the transit; the whole orbit is one zoom-out (or the A button) away.
         span_h = max((fold["t14_h"] if fold else 0.0), best_duration_d * 24.0, 0.5)
@@ -5487,10 +5529,10 @@ class ExoPlanetWindow(QDialog):
         fold_page.setChildrenCollapsible(False)
         fold_page.addWidget(pg_fold)
         if fold:
-            pg_res = pg.PlotWidget(title="Residuals")
+            pg_res = pg.PlotWidget(title=self.tr("Residuals"))
             pg_res.showGrid(True, True, alpha=0.3)
             pg_res.setLabel("left", "ppt")
-            pg_res.setLabel("bottom", "Hours from mid-transit")
+            pg_res.setLabel("bottom", self.tr("Hours from mid-transit"))
             pg_res.setXLink(pg_fold)
             r = fold["resid_ppt"]
             pg_res.plot(fx[fused], r[fused], pen=None, symbol="o", symbolSize=4,
@@ -5510,7 +5552,7 @@ class ExoPlanetWindow(QDialog):
             fold_page.setStretchFactor(0, 3)
             fold_page.setStretchFactor(1, 1)
             fold_page.setSizes([450, 170])
-        tabs.addTab(fold_page, "Phase Fold")
+        tabs.addTab(fold_page, self.tr("Phase Fold"))
 
         # ── Tab 3b: Odd / Even ────────────────────────────────────────────────
         # The two halves side by side on shared axes: each with the transit
@@ -5523,10 +5565,10 @@ class ExoPlanetWindow(QDialog):
             y_view = pg_fold.viewRange()[1]
             panels = []
             for name, sel, a, d, s, n in (
-                    ("Odd", fold["odd"], oe["a_odd"], oe["odd_ppt"], oe["odd_err"], oe["n_odd"]),
-                    ("Even", ~fold["odd"], oe["a_even"], oe["even_ppt"], oe["even_err"],
+                    (self.tr("Odd"), fold["odd"], oe["a_odd"], oe["odd_ppt"], oe["odd_err"], oe["n_odd"]),
+                    (self.tr("Even"), ~fold["odd"], oe["a_even"], oe["even_ppt"], oe["even_err"],
                      oe["n_even"])):
-                pw = pg.PlotWidget(title=f"{name} transits ({n}): {d:.1f} ± {s:.1f} ppt")
+                pw = pg.PlotWidget(title=self.tr("{0} transits ({1}): {2:.1f} ± {3:.1f} ppt").format(name, n, d, s))
                 m = sel & fused
                 pw.plot(fx[m], fy[m], pen=None, symbol="o", symbolSize=4,
                         symbolBrush=pg.mkBrush(150, 190, 255, 130), symbolPen=None)
@@ -5540,8 +5582,8 @@ class ExoPlanetWindow(QDialog):
                         pen=pg.mkPen((200, 200, 200), width=1, style=Qt.PenStyle.DashLine))
                 pw.plot(fold["model_x_h"], 1.0 - a * (1.0 - fold["model_y"]),
                         pen=pg.mkPen((255, 90, 90), width=2))
-                pw.setLabel("bottom", "Hours from mid-transit")
-                pw.setLabel("left", "Relative flux")
+                pw.setLabel("bottom", self.tr("Hours from mid-transit"))
+                pw.setLabel("left", self.tr("Relative flux"))
                 pw.showGrid(True, True, alpha=0.3)
                 pw.setXRange(-x_half, x_half, padding=0.02)
                 pw.setYRange(y_view[0], y_view[1], padding=0)
@@ -5549,10 +5591,10 @@ class ExoPlanetWindow(QDialog):
                 panels.append(pw)
             panels[1].setXLink(panels[0])
             panels[1].setYLink(panels[0])
-            tabs.addTab(oe_page, "Odd / Even")
+            tabs.addTab(oe_page, self.tr("Odd / Even"))
 
         # ── Tab 4: Raw light curve ────────────────────────────────────────────
-        pg_lc = pg.PlotWidget(title="Raw Light Curve")
+        pg_lc = pg.PlotWidget(title=self.tr("Raw Light Curve"))
         # t_jd_good and f_good are already filtered (finite + flag==0)
         # so t_plot and f_norm are the same size — no secondary mask needed
         t_plot = t_jd_good - t_jd_good[0]
@@ -5578,10 +5620,10 @@ class ExoPlanetWindow(QDialog):
                         pen=pg.mkPen("r", style=Qt.PenStyle.DashLine, width=1),
                     )
                 epoch += 1
-        pg_lc.setLabel("bottom", "Days from first obs")
-        pg_lc.setLabel("left", "Relative Flux")
+        pg_lc.setLabel("bottom", self.tr("Days from first obs"))
+        pg_lc.setLabel("left", self.tr("Relative Flux"))
         pg_lc.showGrid(True, True, alpha=0.3)
-        tabs.addTab(pg_lc, "Light Curve")
+        tabs.addTab(pg_lc, self.tr("Light Curve"))
 
         dlg.resize(1000, 700)
         dlg.exec()
@@ -5779,7 +5821,7 @@ class ExoPlanetWindow(QDialog):
                 hits = lib.find_stars_near(float(ra_deg), float(dec_deg),
                                            radius_arcsec=float(radius_arcsec))
                 return ([(int(h.source_id), h.gmag, float(s)) for h, s in hits],
-                        "local Gaia DR3 library")
+                        self.tr("local Gaia DR3 library"))
         except Exception as e:
             print(f"[DEBUG] local Gaia lookup failed: {e}")
         coord = SkyCoord(ra=float(ra_deg) * u.deg, dec=float(dec_deg) * u.deg, frame="icrs")
@@ -5790,9 +5832,9 @@ class ExoPlanetWindow(QDialog):
                 context="exoplanet/gaia")
         except Exception as e:
             print(f"[DEBUG] Gaia DR3 lookup failed on every VizieR mirror: {e}")
-            return [], "Gaia DR3 unreachable (no local library, VizieR mirrors down)"
+            return [], self.tr("Gaia DR3 unreachable (no local library, VizieR mirrors down)")
         if not tbls or len(tbls) == 0 or len(tbls[0]) == 0:
-            return [], f"Gaia DR3 via {host}"
+            return [], self.tr("Gaia DR3 via {0}").format(host)
         t = tbls[0]
         sc = SkyCoord(ra=np.asarray(t["RA_ICRS"], float) * u.deg,
                       dec=np.asarray(t["DE_ICRS"], float) * u.deg, frame="icrs")
@@ -5805,7 +5847,7 @@ class ExoPlanetWindow(QDialog):
             except (TypeError, ValueError):
                 g = None                       # masked
             rows.append((int(t["Source"][j]), g, float(sep[j])))
-        return rows, f"Gaia DR3 via {host}"
+        return rows, self.tr("Gaia DR3 via {0}").format(host)
 
     def _identify_from_gaia(self, ra, dec, idx=None):
         """
@@ -5816,9 +5858,9 @@ class ExoPlanetWindow(QDialog):
         """
         st = cds_health.status_text()
         down = "unavailable" in st.lower()
-        head = ("SIMBAD is unreachable right now (every mirror), and VSX has no "
-                "variable within 15″." if down else
-                "No SIMBAD object or VSX variable within 15″.")
+        head = (self.tr("SIMBAD is unreachable right now (every mirror), and VSX has no "
+                        "variable within 15″.") if down else
+                self.tr("No SIMBAD object or VSX variable within 15″."))
         rows, where = self._gaia_near(ra, dec, 15.0)
         pos = SkyCoord(ra=ra * u.deg, dec=dec * u.deg).to_string("hmsdms", sep=":", precision=1)
         if rows:
@@ -5827,23 +5869,23 @@ class ExoPlanetWindow(QDialog):
             # a neighbour up to 15″ away (the plate solution is good to < 1″).
             if idx is not None and sep <= 3.0:
                 self._set_star_name(idx, f"Gaia DR3 {sid}")
-            lines = [head, "", f"Nearest Gaia DR3 source ({where}):",
+            lines = [head, "", self.tr("Nearest Gaia DR3 source ({0}):").format(where),
                      f"  ID:     Gaia DR3 {sid}"]
             if g is not None:
                 lines.append(f"  G mag:  {g:.2f}")
-            lines.append(f"  Offset: {sep:.1f}″")
+            lines.append(self.tr("  Offset: {0:.1f}″").format(sep))
             if len(rows) > 1:
-                lines.append(f"  ({len(rows) - 1} more Gaia source(s) within 15″)")
-            lines += ["", f"Star position: {pos}"]
+                lines.append(self.tr("  ({0} more Gaia source(s) within 15″)").format(len(rows) - 1))
+            lines += ["", self.tr("Star position: {0}").format(pos)]
             body = "\n".join(lines)
         else:
-            body = f"{head}\n\nNo Gaia DR3 source within 15″ either ({where}).\n\nStar position: {pos}"
+            body = self.tr("{0}\n\nNo Gaia DR3 source within 15″ either ({1}).\n\nStar position: {2}").format(head, where, pos)
         if down:
             body += f"\n\n{st}"
         msg = QMessageBox(self)
-        msg.setWindowTitle("Identify Star")
+        msg.setWindowTitle(self.tr("Identify Star"))
         msg.setText(body)
-        sim_btn = msg.addButton("Open in SIMBAD", QMessageBox.ButtonRole.ActionRole)
+        sim_btn = msg.addButton(self.tr("Open in SIMBAD"), QMessageBox.ButtonRole.ActionRole)
         msg.addButton(QMessageBox.StandardButton.Ok)
         msg.exec()
         if msg.clickedButton() == sim_btn:
@@ -5856,7 +5898,7 @@ class ExoPlanetWindow(QDialog):
     def on_identify_star(self):
         radec = self.get_selected_star_radec()
         if radec is None:
-            QMessageBox.warning(self, "Identify Star", "Please select exactly one star first.")
+            QMessageBox.warning(self, self.tr("Identify Star"), self.tr("Please select exactly one star first."))
             return
         ra, dec = radec
         sel = self.star_list.selectedItems()
@@ -5881,15 +5923,15 @@ class ExoPlanetWindow(QDialog):
 
         simbad_url = cds_health.simbad_web_url(f"sim-id?Ident={quote(main_id)}")
         msg = QMessageBox(self)
-        msg.setWindowTitle("SIMBAD/VSX Lookup")
-        msg.setText(
-            f"Best match{tag}:\n"
-            f"  ID:     {main_id}\n"
-            f"  Type:   {obj_type}\n"
-            f"  V mag:  {vmag_str}\n"
-            f"  Offset: {off_str}"
-        )
-        open_btn = msg.addButton("Open in SIMBAD", QMessageBox.ButtonRole.ActionRole)
+        msg.setWindowTitle(self.tr("SIMBAD/VSX Lookup"))
+        msg.setText(self.tr(
+            "Best match{0}:\n"
+            "  ID:     {1}\n"
+            "  Type:   {2}\n"
+            "  V mag:  {3}\n"
+            "  Offset: {4}"
+        ).format(tag, main_id, obj_type, vmag_str, off_str))
+        open_btn = msg.addButton(self.tr("Open in SIMBAD"), QMessageBox.ButtonRole.ActionRole)
         ok_btn   = msg.addButton(QMessageBox.StandardButton.Ok)
         msg.exec()
         if msg.clickedButton() == open_btn:
@@ -5909,21 +5951,21 @@ class ExoPlanetWindow(QDialog):
     def on_find_star_by_name(self):
         if not self.star_positions:
             QMessageBox.warning(
-                self, "Find Star",
-                "Run photometry first so there are detected stars to search among."
+                self, self.tr("Find Star"),
+                self.tr("Run photometry first so there are detected stars to search among.")
             )
             return
         if self._wcs is None:
             QMessageBox.warning(
-                self, "Find Star",
-                "No WCS available — plate-solve during photometry first."
+                self, self.tr("Find Star"),
+                self.tr("No WCS available — plate-solve during photometry first.")
             )
             return
 
         name, ok = QInputDialog.getText(
-            self, "Find Star by Name",
-            "Enter a SIMBAD-resolvable name\n"
-            "(e.g. V336 Aps, HD 12345, TYC 9256-617-1, Gaia DR3 …):",
+            self, self.tr("Find Star by Name"),
+            self.tr("Enter a SIMBAD-resolvable name\n"
+                    "(e.g. V336 Aps, HD 12345, TYC 9256-617-1, Gaia DR3 …):"),
             QLineEdit.EchoMode.Normal, ""
         )
         if not ok or not name.strip():
@@ -5974,37 +6016,38 @@ class ExoPlanetWindow(QDialog):
                     ra_deg = dec_deg = None
 
         if ra_deg is None:
-            self.status_label.setText(f"Resolving “{name}” via Sesame mirrors…")
+            self.status_label.setText(self.tr("Resolving “{0}” via Sesame mirrors…").format(name))
             QApplication.processEvents()
             hit = cds_health.sesame_resolve(
-                name, status_cb=lambda m: (self.status_label.setText(f"Sesame: {m}"),
+                name, status_cb=lambda m: (self.status_label.setText(self.tr("Sesame: {0}").format(m)),
                                            QApplication.processEvents()))
             if hit is not None:
                 ra_deg, dec_deg, _url = hit
-                self.status_label.setText(f"“{name}” resolved via {_url.split('/')[2]}")
+                self.status_label.setText(self.tr("“{0}” resolved via {1}").format(name, _url.split('/')[2]))
             elif simbad_said_unknown or cds_health.sesame_resolve.last == "not found":
                 QMessageBox.information(
-                    self, "Not Found",
-                    f"Neither SIMBAD nor Sesame resolved “{name}”.\n"
-                    "Try a fuller catalog form (e.g. “V* V336 Aps”, “TYC 9256-617-1”)."
+                    self, self.tr("Not Found"),
+                    self.tr("Neither SIMBAD nor Sesame resolved “{0}”.\n"
+                            "Try a fuller catalog form (e.g. “V* V336 Aps”, “TYC 9256-617-1”).").format(name)
                 )
                 return
             else:
                 box = QMessageBox(self)
                 box.setIcon(QMessageBox.Icon.Warning)
-                box.setWindowTitle("Name Resolution Unavailable")
-                box.setText("No SIMBAD or Sesame mirror answered.")
-                box.setInformativeText(
+                box.setWindowTitle(self.tr("Name Resolution Unavailable"))
+                box.setText(self.tr("No SIMBAD or Sesame mirror answered."))
+                box.setInformativeText(self.tr(
                     "Every SIMBAD mirror and every Sesame mirror was tried. You can "
                     "still select the star directly in the image.\n\n"
                     "CDS status: https://cds.unistra.fr"
-                )
-                box.setDetailedText(
-                    f"{cds_health.status_text()}\n\nSIMBAD mirrors:\n"
-                    f"{cds_health.status_detail()}\n\nSesame: "
-                    f"{cds_health.sesame_resolve.last}"
-                )
-                retry = box.addButton("Re-test mirrors",
+                ))
+                box.setDetailedText(self.tr(
+                    "{0}\n\nSIMBAD mirrors:\n"
+                    "{1}\n\nSesame: "
+                    "{2}"
+                ).format(cds_health.status_text(), cds_health.status_detail(),
+                         cds_health.sesame_resolve.last))
+                retry = box.addButton(self.tr("Re-test mirrors"),
                                       QMessageBox.ButtonRole.ActionRole)
                 box.addButton(QMessageBox.StandardButton.Ok)
                 box.exec()
@@ -6014,7 +6057,7 @@ class ExoPlanetWindow(QDialog):
                     if ok_probe:
                         QMessageBox.information(
                             self, "SIMBAD",
-                            f"SIMBAD is reachable via {srv}. Try the lookup again.")
+                            self.tr("SIMBAD is reachable via {0}. Try the lookup again.").format(srv))
                 return
 
         # 2) sky -> detector pixel coordinates
@@ -6023,7 +6066,7 @@ class ExoPlanetWindow(QDialog):
             xw, yw = self._wcs.world_to_pixel(sky)
             xw = float(xw); yw = float(yw)
         except Exception as e:
-            QMessageBox.warning(self, "Find Star", f"WCS reverse projection failed:\n{e}")
+            QMessageBox.warning(self, self.tr("Find Star"), self.tr("WCS reverse projection failed:\n{0}").format(e))
             return
 
         bin_factor = getattr(self, "_wcs_bin_factor", 1) or 1
@@ -6050,13 +6093,14 @@ class ExoPlanetWindow(QDialog):
 
         if d_near > tol_px:
             QMessageBox.information(
-                self, "Find Star",
-                f"“{name}” resolves to RA/Dec ({ra_deg:.6f}, {dec_deg:.6f})\n"
-                f"= detector pixel ({xd:.1f}, {yd:.1f}), but the closest\n"
-                f"detected star (#{i_near}) is {d_near:.1f} px away — beyond\n"
-                f"the {tol_px:.1f} px tolerance.\n\n"
-                "The star may have been rejected by SEP (too faint / near\n"
-                "the border) or the frame doesn't cover it."
+                self, self.tr("Find Star"),
+                self.tr("“{0}” resolves to RA/Dec ({1:.6f}, {2:.6f})\n"
+                        "= detector pixel ({3:.1f}, {4:.1f}), but the closest\n"
+                        "detected star (#{5}) is {6:.1f} px away — beyond\n"
+                        "the {7:.1f} px tolerance.\n\n"
+                        "The star may have been rejected by SEP (too faint / near\n"
+                        "the border) or the frame doesn't cover it.").format(
+                    name, ra_deg, dec_deg, xd, yd, i_near, d_near, tol_px)
             )
             return
 
@@ -6230,14 +6274,14 @@ class ExoPlanetWindow(QDialog):
 
     def export_data(self):
         if self.fluxes is None or self.times is None:
-            QMessageBox.warning(self, "Export", "No photometry to export. Run Measure & Photometry first.")
+            QMessageBox.warning(self, self.tr("Export"), self.tr("No photometry to export. Run Measure & Photometry first."))
             return
         wcs = self._wcs
         if wcs is None:
-            QMessageBox.warning(self, "Export", "No WCS available. Run plate solve during photometry first.")
+            QMessageBox.warning(self, self.tr("Export"), self.tr("No WCS available. Run plate solve during photometry first."))
             return
 
-        dlg = QFileDialog(self, "Export Light Curves")
+        dlg = QFileDialog(self, self.tr("Export Light Curves"))
         dlg.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
         dlg.setNameFilters(["CSV files (*.csv)", "FITS files (*.fits)"])
         if not dlg.exec():
@@ -6276,7 +6320,7 @@ class ExoPlanetWindow(QDialog):
                 cols[f"STAR_{i}_DEC"] = np.full(n_f, decs[i])
             df = pd.DataFrame(cols)
             df.to_csv(path, index=False)
-            QMessageBox.information(self, "Export CSV", f"Wrote CSV →\n{path}")
+            QMessageBox.information(self, self.tr("Export CSV"), self.tr("Wrote CSV →\n{0}").format(path))
             return
 
         hdr_out = fits.Header()
@@ -6328,7 +6372,7 @@ class ExoPlanetWindow(QDialog):
         primary = fits.PrimaryHDU(header=hdr_out)
         hdul    = fits.HDUList([primary, lc_hdu, stars_hdu])
         hdul.writeto(path, overwrite=True)
-        QMessageBox.information(self, "Export FITS", f"Wrote FITS →\n{path}")
+        QMessageBox.information(self, self.tr("Export FITS"), self.tr("Wrote FITS →\n{0}").format(path))
 
     def estimate_airmass_from_altitude(self, alt_deg):
         alt_rad = np.deg2rad(np.clip(alt_deg, 0.1, 90.0))
@@ -6398,7 +6442,7 @@ class ExoPlanetWindow(QDialog):
         prev_status = self.status_label.text() if hasattr(self, "status_label") else ""
         try:
             if hasattr(self, "status_label"):
-                self.status_label.setText("Per-channel photometry (R/G/B)…")
+                self.status_label.setText(self.tr("Per-channel photometry (R/G/B)…"))
             if hasattr(self, "progress_bar"):
                 self.progress_bar.setMaximum(n_frames)
                 self.progress_bar.setValue(0)
@@ -6432,7 +6476,7 @@ class ExoPlanetWindow(QDialog):
                     QApplication.processEvents()
         finally:
             if hasattr(self, "status_label"):
-                self.status_label.setText(prev_status or "Ready")
+                self.status_label.setText(prev_status or self.tr("Ready"))
 
         # Only publish if at least ONE channel got a finite measurement
         # somewhere (guards against a broken color pass yielding all-NaN).
@@ -6486,14 +6530,14 @@ class ExoPlanetWindow(QDialog):
         try:
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Warning)
-            box.setWindowTitle("Comparison Catalog Unavailable")
-            box.setText(
-                f"Only {n_resolved} of {n_tried} field stars got a catalog "
-                f"magnitude, so the ensemble zero point (needs 3) will be "
-                f"skipped and this export falls back to a single comparison "
-                f"star."
-            )
-            box.setInformativeText(
+            box.setWindowTitle(self.tr("Comparison Catalog Unavailable"))
+            box.setText(self.tr(
+                "Only {0} of {1} field stars got a catalog "
+                "magnitude, so the ensemble zero point (needs 3) will be "
+                "skipped and this export falls back to a single comparison "
+                "star."
+            ).format(n_resolved, n_tried))
+            box.setInformativeText(self.tr(
                 "This is a catalog lookup failure, not a thin field: APASS "
                 "and/or UCAC4 could not be reached.\n\n"
                 "Try another mirror under the wrench \u2192 CDS / SIMBAD "
@@ -6504,7 +6548,7 @@ class ExoPlanetWindow(QDialog):
                 "the Magnitude tool's Step 1 (Fetch Catalog Stars). That "
                 "caches comparison magnitudes from the local Gaia XP "
                 "library and needs no network at all."
-            )
+            ))
             box.setDetailedText("\n".join(errs))
             box.exec()
         except Exception:
@@ -6677,11 +6721,11 @@ class ExoPlanetWindow(QDialog):
         catalog can't cover that band."""
         wcs = self._wcs
         if wcs is None:
-            QMessageBox.warning(self, "Export AAVSO", "No WCS available.")
+            QMessageBox.warning(self, self.tr("Export AAVSO"), self.tr("No WCS available."))
             return
         if self.raw_flux_rgb is None or self.raw_flux_err_rgb is None:
-            QMessageBox.warning(self, "Export AAVSO",
-                                "No per-channel photometry available.")
+            QMessageBox.warning(self, self.tr("Export AAVSO"),
+                                self.tr("No per-channel photometry available."))
             return
 
         # -- STARID ---------------------------------------------------------
@@ -6704,8 +6748,8 @@ class ExoPlanetWindow(QDialog):
                 print(f"[DEBUG] VSX coordinate lookup failed: {e}")
         star_id = _aavso_starid(_vsx_id or star_id or "")
         star_id, ok = QInputDialog.getText(
-            self, "Target Star Name",
-            "AAVSO STARID for this target:",
+            self, self.tr("Target Star Name"),
+            self.tr("AAVSO STARID for this target:"),
             QLineEdit.EchoMode.Normal, star_id or ""
         )
         if not ok or not star_id.strip():
@@ -6716,7 +6760,7 @@ class ExoPlanetWindow(QDialog):
         settings = QSettings()
         prev_code = settings.value("AAVSO/observer_code", "", type=str)
         code, ok = QInputDialog.getText(
-            self, "Observer Code", "Enter your AAVSO observer code:",
+            self, self.tr("Observer Code"), self.tr("Enter your AAVSO observer code:"),
             QLineEdit.EchoMode.Normal, prev_code
         )
         if not ok:
@@ -6726,9 +6770,9 @@ class ExoPlanetWindow(QDialog):
 
         prev_floor = float(settings.value("AAVSO/sys_floor_mag", 0.10, type=float))
         sys_floor, ok = QInputDialog.getDouble(
-            self, "Systematic Floor",
-            "Systematic error floor (mag) added in quadrature to MERR.\n"
-            "  0.10 = defensive default;  0.05 ≈ PixInsight;  0.00 disables.",
+            self, self.tr("Systematic Floor"),
+            self.tr("Systematic error floor (mag) added in quadrature to MERR.\n"
+                    "  0.10 = defensive default;  0.05 ≈ PixInsight;  0.00 disables."),
             value=prev_floor, min=0.00, max=0.30, decimals=3
         )
         if not ok:
@@ -6752,15 +6796,15 @@ class ExoPlanetWindow(QDialog):
                 break
         if kname is None:
             kname, ok = QInputDialog.getText(
-                self, "Check Star Name",
-                "Could not auto-identify a check star. Enter check-star ID:"
+                self, self.tr("Check Star Name"),
+                self.tr("Could not auto-identify a check star. Enter check-star ID:")
             )
             if not ok or not kname.strip():
                 return
             kname = kname.strip()
             k_idx, ok = QInputDialog.getInt(
-                self, "Check Star",
-                "Enter the list index (#) of the check star used for calibration:",
+                self, self.tr("Check Star"),
+                self.tr("Enter the list index (#) of the check star used for calibration:"),
                 0, 0, max(0, len(self.star_positions) - 1)
             )
             if not ok:
@@ -6774,21 +6818,22 @@ class ExoPlanetWindow(QDialog):
         # David saw exactly this on TB/TR for V336 Aps). For most stars
         # V is within a magnitude or so of B and R, so if the user
         # doesn't know the exact value, V is a defensible fallback.
-        for ch, prompt_label in (("B", "B"), ("G", "V (green anchor)"), ("R", "R")):
+        for ch, prompt_label in (("B", "B"), ("G", self.tr("V (green anchor)")), ("R", "R")):
             if kmags.get(ch) is None:
                 _v_default = float(kmags.get("G") or 0.0)
                 _has_v_hint = kmags.get("G") is not None
                 _hint = (
-                    f"\n\nDefaulted to V-mag ({_v_default:.3f}) as a plausible"
-                    f"\nfallback. Edit for accuracy or Cancel to skip this band."
+                    self.tr("\n\nDefaulted to V-mag ({0:.3f}) as a plausible"
+                            "\nfallback. Edit for accuracy or Cancel to skip this band.").format(_v_default)
                     if _has_v_hint else
-                    "\n\nCancel to skip this band."
+                    self.tr("\n\nCancel to skip this band.")
                 )
                 val, ok = QInputDialog.getDouble(
-                    self, f"Check-Star {prompt_label} Magnitude",
-                    f"Catalog {prompt_label} magnitude for {kname}\n"
-                    f"(needed to calibrate the {aav.RGB_FILTER_MAP[ch][0]} channel)."
-                    f"{_hint}",
+                    self, self.tr("Check-Star {0} Magnitude").format(prompt_label),
+                    self.tr("Catalog {0} magnitude for {1}\n"
+                            "(needed to calibrate the {2} channel).").format(
+                        prompt_label, kname, aav.RGB_FILTER_MAP[ch][0])
+                    + _hint,
                     value=(kmags.get("G") if kmags.get("G") is not None else 0.0),
                     min=-5.0, max=30.0, decimals=3
                 )
@@ -6799,7 +6844,7 @@ class ExoPlanetWindow(QDialog):
 
         # -- File path -----------------------------------------------------
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save AAVSO File (multi-band)", "",
+            self, self.tr("Save AAVSO File (multi-band)"), "",
             "Text files (*.txt *.dat *.csv)"
         )
         if not path:
@@ -6990,9 +7035,9 @@ class ExoPlanetWindow(QDialog):
 
         if not any(v is not None for v in per_ch.values()):
             QMessageBox.warning(
-                self, "Export AAVSO",
-                "None of the R/G/B channels could be calibrated — no catalog\n"
-                "comparison stars and no check-star magnitude for any band."
+                self, self.tr("Export AAVSO"),
+                self.tr("None of the R/G/B channels could be calibrated — no catalog\n"
+                        "comparison stars and no check-star magnitude for any band.")
             )
             return
 
@@ -7041,7 +7086,7 @@ class ExoPlanetWindow(QDialog):
                 if not np.isfinite(m):
                     # No MAG to report — drop the row entirely.
                     _skipped_by_filt[filt_lbl] = _skipped_by_filt.get(filt_lbl, 0) + 1
-                    _skip_reasons.add("non-finite MAG")
+                    _skip_reasons.add(self.tr("non-finite MAG"))
                     continue
                 # Per-band comparison identity (tier-dependent: ENSEMBLE vs single).
                 frame_cnames[ch] = pc[3]
@@ -7079,16 +7124,16 @@ class ExoPlanetWindow(QDialog):
 
         if not rows:
             QMessageBox.warning(
-                self, "Export AAVSO",
-                "No frames produced a finite calibrated magnitude in any band."
+                self, self.tr("Export AAVSO"),
+                self.tr("No frames produced a finite calibrated magnitude in any band.")
             )
             return
 
         # -- #RA / #DEC come from the selected star's WCS position ---------
         radec = self.get_selected_star_radec()
         if radec is None:
-            QMessageBox.warning(self, "Export AAVSO",
-                                "Could not determine RA/Dec of selected star.")
+            QMessageBox.warning(self, self.tr("Export AAVSO"),
+                                self.tr("Could not determine RA/Dec of selected star."))
             return
 
         try:
@@ -7097,7 +7142,7 @@ class ExoPlanetWindow(QDialog):
             with open(path, "w") as f:
                 f.write(body)
         except Exception as e:
-            QMessageBox.critical(self, "Export AAVSO", f"Failed to write file:\n{e}")
+            QMessageBox.critical(self, self.tr("Export AAVSO"), self.tr("Failed to write file:\n{0}").format(e))
             return
 
         n_by_filt = {}
@@ -7112,8 +7157,8 @@ class ExoPlanetWindow(QDialog):
             _skip_breakdown = ", ".join(
                 f"{k}:{v}" for k, v in sorted(_skipped_by_filt.items())
             )
-            _reason_txt = "; ".join(sorted(_skip_reasons)) if _skip_reasons else "invalid"
-            _skip_lines.append(f"Skipped: {_skip_breakdown}  ({_reason_txt})")
+            _reason_txt = "; ".join(sorted(_skip_reasons)) if _skip_reasons else self.tr("invalid")
+            _skip_lines.append(self.tr("Skipped: {0}  ({1})").format(_skip_breakdown, _reason_txt))
 
         # summary of emitted-with-MERR=na (per David msg 6)
         if _na_by_filt:
@@ -7121,19 +7166,19 @@ class ExoPlanetWindow(QDialog):
                 f"{k}:{v}" for k, v in sorted(_na_by_filt.items())
             )
             _skip_lines.append(
-                f"MERR=na: {_na_breakdown}  (row kept but MERR exceeded {_MERR_MAX:.1f})"
+                self.tr("MERR=na: {0}  (row kept but MERR exceeded {1:.1f})").format(_na_breakdown, _MERR_MAX)
             )
 
-        _body = f"Wrote {len(rows)} row(s) → {path}\n\nBy filter: {breakdown}"
+        _body = self.tr("Wrote {0} row(s) → {1}\n\nBy filter: {2}").format(len(rows), path, breakdown)
         for _ln in _skip_lines:
             _body += f"\n{_ln}"
-        _body += "\n\nOpen AAVSO WebObs upload page now?"
+        _body += self.tr("\n\nOpen AAVSO WebObs upload page now?")
 
         msg = QMessageBox(self)
-        msg.setWindowTitle("Export AAVSO")
+        msg.setWindowTitle(self.tr("Export AAVSO"))
         msg.setText(_body)
-        yes = msg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
-        msg.addButton("No", QMessageBox.ButtonRole.RejectRole)
+        yes = msg.addButton(self.tr("Yes"), QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton(self.tr("No"), QMessageBox.ButtonRole.RejectRole)
         msg.exec()
         if msg.clickedButton() == yes:
             webbrowser.open("https://www.aavso.org/webobs/file")
@@ -7245,27 +7290,27 @@ class ExoPlanetWindow(QDialog):
 
     def export_to_aavso(self):
         if getattr(self, "fluxes", None) is None or getattr(self, "times", None) is None:
-            QMessageBox.warning(self, "Export AAVSO", "No photometry available. Run Measure & Photometry first.")
+            QMessageBox.warning(self, self.tr("Export AAVSO"), self.tr("No photometry available. Run Measure & Photometry first."))
             return
         wcs = self._wcs
         if wcs is None:
-            QMessageBox.warning(self, "Export AAVSO", "No WCS available. Plate-solve first.")
+            QMessageBox.warning(self, self.tr("Export AAVSO"), self.tr("No WCS available. Plate-solve first."))
             return
 
         sels = self.star_list.selectedItems()
         if len(sels) != 1:
-            QMessageBox.warning(self, "Export AAVSO", "Please select exactly one star before exporting.")
+            QMessageBox.warning(self, self.tr("Export AAVSO"), self.tr("Please select exactly one star before exporting."))
             return
         idx = sels[0].data(Qt.ItemDataRole.UserRole)
 
         # Offer a multi-band (TB+TG+TR) export when color photometry is on hand.
         if getattr(self, "raw_flux_rgb", None) is not None:
             reply = QMessageBox.question(
-                self, "Multi-Band Export",
-                "Color (R/G/B) photometry is available for this dataset.\n\n"
-                "Export as multi-band AAVSO (TB + TG + TR)?\n"
-                "  Yes  → one file with interleaved TB/TG/TR rows\n"
-                "  No   → single-band export (choose one filter code)",
+                self, self.tr("Multi-Band Export"),
+                self.tr("Color (R/G/B) photometry is available for this dataset.\n\n"
+                        "Export as multi-band AAVSO (TB + TG + TR)?\n"
+                        "  Yes  → one file with interleaved TB/TG/TR rows\n"
+                        "  No   → single-band export (choose one filter code)"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes
             )
@@ -7291,34 +7336,35 @@ class ExoPlanetWindow(QDialog):
                 print(f"[DEBUG] VSX coordinate lookup failed: {e}")
         star_id = _aavso_starid(_vsx_id or star_id or "")
         if not star_id:
-            star_id, ok = QInputDialog.getText(self, "Target Star Name", "Could not auto-identify.  Enter target star name for STARID:", QLineEdit.EchoMode.Normal, "")
+            star_id, ok = QInputDialog.getText(self, self.tr("Target Star Name"), self.tr("Could not auto-identify.  Enter target star name for STARID:"), QLineEdit.EchoMode.Normal, "")
             if not ok or not star_id.strip():
                 return
             star_id = star_id.strip()
 
         if not hasattr(self, "exposure_time") or self.exposure_time is None:
-            exp, ok = QInputDialog.getDouble(self, "Exposure Time", "No EXPOSURE found in headers. Please enter exposure time (s):", decimals=1)
+            exp, ok = QInputDialog.getDouble(self, self.tr("Exposure Time"), self.tr("No EXPOSURE found in headers. Please enter exposure time (s):"), decimals=1)
             if not ok: return
             self.exposure_time = exp
 
         settings = QSettings()
         prev_code = settings.value("AAVSO/observer_code", "", type=str)
-        code, ok = QInputDialog.getText(self, "Observer Code", "Enter your AAVSO observer code:", QLineEdit.EchoMode.Normal, prev_code)
+        code, ok = QInputDialog.getText(self, self.tr("Observer Code"), self.tr("Enter your AAVSO observer code:"), QLineEdit.EchoMode.Normal, prev_code)
         if not ok: return
         code = code.strip().upper()
         settings.setValue("AAVSO/observer_code", code)
 
-        fmt, ok = QInputDialog.getItem(self, "AAVSO Format", "Choose submission format:", ["Variable-Star Photometry", "Exoplanet Report"], 0, False)
+        _fmts = [self.tr("Variable-Star Photometry"), self.tr("Exoplanet Report")]
+        fmt, ok = QInputDialog.getItem(self, self.tr("AAVSO Format"), self.tr("Choose submission format:"), _fmts, 0, False)
         if not ok: return
-        if fmt == "Exoplanet Report":
+        if fmt == _fmts[1]:
             # This choice used to fall through and write the variable-star
             # format.  An exoplanet report is the product of a transit fit
             # (Tc, Rp/R*, airmass terms, BJD_TDB), so it is written there.
             QMessageBox.information(
-                self, "AAVSO Exoplanet Report",
-                "The exoplanet report is written from a transit fit.\n\n"
-                "The Transit Fit window will open for this star: run the fit, "
-                "then use its “AAVSO Report…” button.")
+                self, self.tr("AAVSO Exoplanet Report"),
+                self.tr("The exoplanet report is written from a transit fit.\n\n"
+                        "The Transit Fit window will open for this star: run the fit, "
+                        "then use its “AAVSO Report…” button."))
             self.on_fit_transit()
             return
 
@@ -7336,18 +7382,18 @@ class ExoPlanetWindow(QDialog):
                 kname, kmag, k_idx = _aavso_starid(name), v, m
                 break
         if kname is None:
-            kname, ok = QInputDialog.getText(self, "Check Star Name", "Could not auto-identify a check star. Enter check-star ID:")
+            kname, ok = QInputDialog.getText(self, self.tr("Check Star Name"), self.tr("Could not auto-identify a check star. Enter check-star ID:"))
             if not ok or not kname.strip(): return
             kname = kname.strip()
-            kmag, ok = QInputDialog.getDouble(self, "Check Star Magnitude", f"Enter catalog magnitude for {kname}:", decimals=3)
+            kmag, ok = QInputDialog.getDouble(self, self.tr("Check Star Magnitude"), self.tr("Enter catalog magnitude for {0}:").format(kname), decimals=3)
             if not ok: return
 
         # Calibration needs the check star's MEASURED flux row. If it wasn't
         # auto-identified above, ask which list entry it is.
         if k_idx is None:
             k_idx, ok = QInputDialog.getInt(
-                self, "Check Star",
-                "Enter the list index (#) of the check star used for calibration:",
+                self, self.tr("Check Star"),
+                self.tr("Enter the list index (#) of the check star used for calibration:"),
                 0, 0, max(0, len(self.star_positions) - 1))
             if not ok:
                 return
@@ -7372,18 +7418,18 @@ class ExoPlanetWindow(QDialog):
         prev_filt   = settings.value("AAVSO/last_filter", "V", type=str)
         default_idx = filt_choices.index(prev_filt) if prev_filt in filt_choices else 0
         filt, ok = QInputDialog.getItem(
-            self, "Filter",
-            "Select AAVSO filter code for this dataset:\n"
-            "  V/B/U/R/I — Johnson–Cousins\n"
-            "  TG/TB/TR/TI — DSLR / OSC tri-color channels\n"
-            "  CV/CR/CBB/CM — unfiltered CCD reduced to V/R\n"
-            "  SU..SZ — Sloan; HA/HAC — H-alpha; J/H/K — near-IR",
+            self, self.tr("Filter"),
+            self.tr("Select AAVSO filter code for this dataset:\n"
+                    "  V/B/U/R/I — Johnson–Cousins\n"
+                    "  TG/TB/TR/TI — DSLR / OSC tri-color channels\n"
+                    "  CV/CR/CBB/CM — unfiltered CCD reduced to V/R\n"
+                    "  SU..SZ — Sloan; HA/HAC — H-alpha; J/H/K — near-IR"),
             filt_choices, default_idx, False
         )
         if not ok: return
         settings.setValue("AAVSO/last_filter", filt)
 
-        path, _ = QFileDialog.getSaveFileName(self, "Save AAVSO File", "", "Text files (*.txt *.dat *.csv)")
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("Save AAVSO File"), "", "Text files (*.txt *.dat *.csv)")
         if not path: return
 
         header_lines = [
@@ -7396,7 +7442,7 @@ class ExoPlanetWindow(QDialog):
         ]
         radec = self.get_selected_star_radec()
         if radec is None:
-            QMessageBox.warning(self, "Export AAVSO", "Could not determine RA/Dec of selected star.")
+            QMessageBox.warning(self, self.tr("Export AAVSO"), self.tr("Could not determine RA/Dec of selected star."))
             return
         c = SkyCoord(ra=radec[0]*u.deg, dec=radec[1]*u.deg, frame="icrs")
         header_lines += [
@@ -7597,20 +7643,20 @@ class ExoPlanetWindow(QDialog):
                     f.write(",".join(fields) + "\n")
                     _rows_written += 1
         except Exception as e:
-            QMessageBox.critical(self, "Export AAVSO", f"Failed to write file:\n{e}")
+            QMessageBox.critical(self, self.tr("Export AAVSO"), self.tr("Failed to write file:\n{0}").format(e))
             return
 
-        _body = f"Wrote {fmt} ({_rows_written} row(s)) →\n{path}"
+        _body = self.tr("Wrote {0} ({1} row(s)) →\n{2}").format(fmt, _rows_written, path)
         if _na_count > 0:
-            _body += (f"\n\nMERR=na for {_na_count} row(s) "
-                      f"(computed error > {_MERR_MAX:.1f}).")
-        _body += "\n\nOpen AAVSO WebObs upload page now?"
+            _body += self.tr("\n\nMERR=na for {0} row(s) "
+                             "(computed error > {1:.1f}).").format(_na_count, _MERR_MAX)
+        _body += self.tr("\n\nOpen AAVSO WebObs upload page now?")
 
         msg = QMessageBox(self)
-        msg.setWindowTitle("Export AAVSO")
+        msg.setWindowTitle(self.tr("Export AAVSO"))
         msg.setText(_body)
-        yes = msg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
-        msg.addButton("No", QMessageBox.ButtonRole.RejectRole)
+        yes = msg.addButton(self.tr("Yes"), QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton(self.tr("No"), QMessageBox.ButtonRole.RejectRole)
         msg.exec()
         if msg.clickedButton() == yes:
             webbrowser.open("https://www.aavso.org/webobs/file")
@@ -7620,7 +7666,7 @@ class ExoPlanetWindow(QDialog):
     def query_tesscut(self):
         radec = self.get_selected_star_radec()
         if radec is None:
-            QMessageBox.warning(self, "No Star Selected", "Please select a star from the list to fetch TESScut data.")
+            QMessageBox.warning(self, self.tr("No Star Selected"), self.tr("Please select a star from the list to fetch TESScut data."))
             return
         ra, dec = radec
         print(f"[DEBUG] TESScut Query Requested for RA={ra:.6f}, Dec={dec:.6f}")
@@ -7642,12 +7688,12 @@ class ExoPlanetWindow(QDialog):
             except Exception as me:
                 print(f"[DEBUG] Manifest attempt {mtry} failed: {me}")
                 if mtry == MAX_RETRIES:
-                    QMessageBox.information(self, "No TESS Data", "There are no TESS cutouts available at that position.")
-                    self.status_label.setText("No TESScut data found.")
+                    QMessageBox.information(self, self.tr("No TESS Data"), self.tr("There are no TESS cutouts available at that position."))
+                    self.status_label.setText(self.tr("No TESScut data found."))
                     return
                 non_blocking_sleep(2)
 
-        self.status_label.setText("Querying TESScut…")
+        self.status_label.setText(self.tr("Querying TESScut…"))
         QApplication.processEvents()
 
         cache_dir = os.path.join(os.path.expanduser("~"), ".setiastro", "tesscut_cache")
@@ -7691,21 +7737,21 @@ class ExoPlanetWindow(QDialog):
                     print(f"[DEBUG] Clipping {n_clipped} points outside [{lower}, {upper}]×")
                     lc = lc[mask]
 
-                    lc.plot(label=f"Sector {tpf.sector} (clipped)")
-                    plt.title(f"TESS Light Curve - Sector {tpf.sector}")
+                    lc.plot(label=self.tr("Sector {0} (clipped)").format(tpf.sector))
+                    plt.title(self.tr("TESS Light Curve - Sector {0}").format(tpf.sector))
                     plt.tight_layout()
                     plt.show()
 
-                self.status_label.setText("TESScut fetch complete.")
+                self.status_label.setText(self.tr("TESScut fetch complete."))
                 return
 
             except Exception as de:
                 print(f"[ERROR] Download attempt {dtry} failed: {de}")
-                self.status_label.setText(f"TESScut attempt {dtry}/{MAX_RETRIES} failed.")
+                self.status_label.setText(self.tr("TESScut attempt {0}/{1} failed.").format(dtry, MAX_RETRIES))
                 QApplication.processEvents()
                 if dtry == MAX_RETRIES:
-                    QMessageBox.critical(self, "TESScut Error", f"TESScut failed after {MAX_RETRIES} attempts.\n\n{de}")
-                    self.status_label.setText("TESScut fetch failed.")
+                    QMessageBox.critical(self, self.tr("TESScut Error"), self.tr("TESScut failed after {0} attempts.\n\n{1}").format(MAX_RETRIES, de))
+                    self.status_label.setText(self.tr("TESScut fetch failed."))
                 else:
                     non_blocking_sleep(2)
 

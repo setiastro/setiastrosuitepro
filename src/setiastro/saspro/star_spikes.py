@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import math
 import threading
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QCoreApplication
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSplitter, QSizePolicy, QWidget,
                              QFormLayout, QGroupBox, QDoubleSpinBox, QSpinBox, 
                              QMessageBox, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem)
@@ -27,6 +27,10 @@ try:
 except Exception as _e_scipy:
     gaussian_filter = None
     ndi = None
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("StarSpikes", text)
 
 class PreviewView(QGraphicsView):
     def __init__(self, *a, **k):
@@ -168,7 +172,7 @@ class StarSpikesDialogPro(QDialog):
 
         self.flux_min = dspin(0.0, 999999.0, 10.0, 30.0, decimals=1)
         self.detect_thresh = dspin(0.5, 50.0, 0.5, float(self.advanced.get("detect_thresh", 5.0)), decimals=2)
-        self.detect_thresh.setToolTip("σ threshold for SEP detection (higher = fewer stars).")
+        self.detect_thresh.setToolTip(self.tr("σ threshold for SEP detection (higher = fewer stars)."))
         # keep self.advanced in sync if user edits
         self.detect_thresh.valueChanged.connect(lambda v: self.advanced.__setitem__("detect_thresh", float(v)))
 
@@ -181,11 +185,11 @@ class StarSpikesDialogPro(QDialog):
         f_ap.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         f_ap.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        self.pupil_jwst = QPushButton("Circular")
+        self.pupil_jwst = QPushButton(self.tr("Circular"))
         self.pupil_jwst.setCheckable(True)
         self.pupil_jwst.setChecked(False)
         self.pupil_jwst.toggled.connect(lambda on: self._toggle_pupil(on))
-        self.pupil_jwst.setToolTip("Toggle between circular aperture and JWST pupil image.")
+        self.pupil_jwst.setToolTip(self.tr("Toggle between circular aperture and JWST pupil image."))
         self.pupil_jwst.setStyleSheet("""
             QPushButton { min-width: 72px; max-width: 72px; min-height: 28px; max-height: 28px;
                           border-radius: 14px; background:#ccc; border:1px solid #999;}
@@ -206,7 +210,7 @@ class StarSpikesDialogPro(QDialog):
         f_ap.addRow(self.tr("Rotation (deg):"), self.rotation)
 
         # --- Group: PSF & Synthesis ---
-        grp_psf = QGroupBox(self.tr("PSF & Synthesis"))
+        grp_psf = QGroupBox(self.tr("PSF && Synthesis"))
         f_psf = QFormLayout(grp_psf)
         f_psf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         f_psf.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -296,7 +300,7 @@ class StarSpikesDialogPro(QDialog):
         self._fit_mode = True  # start fitted
 
     def _toggle_pupil(self, jwst: bool):
-        self.pupil_jwst.setText("JWST" if jwst else "Circular")
+        self.pupil_jwst.setText("JWST" if jwst else self.tr("Circular"))
         # hide circular-only params when JWST pupil is used
         for w in (self.num_vanes, self.vane_width, self.obstruction, self.radius):
             w.setVisible(not jwst)
@@ -343,14 +347,14 @@ class StarSpikesDialogPro(QDialog):
     @staticmethod
     def _doc_label(doc) -> str:
         if doc is None:
-            return "no image"
+            return _tr("no image")
         try:
             n = doc.display_name()
             if n:
                 return str(n)
         except Exception:
             pass
-        return getattr(doc, "name", None) or "image"
+        return getattr(doc, "name", None) or _tr("image")
 
     def _hook_active_doc_following(self):
         if not self._follow_active:
@@ -444,7 +448,7 @@ class StarSpikesDialogPro(QDialog):
         if not self.doc or getattr(self.doc, "image", None) is None:
             self._img_src = None
             self._img_src_doc = None
-            self.status.setText("No active image.")
+            self.status.setText(self.tr("No active image."))
             return
         arr = np.asarray(self.doc.image)
         if arr.dtype != np.float32:
@@ -459,7 +463,7 @@ class StarSpikesDialogPro(QDialog):
                 arr = arr / (65535.0 if mx > 5.0 else mx)
         self._img_src = np.clip(arr, 0.0, 1.0)
         self._img_src_doc = self.doc
-        self.status.setText(f"Ready — {self._doc_label(self.doc)}")
+        self.status.setText(self.tr("Ready — {0}").format(self._doc_label(self.doc)))
 
     def apply_preset(self, p: dict):
         if not p:
@@ -492,7 +496,7 @@ class StarSpikesDialogPro(QDialog):
         """
         if self._busy:
             self._rerun_pending = True
-            self.status.setText("Working… will run again with the current settings.")
+            self.status.setText(self.tr("Working… will run again with the current settings."))
             return
         self._busy = True
         try:
@@ -514,15 +518,15 @@ class StarSpikesDialogPro(QDialog):
         if self._img_src is None or self._img_src_doc is not self.doc:
             self._load_active_image()
         if self._img_src is None:
-            QMessageBox.information(self, "Diffraction Spikes", "No active image.")
+            QMessageBox.information(self, self.tr("Diffraction Spikes"), self.tr("No active image."))
             return False
 
         # deps check
         if sep is None:
-            QMessageBox.critical(self, "Missing Dependency", "python-sep is required for star detection.")
+            QMessageBox.critical(self, self.tr("Missing Dependency"), self.tr("python-sep is required for star detection."))
             return False
         if gaussian_filter is None or ndi is None:
-            QMessageBox.critical(self, "Missing Dependency", "scipy.ndimage is required.")
+            QMessageBox.critical(self, self.tr("Missing Dependency"), self.tr("scipy.ndimage is required."))
             return False
 
         # Capture the target for the whole run: a view switch mid-run must not
@@ -530,7 +534,7 @@ class StarSpikesDialogPro(QDialog):
         thresh = float(self.detect_thresh.value())
         self._run_ctx = {"doc": self.doc, "img": self._img_src, "thresh": thresh,
                          "flux_min": float(self.flux_min.value()), "tries": 0}
-        self.status.setText("Detecting stars…")
+        self.status.setText(self.tr("Detecting stars…"))
         self._launch(self._detect_job, self._on_detected, img=self._img_src,
                      thresh=thresh, flux_min=self._run_ctx["flux_min"])
         return True
@@ -595,7 +599,7 @@ class StarSpikesDialogPro(QDialog):
         if self._run_dropped(res):
             return
         if "error" in res:
-            QMessageBox.critical(self, "Diffraction Spikes", f"Star detection failed:\n{res['error']}")
+            QMessageBox.critical(self, self.tr("Diffraction Spikes"), self.tr("Star detection failed:\n{0}").format(res['error']))
             self._finish_run()
             return
         ctx = self._run_ctx
@@ -603,11 +607,11 @@ class StarSpikesDialogPro(QDialog):
         err = res.get("detect_error")
         if err:
             if "internal pixel buffer full" in err:
-                QMessageBox.warning(None, "Star Detection Failed",
-                                    "Star detection failed: internal pixel buffer full.\n"
-                                    "Increase detection threshold or minimum flux.")
+                QMessageBox.warning(None, self.tr("Star Detection Failed"),
+                                    self.tr("Star detection failed: internal pixel buffer full.\n"
+                                    "Increase detection threshold or minimum flux."))
             else:
-                QMessageBox.critical(None, "Star Detection Failed", err)
+                QMessageBox.critical(None, self.tr("Star Detection Failed"), err)
         stars = res["stars"]
         thresh = ctx["thresh"]
 
@@ -619,13 +623,13 @@ class StarSpikesDialogPro(QDialog):
             suggested = min(50.0, max(ref + 1.0,
                                       ref * (len(stars) / float(self.WARN_LIMIT))**0.5))
             msg = QMessageBox(self)
-            msg.setWindowTitle("Too Many Stars Detected")
+            msg.setWindowTitle(self.tr("Too Many Stars Detected"))
             msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setText(f"{len(stars)} stars detected (limit {self.WARN_LIMIT}).\n"
-                        "Increase the detection threshold to reduce clutter?")
-            raise_btn = msg.addButton(f"Raise to σ={suggested:.2f}", QMessageBox.ButtonRole.AcceptRole)
-            cont_btn  = msg.addButton("Continue Anyway", QMessageBox.ButtonRole.DestructiveRole)
-            cancel_btn= msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            msg.setText(self.tr("{0} stars detected (limit {1}).\n"
+                                "Increase the detection threshold to reduce clutter?").format(len(stars), self.WARN_LIMIT))
+            raise_btn = msg.addButton(self.tr("Raise to σ={0:.2f}").format(suggested), QMessageBox.ButtonRole.AcceptRole)
+            cont_btn  = msg.addButton(self.tr("Continue Anyway"), QMessageBox.ButtonRole.DestructiveRole)
+            cancel_btn= msg.addButton(self.tr("Cancel"), QMessageBox.ButtonRole.RejectRole)
             msg.setDefaultButton(raise_btn)
             msg.exec()
             if self._pending_close:          # closed while the question was up
@@ -637,7 +641,7 @@ class StarSpikesDialogPro(QDialog):
                 ctx["thresh"] = thresh = suggested
                 ctx["tries"] += 1
                 self.detect_thresh.setValue(thresh)  # reflect in UI
-                self.status.setText(f"Re-detecting stars at σ={thresh:.2f}…")
+                self.status.setText(self.tr("Re-detecting stars at σ={0:.2f}…").format(thresh))
                 self._launch(self._detect_job, self._on_detected, img=ctx["img"],
                              thresh=thresh, flux_min=ctx["flux_min"],
                              lin=ctx["lin"], base=ctx["base"], prep=ctx["prep"])
@@ -645,13 +649,13 @@ class StarSpikesDialogPro(QDialog):
             elif clicked is cont_btn:
                 pass
             else:  # cancel (cancel_btn, or the box was closed)
-                self.status.setText("Cancelled.")
+                self.status.setText(self.tr("Cancelled."))
                 self._finish_run()
                 return
 
         if len(stars) == 0:
-            self.status.setText("No stars found.")
-            QMessageBox.information(self, "Diffraction Spikes", "No stars found above flux_min.")
+            self.status.setText(self.tr("No stars found."))
+            QMessageBox.information(self, self.tr("Diffraction Spikes"), self.tr("No stars found above flux_min."))
             self._finish_run()
             return
         self._start_render(stars)
@@ -659,11 +663,11 @@ class StarSpikesDialogPro(QDialog):
     def _start_render(self, stars):
         ctx = self._run_ctx
         ctx["n_stars"] = len(stars)
-        self.status.setText(f"Building pupil/PSFs… ({len(stars)} stars)")
+        self.status.setText(self.tr("Building pupil/PSFs… ({0} stars)").format(len(stars)))
         jwst = self.pupil_jwst.isChecked()
         if jwst and (cv2 is None or not self.jwstpupil_path):
-            QMessageBox.critical(self, "Missing JWST Pupil",
-                                 "OpenCV not available or JWST pupil image path missing.")
+            QMessageBox.critical(self, self.tr("Missing JWST Pupil"),
+                                 self.tr("OpenCV not available or JWST pupil image path missing."))
             self._finish_run()
             return
         p = {"jwst": jwst, "jwst_path": self.jwstpupil_path,
@@ -695,7 +699,7 @@ class StarSpikesDialogPro(QDialog):
         if cancelled():
             return {"cancelled": True}
 
-        report("Synthesizing spikes…")
+        report(_tr("Synthesizing spikes…"))
         H, W = img.shape[:2]
         canvas = np.zeros((H, W, 3), dtype=np.float32)
 
@@ -798,7 +802,7 @@ class StarSpikesDialogPro(QDialog):
         if cancelled():
             return {"cancelled": True}
 
-        report("Compositing…")
+        report(_tr("Compositing…"))
         if lin.ndim == 3:
             spiked_lin = np.clip(lin + canvas, 0, 1)
         else:
@@ -832,7 +836,7 @@ class StarSpikesDialogPro(QDialog):
         if self._run_dropped(res):
             return
         if "error" in res:
-            QMessageBox.critical(self, "Diffraction Spikes", f"Failed to generate spikes:\n{res['error']}")
+            QMessageBox.critical(self, self.tr("Diffraction Spikes"), self.tr("Failed to generate spikes:\n{0}").format(res['error']))
             self._finish_run()
             return
         ctx = self._run_ctx
@@ -843,22 +847,23 @@ class StarSpikesDialogPro(QDialog):
         self.btn_apply.setEnabled(True)
         note = ""
         if ctx["sigma"] != ctx["thresh"]:
-            note = (f" {ctx['n_stars']} stars, detected at σ={ctx['sigma']:g}: this field has too "
-                    f"much faint signal over σ={ctx['thresh']:g} to detect it quickly.")
-        self.status.setText(f"Done — {self._doc_label(run_doc)}.{note}")
+            note = self.tr(" {0} stars, detected at σ={1:g}: this field has too "
+                           "much faint signal over σ={2:g} to detect it quickly.").format(
+                ctx['n_stars'], ctx['sigma'], ctx['thresh'])
+        self.status.setText(self.tr("Done — {0}.{1}").format(self._doc_label(run_doc), note))
         self._finish_run()
 
     def _apply_to_doc(self):
         if self.final_image is None:
-            QMessageBox.information(self, "Diffraction Spikes", "Nothing to apply yet.")
+            QMessageBox.information(self, self.tr("Diffraction Spikes"), self.tr("Nothing to apply yet."))
             return
 
         # Target the document the spikes were computed from. apply_edit_to_active()
         # would land them on whatever view the user clicked into since Generate.
         doc = self._result_doc or self.doc
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "Diffraction Spikes",
-                                "The target document is no longer available.")
+            QMessageBox.warning(self, self.tr("Diffraction Spikes"),
+                                self.tr("The target document is no longer available."))
             return
 
         out = np.asarray(self.final_image, dtype=np.float32)
@@ -877,10 +882,10 @@ class StarSpikesDialogPro(QDialog):
             else:
                 doc.image = out
         except Exception as e:
-            QMessageBox.critical(self, "Diffraction Spikes", f"Failed to apply:\n{e}")
+            QMessageBox.critical(self, self.tr("Diffraction Spikes"), self.tr("Failed to apply:\n{0}").format(e))
             return
 
-        self.status.setText(f"Applied to {self._doc_label(doc)}.")
+        self.status.setText(self.tr("Applied to {0}.").format(self._doc_label(doc)))
         # keep dialog open so user can tweak more if desired
 
     # ---------- helpers ----------
@@ -899,14 +904,14 @@ class StarSpikesDialogPro(QDialog):
 
     def _show_help(self):
         if not self.aperture_help_path:
-            QMessageBox.information(self, "Aperture Help", "No help image configured.")
+            QMessageBox.information(self, self.tr("Aperture Help"), self.tr("No help image configured."))
             return
         pm = QPixmap(self.aperture_help_path)
         if pm.isNull():
-            QMessageBox.critical(self, "Aperture Help", "Failed to load help image.")
+            QMessageBox.critical(self, self.tr("Aperture Help"), self.tr("Failed to load help image."))
             return
         dlg = QDialog(self)
-        dlg.setWindowTitle("Aperture Help")
+        dlg.setWindowTitle(self.tr("Aperture Help"))
         v = QVBoxLayout(dlg)
         lab = QLabel()
         lab.setPixmap(pm)

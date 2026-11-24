@@ -338,8 +338,8 @@ class UpdateMixin:
         CORRECT_V2_BACKUP   = "https://drive.google.com/file/d/1kquTombkmjxLPycbyYhDtap4U4IUt7Pl/view?usp=sharing"
         CORRECT_V2_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_CorrectV2.zip"
 
-        pd = QProgressDialog("Downloading Aberration Correction V2 model…", "Cancel", 0, 0, self)
-        pd.setWindowTitle("Cosmic Clarity — Aberration Correction V2 Model")
+        pd = QProgressDialog(self.tr("Downloading Aberration Correction V2 model…"), self.tr("Cancel"), 0, 0, self)
+        pd.setWindowTitle(self.tr("Cosmic Clarity — Aberration Correction V2 Model"))
         pd.setWindowModality(Qt.WindowModality.ApplicationModal)
         pd.setAutoClose(True)
         pd.setMinimumDuration(0)
@@ -369,22 +369,22 @@ class UpdateMixin:
                 fid1 = extract_drive_file_id(self._primary or "")
                 fid2 = extract_drive_file_id(self._backup or "")
                 if fid1:
-                    sources.append(("google_drive", fid1, "primary (Google Drive)"))
+                    sources.append(("google_drive", fid1, self.tr("primary (Google Drive)")))
                 if fid2 and fid2 != fid1:
-                    sources.append(("google_drive", fid2, "backup (Google Drive)"))
+                    sources.append(("google_drive", fid2, self.tr("backup (Google Drive)")))
                 if self._tertiary:
-                    sources.append(("http", self._tertiary, "GitHub mirror"))
+                    sources.append(("http", self._tertiary, self.tr("GitHub mirror")))
 
                 for idx, (kind, value, label) in enumerate(sources, start=1):
                     try:
                         if self._cancel:
-                            self.finished.emit(False, "Canceled.")
+                            self.finished.emit(False, self.tr("Canceled."))
                             return
                         try:
                             if os.path.exists(tmp): os.remove(tmp)
                         except Exception:
                             pass
-                        self.progress.emit(f"Trying {label}…")
+                        self.progress.emit(self.tr("Trying {0}…").format(label))
                         if kind == "google_drive":
                             download_google_drive_file(
                                 value, tmp,
@@ -400,11 +400,11 @@ class UpdateMixin:
                         install_models_zip_supplement(
                             tmp, progress_cb=lambda s: self.progress.emit(s)
                         )
-                        self.finished.emit(True, "Aberration Correction V2 model installed.")
+                        self.finished.emit(True, self.tr("Aberration Correction V2 model installed."))
                         return
                     except Exception as e:
                         if idx < len(sources):
-                            self.progress.emit(f"{label} failed, trying next… ({e})")
+                            self.progress.emit(self.tr("{0} failed, trying next… ({1})").format(label, e))
                         else:
                             self.finished.emit(False, str(e))
 
@@ -478,7 +478,7 @@ class UpdateMixin:
                 # No terminal found — run headless
                 subprocess.Popen(["bash", str(update_script)])
         except Exception as e:
-            QMessageBox.warning(self, self.tr("Update"), self.tr(f"Could not launch updater:\n{e}"))
+            QMessageBox.warning(self, self.tr("Update"), self.tr("Could not launch updater:\n{0}").format(e))
             return
 
         from PyQt6.QtWidgets import QApplication
@@ -553,7 +553,7 @@ class UpdateMixin:
                                 self.tr("Could not save update to disk:\n{0}").format(e))
             return
 
-        self.statusBar().showMessage(f"Update downloaded to {target_path}", 5000)
+        self.statusBar().showMessage(self.tr("Update downloaded to {0}").format(target_path), 5000)
 
         # Remove Zone.Identifier ADS from downloaded zip (Windows "blocked" flag)
         if sys.platform.startswith("win"):
@@ -582,7 +582,7 @@ class UpdateMixin:
             if not exe_cands:
                 QMessageBox.warning(
                     self,
-                    "Update Failed",
+                    self.tr("Update Failed"),
                     self.tr("Downloaded ZIP did not contain an .exe installer.\nFolder: {0}").format(extract_dir)
                 )
                 return
@@ -667,20 +667,8 @@ class UpdateMixin:
     
     def _ai4_required_models(self) -> dict[str, list[str]]:
         # Group them so the dialog can be clearer
-        return {
-            "Cosmic Clarity Sharpen (AI4)": [
-                "deep_sharp_stellar_AI4.pth",
-                "deep_sharp_stellar_AI4.onnx",
-                "deep_nonstellar_sharp_conditional_psf_AI4.pth",
-                "deep_nonstellar_sharp_conditional_psf_AI4.onnx",
-            ],
-            "Cosmic Clarity Denoise (AI4)": [
-                "deep_denoise_mono_AI4.pth",
-                "deep_denoise_mono_AI4.onnx",
-                "deep_denoise_color_AI4.pth",
-                "deep_denoise_color_AI4.onnx",
-            ],
-        }
+        from setiastro.saspro.model_manager import AI4_REQUIRED_MODELS
+        return AI4_REQUIRED_MODELS
 
     def _maybe_notify_correct_model_available(self):
         """
@@ -750,6 +738,10 @@ class UpdateMixin:
         missing = self._find_missing_ai4_models()
         if not missing:
             return
+        # Never installed at all: the setup window and its reminder cover a new
+        # user. This warning is for files an update needs that are not there.
+        if not interactive and missing == self._ai4_required_models():
+            return
 
         from setiastro.saspro.model_manager import models_root, read_installed_manifest
         man = read_installed_manifest() or {}
@@ -763,16 +755,16 @@ class UpdateMixin:
                 lines.append(f"  - {fn}")
 
         msg = (
-            "New Cosmic Clarity AI4 models are required, but they were not found.\n\n"
-            f"Models folder:\n{models_root()}\n\n"
-            "Missing files:\n" + "\n".join(lines)
+            self.tr("New Cosmic Clarity AI4 models are required, but they were not found.\n\n"
+                    "Models folder:\n{0}\n\n"
+                    "Missing files:\n").format(models_root()) + "\n".join(lines)
         )
 
         info_bits = []
         if src:
-            info_bits.append(f"Installed source: {src}")
+            info_bits.append(self.tr("Installed source: {0}").format(src))
         if sha:
-            info_bits.append(f"Manifest SHA256: {sha}")
+            info_bits.append(self.tr("Manifest SHA256: {0}").format(sha))
         info = "\n".join(info_bits)
 
         box = QMessageBox(self)
@@ -811,8 +803,8 @@ class UpdateMixin:
         # Easiest: just use the supplement-only path via a minimal worker wrapper.
         # We'll do it directly here using install_models_zip_supplement in a thread.
 
-        pd = QProgressDialog("Downloading Aberration Correction model…", "Cancel", 0, 0, self)
-        pd.setWindowTitle("Cosmic Clarity — Aberration Correction Model")
+        pd = QProgressDialog(self.tr("Downloading Aberration Correction model…"), self.tr("Cancel"), 0, 0, self)
+        pd.setWindowTitle(self.tr("Cosmic Clarity — Aberration Correction Model"))
         pd.setWindowModality(Qt.WindowModality.ApplicationModal)
         pd.setAutoClose(True)
         pd.setMinimumDuration(0)
@@ -844,22 +836,22 @@ class UpdateMixin:
                 fid1 = extract_drive_file_id(self._primary or "")
                 fid2 = extract_drive_file_id(self._backup or "")
                 if fid1:
-                    sources.append(("google_drive", fid1, "primary (Google Drive)"))
+                    sources.append(("google_drive", fid1, self.tr("primary (Google Drive)")))
                 if fid2 and fid2 != fid1:
-                    sources.append(("google_drive", fid2, "backup (Google Drive)"))
+                    sources.append(("google_drive", fid2, self.tr("backup (Google Drive)")))
                 if self._tertiary:
-                    sources.append(("http", self._tertiary, "GitHub mirror"))
+                    sources.append(("http", self._tertiary, self.tr("GitHub mirror")))
 
                 for idx, (kind, value, label) in enumerate(sources, start=1):
                     try:
                         if self._cancel:
-                            self.finished.emit(False, "Canceled.")
+                            self.finished.emit(False, self.tr("Canceled."))
                             return
                         try:
                             if os.path.exists(tmp): os.remove(tmp)
                         except Exception:
                             pass
-                        self.progress.emit(f"Trying {label}…")
+                        self.progress.emit(self.tr("Trying {0}…").format(label))
                         if kind == "google_drive":
                             download_google_drive_file(
                                 value, tmp,
@@ -875,11 +867,11 @@ class UpdateMixin:
                         install_models_zip_supplement(
                             tmp, progress_cb=lambda s: self.progress.emit(s)
                         )
-                        self.finished.emit(True, "Aberration Correction model installed.")
+                        self.finished.emit(True, self.tr("Aberration Correction model installed."))
                         return
                     except Exception as e:
                         if idx < len(sources):
-                            self.progress.emit(f"{label} failed, trying next… ({e})")
+                            self.progress.emit(self.tr("{0} failed, trying next… ({1})").format(label, e))
                         else:
                             self.finished.emit(False, str(e))
 

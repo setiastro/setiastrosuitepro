@@ -49,6 +49,13 @@ from setiastro.saspro.color_space_manager import tag_qimage_with_working_color_s
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.abe_multiscale_gradient import multiscale_gradient_correct
 from setiastro.saspro.thread_keeper import start_owned_thread
+from PyQt6.QtCore import QCoreApplication
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("ABE", text)
+
+
 # =============================================================================
 #                         Headless ABE Core (poly + RBF)
 # =============================================================================
@@ -983,7 +990,7 @@ def abe_run(
     # before any stretching so a legacy_prestretch mapping NaN→huge doesn't
     # hide the no-data wedge. Then OR into any user-supplied exclusion mask.
     if ignore_nodata:
-        if progress_cb: progress_cb("Detecting no-data border/wedge…")
+        if progress_cb: progress_cb(_tr("Detecting no-data border/wedge…"))
         auto_mask = _build_nodata_mask(img_rgb, pad_px=int(nodata_pad_px))
         if auto_mask is not None:
             if exclusion_mask is None:
@@ -996,8 +1003,8 @@ def abe_run(
                     else:
                         # Shape mismatch — can't merge safely; keep the user's.
                         if progress_cb:
-                            progress_cb("No-data mask shape differs from "
-                                        "user exclusion; keeping user mask.")
+                            progress_cb(_tr("No-data mask shape differs from "
+                                        "user exclusion; keeping user mask."))
                 except Exception:
                     pass
 
@@ -1010,11 +1017,11 @@ def abe_run(
 
     orig_med = float(_median_exact(img_rgb_stretched))
 
-    if progress_cb: progress_cb("Downsampling image…")
+    if progress_cb: progress_cb(_tr("Downsampling image…"))
     small = _downsample_area(img_rgb_stretched, downsample)
     mask_small = None
     if exclusion_mask is not None:
-        if progress_cb: progress_cb("Downsampling exclusion mask…")
+        if progress_cb: progress_cb(_tr("Downsampling exclusion mask…"))
         mask_small = _downsample_area(exclusion_mask.astype(np.float32), downsample) >= 0.5
     manual_small = None
     if manual_points is not None:
@@ -1033,10 +1040,10 @@ def abe_run(
 
     # --- Polynomial stage ---
     if degree <= 0:
-        if progress_cb: progress_cb("Degree 0: skipping polynomial stage…")
+        if progress_cb: progress_cb(_tr("Degree 0: skipping polynomial stage…"))
         bg_poly_stretched = np.zeros_like(img_rgb_stretched, dtype=np.float32)
     else:
-        if progress_cb: progress_cb("Sampling points (poly stage)…")
+        if progress_cb: progress_cb(_tr("Sampling points (poly stage)…"))
         if manual_small is not None and len(manual_small) > 0:
             pts = manual_small
         else:
@@ -1047,9 +1054,9 @@ def abe_run(
                 patch_size=patch_size,
                 rng=rng,
             )
-        if progress_cb: progress_cb(f"Fitting polynomial (degree {degree})…")
+        if progress_cb: progress_cb(_tr("Fitting polynomial (degree {0})…").format(degree))
         bg_poly_small = _fit_poly_on_small(small, pts, degree=degree, patch_size=patch_size)
-        if progress_cb: progress_cb("Upscaling polynomial background…")
+        if progress_cb: progress_cb(_tr("Upscaling polynomial background…"))
         bg_poly_stretched = _upscale_bg(bg_poly_small, img_rgb_stretched.shape[:2])
 
     # --- RBF stage ---
@@ -1064,10 +1071,10 @@ def abe_run(
         else:
             after_poly_stretched = img_rgb_stretched.copy()
 
-        if progress_cb: progress_cb("Downsampling for RBF stage…")
+        if progress_cb: progress_cb(_tr("Downsampling for RBF stage…"))
         small_rbf = _downsample_area(after_poly_stretched, downsample)
 
-        if progress_cb: progress_cb("Sampling points (RBF stage)…")
+        if progress_cb: progress_cb(_tr("Sampling points (RBF stage)…"))
         if manual_points is not None and len(manual_points) > 0:
             pts_rbf = _scale_points_to_small(
                 np.asarray(manual_points, dtype=np.int32),
@@ -1094,9 +1101,9 @@ def abe_run(
                 rng=rng,
             )
 
-        if progress_cb: progress_cb(f"Fitting RBF (smooth={rbf_smooth:.3f})…")
+        if progress_cb: progress_cb(_tr("Fitting RBF (smooth={0:.3f})…").format(rbf_smooth))
         bg_rbf_small = _fit_rbf_on_small(small_rbf, pts_rbf, smooth=rbf_smooth, patch_size=patch_size)
-        if progress_cb: progress_cb("Upscaling RBF background…")
+        if progress_cb: progress_cb(_tr("Upscaling RBF background…"))
         bg_rbf_stretched = _upscale_bg(bg_rbf_small, img_rgb_stretched.shape[:2])
 
         # Total background in stretched space
@@ -1111,14 +1118,14 @@ def abe_run(
     # This preserves star colors and all linear photometric relationships.
     # ---------------------------------------------------------------
     if legacy_prestretch and stretch_state is not None:
-        if progress_cb: progress_cb("Unstretching background to linear domain…")
+        if progress_cb: progress_cb(_tr("Unstretching background to linear domain…"))
         total_bg_linear = _legacy_unstretch_unlinked(total_bg_stretched, stretch_state)
         total_bg_linear = total_bg_linear.astype(np.float32, copy=False)
     else:
         total_bg_linear = total_bg_stretched
 
     del img_rgb_stretched, bg_poly_stretched
-    if progress_cb: progress_cb("Applying background correction in linear space…")
+    if progress_cb: progress_cb(_tr("Applying background correction in linear space…"))
     # median(img_rgb) was computed twice (three times in divide mode); it is
     # one value, so compute it once.
     img_rgb_med = float(_median_exact(img_rgb))
@@ -1158,7 +1165,7 @@ def abe_run(
         if total_bg_linear.ndim == 3:
             total_bg_linear = np.ascontiguousarray(total_bg_linear[..., 0])
 
-    if progress_cb: progress_cb("Ready")
+    if progress_cb: progress_cb(_tr("Ready"))
     if return_background:
         return corrected.astype(np.float32, copy=False), total_bg_linear.astype(np.float32, copy=False)
     return corrected.astype(np.float32, copy=False)
@@ -1424,7 +1431,7 @@ def _abe_dialog_compute(imgf: np.ndarray, job: dict, progress=None, status=None,
             # Estimate on a starless copy when DarkStar is available/enabled.
             estimate_from = corrected
             if use_darkstar:
-                if progress: progress("Multiscale: removing stars (DarkStar)…")
+                if progress: progress(_tr("Multiscale: removing stars (DarkStar)…"))
                 try:
                     from setiastro.saspro.remove_stars import darkstar_starless_from_array
                 except Exception as e:
@@ -1440,14 +1447,14 @@ def _abe_dialog_compute(imgf: np.ndarray, job: dict, progress=None, status=None,
 
                         def _ds_status(msg):
                             if status:
-                                try: status(f"Multiscale/DarkStar: {msg}")
+                                try: status(_tr("Multiscale/DarkStar: {0}").format(msg))
                                 except Exception: pass
                             try: _log(f"[Multiscale/DarkStar] {msg}")
                             except Exception: pass
 
                         def _ds_prog(done, total, stage=""):
                             if status:
-                                try: status(f"Multiscale/DarkStar: {stage} {done}/{total}")
+                                try: status(_tr("Multiscale/DarkStar: {0} {1}/{2}").format(stage, done, total))
                                 except Exception: pass
                             # False asks DarkStar to stop (dialog closed / re-run).
                             return not (cancelled is not None and cancelled())
@@ -1460,12 +1467,12 @@ def _abe_dialog_compute(imgf: np.ndarray, job: dict, progress=None, status=None,
                         )
                         if starless is not None:
                             estimate_from = starless
-                            if status: status("Multiscale: DarkStar starless ready.")
+                            if status: status(_tr("Multiscale: DarkStar starless ready."))
                             _log("[Multiscale] DarkStar star removal succeeded; "
                                  "estimating gradient on starless image.")
                         else:
-                            if status: status("Multiscale: DarkStar returned None; "
-                                              "estimating on corrected image.")
+                            if status: status(_tr("Multiscale: DarkStar returned None; "
+                                              "estimating on corrected image."))
                     except Exception as e:
                         import traceback
                         msg = f"Multiscale: DarkStar run FAILED: {e}"
@@ -1531,7 +1538,7 @@ def _abe_dialog_compute(imgf: np.ndarray, job: dict, progress=None, status=None,
                 channels=channels_mode,
                 return_extras=want_structure,
                 return_debug=want_debug,
-                progress_cb=(lambda m: progress(f"Multiscale: {m}") if progress else None),
+                progress_cb=(lambda m: progress(_tr("Multiscale: {0}").format(m)) if progress else None),
             )
 
             # Unpack per the (return_extras, return_debug) return shapes:
@@ -1630,7 +1637,7 @@ def _abe_dialog_job(job: dict, progress, status, log, cancelled) -> dict:
         # Apply right after a Preview with the same settings on the same image:
         # that preview IS this result (the run is deterministic).
         corrected, bg, structure_map, mad_mask = cached
-        status("Using the preview result…")
+        status(_tr("Using the preview result…"))
     else:
         corrected, bg, structure_map, mad_mask = _abe_dialog_compute(
             imgf, job, progress, status, log, cancelled)
@@ -1643,7 +1650,7 @@ def _abe_dialog_job(job: dict, progress, status, log, cancelled) -> dict:
         # If previewing the corrected image, honor the active mask
         if not job["preview_bg"]:
             show = _blend_mask_float(show, imgf, job["mask"])
-        progress("Rendering preview…")
+        progress(_tr("Rendering preview…"))
         res["show"] = show
         res["buf"], res["qimg"] = _render_display_u8(show, job["stretch"])
         res["pre"] = _prescale_qimage(res["qimg"], job.get("view_scale"))
@@ -1883,13 +1890,11 @@ class _ProtectPreviewDialog(QDialog):
         frac = float(m.mean()) * 100.0
         if self._excl is not None:
             self.lbl_stat.setText(
-                f"k = {k:.1f}  →  {frac:.1f}% protected by MAD (red). "
-                f"Drawn exclusions shown in green. Lower k protects more."
+                self.tr("k = {0:.1f}  →  {1:.1f}% protected by MAD (red). Drawn exclusions shown in green. Lower k protects more.").format(k, frac)
             )
         else:
             self.lbl_stat.setText(
-                f"k = {k:.1f}  →  {frac:.1f}% of pixels protected (shown in red). "
-                f"Lower k protects more; higher k protects only the brightest cores."
+                self.tr("k = {0:.1f}  →  {1:.1f}% of pixels protected (shown in red). Lower k protects more; higher k protects only the brightest cores.").format(k, frac)
             )
 
     def resizeEvent(self, e):
@@ -2079,9 +2084,9 @@ class ABEDialog(QDialog):
         self.sp_down.setRange(4, 32)  # minimum 2, not 1
         self.sp_down.setValue(8)
         self.sp_down.setToolTip(
-            "Downsample factor for background fitting.\n"
+            self.tr("Downsample factor for background fitting.\n"
             "Minimum 4 recommended — factor 1 (full resolution) will\n"
-            "cause extreme memory use with RBF refinement enabled."
+            "cause extreme memory use with RBF refinement enabled.")
         )
         self.sp_patch = QSpinBox(); self.sp_patch.setRange(5, 151); self.sp_patch.setSingleStep(2); self.sp_patch.setValue(15)
         self.chk_use_rbf = QCheckBox(self.tr("Enable RBF refinement (after polynomial)")); self.chk_use_rbf.setChecked(True)
@@ -2092,12 +2097,12 @@ class ABEDialog(QDialog):
         self.radio_divide   = QRadioButton(self.tr("Divide"))
         self.radio_subtract.setChecked(True)
         self.radio_subtract.setToolTip(
-            "Subtract the background model from the image.\n"
-            "Standard approach for most deep-sky data."
+            self.tr("Subtract the background model from the image.\n"
+            "Standard approach for most deep-sky data.")
         )
         self.radio_divide.setToolTip(
-            "Divide the image by the background model (normalized to 1).\n"
-            "Better for images with strong vignetting or multiplicative gradients."
+            self.tr("Divide the image by the background model (normalized to 1).\n"
+            "Better for images with strong vignetting or multiplicative gradients.")
         )
         corr_layout.addWidget(self.radio_subtract)
         corr_layout.addWidget(self.radio_divide)
@@ -2110,21 +2115,21 @@ class ABEDialog(QDialog):
         self.chk_ms_enable = QCheckBox(self.tr("Enable multiscale refinement"))
         self.chk_ms_enable.setChecked(False)
         self.chk_ms_enable.setToolTip(
-            "After the normal background removal, run an extra pass that models\n"
+            self.tr("After the normal background removal, run an extra pass that models\n"
             "SHARP-EDGED MULTIPLICATIVE defects — dust motes, internal reflections,\n"
             "filter-edge shadows — that polynomial/RBF fits cannot represent.\n\n"
             "Removes stars first (DarkStar) so they don't pollute the estimate,\n"
             "decomposes in log space, extracts the selected scale band as the\n"
-            "gradient, and divides it out. Best run with Subtract mode above."
+            "gradient, and divides it out. Best run with Subtract mode above.")
         )
         ms_layout.addRow(self.chk_ms_enable)
 
         self.chk_ms_darkstar = QCheckBox(self.tr("Remove stars first (DarkStar)"))
         self.chk_ms_darkstar.setChecked(True)
         self.chk_ms_darkstar.setToolTip(
-            "Run CosmicClarity DarkStar to get a starless image for estimating\n"
+            self.tr("Run CosmicClarity DarkStar to get a starless image for estimating\n"
             "the gradient. Stars are kept in the final output — they just don't\n"
-            "contaminate the gradient model. Strongly recommended."
+            "contaminate the gradient model. Strongly recommended.")
         )
         ms_layout.addRow(self.chk_ms_darkstar)
 
@@ -2142,7 +2147,7 @@ class ABEDialog(QDialog):
         )
         self.chk_ms_disable_protect.setChecked(False)
         self.chk_ms_disable_protect.setToolTip(
-            "Bypass the median + k·MAD signal protection entirely. The gradient\n"
+            self.tr("Bypass the median + k·MAD signal protection entirely. The gradient\n"
             "model then sees every pixel — stars, nebulosity, halos — and\n"
             "divides them all out.\n\n"
             "Use for halo-dominated frames where even Protect k = 20 can't catch\n"
@@ -2150,21 +2155,21 @@ class ABEDialog(QDialog):
             "around anything you want preserved.\n\n"
             "WARNING: this WILL flatten real nebulosity and faint IFN. Draw\n"
             "exclusion polygons around any extended signal you want to keep,\n"
-            "or leave this off and raise Protect k instead."
+            "or leave this off and raise Protect k instead.")
         )
         ms_layout.addRow(self.chk_ms_disable_protect)
 
         self.sp_ms_band_lo = QSpinBox(); self.sp_ms_band_lo.setRange(0, 11); self.sp_ms_band_lo.setValue(6)
         self.sp_ms_band_hi = QSpinBox(); self.sp_ms_band_hi.setRange(0, 11); self.sp_ms_band_hi.setValue(8)
         self.sp_ms_band_lo.setToolTip(
-            "First detail layer treated as gradient. Lower = finer structure.\n"
+            self.tr("First detail layer treated as gradient. Lower = finer structure.\n"
             "Dust motes / reflections / filter edges live in the mid-to-coarse\n"
             "layers. On a full-res frame, 6-8 is a good starting band; if your\n"
-            "image is downscaled, shift the band 1-2 lower."
+            "image is downscaled, shift the band 1-2 lower.")
         )
         self.sp_ms_band_hi.setToolTip(
-            "Last detail layer (inclusive) treated as gradient. Higher = coarser.\n"
-            "Raise toward 9-10 to also catch very broad filter-edge darkening."
+            self.tr("Last detail layer (inclusive) treated as gradient. Higher = coarser.\n"
+            "Raise toward 9-10 to also catch very broad filter-edge darkening.")
         )
         self.sp_ms_band_lo.setMaximumWidth(56)
         self.sp_ms_band_hi.setMaximumWidth(56)
@@ -2180,10 +2185,10 @@ class ABEDialog(QDialog):
         self.chk_ms_residual = QCheckBox(self.tr("Include coarsest residual"))
         self.chk_ms_residual.setChecked(False)
         self.chk_ms_residual.setToolTip(
-            "Fold the coarsest (smooth) residual into the gradient too.\n"
+            self.tr("Fold the coarsest (smooth) residual into the gradient too.\n"
             "Usually leave OFF — the smooth background is already handled by\n"
             "the poly/RBF stage above, and including it here risks double-\n"
-            "correcting. Turn ON only if a broad multiplicative falloff remains."
+            "correcting. Turn ON only if a broad multiplicative falloff remains.")
         )
         ms_layout.addRow(self.chk_ms_residual)
 
@@ -2191,9 +2196,9 @@ class ABEDialog(QDialog):
         self.sp_ms_strength.setSuffix(" %")
         self.sp_ms_strength.setMaximumWidth(80)
         self.sp_ms_strength.setToolTip(
-            "Blend strength of the multiplicative correction.\n"
+            self.tr("Blend strength of the multiplicative correction.\n"
             "100% applies it fully; lower values ease it in if the full\n"
-            "correction over-flattens real large-scale structure."
+            "correction over-flattens real large-scale structure.")
         )
 
         self.sp_ms_protect = QDoubleSpinBox()
@@ -2208,7 +2213,7 @@ class ABEDialog(QDialog):
         self.sp_ms_protect.setValue(3.0)
         self.sp_ms_protect.setMaximumWidth(80)
         self.sp_ms_protect.setToolTip(
-            "Signal-protection threshold: pixels brighter than\n"
+            self.tr("Signal-protection threshold: pixels brighter than\n"
             "    median + k · MAD\n"
             "are treated as signal (galaxies, nebulosity), masked out and\n"
             "inpainted so they are NOT modeled as gradient.\n\n"
@@ -2220,7 +2225,7 @@ class ABEDialog(QDialog):
             "  k = 6-20   needed on halo-dominated frames where bright\n"
             "             reflections stay above the sky at k = 5\n\n"
             "If even k = 20 still protects the halos you want removed,\n"
-            "use the 'Disable signal protection' checkbox above."
+            "use the 'Disable signal protection' checkbox above.")
         )
 
         # Primary controls: Strength and Protect-k, two per row.
@@ -2237,9 +2242,9 @@ class ABEDialog(QDialog):
 
         self.btn_ms_preview_k = QPushButton(self.tr("Preview protection…"))
         self.btn_ms_preview_k.setToolTip(
-            "Open a live preview of the median + k·MAD protection mask overlaid\n"
+            self.tr("Open a live preview of the median + k·MAD protection mask overlaid\n"
             "on a downsampled copy of the image. Drag the slider to see exactly\n"
-            "what each k value protects, then apply it back to Protect k."
+            "what each k value protects, then apply it back to Protect k.")
         )
         self.btn_ms_preview_k.clicked.connect(self._open_protect_preview)
         ms_layout.addRow(self.btn_ms_preview_k)
@@ -2255,14 +2260,14 @@ class ABEDialog(QDialog):
         self.sp_ms_sigblur.setSuffix(" px")
         self.sp_ms_sigblur.setMaximumWidth(90)
         self.sp_ms_sigblur.setToolTip(
-            "Blur applied to the median+k·MAD SIGNAL mask (after dilation),\n"
+            self.tr("Blur applied to the median+k·MAD SIGNAL mask (after dilation),\n"
             "before the gradient is estimated. Softens the hard-edged detections\n"
             "so each star's full footprint is protected (not just its bright\n"
             "core) and the mask edges don't make the inpaint + pyramid ring into\n"
             "fake gradient.\n\n"
             "0 = off (hard mask). 8 px is a good default; raise it to spread the\n"
             "protection further around bright sources. Turn on the DEBUG mask\n"
-            "document to see exactly what this is doing."
+            "document to see exactly what this is doing.")
         )
 
         self.sp_ms_smooth = QSpinBox()
@@ -2271,31 +2276,31 @@ class ABEDialog(QDialog):
         self.sp_ms_smooth.setSuffix(" px")
         self.sp_ms_smooth.setMaximumWidth(90)
         self.sp_ms_smooth.setToolTip(
-            "Blur applied to the gradient MAP (not the image) before it's\n"
+            self.tr("Blur applied to the gradient MAP (not the image) before it's\n"
             "divided out. A gradient is smooth by definition, so smoothing the\n"
             "map removes per-pixel noise the band picked up — which gets worse\n"
             "as the lower band number drops toward the fine, noise-dominated\n"
             "layers (3 and below). This strips noise from the correction while\n"
             "leaving your image's own detail untouched.\n\n"
             "0 = off. 2-3 px is a good default; raise it if a low band makes the\n"
-            "background look smoothed or the exclusion area look noisy."
+            "background look smoothed or the exclusion area look noisy.")
         )
 
         self.sp_ms_feather = QSpinBox()
         self.sp_ms_feather.setRange(0, 50)
         self.sp_ms_feather.setValue(10)
         self.sp_ms_feather.setSuffix(" %")
-        self.sp_ms_feather.setSpecialValueText("Off (hard edge)")
+        self.sp_ms_feather.setSpecialValueText(self.tr("Off (hard edge)"))
         self.sp_ms_feather.setMaximumWidth(140)
         self.sp_ms_feather.setToolTip(
-            "Feather width for the EXCLUSION-AREA edge, as a PERCENTAGE of the\n"
+            self.tr("Feather width for the EXCLUSION-AREA edge, as a PERCENTAGE of the\n"
             "image's short side — the Gaussian blur applied to the protect mask\n"
             "so a drawn exclusion dissolves into the corrected background with\n"
             "no hard line.\n\n"
             "Because it's a percentage, it feathers the same visual amount at\n"
             "any image size (10% ≈ 300 px on a 4500×3000 frame, ≈88 px on an\n"
             "880 px frame). 10% is a good default; lower for a tighter edge.\n"
-            "0 = off (hard edge)."
+            "0 = off (hard edge).")
         )
 
         # How many pixels each threshold hit is dilated out before blurring.
@@ -2311,7 +2316,7 @@ class ABEDialog(QDialog):
         self.sp_ms_grow.setSuffix(" px")
         self.sp_ms_grow.setMaximumWidth(90)
         self.sp_ms_grow.setToolTip(
-            "How far each threshold hit is DILATED outward (in pixels) before\n"
+            self.tr("How far each threshold hit is DILATED outward (in pixels) before\n"
             "the signal mask is blurred. Dilation grows each star / signal\n"
             "detection to cover its full footprint — faint wings, not just the\n"
             "bright core.\n\n"
@@ -2322,7 +2327,7 @@ class ABEDialog(QDialog):
             "  10+   very generous — protect extended structure around hits\n\n"
             "If raising Protect k isn't shrinking the protected region as\n"
             "much as you expect, this is why: each hit still grows outward\n"
-            "by this many pixels regardless of k. Lower this first."
+            "by this many pixels regardless of k. Lower this first.")
         )
 
         # Opt-out from per-channel RGB gradient refinement. Default is Full
@@ -2345,12 +2350,12 @@ class ABEDialog(QDialog):
         self.radio_ms_luma = QRadioButton(self.tr("Luma only"))
         self.radio_ms_rgb.setChecked(True)
         self.radio_ms_rgb.setToolTip(
-            "Estimate the multiscale gradient per channel (R, G, B).\n"
+            self.tr("Estimate the multiscale gradient per channel (R, G, B).\n"
             "Required to remove any colour-selective gradient — bright-blue\n"
-            "star halos, red light-pollution cast, one-channel filter leaks."
+            "star halos, red light-pollution cast, one-channel filter leaks.")
         )
         self.radio_ms_luma.setToolTip(
-            "Estimate the gradient once from Rec.709 luminance and divide\n"
+            self.tr("Estimate the gradient once from Rec.709 luminance and divide\n"
             "the same 2D map into R, G and B.\n\n"
             "Use for:\n"
             "  • narrowband data (SHO, HOO) where a near-empty channel\n"
@@ -2359,7 +2364,7 @@ class ABEDialog(QDialog):
             "    the gradient is the same shape in all three channels\n"
             "  • faster previews on very large frames (per-channel is 3x\n"
             "    the inpaint + decompose cost)\n\n"
-            "Cannot remove colour-selective gradients — those need Full RGB."
+            "Cannot remove colour-selective gradients — those need Full RGB.")
         )
         self._ms_channels_group = QButtonGroup(self)
         self._ms_channels_group.addButton(self.radio_ms_rgb)
@@ -2405,12 +2410,12 @@ class ABEDialog(QDialog):
         self.chk_make_structure_doc = QCheckBox(self.tr("Create multiscale structure document"))
         self.chk_make_structure_doc.setChecked(False)
         self.chk_make_structure_doc.setToolTip(
-            "When Multiscale Gradient Refinement is on, also open the multiplicative\n"
+            self.tr("When Multiscale Gradient Refinement is on, also open the multiplicative\n"
             "STRUCTURE map it divided out (the mote/reflection/filter-edge gradient\n"
             "only — not the smooth poly/RBF background). Useful for troubleshooting:\n"
             "it shows exactly what the multiscale stage thinks the defect is. The\n"
             "regular 'Create background document' still gives the full combined\n"
-            "background from the poly/RBF stage."
+            "background from the poly/RBF stage.")
         )
         self.cmb_sample_mode = QComboBox()
         self.cmb_sample_mode.addItems(["Auto", "Manual"])
@@ -2418,11 +2423,11 @@ class ABEDialog(QDialog):
         self.sp_seed = QSpinBox()
         self.sp_seed.setRange(-1, 99999)
         self.sp_seed.setValue(42)
-        self.sp_seed.setSpecialValueText("Random (no seed)")
+        self.sp_seed.setSpecialValueText(self.tr("Random (no seed)"))
         self.sp_seed.setToolTip(
-            "Random seed for sample point placement.\n"
+            self.tr("Random seed for sample point placement.\n"
             "-1 = non-deterministic (different each run).\n"
-            "Any other value = fully reproducible results."
+            "Any other value = fully reproducible results.")
         )
 
         # ── Place Points group ──────────────────────────────────────────
@@ -2433,15 +2438,15 @@ class ABEDialog(QDialog):
         grid_row = QHBoxLayout()
         self.btn_place_grid = QPushButton(self.tr("Place Grid"))
         self.btn_place_grid.setToolTip(
-            "Fill the image with a regular N×N grid of sample points.\n"
-            "Switches to Manual mode so you can add/remove points before running."
+            self.tr("Fill the image with a regular N×N grid of sample points.\n"
+            "Switches to Manual mode so you can add/remove points before running.")
         )
         self.sp_grid_size = QSpinBox()
         self.sp_grid_size.setRange(2, 50)
         self.sp_grid_size.setValue(10)
-        self.sp_grid_size.setPrefix("Grid: ")
+        self.sp_grid_size.setPrefix(self.tr("Grid: "))
         self.sp_grid_size.setSuffix("×" + str(self.sp_grid_size.value()))
-        self.sp_grid_size.setToolTip("Number of grid points along each axis (N×N total)")
+        self.sp_grid_size.setToolTip(self.tr("Number of grid points along each axis (N×N total)"))
         self.sp_grid_size.valueChanged.connect(
             lambda v: self.sp_grid_size.setSuffix(f"×{v}")
         )
@@ -2452,8 +2457,8 @@ class ABEDialog(QDialog):
         # Auto points row
         self.btn_place_auto = QPushButton(self.tr("Show Auto Points"))
         self.btn_place_auto.setToolTip(
-            "Run the automatic gradient-descent sampler and show all chosen points.\n"
-            "Switches to Manual mode so you can tweak before running."
+            self.tr("Run the automatic gradient-descent sampler and show all chosen points.\n"
+            "Switches to Manual mode so you can tweak before running.")
         )
 
         place_layout.addLayout(grid_row)
@@ -2487,11 +2492,11 @@ class ABEDialog(QDialog):
         # a mis-click clobbering tuned settings mid-session.
         self.btn_reset   = QPushButton(self.tr("Reset to Defaults"))
         self.btn_reset.setToolTip(
-            "Restore every ADBE control to its shipped default value "
+            self.tr("Restore every ADBE control to its shipped default value "
             "(polynomial degree, sample count, multiscale refinement\n"
             "parameters, output options — everything on this dialog).\n"
             "Does NOT clear your drawn exclusion polygons; use "
-            "'Clear Exclusions' for that."
+            "'Clear Exclusions' for that.")
         )
         self.btn_preview.clicked.connect(self._do_preview)
         self.btn_apply.clicked.connect(self._do_apply)
@@ -2509,9 +2514,9 @@ class ABEDialog(QDialog):
         params.addRow(self.tr("Random seed:"), self.sp_seed)
         # ── Workflow note ───────────────────────────────────────────────
         note_lbl = QLabel(
-            "💡 Tip: For best results with RGB data, combine R/G/B channels "
+            self.tr("💡 Tip: For best results with RGB data, combine R/G/B channels "
             "before running ADBE. Running ADBE on individual mono channels "
-            "separately can cause color artifacts at saturated stars after combining."
+            "separately can cause color artifacts at saturated stars after combining.")
         )
         note_lbl.setWordWrap(True)
         note_lbl.setStyleSheet(
@@ -2573,7 +2578,7 @@ class ABEDialog(QDialog):
         opts.addLayout(action_row)
 
         # ▼ New status label
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel(self.tr("Ready"))
         self.status_label.setWordWrap(True)
         opts.addWidget(self.status_label)
 
@@ -2955,11 +2960,11 @@ class ABEDialog(QDialog):
         if hasattr(self, "status_label") and self.status_label is not None:
             if disabled:
                 self._set_status(
-                    "Signal protection DISABLED — all pixels, including stars "
-                    "and nebulosity, will be treated as gradient."
+                    self.tr("Signal protection DISABLED — all pixels, including stars "
+                    "and nebulosity, will be treated as gradient.")
                 )
             else:
-                self._set_status("Ready")
+                self._set_status(self.tr("Ready"))
 
     def _manual_mode(self) -> bool:
         return self.cmb_sample_mode.currentText().lower() == "manual"
@@ -2993,7 +2998,7 @@ class ABEDialog(QDialog):
         # In manual mode, # sample points is not used for fitting
         self.sp_samples.setEnabled(not manual)
 
-        tip = (
+        tip = self.tr(
             "Auto: ADBE picks sample points automatically.\n"
             "Manual: left-click to add sample squares, right-click to remove nearest one."
         )
@@ -3121,7 +3126,7 @@ class ABEDialog(QDialog):
         self.cmb_sample_mode.setCurrentText("Manual")
         self.btn_clear_samples.setEnabled(len(self._manual_points) > 0)
         self._redraw_overlay()
-        self._set_status(f"Placed {len(new_pts)} grid points ({n}×{n}). Edit as needed.")
+        self._set_status(self.tr("Placed {0} grid points ({1}×{2}). Edit as needed.").format(len(new_pts), n, n))
 
 
     def _place_auto_points(self):
@@ -3130,7 +3135,7 @@ class ABEDialog(QDialog):
         if src is None:
             return
 
-        self._set_status("Running auto sampling with gradient descent…")
+        self._set_status(self.tr("Running auto sampling with gradient descent…"))
         QApplication.processEvents()
 
         dwn   = int(self.sp_down.value())
@@ -3158,7 +3163,7 @@ class ABEDialog(QDialog):
         )
 
         if pts_small is None or len(pts_small) == 0:
-            self._set_status("Auto sampling found no valid points.")
+            self._set_status(self.tr("Auto sampling found no valid points."))
             return
 
         # Scale back up to full image coords
@@ -3178,8 +3183,7 @@ class ABEDialog(QDialog):
         self.btn_clear_samples.setEnabled(len(self._manual_points) > 0)
         self._redraw_overlay()
         self._set_status(
-            f"Placed {len(self._manual_points)} auto-sampled points. "
-            "Right-click to remove, left-click to add."
+            self.tr("Placed {0} auto-sampled points. Right-click to remove, left-click to add.").format(len(self._manual_points))
         )
 
     def _post_init_fit_and_stretch(self) -> None:
@@ -3238,16 +3242,16 @@ class ABEDialog(QDialog):
         bar.setContentsMargins(0, 0, 0, 0)
         bar.setSpacing(6)
 
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         # Use a plain QToolButton so it is always visible even if the theme icon is missing.
         self.btn_autostr = QToolButton(self)
-        self.btn_autostr.setText("AutoStretch")
+        self.btn_autostr.setText(self.tr("AutoStretch"))
         self.btn_autostr.setCheckable(True)
         self.btn_autostr.setChecked(bool(getattr(self, "_autostretch_on", False)))
-        self.btn_autostr.setToolTip("Autostretch preview")
+        self.btn_autostr.setToolTip(self.tr("Autostretch preview"))
         self.btn_autostr.setMinimumHeight(24)
         self.btn_autostr.setMinimumWidth(44)
 
@@ -3348,7 +3352,7 @@ class ABEDialog(QDialog):
             self._pending_manual_points = None
             self.seed_manual_points(pts)
         if isinstance(excl, str):
-            self._set_status("Building exclusion mask…")
+            self._set_status(self.tr("Building exclusion mask…"))
             excl = self._build_exclusion_mask()
         img = getattr(self.doc, "image", None) if self.doc is not None else None
         if img is None or np.asarray(img).size == 0:
@@ -3490,13 +3494,13 @@ class ABEDialog(QDialog):
         if job is None:
             job = self._snapshot_job(kind)
         if job is None:
-            QMessageBox.information(self, "No image", "No image is loaded in the active document.")
-            self._set_status("Ready")
+            QMessageBox.information(self, self.tr("No image"), self.tr("No image is loaded in the active document."))
+            self._set_status(self.tr("Ready"))
             return
         self._dbg(f"_do_{kind}: excl mask is "
                   f"{'None (NO exclusions)' if job['excl'] is None else 'present'}")
         self._job_kind = kind
-        self._set_status("Running ABE preview…" if kind == "preview" else "Running ABE (apply)…")
+        self._set_status(self.tr("Running ABE preview…") if kind == "preview" else self.tr("Running ABE (apply)…"))
         self._job_thr = self._start_job_thread(
             job, self._on_compute_result, self._on_compute_ended,
             self._on_compute_failed)
@@ -3534,11 +3538,11 @@ class ABEDialog(QDialog):
             return
         self._pending_apply = None
         try:
-            self._set_status("Error")
+            self._set_status(self.tr("Error"))
             if kind == "apply":
-                QMessageBox.critical(self, "Apply failed", msg)
+                QMessageBox.critical(self, self.tr("Apply failed"), msg)
             else:
-                QMessageBox.warning(self, "Preview failed", msg)
+                QMessageBox.warning(self, self.tr("Preview failed"), msg)
         except RuntimeError:
             pass
 
@@ -3548,8 +3552,8 @@ class ABEDialog(QDialog):
         job = res["job"]
         if res.get("corrected") is None:
             self._pending_apply = None
-            QMessageBox.information(self, "No image", "No image is loaded in the active document.")
-            self._set_status("Ready")
+            QMessageBox.information(self, self.tr("No image"), self.tr("No image is loaded in the active document."))
+            self._set_status(self.tr("Ready"))
             return
         if job["kind"] == "apply":
             self._finish_apply(res)
@@ -3572,7 +3576,7 @@ class ABEDialog(QDialog):
         else:
             self._request_display()     # stretch was toggled during the run
         if not self._pending_preview and self._pending_apply is None:
-            self._set_status("Ready")
+            self._set_status(self.tr("Ready"))
 
     def _on_compute_ended(self, seq: int) -> None:
         if seq != self._job_seq:
@@ -3633,7 +3637,7 @@ class ABEDialog(QDialog):
     def _on_display_failed(self, seq: int, msg: str, tb: str) -> None:
         self._on_job_log("log", f"[ABE] preview render failed: {msg}\n{tb}")
         if not getattr(self, "_closing", False) and seq == self._disp_seq:
-            self._set_status("Error")
+            self._set_status(self.tr("Error"))
 
     def _on_display_ended(self, seq: int) -> None:
         if seq != self._disp_seq:
@@ -3766,15 +3770,15 @@ class ABEDialog(QDialog):
         if getattr(self, "chk_ms_disable_protect", None) is not None \
                 and self.chk_ms_disable_protect.isChecked():
             QMessageBox.information(
-                self, "Preview protection",
-                "Signal protection is disabled — there is no mask to preview.\n"
-                "Uncheck 'Disable signal protection' to use Protect k."
+                self, self.tr("Preview protection"),
+                self.tr("Signal protection is disabled — there is no mask to preview.\n"
+                "Uncheck 'Disable signal protection' to use Protect k.")
             )
             return
 
         src = self._get_source_float()
         if src is None:
-            QMessageBox.information(self, "Preview protection", "No active image.")
+            QMessageBox.information(self, self.tr("Preview protection"), self.tr("No active image."))
             return
 
         # Downsample for responsiveness (cap the long side ~900 px).
@@ -3805,7 +3809,7 @@ class ABEDialog(QDialog):
 
         # Run the SAME ADBE the user has configured, on the small copy, so the
         # preview mask sees the flattened background the real mask will see.
-        self._set_status("Preview: running ADBE for protection preview…")
+        self._set_status(self.tr("Preview: running ADBE for protection preview…"))
 
         # Small modal splash — the ADBE pass runs synchronously on the GUI
         # thread and can take a few seconds, so show a "computing" dialog first
@@ -3864,7 +3868,7 @@ class ABEDialog(QDialog):
                 splash.deleteLater()
             except Exception:
                 pass
-            self._set_status("Ready")
+            self._set_status(self.tr("Ready"))
             QApplication.processEvents()
 
         # Pass through the UI's current grow (previously hard-coded to 6).
@@ -3888,10 +3892,10 @@ class ABEDialog(QDialog):
         if v == 0:
             self.chk_use_rbf.setChecked(True)
             if hasattr(self, "_set_status"):
-                self._set_status("Polynomial disabled (degree 0) → RBF-only.")
+                self._set_status(self.tr("Polynomial disabled (degree 0) → RBF-only."))
         else:
             if hasattr(self, "_set_status"):
-                self._set_status("Ready")
+                self._set_status(self.tr("Ready"))
 
     def _populate_initial_preview(self):
         """Don't render anything yet — just remember the source. showEvent
@@ -3923,7 +3927,7 @@ class ABEDialog(QDialog):
         painter.drawText(
             pm.rect(),
             Qt.AlignmentFlag.AlignCenter,
-            "Computing preview…"
+            self.tr("Computing preview…")
         )
         painter.end()
 
@@ -3986,12 +3990,12 @@ class ABEDialog(QDialog):
                 self._pending_preview = True
                 if self._job_kind == "preview":
                     self._job_thr.cancel()
-                self._set_status("Preview will restart with the current settings…")
+                self._set_status(self.tr("Preview will restart with the current settings…"))
                 return
             self._start_compute("preview")
         except Exception as e:
-            self._set_status("Error")
-            QMessageBox.warning(self, "Preview failed", str(e))
+            self._set_status(self.tr("Error"))
+            QMessageBox.warning(self, self.tr("Preview failed"), str(e))
 
     def _do_apply(self):
         try:
@@ -4008,21 +4012,21 @@ class ABEDialog(QDialog):
                 return
             job = self._snapshot_job("apply")
             if job is None:
-                QMessageBox.information(self, "No image", "No image is loaded in the active document.")
-                self._set_status("Ready")
+                QMessageBox.information(self, self.tr("No image"), self.tr("No image is loaded in the active document."))
+                self._set_status(self.tr("Ready"))
                 return
             if self._job_thr is not None:
                 # A preview is running: Apply waits for it (and reuses it when
                 # the settings match), instead of being dropped.
                 self._pending_apply = job
                 self._pending_preview = False
-                self._set_status("Apply queued — waiting for the running preview…")
+                self._set_status(self.tr("Apply queued — waiting for the running preview…"))
                 self._update_busy_ui()
                 return
             self._start_compute("apply", job)
         except Exception as e:
-            self._set_status("Error")
-            QMessageBox.critical(self, "Apply failed", str(e))
+            self._set_status(self.tr("Error"))
+            QMessageBox.critical(self, self.tr("Apply failed"), str(e))
 
     def _finish_apply(self, res: dict):
         """GUI-thread tail of Apply: commit the worker's result to the document."""
@@ -4063,7 +4067,7 @@ class ABEDialog(QDialog):
                 "mask_blend": "m*out + (1-m)*src",
             }
 
-            self._set_status("Committing edit…")
+            self._set_status(self.tr("Committing edit…"))
             doc.apply_edit(
                 out_masked.astype(np.float32, copy=False),
                 step_name=step_name,
@@ -4072,7 +4076,7 @@ class ABEDialog(QDialog):
 
             # Background doc — do before close
             if make_bg_doc and bg is not None:
-                self._set_status("Creating background document…")
+                self._set_status(self.tr("Creating background document…"))
                 dm = getattr(mw, "docman", None)
                 if dm is not None:
                     base = os.path.splitext(doc.display_name())[0]
@@ -4091,7 +4095,7 @@ class ABEDialog(QDialog):
             # Separate from the full poly/RBF background above; for troubleshooting.
             struct = res["structure"]
             if job["want_structure"] and struct is not None:
-                self._set_status("Creating multiscale structure document…")
+                self._set_status(self.tr("Creating multiscale structure document…"))
                 dm = getattr(mw, "docman", None)
                 if dm is not None:
                     base = os.path.splitext(doc.display_name())[0]
@@ -4132,7 +4136,7 @@ class ABEDialog(QDialog):
             # DEBUG flag; only present when the multiscale stage ran.
             mad = res["mad"]
             if DEBUG and mad is not None:
-                self._set_status("Creating DEBUG MAD mask document…")
+                self._set_status(self.tr("Creating DEBUG MAD mask document…"))
                 dm = getattr(mw, "docman", None)
                 if dm is not None:
                     base = os.path.splitext(doc.display_name())[0]
@@ -4178,12 +4182,26 @@ class ABEDialog(QDialog):
             try:
                 from PyQt6 import sip
                 if not sip.isdeleted(self):
-                    self._set_status("Error")
-                    QMessageBox.critical(self, "Apply failed", str(e))
+                    self._set_status(self.tr("Error"))
+                    QMessageBox.critical(self, self.tr("Apply failed"), str(e))
             except Exception:
                 pass
 
     def closeEvent(self, ev):
+        self._close_teardown()
+        super().closeEvent(ev)
+
+    def done(self, r):
+        # Esc ends a QDialog through done(), which never delivers closeEvent:
+        # without this it skipped the job cancel, the active-view unhook and
+        # the release, and the dialog kept its image until collected.
+        self._close_teardown()
+        super().done(r)
+
+    def _close_teardown(self):
+        if getattr(self, "_close_torn_down", False):
+            return
+        self._close_torn_down = True
         self._closing = True
         # Stop background jobs. thread_keeper owns the threads, so this window
         # may go away while one is still unwinding; its result is dropped.
@@ -4227,7 +4245,6 @@ class ABEDialog(QDialog):
             self._release_memory()
         except Exception:
             pass
-        super().closeEvent(ev)
 
     def _release_memory(self):
         """Drop preview source / QImage backing buffers on close."""
@@ -4984,7 +5001,7 @@ class ABEDialog(QDialog):
         if hasattr(self, "btn_autostr"):
             self.btn_autostr.setChecked(new_state)
             self.btn_autostr.setToolTip(
-                "Autostretch preview (On)" if new_state else "Autostretch preview"
+                self.tr("Autostretch preview (On)") if new_state else self.tr("Autostretch preview")
             )
 
         self._save_settings()

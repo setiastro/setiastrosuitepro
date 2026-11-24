@@ -533,6 +533,19 @@ def apply_auto_white_balance(img: np.ndarray) -> np.ndarray:
 # --------------------------------
 # Headless entry point for DnD
 # --------------------------------
+def star_preset_summary(preset: Optional[Dict] = None) -> str:
+    """What a star-based preset runs with, for the log. Auto σ ignores the
+    threshold, so it is named only when Auto σ is off."""
+    p = dict(preset or {})
+    if bool(p.get("auto_sigma", True)):
+        out = "auto σ"
+    else:
+        out = f"threshold={float(p.get('threshold', 50.0)):.1f}"
+    if bool(p.get("use_color_matrix", False)):
+        out += f", color matrix {float(p.get('matrix_strength', 0.70)):.0%}"
+    return out
+
+
 def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
     """
     Preset schema:
@@ -542,13 +555,14 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
         "threshold": float (default 50),      # ignored when auto_sigma=True
         "auto_sigma": bool (default True),    # waterfall-based threshold pick
         "auto_sigma_min_stars": int (default 1200),
-        "reuse_cached_sources": bool (default True),
         "use_color_matrix": bool (default False),
         "matrix_strength": float 0..1 (default 0.70),  # only if use_color_matrix
                                               # 0 = no rotation, 1 = full send
         # manual mode:
         "r_gain": float (default 1.0), "g_gain": float (default 1.0), "b_gain": float (default 1.0)
       }
+    Stars are always detected afresh here; a "reuse_cached_sources" key in an
+    old preset is ignored.
     """
     import numpy as np
 
@@ -719,7 +733,7 @@ class WhiteBalanceDialog(QDialog):
         self._wire_events()
 
         # default to Star-Based, like SASv2
-        self.type_combo.setCurrentText("Star-Based")
+        self.type_combo.setCurrentIndex(self.type_combo.findData("Star-Based"))
         self._update_mode_widgets()
         # kick off a first detection preview
         QTimer.singleShot(200, self._update_star_preview)
@@ -734,7 +748,9 @@ class WhiteBalanceDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel(self.tr("White Balance Type:")))
         self.type_combo = QComboBox()
-        self.type_combo.addItems([self.tr("Star-Based"), self.tr("Manual"), self.tr("Auto")])
+        self.type_combo.addItem(self.tr("Star-Based"), "Star-Based")
+        self.type_combo.addItem(self.tr("Manual"), "Manual")
+        self.type_combo.addItem(self.tr("Auto"), "Auto")
         row.addWidget(self.type_combo); row.addStretch()
         self.main_layout.addLayout(row)
 
@@ -844,7 +860,7 @@ class WhiteBalanceDialog(QDialog):
         ))
         cm_row.addWidget(self.cm_strength_slider)
 
-        self.cm_strength_label = QLabel("70%  default")
+        self.cm_strength_label = QLabel("70%  " + self.tr("default"))
         self.cm_strength_label.setFixedWidth(88)
         self.cm_strength_label.setStyleSheet("font-size:11px;")
         cm_row.addWidget(self.cm_strength_label)
@@ -1026,7 +1042,7 @@ class WhiteBalanceDialog(QDialog):
         self._debounce.start()
 
     def _update_mode_widgets(self):
-        t = self.type_combo.currentText()
+        t = self.type_combo.currentData()
         self.manual_group.setVisible(t == "Manual")
         self.star_group.setVisible(t == "Star-Based")
 
@@ -1052,7 +1068,7 @@ class WhiteBalanceDialog(QDialog):
     def _update_star_preview(self):
         if getattr(self, "_closing", False):
             return
-        if self.type_combo.currentText() != "Star-Based":
+        if self.type_combo.currentData() != "Star-Based":
             return
 
         auto_sigma = bool(self.auto_sigma_chk.isChecked()) if hasattr(self, "auto_sigma_chk") else False
@@ -1105,7 +1121,7 @@ class WhiteBalanceDialog(QDialog):
             auto_sigma=auto_sigma,
             with_overlay=self._preview_shown,
         )
-        worker.finished.connect(self._on_worker_done)
+        worker.detected.connect(self._on_worker_done)
         worker.failed.connect(self._on_worker_failed)
         self._detection_worker = worker
         worker.start()
@@ -1207,7 +1223,7 @@ class WhiteBalanceDialog(QDialog):
     def get_preset(self) -> dict:
         """Emit current state as the WB preset schema (inverse of seed_from_preset).
         Mirrors exactly what _on_apply records for Replay Last."""
-        mode = self.type_combo.currentText()
+        mode = self.type_combo.currentData()
         if mode == "Manual":
             return {
                 "mode": "manual",
@@ -1249,14 +1265,14 @@ class WhiteBalanceDialog(QDialog):
                 pass
         try:
             if mode == "manual":
-                self.type_combo.setCurrentText("Manual")
+                self.type_combo.setCurrentIndex(self.type_combo.findData("Manual"))
                 self.r_spin.setValue(float(p.get("r_gain", 1.0)))
                 self.g_spin.setValue(float(p.get("g_gain", 1.0)))
                 self.b_spin.setValue(float(p.get("b_gain", 1.0)))
             elif mode == "auto":
-                self.type_combo.setCurrentText("Auto")
+                self.type_combo.setCurrentIndex(self.type_combo.findData("Auto"))
             else:  # star
-                self.type_combo.setCurrentText("Star-Based")
+                self.type_combo.setCurrentIndex(self.type_combo.findData("Star-Based"))
                 iv = int(round(float(p.get("threshold", 50.0))))
                 iv = max(self.thr_slider.minimum(), min(self.thr_slider.maximum(), iv))
                 self.thr_slider.setValue(iv)
@@ -1294,7 +1310,7 @@ class WhiteBalanceDialog(QDialog):
 
     # ---- apply ----------------------------------------------------------
     def _on_apply(self):
-        mode = self.type_combo.currentText()
+        mode = self.type_combo.currentData()
 
         # Find the main window that carries the replay machinery
         main = self.parent()
@@ -1551,7 +1567,7 @@ class WhiteBalanceDialog(QDialog):
         if worker is None:
             return
         # Stop it calling back into this (soon-destroyed) dialog.
-        for _sig in ("finished", "failed"):
+        for _sig in ("detected", "failed"):
             try:
                 getattr(worker, _sig).disconnect()
             except Exception:
@@ -1573,14 +1589,17 @@ class WhiteBalanceDialog(QDialog):
             except Exception:
                 pass
             _orphaned_workers.append(worker)
-            def _cleanup_orphan(*_a, w=worker):
-                try:
-                    _orphaned_workers.remove(w)
-                except ValueError:
-                    pass
+            # The real QThread.finished: it fires after run() returns, on every
+            # exit path (a cancelled run emits nothing else, so orphans used to
+            # pile up, each holding a copy of the image). Capture the id, not
+            # the worker, so the slot does not keep the thread alive itself.
+            wid = id(worker)
+            def _cleanup_orphan(*_a, wid=wid):
+                for w in list(_orphaned_workers):
+                    if id(w) == wid:
+                        _orphaned_workers.remove(w)
             try:
                 worker.finished.connect(_cleanup_orphan)
-                worker.failed.connect(_cleanup_orphan)
             except Exception:
                 pass
 

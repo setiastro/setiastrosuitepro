@@ -1904,7 +1904,7 @@ class _BlinkZoomPanel(QWidget):
 
         # Toolbar row
         ctrl = QHBoxLayout()
-        lbl = QLabel("Zoom:")
+        lbl = QLabel(self.tr("Zoom:"))
         lbl.setStyleSheet("font-size: 11px;")
         ctrl.addWidget(lbl)
 
@@ -1916,10 +1916,10 @@ class _BlinkZoomPanel(QWidget):
         ctrl.addWidget(self.factor_combo)
         ctrl.addStretch(1)
 
-        self.lock_btn = QPushButton("🔒 Lock")
+        self.lock_btn = QPushButton(self.tr("🔒 Lock"))
         self.lock_btn.setCheckable(True)
         self.lock_btn.setFixedWidth(64)
-        self.lock_btn.setToolTip("Lock zoom position (stop following mouse)")
+        self.lock_btn.setToolTip(self.tr("Lock zoom position (stop following mouse)"))
         self.lock_btn.setStyleSheet("font-size: 10px; padding: 2px 4px;")
         ctrl.addWidget(self.lock_btn)
         layout.addLayout(ctrl)
@@ -2586,6 +2586,13 @@ class BlinkTab(QWidget):
         self._save_main_splitter_state()
         self._save_tree_header_state()
         self._shutdown_stream_cache()
+        # These would index the released loaded_images if they fired before
+        # the window is deleted (it can outlive the close by a modal loop).
+        for _t in ("playback_timer", "_pending_preview_timer"):
+            try:
+                getattr(self, _t).stop()
+            except Exception:
+                pass
 
         try:
             if self.metrics_window is not None:
@@ -3671,6 +3678,7 @@ class BlinkTab(QWidget):
 
         using_imageio = (backend == "imageio-ffmpeg")
         frames_written = 0
+        window_closed = False
 
         try:
             for i, idx in enumerate(order):
@@ -3705,11 +3713,24 @@ class BlinkTab(QWidget):
 
                 prog.setValue(i + 1)
                 QApplication.processEvents()
+                # The progress box is modeless: the Blink window can be closed
+                # from inside processEvents(), which releases loaded_images and
+                # may already have deleted the window (and prog with it).
+                if getattr(self, "_memory_released", False):
+                    window_closed = True
+                    break
         finally:
             try:
                 writer.close() if using_imageio else writer.release()
             except Exception:
                 pass
+
+        if window_closed:
+            try:
+                os.remove(out_path)       # a partial video is not an export
+            except Exception:
+                pass
+            return
 
         if prog.wasCanceled():
             try:
@@ -3737,8 +3758,8 @@ class BlinkTab(QWidget):
         layout.addWidget(QLabel(self.tr("Size:")), 0, 0)
         size_combo = QComboBox(dlg)
         size_combo.addItem("HD 1280×720", (1280, 720))
-        size_combo.addItem("Full HD 1920×1080", (1920, 1080))
-        size_combo.addItem("Square 1080×1080", (1080, 1080))
+        size_combo.addItem(self.tr("Full HD 1920×1080"), (1920, 1080))
+        size_combo.addItem(self.tr("Square 1080×1080"), (1080, 1080))
         size_combo.setCurrentIndex(0)
         layout.addWidget(size_combo, 0, 1)
 
@@ -3925,7 +3946,8 @@ class BlinkTab(QWidget):
 
     def _update_loaded_count_label(self, n: int):
         # pluralize nicely
-        self.loading_label.setText(self.tr("Loaded {0} image{1}.").format(n, 's' if n != 1 else ''))
+        self.loading_label.setText((self.tr("Loaded {0} image.") if n == 1
+                                    else self.tr("Loaded {0} images.")).format(n))
 
     def _apply_playback_interval(self, *_):
         # read from custom spin if present (support both .value() and .value attribute)
@@ -4820,13 +4842,11 @@ class BlinkTab(QWidget):
 
         QMessageBox.information(
             self, self.tr("Satellite Detection Complete"),
-            self.tr(
-                "Checked {0} image{1}.\n"
-                "{2} potential satellite trail{3} detected.\n"
-                "{4} could not be checked.\n"
-            ).format(ctx["n_images"], "s" if ctx["n_images"] != 1 else "",
-                     n_detected, "s" if n_detected != 1 else "",
-                     res["n_unknown"])
+            (self.tr("Checked {0} image.\n") if ctx["n_images"] == 1
+             else self.tr("Checked {0} images.\n")).format(ctx["n_images"])
+            + (self.tr("{0} potential satellite trail detected.\n") if n_detected == 1
+               else self.tr("{0} potential satellite trails detected.\n")).format(n_detected)
+            + self.tr("{0} could not be checked.\n").format(res["n_unknown"])
             + _art
             + self.tr(
                 "\nImages with trails are marked ⚠ in the Sat column.\n"
@@ -5004,13 +5024,11 @@ class BlinkTab(QWidget):
 
         QMessageBox.information(
             self, self.tr("Satellite Detection Complete"),
-            self.tr(
-                "Checked {0} image{1}.\n"
-                "{2} potential satellite trail{3} detected.\n"
-                "{4} could not be checked.\n"
-            ).format(n_images, "s" if n_images != 1 else "",
-                     n_pass2, "s" if n_pass2 != 1 else "",
-                     res["n_unknown"])
+            (self.tr("Checked {0} image.\n") if n_images == 1
+             else self.tr("Checked {0} images.\n")).format(n_images)
+            + (self.tr("{0} potential satellite trail detected.\n") if n_pass2 == 1
+               else self.tr("{0} potential satellite trails detected.\n")).format(n_pass2)
+            + self.tr("{0} could not be checked.\n").format(res["n_unknown"])
             + _art
             + self.tr(
                 "\nImages with trails are marked ⚠ in the Sat column and\n"
@@ -5687,6 +5705,7 @@ class BlinkTab(QWidget):
         mem_tripped = None
         mem_last_check = time.monotonic()
         futures = {}
+        window_closed = False
 
         # Make sure numba's threading layer is resolved & recorded before we
         # fan out — otherwise the lock's decision falls back to an OS guess
@@ -5757,6 +5776,15 @@ class BlinkTab(QWidget):
                         print(f"[WARN][Attempt {attempt}] Failed to load {path}: {e}")
                         failed.append(path)
 
+                    # The window can be closed from inside processEvents():
+                    # its frames were released (and its widgets may be gone).
+                    # Stop here -- loading on would refill the released window
+                    # and retry every remaining frame as "failed".
+                    if getattr(self, "_memory_released", False):
+                        window_closed = True
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+
                     # Throttled: virtual_memory() is a syscall and this loop
                     # runs once per frame.
                     _now = time.monotonic()
@@ -5771,6 +5799,10 @@ class BlinkTab(QWidget):
 
             if mem_tripped:
                 break
+            if window_closed:
+                completed.clear()
+                futures.clear()
+                return
 
             remaining = failed
             attempt += 1
@@ -5917,9 +5949,10 @@ class BlinkTab(QWidget):
         self.progress_bar.setValue(max(1, total))
         self._rebuild_tree_from_loaded()
         self.imagesChanged.emit(len(self.loaded_images))
-        self.loading_label.setText(self.tr(
-            "Streaming {0} frame{1} — frames load when you select them.").format(
-                len(self.loaded_images), 's' if len(self.loaded_images) != 1 else ''))
+        _n = len(self.loaded_images)
+        self.loading_label.setText(
+            (self.tr("Streaming {0} frame — frames load when you select them.") if _n == 1
+             else self.tr("Streaming {0} frames — frames load when you select them.")).format(_n))
 
         self._sync_metrics_after_list_change()
 
@@ -6582,8 +6615,8 @@ class BlinkTab(QWidget):
 
         self._sync_metrics_flags()
         QMessageBox.information(self, self.tr("Flag Satellite Detections"),
-            self.tr("Flagged {0} image{1} with satellite trails.").format(
-                flagged, "s" if flagged != 1 else ""))
+            (self.tr("Flagged {0} image with satellite trails.") if flagged == 1
+             else self.tr("Flagged {0} images with satellite trails.")).format(flagged))
 
     def remove_items_from_list(self):
         """Remove selected images from the blink session without touching files on disk."""
@@ -6880,7 +6913,7 @@ class BlinkTab(QWidget):
 
             # Avoid overwriting an existing file
             if os.path.exists(new_path):
-                failures.append((old_path, "target already exists"))
+                failures.append((old_path, self.tr("target already exists")))
                 continue
 
             try:
@@ -6912,7 +6945,8 @@ class BlinkTab(QWidget):
         # Also sync the metrics panel flags/colors
         self._sync_metrics_flags()
 
-        msg = self.tr("Renamed {0} flagged image{1}.").format(successes, 's' if successes != 1 else '')
+        msg = (self.tr("Renamed {0} flagged image.") if successes == 1
+               else self.tr("Renamed {0} flagged images.")).format(successes)
         if failures:
             msg += self.tr("\n\n{0} file(s) could not be renamed:").format(len(failures))
             for old, err in failures[:10]:  # don’t spam too hard
@@ -7013,7 +7047,8 @@ class BlinkTab(QWidget):
         self._after_list_changed()
         self._sync_metrics_flags()
 
-        msg = self.tr("Batch renamed {0} file{1}.").format(renamed, "s" if renamed != 1 else "")
+        msg = (self.tr("Batch renamed {0} file.") if renamed == 1
+               else self.tr("Batch renamed {0} files.")).format(renamed)
         if failures:
             msg += self.tr("\n\n{0} file(s) failed:").format(len(failures))
             for old, err in failures[:10]:

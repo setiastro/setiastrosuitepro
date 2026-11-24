@@ -17,6 +17,34 @@ APP_FOLDER_NAME = "SetiAstroSuitePro"  # keep stable
 ProgressCB = Optional[Callable[[str], None]]
 
 
+# The files a working Cosmic Clarity needs, by feature.
+AI4_REQUIRED_MODELS = {
+    "Cosmic Clarity Sharpen (AI4)": [
+        "deep_sharp_stellar_AI4.pth",
+        "deep_sharp_stellar_AI4.onnx",
+        "deep_nonstellar_sharp_conditional_psf_AI4.pth",
+        "deep_nonstellar_sharp_conditional_psf_AI4.onnx",
+    ],
+    "Cosmic Clarity Denoise (AI4)": [
+        "deep_denoise_mono_AI4.pth",
+        "deep_denoise_mono_AI4.onnx",
+        "deep_denoise_color_AI4.pth",
+        "deep_denoise_color_AI4.onnx",
+    ],
+}
+
+# Later additions, installed by the same download.
+AI4_SUPPLEMENT_MODELS = {
+    "Walking Noise": [
+        "deep_denoise_mono_AI4_1w.pth",
+        "deep_denoise_color_AI4_1w.pth",
+    ],
+    "Aberration Correction V2": [
+        "deep_correct_stellar_V2_AI4.pth",
+    ],
+}
+
+
 def model_path(filename: str) -> Path:
     p = Path(models_root()) / filename
     return p

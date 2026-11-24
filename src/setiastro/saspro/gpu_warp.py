@@ -109,7 +109,7 @@ def _resolve():
         return _TORCH, _DEVICE
     _RESOLVED = True
     torch = None
-    staged = False
+    staged = in_worker = False
 
     # Stage SASpro's own torch runtime onto sys.path FIRST. This is install-
     # free — it injects the staged venv's site-packages and demotes a
@@ -122,13 +122,12 @@ def _resolve():
     # `import_torch` is the one that can shell out to pip and hang a spawned
     # worker, so it stays a last resort; `add_runtime_to_sys_path` cannot.
     try:
-        import sys as _sys
-        from setiastro.saspro.runtime_torch import add_runtime_to_sys_path
-        _before = list(_sys.path)
+        from setiastro.saspro.runtime_torch import (
+            add_runtime_to_sys_path, in_spawned_worker, prefer_runtime_torch)
         add_runtime_to_sys_path(lambda *_: None)
-        # it returns None whether or not it found anything, so the only honest
-        # way to report which torch this is, is to see if sys.path moved
-        staged = any(p not in _before for p in _sys.path)
+        # It returns None whether or not it found anything; this says whether
+        # torch will really come from the runtime (or, if it is loaded, does).
+        staged, in_worker = prefer_runtime_torch(), in_spawned_worker()
     except Exception:
         pass
 
@@ -136,8 +135,11 @@ def _resolve():
         import torch as _t
         torch = _t
         _NOTE = "staged runtime torch" if staged else "plain torch"
-    except Exception:
-        pass
+    except Exception as e:
+        if staged and in_worker:        # it would only be tried again, in every worker
+            _TORCH, _DEVICE = None, None
+            _NOTE = f"the runtime's torch does not load ({type(e).__name__})"
+            return _TORCH, _DEVICE
     if torch is None:
         try:
             from setiastro.saspro.runtime_torch import import_torch

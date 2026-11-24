@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Iterable, List, Any, Dict
 import sys
-from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QEventLoop
+from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QEventLoop, QT_TRANSLATE_NOOP
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem, QProgressBar,
     QPushButton, QSplitter, QMessageBox, QLabel, QAbstractItemView, QDialogButtonBox,
@@ -78,6 +78,23 @@ def _resolve_doc_and_subwindow(mw, doc_ptr: int):
     except Exception:
         pass
     return None, None
+
+def _script_display_name(mw, cid) -> str | None:
+    """The script's name for a "script:<script_id>" step, else None.
+
+    Pinned scripts are stored by id (survives renames and moves), which is
+    meaningless in the steps list. The name comes from the live script
+    registry; a script that is no longer installed keeps showing its id.
+    """
+    if not (isinstance(cid, str) and cid.lower().startswith("script:")):
+        return None
+    sid = cid.split(":", 1)[1]
+    sm = getattr(mw, "scriptman", None) if mw is not None else None
+    for entry in (getattr(sm, "registry", None) or ()):
+        if getattr(entry, "script_id", None) == sid:
+            name = str(getattr(entry, "name", "") or "").strip()
+            return name or None
+    return None
 
 def _find_shortcut_canvas(mw: QWidget | None) -> QWidget | None:
     if not mw:
@@ -275,7 +292,7 @@ class FunctionBundleChip(QWidget):
         from PyQt6.QtWidgets import QMenu  # already imported at top, but safe
 
         m = QMenu(self)
-        act_del = m.addAction(self._panel.tr("Delete Chip"))
+        act_del = m.addAction(self.tr("Delete Chip"))
         act = m.exec(ev.globalPos())
         if act is act_del:
             try:
@@ -473,7 +490,7 @@ class FunctionBundleDialog(QDialog):
         left.addLayout(row)
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("Steps"))
+        right.addWidget(QLabel(self.tr("Steps")))
         right.addWidget(self.steps, 1)
         right.addWidget(self.add_hint)
 
@@ -493,7 +510,7 @@ class FunctionBundleDialog(QDialog):
 
         right.addLayout(rrow)
 
-        self.run_status = QLabel("Ready.")
+        self.run_status = QLabel(self.tr("Ready."))
         self.run_status.setStyleSheet("color:#aaa; padding:2px 0;")
         self.run_status.setWordWrap(True)  # Fix for window stretching on long text
         self.run_progress = QProgressBar()
@@ -531,7 +548,8 @@ class FunctionBundleDialog(QDialog):
         self.btn_del.clicked.connect(self._del_bundle)
         # rename shortcuts
         add_shortcut(self.list, "F2", self._rename_bundle,
-                     label="Rename the selected bundle", context="Function Bundles")
+                     label=QT_TRANSLATE_NOOP("CheatSheet", "Rename the selected bundle"),
+                     context=QT_TRANSLATE_NOOP("CheatSheet", "Function Bundles"))
         self.list.itemDoubleClicked.connect(lambda _it: self._rename_bundle())
 
         # step context menu
@@ -540,9 +558,11 @@ class FunctionBundleDialog(QDialog):
         self.steps.itemSelectionChanged.connect(self._sync_edit_button_enabled)
         self.btn_edit_preset.clicked.connect(self._edit_selected_step_preset)
         add_shortcut(self.steps, "Return", self._edit_selected_step_preset,
-                     label="Edit the selected step's preset", context="Function Bundles")
+                     label=QT_TRANSLATE_NOOP("CheatSheet", "Edit the selected step's preset"),
+                     context=QT_TRANSLATE_NOOP("CheatSheet", "Function Bundles"))
         add_shortcut(self.steps, "Enter", self._edit_selected_step_preset,
-                     label="Edit the selected step's preset", context="Function Bundles")
+                     label=QT_TRANSLATE_NOOP("CheatSheet", "Edit the selected step's preset"),
+                     context=QT_TRANSLATE_NOOP("CheatSheet", "Function Bundles"))
 
         self.btn_remove.clicked.connect(self._remove_selected_steps)
         self.btn_clear.clicked.connect(self._clear_steps)
@@ -560,11 +580,14 @@ class FunctionBundleDialog(QDialog):
             self.list.setCurrentRow(0)
 
         add_shortcut(self.steps, "Delete", self._remove_selected_steps,
-                     label="Remove the selected steps", context="Function Bundles")
+                     label=QT_TRANSLATE_NOOP("CheatSheet", "Remove the selected steps"),
+                     context=QT_TRANSLATE_NOOP("CheatSheet", "Function Bundles"))
         add_shortcut(self.steps, "Backspace", self._remove_selected_steps,
-                     label="Remove the selected steps", context="Function Bundles")
+                     label=QT_TRANSLATE_NOOP("CheatSheet", "Remove the selected steps"),
+                     context=QT_TRANSLATE_NOOP("CheatSheet", "Function Bundles"))
         add_shortcut(self.steps, "Ctrl+A", self.steps.selectAll,
-                     label="Select all steps", context="Function Bundles")
+                     label=QT_TRANSLATE_NOOP("CheatSheet", "Select all steps"),
+                     context=QT_TRANSLATE_NOOP("CheatSheet", "Function Bundles"))
 
         # chips per bundle index
         self._chips: dict[int, FunctionBundleChip] = {}
@@ -690,7 +713,7 @@ class FunctionBundleDialog(QDialog):
 
     def _progress_reset(self):
         try:
-            self.run_status.setText("Ready.")
+            self.run_status.setText(self.tr("Ready."))
             self.run_progress.setRange(0, 100)
             self.run_progress.setValue(0)
             QApplication.processEvents()
@@ -703,7 +726,7 @@ class FunctionBundleDialog(QDialog):
             idx = max(0, idx)
             total = max(1, total)
             pct = int(100 * idx / total)
-            self.run_status.setText(f"Running step {idx}/{total}: {label}")
+            self.run_status.setText(self.tr("Running step {0}/{1}: {2}").format(idx, total, label))
             self.run_progress.setRange(0, 100)
             self.run_progress.setValue(pct)
             QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
@@ -721,6 +744,7 @@ class FunctionBundleDialog(QDialog):
 
     def _step_label(self, st: dict) -> str:
         cid = (st or {}).get("command_id", "<cmd>")
+        cid = _script_display_name(_find_main_window(self), cid) or cid
         # If preset has a friendly name/label, include it
         preset = (st or {}).get("preset")
         if isinstance(preset, dict):
@@ -917,18 +941,15 @@ class FunctionBundleDialog(QDialog):
 
     # ---------- CC wait helpers ----------
     def _is_cc_running(self, mw) -> bool:
-        # main-window flag
+        # The main window's flag only: the preset runner sets it, and clears it
+        # in a finally, in this process. Not the QSettings copy
+        # (cc/headless_in_progress): that is on disk, so a SASpro that closed or
+        # crashed during a Cosmic Clarity step left it True for good, and every
+        # bundle after that sat on its first step for two hours.
         try:
-            if getattr(mw, "_cosmicclarity_headless_running", False):
-                return True
+            return bool(getattr(mw, "_cosmicclarity_headless_running", False))
         except Exception:
-            pass
-        # QSettings flag
-        try:
-            v = QSettings().value("cc/headless_in_progress", False, type=bool)
-        except Exception:
-            v = bool(QSettings().value("cc/headless_in_progress", False))
-        return bool(v)
+            return False
 
     def _wait_for_cosmicclarity(self, mw, timeout_ms: int = 2 * 60 * 60 * 1000, poll_ms: int = 50):
         """If CC is running, wait here (processing events) until it finishes."""
@@ -1019,10 +1040,12 @@ class FunctionBundleDialog(QDialog):
     def _add_step_item(self, step: dict, at: int | None = None):
         cid = step.get("command_id", "<cmd>")
         preset = step.get("preset", None)
-        desc = f"{cid}{self._preset_label(preset)}"
+        name = _script_display_name(_find_main_window(self), cid)
+        desc = f"{name or cid}{self._preset_label(preset)}"
 
         it = QListWidgetItem(desc)
-        it.setToolTip(desc)  # ✅ hover shows full line
+        # hover shows the full line; for a script, also the id it is stored by
+        it.setToolTip(f"{desc}\n{cid}" if name else desc)
         it.setData(Qt.ItemDataRole.UserRole, step)
 
         if at is None:
@@ -1121,8 +1144,8 @@ class FunctionBundleDialog(QDialog):
         if i < 0:
             return
         cur = self._bundles[i]
-        new_name, ok = QInputDialog.getText(self, "Rename Function Bundle",
-                                            "New name:", text=cur.get("name","Function Bundle"))
+        new_name, ok = QInputDialog.getText(self, self.tr("Rename Function Bundle"),
+                                            self.tr("New name:"), text=cur.get("name","Function Bundle"))
         if not ok:
             return
         cur["name"] = (new_name or "Function Bundle").strip()
@@ -1138,7 +1161,7 @@ class FunctionBundleDialog(QDialog):
         if self.list.count() == 0:
             return
         m = QMenu(self)
-        act_ren = m.addAction("Rename…")
+        act_ren = m.addAction(self.tr("Rename…"))
         act = m.exec(self.list.mapToGlobal(pos))
         if act is act_ren:
             self._rename_bundle()
@@ -1149,11 +1172,11 @@ class FunctionBundleDialog(QDialog):
         if not item:
             return
         m = QMenu(self)
-        a_edit  = m.addAction("Edit Preset…")
-        a_clear = m.addAction("Clear Preset")
+        a_edit  = m.addAction(self.tr("Edit Preset…"))
+        a_clear = m.addAction(self.tr("Clear Preset"))
         m.addSeparator()
-        a_dup   = m.addAction("Duplicate Step")
-        a_rem   = m.addAction("Remove Step")
+        a_dup   = m.addAction(self.tr("Duplicate Step"))
+        a_rem   = m.addAction(self.tr("Remove Step"))
         act = m.exec(self.steps.mapToGlobal(pos))
         if not act:
             return
@@ -1206,9 +1229,9 @@ class FunctionBundleDialog(QDialog):
 
         # ---- Fallback: JSON editor (only when no bespoke editor exists) ----
         dlg = QDialog(self)
-        dlg.setWindowTitle("Edit Preset")
+        dlg.setWindowTitle(self.tr("Edit Preset"))
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel("Edit the preset as JSON (e.g. {\"name\":\"My Preset\", \"strength\": 0.8})"))
+        v.addWidget(QLabel(self.tr("Edit the preset as JSON (e.g. {\"name\":\"My Preset\", \"strength\": 0.8})")))
         edit = QPlainTextEdit()
         edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         try:
@@ -1228,7 +1251,7 @@ class FunctionBundleDialog(QDialog):
         try:
             val = json.loads(txt)
         except Exception as e:
-            QMessageBox.warning(self, "Invalid JSON", f"Could not parse JSON:\n{e}")
+            QMessageBox.warning(self, self.tr("Invalid JSON"), self.tr("Could not parse JSON:\n{0}").format(e))
             return current, False
         return val, True
 
@@ -1268,18 +1291,18 @@ class FunctionBundleDialog(QDialog):
     def _apply_to_active_view(self):
         mw = _find_main_window(self)
         if not mw or not hasattr(mw, "_handle_command_drop"):
-            QMessageBox.information(self, "Apply", "Main window not available.")
+            QMessageBox.information(self, self.tr("Apply"), self.tr("Main window not available."))
             return
         sw = mw.mdi.activeSubWindow() if hasattr(mw, "mdi") else None
         if not sw:
-            QMessageBox.information(self, "Apply", "No active view.")
+            QMessageBox.information(self, self.tr("Apply"), self.tr("No active view."))
             return
         self._apply_steps_to_target_sw(mw, sw, self.current_steps())
 
     def _apply_to_view_bundle(self):
         mw = _find_main_window(self)
         if not mw:
-            QMessageBox.information(self, "Apply", "Main window not available.")
+            QMessageBox.information(self, self.tr("Apply"), self.tr("Main window not available."))
             return
 
         settings = QSettings()
@@ -1317,19 +1340,19 @@ class FunctionBundleDialog(QDialog):
             choices.append((name, ptrs, uids))
 
         if not choices:
-            QMessageBox.information(self, "Apply", "No View Bundles found.")
+            QMessageBox.information(self, self.tr("Apply"), self.tr("No View Bundles found."))
             return
 
         # dialog
         dlg = QDialog(self)
-        dlg.setWindowTitle("Apply to View Bundle…")
+        dlg.setWindowTitle(self.tr("Apply to View Bundle…"))
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel("Select a View Bundle:"))
+        v.addWidget(QLabel(self.tr("Select a View Bundle:")))
         lb = QListWidget()
         v.addWidget(lb, 1)
 
         for name, ptrs, uids in choices:
-            it = QListWidgetItem(f"{name}  ({len(ptrs)} views)")
+            it = QListWidgetItem(self.tr("{0}  ({1} views)").format(name, len(ptrs)))
             it.setData(Qt.ItemDataRole.UserRole, (ptrs, uids))
             lb.addItem(it)
 
@@ -1348,7 +1371,7 @@ class FunctionBundleDialog(QDialog):
         ptrs, uids = cur.data(Qt.ItemDataRole.UserRole) or ([], {})
         steps = self.current_steps()
         if not steps:
-            QMessageBox.information(self, "Apply", "This Function Bundle is empty.")
+            QMessageBox.information(self, self.tr("Apply"), self.tr("This Function Bundle is empty."))
             return
 
         try:
@@ -1379,7 +1402,7 @@ class FunctionBundleDialog(QDialog):
             pass
 
         if applied == 0:
-            QMessageBox.information(self, "Apply", "No valid targets in the selected bundle.")
+            QMessageBox.information(self, self.tr("Apply"), self.tr("No valid targets in the selected bundle."))
 
 
     def _apply_steps_to_target_sw(self, mw, sw, steps: list[dict]):
@@ -1462,7 +1485,7 @@ class FunctionBundleDialog(QDialog):
         except Exception:
             pass
 
-        self.run_status.setText("Done.")
+        self.run_status.setText(self.tr("Done."))
         self.run_progress.setRange(0, 100)
         self.run_progress.setValue(100)
 
@@ -1470,8 +1493,8 @@ class FunctionBundleDialog(QDialog):
             _fb(f"EXIT with errors: {errors}")
             QMessageBox.warning(
                 self,
-                "Apply",
-                "Some steps failed:\n\n" + "\n".join(errors),
+                self.tr("Apply"),
+                self.tr("Some steps failed:\n\n{0}").format("\n".join(errors)),
             )
         else:
             _fb("EXIT OK (no errors)")
@@ -1484,13 +1507,13 @@ class FunctionBundleDialog(QDialog):
 
         mw = _find_main_window(self)
         if not mw:
-            QMessageBox.information(self, "Compress", "Main window not available."); return
+            QMessageBox.information(self, self.tr("Compress"), self.tr("Main window not available.")); return
 
         chip = self._chips.get(i)
         if chip is None or chip.parent() is None:
             chip = _spawn_function_chip_on_canvas(mw, self, name, bundle_key=f"fn-{i}")
             if chip is None:
-                QMessageBox.information(self, "Compress", "Shortcut canvas not available."); return
+                QMessageBox.information(self, self.tr("Compress"), self.tr("Shortcut canvas not available.")); return
             self._chips[i] = chip
 
         # Ensure chip knows which bundle it represents

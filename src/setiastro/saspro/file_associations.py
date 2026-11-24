@@ -30,11 +30,15 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QMessageBox, QPushButton, QTextBrowser, QVBoxLayout,
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("FileAssociations", text)
 
 
 # Public URL for the long-form documentation. Updated in one place so the
@@ -50,20 +54,20 @@ WIKI_URL = (
 # in the dialog, since associating them with SASpro won't clobber anything
 # a user is likely to care about.
 PRIMARY_ASTRONOMY_EXTENSIONS: list[tuple[str, str]] = [
-    (".fits", "FITS Image"),
-    (".fit",  "FITS Image"),
-    (".fts",  "FITS Image"),
-    (".xisf", "XISF Image"),
+    (".fits", QT_TRANSLATE_NOOP("FileAssociationsDialog", "FITS Image")),
+    (".fit",  QT_TRANSLATE_NOOP("FileAssociationsDialog", "FITS Image")),
+    (".fts",  QT_TRANSLATE_NOOP("FileAssociationsDialog", "FITS Image")),
+    (".xisf", QT_TRANSLATE_NOOP("FileAssociationsDialog", "XISF Image")),
 ]
 
 # SASpro can open these, but so can Photoshop, Lightroom, your RAW editor,
 # a system image viewer, etc. Opt-in only, with a warning.
 SECONDARY_EXTENSIONS: list[tuple[str, str]] = [
-    (".tif",  "TIFF Image"),
-    (".tiff", "TIFF Image"),
-    (".psd",  "Photoshop Document"),
-    (".psb",  "Photoshop Large Document"),
-    (".exr",  "OpenEXR Image"),
+    (".tif",  QT_TRANSLATE_NOOP("FileAssociationsDialog", "TIFF Image")),
+    (".tiff", QT_TRANSLATE_NOOP("FileAssociationsDialog", "TIFF Image")),
+    (".psd",  QT_TRANSLATE_NOOP("FileAssociationsDialog", "Photoshop Document")),
+    (".psb",  QT_TRANSLATE_NOOP("FileAssociationsDialog", "Photoshop Large Document")),
+    (".exr",  QT_TRANSLATE_NOOP("FileAssociationsDialog", "OpenEXR Image")),
     (".hdr",  "Radiance HDR"),
     (".cr2",  "Canon RAW"),
     (".cr3",  "Canon RAW"),
@@ -90,7 +94,7 @@ def detect_launcher() -> LauncherInfo:
         return LauncherInfo(
             kind="frozen",
             exe=sys.executable,
-            display=f"Installer build — {sys.executable}",
+            display=_tr("Installer build — {0}").format(sys.executable),
             can_register=True,
         )
 
@@ -103,7 +107,7 @@ def detect_launcher() -> LauncherInfo:
         return LauncherInfo(
             kind="pip",
             exe=shim,
-            display=f"pip install — {shim}",
+            display=_tr("pip install — {0}").format(shim),
             can_register=True,
         )
 
@@ -114,7 +118,7 @@ def detect_launcher() -> LauncherInfo:
             script = os.path.abspath(sys.argv[0])
     except Exception:
         pass
-    display = f"Source — {sys.executable}"
+    display = _tr("Source — {0}").format(sys.executable)
     if script:
         display += f"  {script}"
     return LauncherInfo(
@@ -404,7 +408,7 @@ class FileAssociationsDialog(QDialog):
             "Only astronomy software opens these — safe to associate with SASpro."
         )))
         for ext, label in PRIMARY_ASTRONOMY_EXTENSIONS:
-            cb = QCheckBox(f"{ext:<7}  {label}")
+            cb = QCheckBox(f"{ext:<7}  {self.tr(label)}")
             cb.setChecked(True)
             cb.setProperty("ext", ext)
             self._primary_checkboxes.append(cb)
@@ -423,7 +427,7 @@ class FileAssociationsDialog(QDialog):
         warn.setStyleSheet("color: #c0a000;")
         sv.addWidget(warn)
         for ext, label in SECONDARY_EXTENSIONS:
-            cb = QCheckBox(f"{ext:<7}  {label}")
+            cb = QCheckBox(f"{ext:<7}  {self.tr(label)}")
             cb.setChecked(False)
             cb.setProperty("ext", ext)
             self._secondary_checkboxes.append(cb)
@@ -600,17 +604,17 @@ class _ManualStepsDialog(QDialog):
         exe = info.exe
         # Shared footer with the deep link to the wiki — appended to each
         # platform's HTML so users looking for more depth land in one place.
-        wiki_footer = (
-            f'<hr><p style="color:#888;font-size:11px;">'
-            f'Full documentation and troubleshooting: '
-            f'<a href="{WIKI_URL}">{WIKI_URL}</a></p>'
-        )
+        wiki_footer = self.tr(
+            '<hr><p style="color:#888;font-size:11px;">'
+            'Full documentation and troubleshooting: '
+            '<a href="{0}">{0}</a></p>'
+        ).format(WIKI_URL)
 
         if sys.platform.startswith("win"):
-            body = f"""
+            body = self.tr("""
             <h2>Windows — manual file association</h2>
             <p>Executable to point at:</p>
-            <pre>{exe}</pre>
+            <pre>{0}</pre>
             <ol>
               <li>Right-click a <code>.fits</code> file in File Explorer.</li>
               <li>Choose <b>Open with → Choose another app</b>.</li>
@@ -628,9 +632,9 @@ class _ManualStepsDialog(QDialog):
                <code>C:\\Tools\\saspro.bat</code>) containing:</p>
             <pre>@python "C:\\path\\to\\setiastrosuitepro.py" %*</pre>
             <p>Then point Open With at that <code>.bat</code>.</p>
-            """
+            """).format(exe)
         elif sys.platform == "darwin":
-            body = f"""
+            body = self.tr("""
             <h2>macOS — manual file association</h2>
             <p>File associations on macOS come from the <code>.app</code>
                bundle's <code>Info.plist</code>. If you don't have the
@@ -648,13 +652,13 @@ class _ManualStepsDialog(QDialog):
             <p>Repeat for each extension you want. Even without the
                <code>.app</code>, SASpro still accepts files you drag onto its
                running window — but Finder won't list it as a handler.</p>
-            <p>Current launcher: <code>{exe}</code></p>
-            """
+            <p>Current launcher: <code>{0}</code></p>
+            """).format(exe)
         else:  # Linux
-            body = f"""
+            body = self.tr("""
             <h2>Linux — manual file association</h2>
             <p>Executable:</p>
-            <pre>{exe}</pre>
+            <pre>{0}</pre>
             <p>Use <b>Register selected</b> above if it's available — it
                writes a user-level <code>.desktop</code> file and runs
                <code>xdg-mime default</code>. Manual steps if you'd rather:</p>
@@ -664,7 +668,7 @@ class _ManualStepsDialog(QDialog):
 <pre>[Desktop Entry]
 Type=Application
 Name=Seti Astro Suite Pro
-Exec={exe} %F
+Exec={0} %F
 Terminal=false
 Categories=Graphics;Science;Astronomy;
 MimeType=image/fits;application/x-xisf;</pre>
@@ -677,6 +681,6 @@ MimeType=image/fits;application/x-xisf;</pre>
 xdg-mime default setiastrosuitepro.desktop application/x-xisf</pre>
               </li>
             </ol>
-            """
+            """).format(exe)
 
         return body + wiki_footer

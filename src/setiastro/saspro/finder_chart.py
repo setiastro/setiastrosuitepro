@@ -9,7 +9,7 @@ import csv
 import re
 from pathlib import Path
 from typing import List, Dict, Any
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QCoreApplication
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
@@ -32,6 +32,10 @@ if TYPE_CHECKING:
 else:
     AstropyWCS = object
     AstropySkyCoord = object
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("FinderChart", text)
 
 
 _NONFITS_META_KEYS = {
@@ -956,8 +960,8 @@ def try_fetch_hips_cutout(center: "SkyCoord", fov_deg: float, out_px: int, surve
         routes = [ln.strip().lstrip("\u2022").strip().split(" (", 1)[0].split(":", 1)[0]
                   for ln in full.splitlines() if ln.strip().startswith("\u2022")]
         if routes:
-            return None, None, ("Every survey route failed:\n"
-                                + "\n".join(routes[:8]))
+            return None, None, _tr("Every survey route failed:\n{0}").format(
+                "\n".join(routes[:8]))
         return None, None, f"{type(e).__name__}: {e}"
 
     data = np.asarray(data, dtype=np.float32)
@@ -1005,7 +1009,7 @@ def render_finder_chart(doc_image: np.ndarray, meta: dict, req: FinderChartReque
     # --- Draw background OR error message ---
     if bg is None:
         ax.set_facecolor((0, 0, 0))
-        msg = "No HiPS background.\n" + (err or "Unknown error")
+        msg = _tr("No HiPS background.\n{0}").format(err or _tr("Unknown error"))
         ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes)
     else:
         # If you want doc overlay, do it here
@@ -1237,7 +1241,7 @@ def render_finder_chart_cached(
     # ---- background (or error) ----
     if bg is None:
         ax.set_facecolor((0, 0, 0))
-        msg = "No HiPS background.\n" + (err or "Unknown error")
+        msg = _tr("No HiPS background.\n{0}").format(err or _tr("Unknown error"))
         ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes)
     else:
         # If provided, base_u8 already includes hips + optional warped doc overlay.
@@ -1484,12 +1488,12 @@ class _SkyChartHostMixin:
 
         # overlay row, under the survey page's first two rows
         row = QHBoxLayout()
-        self.chk_skychart = QCheckBox("Sky chart overlay")
-        self.chk_skychart.setToolTip("Draw constellations, deep-sky objects to scale and star names "
-                                     "over the survey image")
+        self.chk_skychart = QCheckBox(_tr("Sky chart overlay"))
+        self.chk_skychart.setToolTip(_tr("Draw constellations, deep-sky objects to scale and star names "
+                                         "over the survey image"))
         self.chk_skychart.setChecked(self._settings.value(self._OVERLAY_KEY, False, type=bool))
-        self.btn_skychart_layers = QPushButton("Layers…")
-        self.btn_skychart_layers.setToolTip("Choose which sky chart layers the overlay draws")
+        self.btn_skychart_layers = QPushButton(_tr("Layers…"))
+        self.btn_skychart_layers.setToolTip(_tr("Choose which sky chart layers the overlay draws"))
         row.addWidget(self.chk_skychart)
         row.addWidget(self.btn_skychart_layers)
         row.addStretch(1)
@@ -1499,11 +1503,11 @@ class _SkyChartHostMixin:
 
         outer = QVBoxLayout(self)
         top = QHBoxLayout()
-        top.addWidget(QLabel("Style:"))
+        top.addWidget(QLabel(_tr("Style:")))
         self.cmb_style = QComboBox()
         self.cmb_style.addItems(["Survey image", "Drawn chart"])
-        self.cmb_style.setToolTip("Survey image: a sky survey photograph with overlays.\n"
-                                  "Drawn chart: a vector star chart (SVG / PDF / PNG / new image).")
+        self.cmb_style.setToolTip(_tr("Survey image: a sky survey photograph with overlays.\n"
+                                      "Drawn chart: a vector star chart (SVG / PDF / PNG / new image)."))
         top.addWidget(self.cmb_style)
         top.addStretch(1)
         outer.addLayout(top)
@@ -1594,7 +1598,7 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         self._render_timer.timeout.connect(self._render_debounced_fire)
         self._pending_force_refetch = False
 
-        self.setWindowTitle(f"Finder Chart — {name}")
+        self.setWindowTitle(self.tr("Finder Chart — {0}").format(name))
         self.setModal(False)
         self.resize(920, 980)
 
@@ -1604,7 +1608,7 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
 
         # Row 1: survey + FOV radius + grid
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Survey:"))
+        row1.addWidget(QLabel(self.tr("Survey:")))
         self.cmb_survey = QComboBox()
         self.cmb_survey.addItems(list(SURVEY_HIPS.keys()))
         row1.addWidget(self.cmb_survey)
@@ -1619,11 +1623,11 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         row1.addWidget(self.cmb_fov)
 
         row1.addSpacing(12)
-        self.chk_grid = QCheckBox("Show grid")
+        self.chk_grid = QCheckBox(self.tr("Show grid"))
         row1.addWidget(self.chk_grid)
 
         row1.addSpacing(12)
-        row1.addWidget(QLabel("Output px:"))
+        row1.addWidget(QLabel(self.tr("Output px:")))
         self.sb_px = QSpinBox()
         self.sb_px.setRange(300, 2400)
         self.sb_px.setSingleStep(100)
@@ -1632,15 +1636,15 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
 
         row1.addStretch(1)
         row1.addWidget(make_help_button("finder_chart", self))
-        self.btn_render = QPushButton("Render")
+        self.btn_render = QPushButton(self.tr("Render"))
         row1.addWidget(self.btn_render)
         root.addLayout(row1)
 
         # Row 2: overlays
         row2 = QHBoxLayout()
-        self.chk_stars = QCheckBox("Star names")
+        self.chk_stars = QCheckBox(self.tr("Star names"))
         row2.addWidget(self.chk_stars)
-        row2.addWidget(QLabel("Mag ≤"))
+        row2.addWidget(QLabel(self.tr("Mag ≤")))
         self.sb_star_mag = QDoubleSpinBox()
         self.sb_star_mag.setRange(-2.0, 8.0)
         self.sb_star_mag.setSingleStep(0.5)
@@ -1649,13 +1653,13 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         row2.addWidget(self.sb_star_mag)
 
         row2.addSpacing(12)
-        self.chk_dso = QCheckBox("Deep-sky")
+        self.chk_dso = QCheckBox(self.tr("Deep-sky"))
         row2.addWidget(self.chk_dso)
         self.cmb_dso = QComboBox()
         self.cmb_dso.addItems(["All (DSO)", "M", "NGC", "IC", "Abell", "SH2", "LBN", "LDN", "PN-G"])
         self.cmb_dso.setFixedWidth(140)
         row2.addWidget(self.cmb_dso)
-        row2.addWidget(QLabel("Mag ≤"))
+        row2.addWidget(QLabel(self.tr("Mag ≤")))
         self.sb_dso_mag = QDoubleSpinBox()
         self.sb_dso_mag.setRange(-2.0, 30.0)
         self.sb_dso_mag.setSingleStep(0.5)
@@ -1664,10 +1668,10 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         row2.addWidget(self.sb_dso_mag)
 
         row2.addSpacing(12)
-        self.chk_compass = QCheckBox("Compass")
+        self.chk_compass = QCheckBox(self.tr("Compass"))
         self.chk_compass.setChecked(True)
         row2.addWidget(self.chk_compass)
-        self.chk_scale = QCheckBox("Scale bar")
+        self.chk_scale = QCheckBox(self.tr("Scale bar"))
         self.chk_scale.setChecked(True)
         row2.addWidget(self.chk_scale)
         row2.addStretch(1)
@@ -1675,11 +1679,11 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
 
         # Row 3: Imaging train FOV overlay
         row3 = QHBoxLayout()
-        self.chk_fov_box = QCheckBox("Show FOV box")
+        self.chk_fov_box = QCheckBox(self.tr("Show FOV box"))
         row3.addWidget(self.chk_fov_box)
 
         row3.addSpacing(8)
-        row3.addWidget(QLabel("Focal length (mm):"))
+        row3.addWidget(QLabel(self.tr("Focal length (mm):")))
         self.sb_focal = QDoubleSpinBox()
         self.sb_focal.setRange(1.0, 20000.0)
         self.sb_focal.setDecimals(1)
@@ -1689,7 +1693,7 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         row3.addWidget(self.sb_focal)
 
         row3.addSpacing(8)
-        row3.addWidget(QLabel("Pixel pitch (μm):"))
+        row3.addWidget(QLabel(self.tr("Pixel pitch (μm):")))
         self.sb_pitch = QDoubleSpinBox()
         self.sb_pitch.setRange(0.5, 30.0)
         self.sb_pitch.setDecimals(2)
@@ -1699,7 +1703,7 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         row3.addWidget(self.sb_pitch)
 
         row3.addSpacing(8)
-        row3.addWidget(QLabel("Sensor (px W×H):"))
+        row3.addWidget(QLabel(self.tr("Sensor (px W×H):")))
         self.sb_sensor_w = QSpinBox()
         self.sb_sensor_w.setRange(1, 100000)
         self.sb_sensor_w.setValue(6248)
@@ -1713,7 +1717,7 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         row3.addWidget(self.sb_sensor_h)
 
         row3.addSpacing(8)
-        row3.addWidget(QLabel("Rotation (°CW):"))
+        row3.addWidget(QLabel(self.tr("Rotation (°CW):")))
         self.sb_rotation = QDoubleSpinBox()
         self.sb_rotation.setRange(-360.0, 360.0)
         self.sb_rotation.setDecimals(1)
@@ -1743,8 +1747,8 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         self.lbl_status.setStyleSheet("color:#bbb;")
         brow.addWidget(self.lbl_status)
         brow.addStretch(1)
-        self.btn_save  = QPushButton("Save PNG…")
-        self.btn_close = QPushButton("Close")
+        self.btn_save  = QPushButton(self.tr("Save PNG…"))
+        self.btn_close = QPushButton(self.tr("Close"))
         brow.addWidget(self.btn_save)
         brow.addWidget(self.btn_close)
         root.addLayout(brow)
@@ -1773,7 +1777,7 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
 
         self._load_imaging_settings()
         self._on_imaging_train_changed()  # update the FOV readout label
-        self.lbl.setText("Fetching survey background…")
+        self.lbl.setText(self.tr("Fetching survey background…"))
         self.lbl.setStyleSheet("QLabel { background:#111; border:1px solid #333; color:#ccc; }")
         self._install_sky_chart_host()
         QTimer.singleShot(0, lambda: self._render_now(force_refetch=True))
@@ -1888,7 +1892,7 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
 
     def _schedule_render(self, *, force_refetch=False, delay_ms=200):
         if hasattr(self, "lbl_status"):
-            self.lbl_status.setText("Rendering…")
+            self.lbl_status.setText(self.tr("Rendering…"))
             QApplication.processEvents()
         self._pending_force_refetch = self._pending_force_refetch or bool(force_refetch)
         self._render_timer.stop()
@@ -1918,7 +1922,7 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
 
         self._save_imaging_settings()
 
-        self._set_busy(True, "Fetching survey background…")
+        self._set_busy(True, self.tr("Fetching survey background…"))
         try:
             req    = self._req()
             fov    = self._fov_deg()
@@ -1999,7 +2003,7 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
             self.lbl.setPixmap(QPixmap.fromImage(qimg))
 
         except Exception as e:
-            QMessageBox.critical(self, "Finder Chart", str(e))
+            QMessageBox.critical(self, self.tr("Finder Chart"), str(e))
         finally:
             self._set_busy(False)
 
@@ -2011,7 +2015,7 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
             start = self._settings.value("finder_chart/last_dir", "", type=str) or ""
         except Exception:
             pass
-        fn, _ = QFileDialog.getSaveFileName(self, "Save Finder Chart", start, "PNG Image (*.png)")
+        fn, _ = QFileDialog.getSaveFileName(self, self.tr("Save Finder Chart"), start, "PNG Image (*.png)")
         if not fn:
             return
         if not fn.lower().endswith(".png"):
@@ -2059,7 +2063,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         self._corners_cached = None
         self._center_cached = None
         self._fov_deg_cached = None
-        self.setWindowTitle("Finder Chart…")
+        self.setWindowTitle(self.tr("Finder Chart…"))
         self.setModal(False)
         self.resize(920, 980)
 
@@ -2070,31 +2074,31 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         # controls row 1 (primary)
         row1 = QHBoxLayout()
 
-        row1.addWidget(QLabel("Survey:"))
+        row1.addWidget(QLabel(self.tr("Survey:")))
         self.cmb_survey = QComboBox()
         self.cmb_survey.clear()
         self.cmb_survey.addItems(list(SURVEY_HIPS.keys()))
         row1.addWidget(self.cmb_survey)
 
         row1.addSpacing(12)
-        row1.addWidget(QLabel("Size:"))
+        row1.addWidget(QLabel(self.tr("Size:")))
         self.cmb_size = QComboBox()
-        self.cmb_size.addItems(["2× FOV", "4× FOV", "8× FOV"])
+        self.cmb_size.addItems([self.tr("2× FOV"), self.tr("4× FOV"), self.tr("8× FOV")])
         row1.addWidget(self.cmb_size)
 
         row1.addSpacing(12)
-        self.chk_grid = QCheckBox("Show grid")
+        self.chk_grid = QCheckBox(self.tr("Show grid"))
         row1.addWidget(self.chk_grid)
 
         row1.addSpacing(12)
-        row1.addWidget(QLabel("Output px:"))
+        row1.addWidget(QLabel(self.tr("Output px:")))
         self.sb_px = QSpinBox()
         self.sb_px.setRange(300, 2400)
         self.sb_px.setSingleStep(100)
         self.sb_px.setValue(900)
         row1.addWidget(self.sb_px)
         row1.addSpacing(12)
-        row1.addWidget(QLabel("Image opacity:"))
+        row1.addWidget(QLabel(self.tr("Image opacity:")))
         self.sld_opacity = QSlider(Qt.Orientation.Horizontal)
         self.sld_opacity.setRange(0, 100)
         self.sld_opacity.setValue(35)
@@ -2106,7 +2110,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         row1.addWidget(self.lbl_opacity)
         row1.addStretch(1)
         row1.addWidget(make_help_button("finder_chart", self))
-        self.btn_render = QPushButton("Render")
+        self.btn_render = QPushButton(self.tr("Render"))
         row1.addWidget(self.btn_render)
 
 
@@ -2115,11 +2119,11 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         # controls row 2 (overlays)
         row2 = QHBoxLayout()
 
-        self.chk_stars = QCheckBox("Star names")
+        self.chk_stars = QCheckBox(self.tr("Star names"))
         row2.addWidget(self.chk_stars)
 
         row2.addSpacing(8)
-        row2.addWidget(QLabel("Star ≤"))
+        row2.addWidget(QLabel(self.tr("Star ≤")))
         self.sb_star_mag = QDoubleSpinBox()
         self.sb_star_mag.setRange(-2.0, 8.0)
         self.sb_star_mag.setSingleStep(0.5)
@@ -2127,7 +2131,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         self.sb_star_mag.setFixedWidth(70)
         row2.addWidget(self.sb_star_mag)
 
-        row2.addWidget(QLabel("Max"))
+        row2.addWidget(QLabel(self.tr("Max")))
         self.sb_star_max = QSpinBox()
         self.sb_star_max.setRange(5, 200)
         self.sb_star_max.setValue(30)
@@ -2135,7 +2139,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         row2.addWidget(self.sb_star_max)
 
         row2.addSpacing(12)
-        self.chk_dso = QCheckBox("Deep-sky")
+        self.chk_dso = QCheckBox(self.tr("Deep-sky"))
         row2.addWidget(self.chk_dso)
 
         self.cmb_dso = QComboBox()
@@ -2143,7 +2147,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         self.cmb_dso.setFixedWidth(170)
         row2.addWidget(self.cmb_dso)
 
-        row2.addWidget(QLabel("Mag ≤"))
+        row2.addWidget(QLabel(self.tr("Mag ≤")))
         self.sb_dso_mag = QDoubleSpinBox()
         self.sb_dso_mag.setRange(-2.0, 30.0)
         self.sb_dso_mag.setSingleStep(0.5)
@@ -2151,7 +2155,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         self.sb_dso_mag.setFixedWidth(70)
         row2.addWidget(self.sb_dso_mag)
 
-        row2.addWidget(QLabel("Max"))
+        row2.addWidget(QLabel(self.tr("Max")))
         self.sb_dso_max = QSpinBox()
         self.sb_dso_max.setRange(5, 300)
         self.sb_dso_max.setValue(30)
@@ -2159,11 +2163,11 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         row2.addWidget(self.sb_dso_max)
 
         row2.addSpacing(12)
-        self.chk_compass = QCheckBox("Compass")
+        self.chk_compass = QCheckBox(self.tr("Compass"))
         self.chk_compass.setChecked(True)
         row2.addWidget(self.chk_compass)
 
-        self.chk_scale = QCheckBox("Scale bar")
+        self.chk_scale = QCheckBox(self.tr("Scale bar"))
         self.chk_scale.setChecked(True)
         row2.addWidget(self.chk_scale)
 
@@ -2189,9 +2193,9 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
 
         brow.addStretch(1)
 
-        self.btn_send = QPushButton("Send to New Document")
-        self.btn_save = QPushButton("Save PNG…")
-        self.btn_close = QPushButton("Close")
+        self.btn_send = QPushButton(self.tr("Send to New Document"))
+        self.btn_save = QPushButton(self.tr("Save PNG…"))
+        self.btn_close = QPushButton(self.tr("Close"))
         brow.addWidget(self.btn_send)
         brow.addWidget(self.btn_save)
         brow.addWidget(self.btn_close)
@@ -2215,7 +2219,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         self.sld_opacity.sliderReleased.connect(lambda: self._render_now(force_refetch=False))
         # auto render once
         # placeholder so the user sees *something* immediately
-        self.lbl.setText("Fetching survey background…")
+        self.lbl.setText(self.tr("Fetching survey background…"))
         self.lbl.setStyleSheet("QLabel { background:#111; border:1px solid #333; color:#ccc; }")
         # --- overlay enable/disable: update enabled state + one refresh ---
         self.chk_stars.toggled.connect(lambda _=False: (self._set_overlay_controls_enabled(),
@@ -2291,7 +2295,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
 
 
     def _initial_render(self):
-        self._set_busy(True, "Fetching survey background…")
+        self._set_busy(True, self.tr("Fetching survey background…"))
         # schedule again so the UI paints the busy message + cursor first
         QTimer.singleShot(0, lambda: self._render_now(force_refetch=True))
 
@@ -2299,7 +2303,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
     def _schedule_render(self, *, force_refetch: bool = False, delay_ms: int = 200):
         # show immediate feedback during debounce
         if hasattr(self, "lbl_status") and self.lbl_status is not None:
-            self.lbl_status.setText("Rendering…")
+            self.lbl_status.setText(self.tr("Rendering…"))
             QApplication.processEvents()
 
         self._pending_force_refetch = self._pending_force_refetch or bool(force_refetch)
@@ -2419,7 +2423,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
 
 
     def _render(self, *, force_refetch: bool = False):
-        self._set_busy(True, "Rendering finder chart…")
+        self._set_busy(True, self.tr("Rendering finder chart…"))
         try:
             img = np.asarray(self._doc.image)
             meta = dict(getattr(self._doc, "metadata", None) or {})
@@ -2432,7 +2436,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
                 print("[FinderChart] header cards:", 0 if hdr is None else len(hdr))
                 print("[FinderChart] has CTYPE1:", False if hdr is None else ("CTYPE1" in hdr))
                 print("[FinderChart] meta keys sample:", list(meta.keys())[:20])                
-                QMessageBox.warning(self, "Finder Chart", "Could not render finder chart (missing WCS).")
+                QMessageBox.warning(self, self.tr("Finder Chart"), self.tr("Could not render finder chart (missing WCS)."))
                 return
 
             # cache these for reuse (overlay / footprint / labels)
@@ -2466,7 +2470,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
             self.lbl.setPixmap(QPixmap.fromImage(qimg))
 
         except Exception as e:
-            QMessageBox.critical(self, "Finder Chart", str(e))
+            QMessageBox.critical(self, self.tr("Finder Chart"), str(e))
         finally:
             self._set_busy(False)
 
@@ -2501,7 +2505,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
 
     def _save_png(self):
         if self._last_rgb_u8 is None:
-            QMessageBox.information(self, "Finder Chart", "Nothing rendered yet.")
+            QMessageBox.information(self, self.tr("Finder Chart"), self.tr("Nothing rendered yet."))
             return
 
         start_dir = ""
@@ -2510,7 +2514,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         except Exception:
             start_dir = ""
 
-        fn, _ = QFileDialog.getSaveFileName(self, "Save Finder Chart", start_dir, "PNG Image (*.png)")
+        fn, _ = QFileDialog.getSaveFileName(self, self.tr("Save Finder Chart"), start_dir, "PNG Image (*.png)")
         if not fn:
             return
 
@@ -2527,11 +2531,11 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
             except Exception:
                 pass
         except Exception as e:
-            QMessageBox.critical(self, "Finder Chart", str(e))
+            QMessageBox.critical(self, self.tr("Finder Chart"), str(e))
 
     def _send_to_new_doc(self):
         if self._last_rgb_u8 is None:
-            QMessageBox.information(self, "Finder Chart", "Nothing rendered yet.")
+            QMessageBox.information(self, self.tr("Finder Chart"), self.tr("Nothing rendered yet."))
             return
 
         img01 = self._last_rgb_u8.astype(np.float32) / 255.0
@@ -2550,7 +2554,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
 
         dm = self._get_doc_manager()
         if dm is None:
-            QMessageBox.warning(self, "Finder Chart", "DocManager not found.")
+            QMessageBox.warning(self, self.tr("Finder Chart"), self.tr("DocManager not found."))
             return
 
         title = f"Finder Chart ({req.survey})"
@@ -2571,7 +2575,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
             raise RuntimeError("DocManager lacks open_array/create_document")
 
         except Exception as e:
-            QMessageBox.critical(self, "Finder Chart", f"Failed to open new view:\n{e}")
+            QMessageBox.critical(self, self.tr("Finder Chart"), self.tr("Failed to open new view:\n{0}").format(e))
 
 
     def _get_doc_manager(self):

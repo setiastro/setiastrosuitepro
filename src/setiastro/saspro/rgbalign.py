@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import numpy as np
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QTimer, QCoreApplication
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QMessageBox, QProgressBar, QPlainTextEdit,
@@ -29,6 +29,10 @@ try:
     from setiastro.saspro.star_alignment import PolynomialTransform
 except Exception:
     PolynomialTransform = None
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("RGBAlign", text)
 
 
 def _translate_channel(ch: np.ndarray, dx: float, dy: float) -> np.ndarray:
@@ -344,7 +348,7 @@ class RGBAlignWorker(QThread):
         best = (None, None, None, -1)      # src_xy, dst_xy, sigma, n_match
         for sigma in self._sigma_ladder():
             self._check_cancel()
-            self.progress.emit(self._stage_pct, f"Aligning {name} → Green: detecting stars at σ={sigma:g}…")
+            self.progress.emit(self._stage_pct, self.tr("Aligning {0} → Green: detecting stars at σ={1:g}…").format(name, sigma))
             ref_pts = self._detect_tiled(ref_img, sigma)
             src_pts = self._detect_tiled(src_img, sigma)
             n_ref = 0 if ref_pts is None else len(ref_pts)
@@ -366,14 +370,14 @@ class RGBAlignWorker(QThread):
 
     def run(self):
         if self.img is None or self.img.ndim != 3 or self.img.shape[2] < 3:
-            self.failed.emit("Image must be RGB (3 channels).")
+            self.failed.emit(self.tr("Image must be RGB (3 channels)."))
             return
         if astroalign is None and not self.trial:
-            self.failed.emit("astroalign is not available.")
+            self.failed.emit(self.tr("astroalign is not available."))
             return
 
         try:
-            self.progress.emit(5, "Preparing channels…")
+            self.progress.emit(5, self.tr("Preparing channels…"))
             R = np.ascontiguousarray(self.img[..., 0].astype(np.float32, copy=False))
             G = np.ascontiguousarray(self.img[..., 1].astype(np.float32, copy=False))
             B = np.ascontiguousarray(self.img[..., 2].astype(np.float32, copy=False))
@@ -384,28 +388,28 @@ class RGBAlignWorker(QThread):
 
             # R → G
             self._stage_pct = 15
-            self.progress.emit(15, "Aligning Red → Green…")
+            self.progress.emit(15, self.tr("Aligning Red → Green…"))
             kind_R, X_R, (r_src, r_dst) = self._estimate_transform(R, G, self.model, label="Red")
             self._check_cancel()
             self.r_xform = (kind_R, X_R)
             self.r_pairs = (r_src, r_dst)
-            self.progress.emit(35, f"Red transform = {kind_R}")
+            self.progress.emit(35, self.tr("Red transform = {0}").format(kind_R))
             R_aligned = self._warp_channel(R, kind_R, X_R, G.shape)
 
             # B → G
             self._check_cancel()
             self._stage_pct = 55
-            self.progress.emit(55, "Aligning Blue → Green…")
+            self.progress.emit(55, self.tr("Aligning Blue → Green…"))
             kind_B, X_B, (b_src, b_dst) = self._estimate_transform(B, G, self.model, label="Blue")
             self._check_cancel()
             self.b_xform = (kind_B, X_B)
             self.b_pairs = (b_src, b_dst)
-            self.progress.emit(75, f"Blue transform = {kind_B}")
+            self.progress.emit(75, self.tr("Blue transform = {0}").format(kind_B))
             B_aligned = self._warp_channel(B, kind_B, X_B, G.shape)
 
             out = np.stack([R_aligned, G, B_aligned], axis=2).astype(self.img.dtype, copy=False)
             self._check_cancel()
-            self.progress.emit(100, "Done.")
+            self.progress.emit(100, self.tr("Done."))
             self.done.emit(out)
         except RGBAlignCancelled:
             self.cancelled.emit()
@@ -423,7 +427,7 @@ class RGBAlignWorker(QThread):
         self._check_cancel()
         self._stage_pct = 55
         self._pair_edge_points(B, G, (H, W), label="Blue")
-        self.progress.emit(100, "Trial detect done.")
+        self.progress.emit(100, self.tr("Trial detect done."))
         self.trial_done.emit("\n".join(["[Trial detect: EDGE σ waterfall]"] + self.waterfall_lines()))
 
     def _planet_centroid(self, ch: np.ndarray, signal_floor: float = 0.05):
@@ -646,7 +650,7 @@ class RGBAlignWorker(QThread):
             self._check_cancel()
             if backend == "sep":
                 self.progress.emit(self._stage_pct,
-                                   f"Aligning {name} → Green: detecting stars (SEP, σ waterfall to {sigma:g})…")
+                                   self.tr("Aligning {0} → Green: detecting stars (SEP, σ waterfall to {1:g})…").format(name, sigma))
             s_pts, s_sig = self._control_points(src, backend, sigma, area, cp)
             r_pts, r_sig = self._control_points(ref, backend, sigma, area, cp)
             if s_pts is None or r_pts is None or len(s_pts) < 3 or len(r_pts) < 3:
@@ -884,8 +888,8 @@ class RGBAlignDialog(QDialog):
         self.image = getattr(self.doc, "image", None) if self.doc is not None else None
 
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("Align R and B channels to G.\n"
-                             "Select model and run."))
+        lay.addWidget(QLabel(self.tr("Align R and B channels to G.\n"
+                                     "Select model and run.")))
 
         hl = QHBoxLayout()
         hl.addWidget(QLabel(self.tr("Alignment model:")))
@@ -901,7 +905,7 @@ class RGBAlignDialog(QDialog):
         self.model_combo.setCurrentIndex(1)
         self.model_combo.setItemData(
             0,
-            (
+            self.tr(
                 "Planet Centroid (Atmospheric Dispersion)\n"
                 "• Find planet disk in each channel\n"
                 "• Compute centroid (moments)\n"
@@ -913,7 +917,7 @@ class RGBAlignDialog(QDialog):
         # tooltips for each mode
         self.model_combo.setItemData(
             1,
-            (
+            self.tr(
                 "EDGE (Edge-Detected Guided Estimator)\n"
                 "• Detect stars in both channels with SEP\n"
                 "• Keep only outer-ring stars (ignore center)\n"
@@ -925,22 +929,22 @@ class RGBAlignDialog(QDialog):
         )
         self.model_combo.setItemData(
             2,
-            "Standard homography using astroalign matches (good general-purpose choice).",
+            self.tr("Standard homography using astroalign matches (good general-purpose choice)."),
             Qt.ItemDataRole.ToolTipRole,
         )
         self.model_combo.setItemData(
             3,
-            "Affine (shift + scale + rotate + shear). Good when channels are mostly parallel.",
+            self.tr("Affine (shift + scale + rotate + shear). Good when channels are mostly parallel."),
             Qt.ItemDataRole.ToolTipRole,
         )
         self.model_combo.setItemData(
             4,
-            "Polynomial (order 3). Use when you have mild field distortion.",
+            self.tr("Polynomial (order 3). Use when you have mild field distortion."),
             Qt.ItemDataRole.ToolTipRole,
         )
         self.model_combo.setItemData(
             5,
-            "Polynomial (order 4). Use for stronger distortion, but needs more/better matches.",
+            self.tr("Polynomial (order 4). Use for stronger distortion, but needs more/better matches."),
             Qt.ItemDataRole.ToolTipRole,
         )
         hl.addWidget(self.model_combo)
@@ -952,13 +956,13 @@ class RGBAlignDialog(QDialog):
         self.sep_spin = QSpinBox()
         self.sep_spin.setRange(1, 100)
         self.sep_spin.setValue(3)
-        self.sep_spin.setToolTip("EDGE detects stars at σ = 100, 50, 20, 10, 5, 3 in turn and stops at the\n"
-                                 "first that finds 500 stars in green or 100 edge-ring matches.\n"
-                                 "This is the lowest σ it may go to; a value below 3 adds one last step.")
+        self.sep_spin.setToolTip(self.tr("EDGE detects stars at σ = 100, 50, 20, 10, 5, 3 in turn and stops at the\n"
+                                         "first that finds 500 stars in green or 100 edge-ring matches.\n"
+                                         "This is the lowest σ it may go to; a value below 3 adds one last step."))
         sep_row.addWidget(self.sep_spin)
         self.btn_trial_sep = QPushButton(self.tr("Trial detect stars"))
-        self.btn_trial_sep.setToolTip("Run the EDGE star detection for red and blue against green without aligning:\n"
-                                      "for each σ tried, the green stars and edge matches, and the σ Align would use.")
+        self.btn_trial_sep.setToolTip(self.tr("Run the EDGE star detection for red and blue against green without aligning:\n"
+                                              "for each σ tried, the green stars and edge matches, and the σ Align would use."))
         self.btn_trial_sep.clicked.connect(self._trial_sep_detect)
         sep_row.addWidget(self.btn_trial_sep)
         # wrap in a widget so we can show/hide the whole row including its label
@@ -975,12 +979,12 @@ class RGBAlignDialog(QDialog):
         self.planet_floor_spin.setSingleStep(0.01)
         self.planet_floor_spin.setDecimals(2)
         self.planet_floor_spin.setValue(0.05)
-        self.planet_floor_spin.setToolTip(
+        self.planet_floor_spin.setToolTip(self.tr(
             "Pixels with normalised brightness above this value are considered\n"
             "part of the planet disc for centroid calculation.\n"
             "Lower = include more of the disc (better for dim limbs).\n"
             "Higher = ignore faint halo/noise (better for bright planets)."
-        )
+        ))
         planet_row.addWidget(self.planet_floor_spin)
         planet_row.addStretch(1)
         self.planet_row_widget = QWidget()
@@ -992,7 +996,7 @@ class RGBAlignDialog(QDialog):
         lay.addWidget(self.chk_new_doc)
 
         #sasprogress
-        self.progress_label = QLabel("Idle.")
+        self.progress_label = QLabel(self.tr("Idle."))
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -1001,7 +1005,7 @@ class RGBAlignDialog(QDialog):
 
         self.summary_box = QPlainTextEdit()
         self.summary_box.setReadOnly(True)
-        self.summary_box.setPlaceholderText("Transform summary will appear here…")
+        self.summary_box.setPlaceholderText(self.tr("Transform summary will appear here…"))
         self.summary_box.setMinimumHeight(140)
         # optional: monospace
         self.summary_box.setStyleSheet("font-family: Consolas, 'Courier New', monospace; font-size: 11px;")
@@ -1011,13 +1015,13 @@ class RGBAlignDialog(QDialog):
         self.btn_run = QPushButton(self.tr("Align"))
 
         self.btn_manual = QPushButton(self.tr("Manual…"))
-        self.btn_manual.setToolTip("Manual planetary RGB alignment (nudge channels by 1 px with preview).")
+        self.btn_manual.setToolTip(self.tr("Manual planetary RGB alignment (nudge channels by 1 px with preview)."))
 
         self.btn_manual.clicked.connect(self._open_manual)
 
         self.btn_cancel = QPushButton(self.tr("Cancel"))
         self.btn_cancel.setEnabled(False)
-        self.btn_cancel.setToolTip("Stop the running alignment or trial detect. Nothing is applied.")
+        self.btn_cancel.setToolTip(self.tr("Stop the running alignment or trial detect. Nothing is applied."))
         self.btn_close = QPushButton(self.tr("Close"))
         btns.addWidget(self.btn_run)
         btns.addWidget(self.btn_cancel)
@@ -1039,7 +1043,7 @@ class RGBAlignDialog(QDialog):
 
     def _open_manual(self):
         if self.image is None or self.image.ndim != 3 or self.image.shape[2] < 3:
-            QMessageBox.warning(self, "RGB Align", "Image must be RGB (3 channels).")
+            QMessageBox.warning(self, self.tr("RGB Align"), self.tr("Image must be RGB (3 channels)."))
             return
 
         dlg = RGBAlignManualDialog(self, self.image, planet_roi=("planet" in self.model_combo.currentText().lower()))
@@ -1048,11 +1052,11 @@ class RGBAlignDialog(QDialog):
             return
 
         rdx, rdy, bdx, bdy = dlg.result_offsets()
-        self.summary_box.setPlainText(
+        self.summary_box.setPlainText(self.tr(
             "[Manual Planetary]\n"
-            f"R shift: dx={rdx}, dy={rdy}\n"
-            f"B shift: dx={bdx}, dy={bdy}\n"
-        )
+            "R shift: dx={0}, dy={1}\n"
+            "B shift: dx={2}, dy={3}\n"
+        ).format(rdx, rdy, bdx, bdy))
 
         # apply full-res
         img = self.image
@@ -1084,7 +1088,7 @@ class RGBAlignDialog(QDialog):
                 else:
                     self.doc.image = out
         except Exception as e:
-            QMessageBox.warning(self, "RGB Align", f"Manual aligned image created, but applying failed:\n{e}")
+            QMessageBox.warning(self, self.tr("RGB Align"), self.tr("Manual aligned image created, but applying failed:\n{0}").format(e))
 
     def _update_mode_ui(self):
         """Show SEP controls for star-based modes, planet floor for planet mode."""
@@ -1100,18 +1104,18 @@ class RGBAlignDialog(QDialog):
         if self._busy():
             return
         if self.image is None:
-            QMessageBox.warning(self, "RGB Align", "No image loaded.")
+            QMessageBox.warning(self, self.tr("RGB Align"), self.tr("No image loaded."))
             return
         if self.image.ndim != 3 or self.image.shape[2] < 3:
-            QMessageBox.warning(self, "RGB Align", "Image must be RGB (3 channels).")
+            QMessageBox.warning(self, self.tr("RGB Align"), self.tr("Image must be RGB (3 channels)."))
             return
         if sep is None:
-            QMessageBox.warning(self, "RGB Align", "python-sep is not available.")
+            QMessageBox.warning(self, self.tr("RGB Align"), self.tr("python-sep is not available."))
             return
         # Same detection as Align, on a worker: it used to run on the GUI thread.
         self._launch(
             RGBAlignWorker(self.image, "edge-sep", sep_sigma=float(self.sep_spin.value()), trial=True),
-            "Trial detection in progress…",
+            self.tr("Trial detection in progress…"),
         )
 
     # ---- run lifecycle (align and trial share it) ----
@@ -1152,15 +1156,15 @@ class RGBAlignDialog(QDialog):
             pass
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.setText(self.tr("Cancelling…"))
-        self.progress_label.setText("Cancelling…")
+        self.progress_label.setText(self.tr("Cancelling…"))
 
     def _on_worker_cancelled(self):
         self.progress_bar.setValue(0)
-        self.progress_label.setText("Cancelled. Nothing was applied.")
+        self.progress_label.setText(self.tr("Cancelled. Nothing was applied."))
 
     def _on_trial_done(self, report: str):
         self.summary_box.setPlainText(report)
-        self.progress_label.setText("Trial detect done: see the summary below.")
+        self.progress_label.setText(self.tr("Trial detect done: see the summary below."))
 
     def _on_worker_finished(self):
         self._set_busy(False)
@@ -1190,18 +1194,18 @@ class RGBAlignDialog(QDialog):
         if self._busy():
             return
         if self.image is None:
-            QMessageBox.warning(self, "RGB Align", "No image found in active view.")
+            QMessageBox.warning(self, self.tr("RGB Align"), self.tr("No image found in active view."))
             return
         if self.image.ndim != 3 or self.image.shape[2] < 3:
-            QMessageBox.warning(self, "RGB Align", "Image must be RGB (3 channels).")
+            QMessageBox.warning(self, self.tr("RGB Align"), self.tr("Image must be RGB (3 channels)."))
             return
         if astroalign is None:
-            QMessageBox.warning(self, "RGB Align", "astroalign is not available.")
+            QMessageBox.warning(self, self.tr("RGB Align"), self.tr("astroalign is not available."))
             return
 
         model = self._selected_model()
         sep_sigma = float(self.sep_spin.value())
-        self.progress_label.setText("Starting…")
+        self.progress_label.setText(self.tr("Starting…"))
         self.progress_bar.setValue(0)
         is_planet = "planet" in self.model_combo.currentText().lower() \
                     or "centroid" in self.model_combo.currentText().lower() \
@@ -1211,7 +1215,7 @@ class RGBAlignDialog(QDialog):
             self.image, model,
             sep_sigma=sep_sigma,
             planet_floor=planet_floor,
-        ), "Starting…")
+        ), self.tr("Starting…"))
 
     def _selected_model(self) -> str:
         txt = self.model_combo.currentText().lower()
@@ -1237,8 +1241,8 @@ class RGBAlignDialog(QDialog):
     def _on_worker_failed(self, err: str):
         self.btn_run.setEnabled(True)
         self.progress_bar.setValue(0)
-        self.progress_label.setText("Failed.")
-        QMessageBox.critical(self, "RGB Align", err)
+        self.progress_label.setText(self.tr("Failed."))
+        QMessageBox.critical(self, self.tr("RGB Align"), err)
 
     def _on_worker_done(self, out: np.ndarray):
         if self._cancel_requested:
@@ -1247,7 +1251,7 @@ class RGBAlignDialog(QDialog):
             return
         self.btn_run.setEnabled(True)
         self.progress_bar.setValue(100)
-        self.progress_label.setText("Applying…")
+        self.progress_label.setText(self.tr("Applying…"))
 
         summary_lines = []
         w = self.worker  # type: ignore
@@ -1343,10 +1347,10 @@ class RGBAlignDialog(QDialog):
                 else:
                     self.doc.image = out
 
-            self.progress_label.setText("Done.")
+            self.progress_label.setText(self.tr("Done."))
         except Exception as e:
-            self.progress_label.setText("Apply failed.")
-            QMessageBox.warning(self, "RGB Align", f"Aligned image created, but applying failed:\n{e}")
+            self.progress_label.setText(self.tr("Apply failed."))
+            QMessageBox.warning(self, self.tr("RGB Align"), self.tr("Aligned image created, but applying failed:\n{0}").format(e))
 
 
 
@@ -1414,7 +1418,7 @@ def _align_rgb_off_gui(img: np.ndarray, model: str, sep_sigma: float, status=Non
 
 def run_rgb_align_headless(main_window, document, preset: dict | None = None):
     if document is None:
-        QMessageBox.warning(main_window, "RGB Align", "No active document.")
+        QMessageBox.warning(main_window, _tr("RGB Align"), _tr("No active document."))
         return
 
     img = np.asarray(document.image)
@@ -1425,15 +1429,15 @@ def run_rgb_align_headless(main_window, document, preset: dict | None = None):
 
     sb = getattr(main_window, "statusBar", None)
     if callable(sb):
-        sb().showMessage(f"RGB Align ({model})…", 3000)
+        sb().showMessage(_tr("RGB Align ({0})…").format(model), 3000)
 
     try:
         out = _align_rgb_off_gui(
             img, model=model if model != "edge" else "edge-sep", sep_sigma=sep_sigma,
-            status=(lambda m: sb().showMessage(f"RGB Align: {m}")) if callable(sb) else None,
+            status=(lambda m: sb().showMessage(_tr("RGB Align: {0}").format(m))) if callable(sb) else None,
         )
     except Exception as e:
-        QMessageBox.critical(main_window, "RGB Align (headless)", str(e))
+        QMessageBox.critical(main_window, _tr("RGB Align (headless)"), str(e))
         return
 
     if create_new:
@@ -1454,7 +1458,7 @@ def run_rgb_align_headless(main_window, document, preset: dict | None = None):
             document.image = out
 
     if callable(sb):
-        sb().showMessage("RGB Align done.", 3000)
+        sb().showMessage(_tr("RGB Align done."), 3000)
 
 
 class RGBAlignManualDialog(QDialog):
@@ -1464,7 +1468,7 @@ class RGBAlignManualDialog(QDialog):
     """
     def __init__(self, parent=None, image: np.ndarray | None = None, planet_roi: bool = False):
         super().__init__(parent)
-        self.setWindowTitle("RGB Align — Manual (Planetary)")
+        self.setWindowTitle(self.tr("RGB Align — Manual (Planetary)"))
         self.setModal(True)
 
         self.image = np.asarray(image) if image is not None else None
@@ -1479,7 +1483,7 @@ class RGBAlignManualDialog(QDialog):
 
         lay = QVBoxLayout(self)
 
-        self.lbl = QLabel("Nudge Red and Blue so they line up with Green (1 px steps).")
+        self.lbl = QLabel(self.tr("Nudge Red and Blue so they line up with Green (1 px steps)."))
         lay.addWidget(self.lbl)
 
         # preview label
@@ -1497,8 +1501,8 @@ class RGBAlignManualDialog(QDialog):
         row = QHBoxLayout()
         lay.addLayout(row)
 
-        self.red_pad = OffsetPad("Red offset (relative to Green):")
-        self.blue_pad = OffsetPad("Blue offset (relative to Green):")
+        self.red_pad = OffsetPad(self.tr("Red offset (relative to Green):"))
+        self.blue_pad = OffsetPad(self.tr("Blue offset (relative to Green):"))
 
         self.red_pad.changed.connect(self._on_change)
         self.blue_pad.changed.connect(self._on_change)
@@ -1509,9 +1513,9 @@ class RGBAlignManualDialog(QDialog):
 
         # buttons
         btns = QHBoxLayout()
-        self.btn_reset = QPushButton("Reset")
-        self.btn_apply = QPushButton("Apply")
-        self.btn_close = QPushButton("Close")
+        self.btn_reset = QPushButton(self.tr("Reset"))
+        self.btn_apply = QPushButton(self.tr("Apply"))
+        self.btn_close = QPushButton(self.tr("Close"))
         btns.addWidget(self.btn_reset)
         btns.addStretch(1)
         btns.addWidget(self.btn_apply)
@@ -1557,7 +1561,7 @@ class RGBAlignManualDialog(QDialog):
         self._timer.timeout.connect(self._render_preview)
         if self._roi is not None:
             x0,y0,x1,y1 = self._roi
-            self.lbl.setText(self.lbl.text() + f"\nPreview ROI: x={x0}:{x1}, y={y0}:{y1}")
+            self.lbl.setText(self.lbl.text() + self.tr("\nPreview ROI: x={0}:{1}, y={2}:{3}").format(x0, x1, y0, y1))
         self._render_preview()
 
     def result_offsets(self):
@@ -1578,7 +1582,7 @@ class RGBAlignManualDialog(QDialog):
 
     def _render_preview(self):
         if self.image is None or self.image.ndim != 3 or self.image.shape[2] < 3:
-            self.preview.setText("No RGB image.")
+            self.preview.setText(self.tr("No RGB image."))
             return
 
         x0, y0, x1, y1 = self._roi if self._roi is not None else (0, 0, self.image.shape[1], self.image.shape[0])

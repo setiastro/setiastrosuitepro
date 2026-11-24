@@ -309,7 +309,7 @@ class AstroCatalogueViewerExporterDialog(QDialog):
         if ok:
             QMessageBox.information(self, _tr("Export"), _tr("Exported:\n{0}").format(out_path))
         else:
-            QMessageBox.critical(self, _tr("Export"), _tr("Export failed:\n{0}").format(err or "Unknown error"))
+            QMessageBox.critical(self, _tr("Export"), _tr("Export failed:\n{0}").format(err or _tr("Unknown error")))
 
 
     def _save_current_doc_to_path(self, doc, out_path: str, fmt: str) -> tuple[bool, str]:
@@ -322,7 +322,7 @@ class AstroCatalogueViewerExporterDialog(QDialog):
 
             img = getattr(doc, "image", None)
             if img is None:
-                return False, "Active document has no image data."
+                return False, _tr("Active document has no image data.")
 
             # Ensure numpy array
             img_array = np.asarray(img)

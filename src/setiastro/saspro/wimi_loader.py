@@ -28,7 +28,7 @@ class WIMISplash(QWidget):
         logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(logo_label)
 
-        title = QLabel("What's In My Image")
+        title = QLabel(self.tr("What's In My Image"))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         font = QFont()
         font.setPointSize(14)
@@ -36,7 +36,7 @@ class WIMISplash(QWidget):
         title.setFont(font)
         layout.addWidget(title)
 
-        self._status = QLabel("Initialising…")
+        self._status = QLabel(self.tr("Initialising…"))
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status.setStyleSheet("color: #aaaaaa; font-size: 11px;")
         layout.addWidget(self._status)
@@ -105,9 +105,9 @@ class WIMILoader(QThread):
 
     def run(self):
         try:
-            self.progress.emit("Loading astronomy modules…")
+            self.progress.emit(self.tr("Loading astronomy modules…"))
             from setiastro.saspro.wimi import WIMIDialog   # noqa – just warm the cache
-            self.progress.emit("Almost ready…")
+            self.progress.emit(self.tr("Almost ready…"))
             self.ready.emit(None)
         except Exception as exc:
             self.error.emit(str(exc))

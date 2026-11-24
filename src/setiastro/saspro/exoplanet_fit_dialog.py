@@ -24,7 +24,7 @@ from typing import Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt, QThread, QTimer, QSettings, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, QSettings, pyqtSignal, QCoreApplication
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
@@ -35,6 +35,10 @@ from PyQt6.QtWidgets import (
 
 from setiastro.saspro import exoplanet_transit as xfit
 from setiastro.saspro import exoplanet_photometry as xphot
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("ExoplanetFitDialog", text)
 
 
 # ═════════════════════════ Qt-free fit orchestration ══════════════════════
@@ -109,7 +113,7 @@ def run_fit_job(job: dict, progress=None, cancelled=None) -> dict:
                                "comps": [int(c) for c in cs], "weights": [float(x) for x in ws],
                                "score": float(sc), "n": int(np.count_nonzero(ok))})
             done += 1
-            say(int(30 * done / n_trials), f"Selecting aperture/comparisons {done}/{n_trials}")
+            say(int(30 * done / n_trials), _tr("Selecting aperture/comparisons {0}/{1}").format(done, n_trials))
     good = [s for s in scores if np.isfinite(s["score"])]
     if not good:
         raise RuntimeError("Every aperture/comparison combination failed to fit.")
@@ -222,7 +226,7 @@ class TransitFitDialog(QDialog):
     def __init__(self, parent, ctx: dict):
         super().__init__(parent)
         self.ctx = ctx
-        self.setWindowTitle(f"Transit Fit — {ctx.get('label', 'target')}")
+        self.setWindowTitle(self.tr("Transit Fit — {0}").format(ctx.get('label', self.tr('target'))))
         self.resize(1250, 820)
         self._worker = None
         self._out = None            # last run_fit_job output
@@ -236,37 +240,37 @@ class TransitFitDialog(QDialog):
         lv.setContentsMargins(0, 0, 0, 0)
 
         # ── target / planet ───────────────────────────────────────────
-        g_t = QGroupBox("Target && planet")
+        g_t = QGroupBox(self.tr("Target && planet"))
         ft = QFormLayout(g_t)
         ra, dec = ctx.get("ra"), ctx.get("dec")
         pos = (f"RA {ra:.5f}°, Dec {dec:+.5f}°" if ra is not None and dec is not None
-               else "no WCS position")
+               else self.tr("no WCS position"))
         self.target_lbl = QLabel(f"{ctx.get('label', '')}   ({pos})")
         self.target_lbl.setWordWrap(True)
         ft.addRow(self.target_lbl)
         prow = QHBoxLayout()
         self.planet_edit = QLineEdit(ctx.get("object_name", "") or "")
-        self.planet_edit.setPlaceholderText("Planet or host name, e.g. HAT-P-32 b")
+        self.planet_edit.setPlaceholderText(self.tr("Planet or host name, e.g. HAT-P-32 b"))
         prow.addWidget(self.planet_edit, 1)
-        self.lookup_btn = QPushButton("Look up")
-        self.lookup_btn.setToolTip("NASA Exoplanet Archive (pscomppars) by planet or host name")
+        self.lookup_btn = QPushButton(self.tr("Look up"))
+        self.lookup_btn.setToolTip(self.tr("NASA Exoplanet Archive (pscomppars) by planet or host name"))
         self.lookup_btn.clicked.connect(self._lookup_name)
         prow.addWidget(self.lookup_btn)
-        self.cone_btn = QPushButton("At position")
-        self.cone_btn.setToolTip("Known planets within 20\" of this star's plate-solved position")
+        self.cone_btn = QPushButton(self.tr("At position"))
+        self.cone_btn.setToolTip(self.tr("Known planets within 20\" of this star's plate-solved position"))
         self.cone_btn.clicked.connect(self._lookup_position)
         self.cone_btn.setEnabled(ra is not None and dec is not None)
         prow.addWidget(self.cone_btn)
-        ft.addRow("Planet:", prow)
+        ft.addRow(self.tr("Planet:"), prow)
         self.lookup_status = QLabel("")
         self.lookup_status.setWordWrap(True)
         self.lookup_status.setStyleSheet("color: #8fb8de;")
         ft.addRow(self.lookup_status)
-        self.dip_btn = QPushButton("Unknown planet: start from detected dip")
-        self.dip_btn.setToolTip(
+        self.dip_btn = QPushButton(self.tr("Unknown planet: start from detected dip"))
+        self.dip_btn.setToolTip(self.tr(
             "Fill Tc, depth and duration from the screening box search. The\n"
             "period is nominal (3 d) and a/R* is set free, so only Tc, depth\n"
-            "and duration are meaningful.")
+            "and duration are meaningful."))
         self.dip_btn.clicked.connect(self._fill_from_dip)
         sc = ctx.get("screen") or {}
         self.dip_btn.setEnabled(bool(sc) and np.isfinite(sc.get("dip_t", np.nan)))
@@ -279,7 +283,7 @@ class TransitFitDialog(QDialog):
         self._S = (np.asarray(S, dtype=int) if S is not None and len(S) == n_f
                    else np.zeros(n_f, dtype=int))
         self._sessions = list(ctx.get("sessions") or []) or [
-            {"index": 0, "label": f"All frames — {n_f} frames", "start_jd": float("nan")}]
+            {"index": 0, "label": self.tr("All frames — {0} frames").format(n_f), "start_jd": float("nan")}]
         self.night_combo = QComboBox()
         for s in self._sessions:
             self.night_combo.addItem(s["label"], int(s["index"]))
@@ -294,14 +298,14 @@ class TransitFitDialog(QDialog):
         i0 = self.night_combo.findData(int(start))
         self.night_combo.setCurrentIndex(i0 if i0 >= 0 else 0)
         self.night_combo.currentIndexChanged.connect(self._on_night_changed)
-        self.night_lbl = QLabel("Night:")
+        self.night_lbl = QLabel(self.tr("Night:"))
         ft.addRow(self.night_lbl, self.night_combo)
         self.night_lbl.setVisible(len(self._sessions) > 1)
         self.night_combo.setVisible(len(self._sessions) > 1)
         lv.addWidget(g_t)
 
         # ── ephemeris & system ─────────────────────────────────────────
-        g_p = QGroupBox("Priors")
+        g_p = QGroupBox(self.tr("Priors"))
         fp = QFormLayout(g_p)
         self.per = _dspin(0.05, 5000.0, 7, 3.0, 0.0001)
         self.per_e = _dspin(0.0, 10.0, 7, 0.0, 1e-6)
@@ -315,11 +319,11 @@ class TransitFitDialog(QDialog):
         self.inc_e = _dspin(0.0, 20.0, 3, 0.0, 0.1)
         self.ecc = _dspin(0.0, 0.95, 4, 0.0, 0.01)
         self.omega = _dspin(0.0, 360.0, 2, 90.0, 1.0)
-        for lbl, a, b in (("Period [d]", self.per, self.per_e),
-                          ("Tc ref [BJD_TDB]", self.tc, self.tc_e),
+        for lbl, a, b in ((self.tr("Period [d]"), self.per, self.per_e),
+                          (self.tr("Tc ref [BJD_TDB]"), self.tc, self.tc_e),
                           ("Rp/R*", self.rp, self.rp_e),
                           ("a/R*", self.ars, self.ars_e),
-                          ("Inclination [°]", self.inc, self.inc_e)):
+                          (self.tr("Inclination [°]"), self.inc, self.inc_e)):
             h = QHBoxLayout()
             h.addWidget(a, 3)
             h.addWidget(QLabel("±"))
@@ -329,11 +333,11 @@ class TransitFitDialog(QDialog):
         h.addWidget(self.ecc)
         h.addWidget(QLabel("ω [°]"))
         h.addWidget(self.omega)
-        fp.addRow("Eccentricity:", h)
+        fp.addRow(self.tr("Eccentricity:"), h)
         lv.addWidget(g_p)
 
         # ── limb darkening ─────────────────────────────────────────────
-        g_l = QGroupBox("Filter && limb darkening (quadratic)")
+        g_l = QGroupBox(self.tr("Filter && limb darkening (quadratic)"))
         fl = QFormLayout(g_l)
         self.filter_combo = QComboBox()
         for code, (desc, lo, hi, band) in xfit.FILTERS.items():
@@ -342,9 +346,9 @@ class TransitFitDialog(QDialog):
         guess = xfit.guess_filter_code(ctx.get("filter_kw", "") or "")
         fi = self.filter_combo.findData(guess) if guess else -1
         self.filter_combo.setCurrentIndex(fi if fi >= 0 else 0)
-        fl.addRow(f"Filter (header: {ctx.get('filter_kw') or '—'}):", self.filter_combo)
+        fl.addRow(self.tr("Filter (header: {0}):").format(ctx.get('filter_kw') or '—'), self.filter_combo)
         self.teff = _dspin(0.0, 50000.0, 0, 0.0, 50.0)
-        self.teff.setSpecialValueText("unknown")
+        self.teff.setSpecialValueText(self.tr("unknown"))
         self.logg = _dspin(0.0, 6.0, 2, 4.5, 0.1)
         self.feh = _dspin(-5.0, 1.0, 2, 0.0, 0.1)
         h = QHBoxLayout()
@@ -354,7 +358,7 @@ class TransitFitDialog(QDialog):
         h.addWidget(self.logg)
         h.addWidget(QLabel("[Fe/H]"))
         h.addWidget(self.feh)
-        fl.addRow("Star:", h)
+        fl.addRow(self.tr("Star:"), h)
         self.u1 = _dspin(-1.0, 2.0, 4, 0.465, 0.01)
         self.u2 = _dspin(-1.0, 2.0, 4, 0.257, 0.01)
         h = QHBoxLayout()
@@ -363,49 +367,49 @@ class TransitFitDialog(QDialog):
         h.addWidget(QLabel("u2"))
         h.addWidget(self.u2)
         self.ld_btn = QPushButton("Claret 2011")
-        self.ld_btn.setToolTip("Quadratic coefficients for this star and filter from\n"
-                               "Claret & Bloemen 2011 (VizieR J/A+A/529/A75).")
+        self.ld_btn.setToolTip(self.tr("Quadratic coefficients for this star and filter from\n"
+                               "Claret & Bloemen 2011 (VizieR J/A+A/529/A75)."))
         self.ld_btn.clicked.connect(self._lookup_ld)
         h.addWidget(self.ld_btn)
-        fl.addRow("Coefficients:", h)
-        self.ld_src = QLabel("Default: solar-type V band (Claret 2011, Teff 5750, log g 4.5).")
+        fl.addRow(self.tr("Coefficients:"), h)
+        self.ld_src = QLabel(self.tr("Default: solar-type V band (Claret 2011, Teff 5750, log g 4.5)."))
         self.ld_src.setWordWrap(True)
         self.ld_src.setStyleSheet("color: #8fb8de;")
         fl.addRow(self.ld_src)
         lv.addWidget(g_l)
 
         # ── fit options ────────────────────────────────────────────────
-        g_f = QGroupBox("Fit")
+        g_f = QGroupBox(self.tr("Fit"))
         ff = QFormLayout(g_f)
         self.sys_combo = QComboBox()
         for key, lab in xfit.SYSTEMATICS_LABELS.items():
             self.sys_combo.addItem(lab, key)
-        self.free_inc = QCheckBox("Inclination (±5°, Gaussian prior if ± given)")
+        self.free_inc = QCheckBox(self.tr("Inclination (±5°, Gaussian prior if ± given)"))
         self.free_inc.setChecked(True)
-        self.free_ars = QCheckBox("a/R* (Gaussian prior if ± given)")
-        self.free_ld = QCheckBox("Limb darkening (σ=0.1 prior)")
-        ff.addRow("Systematics:", self.sys_combo)
-        ff.addRow("Also free:", self.free_inc)
+        self.free_ars = QCheckBox(self.tr("a/R* (Gaussian prior if ± given)"))
+        self.free_ld = QCheckBox(self.tr("Limb darkening (σ=0.1 prior)"))
+        ff.addRow(self.tr("Systematics:"), self.sys_combo)
+        ff.addRow(self.tr("Also free:"), self.free_inc)
         ff.addRow("", self.free_ars)
         ff.addRow("", self.free_ld)
         self.ap_combo = QComboBox()
-        self.ap_combo.addItem("Auto (lowest residual scatter)", "auto")
+        self.ap_combo.addItem(self.tr("Auto (lowest residual scatter)"), "auto")
         for k, r in enumerate(ctx["radii"]):
             self.ap_combo.addItem(f"r = {r:.2f} px", k)
-        ff.addRow("Aperture:", self.ap_combo)
+        ff.addRow(self.tr("Aperture:"), self.ap_combo)
         self.comp_combo = QComboBox()
-        self.comp_combo.addItem("Auto (ensemble subsets + single comps)", "auto")
-        self.comp_combo.addItem("Full weighted ensemble", "ensemble")
-        ff.addRow("Comparisons:", self.comp_combo)
+        self.comp_combo.addItem(self.tr("Auto (ensemble subsets + single comps)"), "auto")
+        self.comp_combo.addItem(self.tr("Full weighted ensemble"), "ensemble")
+        ff.addRow(self.tr("Comparisons:"), self.comp_combo)
         self.clip = _dspin(0.0, 20.0, 1, 4.0, 0.5)
-        self.clip.setSpecialValueText("off")
-        ff.addRow("Outlier clip [σ]:", self.clip)
+        self.clip.setSpecialValueText(self.tr("off"))
+        ff.addRow(self.tr("Outlier clip [σ]:"), self.clip)
         self.steps = QSpinBox()
         self.steps.setRange(300, 50000)
         self.steps.setSingleStep(500)
         self.steps.setValue(2000)
-        ff.addRow("MCMC steps:", self.steps)
-        self.use_beta = QCheckBox("Inflate errors by red-noise β")
+        ff.addRow(self.tr("MCMC steps:"), self.steps)
+        self.use_beta = QCheckBox(self.tr("Inflate errors by red-noise β"))
         self.use_beta.setChecked(True)
         ff.addRow("", self.use_beta)
         lv.addWidget(g_f)
@@ -416,17 +420,17 @@ class TransitFitDialog(QDialog):
         lv.addWidget(self.time_lbl)
 
         brow = QHBoxLayout()
-        self.run_btn = QPushButton("Run Fit")
+        self.run_btn = QPushButton(self.tr("Run Fit"))
         self.run_btn.setStyleSheet("font-weight: bold;")
         self.run_btn.clicked.connect(self._run_or_cancel)
         brow.addWidget(self.run_btn)
-        self.aavso_btn = QPushButton("AAVSO Report…")
+        self.aavso_btn = QPushButton(self.tr("AAVSO Report…"))
         self.aavso_btn.clicked.connect(self._export_aavso)
         self.csv_btn = QPushButton("CSV…")
         self.csv_btn.clicked.connect(self._export_csv)
-        self.png_btn = QPushButton("Save Plot…")
-        self.png_btn.setToolTip("Graphical: PNG screenshots of both panels.\n"
-                                "Scientific: one figure as 300 dpi PNG, PDF or SVG.")
+        self.png_btn = QPushButton(self.tr("Save Plot…"))
+        self.png_btn.setToolTip(self.tr("Graphical: PNG screenshots of both panels.\n"
+                                "Scientific: one figure as 300 dpi PNG, PDF or SVG."))
         self.png_btn.clicked.connect(self._export_png)
         for b in (self.aavso_btn, self.csv_btn, self.png_btn):
             b.setEnabled(False)
@@ -447,10 +451,10 @@ class TransitFitDialog(QDialog):
 
         # ── plots + results ────────────────────────────────────────────
         right = QSplitter(Qt.Orientation.Vertical)
-        self.p_lc = pg.PlotWidget(title="Light curve")
+        self.p_lc = pg.PlotWidget(title=self.tr("Light curve"))
         self.p_lc.showGrid(True, True, alpha=0.25)
-        self.p_lc.setLabel("left", "Relative flux")
-        self.p_res = pg.PlotWidget(title="Residuals")
+        self.p_lc.setLabel("left", self.tr("Relative flux"))
+        self.p_res = pg.PlotWidget(title=self.tr("Residuals"))
         self.p_res.showGrid(True, True, alpha=0.25)
         self.p_res.setLabel("left", "ppt")
         self.p_res.setXLink(self.p_lc)
@@ -470,16 +474,16 @@ class TransitFitDialog(QDialog):
         ps = QSettings()
         srow = QHBoxLayout()
         srow.setContentsMargins(0, 0, 0, 0)
-        srow.addWidget(QLabel("Plot:"))
+        srow.addWidget(QLabel(self.tr("Plot:")))
         self.plot_style_combo = QComboBox()
-        self.plot_style_combo.addItem("Graphical", "graphical")
-        self.plot_style_combo.addItem("Scientific", "scientific")
-        self.plot_style_combo.setToolTip(
+        self.plot_style_combo.addItem(self.tr("Graphical"), "graphical")
+        self.plot_style_combo.addItem(self.tr("Scientific"), "scientific")
+        self.plot_style_combo.setToolTip(self.tr(
             "Scientific: the publication figure -- detrended flux with error bars,\n"
-            "binned points and the model, residuals underneath.")
+            "binned points and the model, residuals underneath."))
         self.plot_bin_combo = QComboBox()
-        for lab, mins in (("No bins", 0), ("5-min bins", 5), ("10-min bins", 10),
-                          ("15-min bins", 15), ("30-min bins", 30)):
+        for lab, mins in ((self.tr("No bins"), 0), (self.tr("5-min bins"), 5), (self.tr("10-min bins"), 10),
+                          (self.tr("15-min bins"), 15), (self.tr("30-min bins"), 30)):
             self.plot_bin_combo.addItem(lab, mins)
         for cb, key, default in ((self.plot_style_combo, "Exoplanet/plot_style", "graphical"),
                                  (self.plot_bin_combo, "Exoplanet/plot_bin_min", 10)):
@@ -520,34 +524,34 @@ class TransitFitDialog(QDialog):
         jd = np.asarray(ctx["jd_utc"], dtype=np.float64)
         ra, dec, site = ctx.get("ra"), ctx.get("dec"), ctx.get("site")
         self._t_all, self._time_kind = jd, "JD_UTC"
-        why = ("no target coordinates" if ra is None or dec is None
-               else "some frames have no timestamp")
+        why = (self.tr("no target coordinates") if ra is None or dec is None
+               else self.tr("some frames have no timestamp"))
         info = {}
         if ra is not None and dec is not None and np.all(np.isfinite(jd)):
             try:
                 self._t_all = xfit.bjd_tdb(jd, ra, dec, site, info=info)
                 self._time_kind = "BJD_TDB"
             except Exception as e:
-                why = f"the barycentric correction failed ({xfit.first_paragraph(e)})"
+                why = self.tr("the barycentric correction failed ({0})").format(xfit.first_paragraph(e))
         self._apply_night()
         how = ctx.get("time_how", "")
         if info.get("geocentric_fallback"):
-            site_txt = ("geocentric (≤21 ms): the site correction failed "
-                        f"({info['geocentric_fallback']})")
+            site_txt = self.tr("geocentric (≤21 ms): the site correction failed "
+                               "({0})").format(info['geocentric_fallback'])
         elif site:
-            site_txt = f"site {site[0]:.4f}°, {site[1]:.4f}° from {site[3]}"
+            site_txt = self.tr("site {0:.4f}°, {1:.4f}° from {2}").format(site[0], site[1], site[3])
         else:
-            site_txt = "no site in header — geocentric (≤21 ms)"
+            site_txt = self.tr("no site in header — geocentric (≤21 ms)")
         if self._time_kind == "BJD_TDB":
-            self.time_lbl.setText(f"Times: BJD_TDB at mid-exposure ({how}); {site_txt}.")
+            self.time_lbl.setText(self.tr("Times: BJD_TDB at mid-exposure ({0}); {1}.").format(how, site_txt))
             # A planet lookup can supply coordinates after a JD_UTC start.
             self.time_lbl.setStyleSheet("")
         else:
-            fix = (" Plate-solve the frames or look the planet up to get them."
-                   if why == "no target coordinates" else "")
-            self.time_lbl.setText(
-                f"Times: JD_UTC mid-exposure — {why}, so no barycentric correction. "
-                f"AAVSO and timing databases require BJD_TDB.{fix}")
+            fix = (self.tr(" Plate-solve the frames or look the planet up to get them.")
+                   if ra is None or dec is None else "")
+            self.time_lbl.setText(self.tr(
+                "Times: JD_UTC mid-exposure — {0}, so no barycentric correction. "
+                "AAVSO and timing databases require BJD_TDB.{1}").format(why, fix))
             self.time_lbl.setStyleSheet("color: #ffb347;")
 
     # ------------------------------------------------------------- nights
@@ -578,7 +582,7 @@ class TransitFitDialog(QDialog):
             self._out = None
             for b in (self.aavso_btn, self.csv_btn, self.png_btn):
                 b.setEnabled(False)
-            self.summary.setPlainText("Night changed — run the fit for this night.")
+            self.summary.setPlainText(self.tr("Night changed — run the fit for this night."))
         self._plot_preview()
 
     def _night_with_transit(self, pr: xfit.TransitPriors):
@@ -609,7 +613,7 @@ class TransitFitDialog(QDialog):
         # (measured: 46 s on HAT-P-32 b's archive e=0.16 geometry).
         if not (self._worker is not None and self._worker.isRunning()):
             self.run_btn.setEnabled(not busy)
-            self.run_btn.setText("Run Fit" if not busy else "Run Fit (waiting for lookup…)")
+            self.run_btn.setText(self.tr("Run Fit") if not busy else self.tr("Run Fit (waiting for lookup…)"))
         if msg:
             self.lookup_status.setText(msg)
 
@@ -620,20 +624,20 @@ class TransitFitDialog(QDialog):
         _start_thread(w)
 
     def _lookup_failed(self, msg: str):
-        self._set_busy_lookup(False, f"Lookup failed: {msg}")
+        self._set_busy_lookup(False, self.tr("Lookup failed: {0}").format(msg))
 
     def _lookup_name(self):
         name = self.planet_edit.text().strip()
         if not name:
             return
-        self._set_busy_lookup(True, f"Querying NASA Exoplanet Archive for “{name}”…")
+        self._set_busy_lookup(True, self.tr("Querying NASA Exoplanet Archive for “{0}”…").format(name))
         self._call(xfit.nea_lookup_name, self._rows_arrived, name)
 
     def _lookup_position(self):
         ra, dec = self.ctx.get("ra"), self.ctx.get("dec")
         if ra is None or dec is None:
             return
-        self._set_busy_lookup(True, "Looking for known planets at this position…")
+        self._set_busy_lookup(True, self.tr("Looking for known planets at this position…"))
         self._call(xfit.nea_lookup_position, self._rows_arrived, ra, dec, 20.0)
 
     def _rows_arrived(self, rows):
@@ -642,13 +646,13 @@ class TransitFitDialog(QDialog):
         if not rows:
             sc = self.ctx.get("screen") or {}
             self.lookup_status.setText(
-                "No known planet found. Enter the ephemeris by hand"
-                + (", or start from the detected dip." if sc else "."))
+                self.tr("No known planet found. Enter the ephemeris by hand, or start from the detected dip.")
+                if sc else self.tr("No known planet found. Enter the ephemeris by hand."))
             return
         row = rows[0]
         if len(rows) > 1:
             names = [str(r.get("pl_name")) for r in rows]
-            pick, ok = QInputDialog.getItem(self, "Planet", "Several planets match — pick one:",
+            pick, ok = QInputDialog.getItem(self, self.tr("Planet"), self.tr("Several planets match — pick one:"),
                                             names, 0, False)
             if not ok:
                 return
@@ -665,14 +669,14 @@ class TransitFitDialog(QDialog):
             k = self._night_with_transit(p)
             if k is not None and k != self.night_combo.currentData():
                 self._select_night(k)
-                moved = f"\nSwitched to {self.night_combo.currentText()} — it covers the transit."
+                moved = self.tr("\nSwitched to {0} — it covers the transit.").format(self.night_combo.currentText())
         pred, sig, epoch = p.predicted_tc(float(np.nanmedian(self._t)))
         msg = f"{p.name}: P = {p.per:.6f} d, Rp/R* = {p.rp:.4f}, a/R* = {p.ars:.3f}, i = {p.inc:.2f}°"
         if np.isfinite(pred):
-            msg += (f"\nPredicted Tc this night: {pred:.5f} ± {sig * 1440:.1f} min "
-                    f"(epoch {epoch}).")
+            msg += self.tr("\nPredicted Tc this night: {0:.5f} ± {1:.1f} min "
+                           "(epoch {2}).").format(pred, sig * 1440, epoch)
             if not (self._t.min() - 0.1 <= pred <= self._t.max() + 0.1):
-                msg += "  ⚠ outside this night's observations!"
+                msg += self.tr("  ⚠ outside this night's observations!")
         msg += moved
         self.lookup_status.setText(msg)
         if np.isfinite(p.teff):
@@ -701,15 +705,15 @@ class TransitFitDialog(QDialog):
         band = xfit.FILTERS.get(code, (None, None, None, None))[3]
         teff = self.teff.value()
         if not band or teff <= 0:
-            self.ld_src.setText("Need a stellar Teff and a standard filter for a Claret lookup.")
+            self.ld_src.setText(self.tr("Need a stellar Teff and a standard filter for a Claret lookup."))
             return
         self._set_busy_lookup(True)
-        self.ld_src.setText(f"Querying Claret 2011 ({band}) on VizieR…")
+        self.ld_src.setText(self.tr("Querying Claret 2011 ({0}) on VizieR…").format(band))
         w = _CallWorker(xfit.claret_quadratic_ld, teff, self.logg.value(), self.feh.value(), band)
         w.result_ready.connect(self._ld_arrived)
         w.failed.connect(lambda m: (self._set_busy_lookup(False),
-                                    self.ld_src.setText(f"LD lookup failed ({m}); "
-                                                        "using the values shown.")))
+                                    self.ld_src.setText(self.tr("LD lookup failed ({0}); "
+                                                                "using the values shown.").format(m))))
         _start_thread(w)
 
     def _ld_arrived(self, res):
@@ -718,7 +722,7 @@ class TransitFitDialog(QDialog):
         self.u1.setValue(u1)
         self.u2.setValue(u2)
         code = self.filter_combo.currentData()
-        approx = (" — approximate: no Claret passband for this filter"
+        approx = (self.tr(" — approximate: no Claret passband for this filter")
                   if code in xfit.APPROXIMATE_LD_BANDS else "")
         self.ld_src.setText(desc + approx)
 
@@ -748,9 +752,9 @@ class TransitFitDialog(QDialog):
         self.ecc.setValue(0.0)
         self.free_ars.setChecked(True)
         self.free_inc.setChecked(True)
-        self.lookup_status.setText(
+        self.lookup_status.setText(self.tr(
             "Started from the detected dip. Period is nominal (3 d) with a/R* free: "
-            "only Tc, depth and duration are meaningful.")
+            "only Tc, depth and duration are meaningful."))
 
     # -------------------------------------------------------------- fit
 
@@ -777,15 +781,15 @@ class TransitFitDialog(QDialog):
     def _run_or_cancel(self):
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
-            self.prog_lbl.setText("Cancelling…")
+            self.prog_lbl.setText(self.tr("Cancelling…"))
             return
         pr = self._priors()
         if not np.isfinite(pr.tc_ref):
             pr.tc_ref = float("nan")
             sc = self.ctx.get("screen") or {}
             if not (sc and np.isfinite(sc.get("dip_t", np.nan))):
-                QMessageBox.information(self, "Transit Fit",
-                                        "Enter a reference Tc (or look up the planet) first.")
+                QMessageBox.information(self, self.tr("Transit Fit"),
+                                        self.tr("Enter a reference Tc (or look up the planet) first."))
                 return
         ctx = self.ctx
         m = self._mask
@@ -807,7 +811,7 @@ class TransitFitDialog(QDialog):
         self._worker.progress_msg.connect(self._on_progress)
         self._worker.result_ready.connect(self._on_result)
         self._worker.failed.connect(self._on_failed)
-        self.run_btn.setText("Cancel")
+        self.run_btn.setText(self.tr("Cancel"))
         self.prog.setVisible(True)
         self.prog.setValue(0)
         _start_thread(self._worker)
@@ -817,22 +821,22 @@ class TransitFitDialog(QDialog):
         self.prog_lbl.setText(msg)
 
     def _on_failed(self, msg: str):
-        self.run_btn.setText("Run Fit")
+        self.run_btn.setText(self.tr("Run Fit"))
         self.prog.setVisible(False)
-        self.prog_lbl.setText(msg)
+        self.prog_lbl.setText(self.tr("Cancelled.") if msg == "Cancelled." else msg)
         if msg != "Cancelled.":
-            QMessageBox.warning(self, "Transit Fit", msg)
+            QMessageBox.warning(self, self.tr("Transit Fit"), msg)
 
     def _on_result(self, out: dict):
-        self.run_btn.setText("Run Fit")
+        self.run_btn.setText(self.tr("Run Fit"))
         self.prog.setVisible(False)
         res: xfit.FitResult = out["result"]
         if not res.ok:
             self.prog_lbl.setText(res.message)
-            QMessageBox.warning(self, "Transit Fit", res.message)
+            QMessageBox.warning(self, self.tr("Transit Fit"), res.message)
             return
         self._out = out
-        self.prog_lbl.setText("Fit complete.")
+        self.prog_lbl.setText(self.tr("Fit complete."))
         for b in (self.aavso_btn, self.csv_btn, self.png_btn):
             b.setEnabled(True)
         self._plot_result()
@@ -909,7 +913,7 @@ class TransitFitDialog(QDialog):
         from setiastro.saspro import exoplanet_sciplot as sciplot
         fig = self.sci_plot.figure
         bmin = self._bin_minutes()
-        bin_label = f"{bmin}-min bins" if bmin else ""
+        bin_label = self.tr("{0}-min bins").format(bmin) if bmin else ""
         sub = r"$_\mathrm{TDB}$" if self._time_kind == "BJD_TDB" else r"$_\mathrm{UTC}$"
         tk = "BJD" if self._time_kind == "BJD_TDB" else "JD"
         if self._out:
@@ -932,20 +936,20 @@ class TransitFitDialog(QDialog):
                 m, lo, hi = d["oc_min"]
                 info.append(f"O − C = {m:+.2f} ± {0.5 * (lo + hi):.2f} min")
             st = res.stats
-            info.append(f"σ = {st['rms_ppt']:.2f} ppt per {st['cadence_min']:.1f}-min point")
+            info.append(self.tr("σ = {0:.2f} ppt per {1:.1f}-min point").format(st['rms_ppt'], st['cadence_min']))
             pred = d.get("tc_pred")
             pred_x = (pred - tc) * 24.0 if pred is not None and np.isfinite(pred) else None
-            parts = [pr.name or self.ctx.get("label", "Transit"), self._night_title(),
+            parts = [pr.name or self.ctx.get("label", self.tr("Transit")), self._night_title(),
                      str(self.filter_combo.currentData() or "")]
             sciplot.draw_transit_fit(
                 fig, x=x, y=det, err=derr, used=res.used, model_x=(tf - tc) * 24.0,
                 model_y=mf, resid=(res.y - res.model) / sysm * 1e3, resid_err=derr * 1e3,
-                bin_w=bmin / 60.0, bin_label=bin_label, xlabel="Time from mid-transit (h)",
+                bin_w=bmin / 60.0, bin_label=bin_label, xlabel=self.tr("Time from mid-transit (h)"),
                 title="  ·  ".join(p for p in parts if p), info=info, pred_x=pred_x)
         else:
             rel = self.ctx.get("rel")
             if rel is None or self._t is None or self._t.size == 0:
-                sciplot.draw_message(fig, "No light curve")
+                sciplot.draw_message(fig, self.tr("No light curve"))
                 self.sci_plot.refresh()
                 return
             rel = np.asarray(rel, dtype=np.float64)[self._mask]
@@ -956,9 +960,9 @@ class TransitFitDialog(QDialog):
             S = self._S[self._mask]
             series = [{"label": self.ctx.get("label", ""), "x": (self._t - off)[ok], "y": rel[ok],
                        "err": (err[ok] if err is not None else None), "group": S[ok]}]
-            parts = [self.ctx.get("label", ""), self._night_title(), "screening ensemble"]
+            parts = [self.ctx.get("label", ""), self._night_title(), self.tr("screening ensemble")]
             sciplot.draw_light_curves(fig, series, bin_w=bmin / 1440.0, bin_label=bin_label,
-                                      xlabel=f"{tk}{sub} − {off:.0f}  (mid-exposure)",
+                                      xlabel=self.tr("{0}{1} − {2:.0f}  (mid-exposure)").format(tk, sub, off),
                                       title="  ·  ".join(p for p in parts if p))
         self.sci_plot.refresh()
 
@@ -988,8 +992,8 @@ class TransitFitDialog(QDialog):
                                               pen=pg.mkPen((255, 210, 80), width=1)))
             self.p_lc.plot(tb, yb, pen=None, symbol="o", symbolSize=7,
                            symbolBrush=pg.mkBrush(255, 210, 80), symbolPen=None)
-        self.p_lc.setLabel("bottom", f"Hours since first frame ({self._time_kind})")
-        self.p_lc.setTitle("Light curve (screening ensemble) — run the fit to optimise")
+        self.p_lc.setLabel("bottom", self.tr("Hours since first frame ({0})").format(self._time_kind))
+        self.p_lc.setTitle(self.tr("Light curve (screening ensemble) — run the fit to optimise"))
         self._draw_sci()
 
     def _plot_result(self):
@@ -1004,10 +1008,10 @@ class TransitFitDialog(QDialog):
         self.p_lc.addLegend(offset=(10, 10))
         self.p_lc.plot(h[used], det[used], pen=None, symbol="o", symbolSize=4,
                        symbolBrush=pg.mkBrush(150, 190, 255, 130), symbolPen=None,
-                       name="detrended")
+                       name=self.tr("detrended"))
         if np.any(~used):
             self.p_lc.plot(h[~used], det[~used], pen=None, symbol="x", symbolSize=8,
-                           symbolPen=pg.mkPen((255, 80, 80)), name="clipped")
+                           symbolPen=pg.mkPen((255, 80, 80)), name=self.tr("clipped"))
         bmin = self._bin_minutes()
         bw = bmin / 60.0
         derr = res.yerr / res.systematics
@@ -1018,17 +1022,17 @@ class TransitFitDialog(QDialog):
                                               pen=pg.mkPen((255, 210, 80), width=1)))
             self.p_lc.plot(tb, yb, pen=None, symbol="o", symbolSize=7,
                            symbolBrush=pg.mkBrush(255, 210, 80), symbolPen=None,
-                           name=f"{bmin}-min bins")
+                           name=self.tr("{0}-min bins").format(bmin))
         pr = res.priors
         tf, mf = self._model_curve(res)
         self.p_lc.plot((tf - tc) * 24.0, mf, pen=pg.mkPen((255, 90, 90), width=2),
-                       name="transit model")
+                       name=self.tr("transit model"))
         pred = res.derived.get("tc_pred")
         if pred is not None and np.isfinite(pred):
             self.p_lc.addLine(x=(pred - tc) * 24.0,
                               pen=pg.mkPen((180, 180, 180), style=Qt.PenStyle.DashLine))
-        self.p_lc.setLabel("bottom", "Hours from fitted mid-transit")
-        self.p_lc.setTitle(f"{pr.name or 'Transit'} — detrended ({self._time_kind})")
+        self.p_lc.setLabel("bottom", self.tr("Hours from fitted mid-transit"))
+        self.p_lc.setTitle(self.tr("{0} — detrended ({1})").format(pr.name or self.tr("Transit"), self._time_kind))
         r = (res.y - res.model) * 1e3
         self.p_res.plot(h[used], r[used], pen=None, symbol="o", symbolSize=4,
                         symbolBrush=pg.mkBrush(150, 190, 255, 130), symbolPen=None)
@@ -1038,7 +1042,7 @@ class TransitFitDialog(QDialog):
             self.p_res.plot(tb, rb, pen=None, symbol="o", symbolSize=6,
                             symbolBrush=pg.mkBrush(255, 210, 80), symbolPen=None)
         self.p_res.addLine(y=0.0, pen=pg.mkPen((200, 200, 200), style=Qt.PenStyle.DashLine))
-        self.p_res.setLabel("bottom", "Hours from fitted mid-transit")
+        self.p_res.setLabel("bottom", self.tr("Hours from fitted mid-transit"))
         self._draw_sci()
 
     # -------------------------------------------------------------- summary
@@ -1058,25 +1062,27 @@ class TransitFitDialog(QDialog):
                 lo, hi = res.err_lo[name] * scale, res.err_hi[name] * scale
                 return f"{fmt.format(m)} -{fmt.format(lo)} +{fmt.format(hi)}"
             v = res.fixed.get(name)
-            return (fmt.format(v * scale) + " (fixed)") if v is not None else "—"
+            return (fmt.format(v * scale) + self.tr(" (fixed)")) if v is not None else "—"
 
-        L.append(f"{pr.name or 'Transit'} — SASpro transit fit ({self._time_kind}, mid-exposure)")
+        L.append(self.tr("{0} — SASpro transit fit ({1}, mid-exposure)").format(pr.name or self.tr("Transit"), self._time_kind))
         L.append("")
         tce = 0.5 * (res.err_lo["tc"] + res.err_hi["tc"])
         L.append(f"Tc        = {res.median['tc']:.6f} ± {tce:.6f}  (± {tce * 1440:.2f} min)")
         if "oc_min" in d:
             m, lo, hi = d["oc_min"]
-            L.append(f"O–C       = {m:+.2f} ± {0.5 * (lo + hi):.2f} min   (epoch {d['epoch']}, "
-                     f"predicted {d['tc_pred']:.5f} ± {d['oc_pred_sigma_min']:.2f} min)")
+            L.append(self.tr("O–C       = {0:+.2f} ± {1:.2f} min   (epoch {2}, "
+                             "predicted {3:.5f} ± {4:.2f} min)").format(
+                m, 0.5 * (lo + hi), d['epoch'], d['tc_pred'], d['oc_pred_sigma_min']))
             if self._time_kind != "BJD_TDB":
                 # BJD_TDB - JD_UTC runs from -7.2 to +9.5 min (light time
                 # +-8.3 min, plus TDB - UTC = 69.2 s).
-                L.append("            ⚠ JD_UTC times against a BJD_TDB ephemeris: "
-                         "this O–C can be off by up to 9.5 min")
+                L.append(self.tr("            ⚠ JD_UTC times against a BJD_TDB ephemeris: "
+                                 "this O–C can be off by up to 9.5 min"))
         L.append(f"Rp/R*     = {pm('rp')}")
         dm, dl, dh = d["depth_rp2"]
-        L.append(f"(Rp/R*)²  = {dm * 1e3:.2f} ± {0.5 * (dl + dh) * 1e3:.2f} ppt    "
-                 f"model depth (with LD) = {d['depth_model'] * 1e3:.2f} ppt")
+        L.append(self.tr("(Rp/R*)²  = {0:.2f} ± {1:.2f} ppt    "
+                         "model depth (with LD) = {2:.2f} ppt").format(
+            dm * 1e3, 0.5 * (dl + dh) * 1e3, d['depth_model'] * 1e3))
         L.append(f"inc       = {pm('inc', fmt='{:.2f}')} °")
         L.append(f"a/R*      = {pm('ars', fmt='{:.3f}')}")
         bm, bl, bh = d["b"]
@@ -1085,44 +1091,49 @@ class TransitFitDialog(QDialog):
         if "u1" in res.median:
             L.append(f"u1, u2    = {pm('u1', fmt='{:.3f}')}, {pm('u2', fmt='{:.3f}')}")
         else:
-            L.append(f"u1, u2    = {pr.u1:.3f}, {pr.u2:.3f} (fixed)")
+            L.append(self.tr("u1, u2    = {0:.3f}, {1:.3f} (fixed)").format(pr.u1, pr.u2))
         a1, a1l, a1h = d["a1"]
         a2, a2l, a2h = d["a2"]
         if "fs" in res.median:
-            L.append(f"Flip step = {res.median['fs'] * 1e3:+.2f} ± "
-                     f"{0.5 * (res.err_lo['fs'] + res.err_hi['fs']) * 1e3:.2f} ppt "
-                     "(far pier side vs near; meridian flip inside the night)")
+            L.append(self.tr("Flip step = {0:+.2f} ± "
+                             "{1:.2f} ppt "
+                             "(far pier side vs near; meridian flip inside the night)").format(
+                res.median['fs'] * 1e3, 0.5 * (res.err_lo['fs'] + res.err_hi['fs']) * 1e3))
         if "am" in res.median:
-            L.append(f"Airmass   a1 = {a1:.5f} ± {0.5 * (a1l + a1h):.5f}   "
-                     f"a2 = {a2:+.5f} ± {0.5 * (a2l + a2h):.5f}   (EXOTIC convention)")
+            L.append(self.tr("Airmass   a1 = {0:.5f} ± {1:.5f}   "
+                             "a2 = {2:+.5f} ± {3:.5f}   (EXOTIC convention)").format(
+                a1, 0.5 * (a1l + a1h), a2, 0.5 * (a2l + a2h)))
         # tau is in days: c1 per day, c2 per day^2.
-        for name, scale, unit, lab in (("c1", 1e3 / 24.0, "ppt/h", "Slope"),
-                                       ("c2", 1e3 / 576.0, "ppt/h²", "Curvature")):
+        for name, scale, unit, lab in (("c1", 1e3 / 24.0, "ppt/h", self.tr("Slope")),
+                                       ("c2", 1e3 / 576.0, "ppt/h²", self.tr("Curvature"))):
             if name in res.median:
                 L.append(f"{lab:<9} = {res.median[name] * scale:+.3f} ± "
                          f"{0.5 * (res.err_lo[name] + res.err_hi[name]) * scale:.3f} {unit}")
         L.append("")
-        L.append(f"Residual RMS = {st['rms_ppt']:.2f} ppt/point ({st['cadence_min']:.2f} min cadence), "
-                 f"{st['rms10_ppt']:.2f} ppt per 10 min")
-        L.append(f"χ²_red (photometric errors) = {st['chi2_red_raw']:.2f} → errors × {st['err_scale']:.2f};"
-                 f"  red-noise β = {st['beta']:.2f}" + ("" if self.use_beta.isChecked() else " (not applied)"))
+        L.append(self.tr("Residual RMS = {0:.2f} ppt/point ({1:.2f} min cadence), "
+                         "{2:.2f} ppt per 10 min").format(st['rms_ppt'], st['cadence_min'], st['rms10_ppt']))
+        L.append(self.tr("χ²_red (photometric errors) = {0:.2f} → errors × {1:.2f};"
+                         "  red-noise β = {2:.2f}").format(st['chi2_red_raw'], st['err_scale'], st['beta'])
+                 + ("" if self.use_beta.isChecked() else self.tr(" (not applied)")))
         fnp = float(best.get("frame_noise_ppt", 0.0) or 0.0)
-        L.append("Point errors: CCD equation ⊕ per-frame noise measured from the comparison "
-                 f"stars (median {fnp:.2f} ppt: scintillation, cloud, seeing)"
-                 if fnp > 0 else "Point errors: CCD equation (comparison stars showed no excess)")
-        L.append(f"Points: {st['n_used']} used, {st['n_clipped']} clipped"
-                 f"   MCMC: {st['walkers']} walkers × {st['steps']} steps, "
-                 f"acceptance {st['acceptance']:.2f}")
+        L.append(self.tr("Point errors: CCD equation ⊕ per-frame noise measured from the comparison "
+                         "stars (median {0:.2f} ppt: scintillation, cloud, seeing)").format(fnp)
+                 if fnp > 0 else self.tr("Point errors: CCD equation (comparison stars showed no excess)"))
+        L.append(self.tr("Points: {0} used, {1} clipped"
+                         "   MCMC: {2} walkers × {3} steps, "
+                         "acceptance {4:.2f}").format(st['n_used'], st['n_clipped'], st['walkers'],
+                                                      st['steps'], st['acceptance']))
         _sb = int(self.ctx.get("soft_bin", 2) or 2)
-        L.append(f"Aperture r = {best['radius']:.2f} px ({_sb}×{_sb}-binned grid); comparison: {best['label']} "
-                 f"→ stars {best['comps'][:12]}{' …' if len(best['comps']) > 12 else ''}")
-        L.append(f"Selection: {len(out['scores'])} aperture/comparison combinations scored, "
-                 f"best std/median = {best['score']:.5f}")
+        L.append(self.tr("Aperture r = {0:.2f} px ({1}×{1}-binned grid); comparison: {2} "
+                         "→ stars {3}{4}").format(best['radius'], _sb, best['label'], best['comps'][:12],
+                                                  ' …' if len(best['comps']) > 12 else ''))
+        L.append(self.tr("Selection: {0} aperture/comparison combinations scored, "
+                         "best std/median = {1:.5f}").format(len(out['scores']), best['score']))
         sys_lab = xfit.SYSTEMATICS_LABELS.get(res.options.systematics)
         sa = st.get("sys_auto")
         if sa:
-            L.append(f"Systematics: {sys_lab} — chosen automatically (lowest BIC; "
-                     "within ΔBIC 2 the model with fewer terms wins)")
+            L.append(self.tr("Systematics: {0} — chosen automatically (lowest BIC; "
+                             "within ΔBIC 2 the model with fewer terms wins)").format(sys_lab))
             parts = []
             for r in sa["rows"]:
                 nm = xfit.SYSTEMATICS_SHORT.get(r["key"], r["key"])
@@ -1132,11 +1143,11 @@ class TransitFitDialog(QDialog):
                     parts.append(f"{nm} ({r['note']})")
             L.append("  ΔBIC: " + " · ".join(parts))
         else:
-            L.append(f"Systematics: {sys_lab}")
-        L.append(f"Limb darkening: u1={pr.u1:.4f}, u2={pr.u2:.4f} — {pr.ld_source}")
-        L.append(f"Priors: {getattr(self, '_prior_source', 'manual')}")
+            L.append(self.tr("Systematics: {0}").format(sys_lab))
+        L.append(self.tr("Limb darkening: u1={0:.4f}, u2={1:.4f} — {2}").format(pr.u1, pr.u2, pr.ld_source))
+        L.append(self.tr("Priors: {0}").format(getattr(self, '_prior_source', 'manual')))
         for n in res.notes:
-            L.append("Note: " + n)
+            L.append(self.tr("Note: {0}").format(n))
         return "\n".join(L)
 
     # -------------------------------------------------------------- exports
@@ -1164,26 +1175,26 @@ class TransitFitDialog(QDialog):
         res: xfit.FitResult = self._out["result"]
         if self._time_kind != "BJD_TDB":
             if QMessageBox.question(
-                    self, "AAVSO Report",
-                    "These times are JD_UTC, not BJD_TDB. The AAVSO Exoplanet Database "
-                    "expects BJD_TDB. Write the report anyway?") != QMessageBox.StandardButton.Yes:
+                    self, self.tr("AAVSO Report"),
+                    self.tr("These times are JD_UTC, not BJD_TDB. The AAVSO Exoplanet Database "
+                            "expects BJD_TDB. Write the report anyway?")) != QMessageBox.StandardButton.Yes:
                 return
         settings = QSettings()
-        code, ok = QInputDialog.getText(self, "AAVSO", "Observer code:",
+        code, ok = QInputDialog.getText(self, "AAVSO", self.tr("Observer code:"),
                                         QLineEdit.EchoMode.Normal,
                                         settings.value("AAVSO/observer_code", "", type=str))
         if not ok:
             return
         code = code.strip().upper()
         settings.setValue("AAVSO/observer_code", code)
-        sec, ok = QInputDialog.getText(self, "AAVSO", "Secondary observer codes (optional):",
+        sec, ok = QInputDialog.getText(self, "AAVSO", self.tr("Secondary observer codes (optional):"),
                                        QLineEdit.EchoMode.Normal,
                                        settings.value("AAVSO/secondary_codes", "", type=str))
         if not ok:
             return
         settings.setValue("AAVSO/secondary_codes", sec.strip())
         cams = ["CCD", "CMOS", "DSLR"]
-        cam, ok = QInputDialog.getItem(self, "AAVSO", "Camera type:", cams,
+        cam, ok = QInputDialog.getItem(self, "AAVSO", self.tr("Camera type:"), cams,
                                        cams.index(self.ctx.get("camera_hint", "CCD"))
                                        if self.ctx.get("camera_hint", "CCD") in cams else 0, False)
         if not ok:
@@ -1199,7 +1210,7 @@ class TransitFitDialog(QDialog):
             + ("" if res.options.systematics == "airmass" else
                f"; systematics model: {xfit.SYSTEMATICS_LABELS.get(res.options.systematics)} "
                "(DETREND_2 is that model)"))
-        notes, ok = QInputDialog.getMultiLineText(self, "AAVSO", "Notes:", notes_default)
+        notes, ok = QInputDialog.getMultiLineText(self, "AAVSO", self.tr("Notes:"), notes_default)
         if not ok:
             return
         planet = res.priors.name or self.planet_edit.text().strip() or "unknown"
@@ -1213,19 +1224,19 @@ class TransitFitDialog(QDialog):
             date_type=self._time_kind)
         date = _dt.date.today().strftime("%Y-%m-%d")
         default = f"AAVSO_{planet.replace(' ', '')}_{date}.txt"
-        path, _ = QFileDialog.getSaveFileName(self, "Save AAVSO Exoplanet Report", default,
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("Save AAVSO Exoplanet Report"), default,
                                               "Text (*.txt)")
         if not path:
             return
         with open(path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
-        QMessageBox.information(self, "AAVSO Report", f"Wrote\n{path}")
+        QMessageBox.information(self, self.tr("AAVSO Report"), self.tr("Wrote\n{0}").format(path))
 
     def _export_csv(self):
         if not self._out:
             return
         res: xfit.FitResult = self._out["result"]
-        path, _ = QFileDialog.getSaveFileName(self, "Save light curve", "transit_fit.csv",
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("Save light curve"), "transit_fit.csv",
                                               "CSV (*.csv)")
         if not path:
             return
@@ -1237,14 +1248,14 @@ class TransitFitDialog(QDialog):
             "residual": res.y - res.model, "used": res.used.astype(int),
         })
         df.to_csv(path, index=False, float_format="%.8f")
-        QMessageBox.information(self, "CSV", f"Wrote\n{path}")
+        QMessageBox.information(self, "CSV", self.tr("Wrote\n{0}").format(path))
 
     def _export_png(self):
         if not self._out:
             return
         if self._plot_style() == "scientific" and self.sci_plot is not None:
             path, filt = QFileDialog.getSaveFileName(
-                self, "Save plot", "transit_fit.png",
+                self, self.tr("Save plot"), "transit_fit.png",
                 "PNG image, 300 dpi (*.png);;PDF (*.pdf);;SVG (*.svg)")
             if not path:
                 return
@@ -1253,17 +1264,17 @@ class TransitFitDialog(QDialog):
             try:
                 self.sci_plot.save(path)
             except Exception as e:
-                QMessageBox.warning(self, "Plot", f"Could not save the plot:\n{e}")
+                QMessageBox.warning(self, self.tr("Plot"), self.tr("Could not save the plot:\n{0}").format(e))
                 return
-            QMessageBox.information(self, "Plot", f"Wrote\n{path}")
+            QMessageBox.information(self, self.tr("Plot"), self.tr("Wrote\n{0}").format(path))
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save plot", "transit_fit.png", "PNG (*.png)")
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("Save plot"), "transit_fit.png", "PNG (*.png)")
         if not path:
             return
         self.p_lc.grab().save(path)
         base = path[:-4] if path.lower().endswith(".png") else path
         self.p_res.grab().save(base + "_residuals.png")
-        QMessageBox.information(self, "Plot", f"Wrote\n{path}\n{base}_residuals.png")
+        QMessageBox.information(self, self.tr("Plot"), self.tr("Wrote\n{0}\n{1}_residuals.png").format(path, base))
 
     # -------------------------------------------------------------- lifetime
 

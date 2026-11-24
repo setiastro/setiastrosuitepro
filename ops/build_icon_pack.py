@@ -19,6 +19,7 @@ from pathlib import Path
 W, Y, R, G, B, C = "#FFFFFF", "#FFD54A", "#FF5A5F", "#4ADE80", "#60A5FA", "#5EEAD4"
 DIM = "#FFFFFF88"
 S = 18
+BOLT = "M150,44 L96,138 L130,138 L108,214 L182,108 L142,108 L168,44 Z"   # lightning bolt
 
 # folder: (tile top, tile bottom)
 PALETTE = {
@@ -353,6 +354,7 @@ ICONS = {
     "livestacking": ("Tools", lambda: layers(66) + dot(186, 66, 22, "#FF7B80")),
     "magnitude": ("Tools", lambda: arc(128, 158, 82, 180, 360, W, 18, head=0) + line(128, 158, 174, 96, Y, 16) + dot(128, 158, 18) + line(46, 196, 210, 196, DIM, 12)),
     "mosaic": ("Tools", lambda: fill("M58,88 H104 A24,24 0 1 1 152,88 H198 V132 A24,24 0 1 0 198,180 V206 H58Z")),
+    "quickstack": ("Tools", lambda: layers(66) + path(BOLT, TILE, 22) + fill(BOLT, Y)),
     "selectivecolor": ("Tools", lambda: fan(["#8B5CF6", "#60A5FA", "#4ADE80", "#FFD54A", "#FF5A5F"])),
     "selectiveluma": ("Tools", lambda: fan(["#FFFFFF33", "#FFFFFF66", "#FFFFFF99", "#FFFFFFCC", "#FFFFFF"])),
     "slap": ("Tools", lambda: dot(128, 128, 52) + fill("M128,76 A52,52 0 0 1 128,180Z", "#1E5D42") + oval(128, 128, 96, 26, Y, 12, -18)),

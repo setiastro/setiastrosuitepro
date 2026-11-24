@@ -27,7 +27,7 @@ def main():
     parser.add_argument('--width', type=int, default=512)
     parser.add_argument('--repeat', type=int, default=3)
     parser.add_argument('--baseline-ref')
-    parser.add_argument('--algorithm', default='Weighted Windsorized Sigma Clipping')
+    parser.add_argument('--algorithm', default='Weighted Winsorized Sigma Clipping')
     args = parser.parse_args()
     if min(args.frames, args.rows, args.width, args.repeat) < 1:
         parser.error('Dimensions and repeat must be positive')

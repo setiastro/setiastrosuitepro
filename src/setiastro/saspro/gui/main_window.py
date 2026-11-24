@@ -121,7 +121,7 @@ from PyQt6.QtGui import (QPixmap, QColor, QIcon, QKeySequence, QShortcut,
 
 # ----- QtCore -----
 from PyQt6.QtCore import (Qt, pyqtSignal, QTimer, QSize, QModelIndex, QUrl, QSettings, QEvent, QByteArray, QObject,
-    QPropertyAnimation, QEasingCurve, QPoint, QCoreApplication
+    QPropertyAnimation, QEasingCurve, QPoint, QCoreApplication, QT_TRANSLATE_NOOP
 )
 
 
@@ -178,7 +178,7 @@ from setiastro.saspro.resources import (
     histogram_path, mosaic_path, rescale_path, staralign_path, mask_path,
     platesolve_path, psf_path, supernova_path, starregistration_path,
     stacking_path, pedestal_icon_path, starspike_path, aperture_path, histogram_transform_path,
-    jwstpupil_path, signature_icon_path, livestacking_path, hrdiagram_path,
+    jwstpupil_path, signature_icon_path, livestacking_path, quickstack_path, hrdiagram_path,
     convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,rotatearbitrary_path,
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path, unwarp_path,
@@ -523,7 +523,7 @@ class AstroSuiteProMainWindow(
         try:
             from setiastro.saspro.settings_sandbox import active as _sandbox_active
             if _sandbox_active():
-                _sup_suffix += "  [first-run sandbox: settings are not saved]"
+                _sup_suffix += self.tr("  [sandbox: settings are not saved]")
         except Exception:
             pass
         self.setWindowTitle(f"Seti Astro Suite Pro v{self._version}{_sup_suffix}")
@@ -539,9 +539,19 @@ class AstroSuiteProMainWindow(
         self._force_close_all = False
         self._is_restarting = False  # Flag to bypass exit confirmation on restart
         self.settings = QSettings()
-        # No window layout was ever saved: a new install (or `--firstrun`).
-        # Decides the out-of-the-box theme and backdrop here and the panel
-        # layout at the end of __init__ (_apply_first_run_layout).
+        # First start of 2.0 with a layout saved by 1.x: that layout is set
+        # aside and the window comes up as a new install. The welcome window
+        # offers it back. Before anything below reads a layout setting.
+        from setiastro.saspro import workspace_layout
+        try:
+            workspace_layout.start_new_layout_if_due(self.settings, self._version)
+        except Exception as e:
+            print(f"[layout] keeping the saved layout: {e!r}")
+        # Has used 1.x, so not new to SASpro even when the layout is new.
+        self._returning_user = workspace_layout.has_saved_layout(self.settings)
+        # No window layout is saved: a new install, `--firstrun`, or the start
+        # above. Decides the out-of-the-box theme and backdrop here and the
+        # panel layout at the end of __init__ (_apply_first_run_layout).
         self._fresh_install = not (self.settings.contains(f"{self._mw_key()}/state")
                                    or self.settings.contains("ui/main/state"))
         if self._fresh_install:
@@ -551,7 +561,10 @@ class AstroSuiteProMainWindow(
                 self.settings.setValue("ui/theme", "gray")    # not "follow the OS"
             if not self.settings.contains("display/bg_opacity"):
                 self.settings.setValue("display/bg_opacity", 20)
-            if not self.settings.contains("display/no_black_clip"):
+            if not self.settings.contains(workspace_layout.ICON_SIZE_KEY):
+                self.settings.setValue(workspace_layout.ICON_SIZE_KEY,
+                                       workspace_layout.ICON_SIZE_DEFAULT)
+            if not self._returning_user and not self.settings.contains("display/no_black_clip"):
                 # Display-Stretch black point at the image minimum, not a
                 # sigma clip, so a first linear image isn't shown crushed.
                 self.settings.setValue("display/no_black_clip", True)
@@ -617,6 +630,8 @@ class AstroSuiteProMainWindow(
         self._bg_pixmap = QPixmap(self._builtin_background_path())
         self._custom_bg_path = getattr(self, "_custom_bg_path", "") or ""
         self._custom_bg_pixmap = QPixmap()  # original loaded custom pixmap (unscaled)
+        self._bg_scaled = (None, QPixmap())  # (what it was made for, the image as drawn)
+        self._workspace_has_views = False    # kept by _sync_workspace_views
 
         def _draw_transparent_bg(event):
             painter = QPainter(self.mdi.viewport())
@@ -637,30 +652,27 @@ class AstroSuiteProMainWindow(
                 pix = self._bg_pixmap
 
             if pix is not None and not pix.isNull():
-                # scale to cover MDI area while preserving aspect ratio
-                target = vp_rect.size()
-                if target.width() > 0 and target.height() > 0:
-                    scaled = pix.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
-                else:
-                    scaled = pix
-
                 opacity_percent = self.settings.value("display/bg_opacity", 50, type=int)
                 opacity_float = max(0.0, min(1.0, float(opacity_percent) / 100.0))
                 painter.setOpacity(opacity_float)
-
-                x = (vp_rect.width() - scaled.width()) // 2
-                y = (vp_rect.height() - scaled.height()) // 2
-                painter.drawPixmap(x, y, scaled)
+                painter.drawPixmap(0, 0, self._background_as_drawn(
+                    pix, vp_rect.size(), self.mdi.viewport().devicePixelRatioF()))
 
         self.mdi.paintEvent = _draw_transparent_bg
 
+        # The start panel goes while images are open.
+        self._views_sync_timer = QTimer(self)
+        self._views_sync_timer.setSingleShot(True)
+        self._views_sync_timer.setInterval(0)
+        self._views_sync_timer.timeout.connect(self._sync_workspace_views)
+        self.mdi.subWindowActivated.connect(lambda _=None: self._views_sync_timer.start())
         self.mdi.subWindowActivated.connect(self._remember_active_pair)
         self.mdi.subWindowActivated.connect(self._reveal_activated_view)
         self.mdi.backgroundDoubleClicked.connect(self.open_files)   # <- new
         add_shortcut(self, "Ctrl+PgDown", self._toggle_last_active_view,
-                     label="Switch back to the previously active view", context="Global")
+                     label=QT_TRANSLATE_NOOP("CheatSheet", "Switch back to the previously active view"), context="Global")
         add_shortcut(self, "Ctrl+PgUp", self._toggle_last_active_view,
-                     label="Switch back to the previously active view", context="Global")
+                     label=QT_TRANSLATE_NOOP("CheatSheet", "Switch back to the previously active view"), context="Global")
         self.setCentralWidget(self.mdi)
 
         # Pannable workspace. The chip overlay does not exist yet (the
@@ -684,7 +696,12 @@ class AstroSuiteProMainWindow(
         self.currentDocumentChanged.connect(self._sync_docman_active)
         self.currentDocumentChanged.connect(self._sync_explorer_to_active_doc)
         self.scriptman = ScriptManager(self)
-        self.scriptman.load_registry()
+        try:
+            # User scripts are other people's code: nothing in them may stop
+            # SASpro from opening. A failure here just means fewer scripts.
+            self.scriptman.load_registry()
+        except (Exception, SystemExit) as e:
+            print(f"[Scripts] Loading user scripts failed; continuing without them: {e!r}")
         # Docks
         self._init_explorer_dock()
         self._init_console_dock()
@@ -844,6 +861,33 @@ class AstroSuiteProMainWindow(
             self.restore_dock_host_state()
             self._send_default_docks_to_host()
 
+        self._start_panel = None
+        try:
+            from setiastro.saspro import start_panel
+            start_panel.install(self)
+        except Exception as e:
+            print(f"[start panel] not available: {e!r}")
+
+    def _set_start_panel(self, on: bool):
+        """For this session: View > Start Panel, and the panel's close button."""
+        act = getattr(self, "act_start_panel", None)
+        if act is not None and act.isChecked() != bool(on):
+            act.setChecked(bool(on))
+        panel = getattr(self, "_start_panel", None)
+        if panel is not None:
+            panel.on = bool(on)
+            panel.sync()
+
+    def _set_start_panel_on_startup(self, on: bool):
+        """Show on startup: on the panel and in Preferences. Turned off with the
+        panel up, it stays until it is closed or an image opens."""
+        self.settings.setValue("ui/start_panel", bool(on))
+        panel = getattr(self, "_start_panel", None)
+        if panel is not None:
+            panel.startup_changed()
+        if on:
+            self._set_start_panel(True)
+
     def _mw_key(self) -> str:
         return "main_window"
 
@@ -907,6 +951,7 @@ class AstroSuiteProMainWindow(
             self._clear_custom_background()
             self._set_builtin_background("signature")
             s.setValue("display/bg_opacity", 20)
+            self._set_start_panel_on_startup(True)
             s.setValue("ui/theme", "gray")
             self._apply_theme_safely()
             self.mdi.viewport().update()
@@ -922,6 +967,97 @@ class AstroSuiteProMainWindow(
             s.sync()
         except Exception:
             pass
+
+    def _use_new_layout(self):
+        """The new default layout, live (welcome window)."""
+        self._apply_factory_layout()
+        self._close_icon_table()
+
+    def _use_saved_layout(self) -> bool:
+        """Put the layout from before 2.0 back, live (welcome window, View >
+        Layout): toolbars, panels, second window, theme and background."""
+        from setiastro.saspro import workspace_layout
+        s = self.settings
+        try:
+            self._return_all_host_docks_to_main()
+        except Exception:
+            pass
+        if not workspace_layout.load_saved_layout(s):
+            return False
+        self._fresh_install = False
+        self._rebuild_toolbars()
+        # From the layout as built in code, exactly as a start does it: rail
+        # buttons by plan, then both saved states.
+        try:
+            if getattr(self, "_factory_state", None) is not None:
+                self.restoreState(self._factory_state, version=1)
+            for names in self._rail_membership.values():
+                names.clear()
+            self._assign_rails_by_plan()
+            st = s.value("ui/main/state")
+            if st is not None and len(st) > 0:
+                self.restoreState(st, version=1)
+            st = s.value(f"{self._mw_key()}/state")
+            if st is not None and len(st) > 0:
+                self.restoreState(st)
+        except Exception as e:
+            print(f"[layout] restoring panels and toolbars: {e}")
+        self._place_new_stacking_toolbar()
+        tb_hidden = self._hidden_toolbar()
+        if tb_hidden:
+            tb_hidden.setVisible(False)
+        if s.value(f"{self._mw_key()}/dock_host/active", False, type=bool):
+            try:
+                self.restore_dock_host_state()
+                self._send_default_docks_to_host()
+            except Exception as e:
+                print(f"[layout] second window: {e}")
+        try:
+            self._refresh_all_rail_collapse_icons()
+            self._refresh_rail_visibility()
+        except Exception:
+            pass
+        try:
+            bg = s.value("ui/custom_background", "", type=str) or ""
+            self._custom_bg_pixmap = QPixmap()
+            self._custom_bg_path = ""
+            if bg and os.path.exists(bg):
+                self._apply_custom_background(bg, silent=True)
+            self._set_builtin_background(
+                s.value("ui/builtin_background", "signature", type=str) or "signature")
+            self._apply_theme_safely()
+            self.mdi.viewport().update()
+        except Exception as e:
+            print(f"[layout] theme/background: {e}")
+        if s.value("icon_table/visible", False, type=bool):
+            self._restore_icon_table_if_needed()
+        # Save now, so a crash before the next normal close keeps the choice.
+        try:
+            self.save_main_window_state()
+            s.setValue("ui/main/state", self.saveState(version=1))
+            s.sync()
+        except Exception:
+            pass
+        return True
+
+    def _close_icon_table(self):
+        try:
+            if getattr(self, "_icon_table", None) is not None:
+                self._icon_table.close()
+        except Exception:
+            pass
+
+    def _restore_old_layout_clicked(self):
+        """View > Layout > Restore Layout From Before 2.0..."""
+        ok = QMessageBox.question(
+            self, self.tr("Restore Layout From Before 2.0"),
+            self.tr("Put back the toolbars, panels, theme and background you had "
+                    "before SASpro 2.0?\n\nThey replace the current ones. Open "
+                    "images, tool settings, presets and shortcuts are not changed."),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes)
+        if ok == QMessageBox.StandardButton.Yes:
+            self._use_saved_layout()
 
     def _schedule_undo_redo_label_refresh(self):
         # Coalesce many triggers into one UI update
@@ -1137,7 +1273,7 @@ class AstroSuiteProMainWindow(
 
 
         # ---- 3) Build a nice display name without "(Preview)" chained on ----
-        # e.g. "andromedasolved.fit (Preview) [ROI 1793,1067,1132Ã--954]"
+        # e.g. "andromedasolved.fit (Preview) [ROI 1793,1067,1132×954]"
         disp = preview_doc.display_name() if hasattr(preview_doc, "display_name") else ""
 
 
@@ -1153,7 +1289,7 @@ class AstroSuiteProMainWindow(
             disp = pmeta.get("display_name") or "Untitled"
 
 
-        meta["display_name"] = f"{disp} [ROI {x},{y},{w}Ã--{h}]"
+        meta["display_name"] = f"{disp} [ROI {x},{y},{w}×{h}]"
 
 
         # ---- 4) Use the preview's ROI header as the *primary* header ----
@@ -1451,6 +1587,35 @@ class AstroSuiteProMainWindow(
     def _on_document_added(self, doc):
         self._spawn_subwindow_for(doc)
 
+    def _follow_linear_if_new(self, view, dm):
+        """Display-Stretch follows a linear image the user just opened (a file,
+        a finished stack) so it doesn't open near-black. Tools' by-products and
+        restored projects keep the view they had. Settings > Display turns
+        this off."""
+        try:
+            if dm is None or not dm.is_opening_new_data():
+                return
+            if not self.settings.value("display/follow_linear", True, type=bool):
+                return
+            view.follow_linear_data()   # unlinked, whatever the global setting
+            sw = self.mdi.activeSubWindow()
+            if sw is not None and sw.widget() is view and hasattr(self, "act_stretch_linked"):
+                from PyQt6.QtCore import QSignalBlocker
+                with QSignalBlocker(self.act_stretch_linked):
+                    self.act_stretch_linked.setChecked(bool(view.is_autostretch_linked()))
+        except Exception:
+            pass
+
+    def _on_view_autostretch_changed(self, view, on):
+        """Keep the toolbar's Display-Stretch button on the active view's state
+        when the view changes it itself (following its data, or its chip)."""
+        try:
+            sw = self.mdi.activeSubWindow()
+            if sw is not None and sw.widget() is view:
+                self._sync_autostretch_action(bool(on))
+        except Exception:
+            pass
+
     # --- UI scaffolding ---
     def _on_console_context_menu(self, pos):
         lw = self.console
@@ -1583,7 +1748,7 @@ class AstroSuiteProMainWindow(
         # Status bar toast
         sb = self.statusBar() if hasattr(self, "statusBar") else None
         if sb:
-            msg = "Link: None" if not name_or_none else f"Link: Group {name_or_none}"
+            msg = self.tr("Link: None") if not name_or_none else self.tr("Link: Group {0}").format(name_or_none)
             sb.showMessage(msg, 2500)
 
     def _current_group_of_active(self):
@@ -1650,7 +1815,7 @@ class AstroSuiteProMainWindow(
 
         # Optional: toast/status to confirm
         try:
-            self.statusBar().showMessage(f"Linked views: {a.base_doc_title()} <-> {b.base_doc_title()}", 4000)
+            self.statusBar().showMessage(self.tr("Linked views: {0} <-> {1}").format(a.base_doc_title(), b.base_doc_title()), 4000)
         except Exception:
             pass
 
@@ -1870,13 +2035,14 @@ class AstroSuiteProMainWindow(
         shortcuts_menu = None
         for act in self.menuBar().actions():
             m = act.menu()
-            if m and (m.title().replace("&", "").strip().lower() == "view"):
+            if m and (m.title() == self.tr("&View")
+                      or m.title().replace("&", "").strip().lower() == "view"):
                 shortcuts_menu = m
                 break
         if shortcuts_menu is None:
-            shortcuts_menu = self.menuBar().addMenu("&View")
+            shortcuts_menu = self.menuBar().addMenu(self.tr("&View"))
 
-        self._menu_view_panels = shortcuts_menu.addMenu("View Panels")
+        self._menu_view_panels = shortcuts_menu.addMenu(self.tr("View Panels"))
         self._view_panels_actions = {}
         return self._menu_view_panels
 
@@ -1939,7 +2105,7 @@ class AstroSuiteProMainWindow(
     def _export_shortcuts_dialog(self):
         from PyQt6.QtWidgets import QFileDialog
         fn, _ = QFileDialog.getSaveFileName(
-            self, "Export Shortcuts",
+            self, self.tr("Export Shortcuts"),
             "shortcuts.sass",
             "SAS Shortcuts (*.sass);;JSON (*.json);;All Files (*)"
         )
@@ -1955,7 +2121,7 @@ class AstroSuiteProMainWindow(
     def _import_shortcuts_dialog(self):
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         fn, _ = QFileDialog.getOpenFileName(
-            self, "Import Shortcuts",
+            self, self.tr("Import Shortcuts"),
             "", "SAS Shortcuts (*.sass *.json);;All Files (*)"
         )
         if not fn:
@@ -1963,8 +2129,8 @@ class AstroSuiteProMainWindow(
 
         # Ask merge vs replace
         btn = QMessageBox.question(
-            self, "Import Shortcuts",
-            "Replace existing shortcuts? (Choose No to merge.)",
+            self, self.tr("Import Shortcuts"),
+            self.tr("Replace existing shortcuts? (Choose No to merge.)"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -2049,7 +2215,7 @@ class AstroSuiteProMainWindow(
 
             show_view_bundles(self)
         except Exception as e:
-            QMessageBox.warning(self, self.tr("View Bundles"), f"Open failed:\n{e}")
+            QMessageBox.warning(self, self.tr("View Bundles"), self.tr("Open failed:\n{0}").format(e))
 
     def _open_function_bundles(self):
         from setiastro.saspro.function_bundle import show_function_bundles
@@ -2057,7 +2223,7 @@ class AstroSuiteProMainWindow(
 
             show_function_bundles(self)
         except Exception as e:
-            QMessageBox.warning(self, self.tr("Function Bundles"), f"Open failed:\n{e}")
+            QMessageBox.warning(self, self.tr("Function Bundles"), self.tr("Open failed:\n{0}").format(e))
 
     def _open_scripts_folder(self):
         if hasattr(self, "scriptman"):
@@ -2185,14 +2351,14 @@ class AstroSuiteProMainWindow(
             return s.value("projects/compress", True, type=bool)
 
         msg = QMessageBox(self)
-        msg.setWindowTitle("Save Project")
-        msg.setText("Compress project file for smaller size?\n\n"
+        msg.setWindowTitle(self.tr("Save Project"))
+        msg.setText(self.tr("Compress project file for smaller size?\n\n"
                     "Yes = smaller file, slower save\n"
-                    "No  = larger file, faster save")
+                    "No  = larger file, faster save"))
         msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         msg.setDefaultButton(QMessageBox.StandardButton.Yes)
 
-        remember = QCheckBox("Remember my choice")
+        remember = QCheckBox(self.tr("Remember my choice"))
         msg.setCheckBox(remember)
 
         choice = msg.exec()
@@ -2252,8 +2418,8 @@ class AstroSuiteProMainWindow(
             )
 
         # progress ("thinking") dialog
-        dlg = QProgressDialog("Loading project...", "", 0, 0, self)
-        dlg.setWindowTitle("Loading")
+        dlg = QProgressDialog(self.tr("Loading project..."), "", 0, 0, self)
+        dlg.setWindowTitle(self.tr("Loading"))
         try:
             dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
         except AttributeError:  # PyQt5 fallback
@@ -2271,7 +2437,7 @@ class AstroSuiteProMainWindow(
             self._log("Project loaded.")
             self._add_recent_project(path)   # âœ... track in MRU
         except Exception as e:
-            QMessageBox.critical(self, "Load Project", f"Failed to load:\n{e}")
+            QMessageBox.critical(self, self.tr("Load Project"), self.tr("Failed to load:\n{0}").format(e))
         finally:
             dlg.close()
 
@@ -2284,7 +2450,7 @@ class AstroSuiteProMainWindow(
         doc = getattr(vw, "document", None)
         has_mask = bool(doc and getattr(doc, "active_mask_id", None))
         if not has_mask:
-            QMessageBox.information(self, "Mask Overlay", "No active mask on this image.")
+            QMessageBox.information(self, self.tr("Mask Overlay"), self.tr("No active mask on this image."))
             return
         vw.show_mask_overlay = True
         # ensure visuals are up-to-date immediately
@@ -2431,7 +2597,7 @@ class AstroSuiteProMainWindow(
     # ---------------- Custom Background ----------------
     def _choose_custom_background(self):
         """Ask the user to pick a JPG/PNG and apply it as app background. Persists in QSettings."""
-        path, _ = QFileDialog.getOpenFileName(self, "Select background image", "", "Images (*.png *.jpg *.jpeg)")
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select background image"), "", "Images (*.png *.jpg *.jpeg)")
         if not path:
             return
         try:
@@ -2440,7 +2606,7 @@ class AstroSuiteProMainWindow(
             self._custom_bg_path = path
             self._apply_custom_background(path)
         except Exception as e:
-            QMessageBox.warning(self, "Background error", f"Could not apply background: {e}")
+            QMessageBox.warning(self, self.tr("Background error"), self.tr("Could not apply background: {0}").format(e))
 
     # Built-in workspace backgrounds, by the key stored in "ui/builtin_background".
     # "galaxy" is the pre-1.24.7 default, kept for anyone who wants it back.
@@ -2453,6 +2619,37 @@ class AstroSuiteProMainWindow(
             from setiastro.saspro import resources as _res
             return _res.background_galaxy_path
         return background_path
+
+    def _background_as_drawn(self, pix, size, dpr: float):
+        """`pix` scaled to cover a workspace of `size`, centred and cropped to
+        it. Kept until the image or the workspace changes: scaling it on every
+        repaint costs tens of milliseconds at 4K."""
+        key = (pix.cacheKey(), size.width(), size.height(), dpr)
+        if self._bg_scaled[0] != key:
+            w, h = max(1, round(size.width() * dpr)), max(1, round(size.height() * dpr))
+            big = pix.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                             Qt.TransformationMode.SmoothTransformation)
+            out = big.copy((big.width() - w) // 2, (big.height() - h) // 2, w, h)
+            out.setDevicePixelRatio(dpr)
+            self._bg_scaled = (key, out)
+        return self._bg_scaled[1]
+
+    def _sync_workspace_views(self):
+        """Images opened or closed: the start panel follows."""
+        try:
+            has = bool(self.mdi.subWindowList())
+        except RuntimeError:
+            return                               # shutting down
+        if has != self._workspace_has_views:
+            self._workspace_has_views = has
+            if not has and getattr(self, "canvas", None) is not None:
+                try:
+                    self.canvas.reset_bounds()   # no scrollbars to nothing
+                except Exception:
+                    pass
+        panel = getattr(self, "_start_panel", None)
+        if panel is not None:
+            panel.sync()
 
     def _set_builtin_background(self, key: str):
         """Switch the built-in background (shown when no custom image is set)."""
@@ -2493,7 +2690,7 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
         except Exception as e:
-            QMessageBox.warning(self, "Background error", f"Could not clear background: {e}")
+            QMessageBox.warning(self, self.tr("Background error"), self.tr("Could not clear background: {0}").format(e))
 
     def _apply_custom_background(self, path: str, silent: bool = False):
         """Apply a background image from `path` to the main window (and MDI if present).
@@ -2512,14 +2709,14 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     pass
                 if not silent:
-                    QMessageBox.warning(self, "Background load failed", "Could not load image file.")
+                    QMessageBox.warning(self, self.tr("Background load failed"), self.tr("Could not load image file."))
                 return
 
             # Keep the original pixmap around and let the paintEvent scale/draw it
             try:
                 self._custom_bg_pixmap = QPixmap(path)
                 if self._custom_bg_pixmap.isNull():
-                    QMessageBox.warning(self, "Background load failed", "Could not load image file.")
+                    QMessageBox.warning(self, self.tr("Background load failed"), self.tr("Could not load image file."))
                     return
                 self._custom_bg_path = path
             except Exception:
@@ -2548,7 +2745,7 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
         except Exception as e:
-            QMessageBox.warning(self, "Background error", str(e))
+            QMessageBox.warning(self, self.tr("Background error"), str(e))
 
     def graxpert_path(self) -> str:
         return self.settings.value("paths/graxpert", "", type=str)
@@ -2766,7 +2963,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.mask_creation import create_mask_and_attach
         doc = self._current_document()
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         created = create_mask_and_attach(self, doc)
         # Optional toast/log
@@ -2849,41 +3046,41 @@ class AstroSuiteProMainWindow(
                 return "n/a"
 
         msg_lines = [
-            f"{step_name}: WCS updated.",
+            self.tr("{0}: WCS updated.").format(step_name),
             "",
-            "BEFORE:",
-            f"  CRVAL (deg):    { _fmt_pair(before.get('crval_deg')) }",
-            f"  CRPIX (pix):    { _fmt_pair(before.get('crpix_pix'), fmt='{:.2f}') }",
-            f"  Scale (as/px):  { _fmt_pair(before.get('scale_as_per_pix'), fmt='{:.3f}') }",
-            f"  Rotation (deg): { _fmt_one(before.get('rot_deg'), fmt='{:.3f}') }",
+            self.tr("BEFORE:"),
+            self.tr("  CRVAL (deg):    {0}").format(_fmt_pair(before.get('crval_deg'))),
+            self.tr("  CRPIX (pix):    {0}").format(_fmt_pair(before.get('crpix_pix'), fmt='{:.2f}')),
+            self.tr("  Scale (as/px):  {0}").format(_fmt_pair(before.get('scale_as_per_pix'), fmt='{:.3f}')),
+            self.tr("  Rotation (deg): {0}").format(_fmt_one(before.get('rot_deg'), fmt='{:.3f}')),
             "",
-            "AFTER:",
-            f"  CRVAL (deg):    { _fmt_pair(after.get('crval_deg')) }",
-            f"  CRPIX (pix):    { _fmt_pair(after.get('crpix_pix'), fmt='{:.2f}') }",
-            f"  Scale (as/px):  { _fmt_pair(after.get('scale_as_per_pix'), fmt='{:.3f}') }",
-            f"  Rotation (deg): { _fmt_one(after.get('rot_deg'), fmt='{:.3f}') }",
+            self.tr("AFTER:"),
+            self.tr("  CRVAL (deg):    {0}").format(_fmt_pair(after.get('crval_deg'))),
+            self.tr("  CRPIX (pix):    {0}").format(_fmt_pair(after.get('crpix_pix'), fmt='{:.2f}')),
+            self.tr("  Scale (as/px):  {0}").format(_fmt_pair(after.get('scale_as_per_pix'), fmt='{:.3f}')),
+            self.tr("  Rotation (deg): {0}").format(_fmt_one(after.get('rot_deg'), fmt='{:.3f}')),
         ]
 
         size = after.get("size")
         if isinstance(size, (list, tuple)) and len(size) == 2:
-            msg_lines.append(f"  Image size:     {int(size[0])} Ã-- {int(size[1])}")
+            msg_lines.append(self.tr("  Image size:     {0} × {1}").format(int(size[0]), int(size[1])))
 
         rms  = _fmt_one(fit.get("rms_arcsec"), fmt="{:.3f}")
         p50  = _fmt_one(fit.get("p50_arcsec"), fmt="{:.3f}")
         p95  = _fmt_one(fit.get("p95_arcsec"), fmt="{:.3f}")
         msg_lines += [
             "",
-            "Fit residuals (arcsec):",
-            f"  RMS: {rms}   median: {p50}   p95: {p95}",
+            self.tr("Fit residuals (arcsec):"),
+            self.tr("  RMS: {0}   median: {1}   p95: {2}").format(rms, p50, p95),
         ]
 
         coerced = debug_summary.get("coerced_to_2d", None)
         if coerced is True:
             msg_lines.append("")
-            msg_lines.append("Note: WCS was coerced from 3-D to 2-D for refitting.")
+            msg_lines.append(self.tr("Note: WCS was coerced from 3-D to 2-D for refitting."))
 
         text = "\n".join(msg_lines)
-        QMessageBox.information(self, "WCS Updated", text)
+        QMessageBox.information(self, self.tr("WCS Updated"), text)
 
     def _bake_display_stretch(self):
         """Bake the *currently displayed* Display-Stretch into the image data.
@@ -2894,25 +3091,25 @@ class AstroSuiteProMainWindow(
         """
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Display-Stretch", "No active image window.")
+            QMessageBox.information(self, self.tr("Display-Stretch"), self.tr("No active image window."))
             return
 
         view = sw.widget()
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Display-Stretch", "Active window has no image.")
+            QMessageBox.information(self, self.tr("Display-Stretch"), self.tr("Active window has no image."))
             return
 
         if not getattr(view, "autostretch_enabled", False):
             QMessageBox.information(
-                self, "Display-Stretch",
-                "Display-Stretch isn't on for this view.\nTurn it on first, then bake it in."
+                self, self.tr("Display-Stretch"),
+                self.tr("Display-Stretch isn't on for this view.\nTurn it on first, then bake it in.")
             )
             return
 
         a = np.asarray(doc.image)
         if a.size == 0:
-            QMessageBox.information(self, "Display-Stretch", "Image is empty.")
+            QMessageBox.information(self, self.tr("Display-Stretch"), self.tr("Image is empty."))
             return
 
         stretched01 = None
@@ -2920,8 +3117,8 @@ class AstroSuiteProMainWindow(
             stretched01 = view.apply_current_display_stretch()
         if stretched01 is None:
             QMessageBox.warning(
-                self, "Display-Stretch",
-                "Couldn't read the active display-stretch. Toggle it off and on, then retry."
+                self, self.tr("Display-Stretch"),
+                self.tr("Couldn't read the active display-stretch. Toggle it off and on, then retry.")
             )
             return
 
@@ -2949,7 +3146,7 @@ class AstroSuiteProMainWindow(
             else:
                 doc.image = out
         except Exception as e:
-            QMessageBox.critical(self, "Display-Stretch", f"Failed to update image:\n{e}")
+            QMessageBox.critical(self, self.tr("Display-Stretch"), self.tr("Failed to update image:\n{0}").format(e))
             return
 
         # turn display-stretch off so the baked (already-stretched) data shows linearly,
@@ -2968,7 +3165,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.histogram import HistogramDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Histogram", "No active image window.")
+            QMessageBox.information(self, self.tr("Histogram"), self.tr("No active image window."))
             return
 
         doc = sw.widget().document
@@ -2978,7 +3175,7 @@ class AstroSuiteProMainWindow(
             self._open_histograms = []
 
         dlg = HistogramDialog(self, doc)
-        dlg.setWindowTitle(f"Histogram -- {sw.windowTitle()}")
+        dlg.setWindowTitle(self.tr("Histogram -- {0}").format(sw.windowTitle()))
         try:
             dlg.setWindowIcon(QIcon(histogram_path))
         except Exception:
@@ -3005,11 +3202,11 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.crop_dialog_pro import CropDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Crop", "No active image window.")
+            QMessageBox.information(self, self.tr("Crop"), self.tr("No active image window."))
             return
         doc = sw.widget().document
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Crop", "Active document has no image.")
+            QMessageBox.information(self, self.tr("Crop"), self.tr("Active document has no image."))
             return
         dlg = CropDialogPro(self, doc)
         try:
@@ -3024,7 +3221,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.stat_stretch import StatisticalStretchDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         view = sw.widget()
         # ROI-aware: always resolve via DocManager for THIS view
@@ -3043,7 +3240,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.star_stretch import StarStretchDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         doc = sw.widget().document
         dlg = StarStretchDialog(self, doc)
@@ -3060,7 +3257,7 @@ class AstroSuiteProMainWindow(
 
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
 
         doc = sw.widget().document
@@ -3077,7 +3274,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.curve_editor_pro import CurvesDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         doc = sw.widget().document
 
@@ -3093,7 +3290,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.ghs_dialog_pro import GhsDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         doc = sw.widget().document
         dlg = GhsDialogPro(self, doc)  # class below
@@ -3107,7 +3304,7 @@ class AstroSuiteProMainWindow(
     def _open_satchroma_tool(self):
         doc = self._active_doc()
         if not doc:
-            QMessageBox.information(self, "SatChroma", "No active image.")
+            QMessageBox.information(self, "SatChroma", self.tr("No active image."))
             return
         from setiastro.saspro.satchroma_tool import SatChromaTool
         w = SatChromaTool(doc_manager=self.docman, document=doc, parent=self)
@@ -3124,7 +3321,7 @@ class AstroSuiteProMainWindow(
         if doc is None:
             sw = self.mdi.activeSubWindow()
             if not sw:
-                QMessageBox.information(self, "No image", "Open an image first.")
+                QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
                 return
             doc = sw.widget().document
 
@@ -3140,7 +3337,7 @@ class AstroSuiteProMainWindow(
         if doc is None:
             sw = self.mdi.activeSubWindow()
             if not sw:
-                QMessageBox.information(self, "No image", "Open an image first.")
+                QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
                 return
 
         add_stars(self)
@@ -3173,13 +3370,13 @@ class AstroSuiteProMainWindow(
         """Open GraXpert for the active document (same style as Star Stretch)."""
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "GraXpert", "Open an image first.")
+            QMessageBox.information(self, "GraXpert", self.tr("Open an image first."))
             return
 
         view = sw.widget()
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "GraXpert", "Active document has no image.")
+            QMessageBox.information(self, "GraXpert", self.tr("Active document has no image."))
             return
 
         # Let pro.graxpert handle the UI + progress and apply_edit back to this doc
@@ -3194,7 +3391,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.abe import ABEDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         doc = sw.widget().document
         dlg = ABEDialog(self, doc)
@@ -3237,14 +3434,14 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.backgroundneutral import BackgroundNeutralizationDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         doc = sw.widget().document
         try:
 
             dlg = BackgroundNeutralizationDialog(self, doc, icon=QIcon(neutral_path))
         except Exception as e:
-            QMessageBox.warning(self, "Background Neutralization", f"Failed to open dialog:\n{e}")
+            QMessageBox.warning(self, self.tr("Background Neutralization"), self.tr("Failed to open dialog:\n{0}").format(e))
             return
         dlg.resize(900, 600)
         dlg.show()
@@ -3256,7 +3453,7 @@ class AstroSuiteProMainWindow(
     def _open_white_balance(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         doc = sw.widget().document
         try:
@@ -3264,7 +3461,7 @@ class AstroSuiteProMainWindow(
             dlg = WhiteBalanceDialog(self, doc, icon=QIcon(whitebalance_path))
             dlg.show()
         except Exception as e:
-            QMessageBox.warning(self, "White Balance", f"Failed to open dialog:\n{e}")
+            QMessageBox.warning(self, self.tr("White Balance"), self.tr("Failed to open dialog:\n{0}").format(e))
 
     def _apply_white_balance_preset_to_doc(self, doc, preset: dict | None):
         from setiastro.saspro.whitebalance import apply_white_balance_to_doc
@@ -3307,7 +3504,7 @@ class AstroSuiteProMainWindow(
 
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         doc = sw.widget().document
 
@@ -3315,7 +3512,7 @@ class AstroSuiteProMainWindow(
             dlg = RemoveGreenDialog(self, doc, parent=self)
             dlg.show()
         except Exception as e:
-            QMessageBox.warning(self, "Remove Green", f"Failed to open dialog:\n{e}")
+            QMessageBox.warning(self, self.tr("Remove Green"), self.tr("Failed to open dialog:\n{0}").format(e))
 
 
     def SFCC_show(self):
@@ -3331,7 +3528,7 @@ class AstroSuiteProMainWindow(
             self.doc_manager = DocManager(image_manager=getattr(self, "image_manager", None), parent=self)
 
         if not os.path.exists(sasp_data_path):
-            QMessageBox.critical(self, "Missing Resource", f"SASP Data file not found:\n{sasp_data_path}")
+            QMessageBox.critical(self, self.tr("Missing Resource"), self.tr("SASP Data file not found:\n{0}").format(sasp_data_path))
             return
 
         self.SFCC_window = SFCCDialog(
@@ -3353,7 +3550,7 @@ class AstroSuiteProMainWindow(
     def _open_curve_manager(self):
         from setiastro.saspro.spectral_curves import open_curve_manager
         if not os.path.exists(sasp_data_path):
-            QMessageBox.critical(self, "Missing Resource", f"SASP Data file not found:\n{sasp_data_path}")
+            QMessageBox.critical(self, self.tr("Missing Resource"), self.tr("SASP Data file not found:\n{0}").format(sasp_data_path))
             return
         open_curve_manager(parent=self, sasp_data_path=sasp_data_path)
 
@@ -3371,8 +3568,8 @@ class AstroSuiteProMainWindow(
                 image_manager=getattr(self, "image_manager", None), parent=self)
 
         if not os.path.exists(sasp_data_path):
-            QMessageBox.critical(self, "Missing Resource",
-                f"SASP Data file not found:\n{sasp_data_path}")
+            QMessageBox.critical(self, self.tr("Missing Resource"),
+                self.tr("SASP Data file not found:\n{0}").format(sasp_data_path))
             return
 
         splash = SSSCSplash(parent=self, sssc_path=sssc_path)
@@ -3382,7 +3579,7 @@ class AstroSuiteProMainWindow(
         self._sssc_loader = SSSCLoader(parent=self)
 
         def _on_ready():
-            splash.set_status("Building interface…")
+            splash.set_status(self.tr("Building interface…"))
             QApplication.processEvents()
             try:
                 from setiastro.saspro.sssc import SSSCDialog  # already cached, instant
@@ -3404,14 +3601,14 @@ class AstroSuiteProMainWindow(
                 self.SSSC_window.show()
             except Exception as exc:
                 splash.close()
-                QMessageBox.critical(self, "SSSC Error", f"Failed to open SSSC:\n{exc}")
+                QMessageBox.critical(self, self.tr("SSSC Error"), self.tr("Failed to open SSSC:\n{0}").format(exc))
 
         def _on_progress(msg):
             splash.set_status(msg)
 
         def _on_error(msg):
             splash.close()
-            QMessageBox.critical(self, "SSSC Error", f"Failed to open SSSC:\n{msg}")
+            QMessageBox.critical(self, self.tr("SSSC Error"), self.tr("Failed to open SSSC:\n{0}").format(msg))
 
         self._sssc_loader.progress.connect(_on_progress)
         self._sssc_loader.ready.connect(_on_ready)
@@ -3435,8 +3632,8 @@ class AstroSuiteProMainWindow(
 
         if not os.path.exists(sasp_data_path):
             QMessageBox.critical(
-                self, "Missing Resource",
-                f"SASP data file not found:\n{sasp_data_path}"
+                self, self.tr("Missing Resource"),
+                self.tr("SASP data file not found:\n{0}").format(sasp_data_path)
             )
             return
 
@@ -3549,7 +3746,7 @@ class AstroSuiteProMainWindow(
         # Reuse existing dialog if it's already open
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         doc = sw.widget().document
 
@@ -3585,7 +3782,7 @@ class AstroSuiteProMainWindow(
         p = dict(preset or {})
 
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Extract Luminance", "No target image.")
+            QMessageBox.information(self, self.tr("Extract Luminance"), self.tr("No target image."))
             return
 
         img = np.asarray(doc.image)
@@ -3721,20 +3918,20 @@ class AstroSuiteProMainWindow(
                     QApplication.clipboard().setImage(qimg)
                     return
             except Exception as e:
-                QMessageBox.warning(self, "Copy", f"Failed to copy viewport:\n\n{e}")
+                QMessageBox.warning(self, self.tr("Copy"), self.tr("Failed to copy viewport:\n\n{0}").format(e))
                 return
 
         # Fallback: old behavior (raw doc -> full image)
         doc = self.docman.get_active_document()
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Copy", "No active image to copy.")
+            QMessageBox.information(self, self.tr("Copy"), self.tr("No active image to copy."))
             return
 
         try:
             qimg = float01_to_qimage(doc.image)
             QApplication.clipboard().setImage(qimg)
         except Exception as e:
-            QMessageBox.warning(self, "Copy", f"Failed to copy image:\n\n{e}")
+            QMessageBox.warning(self, self.tr("Copy"), self.tr("Failed to copy image:\n\n{0}").format(e))
 
 
     def _paste_clipboard_as_new_document(self):
@@ -3772,7 +3969,7 @@ class AstroSuiteProMainWindow(
                 self.docman.open_array(arr, metadata=meta, title=meta["display_name"])
                 return
             except Exception as e:
-                QMessageBox.warning(self, "Paste", f"Failed to paste image:\n\n{e}")
+                QMessageBox.warning(self, self.tr("Paste"), self.tr("Failed to paste image:\n\n{0}").format(e))
                 return
 
         # 2) Nice-to-have: paste file paths (copy file in Explorer/Finder)
@@ -3797,7 +3994,7 @@ class AstroSuiteProMainWindow(
                 if opened:
                     return
 
-        QMessageBox.information(self, "Paste", "Clipboard does not contain an image (or valid file paths).")
+        QMessageBox.information(self, self.tr("Paste"), self.tr("Clipboard does not contain an image (or valid file paths)."))
 
 
 
@@ -3815,18 +4012,18 @@ class AstroSuiteProMainWindow(
         if doc is None:
             sw = self.mdi.activeSubWindow()
             if not sw:
-                QMessageBox.information(self, "Extract Luminance", "No active image window.")
+                QMessageBox.information(self, self.tr("Extract Luminance"), self.tr("No active image window."))
                 return
             vw = sw.widget()
             doc = getattr(vw, "document", None)
 
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Extract Luminance", "Active document has no image.")
+            QMessageBox.information(self, self.tr("Extract Luminance"), self.tr("Active document has no image."))
             return
 
         img = np.asarray(doc.image)
         if img.ndim != 3 or img.shape[2] != 3:
-            QMessageBox.information(self, "Extract Luminance", "Luminance extraction requires an RGB image.")
+            QMessageBox.information(self, self.tr("Extract Luminance"), self.tr("Luminance extraction requires an RGB image."))
             return
 
         p = dict(preset or {})
@@ -3871,7 +4068,7 @@ class AstroSuiteProMainWindow(
 
         dm = getattr(self, "docman", None)
         if dm is None:
-            QMessageBox.critical(self, "Extract Luminance", "DocManager not available.")
+            QMessageBox.critical(self, self.tr("Extract Luminance"), self.tr("DocManager not available."))
             return
 
         try:
@@ -3884,7 +4081,7 @@ class AstroSuiteProMainWindow(
             else:
                 raise RuntimeError("DocManager lacks open_array/open_numpy/create_document")
         except Exception as e:
-            QMessageBox.critical(self, "Extract Luminance", f"Failed to create document:\n{e}")
+            QMessageBox.critical(self, self.tr("Extract Luminance"), self.tr("Failed to create document:\n{0}").format(e))
             return
 
         try:
@@ -3930,16 +4127,16 @@ class AstroSuiteProMainWindow(
         if target_doc is None:
             sw = self.mdi.activeSubWindow()
             if not sw:
-                QMessageBox.information(self, "Recombine Luminance", "No active image window.")
+                QMessageBox.information(self, self.tr("Recombine Luminance"), self.tr("No active image window."))
                 return
             target_doc = getattr(sw.widget(), "document", None)
             if target_doc is None or getattr(target_doc, "image", None) is None:
-                QMessageBox.information(self, "Recombine Luminance", "Active window has no image.")
+                QMessageBox.information(self, self.tr("Recombine Luminance"), self.tr("Active window has no image."))
                 return
 
         tgt_img = np.asarray(target_doc.image)
         if tgt_img.ndim != 3 or tgt_img.shape[2] != 3:
-            QMessageBox.warning(self, "Recombine Luminance", "Target image must be RGB.")
+            QMessageBox.warning(self, self.tr("Recombine Luminance"), self.tr("Target image must be RGB."))
             return
 
         # ── Gather candidates ─────────────────────────────────────────────────
@@ -3955,19 +4152,19 @@ class AstroSuiteProMainWindow(
 
         if not candidates:
             QMessageBox.information(
-                self, "Recombine Luminance",
-                "Open a luminance (mono) view or any image to use as L."
+                self, self.tr("Recombine Luminance"),
+                self.tr("Open a luminance (mono) view or any image to use as L.")
             )
             return
 
         # ── Dialog ────────────────────────────────────────────────────────────
         dlg = QDialog(self)
-        dlg.setWindowTitle("Recombine Luminance")
+        dlg.setWindowTitle(self.tr("Recombine Luminance"))
         dlg.setMinimumWidth(420)
         lay = QVBoxLayout(dlg)
 
         # Source selector
-        lay.addWidget(QLabel("Luminance source:"))
+        lay.addWidget(QLabel(self.tr("Luminance source:")))
         src_combo = QComboBox()
         for title, _ in candidates:
             src_combo.addItem(title)
@@ -3988,9 +4185,9 @@ class AstroSuiteProMainWindow(
         )
 
         lay.addWidget(QLabel(
-            "Luminance weighting profile:\n"
+            self.tr("Luminance weighting profile:\n"
             "Controls how R, G, B are weighted when computing/replacing Y.\n"
-            "For sensor data, pick the matching sensor; Rec.709 is a safe default."
+            "For sensor data, pick the matching sensor; Rec.709 is a safe default.")
         ))
         profile_combo = QComboBox()
         # Populate grouped by category, using disabled header rows as separators.
@@ -4086,7 +4283,7 @@ class AstroSuiteProMainWindow(
         lay.addSpacing(8)
 
         # ── Blend ─────────────────────────────────────────────────────────────
-        lay.addWidget(QLabel("Blend strength  (1.0 = full L replacement):"))
+        lay.addWidget(QLabel(self.tr("Blend strength  (1.0 = full L replacement):")))
 
         def _linked_row(lo, hi, decimals, step, default, scale=100):
             """Return (row_layout, slider, spinbox). scale controls slider int range."""
@@ -4112,7 +4309,7 @@ class AstroSuiteProMainWindow(
         lay.addSpacing(8)
 
         # ── Advanced (collapsed by default) ───────────────────────────────────
-        adv_btn = QPushButton("▶  Advanced")
+        adv_btn = QPushButton(self.tr("▶  Advanced"))
         adv_btn.setCheckable(True)
         adv_btn.setChecked(False)
         adv_btn.setFlat(True)
@@ -4128,9 +4325,9 @@ class AstroSuiteProMainWindow(
 
         # Saturation boost
         adv_lay.addWidget(QLabel(
-            "Saturation boost  (0.0 = no change, applied before recombine):\n"
+            self.tr("Saturation boost  (0.0 = no change, applied before recombine):\n"
             "Enriches colour before L is placed — cannot skew the new luminance.\n"
-            "Negative values desaturate."
+            "Negative values desaturate.")
         ))
         # Range -1.0..3.0, scale=100 → slider -100..300
         sat_row, sat_slider, sat_spin = _linked_row(-1.0, 3.0, 2, 0.05, 0.0, scale=100)
@@ -4140,9 +4337,9 @@ class AstroSuiteProMainWindow(
 
         # Chrominance NR
         adv_lay.addWidget(QLabel(
-            "Chrominance NR  (σ px, 0.0 = disabled, applied before recombine):\n"
+            self.tr("Chrominance NR  (σ px, 0.0 = disabled, applied before recombine):\n"
             "Blurs only Cb/Cr — preserves luma detail while reducing colour noise.\n"
-            "Typical range: 0.5–3.0 px."
+            "Typical range: 0.5–3.0 px.")
         ))
         # Range 0.0..20.0, scale=10 → slider 0..200 (0.1px steps)
         cnr_row, cnr_slider, cnr_spin = _linked_row(0.0, 20.0, 1, 0.5, 0.0, scale=10)
@@ -4152,9 +4349,9 @@ class AstroSuiteProMainWindow(
 
         # Pedestal
         adv_lay.addWidget(QLabel(
-            "Noise-floor pedestal  (0.05 = default 5% lift):\n"
+            self.tr("Noise-floor pedestal  (0.05 = default 5% lift):\n"
             "Prevents near-zero hue skew in deep shadows.\n"
-            "0.0 = disabled (pure linear scaling)."
+            "0.0 = disabled (pure linear scaling).")
         ))
         ped_row, ped_slider, ped_spin = _linked_row(0.0, 0.5, 3, 0.005, 0.05, scale=1000)
         adv_lay.addLayout(ped_row)
@@ -4163,8 +4360,8 @@ class AstroSuiteProMainWindow(
 
         # Soft knee
         adv_lay.addWidget(QLabel(
-            "Highlight soft-knee  (0.0 = disabled):\n"
-            "Compresses over-bright scaling to protect highlights."
+            self.tr("Highlight soft-knee  (0.0 = disabled):\n"
+            "Compresses over-bright scaling to protect highlights.")
         ))
         knee_row, knee_slider, knee_spin = _linked_row(0.0, 1.0, 2, 0.05, 0.0)
         adv_lay.addLayout(knee_row)
@@ -4173,7 +4370,7 @@ class AstroSuiteProMainWindow(
 
         def _toggle_adv(checked):
             adv_frame.setVisible(checked)
-            adv_btn.setText(("▼" if checked else "▶") + "  Advanced")
+            adv_btn.setText(self.tr("▼  Advanced") if checked else self.tr("▶  Advanced"))
             dlg.adjustSize()
 
         adv_btn.toggled.connect(_toggle_adv)
@@ -4248,38 +4445,38 @@ class AstroSuiteProMainWindow(
                 pass
 
         except Exception as e:
-            QMessageBox.critical(self, "Recombine Luminance", f"Failed: {e}")
+            QMessageBox.critical(self, self.tr("Recombine Luminance"), self.tr("Failed: {0}").format(e))
 
     def _rgb_extract_active(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "RGB Extract", "No active image window.")
+            QMessageBox.information(self, self.tr("RGB Extract"), self.tr("No active image window."))
             return
         view = sw.widget()
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "RGB Extract", "Active document has no image.")
+            QMessageBox.information(self, self.tr("RGB Extract"), self.tr("Active document has no image."))
             return
         self._rgb_extract_on_doc(doc, base_title=sw.windowTitle())
 
     def _rgb_extract_on_doc(self, doc, base_title: str | None = None):
         img = getattr(doc, "image", None)
         if img is None:
-            QMessageBox.information(self, "RGB Extract", "No image to extract.")
+            QMessageBox.information(self, self.tr("RGB Extract"), self.tr("No image to extract."))
             return
         if img.ndim != 3 or img.shape[2] != 3:
-            QMessageBox.information(self, "RGB Extract", "Image is not a 3-channel RGB image.")
+            QMessageBox.information(self, self.tr("RGB Extract"), self.tr("Image is not a 3-channel RGB image."))
             return
 
         try:
             r, g, b = extract_rgb_channels(img)
         except Exception as e:
-            QMessageBox.critical(self, "RGB Extract", f"Failed to split channels:\n{e}")
+            QMessageBox.critical(self, self.tr("RGB Extract"), self.tr("Failed to split channels:\n{0}").format(e))
             return
 
         dm = getattr(self, "docman", None)
         if not dm:
-            QMessageBox.critical(self, "RGB Extract", "Document manager not available.")
+            QMessageBox.critical(self, self.tr("RGB Extract"), self.tr("Document manager not available."))
             return
 
         # derive base name for the three windows
@@ -4354,7 +4551,7 @@ class AstroSuiteProMainWindow(
                 self._spawn_subwindow_for(newdoc)
 
             except Exception as ex:
-                QMessageBox.critical(self, "RGB Extract", f"Failed to open '{title}':\n{ex}")
+                QMessageBox.critical(self, self.tr("RGB Extract"), self.tr("Failed to open '{0}':\n{1}").format(title, ex))
 
 
         _open(r, "R")
@@ -4392,12 +4589,12 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.blemish_blaster import BlemishBlasterDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Blemish Blaster", "No active image window.")
+            QMessageBox.information(self, self.tr("Blemish Blaster"), self.tr("No active image window."))
             return
         view = sw.widget()
         doc  = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Blemish Blaster", "Active document has no image.")
+            QMessageBox.information(self, self.tr("Blemish Blaster"), self.tr("Active document has no image."))
             return
         dlg = BlemishBlasterDialogPro(self, doc)
         try:
@@ -4411,12 +4608,12 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.clone_stamp import CloneStampDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Clone Stamp", "No active image window.")
+            QMessageBox.information(self, self.tr("Clone Stamp"), self.tr("No active image window."))
             return
         view = sw.widget()
         doc  = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Clone Stamp", "Active document has no image.")
+            QMessageBox.information(self, self.tr("Clone Stamp"), self.tr("Active document has no image."))
             return
 
         dlg = CloneStampDialogPro(self, doc)
@@ -4432,26 +4629,21 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.wavescale_hdr import WaveScaleHDRDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "WaveScale HDR", "No active image window.")
+            QMessageBox.information(self, self.tr("WaveScale HDR"), self.tr("No active image window."))
             return
         view = sw.widget()
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "WaveScale HDR", "Active document has no image.")
+            QMessageBox.information(self, self.tr("WaveScale HDR"), self.tr("Active document has no image."))
             return
 
         dlg = WaveScaleHDRDialogPro(self, doc, icon_path=hdr_path)
 
-        # -- NEW: capture preset for replay when user clicks Apply ------
+        # -- capture preset for replay (last action + history dropdown) --
         def _on_applied(doc_obj, preset: dict):
             try:
-                # Whatever helper you used for Curves / GHS:
-                # cid is what command-drop & replay will call.
-                self._register_replay_action(
-                    cid="wavescale_hdr",
-                    label="WaveScale HDR",
-                    preset=dict(preset or {}),
-                    target_doc=doc_obj,
+                self.remember_last_headless_command(
+                    "wavescale_hdr", dict(preset or {}), description="WaveScale HDR"
                 )
             except Exception:
                 pass
@@ -4469,12 +4661,12 @@ class AstroSuiteProMainWindow(
     def _open_wavescale_dark_enhance(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "WaveScale Dark Enhancer", "No active image window.")
+            QMessageBox.information(self, self.tr("WaveScale Dark Enhancer"), self.tr("No active image window."))
             return
         view = sw.widget()
         doc  = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "WaveScale Dark Enhancer", "Active document has no image.")
+            QMessageBox.information(self, self.tr("WaveScale Dark Enhancer"), self.tr("Active document has no image."))
             return
 
         try:
@@ -4484,7 +4676,7 @@ class AstroSuiteProMainWindow(
             try:
                 from setiastro.saspro.wavescalede import WaveScaleDarkEnhanceDialog as _Dlg
             except Exception as e:
-                QMessageBox.warning(self, "WaveScale Dark Enhancer", f"Failed to import dialog:\n{e}")
+                QMessageBox.warning(self, self.tr("WaveScale Dark Enhancer"), self.tr("Failed to import dialog:\n{0}").format(e))
                 return
 
         try:
@@ -4509,7 +4701,7 @@ class AstroSuiteProMainWindow(
         if doc is None and getattr(self, "docman", None) and self.docman._docs:
             doc = self.docman._docs[-1]
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         from setiastro.saspro.fx_module import FXDialog
         w = FXDialog(self, doc, parent=self)
@@ -4523,12 +4715,12 @@ class AstroSuiteProMainWindow(
     def _open_clahe(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "CLAHE", "Open an image first.")
+            QMessageBox.information(self, "CLAHE", self.tr("Open an image first."))
             return
         view = sw.widget()
         doc = getattr(view, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "CLAHE", "Active document has no image.")
+            QMessageBox.information(self, "CLAHE", self.tr("Active document has no image."))
             return
         try:
             from setiastro.saspro.clahe import CLAHEDialogPro
@@ -4536,7 +4728,7 @@ class AstroSuiteProMainWindow(
             dlg.resize(900, 650)
             dlg.show()
         except Exception as e:
-            QMessageBox.warning(self, "CLAHE", f"Failed to open dialog:\n{e}")
+            QMessageBox.warning(self, "CLAHE", self.tr("Failed to open dialog:\n{0}").format(e))
 
     def _apply_clahe_preset_to_doc(self, doc, preset: dict | None):
         """
@@ -4593,11 +4785,11 @@ class AstroSuiteProMainWindow(
     def _open_morphology(self, preset: dict | None = None):
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Morphology", "No active image window.")
+            QMessageBox.information(self, self.tr("Morphology"), self.tr("No active image window."))
             return
         doc = getattr(sw.widget(), "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Morphology", "Active document has no image.")
+            QMessageBox.information(self, self.tr("Morphology"), self.tr("Active document has no image."))
             return
         from setiastro.saspro.morphology import MorphologyDialogPro
         dlg = MorphologyDialogPro(self, doc, icon=QIcon(morpho_path), initial=preset or {})
@@ -4635,11 +4827,11 @@ class AstroSuiteProMainWindow(
     def _open_pixel_math(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Pixel Math", "No active image window.")
+            QMessageBox.information(self, self.tr("Pixel Math"), self.tr("No active image window."))
             return
         doc = getattr(sw.widget(), "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Pixel Math", "Active document has no image.")
+            QMessageBox.information(self, self.tr("Pixel Math"), self.tr("Active document has no image."))
             return
         from setiastro.saspro.pixelmath import PixelMathDialogPro
         dlg = PixelMathDialogPro(self, doc, icon=QIcon(pixelmath_path))
@@ -4649,10 +4841,10 @@ class AstroSuiteProMainWindow(
     def _open_signature_insert(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Signature / Insert", "No active image window."); return
+            QMessageBox.information(self, self.tr("Signature / Insert"), self.tr("No active image window.")); return
         doc = getattr(sw.widget(), "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Signature / Insert", "Active document has no image."); return
+            QMessageBox.information(self, self.tr("Signature / Insert"), self.tr("Active document has no image.")); return
         from setiastro.saspro.signature_insert import SignatureInsertDialogPro
         dlg = SignatureInsertDialogPro(self, doc, icon=QIcon(signature_icon_path))
         dlg.show()
@@ -4660,10 +4852,10 @@ class AstroSuiteProMainWindow(
     def _open_halo_b_gon(self):
         sw = self.mdi.activeSubWindow()
         if not sw: 
-            QMessageBox.information(self, "Halo-B-Gon", "No active image view."); return
+            QMessageBox.information(self, "Halo-B-Gon", self.tr("No active image view.")); return
         doc = getattr(sw.widget(), "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Halo-B-Gon", "Active view has no image."); return
+            QMessageBox.information(self, "Halo-B-Gon", self.tr("Active view has no image.")); return
         from setiastro.saspro.halobgon import HaloBGonDialogPro
         dlg = HaloBGonDialogPro(self, doc, icon=QIcon(halo_path))
         dlg.show()
@@ -4696,13 +4888,13 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.aberration_ai import AberrationAIDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Aberration Correction", "No active image view.")
+            QMessageBox.information(self, self.tr("Aberration Correction"), self.tr("No active image view."))
             return
 
         w = sw.widget() if hasattr(sw, "widget") else None
         doc = getattr(w, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Aberration Correction", "Active view has no image.")
+            QMessageBox.information(self, self.tr("Aberration Correction"), self.tr("Active view has no image."))
             return
 
         # Live active-doc resolver so the non-modal dialog tracks view switches
@@ -4785,13 +4977,13 @@ class AstroSuiteProMainWindow(
 
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "SyQon Tools", "No active image view.")
+            QMessageBox.information(self, self.tr("SyQon Tools"), self.tr("No active image view."))
             return
 
         w = sw.widget() if hasattr(sw, "widget") else None
         doc = getattr(w, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "SyQon Tools", "Active view has no image.")
+            QMessageBox.information(self, self.tr("SyQon Tools"), self.tr("Active view has no image."))
             return
 
         try:
@@ -4855,12 +5047,12 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.rcastro import open_rcastro_dialog
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "RC-Astro Tools", "No active image view.")
+            QMessageBox.information(self, self.tr("RC-Astro Tools"), self.tr("No active image view."))
             return
         w   = sw.widget() if hasattr(sw, "widget") else None
         doc = getattr(w, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "RC-Astro Tools", "Active view has no image.")
+            QMessageBox.information(self, self.tr("RC-Astro Tools"), self.tr("Active view has no image."))
             return
 
         # Clear stale reference if dialog was closed/destroyed
@@ -4896,19 +5088,19 @@ class AstroSuiteProMainWindow(
             QMessageBox.critical(
                 self,
                 "Cosmic Clarity",
-                f"Failed to import Cosmic Clarity module:\n{e}"
+                self.tr("Failed to import Cosmic Clarity module:\n{0}").format(e)
             )
             return
 
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Cosmic Clarity", "No active image view.")
+            QMessageBox.information(self, "Cosmic Clarity", self.tr("No active image view."))
             return
 
         w = sw.widget() if hasattr(sw, "widget") else None
         doc = getattr(w, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Cosmic Clarity", "Active view has no image.")
+            QMessageBox.information(self, "Cosmic Clarity", self.tr("Active view has no image."))
             return
 
         # Clear any stale headless flag when user explicitly opens the UI
@@ -4967,7 +5159,7 @@ class AstroSuiteProMainWindow(
             QMessageBox.critical(
                 self,
                 "Cosmic Clarity",
-                f"Failed to open Cosmic Clarity UI:\n{e}"
+                self.tr("Failed to open Cosmic Clarity UI:\n{0}").format(e)
             )
 
     def _open_cosmic_clarity_satellite(self):
@@ -5010,7 +5202,7 @@ class AstroSuiteProMainWindow(
             QMessageBox.critical(
                 self,
                 "Cosmic Clarity Satellite",
-                f"Failed to open Cosmic Clarity Satellite:\n{e}"
+                self.tr("Failed to open Cosmic Clarity Satellite:\n{0}").format(e)
             )
 
 
@@ -5019,12 +5211,12 @@ class AstroSuiteProMainWindow(
         sw = self.mdi.activeSubWindow()
         doc = sw.widget().document if sw else None
         if not doc:
-            QMessageBox.information(self, "History", "No active document.")
+            QMessageBox.information(self, self.tr("History"), self.tr("No active document."))
             return
 
         dlg = HistoryExplorerDialog(doc, parent=self)
         sub_title = sw.windowTitle() if sw else doc.display_name()
-        dlg.setWindowTitle(f"History Explorer -- {sub_title}")
+        dlg.setWindowTitle(self.tr("History Explorer -- {0}").format(sub_title))
         dlg.show()
         self._log("History: opened History Explorer.")
 
@@ -5037,7 +5229,7 @@ class AstroSuiteProMainWindow(
         # always-on-top-of-everything window that survived app shutdown.
         dlg = BlinkComparatorPro(doc_manager=self.docman, parent=self)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        dlg.setWindowTitle("Blink Comparator")
+        dlg.setWindowTitle(self.tr("Blink Comparator"))
         dlg.setWindowFlags(Qt.WindowType.Window)
         try:
             dlg.setWindowIcon(QIcon(blink_path))
@@ -5054,7 +5246,7 @@ class AstroSuiteProMainWindow(
 
         w = NarrowbandNormalization(doc_manager=self.docman, parent=self)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        w.setWindowTitle("Narrowband Normalization")
+        w.setWindowTitle(self.tr("Narrowband Normalization"))
         try:
             w.setWindowIcon(QIcon(narrowbandnormalization_path))
         except Exception:
@@ -5065,7 +5257,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.perfect_palette_picker import PerfectPalettePicker
         w = PerfectPalettePicker(doc_manager=self.docman)  # parent gives access to _spawn_subwindow_for
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        w.setWindowTitle("Perfect Palette Picker")
+        w.setWindowTitle(self.tr("Perfect Palette Picker"))
         try:
             w.setWindowIcon(QIcon(ppp_path))
         except Exception:
@@ -5076,7 +5268,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.nbtorgb_stars import NBtoRGBStars
         w = NBtoRGBStars(doc_manager=self.docman)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        w.setWindowTitle("NB -> RGB Stars")
+        w.setWindowTitle(self.tr("NB -> RGB Stars"))
         try:
             w.setWindowIcon(QIcon(nbtorgb_path))
         except Exception:
@@ -5092,7 +5284,7 @@ class AstroSuiteProMainWindow(
         if doc is None and getattr(self, "docman", None) and self.docman._docs:
             doc = self.docman._docs[-1]
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "No image", "Open an image first."); return
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first.")); return
 
         from setiastro.saspro.selective_color import SelectiveColorCorrection
         w = SelectiveColorCorrection(doc_manager=self.docman, document=doc, parent=self,
@@ -5109,7 +5301,7 @@ class AstroSuiteProMainWindow(
         if doc is None and getattr(self, "docman", None) and self.docman._docs:
             doc = self.docman._docs[-1]
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         from setiastro.saspro.selective_luma import SelectiveLuminanceCorrection
         w = SelectiveLuminanceCorrection(
@@ -5136,7 +5328,7 @@ class AstroSuiteProMainWindow(
         w = FrequencySeperationTab(doc_manager=self.docman, document=doc, parent=self)
         w.setWindowFlag(Qt.WindowType.Window, True)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        w.setWindowTitle("Frequency Separation")
+        w.setWindowTitle(self.tr("Frequency Separation"))
 
         try:
             w.setWindowIcon(QIcon(freqsep_path))
@@ -5151,19 +5343,19 @@ class AstroSuiteProMainWindow(
     def _open_multiscale_decomp(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Multiscale Decomposition", "No active image.")
+            QMessageBox.information(self, self.tr("Multiscale Decomposition"), self.tr("No active image."))
             return
         view = sw.widget()
         # ROI-aware: always resolve via DocManager for THIS view
         # (so active_mask_id / masks are attached to the doc we pass in).
         doc = self.doc_manager.get_document_for_view(view)
         if not doc or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Multiscale Decomposition", "No active image.")
+            QMessageBox.information(self, self.tr("Multiscale Decomposition"), self.tr("No active image."))
             return
         from setiastro.saspro.multiscale_decomp import MultiscaleDecompDialog
         dlg = MultiscaleDecompDialog(self, doc)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        dlg.setWindowTitle("Multiscale Decomposition")
+        dlg.setWindowTitle(self.tr("Multiscale Decomposition"))
         try:
             dlg.setWindowIcon(QIcon(multiscale_decomp_path))
         except Exception:
@@ -5183,7 +5375,7 @@ class AstroSuiteProMainWindow(
         w = ContinuumSubtractTab(doc_manager=self.docman, parent=self)
         w.setWindowFlag(Qt.WindowType.Window, True)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        w.setWindowTitle("Continuum Subtract")
+        w.setWindowTitle(self.tr("Continuum Subtract"))
         try:
             w.setWindowIcon(QIcon(contsub_path))
         except Exception:
@@ -5194,7 +5386,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.narrowbandintegration import NarrowbandIntegrationDialog
         w = NarrowbandIntegrationDialog(doc_manager=self.docman, parent=self)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        w.setWindowTitle("Narrowband Integration")
+        w.setWindowTitle(self.tr("Narrowband Integration"))
         try:
             w.setWindowIcon(QIcon(nbi_path))
         except Exception:
@@ -5205,7 +5397,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.image_combine import ImageCombineDialog
         w = ImageCombineDialog(self)   # <- only pass self
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        w.setWindowTitle("Image Combination")
+        w.setWindowTitle(self.tr("Image Combination"))
         try:
             w.setWindowIcon(QIcon(imagecombine_path))
         except Exception:
@@ -5226,9 +5418,9 @@ class AstroSuiteProMainWindow(
                 self, preset or {}, target_doc=target_doc, ask_order=False,
             )
         except HDRCompositionError as exc:
-            QMessageBox.warning(self, "HDR Composition", str(exc))
+            QMessageBox.warning(self, self.tr("HDR Composition"), str(exc))
         except Exception as exc:
-            QMessageBox.critical(self, "HDR Composition", f"Failed:\n{exc}")
+            QMessageBox.critical(self, self.tr("HDR Composition"), self.tr("Failed:\n{0}").format(exc))
 
     def _apply_image_combine_from_preset(self, preset: dict, *, target_doc=None):
         """
@@ -5237,11 +5429,11 @@ class AstroSuiteProMainWindow(
         """
         dm = getattr(self, "doc_manager", None) or getattr(self, "dm", None)
         if dm is None:
-            QMessageBox.warning(self, "Image Combine", "No document manager."); return
+            QMessageBox.warning(self, self.tr("Image Combine"), self.tr("No document manager.")); return
 
         docs = self._list_open_docs()
         if not docs:
-            QMessageBox.information(self, "Image Combine", "No open images."); return
+            QMessageBox.information(self, self.tr("Image Combine"), self.tr("No open images.")); return
 
         mode   = preset.get("mode", "Blend")
         alpha  = float(preset.get("opacity", 1.0))
@@ -5265,20 +5457,20 @@ class AstroSuiteProMainWindow(
             B = docs[0] if docs[1] is A else docs[1]
 
         if A is None or B is None:
-            QMessageBox.warning(self, "Image Combine", "Could not resolve Source A and B."); return
+            QMessageBox.warning(self, self.tr("Image Combine"), self.tr("Could not resolve Source A and B.")); return
 
         imgA = np.asarray(getattr(A, "image", None), dtype=np.float32)
         imgB = np.asarray(getattr(B, "image", None), dtype=np.float32)
         if imgA is None or imgB is None:
-            QMessageBox.warning(self, "Image Combine", "One of the sources has no image."); return
+            QMessageBox.warning(self, self.tr("Image Combine"), self.tr("One of the sources has no image.")); return
         if imgA.shape[:2] != imgB.shape[:2]:
-            QMessageBox.warning(self, "Image Combine", "Image sizes must match."); return
+            QMessageBox.warning(self, self.tr("Image Combine"), self.tr("Image sizes must match.")); return
 
         from setiastro.saspro.image_combine import _blend_dispatch, _rgb_to_luma, _recombine_luma_into_rgb, _to_float01
         try:
             if lonly:
                 if imgA.ndim != 3 or (imgA.shape[2] != 3):
-                    QMessageBox.warning(self, "Luminance Blend", "Source A must be RGB."); return
+                    QMessageBox.warning(self, self.tr("Luminance Blend"), self.tr("Source A must be RGB.")); return
                 YA = _rgb_to_luma(imgA)
                 YB = _rgb_to_luma(imgB)
                 Ymix = _blend_dispatch(YA[..., None], YB[..., None], mode, alpha)[..., 0]
@@ -5310,13 +5502,13 @@ class AstroSuiteProMainWindow(
                 self._log(f"Image Combine -> new view '{newdoc.display_name()}' ({step})")
 
         except Exception as e:
-            QMessageBox.critical(self, "Image Combine", f"Failed:\n{e}")
+            QMessageBox.critical(self, self.tr("Image Combine"), self.tr("Failed:\n{0}").format(e))
 
     def _open_psf_viewer(self, preset: dict | None = None):
         from setiastro.saspro.psf_viewer import PSFViewer
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Pixel Math", "No active image window.")
+            QMessageBox.information(self, self.tr("Pixel Math"), self.tr("No active image window."))
             return
 
         dlg = PSFViewer(self.mdi.activeSubWindow().widget(), parent=self)
@@ -5351,7 +5543,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.image_peeker_pro import ImagePeekerDialogPro
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Image Peaker", "No active image window.")
+            QMessageBox.information(self, self.tr("Image Peeker"), self.tr("No active image window."))
             return
 
         dlg = ImagePeekerDialogPro(parent=self, document=sw, settings=self.settings)
@@ -5473,11 +5665,45 @@ class AstroSuiteProMainWindow(
         self._starreg_win.show()
 
     def _show_welcome(self):
-        from setiastro.saspro.first_run_dialog import FirstRunDialog, _SETTINGS_KEY
-        self.settings.remove(_SETTINGS_KEY)
-        self.settings.sync()
-        dlg = FirstRunDialog(self)
-        dlg.exec()
+        self._open_setup_center()
+
+    def _open_setup_center(self, step: str | None = None):
+        """The setup window, on `step` ("accel", "models", "gaia")."""
+        from setiastro.saspro.setup_center import open_setup_center
+        return open_setup_center(self, step)
+
+    def restart_app(self):
+        """Close and start again. Asks first when images are open."""
+        self._relaunch_on_exit = True
+        self.close()
+
+    def _relaunch(self):
+        """Start a new SASpro as this one exits."""
+        import subprocess
+        srv = getattr(self, "_single_instance_server", None)
+        if srv is not None:
+            try:
+                srv.close()           # or the new one hands off to us and quits
+            except Exception:
+                pass
+        env = None
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable]
+            if sys.platform == "darwin":
+                bundle = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
+                if bundle.endswith(".app"):
+                    cmd = ["open", "-n", bundle]
+        else:
+            import setiastro.saspro as _pkg
+            root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_pkg.__file__))))
+            env = dict(os.environ)
+            env["PYTHONPATH"] = os.pathsep.join(
+                [root] + [x for x in env.get("PYTHONPATH", "").split(os.pathsep) if x and x != root])
+            cmd = [sys.executable, "-m", "setiastro.saspro"]
+        try:
+            subprocess.Popen(cmd, env=env)
+        except Exception as e:
+            print(f"[restart] could not start SASpro again: {e}")
 
     def _show_first_steps_tour(self):
         from setiastro.saspro.first_steps_tour import start_first_steps_tour
@@ -5492,8 +5718,8 @@ class AstroSuiteProMainWindow(
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(
                 self,
-                "Tips Enabled",
-                "Tip of the day has been re-enabled.\nA tip will appear next time you launch SASpro."
+                self.tr("Tips Enabled"),
+                self.tr("Tip of the day has been re-enabled.\nA tip will appear next time you launch SASpro.")
             )
         else:
             self.settings.setValue("tips/disabled", True)
@@ -5501,8 +5727,8 @@ class AstroSuiteProMainWindow(
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(
                 self,
-                "Tips Disabled",
-                "Tip of the day has been disabled.\nYou can re-enable it here at any time."
+                self.tr("Tips Disabled"),
+                self.tr("Tip of the day has been disabled.\nYou can re-enable it here at any time.")
             )
 
     def _open_dither_analysis(self):
@@ -5528,7 +5754,7 @@ class AstroSuiteProMainWindow(
     def _open_rgb_align(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "RGB Align", "No active image window.")
+            QMessageBox.information(self, self.tr("RGB Align"), self.tr("No active image window."))
             return
 
         view = sw.widget()
@@ -5551,13 +5777,23 @@ class AstroSuiteProMainWindow(
         dlg.setWindowFlag(Qt.WindowType.Window, True)
         dlg.setWindowIcon(QIcon(mosaic_path))
         dlg.show()
+        return dlg
+
+    def _open_robotic_mosaic(self):
+        """Mosaic Master with its Robotic Mosaic card chosen (start panel)."""
+        self._open_mosaic_master()._set_source_mode("seestar")
+
+    def _open_panel_mosaic(self):
+        """Mosaic Master with its Traditional Panels card chosen (start panel).
+        Set explicitly: Mosaic Master reopens on whichever card was used last."""
+        self._open_mosaic_master()._set_source_mode("generic")
 
     def _open_surface_mosaic(self):
         from setiastro.saspro.surface_mosaic import SurfaceMosaicDialog
         w = SurfaceMosaicDialog(doc_manager=self.docman, parent=self)
         w.setWindowFlag(Qt.WindowType.Window, True)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        w.setWindowTitle("Surface Mosaic")
+        w.setWindowTitle(self.tr("Surface Mosaic"))
         try:
             w.setWindowIcon(QIcon(surfacemosaic_path))
         except Exception:
@@ -5576,6 +5812,14 @@ class AstroSuiteProMainWindow(
         dlg.setWindowIcon(QIcon(livestacking_path))
         dlg.show()
 
+    def _open_quick_stack(self):
+        from setiastro.saspro.quick_stack import QuickStackDialog
+        dlg = QuickStackDialog(parent=self, doc_manager=getattr(self, "docman", None) or getattr(self, "doc_manager", None))
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.setWindowFlag(Qt.WindowType.Window, True)
+        dlg.setWindowIcon(QIcon(quickstack_path))
+        dlg.show()
+
     def _open_planetary_stacker(self):
         # import locally to avoid startup cost / circular imports
         from setiastro.saspro.serviewer import SERViewer
@@ -5588,7 +5832,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.planetprojection import PlanetProjectionDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
 
         view = sw.widget()
@@ -5780,7 +6024,7 @@ class AstroSuiteProMainWindow(
             import traceback
             try:
                 from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.critical(self, "RGB → Mono", traceback.format_exc())
+                QMessageBox.critical(self, self.tr("RGB → Mono"), traceback.format_exc())
             except Exception:
                 pass
             return False
@@ -5855,7 +6099,7 @@ class AstroSuiteProMainWindow(
             import traceback
             try:
                 from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.critical(self, "Mono → RGB", traceback.format_exc())
+                QMessageBox.critical(self, self.tr("Mono → RGB"), traceback.format_exc())
             except Exception:
                 pass
             return False
@@ -5919,7 +6163,7 @@ class AstroSuiteProMainWindow(
             import traceback
             try:
                 from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.critical(self, "Swap R/B", traceback.format_exc())
+                QMessageBox.critical(self, self.tr("Swap R/B"), traceback.format_exc())
             except Exception:
                 pass
             return False
@@ -6003,7 +6247,7 @@ class AstroSuiteProMainWindow(
         if preset:
             dlg.apply_preset(preset)
         if title_hint:
-            dlg.setWindowTitle(f"Diffraction Spikes -- {title_hint}")
+            dlg.setWindowTitle(self.tr("Diffraction Spikes -- {0}").format(title_hint))
         dlg.setWindowFlag(Qt.WindowType.Window, True)
         dlg.setWindowIcon(QIcon(starspike_path))
         dlg.show()
@@ -6109,7 +6353,7 @@ class AstroSuiteProMainWindow(
         # Mirror PSF opener: use MDI active subwindow -> widget -> document -> image
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "GLIMR", "No active image window.")
+            QMessageBox.information(self, "GLIMR", self.tr("No active image window."))
             return
 
         view = sw.widget()
@@ -6118,14 +6362,14 @@ class AstroSuiteProMainWindow(
         # Grab image from the doc (same style as PSF)
         img = getattr(doc, "image", None)
         if img is None:
-            QMessageBox.information(self, "GLIMR", "Active view has no image data.")
+            QMessageBox.information(self, "GLIMR", self.tr("Active view has no image data."))
             return
 
         # Ensure ndarray
         try:
             arr = np.asarray(img)
         except Exception:
-            QMessageBox.information(self, "GLIMR", "Could not read image data from the active view.")
+            QMessageBox.information(self, "GLIMR", self.tr("Could not read image data from the active view."))
             return
 
         # Coerce to mono float32 in [0,1]
@@ -6149,7 +6393,7 @@ class AstroSuiteProMainWindow(
         dlg = IsophoteModelerDialog(
             mono_image=mono,
             parent=self,
-            title_hint="GLIMR -- Isophote Modeler",
+            title_hint=self.tr("GLIMR -- Isophote Modeler"),
             doc_manager=dm,
         )
         dlg.setWindowFlag(Qt.WindowType.Window, True)
@@ -6191,7 +6435,7 @@ class AstroSuiteProMainWindow(
 
         def _on_imported():
             """Called on GUI thread after the slow import finishes."""
-            splash.set_status("Building interface…")
+            splash.set_status(self.tr("Building interface…"))
             QApplication.processEvents()
             try:
                 from setiastro.saspro.wimi import WIMIDialog   # already cached, instant
@@ -6208,14 +6452,14 @@ class AstroSuiteProMainWindow(
                 dlg.show()
             except Exception as exc:
                 splash.close()
-                QMessageBox.critical(self, "WIMI Error", f"Failed to open WIMI:\n{exc}")
+                QMessageBox.critical(self, self.tr("WIMI Error"), self.tr("Failed to open WIMI:\n{0}").format(exc))
 
         def _on_progress(msg):
             splash.set_status(msg)
 
         def _on_error(msg):
             splash.close()
-            QMessageBox.critical(self, "WIMI Error", f"Failed to open WIMI:\n{msg}")
+            QMessageBox.critical(self, self.tr("WIMI Error"), self.tr("Failed to open WIMI:\n{0}").format(msg))
 
         self._wimi_loader.progress.connect(_on_progress)
         self._wimi_loader.ready.connect(_on_imported)
@@ -6227,7 +6471,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.fitsmodifier import FITSModifier
         doc = self.doc_manager.get_active_document()
         if not doc:
-            QMessageBox.information(self, "FITS Header Editor", "No active image window.")
+            QMessageBox.information(self, self.tr("FITS Header Editor"), self.tr("No active image window."))
             return
 
         file_path = doc.metadata.get("file_path")
@@ -6288,7 +6532,7 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.copyastro import CopyAstrometryDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Copy Astrometric Solution", "No active image window.")
+            QMessageBox.information(self, self.tr("Copy Astrometric Solution"), self.tr("No active image window."))
             return
 
         dlg = CopyAstrometryDialog(parent=self, target=sw)
@@ -6300,12 +6544,12 @@ class AstroSuiteProMainWindow(
 
         dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
         if dm is None:
-            QMessageBox.information(self, "Astro Catalogue Viewer Exporter", "No document manager available.")
+            QMessageBox.information(self, self.tr("Astro Catalogue Viewer Exporter"), self.tr("No document manager available."))
             return
 
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Astro Catalogue Viewer Exporter", "Open an image first.")
+            QMessageBox.information(self, self.tr("Astro Catalogue Viewer Exporter"), self.tr("Open an image first."))
             return
 
         view = sw.widget()
@@ -6326,7 +6570,7 @@ class AstroSuiteProMainWindow(
                 active_doc = None
 
         if active_doc is None or getattr(active_doc, "image", None) is None:
-            QMessageBox.information(self, "Astro Catalogue Viewer Exporter", "No active image.")
+            QMessageBox.information(self, self.tr("Astro Catalogue Viewer Exporter"), self.tr("No active image."))
             return
 
         dlg = AstroCatalogueViewerExporterDialog(self, dm, active_doc)
@@ -6341,12 +6585,12 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.linear_fit import LinearFitDialog
         dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
         if dm is None:
-            QMessageBox.information(self, "Linear Fit", "No document manager available.")
+            QMessageBox.information(self, self.tr("Linear Fit"), self.tr("No document manager available."))
             return
 
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
 
         view = sw.widget()
@@ -6367,7 +6611,7 @@ class AstroSuiteProMainWindow(
                 active_doc = None
 
         if active_doc is None or getattr(active_doc, "image", None) is None:
-            QMessageBox.information(self, "Linear Fit", "No active image.")
+            QMessageBox.information(self, self.tr("Linear Fit"), self.tr("No active image."))
             return
 
         dlg = LinearFitDialog(self, dm, active_doc)  # <-- pass ROI-aware doc + DM
@@ -6383,16 +6627,16 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.debayer import DebayerDialog
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         try:
             doc = sw.widget().document
         except Exception:
-            QMessageBox.information(self, "Debayer", "No active image.")
+            QMessageBox.information(self, self.tr("Debayer"), self.tr("No active image."))
             return
         dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
         if dm is None:
-            QMessageBox.information(self, "Debayer", "No document manager available.")
+            QMessageBox.information(self, self.tr("Debayer"), self.tr("No document manager available."))
             return
         dlg = DebayerDialog(self, dm, doc)
         try:
@@ -6488,13 +6732,13 @@ class AstroSuiteProMainWindow(
         """
         hist = getattr(self, "_headless_history", [])
         if not hist:
-            QMessageBox.information(self, "Replay Action", "There are no actions in history yet.")
+            QMessageBox.information(self, self.tr("Replay Action"), self.tr("There are no actions in history yet."))
             return
 
         try:
             entry = hist[index]
         except IndexError:
-            QMessageBox.warning(self, "Replay Action", "Selected history item is no longer available.")
+            QMessageBox.warning(self, self.tr("Replay Action"), self.tr("Selected history item is no longer available."))
             return
 
         # Build a payload in the same schema replay_last_action_on_base expects
@@ -6523,8 +6767,8 @@ class AstroSuiteProMainWindow(
 
         if not payload:
             QMessageBox.information(
-                self, "Replay Last Action",
-                "There is no previous action to replay yet."
+                self, self.tr("Replay Last Action"),
+                self.tr("There is no previous action to replay yet.")
             )
             return
 
@@ -6534,15 +6778,15 @@ class AstroSuiteProMainWindow(
 
         if target_sw is None:
             QMessageBox.information(
-                self, "Replay Last Action",
-                "No active image view to apply the action to."
+                self, self.tr("Replay Last Action"),
+                self.tr("No active image view to apply the action to.")
             )
             return
 
         try:
             self._handle_command_drop(dict(payload), target_sw=target_sw)
         except Exception as e:
-            QMessageBox.critical(self, "Replay Last Action", f"Replay failed:\n{e}")
+            QMessageBox.critical(self, self.tr("Replay Last Action"), self.tr("Replay failed:\n{0}").format(e))
 
     def replay_last_action_on_base(self, target_sw=None):
         """
@@ -6554,8 +6798,8 @@ class AstroSuiteProMainWindow(
 
         if not payload:
             QMessageBox.information(
-                self, "Replay Last Action",
-                "There is no previous action to replay yet."
+                self, self.tr("Replay Last Action"),
+                self.tr("There is no previous action to replay yet.")
             )
             return
 
@@ -6565,15 +6809,15 @@ class AstroSuiteProMainWindow(
 
         if target_sw is None:
             QMessageBox.information(
-                self, "Replay Last Action",
-                "No active image view to apply the action to."
+                self, self.tr("Replay Last Action"),
+                self.tr("No active image view to apply the action to.")
             )
             return
 
         # Resolve the *base* document for this subwindow
         base_doc = self._target_doc_from_subwindow(target_sw) if hasattr(self, "_target_doc_from_subwindow") else None
         if base_doc is None or getattr(base_doc, "image", None) is None:
-            QMessageBox.information(self, "Replay Last Action", "No base image to apply the action to.")
+            QMessageBox.information(self, self.tr("Replay Last Action"), self.tr("No base image to apply the action to."))
             return
 
 
@@ -6599,7 +6843,7 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     pass
             except Exception as e:
-                QMessageBox.warning(self, "Preset apply failed", str(e))
+                QMessageBox.warning(self, self.tr("Preset apply failed"), str(e))
             return
 
         if cid == "pedestal":
@@ -6611,7 +6855,7 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     pass
             except Exception as e:
-                QMessageBox.warning(self, "Pedestal Removal", str(e))
+                QMessageBox.warning(self, self.tr("Pedestal Removal"), str(e))
             return
 
         if cid == "linear_fit":
@@ -6624,7 +6868,7 @@ class AstroSuiteProMainWindow(
                     pass
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "Linear Fit", f"Replay-on-base failed:\n{e}")
+                    QMessageBox.warning(self, self.tr("Linear Fit"), self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     pass
             return
@@ -6638,7 +6882,7 @@ class AstroSuiteProMainWindow(
                     pass
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "Star Stretch", f"Replay-on-base failed:\n{e}")
+                    QMessageBox.warning(self, self.tr("Star Stretch"), self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     pass
             return
@@ -6667,7 +6911,7 @@ class AstroSuiteProMainWindow(
                     pass
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "Texture and Clarity", f"Replay-on-base failed:\n{e}")
+                    QMessageBox.warning(self, self.tr("Texture and Clarity"), self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     print("Texture and Clarity replay-on-base failed:", e)
             return
@@ -6692,7 +6936,7 @@ class AstroSuiteProMainWindow(
 
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "Levels", f"Replay-on-base failed:\n{e}")
+                    QMessageBox.warning(self, self.tr("Levels"), self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     print("Levels replay-on-base failed:", e)
             return
@@ -6735,7 +6979,7 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 try:
                     QMessageBox.warning(
-                        self, "Curves", f"Replay-on-base failed:\n{e}"
+                        self, self.tr("Curves"), self.tr("Replay-on-base failed:\n{0}").format(e)
                     )
                 except Exception:
                     print("Replay-on-base Curves failed:", e)
@@ -6767,8 +7011,8 @@ class AstroSuiteProMainWindow(
                 try:
                     QMessageBox.warning(
                         self,
-                        "Cosmetic Correction",
-                        f"Replay-on-base failed:\n{e}",
+                        self.tr("Cosmetic Correction"),
+                        self.tr("Replay-on-base failed:\n{0}").format(e),
                     )
                 except Exception:
                     print("Cosmetic Correction replay-on-base failed:", e)
@@ -6792,7 +7036,7 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 try:
                     QMessageBox.warning(self, "SatChroma",
-                                        f"Replay-on-base failed:\n{e}")
+                                        self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     print("SatChroma replay-on-base failed:", e)
             return
@@ -6812,7 +7056,7 @@ class AstroSuiteProMainWindow(
                     pass
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "FX", f"Replay-on-base failed:\n{e}")
+                    QMessageBox.warning(self, "FX", self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     print("FX replay-on-base failed:", e)
             return
@@ -6848,7 +7092,7 @@ class AstroSuiteProMainWindow(
 
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "GHS", f"Apply failed:\n{e}")
+                    QMessageBox.warning(self, "GHS", self.tr("Apply failed:\n{0}").format(e))
                 except Exception:
                     print("GHS replay-on-base failed:", e)
             return
@@ -6885,7 +7129,7 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 try:
                     QMessageBox.warning(
-                        self, "ABE", f"Replay-on-base failed:\n{e}"
+                        self, "ABE", self.tr("Replay-on-base failed:\n{0}").format(e)
                     )
                 except Exception:
                     print("ABE replay-on-base failed:", e)
@@ -6935,7 +7179,7 @@ class AstroSuiteProMainWindow(
 
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "GraXpert", f"Replay-on-base failed:\n{e}")
+                    QMessageBox.warning(self, "GraXpert", self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     print("GraXpert replay-on-base failed:", e)
             return
@@ -6978,8 +7222,8 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 try:
                     QMessageBox.warning(
-                        self, "Remove Stars",
-                        f"Replay-on-base failed:\n{e}"
+                        self, self.tr("Remove Stars"),
+                        self.tr("Replay-on-base failed:\n{0}").format(e)
                     )
                 except Exception:
                     print("Remove Stars replay-on-base failed:", e)
@@ -7005,8 +7249,8 @@ class AstroSuiteProMainWindow(
                 try:
                     QMessageBox.warning(
                         self,
-                        "Background Neutralization",
-                        f"Replay-on-base failed:\n{e}",
+                        self.tr("Background Neutralization"),
+                        self.tr("Replay-on-base failed:\n{0}").format(e),
                     )
                 except Exception:
                     print("Background Neutralization replay-on-base failed:", e)
@@ -7030,12 +7274,8 @@ class AstroSuiteProMainWindow(
                     elif mode == "auto":
                         detail = "auto"
                     else:
-                        thr = float(preset_dict.get("threshold", 50.0))
-                        reuse = bool(preset_dict.get("reuse_cached_sources", True))
-                        detail = (
-                            f"star-based (thr={thr:.1f}, "
-                            f"reuse={'yes' if reuse else 'no'})"
-                        )
+                        from setiastro.saspro.whitebalance import star_preset_summary
+                        detail = f"star-based ({star_preset_summary(preset_dict)})"
 
                     self._log(
                         f"[Replay] Applied White Balance {detail} "
@@ -7049,8 +7289,8 @@ class AstroSuiteProMainWindow(
                 try:
                     QMessageBox.warning(
                         self,
-                        "White Balance",
-                        f"Replay-on-base failed:\n{e}",
+                        self.tr("White Balance"),
+                        self.tr("Replay-on-base failed:\n{0}").format(e),
                     )
                 except Exception:
                     print("White Balance replay-on-base failed:", e)
@@ -7095,8 +7335,8 @@ class AstroSuiteProMainWindow(
                 try:
                     QMessageBox.warning(
                         self,
-                        "Remove Green",
-                        f"Replay-on-base failed:\n{e}",
+                        self.tr("Remove Green"),
+                        self.tr("Replay-on-base failed:\n{0}").format(e),
                     )
                 except Exception:
                     print("Remove Green replay-on-base failed:", e)
@@ -7116,8 +7356,8 @@ class AstroSuiteProMainWindow(
                 try:
                     QMessageBox.warning(
                         self,
-                        "Convo / Deconvo",
-                        f"Replay-on-base failed:\n{e}",
+                        self.tr("Convo / Deconvo"),
+                        self.tr("Replay-on-base failed:\n{0}").format(e),
                     )
                 except Exception:
                     print("Convo replay-on-base failed:", e)
@@ -7138,7 +7378,7 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 try:
                     QMessageBox.warning(
-                        self, "HDR Composition", f"Replay-on-base failed:\n{e}",
+                        self, self.tr("HDR Composition"), self.tr("Replay-on-base failed:\n{0}").format(e),
                     )
                 except Exception:
                     print("HDR Composition replay-on-base failed:", e)
@@ -7189,8 +7429,8 @@ class AstroSuiteProMainWindow(
                 try:
                     QMessageBox.warning(
                         self,
-                        "WaveScale HDR",
-                        f"Replay-on-base failed:\n{e}",
+                        self.tr("WaveScale HDR"),
+                        self.tr("Replay-on-base failed:\n{0}").format(e),
                     )
                 except Exception:
                     print("WaveScale HDR replay-on-base failed:", e)
@@ -7252,8 +7492,8 @@ class AstroSuiteProMainWindow(
                 try:
                     QMessageBox.warning(
                         self,
-                        "WaveScale Dark Enhancer",
-                        f"Replay-on-base failed:\n{e}",
+                        self.tr("WaveScale Dark Enhancer"),
+                        self.tr("Replay-on-base failed:\n{0}").format(e),
                     )
                 except Exception:
                     print("WaveScale Dark Enhancer replay-on-base failed:", e)
@@ -7283,7 +7523,7 @@ class AstroSuiteProMainWindow(
                     pass
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "CLAHE", f"Replay-on-base failed:\n{e}")
+                    QMessageBox.warning(self, "CLAHE", self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     print("CLAHE replay-on-base failed:", e)
             return
@@ -7313,7 +7553,7 @@ class AstroSuiteProMainWindow(
                     pass
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "Morphology", f"Replay-on-base failed:\n{e}")
+                    QMessageBox.warning(self, self.tr("Morphology"), self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     print("Morphology replay-on-base failed:", e)
             return
@@ -7348,7 +7588,7 @@ class AstroSuiteProMainWindow(
                     pass
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "Pixel Math", f"Replay-on-base failed:\n{e}")
+                    QMessageBox.warning(self, self.tr("Pixel Math"), self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     print("Pixel Math replay-on-base failed:", e)
             return
@@ -7375,7 +7615,7 @@ class AstroSuiteProMainWindow(
                     pass
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "Halo-B-Gon", f"Replay-on-base failed:\n{e}")
+                    QMessageBox.warning(self, "Halo-B-Gon", self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     print("Halo-B-Gon replay-on-base failed:", e)
             return
@@ -7400,7 +7640,7 @@ class AstroSuiteProMainWindow(
                     )
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "Aberration AI", f"Replay-on-base failed:\n{e}")
+                    QMessageBox.warning(self, "Aberration AI", self.tr("Replay-on-base failed:\n{0}").format(e))
                 except Exception:
                     print("Replay Aberration AI failed:", e)
             return
@@ -7424,7 +7664,7 @@ class AstroSuiteProMainWindow(
                 try:
                     QMessageBox.warning(
                         self, "Cosmic Clarity",
-                        f"Replay-on-base failed:\n{e}"
+                        self.tr("Replay-on-base failed:\n{0}").format(e)
                     )
                 except Exception:
                     print("Cosmic Clarity replay-on-base failed:", e)
@@ -7453,7 +7693,7 @@ class AstroSuiteProMainWindow(
                 try:
                     QMessageBox.warning(
                         self, "RC-Astro",
-                        f"Replay-on-base failed:\n{e}"
+                        self.tr("Replay-on-base failed:\n{0}").format(e)
                     )
                 except Exception:
                     print("RC-Astro replay-on-base failed:", e)
@@ -7462,7 +7702,7 @@ class AstroSuiteProMainWindow(
         try:
             self._handle_command_drop(dict(payload), target_sw=target_sw)
         except Exception as e:
-            QMessageBox.critical(self, "Replay Last Action", f"Replay failed:\n{e}")
+            QMessageBox.critical(self, self.tr("Replay Last Action"), self.tr("Replay failed:\n{0}").format(e))
 
 
 
@@ -7608,7 +7848,7 @@ class AstroSuiteProMainWindow(
 
             sm = getattr(self, "scriptman", None)
             if sm is None:
-                QMessageBox.warning(self, "Scripts", "Script manager is not available.")
+                QMessageBox.warning(self, self.tr("Scripts"), self.tr("Script manager is not available."))
                 return
 
             try:
@@ -7636,7 +7876,7 @@ class AstroSuiteProMainWindow(
                     pass
 
             except Exception as e:
-                QMessageBox.critical(self, "Script failed", f"{sid}\n\n{e}")
+                QMessageBox.critical(self, self.tr("Script failed"), f"{sid}\n\n{e}")
             return
 
 
@@ -7840,7 +8080,7 @@ class AstroSuiteProMainWindow(
                             import logging
                             logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                         if stop_on_error:
-                            QMessageBox.warning(self, "Bundle", f"Stopped on error:\n{e}")
+                            QMessageBox.warning(self, self.tr("Bundle"), self.tr("Stopped on error:\n{0}").format(e))
                             return
                         # else continue to next step
 
@@ -7888,7 +8128,7 @@ class AstroSuiteProMainWindow(
                     run_crop_via_preset(self, preset or {}, target_doc=None)
                     self._log("Ran Crop headlessly on active view.")
                 except Exception as e:
-                    QMessageBox.warning(self, "Crop", f"Apply failed:\n{e}")
+                    QMessageBox.warning(self, self.tr("Crop"), self.tr("Apply failed:\n{0}").format(e))
                 return
             
             if cid == "star_align":
@@ -7902,7 +8142,7 @@ class AstroSuiteProMainWindow(
                     self._log(f"Ran Star Alignment (ref={rm}:{rn}, overwrite={'yes' if rp.get('overwrite', False) else 'no'})")
                 except Exception as e:
                     
-                    QMessageBox.warning(self, "Star Alignment", f"Apply failed:\n{e}")
+                    QMessageBox.warning(self, self.tr("Star Alignment"), self.tr("Apply failed:\n{0}").format(e))
                 return            
             if target_sw is None:
                 if cid == "ghs":
@@ -7940,7 +8180,7 @@ class AstroSuiteProMainWindow(
             try:
                 self._apply_export_fits_to_doc(doc, preset or {})
             except Exception as e:
-                QMessageBox.warning(self, "Export FITS", str(e))
+                QMessageBox.warning(self, self.tr("Export FITS"), str(e))
             return
 
         if cid == "stat_stretch":
@@ -7948,7 +8188,7 @@ class AstroSuiteProMainWindow(
                 self._apply_stat_stretch_preset_to_doc(doc, preset)
                 self._log(f"Applied Statistical Stretch preset to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Preset apply failed", str(e))
+                QMessageBox.warning(self, self.tr("Preset apply failed"), str(e))
             return
 
         if cid == "star_stretch":
@@ -7956,7 +8196,7 @@ class AstroSuiteProMainWindow(
                 self._apply_star_stretch_preset_to_doc(doc, preset)
                 self._log(f"Applied Star Stretch preset to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Preset apply failed", str(e))
+                QMessageBox.warning(self, self.tr("Preset apply failed"), str(e))
             return
 
         if cid == "levels":
@@ -7976,7 +8216,7 @@ class AstroSuiteProMainWindow(
 
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "Levels", f"Apply failed:\n{e}")
+                    QMessageBox.warning(self, self.tr("Levels"), self.tr("Apply failed:\n{0}").format(e))
                 except Exception:
                     pass
             return
@@ -7988,7 +8228,7 @@ class AstroSuiteProMainWindow(
                 self._log(f"Applied Curves preset to '{target_sw.windowTitle()}'")
             except Exception as e:
                 
-                QMessageBox.warning(self, "Curves", f"Apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Curves"), self.tr("Apply failed:\n{0}").format(e))
             return
 
         if cid == "satchroma":
@@ -8010,7 +8250,7 @@ class AstroSuiteProMainWindow(
                     pass
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "SatChroma", f"Apply failed:\n{e}")
+                    QMessageBox.warning(self, "SatChroma", self.tr("Apply failed:\n{0}").format(e))
                 except Exception:
                     pass
             return
@@ -8019,7 +8259,7 @@ class AstroSuiteProMainWindow(
             # document (a Preview/ROI doc won't carry the full solution).
             u_doc = base_doc if base_doc is not None else doc
             if u_doc is None or getattr(u_doc, "image", None) is None:
-                QMessageBox.information(self, "Unwarp", "Target view has no image.")
+                QMessageBox.information(self, self.tr("Unwarp"), self.tr("Target view has no image."))
                 return
             try:
                 from setiastro.saspro.unwarp import apply_unwarp_to_doc
@@ -8036,11 +8276,11 @@ class AstroSuiteProMainWindow(
                 else:
                     # No WCS / no SIP → apply_unwarp_to_doc is a logged no-op
                     QMessageBox.information(
-                        self, "Unwarp",
-                        "This image has no SIP distortion to remove.\n"
-                        "Plate solve with SIP enabled first.")
+                        self, self.tr("Unwarp"),
+                        self.tr("This image has no SIP distortion to remove.\n"
+                        "Plate solve with SIP enabled first."))
             except Exception as e:
-                QMessageBox.warning(self, "Unwarp", f"Apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Unwarp"), self.tr("Apply failed:\n{0}").format(e))
             return
         if cid == "fx":
             try:
@@ -8060,7 +8300,7 @@ class AstroSuiteProMainWindow(
                     pass
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "FX", f"Apply failed:\n{e}")
+                    QMessageBox.warning(self, "FX", self.tr("Apply failed:\n{0}").format(e))
                 except Exception:
                     pass
             return
@@ -8076,7 +8316,7 @@ class AstroSuiteProMainWindow(
                 self._log(f"Applied GHS preset to '{target_sw.windowTitle()}'")
             except Exception as e:
                 
-                QMessageBox.warning(self, "GHS", f"Apply failed:\n{e}")
+                QMessageBox.warning(self, "GHS", self.tr("Apply failed:\n{0}").format(e))
             return
         if cid == "crop":
             try:
@@ -8084,7 +8324,7 @@ class AstroSuiteProMainWindow(
                 apply_crop_via_preset(self, doc, preset or {})
                 self._log(f"Applied Crop preset to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Crop", f"Apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Crop"), self.tr("Apply failed:\n{0}").format(e))
             return
 
         if cid == "pedestal":
@@ -8104,7 +8344,7 @@ class AstroSuiteProMainWindow(
                     pass
             except Exception as e:
                 try:
-                    QMessageBox.warning(self, "Remove Pedestal", f"Apply failed:\n{e}")
+                    QMessageBox.warning(self, self.tr("Remove Pedestal"), self.tr("Apply failed:\n{0}").format(e))
                 except Exception:
                     pass
             return
@@ -8115,7 +8355,7 @@ class AstroSuiteProMainWindow(
                 apply_abe_via_preset(self, doc, preset or {})
                 self._log(f"Applied ABE preset to '{target_sw.windowTitle()}' (no exclusions)")
             except Exception as e:
-                QMessageBox.warning(self, "ABE", f"Apply failed:\n{e}")
+                QMessageBox.warning(self, "ABE", self.tr("Apply failed:\n{0}").format(e))
             return
 
         if cid == "srgc":
@@ -8139,7 +8379,7 @@ class AstroSuiteProMainWindow(
             from setiastro.saspro.graxpert_preset import run_graxpert_via_preset
 
             if doc is None or getattr(doc, "image", None) is None:
-                QMessageBox.warning(self, "GraXpert", "Target document has no image.")
+                QMessageBox.warning(self, "GraXpert", self.tr("Target document has no image."))
                 return
 
             p = preset or {}
@@ -8178,14 +8418,14 @@ class AstroSuiteProMainWindow(
             try:
                 self._apply_convo_preset_to_doc(doc, preset or {})
             except Exception as e:
-                QMessageBox.warning(self, "Convo/Deconvo", f"Apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Convo/Deconvo"), self.tr("Apply failed:\n{0}").format(e))
             return
 
         if cid == "remove_stars":
             from setiastro.saspro.remove_stars_preset import run_remove_stars_via_preset
 
             if doc is None or getattr(doc, "image", None) is None:
-                QMessageBox.warning(self, "Remove Stars", "Target document has no image.")
+                QMessageBox.warning(self, self.tr("Remove Stars"), self.tr("Target document has no image."))
                 return
 
             # Run headless on this specific document (ROI or full frame)
@@ -8266,7 +8506,7 @@ class AstroSuiteProMainWindow(
                 apply_linear_fit_via_preset(self, self.doc_manager, doc, preset or {})
                 self._log("Applied Linear Fit")
             except Exception as e:
-                QMessageBox.warning(self, "Linear Fit", f"Apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Linear Fit"), self.tr("Apply failed:\n{0}").format(e))
             return
 
         if cid == "remove_green":
@@ -8312,7 +8552,7 @@ class AstroSuiteProMainWindow(
                     pass
 
             except Exception as e:
-                QMessageBox.warning(self, "Remove Green", str(e))
+                QMessageBox.warning(self, self.tr("Remove Green"), str(e))
             return
 
 
@@ -8327,7 +8567,7 @@ class AstroSuiteProMainWindow(
                 self._log(f"Ran Star Alignment (ref={rm}:{rn}, overwrite={'yes' if rp.get('overwrite', False) else 'no'})")
             except Exception as e:
                 
-                QMessageBox.warning(self, "Star Alignment", f"Apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Star Alignment"), self.tr("Apply failed:\n{0}").format(e))
             return
 
         if cid == "rgb_align":
@@ -8342,7 +8582,7 @@ class AstroSuiteProMainWindow(
                 doc = self._active_doc()
 
             if not doc or getattr(doc, "image", None) is None:
-                QMessageBox.information(self, "RGB Align", "No image in the dropped/active view.")
+                QMessageBox.information(self, self.tr("RGB Align"), self.tr("No image in the dropped/active view."))
                 return
 
             # 2) if we were called WITH a preset -> headless
@@ -8355,7 +8595,7 @@ class AstroSuiteProMainWindow(
                     
                     run_rgb_align_headless(self, doc, preset)
                 except Exception as e:
-                    QMessageBox.critical(self, "RGB Align", f"Headless failed:\n{e}")
+                    QMessageBox.critical(self, self.tr("RGB Align"), self.tr("Headless failed:\n{0}").format(e))
                 return
 
             # 3) otherwise -> open the dialog like before
@@ -8368,7 +8608,7 @@ class AstroSuiteProMainWindow(
                     pass
                 dlg.show()
             except Exception as e:
-                QMessageBox.critical(self, "RGB Align", f"Open failed:\n{e}")
+                QMessageBox.critical(self, self.tr("RGB Align"), self.tr("Open failed:\n{0}").format(e))
             return
 
 
@@ -8377,7 +8617,7 @@ class AstroSuiteProMainWindow(
                 self._apply_background_neutral_preset_to_doc(doc, preset)
                 self._log(f"Background Neutralization applied to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Background Neutralization", str(e))
+                QMessageBox.warning(self, self.tr("Background Neutralization"), str(e))
             return
 
         if cid == "white_balance":
@@ -8385,11 +8625,7 @@ class AstroSuiteProMainWindow(
                 # Normalize preset -> dict and supply sensible defaults
                 preset_dict = preset if isinstance(preset, dict) else {}
                 if not preset_dict:
-                    preset_dict = {
-                        "mode": "star",
-                        "threshold": 50.0,
-                        "reuse_cached_sources": True,
-                    }
+                    preset_dict = {"mode": "star", "threshold": 50.0}
 
                 # Apply to the *current* doc (ROI or full), just like before
                 self._apply_white_balance_preset_to_doc(doc, preset_dict)
@@ -8416,12 +8652,10 @@ class AstroSuiteProMainWindow(
                             "[Replay] Recorded White Balance preset from command drop (mode=auto)"
                         )
                     else:
-                        thr = float(preset_dict.get("threshold", 50.0))
-                        reuse = bool(preset_dict.get("reuse_cached_sources", True))
+                        from setiastro.saspro.whitebalance import star_preset_summary
                         self._log(
                             f"[Replay] Recorded White Balance preset from command drop "
-                            f"(mode=star, threshold={thr:.1f}, "
-                            f"reuse={'yes' if reuse else 'no'})"
+                            f"(mode=star, {star_preset_summary(preset_dict)})"
                         )
                 except Exception:
                     # Recording/logging must never break the command
@@ -8431,7 +8665,7 @@ class AstroSuiteProMainWindow(
                 self._log(f"White Balance applied to '{target_sw.windowTitle()}'")
 
             except Exception as e:
-                QMessageBox.warning(self, "White Balance", str(e))
+                QMessageBox.warning(self, self.tr("White Balance"), str(e))
             return
 
 
@@ -8466,7 +8700,7 @@ class AstroSuiteProMainWindow(
                 self._log(f"Ran WaveScale Dark Enhancer (n_scales={ns}, boost={bf:.2f}, mask_gamma={mg:.2f}, iters={it})")
             except Exception as e:
                 
-                QMessageBox.warning(self, "WaveScale Dark Enhancer", f"Apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("WaveScale Dark Enhancer"), self.tr("Apply failed:\n{0}").format(e))
             return
         if cid == "texture_clarity":
             from setiastro.saspro.texture_clarity import texture_clarity_headless
@@ -8488,7 +8722,7 @@ class AstroSuiteProMainWindow(
                 self._extract_luminance(doc=doc)
                 self._log(f"Extract Luminance -> new doc from '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Extract Luminance", str(e))
+                QMessageBox.warning(self, self.tr("Extract Luminance"), str(e))
             return
 
         if cid == "recombine_luminance":
@@ -8525,7 +8759,7 @@ class AstroSuiteProMainWindow(
                     pass
 
             except Exception as e:
-                QMessageBox.warning(self, "Preset apply failed", str(e))
+                QMessageBox.warning(self, self.tr("Preset apply failed"), str(e))
             return
 
         if cid == "wavescale_hdr":
@@ -8564,7 +8798,7 @@ class AstroSuiteProMainWindow(
 
                 self._log(f"WaveScale HDR applied to '{target_sw.windowTitle()}' (n_scales={n_scales}, comp={compression_factor}, gamma={mask_gamma})")
             except Exception as e:
-                QMessageBox.warning(self, "WaveScale HDR", f"Preset apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("WaveScale HDR"), self.tr("Preset apply failed:\n{0}").format(e))
             return
 
         if cid == "wavescale_dark_enhance":
@@ -8595,7 +8829,7 @@ class AstroSuiteProMainWindow(
                     else: doc.image = out
                 self._log(f"WaveScale Dark Enhancer applied to '{target_sw.windowTitle()}' (n_scales={n_scales}, boost={boost_factor}, gamma={mask_gamma}, iter={iterations})")
             except Exception as e:
-                QMessageBox.warning(self, "WaveScale Dark Enhancer", f"Preset apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("WaveScale Dark Enhancer"), self.tr("Preset apply failed:\n{0}").format(e))
             return
 
         if cid == "clahe":
@@ -8616,7 +8850,7 @@ class AstroSuiteProMainWindow(
 
                 self._log(f"Morphology applied to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Morphology", str(e))
+                QMessageBox.warning(self, self.tr("Morphology"), str(e))
             return
 
         if cid == "pixel_math":
@@ -8641,7 +8875,7 @@ class AstroSuiteProMainWindow(
 
                 self._log(f"Pixel Math applied to '{target_sw.windowTitle()}' -> {desc}")
             except Exception as e:
-                QMessageBox.warning(self, "Pixel Math", f"Preset apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Pixel Math"), self.tr("Preset apply failed:\n{0}").format(e))
             return
 
 
@@ -8652,9 +8886,9 @@ class AstroSuiteProMainWindow(
                 if hasattr(doc, "set_image"): doc.set_image(out, step_name="Signature / Insert")
                 else: doc.image = out
                 fp = preset.get("file_path", "<file>"); pos = preset.get("position", "bottom_right")
-                self._log(f"Signature preset applied to '{target_sw.windowTitle()}' (file={fp}, pos={pos}, scale={preset.get('scale',100)}%, rot={preset.get('rotation',0)}Â deg, op={preset.get('opacity',100)}%)")
+                self._log(f"Signature preset applied to '{target_sw.windowTitle()}' (file={fp}, pos={pos}, scale={preset.get('scale',100)}%, rot={preset.get('rotation',0)}°, op={preset.get('opacity',100)}%)")
             except Exception as e:
-                QMessageBox.warning(self, "Signature / Insert", f"Preset apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Signature / Insert"), self.tr("Preset apply failed:\n{0}").format(e))
             return
 
         if cid == "halo_b_gon":
@@ -8674,7 +8908,7 @@ class AstroSuiteProMainWindow(
                     f"(level={lvl}, linear={lin})"
                 )
             except Exception as e:
-                QMessageBox.warning(self, "Halo-B-Gon", f"Preset apply failed:\n{e}")
+                QMessageBox.warning(self, "Halo-B-Gon", self.tr("Preset apply failed:\n{0}").format(e))
             return
 
 
@@ -8684,7 +8918,7 @@ class AstroSuiteProMainWindow(
                 _call_any(["_apply_geom_invert_to_doc"], doc)
                 self._log(f"Inverted '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Invert", str(e))
+                QMessageBox.warning(self, self.tr("Invert"), str(e))
             return
 
         if cid == "geom_flip_horizontal":
@@ -8694,7 +8928,7 @@ class AstroSuiteProMainWindow(
                     raise RuntimeError("No flip-horizontal apply method found")
                 self._log(f"Flip Horizontal applied to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Flip Horizontal", str(e))
+                QMessageBox.warning(self, self.tr("Flip Horizontal"), str(e))
             return
 
         if cid == "geom_flip_vertical":
@@ -8704,7 +8938,7 @@ class AstroSuiteProMainWindow(
                     raise RuntimeError("No flip-vertical apply method found")
                 self._log(f"Flip Vertical applied to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Flip Vertical", str(e))
+                QMessageBox.warning(self, self.tr("Flip Vertical"), str(e))
             return
 
         if cid == "geom_rotate_clockwise":
@@ -8712,9 +8946,9 @@ class AstroSuiteProMainWindow(
                 called = _call_any(["_apply_geom_rot_cw_to_doc", "_apply_geom_rotate_cw_to_doc"], doc)
                 if not called:
                     raise RuntimeError("No rotate-cw apply method found")
-                self._log(f"Rotate 90Â deg CW applied to '{target_sw.windowTitle()}'")
+                self._log(f"Rotate 90° CW applied to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Rotate 90Â deg CW", str(e))
+                QMessageBox.warning(self, self.tr("Rotate 90° CW"), str(e))
             return
 
         if cid == "geom_rotate_counterclockwise":
@@ -8722,9 +8956,9 @@ class AstroSuiteProMainWindow(
                 called = _call_any(["_apply_geom_rot_ccw_to_doc", "_apply_geom_rotate_ccw_to_doc"], doc)
                 if not called:
                     raise RuntimeError("No rotate-ccw apply method found")
-                self._log(f"Rotate 90Â deg CCW applied to '{target_sw.windowTitle()}'")
+                self._log(f"Rotate 90° CCW applied to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Rotate 90Â deg CCW", str(e))
+                QMessageBox.warning(self, self.tr("Rotate 90° CCW"), str(e))
             return
 
         if cid == "geom_rotate_180":
@@ -8732,9 +8966,9 @@ class AstroSuiteProMainWindow(
                 called = _call_any(["_apply_geom_rot_180_to_doc"], doc)
                 if not called:
                     raise RuntimeError("No rotate-180 apply method found")
-                self._log(f"Rotate 180Â deg applied to '{target_sw.windowTitle()}'")
+                self._log(f"Rotate 180° applied to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Rotate 180Â deg", str(e))
+                QMessageBox.warning(self, self.tr("Rotate 180°"), str(e))
             return
 
         if cid == "geom_rotate_any":
@@ -8745,7 +8979,7 @@ class AstroSuiteProMainWindow(
                     raise RuntimeError("No rotate-any apply method found")
                 self._log(f"Rotate ({angle:g}°) applied to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Rotate...", str(e))
+                QMessageBox.warning(self, self.tr("Rotate..."), str(e))
             return
 
         if cid == "geom_rescale":
@@ -8759,9 +8993,9 @@ class AstroSuiteProMainWindow(
                 if not called:
                     # last resort: try signature (doc, preset)
                     _call_any(["_apply_rescale_preset_to_doc"], doc, {"factor": factor})
-                self._log(f"Rescale Ã--{factor:g} applied to '{target_sw.windowTitle()}'")
+                self._log(f"Rescale ×{factor:g} applied to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Rescale", str(e))
+                QMessageBox.warning(self, self.tr("Rescale"), str(e))
             return
         if cid == "geom_resize_canvas":
             try:
@@ -8808,7 +9042,7 @@ class AstroSuiteProMainWindow(
                     f"({width}x{height}, anchor={anchor})"
                 )
             except Exception as e:
-                QMessageBox.warning(self, "Resize Canvas", str(e))
+                QMessageBox.warning(self, self.tr("Resize Canvas"), str(e))
             return        
         if cid == "debayer":
             try:
@@ -8845,7 +9079,7 @@ class AstroSuiteProMainWindow(
                     doc = _resolve_doc(sw)
 
                 if doc is None or getattr(doc, "image", None) is None:
-                    QMessageBox.information(self, "Debayer", "No active image.")
+                    QMessageBox.information(self, self.tr("Debayer"), self.tr("No active image."))
                     return
 
                 dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
@@ -8862,7 +9096,7 @@ class AstroSuiteProMainWindow(
 
                 self._log(f"Applied Debayer ({pattern_used}) to '{title}'")
             except Exception as e:
-                QMessageBox.warning(self, "Debayer failed", str(e))
+                QMessageBox.warning(self, self.tr("Debayer failed"), str(e))
             return   
         if cid == "hdr_composition":
             if target_sw is None:
@@ -8872,14 +9106,14 @@ class AstroSuiteProMainWindow(
             view = target_sw.widget()
             doc = getattr(view, "document", None)
             if doc is None or getattr(doc, "image", None) is None:
-                QMessageBox.information(self, "HDR Composition", "Target view has no image.")
+                QMessageBox.information(self, self.tr("HDR Composition"), self.tr("Target view has no image."))
                 return
             try:
                 self._apply_hdr_composition_from_preset(
                     dict(preset or {}), target_doc=doc,
                 )
             except Exception as e:
-                QMessageBox.warning(self, "HDR Composition", f"Preset apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("HDR Composition"), self.tr("Preset apply failed:\n{0}").format(e))
             return
         if cid == "image_combine":
             if target_sw is None:
@@ -8890,14 +9124,14 @@ class AstroSuiteProMainWindow(
             view = target_sw.widget()
             docA = getattr(view, "document", None)
             if docA is None or getattr(docA, "image", None) is None:
-                QMessageBox.information(self, "Image Combine", "Target view has no image."); return
+                QMessageBox.information(self, self.tr("Image Combine"), self.tr("Target view has no image.")); return
             try:
                 p = dict(preset or {})
                 p.setdefault("output", p.get("output", "replace"))   # default drop replaces A
                 self._apply_image_combine_from_preset(p, target_doc=docA)
                 return
             except Exception as e:
-                QMessageBox.warning(self, "Image Combine", f"Preset apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Image Combine"), self.tr("Preset apply failed:\n{0}").format(e))
                 return
         if cid == "psf_viewer":
             # Open viewer; optional preset keys: threshold/mode/log/zoom
@@ -8905,7 +9139,7 @@ class AstroSuiteProMainWindow(
                 self._open_psf_viewer(preset)
                 self._log("Opened PSF Viewer" + (f" with preset {preset}" if preset else ""))
             except Exception as e:
-                QMessageBox.warning(self, "PSF Viewer", f"Open failed:\n{e}")
+                QMessageBox.warning(self, self.tr("PSF Viewer"), self.tr("Open failed:\n{0}").format(e))
             return            
         if cid == "plate_solve":
             doc = None
@@ -8920,17 +9154,19 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     doc = None
             if not doc or getattr(doc, "image", None) is None:
-                QMessageBox.information(self, "Plate Solver", "No active image view.")
+                QMessageBox.information(self, self.tr("Plate Solver"), self.tr("No active image view."))
                 return
 
             solver = str((preset or {}).get("solver") or (preset or {}).get("solver_pref") or "").lower()
             pref = solver or (self.settings.value("plate_solver/preference", "both", type=str) or "both").lower()
-            if pref not in ("gaia_only", "astrometry_only"):
+            # Only block when ASTAP is the sole solver; the default chain
+            # skips ASTAP when it is not configured and still runs Gaia.
+            if pref == "astap_only":
                 astap_path = self.settings.value("paths/astap", "", type=str)
                 if not astap_path or not os.path.exists(astap_path):
                     QMessageBox.information(
-                        self, "Plate Solver",
-                        "ASTAP executable not set. Go to Preferences -> ASTAP executable."
+                        self, self.tr("Plate Solver"),
+                        self.tr("ASTAP executable not set. Go to Preferences -> ASTAP executable.")
                     )
                     return
 
@@ -8964,7 +9200,7 @@ class AstroSuiteProMainWindow(
                 else:
                     print(msg)
             except Exception as e:
-                QMessageBox.warning(self, "Plate Solver", f"Plate solve failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Plate Solver"), self.tr("Plate solve failed:\n{0}").format(e))
             self._hdr_refresh_timer.start(0)
             return
         if cid == "star_align":
@@ -8974,13 +9210,13 @@ class AstroSuiteProMainWindow(
             try:
                 self._open_stellar_alignment()
             except Exception as e:
-                QMessageBox.critical(self, "Stellar Alignment", f"Unhandled error:\n{e}")
+                QMessageBox.critical(self, self.tr("Stellar Alignment"), self.tr("Unhandled error:\n{0}").format(e))
             return
         if cid == "star_register":
             try:
                 self._open_stellar_registration()
             except Exception as e:
-                QMessageBox.critical(self, "Stellar Register", f"Unhandled error:\n{e}")
+                QMessageBox.critical(self, self.tr("Stellar Register"), self.tr("Unhandled error:\n{0}").format(e))
             return
         if cid == "image_peeker":
             doc = None
@@ -8990,7 +9226,7 @@ class AstroSuiteProMainWindow(
             if doc is None and hasattr(self, "_active_doc"):
                 doc = self._active_doc()
             if not doc or getattr(doc, "image", None) is None:
-                QMessageBox.information(self, "Image Peeker", "No image in the dropped/active view.")
+                QMessageBox.information(self, self.tr("Image Peeker"), self.tr("No image in the dropped/active view."))
                 return
             self._open_image_peeker_for_doc(doc, title_hint=getattr(target_sw, "windowTitle", lambda:"view")())
             return
@@ -9008,14 +9244,14 @@ class AstroSuiteProMainWindow(
             if doc is None and hasattr(self, "docman"):
                 doc = self.docman.get_active_document()
             if not doc or getattr(doc, "image", None) is None:
-                QMessageBox.information(self, "Diffraction Spikes", "No image in the dropped/active view.")
+                QMessageBox.information(self, self.tr("Diffraction Spikes"), self.tr("No image in the dropped/active view."))
                 return
             self._open_star_spikes(doc=doc, preset=payload.get("preset") or {},
                                 title_hint=getattr(target_sw, "windowTitle", lambda:"view")())
             return
         if cid == "multiscale_decomp":
             if doc is None or getattr(doc, "image", None) is None:
-                QMessageBox.information(self, "Multiscale Decomposition", "Target view has no image.")
+                QMessageBox.information(self, self.tr("Multiscale Decomposition"), self.tr("Target view has no image."))
                 return
             try:
                 from setiastro.saspro.multiscale_decomp import apply_multiscale_decomp_headless
@@ -9029,7 +9265,7 @@ class AstroSuiteProMainWindow(
                     pass
                 self._log(f"Applied Multiscale Decomposition to '{target_sw.windowTitle()}'")
             except Exception as e:
-                QMessageBox.warning(self, "Multiscale Decomposition", f"Apply failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Multiscale Decomposition"), self.tr("Apply failed:\n{0}").format(e))
             return
         # ---------- Unknown cid with a doc: try a generic _apply_{cid}_to_doc  ----------
         generic = getattr(self, f"_apply_{cid}_to_doc", None)
@@ -9406,19 +9642,19 @@ class AstroSuiteProMainWindow(
         """
         dm = getattr(self, "docman", None) or getattr(self, "doc_manager", None)
         if dm is None:
-            QMessageBox.information(self, "Copy Astrometry", "No document manager.")
+            QMessageBox.information(self, self.tr("Copy Astrometry"), self.tr("No document manager."))
             return
 
         # 1) Resolve source (prefer base doc over preview/proxy)
         src_doc = self._resolve_doc_from_payload(payload, prefer_base=True)
         if src_doc is None:
-            QMessageBox.information(self, "Copy Astrometry", "Source view not found.")
+            QMessageBox.information(self, self.tr("Copy Astrometry"), self.tr("Source view not found."))
             return
 
         # 2) Resolve target (map preview tab -> ROI doc -> base doc as needed)
         tgt_doc = self._target_doc_from_subwindow(target_subwindow)
         if tgt_doc is None:
-            QMessageBox.information(self, "Copy Astrometry", "No target image.")
+            QMessageBox.information(self, self.tr("Copy Astrometry"), self.tr("No target image."))
             return
 
         # 3) Extract WCS dict from source
@@ -9431,7 +9667,7 @@ class AstroSuiteProMainWindow(
             wcs = {}
 
         if not wcs:
-            QMessageBox.information(self, "Copy Astrometry", "Source has no WCS/SIP solution.")
+            QMessageBox.information(self, self.tr("Copy Astrometry"), self.tr("Source has no WCS/SIP solution."))
             return
 
         # 4) Apply to target
@@ -9443,7 +9679,7 @@ class AstroSuiteProMainWindow(
                 ok = False
 
         if not ok:
-            QMessageBox.warning(self, "Copy Astrometry", "Failed to apply astrometric solution.")
+            QMessageBox.warning(self, self.tr("Copy Astrometry"), self.tr("Failed to apply astrometric solution."))
             return
 
         # 5) Refresh UI bits immediately
@@ -9456,10 +9692,10 @@ class AstroSuiteProMainWindow(
             pass
 
         try:
-            sname = getattr(src_doc, "display_name", lambda: None)() or "Source"
-            tname = getattr(tgt_doc, "display_name", lambda: None)() or "Target"
-            QMessageBox.information(self, "Copy Astrometry",
-                                    f"Copied solution from '{sname}' to '{tname}'.")
+            sname = getattr(src_doc, "display_name", lambda: None)() or self.tr("Source")
+            tname = getattr(tgt_doc, "display_name", lambda: None)() or self.tr("Target")
+            QMessageBox.information(self, self.tr("Copy Astrometry"),
+                                    self.tr("Copied solution from '{0}' to '{1}'.").format(sname, tname))
         except Exception:
             pass
 
@@ -9476,7 +9712,7 @@ class AstroSuiteProMainWindow(
         sw = self.mdi.activeSubWindow()
         if not sw:
             
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
 
         doc = sw.widget().document
@@ -9530,11 +9766,11 @@ class AstroSuiteProMainWindow(
         """Background drop -> open Star Stretch dialog with controls preloaded."""
         sw = self.mdi.activeSubWindow()
         if not sw:
-            QMessageBox.information(self, "Star Stretch", "No active image window.")
+            QMessageBox.information(self, self.tr("Star Stretch"), self.tr("No active image window."))
             return
         doc = sw.widget().document
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Star Stretch", "Active document has no image.")
+            QMessageBox.information(self, self.tr("Star Stretch"), self.tr("Active document has no image."))
             return
 
         dlg = StarStretchDialog(self, doc)
@@ -9679,7 +9915,7 @@ class AstroSuiteProMainWindow(
         lay.setSpacing(6)
 
         self._cmd_edit = QLineEdit(holder)
-        self._cmd_edit.setPlaceholderText("Search commands...  (Ctrl+Shift+P)")
+        self._cmd_edit.setPlaceholderText(self.tr("Search commands...  (Ctrl+Shift+P)"))
         self._cmd_edit.setClearButtonEnabled(True)
         self._cmd_edit.setMinimumWidth(240)
         self._cmd_edit.setMaximumWidth(700)
@@ -9722,7 +9958,7 @@ class AstroSuiteProMainWindow(
 
         # Shortcut to focus it
         add_shortcut(self, "Ctrl+Shift+P", self._focus_command_search,
-                     label="Command Search (the search bar, or a centred palette when it is hidden)",
+                     label=QT_TRANSLATE_NOOP("CheatSheet", "Command Search (the search bar, or a centred palette when it is hidden)"),
                      context="Global")
 
 
@@ -9830,14 +10066,14 @@ class AstroSuiteProMainWindow(
         self._doc = doc
         if doc is None:
             self._clear()                      # <- must fully clear visible content
-            self.setWindowTitle("Header (No image)")
+            self.setWindowTitle(self.tr("Header (No image)"))
             return
         self._populate_from(doc)
-        self.setWindowTitle("Header")
+        self.setWindowTitle(self.tr("Header"))
 
     # --- Helpers ---
     def _remember_active_pair(self, new_sw):
-        """Remember last and current active subwindow so we can â€˜bounce'."""
+        """Remember last and current active subwindow so we can 'bounce'."""
         if new_sw is None:
             return
         if new_sw is self._current_active_sw:
@@ -10126,8 +10362,8 @@ class AstroSuiteProMainWindow(
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
-            QMessageBox.critical(self, "View Import Error",
-                                f"Failed to import view classes from setiastro.saspro.subwindow:\n{e}\n\n{tb}")
+            QMessageBox.critical(self, self.tr("View Import Error"),
+                                self.tr("Failed to import view classes from setiastro.saspro.subwindow:\n{0}\n\n{1}").format(e, tb))
             from PyQt6.QtWidgets import QLabel
             w = QLabel(doc.display_name()); setattr(w, "document", doc)
             wrapper = self.mdi.addSubWindow(w)
@@ -10339,6 +10575,17 @@ class AstroSuiteProMainWindow(
                 if self.mdi.activeSubWindow() is not sw:
                     self.mdi.setActiveSubWindow(sw)
                 self._zoom_active_fit()
+            except Exception:
+                pass
+
+        # -- 7b) New data the user opened (a file, a finished stack) that is
+        # still linear opens display-stretched instead of near-black.
+        if not is_table:
+            self._follow_linear_if_new(view, dm)
+        if hasattr(view, "autostretchChanged"):
+            try:
+                view.autostretchChanged.connect(
+                    lambda on, v=view: self._on_view_autostretch_changed(v, on))
             except Exception:
                 pass
 
@@ -11323,9 +11570,22 @@ class AstroSuiteProMainWindow(
         # If user has disabled exit confirmation (optional setting, but default is confirm)
         confirm = True 
         
+        restarting = getattr(self, "_relaunch_on_exit", False)
+        mgr = getattr(self, "_setup_manager", None)
+        installing = list(mgr.jobs) if mgr is not None else []
+        if restarting and not docs and not installing:
+            confirm = False
+
         if confirm:
-            msg = self.tr("Exit Seti Astro Suite Pro?")
+            msg = (self.tr("Restart Seti Astro Suite Pro?") if restarting
+                   else self.tr("Exit Seti Astro Suite Pro?"))
             detail = []
+            if "accel" in installing:
+                detail.append(self.tr(
+                    "Hardware acceleration is still installing. Closing now can leave it "
+                    "half installed."))
+            if "models" in installing:
+                detail.append(self.tr("The AI models are still downloading. Closing stops the download."))
             if docs:
                 detail.append(self.tr("Open images:") + f" {len(docs)}")
             if edited:
@@ -11350,6 +11610,7 @@ class AstroSuiteProMainWindow(
             if btn != QMessageBox.StandardButton.Yes:
                 e.ignore()
                 self._shutting_down = False
+                self._relaunch_on_exit = False
                 return
 
         # --- User confirmed (or no confirm needed) ---
@@ -11401,6 +11662,12 @@ class AstroSuiteProMainWindow(
         self._unhook_stdout_stderr()
         self._force_close_all = True
         self._shutting_down = True
+        dlg = getattr(self, "_setup_center", None)
+        if dlg is not None:
+            try:
+                dlg.close()           # seen, so it doesn't open by itself again
+            except RuntimeError:
+                pass
         # User has confirmed exit. Un-shelve any minimized views before we
         # persist UI state and before Qt tears the shelf down.
         shelf = getattr(self, "window_shelf", None)
@@ -11427,7 +11694,20 @@ class AstroSuiteProMainWindow(
             pass
 
         self._clear_view_bundles_for_next_launch()
+        panel = getattr(self, "_start_panel", None)
+        if panel is not None:
+            panel.stop()
         super().closeEvent(e)
+        if getattr(self, "_relaunch_on_exit", False):
+            self._relaunch_on_exit = False
+            self._relaunch()
+        mgr = getattr(self, "_setup_manager", None)
+        if mgr is not None and not mgr.stop_for_exit():
+            # Everything is saved. The acceleration install can't be stopped
+            # part way, and Qt aborts if its thread is destroyed running.
+            import logging
+            logging.shutdown()
+            os._exit(0)
 
 # CheatSheet dialog and helper functions imported from setiastro.saspro.cheat_sheet
 from setiastro.saspro.cheat_sheet import (
@@ -11438,6 +11718,8 @@ from setiastro.saspro.cheat_sheet import (
 from setiastro.saspro.shortcut_registry import add_shortcut, declare_gesture
 
 # mdi.backgroundDoubleClicked -> open_files (wired in __init__).
-declare_gesture("Double-click empty canvas", "Main window", "Open image files")
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Double-click empty canvas"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Main window"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Open image files"))
 
 # _ProjectSaveWorker and install_crash_handlers imported from setiastro.saspro.widgets.common_utilities

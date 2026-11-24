@@ -59,23 +59,23 @@ class _UploadWorker(QThread):
 
     def run(self):
         try:
-            self.progress.emit("Preparing thumbnail…")
+            self.progress.emit(self.tr("Preparing thumbnail…"))
             jpeg_bytes = self._make_thumbnail()
 
-            self.progress.emit("Extracting WCS footprint…")
+            self.progress.emit(self.tr("Extracting WCS footprint…"))
             meta = self._extract_wcs_meta()
 
-            self.progress.emit("Uploading to atlas…")
+            self.progress.emit(self.tr("Uploading to atlas…"))
             url = self._upload(jpeg_bytes, meta)
 
             self.finished.emit(url)
 
         except requests.exceptions.Timeout:
             self.error.emit(
-                "Upload timed out. The server may be waking up — please try again in a moment."
+                self.tr("Upload timed out. The server may be waking up — please try again in a moment.")
             )
         except requests.exceptions.ConnectionError:
-            self.error.emit("Could not reach the atlas server. Check your internet connection.")
+            self.error.emit(self.tr("Could not reach the atlas server. Check your internet connection."))
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -351,7 +351,7 @@ class AtlasDialog(QDialog):
         filter_row.addSpacing(16)
         filter_row.addWidget(QLabel(self.tr("Object:")))
         self._object_edit = QLineEdit()
-        self._object_edit.setPlaceholderText("e.g. M33  (optional)")
+        self._object_edit.setPlaceholderText(self.tr("e.g. M33  (optional)"))
         filter_row.addWidget(self._object_edit, 1)
         layout.addLayout(filter_row)
 
@@ -362,7 +362,7 @@ class AtlasDialog(QDialog):
         desc_row.addWidget(desc_label)
         self._desc_edit = QPlainTextEdit()
         self._desc_edit.setPlaceholderText(
-            "Optional — imaging notes, equipment, location, etc. (max 300 chars)"
+            self.tr("Optional — imaging notes, equipment, location, etc. (max 300 chars)")
         )
         self._desc_edit.setFixedHeight(60)
         self._desc_edit.setMaximumWidth(9999)
@@ -381,7 +381,7 @@ class AtlasDialog(QDialog):
         link_row.addWidget(link_label)
         self._link_edit = QLineEdit()
         self._link_edit.setPlaceholderText(
-            "Optional — Astrobin, website, YouTube, etc. (https://...)"
+            self.tr("Optional — Astrobin, website, YouTube, etc. (https://...)")
         )
         link_row.addWidget(self._link_edit, 1)
         layout.addLayout(link_row)
@@ -496,10 +496,10 @@ class AtlasDialog(QDialog):
 
         if image_data is None or not has_wcs:
             self._share_btn.setEnabled(False)
-            reason = ("Open an image in SASpro to submit to the atlas."
+            reason = (self.tr("Open an image in SASpro to submit to the atlas.")
                     if (self._doc is None or image_data is None)
-                    else "Plate solve this image first to enable submission.")
-            self._no_wcs_label.setText(self.tr(reason))
+                    else self.tr("Plate solve this image first to enable submission."))
+            self._no_wcs_label.setText(reason)
             self._no_wcs_label.setVisible(True)
         else:
             self._share_btn.setEnabled(True)
@@ -597,5 +597,5 @@ class AtlasDialog(QDialog):
         QMessageBox.critical(
             self,
             self.tr("Upload Failed"),
-            self.tr(f"Could not share image:\n\n{msg}")
+            self.tr("Could not share image:\n\n{0}").format(msg)
         )

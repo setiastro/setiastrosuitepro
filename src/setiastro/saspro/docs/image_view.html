@@ -150,6 +150,7 @@ Everything in the view is <b>already there</b> &mdash; no mode switch, no prefer
 
 <h2 id="s8">8. Autostretch</h2>
 <p>Toggle autostretch for the view: <b>Ctrl+Space</b> or <b>Alt+Shift+A</b>. Autostretch is a display-only non-destructive transformation &mdash; the stored pixel data is untouched; only what's drawn changes. Turn it off and you're back to looking at the raw linear data.</p>
+<p><b>Linear images open brightened.</b> A file you open, or a stack Quick Stack or the Stacking Suite has just finished, that is still linear (the median of the image is near black) opens with autostretch on, so it isn't a near-black window. The view's top bar shows a <b>Linear &middot; Display-Stretch Applied</b> chip while this is happening. Autostretch then follows the image: it turns itself off when a stretch makes the image non-linear, and back on if that stretch is undone. Clicking the chip, or turning autostretch on or off yourself, ends the following for that view. Images made by tools (extracted channels, stars-only, masks) and documents restored from a project are left alone. Turn this off with <i>Settings &rarr; Display &rarr; Brighten the view of linear images when they open</i>.</p>
 <p>Two profiles, switchable from the main-window toolbar or Preferences:</p>
 <ul>
 <li><b>Normal</b> &mdash; target median 0.3, sigma 5. Softer stretch; good for background-dominated DSO data where you want to retain some darkness.</li>

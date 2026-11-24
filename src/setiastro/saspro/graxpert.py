@@ -9,7 +9,7 @@ import glob
 import subprocess
 import numpy as np
 
-from PyQt6.QtCore import QThread, pyqtSignal, Qt
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QCoreApplication
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QFileDialog,
     QMessageBox, QInputDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox,
@@ -24,6 +24,10 @@ try:
     from setiastro.saspro.legacy.image_manager import load_image as _legacy_load_image
 except Exception:
     _legacy_load_image = None
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("GraXpert", text)
 
 
 class GraXpertOperationDialog(QDialog):
@@ -42,8 +46,8 @@ class GraXpertOperationDialog(QDialog):
         root = QVBoxLayout(self)
 
         # radios
-        self.rb_bg  = QRadioButton("Remove gradient")
-        self.rb_dn  = QRadioButton("Denoise")
+        self.rb_bg  = QRadioButton(self.tr("Remove gradient"))
+        self.rb_dn  = QRadioButton(self.tr("Denoise"))
         self.rb_bg.setChecked(True)
 
         # param widgets
@@ -54,18 +58,18 @@ class GraXpertOperationDialog(QDialog):
         self.spin.setValue(0.10)   # default for smoothing
 
         # dynamic label
-        self.param_label = QLabel("Smoothing (0–1):")
+        self.param_label = QLabel(self.tr("Smoothing (0–1):"))
 
         # denoise model (optional)
-        self.model_label = QLabel("Denoise model:")
+        self.model_label = QLabel(self.tr("Denoise model:"))
         self.model_combo = QComboBox()
         # Index 0 = auto/latest (empty payload → omit flag)
-        self.model_combo.addItem("Latest (auto)", "")     # omit -ai_version
+        self.model_combo.addItem(self.tr("Latest (auto)"), "")     # omit -ai_version
         for v in ["3.0.2", "3.0.1", "3.0.0", "2.0.0", "1.1.0", "1.0.0"]:
             self.model_combo.addItem(v, v)
 
         # GPU toggle (persists via QSettings if available)
-        self.cb_gpu = QCheckBox("Use GPU acceleration")
+        self.cb_gpu = QCheckBox(self.tr("Use GPU acceleration"))
         use_gpu_default = True
         try:
             settings = getattr(parent, "settings", None)
@@ -87,14 +91,14 @@ class GraXpertOperationDialog(QDialog):
 
         # switch label/defaults and enable/disable model picker
         def _to_bg():
-            self.param_label.setText("Smoothing (0–1):")
+            self.param_label.setText(self.tr("Smoothing (0–1):"))
             # If param was the denoise default, flip back to smoothing default
             self.spin.setValue(0.10 if abs(self.spin.value() - 0.50) < 1e-6 else self.spin.value())
             self.model_label.setEnabled(False)
             self.model_combo.setEnabled(False)
 
         def _to_dn():
-            self.param_label.setText("Strength (0–1):")
+            self.param_label.setText(self.tr("Strength (0–1):"))
             # If param was the smoothing default, flip to denoise default
             self.spin.setValue(0.50 if abs(self.spin.value() - 0.10) < 1e-6 else self.spin.value())
             self.model_label.setEnabled(True)
@@ -256,8 +260,8 @@ def remove_gradient_with_graxpert(main_window, target_doc=None, seed_preset=None
     if doc is None or getattr(doc, "image", None) is None:
         QMessageBox.warning(
             main_window,
-            "No Image",
-            "Please load an image before removing the gradient."
+            _tr("No Image"),
+            _tr("Please load an image before removing the gradient.")
         )
         return
 
@@ -347,7 +351,7 @@ def _graxpert_run_from_dialog(main_window, doc, op_dlg):
     try:
         _write_tiff_float32(doc.image, input_path)
     except Exception as e:
-        QMessageBox.critical(main_window, "GraXpert", f"Failed to write temporary input:\n{e}")
+        QMessageBox.critical(main_window, "GraXpert", _tr("Failed to write temporary input:\n{0}").format(e))
         shutil.rmtree(workdir, ignore_errors=True)
         return
 
@@ -442,18 +446,18 @@ def _resolve_graxpert_exec(main_window) -> str | None:
     if sysname == "Linux":
         return _pick_graxpert_path_and_store(main_window)
 
-    QMessageBox.critical(main_window, "GraXpert", f"Unsupported operating system: {sysname}")
+    QMessageBox.critical(main_window, "GraXpert", _tr("Unsupported operating system: {0}").format(sysname))
     return None
 
 def _pick_graxpert_path_and_store(main_window) -> str | None:
-    path, _ = QFileDialog.getOpenFileName(main_window, "Select GraXpert Executable")
+    path, _ = QFileDialog.getOpenFileName(main_window, _tr("Select GraXpert Executable"))
     if not path:
-        QMessageBox.warning(main_window, "Cancelled", "GraXpert path selection was cancelled.")
+        QMessageBox.warning(main_window, _tr("Cancelled"), _tr("GraXpert path selection was cancelled."))
         return None
     try:
         _ensure_exec_bit(path)
     except Exception as e:
-        QMessageBox.critical(main_window, "GraXpert", f"Failed to set execute permissions:\n{e}")
+        QMessageBox.critical(main_window, "GraXpert", _tr("Failed to set execute permissions:\n{0}").format(e))
         return None
     if hasattr(main_window, "settings"):
         main_window.settings.setValue("paths/graxpert", path)
@@ -576,12 +580,12 @@ def _run_graxpert_command(parent, command: list[str], output_basename: str,
                           meta_extras: dict | None = None,
                           replay_preset: dict | None = None):
     dlg = QDialog(parent)
-    dlg.setWindowTitle("GraXpert Progress")
+    dlg.setWindowTitle(_tr("GraXpert Progress"))
     dlg.setMinimumSize(600, 420)
     lay = QVBoxLayout(dlg)
     log = QTextEdit(readOnly=True)
     lay.addWidget(log)
-    btn_cancel = QPushButton("Cancel")
+    btn_cancel = QPushButton(_tr("Cancel"))
     lay.addWidget(btn_cancel)
 
     thr = _GraXpertThread(command, cwd=working_dir)
@@ -643,14 +647,14 @@ def _on_graxpert_finished(parent,
         pass
 
     if return_code != 0:
-        QMessageBox.critical(parent, "GraXpert", "GraXpert process failed.")
+        QMessageBox.critical(parent, "GraXpert", _tr("GraXpert process failed."))
         shutil.rmtree(working_dir, ignore_errors=True)
         return
 
     # 1) find output file in the temp working dir
     output_file = _pick_exact_output(working_dir, output_basename)
     if not output_file:
-        QMessageBox.critical(parent, "GraXpert", "GraXpert output file not found.")
+        QMessageBox.critical(parent, "GraXpert", _tr("GraXpert output file not found."))
         shutil.rmtree(working_dir, ignore_errors=True)
         return
 
@@ -698,11 +702,11 @@ def _on_graxpert_finished(parent,
         QMessageBox.critical(
             parent,
             "GraXpert",
-            "GraXpert finished, but SASpro couldn't read its output image:\n"
-            f"{output_file}\n\n"
+            _tr("GraXpert finished, but SASpro couldn't read its output image:\n"
+            "{0}\n\n"
             "The file may be in a format the loader doesn't recognize. "
             "Make sure 'tifffile' and 'imageio' are installed, or check the "
-            "GraXpert log above."
+            "GraXpert log above.").format(output_file)
         )
         shutil.rmtree(working_dir, ignore_errors=True)
         return
@@ -769,7 +773,7 @@ def _on_graxpert_finished(parent,
             step_name=step_label,
         )
     except Exception as e:
-        QMessageBox.critical(parent, "GraXpert", f"Failed to apply result:\n{e}")
+        QMessageBox.critical(parent, "GraXpert", _tr("Failed to apply result:\n{0}").format(e))
     finally:
         shutil.rmtree(working_dir, ignore_errors=True)
 

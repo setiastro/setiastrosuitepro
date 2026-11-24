@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, QSettings, QTimer
+from PyQt6.QtCore import Qt, QSettings, QTimer, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -42,6 +42,10 @@ from PyQt6.QtWidgets import (
     QWidget,
     QFrame,
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("SLaPToolkit", text)
 
 # ─────────────────────────────────────────────────────────────
 # SLaP modes
@@ -302,39 +306,39 @@ def slap_canned_workflows():
 
 SLAP_PALETTES = {
     "White Light Solar (warm yellow)": {
-        "description": "Classic warm yellow-orange for white-light solar images.",
+        "description": QT_TRANSLATE_NOOP("SLaPToolkit", "Classic warm yellow-orange for white-light solar images."),
         "r": 1.00, "g": 0.85, "b": 0.55,
     },
     "Hα Solar (deep red)": {
-        "description": "Rich red for hydrogen-alpha solar images.",
+        "description": QT_TRANSLATE_NOOP("SLaPToolkit", "Rich red for hydrogen-alpha solar images."),
         "r": 1.00, "g": 0.25, "b": 0.10,
     },
     "Ca-K Solar (violet)": {
-        "description": "Blue-violet for calcium K-line solar images.",
+        "description": QT_TRANSLATE_NOOP("SLaPToolkit", "Blue-violet for calcium K-line solar images."),
         "r": 0.55, "g": 0.55, "b": 1.00,
     },
     "He I 10830 (teal)": {
-        "description": "Teal-green for helium 10830 Å infrared solar images.",
+        "description": QT_TRANSLATE_NOOP("SLaPToolkit", "Teal-green for helium 10830 Å infrared solar images."),
         "r": 0.30, "g": 0.90, "b": 0.80,
     },
     "Lunar (natural grey)": {
-        "description": "Near-neutral grey with a very slight warm cast — natural lunar look.",
+        "description": QT_TRANSLATE_NOOP("SLaPToolkit", "Near-neutral grey with a very slight warm cast — natural lunar look."),
         "r": 1.00, "g": 0.97, "b": 0.90,
     },
     "Lunar (false colour)": {
-        "description": "False-colour blue-grey to bring out mare / highland contrast.",
+        "description": QT_TRANSLATE_NOOP("SLaPToolkit", "False-colour blue-grey to bring out mare / highland contrast."),
         "r": 0.75, "g": 0.85, "b": 1.00,
     },
     "Planetary (natural)": {
-        "description": "Neutral — no colour shift, rely on the RGB data.",
+        "description": QT_TRANSLATE_NOOP("SLaPToolkit", "Neutral — no colour shift, rely on the RGB data."),
         "r": 1.00, "g": 1.00, "b": 1.00,
     },
     "Jupiter (warm)": {
-        "description": "Slightly warm tone to flatter Jupiter's belt colours.",
+        "description": QT_TRANSLATE_NOOP("SLaPToolkit", "Slightly warm tone to flatter Jupiter's belt colours."),
         "r": 1.00, "g": 0.92, "b": 0.78,
     },
     "Mars (rust)": {
-        "description": "Rust-red palette for Mars.",
+        "description": QT_TRANSLATE_NOOP("SLaPToolkit", "Rust-red palette for Mars."),
         "r": 1.00, "g": 0.60, "b": 0.35,
     },
 }
@@ -345,55 +349,55 @@ SLAP_PALETTES = {
 
 _MODE_TIPS: Dict[str, Dict[str, str]] = {
     "Solar — Surface": {
-        "Deconvolution": "Richardson-Lucy, PSF 1.5–2 px, 20–30 iterations, no regularization.",
-        "Multiscale": "4 layers, Base σ 1.0. Gain layers 1–3 → 1.3–2.0. Layer 4 → 0.8. NR 0.1–0.2 on layer 4.",
-        "LHE / CLAHE": "Kernel 64–128 px. Contrast limit 2.0–3.0. Brings out granulation beautifully.",
-        "WaveScale": "Not typically needed for surface-only. Use for limb brightening correction.",
-        "Colorize": "White Light: warm yellow.  Hα: deep red.  Ca-K: violet.",
-        "Curves": "Gentle inverted-V: lift midtones, keep shadows and bright limb natural.",
+        "Deconvolution": QT_TRANSLATE_NOOP("SLaPToolkit", "Richardson-Lucy, PSF 1.5–2 px, 20–30 iterations, no regularization."),
+        "Multiscale": QT_TRANSLATE_NOOP("SLaPToolkit", "4 layers, Base σ 1.0. Gain layers 1–3 → 1.3–2.0. Layer 4 → 0.8. NR 0.1–0.2 on layer 4."),
+        "LHE / CLAHE": QT_TRANSLATE_NOOP("SLaPToolkit", "Kernel 64–128 px. Contrast limit 2.0–3.0. Brings out granulation beautifully."),
+        "WaveScale": QT_TRANSLATE_NOOP("SLaPToolkit", "Not typically needed for surface-only. Use for limb brightening correction."),
+        "Colorize": QT_TRANSLATE_NOOP("SLaPToolkit", "White Light: warm yellow.  Hα: deep red.  Ca-K: violet."),
+        "Curves": QT_TRANSLATE_NOOP("SLaPToolkit", "Gentle inverted-V: lift midtones, keep shadows and bright limb natural."),
     },
     "Solar — Surface + Prominence": {
-        "Deconvolution": "Richardson-Lucy, PSF 1.5 px, 20 iterations. Apply only to a surface mask.",
-        "Multiscale": "5 layers. Boost layers 1–3 for surface; keep layers 4–5 at Gain 1.0 for prominence.",
-        "LHE / CLAHE": "Use Surface mask to limit contrast boost to the disc only.",
-        "WaveScale": "Key tool here. Mask Gamma 5–8 keeps effect outside the bright disc. "
-                     "Compression 1.5–2.0 to lift faint prominences.",
-        "Colorize": "Hα palette. Consider separate colourisation of disc vs. prominence.",
-        "Curves": "Two-zone: S-curve for disc, gentle lift for prominence region.",
+        "Deconvolution": QT_TRANSLATE_NOOP("SLaPToolkit", "Richardson-Lucy, PSF 1.5 px, 20 iterations. Apply only to a surface mask."),
+        "Multiscale": QT_TRANSLATE_NOOP("SLaPToolkit", "5 layers. Boost layers 1–3 for surface; keep layers 4–5 at Gain 1.0 for prominence."),
+        "LHE / CLAHE": QT_TRANSLATE_NOOP("SLaPToolkit", "Use Surface mask to limit contrast boost to the disc only."),
+        "WaveScale": QT_TRANSLATE_NOOP("SLaPToolkit", "Key tool here. Mask Gamma 5–8 keeps effect outside the bright disc. "
+                     "Compression 1.5–2.0 to lift faint prominences."),
+        "Colorize": QT_TRANSLATE_NOOP("SLaPToolkit", "Hα palette. Consider separate colourisation of disc vs. prominence."),
+        "Curves": QT_TRANSLATE_NOOP("SLaPToolkit", "Two-zone: S-curve for disc, gentle lift for prominence region."),
     },
     "Solar — Prominence Only": {
-        "Deconvolution": "Not usually needed — prominence data is diffuse. Skip or use very light RL.",
-        "Multiscale": "3–4 layers. Very gentle gain (1.1–1.3) on layers 1–2. Strong NR on layers 3–4.",
-        "LHE / CLAHE": "Small kernel (32–64 px), low contrast limit (1.5). Avoid crushing faint tips.",
-        "WaveScale": "Low Mask Gamma (1–2) to spread the enhancement into faint regions. "
-                     "Compression 2.0–3.0.",
-        "Colorize": "Deep red / orange for Hα. Optionally invert for a dramatic black-disc look.",
-        "Curves": "Gentle — protect faint prominence tips from clipping.",
+        "Deconvolution": QT_TRANSLATE_NOOP("SLaPToolkit", "Not usually needed — prominence data is diffuse. Skip or use very light RL."),
+        "Multiscale": QT_TRANSLATE_NOOP("SLaPToolkit", "3–4 layers. Very gentle gain (1.1–1.3) on layers 1–2. Strong NR on layers 3–4."),
+        "LHE / CLAHE": QT_TRANSLATE_NOOP("SLaPToolkit", "Small kernel (32–64 px), low contrast limit (1.5). Avoid crushing faint tips."),
+        "WaveScale": QT_TRANSLATE_NOOP("SLaPToolkit", "Low Mask Gamma (1–2) to spread the enhancement into faint regions. "
+                     "Compression 2.0–3.0."),
+        "Colorize": QT_TRANSLATE_NOOP("SLaPToolkit", "Deep red / orange for Hα. Optionally invert for a dramatic black-disc look."),
+        "Curves": QT_TRANSLATE_NOOP("SLaPToolkit", "Gentle — protect faint prominence tips from clipping."),
     },
     "Lunar": {
-        "Deconvolution": "Richardson-Lucy is very effective on lunar data. PSF 1.5–3 px, "
-                         "20–50 iterations. Use de-ring to suppress ringing at crater rims.",
-        "Multiscale": "5–6 layers. Strong gain (1.5–3.0) on layers 1–4 for fine surface texture. "
-                      "Heavy NR (0.3–0.5) on layer 5+.",
-        "LHE / CLAHE": "Large kernel (128–256 px), moderate contrast (2.0–4.0). "
-                        "Balances highland/mare dynamic range.",
-        "WaveScale": "Useful for compressing the very bright limb or terminator zone. "
-                     "Keep Mask Gamma moderate (3–5).",
-        "Colorize": "Natural grey or false-colour blue. Colour adds little scientifically "
-                    "but can be visually striking.",
-        "Curves": "Strong S-curve — lunar data tolerates aggressive contrast well.",
+        "Deconvolution": QT_TRANSLATE_NOOP("SLaPToolkit", "Richardson-Lucy is very effective on lunar data. PSF 1.5–3 px, "
+                         "20–50 iterations. Use de-ring to suppress ringing at crater rims."),
+        "Multiscale": QT_TRANSLATE_NOOP("SLaPToolkit", "5–6 layers. Strong gain (1.5–3.0) on layers 1–4 for fine surface texture. "
+                      "Heavy NR (0.3–0.5) on layer 5+."),
+        "LHE / CLAHE": QT_TRANSLATE_NOOP("SLaPToolkit", "Large kernel (128–256 px), moderate contrast (2.0–4.0). "
+                        "Balances highland/mare dynamic range."),
+        "WaveScale": QT_TRANSLATE_NOOP("SLaPToolkit", "Useful for compressing the very bright limb or terminator zone. "
+                     "Keep Mask Gamma moderate (3–5)."),
+        "Colorize": QT_TRANSLATE_NOOP("SLaPToolkit", "Natural grey or false-colour blue. Colour adds little scientifically "
+                    "but can be visually striking."),
+        "Curves": QT_TRANSLATE_NOOP("SLaPToolkit", "Strong S-curve — lunar data tolerates aggressive contrast well."),
     },
     "Planetary": {
-        "Deconvolution": "Critical for planetary. PSF 1–2 px, 30–80 iterations. "
-                         "RL is best. Deconvolve the L channel before blending with RGB.",
-        "Multiscale": "3–4 layers. Very aggressive gain (2.0–4.0) on layers 1–2, "
-                      "Gain ≤ 1 on layers 3–4. NR 0.2–0.4 on upper layers. Use Linear mode.",
-        "LHE / CLAHE": "Small kernel (16–64 px), contrast limit 2.0–3.5. "
-                        "Brings out belt detail and polar cap structure.",
-        "WaveScale": "Can help with large-disc targets like Jupiter. "
-                     "Compress highlights to prevent the disc from washing out.",
-        "Colorize": "Use the natural RGB data. Fine-tune with white balance, not a palette.",
-        "Curves": "Targeted S-curve: boost midtones strongly, clip highlights carefully.",
+        "Deconvolution": QT_TRANSLATE_NOOP("SLaPToolkit", "Critical for planetary. PSF 1–2 px, 30–80 iterations. "
+                         "RL is best. Deconvolve the L channel before blending with RGB."),
+        "Multiscale": QT_TRANSLATE_NOOP("SLaPToolkit", "3–4 layers. Very aggressive gain (2.0–4.0) on layers 1–2, "
+                      "Gain ≤ 1 on layers 3–4. NR 0.2–0.4 on upper layers. Use Linear mode."),
+        "LHE / CLAHE": QT_TRANSLATE_NOOP("SLaPToolkit", "Small kernel (16–64 px), contrast limit 2.0–3.5. "
+                        "Brings out belt detail and polar cap structure."),
+        "WaveScale": QT_TRANSLATE_NOOP("SLaPToolkit", "Can help with large-disc targets like Jupiter. "
+                     "Compress highlights to prevent the disc from washing out."),
+        "Colorize": QT_TRANSLATE_NOOP("SLaPToolkit", "Use the natural RGB data. Fine-tune with white balance, not a palette."),
+        "Curves": QT_TRANSLATE_NOOP("SLaPToolkit", "Targeted S-curve: boost midtones strongly, clip highlights carefully."),
     },
 }
 
@@ -577,7 +581,7 @@ class SLaPToolkitDialog(QDialog):
         self.main = main
         self.settings = getattr(main, "settings", None)
 
-        self.setWindowTitle("SLaP Toolkit  —  Solar, Lunar, and Planetary")
+        self.setWindowTitle(self.tr("SLaP Toolkit  —  Solar, Lunar, and Planetary"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
@@ -627,7 +631,7 @@ class SLaPToolkitDialog(QDialog):
         lbl_title.setStyleSheet(
             "font-size: 16px; color: #e8d060; letter-spacing: 1px; background: transparent;"
         )
-        lbl_subtitle = QLabel("Solar · Lunar · Planetary", header_widget)
+        lbl_subtitle = QLabel(self.tr("Solar · Lunar · Planetary"), header_widget)
         lbl_subtitle.setStyleSheet("font-size: 10px; color: #7aaacc; background: transparent;")
         title_row.addWidget(lbl_sun)
         title_row.addSpacing(6)
@@ -639,13 +643,13 @@ class SLaPToolkitDialog(QDialog):
 
         # Mode row inside header
         mode_row = QHBoxLayout()
-        lbl_mode = QLabel("Mode:", header_widget)
+        lbl_mode = QLabel(self.tr("Mode:"), header_widget)
         lbl_mode.setStyleSheet("color: #aac; font-size: 11px; background: transparent;")
         self.combo_mode = QComboBox(header_widget)
         self.combo_mode.addItems(SLAP_MODES)
         self.combo_mode.setToolTip(
-            "Select the type of solar-system target you are processing. "
-            "Tips and recommended settings will update automatically."
+            self.tr("Select the type of solar-system target you are processing. "
+            "Tips and recommended settings will update automatically.")
         )
         self.combo_mode.setStyleSheet("""
             QComboBox {
@@ -667,9 +671,9 @@ class SLaPToolkitDialog(QDialog):
         """)
         self.combo_mode.currentIndexChanged.connect(self._on_mode_changed)
 
-        self.btn_open_workflow = QPushButton("📋 Workflow", header_widget)
+        self.btn_open_workflow = QPushButton(self.tr("📋 Workflow"), header_widget)
         self.btn_open_workflow.setToolTip(
-            "Load the matching canned workflow for this mode into the Workflow Assistant."
+            self.tr("Load the matching canned workflow for this mode into the Workflow Assistant.")
         )
         self.btn_open_workflow.setStyleSheet("""
             QPushButton {
@@ -740,21 +744,21 @@ class SLaPToolkitDialog(QDialog):
             """)
             return b
 
-        btn_qa_invert = _qa_btn("🔄 Invert Masked Region",
-                                "Invert the image (Ctrl+I). If a mask is active, only the masked region is inverted.",
+        btn_qa_invert = _qa_btn(self.tr("🔄 Invert Masked Region"),
+                                self.tr("Invert the image (Ctrl+I). If a mask is active, only the masked region is inverted."),
                                 "#cc8844")
         btn_qa_invert.clicked.connect(lambda: self._trigger("geom_invert"))
 
-        btn_qa_flip = _qa_btn("↔ Flip", "Flip the image horizontally.", "#6a8aaa")
+        btn_qa_flip = _qa_btn(self.tr("↔ Flip"), self.tr("Flip the image horizontally."), "#6a8aaa")
         btn_qa_flip.clicked.connect(lambda: self._trigger("geom_flip_horizontal"))
 
-        btn_qa_rotate = _qa_btn("↺ Rotate", "Rotate the image 90°.", "#6a8aaa")
+        btn_qa_rotate = _qa_btn(self.tr("↺ Rotate"), self.tr("Rotate the image 90°."), "#6a8aaa")
         btn_qa_rotate.clicked.connect(lambda: self._trigger("geom_rotate_clockwise"))
 
-        btn_qa_resize = _qa_btn("⤢ Resize", "Resize the image.", "#6a8aaa")
+        btn_qa_resize = _qa_btn(self.tr("⤢ Resize"), self.tr("Resize the image."), "#6a8aaa")
         btn_qa_resize.clicked.connect(lambda: self._trigger("geom_rescale"))
 
-        btn_qa_save = _qa_btn("💾 Save As", "Save the current image to disk.", "#40a840")
+        btn_qa_save = _qa_btn(self.tr("💾 Save As"), self.tr("Save the current image to disk."), "#40a840")
         btn_qa_save.clicked.connect(lambda: self._trigger("save_as"))
 
         qa_lay.addWidget(btn_qa_invert, 2)
@@ -789,10 +793,10 @@ class SLaPToolkitDialog(QDialog):
         )
         bot = QHBoxLayout(bot_widget)
         bot.setContentsMargins(8, 5, 8, 5)
-        self.lbl_status = QLabel("Ready.", self)
+        self.lbl_status = QLabel(self.tr("Ready."), self)
         self.lbl_status.setStyleSheet("color: #666; font-size: 10px;")
 
-        btn_close = QPushButton("Close", self)
+        btn_close = QPushButton(self.tr("Close"), self)
         btn_close.setStyleSheet("""
             QPushButton {
                 background: rgba(255,255,255,8);
@@ -817,25 +821,25 @@ class SLaPToolkitDialog(QDialog):
         """Build all collapsible tool sections once; tips update on mode change."""
 
         # ── 1. Pre-processing ────────────────────────────────
-        sec_pre = _SectionCard("1 · Pre-processing", self, accent_color="#e8a020", icon="✂️")
+        sec_pre = _SectionCard(self.tr("1 · Pre-processing"), self, accent_color="#e8a020", icon="✂️")
         self._tip_pre = QLabel("", self)
         self._tip_pre.setWordWrap(True)
         self._tip_pre.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
         sec_pre.add_widget(self._tip_pre)
 
         row_pre = QHBoxLayout()
-        btn_crop = _LaunchButton("Crop", "Remove stacking edges and border artefacts.", accent_color="#e8a020")
+        btn_crop = _LaunchButton(self.tr("Crop"), self.tr("Remove stacking edges and border artefacts."), accent_color="#e8a020")
         btn_crop.clicked.connect(lambda: self._trigger("crop"))
-        btn_pedestal = _LaunchButton("Pedestal", "Remove the minimum black pedestal value.", accent_color="#e8a020")
+        btn_pedestal = _LaunchButton(self.tr("Pedestal"), self.tr("Remove the minimum black pedestal value."), accent_color="#e8a020")
         btn_pedestal.clicked.connect(lambda: self._trigger("pedestal"))
         row_pre.addWidget(btn_crop)
         row_pre.addWidget(btn_pedestal)
         sec_pre.body_layout().addLayout(row_pre)
 
         btn_rgb_align = _LaunchButton(
-            "RGB Align",
-            "Align R and B channels to G — useful for atmospheric dispersion or "
-            "channel misalignment in planetary/solar RGB data.",
+            self.tr("RGB Align"),
+            self.tr("Align R and B channels to G — useful for atmospheric dispersion or "
+            "channel misalignment in planetary/solar RGB data."),
             accent_color="#e8a020"
         )
         btn_rgb_align.clicked.connect(lambda: self._trigger("rgb_align"))
@@ -844,7 +848,7 @@ class SLaPToolkitDialog(QDialog):
         self._scroll_lay.addWidget(sec_pre)
 
         # ── 2. Masks ─────────────────────────────────────────
-        sec_mask = _SectionCard("2 · Masks", self, accent_color="#cc4444", icon="🎭")
+        sec_mask = _SectionCard(self.tr("2 · Masks"), self, accent_color="#cc4444", icon="🎭")
         self._tip_mask = QLabel("", self)
         self._tip_mask.setWordWrap(True)
         self._tip_mask.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
@@ -852,26 +856,26 @@ class SLaPToolkitDialog(QDialog):
 
         # Mask creation — opens MaskCreationDialog directly on the active doc
         btn_mask = _LaunchButton(
-            "Create Mask",
-            "Draw freehand, ellipse, or range-selection masks on the active image."
+            self.tr("Create Mask"),
+            self.tr("Draw freehand, ellipse, or range-selection masks on the active image.")
         )
         btn_mask.clicked.connect(self._do_create_mask)
         sec_mask.add_widget(btn_mask)
 
         # Disc mask — convenience: full-image ellipse mask pre-sized to the solar/lunar disc
         btn_disc = _LaunchButton(
-            "Quick Disc Mask",
-            "Open Mask Creation with an ellipse pre-fitted to the image bounds — "
-            "ideal for isolating the solar or lunar disc."
+            self.tr("Quick Disc Mask"),
+            self.tr("Open Mask Creation with an ellipse pre-fitted to the image bounds — "
+            "ideal for isolating the solar or lunar disc.")
         )
         btn_disc.clicked.connect(self._do_disc_mask)
         sec_mask.add_widget(btn_disc)
 
         # Auto mask — compute and apply the right mask for the current mode instantly
         self.btn_auto_mask = _LaunchButton(
-            "⚡ Apply SLaP Mode Mask",
-            "Automatically compute and apply the correct mask for the current mode: "
-            "disc mask for Surface, inverted disc for Prominence Only, none for combined.",
+            self.tr("⚡ Apply SLaP Mode Mask"),
+            self.tr("Automatically compute and apply the correct mask for the current mode: "
+            "disc mask for Surface, inverted disc for Prominence Only, none for combined."),
             accent_color="#ddaa00"
         )
         self.btn_auto_mask.setStyleSheet("""
@@ -897,11 +901,11 @@ class SLaPToolkitDialog(QDialog):
 
         # Invert / remove mask shortcuts
         row_mask_ops = QHBoxLayout()
-        btn_invert = _LaunchButton("Invert Mask", "Invert the currently active mask.", accent_color="#cc4444")
+        btn_invert = _LaunchButton(self.tr("Invert Mask"), self.tr("Invert the currently active mask."), accent_color="#cc4444")
         btn_invert.clicked.connect(lambda: self._trigger("invert_mask"))
-        btn_show = _LaunchButton("Show Mask", "Toggle mask overlay on the active image.", accent_color="#cc4444")
+        btn_show = _LaunchButton(self.tr("Show Mask"), self.tr("Toggle mask overlay on the active image."), accent_color="#cc4444")
         btn_show.clicked.connect(self._do_toggle_mask_overlay)
-        btn_remove = _LaunchButton("Remove Mask", "Remove the active mask from the document.", accent_color="#cc4444")
+        btn_remove = _LaunchButton(self.tr("Remove Mask"), self.tr("Remove the active mask from the document."), accent_color="#cc4444")
         btn_remove.clicked.connect(lambda: self._trigger("remove_mask"))
         row_mask_ops.addWidget(btn_invert)
         row_mask_ops.addWidget(btn_show)
@@ -911,15 +915,15 @@ class SLaPToolkitDialog(QDialog):
         self._scroll_lay.addWidget(sec_mask)
 
         # ── 3. Deconvolution ─────────────────────────────────
-        sec_decon = _SectionCard("3 · Deconvolution", self, accent_color="#9060e0", icon="🔬")
+        sec_decon = _SectionCard(self.tr("3 · Deconvolution"), self, accent_color="#9060e0", icon="🔬")
         self._tip_decon = QLabel("", self)
         self._tip_decon.setWordWrap(True)
         self._tip_decon.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
         sec_decon.add_widget(self._tip_decon)
 
         btn_decon = _LaunchButton(
-            "Convolution / Deconvolution",
-            "Richardson-Lucy deconvolution to restore diffraction-limited detail."
+            self.tr("Convolution / Deconvolution"),
+            self.tr("Richardson-Lucy deconvolution to restore diffraction-limited detail.")
         )
         btn_decon.clicked.connect(lambda: self._trigger("convo"))
         sec_decon.add_widget(btn_decon)
@@ -927,15 +931,15 @@ class SLaPToolkitDialog(QDialog):
         self._scroll_lay.addWidget(sec_decon)
 
         # ── 4. Multiscale Sharpening ─────────────────────────
-        sec_ms = _SectionCard("4 · Multiscale Sharpening", self, accent_color="#2080e0", icon="🔷")
+        sec_ms = _SectionCard(self.tr("4 · Multiscale Sharpening"), self, accent_color="#2080e0", icon="🔷")
         self._tip_ms = QLabel("", self)
         self._tip_ms.setWordWrap(True)
         self._tip_ms.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
         sec_ms.add_widget(self._tip_ms)
 
         btn_ms = _LaunchButton(
-            "Multiscale Decomposition",
-            "Per-layer gain, threshold, and NR — the most powerful sharpening tool in SASpro."
+            self.tr("Multiscale Decomposition"),
+            self.tr("Per-layer gain, threshold, and NR — the most powerful sharpening tool in SASpro.")
         )
         btn_ms.clicked.connect(lambda: self._trigger("multiscale_decomp"))
         sec_ms.add_widget(btn_ms)
@@ -943,24 +947,24 @@ class SLaPToolkitDialog(QDialog):
         self._scroll_lay.addWidget(sec_ms)
 
         # ── 5. Contrast Enhancement ──────────────────────────
-        sec_ce = _SectionCard("5 · Contrast Enhancement", self, accent_color="#20a060", icon="📊")
+        sec_ce = _SectionCard(self.tr("5 · Contrast Enhancement"), self, accent_color="#20a060", icon="📊")
         self._tip_ce = QLabel("", self)
         self._tip_ce.setWordWrap(True)
         self._tip_ce.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
         sec_ce.add_widget(self._tip_ce)
 
         row_ce = QHBoxLayout()
-        btn_clahe = _LaunchButton("CLAHE / LHE", "Local histogram equalisation — essential for solar and lunar.", accent_color="#20a060")
+        btn_clahe = _LaunchButton("CLAHE / LHE", self.tr("Local histogram equalisation — essential for solar and lunar."), accent_color="#20a060")
         btn_clahe.clicked.connect(lambda: self._trigger("clahe"))
-        btn_wavescale = _LaunchButton("WaveScale Dark Enhancer", "Wavelet-based local contrast + prominence boost.", accent_color="#20a060")
+        btn_wavescale = _LaunchButton(self.tr("WaveScale Dark Enhancer"), self.tr("Wavelet-based local contrast + prominence boost."), accent_color="#20a060")
         btn_wavescale.clicked.connect(lambda: self._trigger("wavescale_dark_enhance"))
         row_ce.addWidget(btn_clahe)
         row_ce.addWidget(btn_wavescale)
         sec_ce.body_layout().addLayout(row_ce)
 
         btn_freqsep = _LaunchButton(
-            "Frequency Separation",
-            "Split LF/HF for targeted processing of large-scale gradients and fine detail separately."
+            self.tr("Frequency Separation"),
+            self.tr("Split LF/HF for targeted processing of large-scale gradients and fine detail separately.")
         )
         btn_freqsep.clicked.connect(lambda: self._trigger("freqsep"))
         sec_ce.add_widget(btn_freqsep)
@@ -968,7 +972,7 @@ class SLaPToolkitDialog(QDialog):
         self._scroll_lay.addWidget(sec_ce)
 
         # ── 6. Noise Reduction ───────────────────────────────
-        sec_nr = _SectionCard("6 · Noise Reduction", self, accent_color="#20a0a0", icon="🔇")
+        sec_nr = _SectionCard(self.tr("6 · Noise Reduction"), self, accent_color="#20a0a0", icon="🔇")
         self._tip_nr = QLabel("", self)
         self._tip_nr.setWordWrap(True)
         self._tip_nr.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
@@ -976,7 +980,7 @@ class SLaPToolkitDialog(QDialog):
 
         btn_cc = _LaunchButton(
             "Cosmic Clarity",
-            "AI-powered denoise and sharpen — use denoise mode for solar/planetary noise reduction."
+            self.tr("AI-powered denoise and sharpen — use denoise mode for solar/planetary noise reduction.")
         )
         btn_cc.clicked.connect(lambda: self._trigger("cosmicclarity"))
         sec_nr.add_widget(btn_cc)
@@ -984,7 +988,7 @@ class SLaPToolkitDialog(QDialog):
         self._scroll_lay.addWidget(sec_nr)
 
         # ── 7. Colorization ──────────────────────────────────
-        sec_col = _SectionCard("7 · Colorization", self, accent_color="#e04080", icon="🎨")
+        sec_col = _SectionCard(self.tr("7 · Colorization"), self, accent_color="#e04080", icon="🎨")
         self._tip_col = QLabel("", self)
         self._tip_col.setWordWrap(True)
         self._tip_col.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
@@ -992,7 +996,7 @@ class SLaPToolkitDialog(QDialog):
 
         # Palette picker
         pal_row = QHBoxLayout()
-        pal_row.addWidget(QLabel("Palette preset:"))
+        pal_row.addWidget(QLabel(self.tr("Palette preset:")))
         self.combo_palette = QComboBox(self)
         self.combo_palette.addItems(list(SLAP_PALETTES.keys()))
         self.combo_palette.currentTextChanged.connect(self._on_palette_changed)
@@ -1005,8 +1009,8 @@ class SLaPToolkitDialog(QDialog):
         sec_col.add_widget(self.lbl_palette_desc)
 
         btn_mono_rgb = _LaunchButton(
-            "Mono to RGB / Colorize",
-            "Convert mono image to RGB, then apply curves to colorize with the selected palette."
+            self.tr("Mono to RGB / Colorize"),
+            self.tr("Convert mono image to RGB, then apply curves to colorize with the selected palette.")
         )
         btn_mono_rgb.clicked.connect(self._do_mono_to_rgb)
         sec_col.add_widget(btn_mono_rgb)
@@ -1014,40 +1018,40 @@ class SLaPToolkitDialog(QDialog):
         self._scroll_lay.addWidget(sec_col)
 
         # ── 8. Tone and Colour ─────────────────────────────────
-        sec_tone = _SectionCard("8 · Tone and Colour", self, accent_color="#e07020", icon="🌗")
+        sec_tone = _SectionCard(self.tr("8 · Tone and Colour"), self, accent_color="#e07020", icon="🌗")
         self._tip_tone = QLabel("", self)
         self._tip_tone.setWordWrap(True)
         self._tip_tone.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
         sec_tone.add_widget(self._tip_tone)
         btn_curves = _LaunchButton(
-            "Curves",
-            "S-curve for contrast, inverted-V for solar midtone lift. "
-            "Works identically to Photoshop curves."
+            self.tr("Curves"),
+            self.tr("S-curve for contrast, inverted-V for solar midtone lift. "
+            "Works identically to Photoshop curves.")
         )
         btn_curves.clicked.connect(lambda: self._trigger("curves"))
         sec_tone.add_widget(btn_curves)
         btn_satchroma = _LaunchButton(
-            "Saturation / Chroma",
-            "Hue-selective saturation (HSV) or chroma (Lab) adjustment via a "
-            "draggable curve over the hue wheel."
+            self.tr("Saturation / Chroma"),
+            self.tr("Hue-selective saturation (HSV) or chroma (Lab) adjustment via a "
+            "draggable curve over the hue wheel.")
         )
         btn_satchroma.clicked.connect(lambda: self._trigger("satchroma"))
         sec_tone.add_widget(btn_satchroma)
-        btn_wb = _LaunchButton("White Balance", "Balance RGB channels before or after palette application.", accent_color="#e07020")
+        btn_wb = _LaunchButton(self.tr("White Balance"), self.tr("Balance RGB channels before or after palette application."), accent_color="#e07020")
         btn_wb.clicked.connect(lambda: self._trigger("white_balance"))
         sec_tone.add_widget(btn_wb)
         btn_sellum = _LaunchButton(
-            "Selective Luminance",
-            "Apply colour/contrast adjustments only to a specific luminance band — "
-            "ideal for taming clipped solar disc vs. dark space."
+            self.tr("Selective Luminance"),
+            self.tr("Apply colour/contrast adjustments only to a specific luminance band — "
+            "ideal for taming clipped solar disc vs. dark space.")
         )
         btn_sellum.clicked.connect(lambda: self._trigger("selective_lum"))
         sec_tone.add_widget(btn_sellum)
 
         btn_fx = _LaunchButton(
             "FX",
-            "Orton glow, soft focus, bloom, vignette, grain, split tone — "
-            "pick an effect from the dropdown."
+            self.tr("Orton glow, soft focus, bloom, vignette, grain, split tone — "
+            "pick an effect from the dropdown.")
         )
         btn_fx.clicked.connect(lambda: self._trigger("fx"))
         sec_tone.add_widget(btn_fx)
@@ -1055,8 +1059,8 @@ class SLaPToolkitDialog(QDialog):
         self._scroll_lay.addWidget(sec_tone)
 
         # ── 9. Output ────────────────────────────────────────
-        sec_out = _SectionCard("9 · Output", self, accent_color="#40a840", icon="💾")
-        btn_save = _LaunchButton("Save As", "Save the processed result to disk.", accent_color="#40a840")
+        sec_out = _SectionCard(self.tr("9 · Output"), self, accent_color="#40a840", icon="💾")
+        btn_save = _LaunchButton(self.tr("Save As"), self.tr("Save the processed result to disk."), accent_color="#40a840")
         btn_save.clicked.connect(lambda: self._trigger("save_as"))
         sec_out.add_widget(btn_save)
         self._scroll_lay.addWidget(sec_out)
@@ -1104,20 +1108,20 @@ class SLaPToolkitDialog(QDialog):
         if act is None:
             QMessageBox.warning(
                 self, "SLaP Toolkit",
-                "Could not find 'Convert Mono to RGB' action.\n"
-                "Make sure act_mono_to_rgb is registered with command_id 'mono_to_rgb'."
+                self.tr("Could not find 'Convert Mono to RGB' action.\n"
+                "Make sure act_mono_to_rgb is registered with command_id 'mono_to_rgb'.")
             )
             return
         try:
             act.trigger()
         except Exception as e:
-            QMessageBox.critical(self, "SLaP Toolkit", f"Mono to RGB failed:\n{e}")
+            QMessageBox.critical(self, "SLaP Toolkit", self.tr("Mono to RGB failed:\n{0}").format(e))
             return
 
         # ── Step 2: re-fetch doc after the mono→RGB edit ─────────────────
         doc = self._active_doc()
         if doc is None or getattr(doc, "image", None) is None:
-            self._status("Converted to RGB.")
+            self._status(self.tr("Converted to RGB."))
             return
 
         # ── Step 3: build per-channel LUTs from palette RGB weights ───────
@@ -1129,7 +1133,7 @@ class SLaPToolkitDialog(QDialog):
 
         # All weights == 1.0 → Planetary/natural — skip curves entirely
         if abs(r_w - 1.0) < 0.01 and abs(g_w - 1.0) < 0.01 and abs(b_w - 1.0) < 0.01:
-            self._status(f"Converted to RGB — palette: {pal_name} (neutral, no colour shift).")
+            self._status(self.tr("Converted to RGB — palette: {0} (neutral, no colour shift).").format(pal_name))
             return
 
         def _weight_to_lut(w: float, size: int = 65536) -> np.ndarray:
@@ -1161,7 +1165,7 @@ class SLaPToolkitDialog(QDialog):
         try:
             img = np.asarray(doc.image, dtype=np.float32)
             if img.ndim != 3 or img.shape[2] < 3:
-                self._status(f"Converted to RGB — image isn't 3-channel yet, skipping palette.")
+                self._status(self.tr("Converted to RGB — image isn't 3-channel yet, skipping palette."))
                 return
 
             out = img.copy()
@@ -1205,25 +1209,25 @@ class SLaPToolkitDialog(QDialog):
             except Exception:
                 pass
 
-            self._status(f"Colorized: {pal_name}  (R={r_w:.2f}  G={g_w:.2f}  B={b_w:.2f})")
+            self._status(self.tr("Colorized: {0}  (R={1:.2f}  G={2:.2f}  B={3:.2f})").format(pal_name, r_w, g_w, b_w))
 
         except Exception as e:
-            QMessageBox.critical(self, "SLaP Toolkit", f"Palette colorize failed:\n{e}")
+            QMessageBox.critical(self, "SLaP Toolkit", self.tr("Palette colorize failed:\n{0}").format(e))
 
     def _do_create_mask(self):
         """Open MaskCreationDialog on the active document."""
         doc = self._active_doc()
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "SLaP Toolkit", "Open an image first.")
+            QMessageBox.information(self, "SLaP Toolkit", self.tr("Open an image first."))
             return
         try:
             from setiastro.saspro.mask_creation import MaskCreationDialog
             dlg = MaskCreationDialog(doc.image, parent=self.main, auto_push_on_ok=True)
             dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
             dlg.show()
-            self._status("Mask creation opened.")
+            self._status(self.tr("Mask creation opened."))
         except Exception as e:
-            QMessageBox.critical(self, "SLaP Toolkit", f"Could not open Mask Creation:\n{e}")
+            QMessageBox.critical(self, "SLaP Toolkit", self.tr("Could not open Mask Creation:\n{0}").format(e))
 
     def _do_disc_mask(self):
         """
@@ -1233,7 +1237,7 @@ class SLaPToolkitDialog(QDialog):
         """
         doc = self._active_doc()
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "SLaP Toolkit", "Open an image first.")
+            QMessageBox.information(self, "SLaP Toolkit", self.tr("Open an image first."))
             return
         try:
             from setiastro.saspro.mask_creation import MaskCreationDialog
@@ -1278,9 +1282,9 @@ class SLaPToolkitDialog(QDialog):
 
             dlg.show()
             _QTimer.singleShot(150, _pre_fit_ellipse)
-            self._status("Disc mask opened — resize the ellipse to match your disc.")
+            self._status(self.tr("Disc mask opened — resize the ellipse to match your disc."))
         except Exception as e:
-            QMessageBox.critical(self, "SLaP Toolkit", f"Could not open Disc Mask:\n{e}")
+            QMessageBox.critical(self, "SLaP Toolkit", self.tr("Could not open Disc Mask:\n{0}").format(e))
 
     # ─────────────────────────────────────────────────────────
     # SLaP auto-mask
@@ -1306,7 +1310,7 @@ class SLaPToolkitDialog(QDialog):
 
         doc = self._active_doc()
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "SLaP Toolkit", "Open an image first.")
+            QMessageBox.information(self, "SLaP Toolkit", self.tr("Open an image first."))
             return
 
         mode = self.combo_mode.currentText()
@@ -1324,9 +1328,9 @@ class SLaPToolkitDialog(QDialog):
                         self.main._refresh_mask_action_states()
                 except Exception:
                     pass
-                self._status("Mask cleared — full image active for Surface + Prominence.")
+                self._status(self.tr("Mask cleared — full image active for Surface + Prominence."))
             except Exception as e:
-                self._status(f"Could not clear mask: {e}")
+                self._status(self.tr("Could not clear mask: {0}").format(e))
             return
 
         # ── All other modes: compute a luminance range mask ──────────────────
@@ -1406,12 +1410,11 @@ class SLaPToolkitDialog(QDialog):
                 pass
 
             if invert:
-                direction = f"disc ≥ {disc_threshold:.2f} then inverted → prominence region"
+                direction = self.tr("disc ≥ {0:.2f} then inverted → prominence region").format(disc_threshold)
             else:
-                direction = f"brightness ≥ {disc_threshold:.2f}"
+                direction = self.tr("brightness ≥ {0:.2f}").format(disc_threshold)
             self._status(
-                f"Mask applied: {mode} ({direction}, feather {feather_px}px). "
-                f"Adjust with Mask Tools if needed."
+                self.tr("Mask applied: {0} ({1}, feather {2}px). Adjust with Mask Tools if needed.").format(mode, direction, feather_px)
             )
 
             # Refresh the active view overlay
@@ -1426,7 +1429,7 @@ class SLaPToolkitDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(
                 self, "SLaP Toolkit",
-                f"Could not attach mask to document:\n\n{e}"
+                self.tr("Could not attach mask to document:\n\n{0}").format(e)
             )
 
     def _do_toggle_mask_overlay(self):
@@ -1441,18 +1444,20 @@ class SLaPToolkitDialog(QDialog):
                 vw = None
 
             if vw is None:
-                self._status("No active view.")
+                self._status(self.tr("No active view."))
                 return
 
             if not hasattr(vw, "toggle_mask_overlay"):
-                self._status("Active view does not support mask overlay.")
+                self._status(self.tr("Active view does not support mask overlay."))
                 return
 
             vw.toggle_mask_overlay()
-            state = "ON" if getattr(vw, "show_mask_overlay", False) else "OFF"
-            self._status(f"Mask overlay {state}.")
+            if getattr(vw, "show_mask_overlay", False):
+                self._status(self.tr("Mask overlay ON."))
+            else:
+                self._status(self.tr("Mask overlay OFF."))
         except Exception as e:
-            self._status(f"Mask overlay error: {e}")
+            self._status(self.tr("Mask overlay error: {0}").format(e))
 
     # ─────────────────────────────────────────────────────────
     # Mode logic
@@ -1465,38 +1470,38 @@ class SLaPToolkitDialog(QDialog):
         # Banner
         mode_summaries = {
             "Solar — Surface":
-                "Surface-only solar processing. Optimised for granulation, sunspots, "
-                "and active region detail. Deconvolution and multiscale are the key tools.",
+                self.tr("Surface-only solar processing. Optimised for granulation, sunspots, "
+                "and active region detail. Deconvolution and multiscale are the key tools."),
             "Solar — Surface + Prominence":
-                "Full-disc solar with prominence enhancement. WaveScale Dark Enhancer "
-                "lifts faint filament structure outside the solar limb.",
+                self.tr("Full-disc solar with prominence enhancement. WaveScale Dark Enhancer "
+                "lifts faint filament structure outside the solar limb."),
             "Solar — Prominence Only":
-                "Over-exposed prominence data where the disc is clipped. "
-                "Emphasis on gentle enhancement of faint extremities without noise amplification.",
+                self.tr("Over-exposed prominence data where the disc is clipped. "
+                "Emphasis on gentle enhancement of faint extremities without noise amplification."),
             "Lunar":
-                "High-contrast lunar surface detail. Richardson-Lucy deconvolution and "
-                "strong multiscale sharpening are the workhorses here.",
+                self.tr("High-contrast lunar surface detail. Richardson-Lucy deconvolution and "
+                "strong multiscale sharpening are the workhorses here."),
             "Planetary":
-                "Small-disc high-magnification planetary data. L+RGB split workflow — "
-                "deconvolve and sharpen L hard, denoise RGB gently, then blend.",
+                self.tr("Small-disc high-magnification planetary data. L+RGB split workflow — "
+                "deconvolve and sharpen L hard, denoise RGB gently, then blend."),
         }
         self.lbl_mode_tip.setText(mode_summaries.get(mode, ""))
 
         # Per-section tips
         self._tip_pre.setText(
-            "Crop first to remove stacking edge artefacts. "
-            "Then remove the pedestal to set a clean black point."
+            self.tr("Crop first to remove stacking edge artefacts. "
+            "Then remove the pedestal to set a clean black point.")
         )
-        self._tip_decon.setText(tips.get("Deconvolution", ""))
-        self._tip_ms.setText(tips.get("Multiscale", ""))
-        self._tip_ce.setText(tips.get("LHE / CLAHE", "") + "\n" + tips.get("WaveScale", ""))
-        self._tip_nr.setText(tips.get("Cosmicclarity",
-            "Cosmic Clarity denoise — keep it light to preserve fine detail."))
-        self._tip_tone.setText(tips.get("Curves", ""))
-        self._tip_col.setText(tips.get("Colorize", ""))
+        self._tip_decon.setText(_tr(tips.get("Deconvolution", "")))
+        self._tip_ms.setText(_tr(tips.get("Multiscale", "")))
+        self._tip_ce.setText(_tr(tips.get("LHE / CLAHE", "")) + "\n" + _tr(tips.get("WaveScale", "")))
+        self._tip_nr.setText(_tr(tips.get("Cosmicclarity",
+            QT_TRANSLATE_NOOP("SLaPToolkit", "Cosmic Clarity denoise — keep it light to preserve fine detail."))))
+        self._tip_tone.setText(_tr(tips.get("Curves", "")))
+        self._tip_col.setText(_tr(tips.get("Colorize", "")))
         self._tip_mask.setText(
-            "Use masks to constrain tools to specific image zones — "
-            "disc vs. limb vs. space — especially important for prominence work."
+            self.tr("Use masks to constrain tools to specific image zones — "
+            "disc vs. limb vs. space — especially important for prominence work.")
         )
 
         # Auto-select a sensible palette default for the mode
@@ -1520,21 +1525,21 @@ class SLaPToolkitDialog(QDialog):
         # Update the auto-mask button label to show what will happen for this mode
         auto_mask_labels = {
             "Solar — Surface":
-                "⚡ Apply Disc Mask  (brightness ≥ 0.20)",
+                self.tr("⚡ Apply Disc Mask  (brightness ≥ 0.20)"),
             "Solar — Surface + Prominence":
-                "⚡ Clear Mask  (full image — no mask needed)",
+                self.tr("⚡ Clear Mask  (full image — no mask needed)"),
             "Solar — Prominence Only":
-                "⚡ Apply Prominence Mask  (disc ≥ 0.20, then inverted)",
+                self.tr("⚡ Apply Prominence Mask  (disc ≥ 0.20, then inverted)"),
             "Lunar":
-                "⚡ Apply Disc Mask  (brightness ≥ 0.15)",
+                self.tr("⚡ Apply Disc Mask  (brightness ≥ 0.15)"),
             "Planetary":
-                "⚡ Apply Disc Mask  (brightness ≥ 0.10)",
+                self.tr("⚡ Apply Disc Mask  (brightness ≥ 0.10)"),
         }
         if hasattr(self, "btn_auto_mask"):
             # Update the bold label inside the _LaunchButton
             try:
                 lbl = self.btn_auto_mask.findChildren(QLabel)[0]
-                lbl.setText(f"<b>{auto_mask_labels.get(mode, '⚡ Apply SLaP Mode Mask')}</b>")
+                lbl.setText(f"<b>{auto_mask_labels.get(mode, self.tr('⚡ Apply SLaP Mode Mask'))}</b>")
             except Exception:
                 pass
 
@@ -1548,7 +1553,7 @@ class SLaPToolkitDialog(QDialog):
 
     def _on_palette_changed(self, name: str):
         pal = SLAP_PALETTES.get(name, {})
-        self.lbl_palette_desc.setText(pal.get("description", ""))
+        self.lbl_palette_desc.setText(_tr(pal.get("description", "")))
 
     # ─────────────────────────────────────────────────────────
     # Tool triggering
@@ -1562,20 +1567,23 @@ class SLaPToolkitDialog(QDialog):
         from setiastro.saspro.workflows import _find_action_by_command_id
         action = _find_action_by_command_id(self.main, command_id)
         if action is None:
-            self._status(f"Could not find tool: {command_id}")
+            self._status(self.tr("Could not find tool: {0}").format(command_id))
             QMessageBox.warning(
                 self,
                 "SLaP Toolkit",
-                f"Could not find the tool action for command_id:\n\n{command_id}\n\n"
-                "Make sure the tool is registered in the SASpro toolbar.",
+                self.tr("Could not find the tool action for command_id:\n"
+                        "\n"
+                        "{0}\n"
+                        "\n"
+                        "Make sure the tool is registered in the SASpro toolbar.").format(command_id),
             )
             return
         try:
             action.trigger()
-            self._status(f"Opened: {action.text() or command_id}")
+            self._status(self.tr("Opened: {0}").format(action.text() or command_id))
         except Exception as e:
-            self._status(f"Error: {e}")
-            QMessageBox.critical(self, "SLaP Toolkit", f"Error opening tool:\n\n{e}")
+            self._status(self.tr("Error: {0}").format(e))
+            QMessageBox.critical(self, "SLaP Toolkit", self.tr("Error opening tool:\n\n{0}").format(e))
 
     def _status(self, msg: str):
         self.lbl_status.setText(msg)
@@ -1583,7 +1591,7 @@ class SLaPToolkitDialog(QDialog):
 
     def _clear_status(self):
         try:
-            self.lbl_status.setText("Ready.")
+            self.lbl_status.setText(self.tr("Ready."))
         except RuntimeError:
             pass
 
@@ -1628,7 +1636,7 @@ class SLaPToolkitDialog(QDialog):
         dlg = getattr(self.main, "_workflow_dialog", None)
         if dlg is not None:
             dlg.load_workflow_definition(target)
-            self._status(f"Loaded workflow: {wf_name}")
+            self._status(self.tr("Loaded workflow: {0}").format(wf_name))
 
     # ─────────────────────────────────────────────────────────
     # Geometry / state persistence

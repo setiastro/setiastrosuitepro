@@ -71,7 +71,7 @@ from pathlib import Path
 
 import numpy as np
 
-from PyQt6.QtCore import Qt, QSettings, QUrl, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QSettings, QUrl, QThread, pyqtSignal, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtGui import QIcon, QPixmap, QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QGroupBox,
@@ -91,6 +91,10 @@ from setiastro.saspro.syqon_tools import (
 from setiastro.saspro.remove_stars import _push_as_new_doc, _extract_stars_only
 
 
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("SyQonStudio", text)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Model registry — stable CLI identifiers (from --list-models / the dev docs).
 # Order here is the dropdown order. `family` drives which option page shows.
@@ -102,18 +106,20 @@ from setiastro.saspro.remove_stars import _push_as_new_doc, _extract_stars_only
 # ─────────────────────────────────────────────────────────────────────────────
 # (identifier, friendly label, access, family, input contract note)
 STUDIO_MODELS: list[tuple[str, str, str, str, str]] = [
-    ("studio-gui",      "Studio Editor (GUI) — ROI · Autostretch · Intensity", "Included", "gui", "Any supported format (TIFF/FITS/XISF/PNG/JPEG)"),
-    ("prism-essential", "Prism Essential — Denoise",       "Included", "prism",         "Linear RGB or mono"),
-    ("prism-advanced",  "Prism Deep Advanced — Denoise",   "Licensed", "prism",         "Linear RGB or mono"),
-    ("prism-ultra",     "Prism Deep Ultra — Denoise",      "Licensed", "prism",         "Linear or non-linear"),
-    ("prism-max",       "Prism Deep Max — Denoise",        "Licensed", "prism",         "Linear or non-linear"),
-    ("prism-legacy-v1", "Prism Legacy V1 — Denoise",       "Licensed", "prism",         "Legacy display-domain input"),
-    ("prism-legacy-v2", "Prism Legacy V2 — Denoise",       "Licensed", "prism",         "Robust linear input"),
-    ("parallax-nano",   "Parallax Nano — Correct / Reduce / Deblur", "Free", "parallax", "Linear or non-linear"),
-    ("parallax",        "Parallax — Correct / Reduce / Deblur", "Licensed", "parallax",  "Linear or non-linear"),
-    ("axiom-mini",      "Axiom Mini — Starless",           "Free",     "axiom",         "Linear (Axiom stretch) or non-linear"),
-    ("axiom",           "Axiom V4 — Starless",             "Licensed", "axiom",         "Linear (Axiom stretch) or non-linear"),
-    ("deep-gradient",   "Deep Gradient (Untested Beta) — Gradient removal", "Included", "deep-gradient", "Linear RGB or mono"),
+    # The label (index 1) and input-contract note (index 4) are display text,
+    # marked for translation and translated where shown ("SyQonStudio").
+    ("studio-gui",      QT_TRANSLATE_NOOP("SyQonStudio", "Studio Editor (GUI) — ROI · Autostretch · Intensity"), "Included", "gui", QT_TRANSLATE_NOOP("SyQonStudio", "Any supported format (TIFF/FITS/XISF/PNG/JPEG)")),
+    ("prism-essential", QT_TRANSLATE_NOOP("SyQonStudio", "Prism Essential — Denoise"),       "Included", "prism",         QT_TRANSLATE_NOOP("SyQonStudio", "Linear RGB or mono")),
+    ("prism-advanced",  QT_TRANSLATE_NOOP("SyQonStudio", "Prism Deep Advanced — Denoise"),   "Licensed", "prism",         QT_TRANSLATE_NOOP("SyQonStudio", "Linear RGB or mono")),
+    ("prism-ultra",     QT_TRANSLATE_NOOP("SyQonStudio", "Prism Deep Ultra — Denoise"),      "Licensed", "prism",         QT_TRANSLATE_NOOP("SyQonStudio", "Linear or non-linear")),
+    ("prism-max",       QT_TRANSLATE_NOOP("SyQonStudio", "Prism Deep Max — Denoise"),        "Licensed", "prism",         QT_TRANSLATE_NOOP("SyQonStudio", "Linear or non-linear")),
+    ("prism-legacy-v1", QT_TRANSLATE_NOOP("SyQonStudio", "Prism Legacy V1 — Denoise"),       "Licensed", "prism",         QT_TRANSLATE_NOOP("SyQonStudio", "Legacy display-domain input")),
+    ("prism-legacy-v2", QT_TRANSLATE_NOOP("SyQonStudio", "Prism Legacy V2 — Denoise"),       "Licensed", "prism",         QT_TRANSLATE_NOOP("SyQonStudio", "Robust linear input")),
+    ("parallax-nano",   QT_TRANSLATE_NOOP("SyQonStudio", "Parallax Nano — Correct / Reduce / Deblur"), "Free", "parallax", QT_TRANSLATE_NOOP("SyQonStudio", "Linear or non-linear")),
+    ("parallax",        QT_TRANSLATE_NOOP("SyQonStudio", "Parallax — Correct / Reduce / Deblur"), "Licensed", "parallax",  QT_TRANSLATE_NOOP("SyQonStudio", "Linear or non-linear")),
+    ("axiom-mini",      QT_TRANSLATE_NOOP("SyQonStudio", "Axiom Mini — Starless"),           "Free",     "axiom",         QT_TRANSLATE_NOOP("SyQonStudio", "Linear (Axiom stretch) or non-linear")),
+    ("axiom",           QT_TRANSLATE_NOOP("SyQonStudio", "Axiom V4 — Starless"),             "Licensed", "axiom",         QT_TRANSLATE_NOOP("SyQonStudio", "Linear (Axiom stretch) or non-linear")),
+    ("deep-gradient",   QT_TRANSLATE_NOOP("SyQonStudio", "Deep Gradient (Untested Beta) — Gradient removal"), "Included", "deep-gradient", QT_TRANSLATE_NOOP("SyQonStudio", "Linear RGB or mono")),
 ]
 
 _MODEL_INDEX = {m[0]: m for m in STUDIO_MODELS}
@@ -205,7 +211,7 @@ def validate_studio_cli(path: str, timeout: float = 20.0) -> tuple[bool, str]:
     """Run `<cli> --version`. Returns (ok, version_or_error_text)."""
     path = _resolve_bundle((path or "").strip())
     if not path or not os.path.isfile(path):
-        return False, "No such file"
+        return False, _tr("No such file")
     try:
         r = subprocess.run(
             [path, "--version"],
@@ -698,7 +704,7 @@ class _SyQonStudioCLIThread(QThread):
                     if is_stderr and not is_gui:
                         m = re_pct.search(line)
                         if m:
-                            self._emit(min(int(m.group(1)), 99), "SyQon Studio processing…")
+                            self._emit(min(int(m.group(1)), 99), self.tr("SyQon Studio processing…"))
             except Exception as e:
                 print(f"[SyQon Studio reader] {type(e).__name__}: {e}", flush=True)
 
@@ -726,7 +732,7 @@ class _SyQonStudioCLIThread(QThread):
             if self.want_secondary and self.secondary_flag:
                 self._tmp_sec = str(run_dir / f"{tag}_sec.fits")
 
-            self._emit(2, "Writing temp image…")
+            self._emit(2, self.tr("Writing temp image…"))
             self._write_fits(self._tmp_in, self.input_image,
                              header=self.header, wcs_header=self.wcs_header)
             if self._cancel:
@@ -744,9 +750,9 @@ class _SyQonStudioCLIThread(QThread):
             if is_gui:
                 # Nudge the UI to switch the bar to indeterminate; the status
                 # text tells the user what to do.
-                self._emit(10, "Opening SyQon Studio editor — click Done when finished.")
+                self._emit(10, self.tr("Opening SyQon Studio editor — click Done when finished."))
             else:
-                self._emit(5, "Launching SyQon CLI…")
+                self._emit(5, self.tr("Launching SyQon CLI…"))
 
             self._p = subprocess.Popen(
                 argv,
@@ -793,7 +799,7 @@ class _SyQonStudioCLIThread(QThread):
             if not os.path.exists(primary_path):
                 raise RuntimeError("SyQon CLI reported success but no output file was found.")
 
-            self._emit(96, "Loading result…")
+            self._emit(96, self.tr("Loading result…"))
             primary = self._load_result(primary_path)
             if primary is None:
                 raise RuntimeError("Could not load the SyQon CLI output.")
@@ -823,13 +829,13 @@ class _SyQonStudioCLIThread(QThread):
                     or _header_is_star_removal(self._read_header(primary_path))))
                 info["star_removal"] = bool(star_removal)
                 if secondary is None and star_removal:
-                    self._emit(98, "Extracting stars (unscreen)…")
+                    self._emit(98, self.tr("Extracting stars (unscreen)…"))
                     secondary = _unscreen_star_layer(self.input_image, primary)
                     if secondary is not None:
                         info["secondary_source"] = "unscreen"
                 print(f"[SyQon Studio] secondary: {info.get('secondary_source', 'none')}", flush=True)
 
-            self._emit(100, "Complete")
+            self._emit(100, self.tr("Complete"))
             self.result.emit(primary, secondary, info, "")
 
         except Exception as e:
@@ -891,9 +897,9 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         cli_form = QFormLayout(cli_box)
 
         self.edt_cli = QLineEdit(self)
-        self.edt_cli.setPlaceholderText("Path to syqon-cli (auto-detected from SyQon Studio)")
-        self.btn_locate = QPushButton("Locate…", self)
-        self.btn_validate = QPushButton("Validate", self)
+        self.edt_cli.setPlaceholderText(self.tr("Path to syqon-cli (auto-detected from SyQon Studio)"))
+        self.btn_locate = QPushButton(self.tr("Locate…"), self)
+        self.btn_validate = QPushButton(self.tr("Validate"), self)
         self.btn_locate.clicked.connect(self._locate_cli)
         self.btn_validate.clicked.connect(self._validate_cli)
 
@@ -902,14 +908,14 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         cli_row.addWidget(self.btn_locate)
         cli_row.addWidget(self.btn_validate)
         cli_wrap = QWidget(self); cli_wrap.setLayout(cli_row)
-        cli_form.addRow("Executable:", cli_wrap)
+        cli_form.addRow(self.tr("Executable:"), cli_wrap)
 
         self.lbl_cli_status = QLabel("", self)
         self.lbl_cli_status.setWordWrap(True)
         self.lbl_cli_status.setStyleSheet("color:#8e8e93;")
         cli_form.addRow("", self.lbl_cli_status)
 
-        self.btn_get_studio = QPushButton("Get SyQon Studio…", self)
+        self.btn_get_studio = QPushButton(self.tr("Get SyQon Studio…"), self)
         self.btn_get_studio.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl(_STUDIO_BUY_URL))
         )
@@ -922,15 +928,21 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         lay.addWidget(cli_box)
 
         # ── Model + options box ────────────────────────────────────────────
-        box = QGroupBox("Neural process", self)
+        box = QGroupBox(self.tr("Neural process"), self)
         form = QFormLayout(box)
 
         self.cmb_model = QComboBox(self)
         for mid, label, access, _fam, _note in STUDIO_MODELS:
-            tag = {"Included": "", "Free": "  ·  Free"}.get(access, "  ·  Licensed")
-            self.cmb_model.addItem(f"{label}{tag}", userData=mid)
+            label = QCoreApplication.translate("SyQonStudio", label)
+            if access == "Included":
+                item_text = label
+            elif access == "Free":
+                item_text = self.tr("{0}  ·  Free").format(label)
+            else:
+                item_text = self.tr("{0}  ·  Licensed").format(label)
+            self.cmb_model.addItem(item_text, userData=mid)
         self.cmb_model.currentIndexChanged.connect(self._on_model_changed)
-        form.addRow("Model:", self.cmb_model)
+        form.addRow(self.tr("Model:"), self.cmb_model)
 
         self.lbl_contract = QLabel("", self)
         self.lbl_contract.setWordWrap(True)
@@ -939,23 +951,23 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
 
         # Common options
         self.cmb_domain = QComboBox(self)
-        self.cmb_domain.addItem("Auto (read metadata)", userData="auto")
-        self.cmb_domain.addItem("Linear", userData="linear")
-        self.cmb_domain.addItem("Non-linear", userData="nonlinear")
-        self.lbl_domain = QLabel("Input domain:", self)
+        self.cmb_domain.addItem(self.tr("Auto (read metadata)"), userData="auto")
+        self.cmb_domain.addItem(self.tr("Linear"), userData="linear")
+        self.cmb_domain.addItem(self.tr("Non-linear"), userData="nonlinear")
+        self.lbl_domain = QLabel(self.tr("Input domain:"), self)
         form.addRow(self.lbl_domain, self.cmb_domain)
 
         self.spin_tile = QSpinBox(self)
         self.spin_tile.setRange(256, 2048)
         self.spin_tile.setSingleStep(64)
         self.spin_tile.setValue(int(self.settings.value("syqon/studio/tile", 512)))
-        self.lbl_tile = QLabel("Tile size:", self)
+        self.lbl_tile = QLabel(self.tr("Tile size:"), self)
         form.addRow(self.lbl_tile, self.spin_tile)
 
         self.spin_overlap = QSpinBox(self)
         self.spin_overlap.setRange(0, 512)
         self.spin_overlap.setValue(int(self.settings.value("syqon/studio/overlap", 64)))
-        self.lbl_overlap = QLabel("Overlap:", self)
+        self.lbl_overlap = QLabel(self.tr("Overlap:"), self)
         form.addRow(self.lbl_overlap, self.spin_overlap)
 
         # Application (blend) — Prism only
@@ -985,7 +997,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         app_row = QWidget(self)
         app_lay = QHBoxLayout(app_row); app_lay.setContentsMargins(0, 0, 0, 0)
         app_lay.addWidget(self.sld_app, 1); app_lay.addWidget(self.spin_app)
-        self.lbl_app = QLabel("Application (blend):", self)
+        self.lbl_app = QLabel(self.tr("Application (blend):"), self)
         form.addRow(self.lbl_app, app_row)
         self._app_row_widget = app_row
 
@@ -1009,7 +1021,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         lay.addWidget(self.lbl_status)
 
         lay.addStretch(1)
-        self.btn_cancel = QPushButton("Cancel", self)
+        self.btn_cancel = QPushButton(self.tr("Cancel"), self)
         self.btn_cancel.setVisible(False)
         self.btn_cancel.clicked.connect(self._cancel_processing)
         lay.addWidget(self.btn_cancel)
@@ -1047,8 +1059,8 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             drag_row = QHBoxLayout(); drag_row.setContentsMargins(0, 0, 0, 0)
             self.preset_drag_handle = PresetDragHandle(
                 "syqontools", self.get_preset, icon=_grip,
-                tooltip="Drag to the canvas to create a SyQon Studio shortcut.\n"
-                        "Drop directly on an image to apply it headlessly.",
+                tooltip=self.tr("Drag to the canvas to create a SyQon Studio shortcut.\n"
+                        "Drop directly on an image to apply it headlessly."),
                 parent=self,
             )
             drag_row.addWidget(self.preset_drag_handle); drag_row.addStretch(1)
@@ -1062,7 +1074,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
         lbl = QLabel(
-            "Denoise · Application blends the result with the original.", self
+            self.tr("Denoise · Application blends the result with the original."), self
         )
         lbl.setWordWrap(True); lbl.setStyleSheet("color:#8e8e93;")
         v.addWidget(lbl)
@@ -1073,35 +1085,35 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         form = QFormLayout(w)
 
         self.cmb_px_family = QComboBox(self)
-        self.cmb_px_family.addItem("Aesthetics", userData="aesthetics")
-        self.cmb_px_family.addItem("Classic", userData="classic")
+        self.cmb_px_family.addItem(self.tr("Aesthetics"), userData="aesthetics")
+        self.cmb_px_family.addItem(self.tr("Classic"), userData="classic")
         f = self.cmb_px_family.findData(str(self.settings.value("syqon/studio/px_family", "aesthetics", type=str) or "aesthetics"))
         if f >= 0:
             self.cmb_px_family.setCurrentIndex(f)
-        form.addRow("Family:", self.cmb_px_family)
+        form.addRow(self.tr("Family:"), self.cmb_px_family)
 
-        self.chk_px_correct = QCheckBox("Stellar correction / defect repair", self)
+        self.chk_px_correct = QCheckBox(self.tr("Stellar correction / defect repair"), self)
         self.chk_px_correct.setChecked(bool(self.settings.value("syqon/studio/px_correct", True, type=bool)))
         form.addRow("", self.chk_px_correct)
 
         red_row = QWidget(self); red_lay = QHBoxLayout(red_row); red_lay.setContentsMargins(0, 0, 0, 0)
-        self.chk_px_reduce = QCheckBox("Star reduction", self)
+        self.chk_px_reduce = QCheckBox(self.tr("Star reduction"), self)
         self.chk_px_reduce.setChecked(bool(self.settings.value("syqon/studio/px_reduce", True, type=bool)))
         self.spin_px_reduce = QSpinBox(self); self.spin_px_reduce.setRange(0, 10)
         self.spin_px_reduce.setValue(int(self.settings.value("syqon/studio/px_reduce_level", 5)))
         self.spin_px_reduce.setFixedWidth(60)
-        red_lay.addWidget(self.chk_px_reduce); red_lay.addWidget(QLabel("level:", self))
+        red_lay.addWidget(self.chk_px_reduce); red_lay.addWidget(QLabel(self.tr("level:"), self))
         red_lay.addWidget(self.spin_px_reduce); red_lay.addStretch(1)
         form.addRow("", red_row)
 
         deb_row = QWidget(self); deb_lay = QHBoxLayout(deb_row); deb_lay.setContentsMargins(0, 0, 0, 0)
-        self.chk_px_deblur = QCheckBox("Deblur (deconvolution)", self)
+        self.chk_px_deblur = QCheckBox(self.tr("Deblur (deconvolution)"), self)
         self.chk_px_deblur.setChecked(bool(self.settings.value("syqon/studio/px_deblur", True, type=bool)))
         self.spin_px_deblur = QDoubleSpinBox(self); self.spin_px_deblur.setRange(0.0, 1.0)
         self.spin_px_deblur.setSingleStep(0.05); self.spin_px_deblur.setDecimals(2)
         self.spin_px_deblur.setValue(float(self.settings.value("syqon/studio/px_deblur_strength", 0.5)))
         self.spin_px_deblur.setFixedWidth(70)
-        deb_lay.addWidget(self.chk_px_deblur); deb_lay.addWidget(QLabel("strength:", self))
+        deb_lay.addWidget(self.chk_px_deblur); deb_lay.addWidget(QLabel(self.tr("strength:"), self))
         deb_lay.addWidget(self.spin_px_deblur); deb_lay.addStretch(1)
         form.addRow("", deb_row)
 
@@ -1110,7 +1122,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         self.spin_px_reduce.setEnabled(self.chk_px_reduce.isChecked())
         self.spin_px_deblur.setEnabled(self.chk_px_deblur.isChecked())
 
-        note = QLabel("Order: correction → reduction → deblur · enable at least one.", self)
+        note = QLabel(self.tr("Order: correction → reduction → deblur · enable at least one."), self)
         note.setWordWrap(True); note.setStyleSheet("color:#8e8e93; font-size:11px;")
         form.addRow("", note)
         return w
@@ -1120,13 +1132,13 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         form = QFormLayout(w)
 
         self.cmb_ax_stretch = QComboBox(self)
-        self.cmb_ax_stretch.addItem("Auto", userData="auto")
-        self.cmb_ax_stretch.addItem("Identity (already stretched)", userData="identity")
-        self.cmb_ax_stretch.addItem("Custom", userData="custom")
+        self.cmb_ax_stretch.addItem(self.tr("Auto"), userData="auto")
+        self.cmb_ax_stretch.addItem(self.tr("Identity (already stretched)"), userData="identity")
+        self.cmb_ax_stretch.addItem(self.tr("Custom"), userData="custom")
         s = self.cmb_ax_stretch.findData(str(self.settings.value("syqon/studio/ax_stretch", "auto", type=str) or "auto"))
         if s >= 0:
             self.cmb_ax_stretch.setCurrentIndex(s)
-        form.addRow("Axiom stretch:", self.cmb_ax_stretch)
+        form.addRow(self.tr("Axiom stretch:"), self.cmb_ax_stretch)
 
         cust_row = QWidget(self); cust_lay = QHBoxLayout(cust_row); cust_lay.setContentsMargins(0, 0, 0, 0)
         self.spin_ax_black = QDoubleSpinBox(self); self.spin_ax_black.setRange(0.0, 1.0)
@@ -1138,13 +1150,13 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         self.spin_ax_white = QDoubleSpinBox(self); self.spin_ax_white.setRange(0.0, 1.0)
         self.spin_ax_white.setDecimals(4); self.spin_ax_white.setSingleStep(0.001)
         self.spin_ax_white.setValue(float(self.settings.value("syqon/studio/ax_white", 1.0)))
-        for cap, sp in (("black", self.spin_ax_black), ("mid", self.spin_ax_mid), ("white", self.spin_ax_white)):
+        for cap, sp in ((self.tr("black"), self.spin_ax_black), (self.tr("mid"), self.spin_ax_mid), (self.tr("white"), self.spin_ax_white)):
             cust_lay.addWidget(QLabel(cap, self)); cust_lay.addWidget(sp)
         cust_lay.addStretch(1)
         self._ax_custom_row = cust_row
-        form.addRow("Custom points:", cust_row)
+        form.addRow(self.tr("Custom points:"), cust_row)
 
-        self.chk_ax_stars = QCheckBox("Also create a Stars-Only document", self)
+        self.chk_ax_stars = QCheckBox(self.tr("Also create a Stars-Only document"), self)
         self.chk_ax_stars.setChecked(bool(self.settings.value("syqon/studio/ax_make_stars", True, type=bool)))
         form.addRow("", self.chk_ax_stars)
 
@@ -1154,7 +1166,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         self.cmb_ax_stretch.currentIndexChanged.connect(_toggle_custom)
         _toggle_custom()
 
-        note = QLabel("Starless applied to this view; stars-only opens as a new view.", self)
+        note = QLabel(self.tr("Starless applied to this view; stars-only opens as a new view."), self)
         note.setWordWrap(True); note.setStyleSheet("color:#8e8e93; font-size:11px;")
         form.addRow("", note)
         return w
@@ -1162,10 +1174,10 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
     def _build_gradient_page(self) -> QWidget:
         w = QWidget(self)
         form = QFormLayout(w)
-        self.chk_dg_gradient = QCheckBox("Also create the extracted-gradient document", self)
+        self.chk_dg_gradient = QCheckBox(self.tr("Also create the extracted-gradient document"), self)
         self.chk_dg_gradient.setChecked(bool(self.settings.value("syqon/studio/dg_make_gradient", False, type=bool)))
         form.addRow("", self.chk_dg_gradient)
-        note = QLabel("Fixed internal contract (tile/overlap managed by the CLI) · linear input.", self)
+        note = QLabel(self.tr("Fixed internal contract (tile/overlap managed by the CLI) · linear input."), self)
         note.setWordWrap(True); note.setStyleSheet("color:#8e8e93; font-size:11px;")
         form.addRow("", note)
         return w
@@ -1180,13 +1192,13 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
         lbl = QLabel(
-            "Opens the SyQon Studio editor on this image. Pick the model, draw "
+            self.tr("Opens the SyQon Studio editor on this image. Pick the model, draw "
             "an ROI, toggle autostretch (display-only — not baked into the "
             "result) and dial in processing intensity interactively.\n\n"
             "Click <b>Done</b> in the editor to save and return. "
             "<b>Cancel</b> there (or Cancel here) returns to SASpro with the "
             "original image unchanged.\n\n"
-            "SASpro is blocked while the editor is open.",
+            "SASpro is blocked while the editor is open."),
             self,
         )
         lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -1195,13 +1207,13 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
 
         # Same setting (and preset key) as the Axiom page's checkbox, so the
         # two always agree.
-        self.chk_gui_stars = QCheckBox("If the editor removes stars, also create a Stars-Only document", self)
+        self.chk_gui_stars = QCheckBox(self.tr("If the editor removes stars, also create a Stars-Only document"), self)
         self.chk_gui_stars.setChecked(self.chk_ax_stars.isChecked())
         self.chk_gui_stars.toggled.connect(self.chk_ax_stars.setChecked)
         self.chk_ax_stars.toggled.connect(self.chk_gui_stars.setChecked)
         v.addWidget(self.chk_gui_stars)
-        note = QLabel("Uses the layer Studio saves with Save star mask; without "
-                      "one, the same layer is computed by unscreen.", self)
+        note = QLabel(self.tr("Uses the layer Studio saves with Save star mask; without "
+                      "one, the same layer is computed by unscreen."), self)
         note.setWordWrap(True); note.setStyleSheet("color:#8e8e93; font-size:11px;")
         v.addWidget(note)
         return w
@@ -1213,7 +1225,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
     def _locate_cli(self):
         start = self._cli_path() or (studio_cli_candidates()[0] if studio_cli_candidates() else "")
         filt = "SyQon CLI (syqon-cli syqon-cli.exe);;Applications (*.app);;All Files (*)"
-        path, _ = QFileDialog.getOpenFileName(self, "Locate syqon-cli", start, filt)
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Locate syqon-cli"), start, filt)
         if not path:
             return
         path = _resolve_bundle(path)
@@ -1223,7 +1235,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
     def _validate_cli(self):
         path = self._cli_path()
         if not path:
-            self.lbl_cli_status.setText("No executable selected.")
+            self.lbl_cli_status.setText(self.tr("No executable selected."))
             return
         ok, text = validate_studio_cli(path)
         if ok:
@@ -1231,21 +1243,21 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             avail = list_studio_models(path)
             extra = ""
             if avail:
-                extra = f"\nAvailable models: {', '.join(sorted(avail))}"
+                extra = self.tr("\nAvailable models: {0}").format(', '.join(sorted(avail)))
             self.lbl_cli_status.setStyleSheet("color:#2ed573;")
             self.lbl_cli_status.setText(f"✔  {text}{extra}")
         else:
             self.lbl_cli_status.setStyleSheet("color:#ff6b6b;")
-            self.lbl_cli_status.setText(f"✘  Could not validate: {text}")
+            self.lbl_cli_status.setText(self.tr("✘  Could not validate: {0}").format(text))
 
     def _update_cli_status(self, initial=False):
         path = self._cli_path()
         if not path:
             self.lbl_cli_status.setStyleSheet("color:#ff6b6b;")
-            self.lbl_cli_status.setText(
+            self.lbl_cli_status.setText(self.tr(
                 "SyQon Studio CLI not found. Install SyQon Studio and sign in, then "
                 "click Locate… if it isn't detected automatically."
-            )
+            ))
             return
         if initial:
             ok, text = validate_studio_cli(path)
@@ -1254,7 +1266,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
                 self.lbl_cli_status.setText(f"✔  {text}")
             else:
                 self.lbl_cli_status.setStyleSheet("color:#8e8e93;")
-                self.lbl_cli_status.setText("Executable set — click Validate to confirm.")
+                self.lbl_cli_status.setText(self.tr("Executable set — click Validate to confirm."))
 
     # ---- model change ------------------------------------------------------
     def current_model(self) -> str:
@@ -1267,16 +1279,16 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         self.settings.setValue("syqon/studio/model", mid)
 
         if m:
-            access = m[2]; note = m[4]
+            access = m[2]; note = QCoreApplication.translate("SyQonStudio", m[4])
             if fam == "gui":
                 self.lbl_contract.setText(
-                    f"Input contract: {note}  ·  editor is included with Studio."
+                    self.tr("Input contract: {0}  ·  editor is included with Studio.").format(note)
                 )
             else:
-                tag = {"Included": "included with your account",
-                       "Free": "free with a signed-in Studio account"}.get(
-                           access, "requires a licensed entitlement")
-                self.lbl_contract.setText(f"Input contract: {note}  ·  {tag}.")
+                tag = {"Included": self.tr("included with your account"),
+                       "Free": self.tr("free with a signed-in Studio account")}.get(
+                           access, self.tr("requires a licensed entitlement"))
+                self.lbl_contract.setText(self.tr("Input contract: {0}  ·  {1}.").format(note, tag))
 
         self.opt_stack.setCurrentIndex(self._family_page.get(fam, 0))
 
@@ -1412,13 +1424,13 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
 
     def process_document(self, doc, main):
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "SyQon Studio", "No active image.")
+            QMessageBox.warning(self, "SyQon Studio", self.tr("No active image."))
             return
 
         exe = self._cli_path()
         if not exe or not os.path.isfile(exe):
             QMessageBox.warning(self, "SyQon Studio",
-                                "SyQon Studio CLI not found. Click Locate… to select syqon-cli.")
+                                self.tr("SyQon Studio CLI not found. Click Locate… to select syqon-cli."))
             return
 
         mid = self.current_model()
@@ -1432,8 +1444,8 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             self.chk_px_deblur.isChecked(),
         )):
             QMessageBox.warning(self, "SyQon Studio",
-                                "Parallax needs at least one stage enabled "
-                                "(correction, reduction, or deblur).")
+                                self.tr("Parallax needs at least one stage enabled "
+                                "(correction, reduction, or deblur)."))
             return
 
         self.doc = doc
@@ -1475,9 +1487,9 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
 
         self._set_busy(True)
         if fam == "gui":
-            self.lbl_status.setText("Opening editor…")
+            self.lbl_status.setText(self.tr("Opening editor…"))
         else:
-            self.lbl_status.setText("Processing…")
+            self.lbl_status.setText(self.tr("Processing…"))
 
         hdr_in, wcs_in = studio_input_headers(doc)
         self.proc_thr = _SyQonStudioCLIThread(
@@ -1500,7 +1512,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         if thr is not None and thr.isRunning():
             thr.cancel()
             self.btn_cancel.setEnabled(False)
-            self.lbl_status.setText("Cancelling…")
+            self.lbl_status.setText(self.tr("Cancelling…"))
 
     def _set_busy(self, busy: bool):
         for w in (self.cmb_model, self.cmb_domain, self.spin_tile, self.spin_overlap,
@@ -1540,7 +1552,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
 
         if err == "__cancelled__":
             self._set_busy(False)
-            self.lbl_status.setText("Cancelled.")
+            self.lbl_status.setText(self.tr("Cancelled."))
             self.proc_thr = None
             return
 
@@ -1548,7 +1560,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             self._set_busy(False)
             self.proc_thr = None
             QMessageBox.critical(self, "SyQon Studio", err)
-            self.lbl_status.setText("Failed.")
+            self.lbl_status.setText(self.tr("Failed."))
             return
 
         mid = self.current_model()
@@ -1661,7 +1673,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
 
         self.proc_thr = None
         self._set_busy(False)
-        self.lbl_status.setText("Complete!")
+        self.lbl_status.setText(self.tr("Complete!"))
 
     def closeEvent(self, ev):
         if not self._safe_to_close():

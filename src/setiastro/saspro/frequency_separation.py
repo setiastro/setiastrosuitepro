@@ -661,14 +661,14 @@ class FrequencySeperationTab(QWidget):
         left = QVBoxLayout()
         left_host = QWidget(self); left_host.setLayout(left); left_host.setFixedWidth(280)
 
-        self.fileLabel = QLabel("(No image loaded)", self)
+        self.fileLabel = QLabel(self.tr("(No image loaded)"), self)
         left.addWidget(self.fileLabel)
 
         # Load Source button
         self.btn_load_source = QPushButton(self.tr("Load Source Image"), self)
         self.btn_load_source.setToolTip(
-            "Select an open view to use as the source image.\n"
-            "This image will be split into LF and HF components."
+            self.tr("Select an open view to use as the source image.\n"
+            "This image will be split into LF and HF components.")
         )
         self.btn_load_source.clicked.connect(self._load_source_from_view)
         left.addWidget(self.btn_load_source)
@@ -679,22 +679,22 @@ class FrequencySeperationTab(QWidget):
         self.cb_use_gpu.setEnabled(_CUDA_AVAILABLE)
         if _CUDA_AVAILABLE:
             self.cb_use_gpu.setToolTip(
-                f"Enable CUDA GPU acceleration for faster processing.\n"
-                f"GPU detected: {_CUDA_DEVICE_NAME}\n\n"
-                f"GPU-accelerated operations:\n"
-                f"  • LF/HF Split: Gaussian, Bilateral, Median blur\n"
-                f"  • HF Scale: Multiplication\n"
-                f"  • HF Denoise: Non-Local Means\n\n"
-                f"CPU-only (no GPU support):\n"
-                f"  • Wavelet Sharpening (PyWavelets library)\n\n"
-                f"Uncheck to force CPU-only processing."
+                self.tr("Enable CUDA GPU acceleration for faster processing.\n"
+                "GPU detected: {0}\n\n"
+                "GPU-accelerated operations:\n"
+                "  • LF/HF Split: Gaussian, Bilateral, Median blur\n"
+                "  • HF Scale: Multiplication\n"
+                "  • HF Denoise: Non-Local Means\n\n"
+                "CPU-only (no GPU support):\n"
+                "  • Wavelet Sharpening (PyWavelets library)\n\n"
+                "Uncheck to force CPU-only processing.").format(_CUDA_DEVICE_NAME)
             )
         else:
             self.cb_use_gpu.setToolTip(
-                "GPU acceleration not available.\n"
+                self.tr("GPU acceleration not available.\n"
                 "OpenCV was not built with CUDA support,\n"
                 "or no CUDA-capable GPU was detected.\n\n"
-                "To enable GPU: reinstall OpenCV with CUDA support."
+                "To enable GPU: reinstall OpenCV with CUDA support.")
             )
         self.cb_use_gpu.toggled.connect(self._on_gpu_toggled)
         left.addWidget(self.cb_use_gpu)
@@ -706,35 +706,35 @@ class FrequencySeperationTab(QWidget):
         self.method_combo = QComboBox(self)
         self.method_combo.addItems(['Gaussian', 'Median', 'Bilateral'])
         self.method_combo.setToolTip(
-            "Blur method for creating the Low Frequency layer:\n"
+            self.tr("Blur method for creating the Low Frequency layer:\n"
             "- Gaussian: Smooth blur, best for general use\n"
             "- Median: Preserves edges, good for noise reduction\n"
-            "- Bilateral: Edge-aware blur, protects fine boundaries"
+            "- Bilateral: Edge-aware blur, protects fine boundaries")
         )
         self.method_combo.currentTextChanged.connect(self._on_method_changed)
         left.addWidget(self.method_combo)
 
         # Radius (0..100 mapped to 0.1..100)
-        self.radius_label = QLabel("Radius: 10.00", self); left.addWidget(self.radius_label)
+        self.radius_label = QLabel(self.tr("Radius: {0:.2f}").format(10.0), self); left.addWidget(self.radius_label)
         self.radius_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.radius_slider.setRange(1, 100); self.radius_slider.setValue(50)
         self.radius_slider.setToolTip(
-            "Controls the frequency cutoff between LF and HF:\n"
+            self.tr("Controls the frequency cutoff between LF and HF:\n"
             "- Small radius: Only finest details go to HF (subtle sharpening)\n"
             "- Large radius: More structure captured in HF (aggressive sharpening)\n"
-            "Larger values = smoother LF, more detail in HF"
+            "Larger values = smoother LF, more detail in HF")
         )
         self.radius_slider.valueChanged.connect(self._on_radius_changed)
         left.addWidget(self.radius_slider)
 
         # Tolerance (for Bilateral only)
-        self.tol_label = QLabel("Tolerance: 50%", self); left.addWidget(self.tol_label)
+        self.tol_label = QLabel(self.tr("Tolerance: {0}%").format(50), self); left.addWidget(self.tol_label)
         self.tol_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.tol_slider.setRange(0, 100); self.tol_slider.setValue(50)
         self.tol_slider.setToolTip(
-            "Bilateral filter edge sensitivity (only for Bilateral method):\n"
+            self.tr("Bilateral filter edge sensitivity (only for Bilateral method):\n"
             "- Low: Strong edge preservation, less smoothing across edges\n"
-            "- High: More smoothing, edges less protected"
+            "- High: More smoothing, edges less protected")
         )
         self.tol_slider.valueChanged.connect(self._on_tol_changed)
         left.addWidget(self.tol_slider)
@@ -742,18 +742,18 @@ class FrequencySeperationTab(QWidget):
 
         # Apply separation with undo button
         split_row = QHBoxLayout()
-        self.btn_apply_split = QPushButton(self.tr("Apply - Split HF & LF"), self)
+        self.btn_apply_split = QPushButton(self.tr("Apply - Split HF && LF"), self)
         self.btn_apply_split.setToolTip(
-            "Split the image into Low Frequency and High Frequency components.\n"
+            self.tr("Split the image into Low Frequency and High Frequency components.\n"
             "LF = blurred image (smooth tones, gradients)\n"
-            "HF = original - LF (fine details, edges, stars)"
+            "HF = original - LF (fine details, edges, stars)")
         )
         self.btn_apply_split.clicked.connect(self._apply_separation)
         split_row.addWidget(self.btn_apply_split)
 
         self.btn_undo_split = QToolButton(self)
         self.btn_undo_split.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
-        self.btn_undo_split.setToolTip("Undo last split (restore previous LF/HF)")
+        self.btn_undo_split.setToolTip(self.tr("Undo last split (restore previous LF/HF)"))
         self.btn_undo_split.setEnabled(False)
         self.btn_undo_split.clicked.connect(self._undo_split)
         split_row.addWidget(self.btn_undo_split)
@@ -764,17 +764,17 @@ class FrequencySeperationTab(QWidget):
         # Sharpen scale
         self.cb_scale = QCheckBox(self.tr("Enable Sharpen Scale"), self)
         self.cb_scale.setChecked(True)
-        self.cb_scale.setToolTip("Enable/disable simple multiplication of HF details")
+        self.cb_scale.setToolTip(self.tr("Enable/disable simple multiplication of HF details"))
         left.addWidget(self.cb_scale)
-        self.scale_label = QLabel("Sharpen Scale: 1.00", self); left.addWidget(self.scale_label)
+        self.scale_label = QLabel(self.tr("Sharpen Scale: {0:.2f}").format(1.0), self); left.addWidget(self.scale_label)
         self.scale_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.scale_slider.setRange(10, 300); self.scale_slider.setValue(100)
         self.scale_slider.setToolTip(
-            "Multiplier for High Frequency details:\n"
+            self.tr("Multiplier for High Frequency details:\n"
             "- 1.0: No change\n"
             "- < 1.0: Reduce detail intensity (soften)\n"
             "- > 1.0: Amplify details (sharpen)\n"
-            "Simple and fast way to adjust overall sharpness"
+            "Simple and fast way to adjust overall sharpness")
         )
         self.scale_slider.valueChanged.connect(lambda v: self._update_scale(v))
         left.addWidget(self.scale_slider)
@@ -782,23 +782,23 @@ class FrequencySeperationTab(QWidget):
         # Wavelet
         self.cb_wavelet = QCheckBox(self.tr("Enable Wavelet Sharpening"), self)
         self.cb_wavelet.setChecked(True)
-        self.cb_wavelet.setToolTip("Enable/disable multi-scale wavelet enhancement")
+        self.cb_wavelet.setToolTip(self.tr("Enable/disable multi-scale wavelet enhancement"))
         left.addWidget(self.cb_wavelet)
-        self.wavelet_level_label = QLabel("Wavelet Level: 2", self); left.addWidget(self.wavelet_level_label)
+        self.wavelet_level_label = QLabel(self.tr("Wavelet Level: {0}").format(2), self); left.addWidget(self.wavelet_level_label)
         self.wavelet_level_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.wavelet_level_slider.setRange(1, 5); self.wavelet_level_slider.setValue(2)
-        self.wavelet_level_slider.setToolTip("Wavelet decomposition levels (1-5): Higher = larger features affected")
+        self.wavelet_level_slider.setToolTip(self.tr("Wavelet decomposition levels (1-5): Higher = larger features affected"))
         self.wavelet_level_slider.valueChanged.connect(lambda v: self._update_wavelet_level(v))
         left.addWidget(self.wavelet_level_slider)
 
-        self.wavelet_boost_label = QLabel("Wavelet Boost: 1.20", self); left.addWidget(self.wavelet_boost_label)
+        self.wavelet_boost_label = QLabel(self.tr("Wavelet Boost: {0:.2f}").format(1.2), self); left.addWidget(self.wavelet_boost_label)
         self.wavelet_boost_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.wavelet_boost_slider.setRange(50, 300); self.wavelet_boost_slider.setValue(120)
         self.wavelet_boost_slider.setToolTip(
-            "Multiplier for wavelet detail coefficients:\n"
+            self.tr("Multiplier for wavelet detail coefficients:\n"
             "- 1.0: No change\n"
             "- > 1.0: Enhance details at each wavelet scale\n"
-            "Works with Wavelet Level to control multi-scale sharpening"
+            "Works with Wavelet Level to control multi-scale sharpening")
         )
         self.wavelet_boost_slider.valueChanged.connect(lambda v: self._update_wavelet_boost(v))
         left.addWidget(self.wavelet_boost_slider)
@@ -807,18 +807,18 @@ class FrequencySeperationTab(QWidget):
         self.cb_denoise = QCheckBox(self.tr("Enable HF Denoise"), self)
         self.cb_denoise.setChecked(False)
         self.cb_denoise.setToolTip(
-            "Apply noise reduction to the HF layer only.\n"
-            "Reduces noise while preserving the smooth LF layer intact."
+            self.tr("Apply noise reduction to the HF layer only.\n"
+            "Reduces noise while preserving the smooth LF layer intact.")
         )
         left.addWidget(self.cb_denoise)
-        self.denoise_label = QLabel("Denoise Strength: 3.00", self); left.addWidget(self.denoise_label)
+        self.denoise_label = QLabel(self.tr("Denoise Strength: {0:.2f}").format(3.0), self); left.addWidget(self.denoise_label)
         self.denoise_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.denoise_slider.setRange(0, 50); self.denoise_slider.setValue(30)  # 0..5.0 (we'll /10)
         self.denoise_slider.setToolTip(
-            "Strength of Non-Local Means denoising on HF:\n"
+            self.tr("Strength of Non-Local Means denoising on HF:\n"
             "- Low: Subtle noise reduction, preserves fine detail\n"
             "- High: Aggressive noise removal, may soften details\n"
-            "Only affects the HF component"
+            "Only affects the HF component")
         )
         self.denoise_slider.valueChanged.connect(lambda v: self._update_denoise(v))
         left.addWidget(self.denoise_slider)
@@ -828,15 +828,15 @@ class FrequencySeperationTab(QWidget):
         self.btn_apply_hf = QPushButton(self.tr("Apply HF Enhancements"), self)
         self.btn_apply_hf.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.btn_apply_hf.setToolTip(
-            "Apply the enabled HF enhancements (scale, wavelet, denoise)\n"
-            "to the High Frequency layer. Can be applied multiple times."
+            self.tr("Apply the enabled HF enhancements (scale, wavelet, denoise)\n"
+            "to the High Frequency layer. Can be applied multiple times.")
         )
         self.btn_apply_hf.clicked.connect(self._apply_hf_enhancements)
         row.addWidget(self.btn_apply_hf)
 
         self.btn_undo_hf = QToolButton(self)
         self.btn_undo_hf.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
-        self.btn_undo_hf.setToolTip("Undo last HF enhancement (restores previous HF state)")
+        self.btn_undo_hf.setToolTip(self.tr("Undo last HF enhancement (restores previous HF state)"))
         self.btn_undo_hf.setEnabled(False)
         self.btn_undo_hf.clicked.connect(self._undo_hf)
         row.addWidget(self.btn_undo_hf)
@@ -845,25 +845,25 @@ class FrequencySeperationTab(QWidget):
         # Push buttons
         push_row = QHBoxLayout()
         self.btn_push_lf = QPushButton(self.tr("Push LF"), self)
-        self.btn_push_lf.setToolTip("Open the Low Frequency layer in a new view for separate editing")
+        self.btn_push_lf.setToolTip(self.tr("Open the Low Frequency layer in a new view for separate editing"))
         self.btn_push_lf.clicked.connect(lambda: self._push_array(self.low_freq_image, "LF"))
         self.btn_push_hf = QPushButton(self.tr("Push HF"), self)
-        self.btn_push_hf.setToolTip("Open the High Frequency layer in a new view for separate editing")
+        self.btn_push_hf.setToolTip(self.tr("Open the High Frequency layer in a new view for separate editing"))
         self.btn_push_hf.clicked.connect(lambda: self._push_array(self._hf_display_for_push(), "HF"))
         push_row.addWidget(self.btn_push_lf); push_row.addWidget(self.btn_push_hf)
         left.addLayout(push_row)
 
         # --- Load from VIEW (active subwindow) ---
         load_row = QHBoxLayout()
-        self.btn_load_lf_view = QPushButton("Load LF (View)", self)
+        self.btn_load_lf_view = QPushButton(self.tr("Load LF (View)"), self)
         self.btn_load_lf_view.setToolTip(
-            "Replace the LF layer with an image from another open view.\n"
-            "Useful for loading an externally processed LF back in."
+            self.tr("Replace the LF layer with an image from another open view.\n"
+            "Useful for loading an externally processed LF back in.")
         )
-        self.btn_load_hf_view = QPushButton("Load HF (View)", self)
+        self.btn_load_hf_view = QPushButton(self.tr("Load HF (View)"), self)
         self.btn_load_hf_view.setToolTip(
-            "Replace the HF layer with an image from another open view.\n"
-            "Useful for loading an externally processed HF back in."
+            self.tr("Replace the HF layer with an image from another open view.\n"
+            "Useful for loading an externally processed HF back in.")
         )
         self.btn_load_hf_view.clicked.connect(lambda: self._load_component_from_view("HF"))
         self.btn_load_lf_view.clicked.connect(lambda: self._load_component_from_view("LF"))
@@ -876,18 +876,18 @@ class FrequencySeperationTab(QWidget):
         combine_row = QHBoxLayout()
         self.btn_combine_update = QPushButton(self.tr("Combine → Update"), self)
         self.btn_combine_update.setToolTip(
-            "Recombine LF + HF and apply back to the source document.\n"
+            self.tr("Recombine LF + HF and apply back to the source document.\n"
             "Result = clip(LF + HF, 0, 1)\n"
-            "If a mask is active, blends with original using the mask."
+            "If a mask is active, blends with original using the mask.")
         )
         self.btn_combine_update.clicked.connect(self._combine_and_update_source)
         combine_row.addWidget(self.btn_combine_update)
 
         self.btn_combine_new = QPushButton(self.tr("Combine → New"), self)
         self.btn_combine_new.setToolTip(
-            "Recombine LF + HF and open in a new view.\n"
+            self.tr("Recombine LF + HF and open in a new view.\n"
             "Result = clip(LF + HF, 0, 1)\n"
-            "Leaves the source document unchanged."
+            "Leaves the source document unchanged.")
         )
         self.btn_combine_new.clicked.connect(self._combine_and_push_new)
         combine_row.addWidget(self.btn_combine_new)
@@ -898,16 +898,16 @@ class FrequencySeperationTab(QWidget):
         self.cb_preview_combined = QCheckBox(self.tr("Preview Combined"), self)
         self.cb_preview_combined.setChecked(False)
         self.cb_preview_combined.setToolTip(
-            "Preview the combined LF + HF result before applying.\n"
-            "Shows what the final image will look like."
+            self.tr("Preview the combined LF + HF result before applying.\n"
+            "Shows what the final image will look like.")
         )
         self.cb_preview_combined.toggled.connect(self._on_preview_combined_toggled)
         preview_row.addWidget(self.cb_preview_combined)
 
         self.btn_reset_all = QPushButton(self.tr("Reset All"), self)
         self.btn_reset_all.setToolTip(
-            "Reset all parameters to defaults and re-run separation.\n"
-            "Clears HF enhancement history and restores initial state."
+            self.tr("Reset all parameters to defaults and re-run separation.\n"
+            "Clears HF enhancement history and restores initial state.")
         )
         self.btn_reset_all.clicked.connect(self._reset_to_defaults)
         preview_row.addWidget(self.btn_reset_all)
@@ -924,7 +924,7 @@ class FrequencySeperationTab(QWidget):
             self.spinnerLabel.setMovie(mov)
             self._spinner = mov
         except Exception:
-            self.spinnerLabel.setText("Processing…")
+            self.spinnerLabel.setText(self.tr("Processing…"))
             self._spinner = None
         self.spinnerLabel.hide()
         left.addWidget(self.spinnerLabel)
@@ -936,9 +936,9 @@ class FrequencySeperationTab(QWidget):
         top_row = QHBoxLayout()
         top_row.addStretch(1)
 
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In (Mouse Wheel Up)")
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out (Mouse Wheel Down)")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit image to preview area")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In (Mouse Wheel Up)"))
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out (Mouse Wheel Down)"))
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit image to preview area"))
 
         self.btn_zoom_in.clicked.connect(lambda: self._zoom_at_pair(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom_at_pair(0.8))
@@ -957,10 +957,10 @@ class FrequencySeperationTab(QWidget):
         self.scrollHF = QScrollArea(self); self.scrollHF.setWidgetResizable(False); self.scrollHF.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scrollLF = QScrollArea(self); self.scrollLF.setWidgetResizable(False); self.scrollLF.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.labelHF = QLabel("High Frequency", self); self.labelHF.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.labelHF.setToolTip("High Frequency layer: fine details, edges, stars\n(displayed with +0.5 offset for visibility)")
-        self.labelLF = QLabel("Low Frequency", self); self.labelLF.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.labelLF.setToolTip("Low Frequency layer: smooth tones, gradients, nebulosity\nLeft-click and drag to pan (synced with HF)")
+        self.labelHF = QLabel(self.tr("High Frequency"), self); self.labelHF.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.labelHF.setToolTip(self.tr("High Frequency layer: fine details, edges, stars\n(displayed with +0.5 offset for visibility)"))
+        self.labelLF = QLabel(self.tr("Low Frequency"), self); self.labelLF.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.labelLF.setToolTip(self.tr("Low Frequency layer: smooth tones, gradients, nebulosity\nLeft-click and drag to pan (synced with HF)"))
 
         self.scrollHF.setWidget(self.labelHF)
         self.scrollLF.setWidget(self.labelLF)
@@ -1070,7 +1070,7 @@ class FrequencySeperationTab(QWidget):
         """
         doc = self._get_active_document()
         if doc is None or doc.image is None:
-            QMessageBox.warning(self, "From View", "No active view found with an image.")
+            QMessageBox.warning(self, self.tr("From View"), self.tr("No active view found with an image."))
             return
 
         # If this dialog was opened for an active document, it might be the same doc.
@@ -1080,7 +1080,7 @@ class FrequencySeperationTab(QWidget):
         try:
             imgc = self._coerce_to_ref(np.asarray(doc.image), ref)
         except Exception as e:
-            QMessageBox.critical(self, "From View", f"Shape/channel mismatch:\n{e}")
+            QMessageBox.critical(self, self.tr("From View"), self.tr("Shape/channel mismatch:\n{0}").format(e))
             return
 
         if self.image is None and self.low_freq_image is None and self.high_freq_image is None:
@@ -1165,7 +1165,7 @@ class FrequencySeperationTab(QWidget):
                         name = None
             if not name:
                 md = getattr(doc, "metadata", {}) or {}
-                name = md.get("display_name") or md.get("file_path") or "Untitled"
+                name = md.get("display_name") or md.get("file_path") or self.tr("Untitled")
                 import os
                 if isinstance(name, str):
                     name = os.path.basename(name)
@@ -1173,7 +1173,7 @@ class FrequencySeperationTab(QWidget):
 
         # Put active first
         if active_doc and active_doc in docs:
-            items.append((f"★ { _name_for(active_doc) } (active)", active_doc))
+            items.append((self.tr("★ {0} (active)").format(_name_for(active_doc)), active_doc))
             docs = [d for d in docs if d is not active_doc]
 
         for d in docs:
@@ -1184,8 +1184,8 @@ class FrequencySeperationTab(QWidget):
     def _select_document_via_dropdown(self, which: str | None = None) -> object | None:
         items = self._collect_open_documents()
         if not items:
-            QMessageBox.information(self, f"Select View for {which or ''}".strip(),
-                                    "No open views/documents found.")
+            QMessageBox.information(self, self.tr("Select View for {0}").format(which or '').strip(),
+                                    self.tr("No open views/documents found."))
             return None
         dlg = SelectViewDialog(self, items, which=which)
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -1211,7 +1211,7 @@ class FrequencySeperationTab(QWidget):
             scale = 65535.0 if (arr.dtype.itemsize >= 2) else 255.0
             return (arr.astype(np.float32) / scale)
         except Exception as e:
-            QMessageBox.warning(self, "Load from View", f"Could not read image from view:\n{e}")
+            QMessageBox.warning(self, self.tr("Load from View"), self.tr("Could not read image from view:\n{0}").format(e))
             return None
 
     def _load_component_from_view(self, which: str):
@@ -1244,9 +1244,9 @@ class FrequencySeperationTab(QWidget):
         if (self.low_freq_image is not None and self.high_freq_image is not None and
             self.low_freq_image.shape != self.high_freq_image.shape):
             QMessageBox.warning(
-                self, "Dimension Mismatch",
-                "Loaded image dimensions do not match the other component.\n"
-                "You can still view/edit, but Combine requires matching sizes."
+                self, self.tr("Dimension Mismatch"),
+                self.tr("Loaded image dimensions do not match the other component.\n"
+                "You can still view/edit, but Combine requires matching sizes.")
             )
 
         self._update_previews()
@@ -1271,7 +1271,8 @@ class FrequencySeperationTab(QWidget):
         self.is_mono = bool(md.get("is_mono", False))
 
         # Update label with document name
-        doc_name = getattr(doc, "name", None) or os.path.basename(self.filename) if self.filename else "(from view)"
+        doc_name = getattr(doc, "name", None) or (
+            os.path.basename(self.filename) if self.filename else self.tr("(from view)"))
         self.fileLabel.setText(doc_name)
 
         # Clear outputs and invalidate all caches
@@ -1350,7 +1351,7 @@ class FrequencySeperationTab(QWidget):
 
     def _load_hf_from_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load High-Frequency Image", "",
+            self, self.tr("Load High-Frequency Image"), "",
             "Images (*.tif *.tiff *.fits *.fit *.png *.xisf);;All Files (*)"
         )
         if not path:
@@ -1363,13 +1364,13 @@ class FrequencySeperationTab(QWidget):
             imgc = self._coerce_to_ref(img, ref)
             self.high_freq_image = imgc.astype(np.float32, copy=False)
             self._update_previews()
-            QMessageBox.information(self, "HF Loaded", os.path.basename(path))
+            QMessageBox.information(self, self.tr("HF Loaded"), os.path.basename(path))
         except Exception as e:
-            QMessageBox.critical(self, "Load HF", f"Failed to load HF:\n{e}")
+            QMessageBox.critical(self, self.tr("Load HF"), self.tr("Failed to load HF:\n{0}").format(e))
 
     def _load_lf_from_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Low-Frequency Image", "",
+            self, self.tr("Load Low-Frequency Image"), "",
             "Images (*.tif *.tiff *.fits *.fit *.png *.xisf);;All Files (*)"
         )
         if not path:
@@ -1382,9 +1383,9 @@ class FrequencySeperationTab(QWidget):
             imgc = self._coerce_to_ref(img, ref)
             self.low_freq_image = imgc.astype(np.float32, copy=False)
             self._update_previews()
-            QMessageBox.information(self, "LF Loaded", os.path.basename(path))
+            QMessageBox.information(self, self.tr("LF Loaded"), os.path.basename(path))
         except Exception as e:
-            QMessageBox.critical(self, "Load LF", f"Failed to load LF:\n{e}")
+            QMessageBox.critical(self, self.tr("Load LF"), self.tr("Failed to load LF:\n{0}").format(e))
 
     # --------------- helpers ---------------
     def _toggle_tol_enabled(self, on: bool):
@@ -1404,19 +1405,19 @@ class FrequencySeperationTab(QWidget):
 
     def _update_scale(self, v: int):
         self.sharpen_scale = v / 100.0
-        self.scale_label.setText(f"Sharpen Scale: {self.sharpen_scale:.2f}")
+        self.scale_label.setText(self.tr("Sharpen Scale: {0:.2f}").format(self.sharpen_scale))
 
     def _update_wavelet_level(self, v: int):
         self.wavelet_level = int(v)
-        self.wavelet_level_label.setText(f"Wavelet Level: {self.wavelet_level}")
+        self.wavelet_level_label.setText(self.tr("Wavelet Level: {0}").format(self.wavelet_level))
 
     def _update_wavelet_boost(self, v: int):
         self.wavelet_boost = v / 100.0
-        self.wavelet_boost_label.setText(f"Wavelet Boost: {self.wavelet_boost:.2f}")
+        self.wavelet_boost_label.setText(self.tr("Wavelet Boost: {0:.2f}").format(self.wavelet_boost))
 
     def _update_denoise(self, v: int):
         self.denoise_strength = v / 10.0
-        self.denoise_label.setText(f"Denoise Strength: {self.denoise_strength:.2f}")
+        self.denoise_label.setText(self.tr("Denoise Strength: {0:.2f}").format(self.denoise_strength))
 
     # --------------- image I/O hooks ---------------
     def set_image_from_doc(self, image: np.ndarray, metadata: dict | None, source_doc=None):
@@ -1430,7 +1431,7 @@ class FrequencySeperationTab(QWidget):
         self.original_header = md.get("original_header", None)
         self.is_mono = bool(md.get("is_mono", False))
         doc_name = getattr(source_doc, "name", None) if source_doc else None
-        self.fileLabel.setText(doc_name or (os.path.basename(self.filename) if self.filename else "(from view)"))
+        self.fileLabel.setText(doc_name or (os.path.basename(self.filename) if self.filename else self.tr("(from view)")))
         # clear outputs and invalidate all caches (base + scaled)
         self.low_freq_image = None
         self.high_freq_image = None
@@ -1455,11 +1456,11 @@ class FrequencySeperationTab(QWidget):
 
     def _on_radius_changed(self, v: int):
         self.radius = self._map_slider_to_radius(v)
-        self.radius_label.setText(f"Radius: {self.radius:.2f}")
+        self.radius_label.setText(self.tr("Radius: {0:.2f}").format(self.radius))
 
     def _on_tol_changed(self, v: int):
         self.tolerance = int(v)
-        self.tol_label.setText(f"Tolerance: {self.tolerance}%")
+        self.tol_label.setText(self.tr("Tolerance: {0}%").format(self.tolerance))
 
     def _on_gpu_toggled(self, checked: bool):
         self.use_gpu = checked
@@ -1467,7 +1468,7 @@ class FrequencySeperationTab(QWidget):
     # --------------- processing ---------------
     def _apply_separation(self):
         if self.image is None:
-            QMessageBox.warning(self, "No Image", "Load or select an image first.")
+            QMessageBox.warning(self, self.tr("No Image"), self.tr("Load or select an image first."))
             return
 
         # Save current state for undo (if we have existing LF/HF)
@@ -1538,13 +1539,13 @@ class FrequencySeperationTab(QWidget):
 
     def _on_sep_error(self, msg: str):
         self._show_spinner(False)
-        QMessageBox.critical(self, "Frequency Separation", msg)
+        QMessageBox.critical(self, self.tr("Frequency Separation"), msg)
 
     def _apply_hf_enhancements(self):
         global _CUDA_DENOISE_INITIALIZED
 
         if self.high_freq_image is None:
-            QMessageBox.information(self, "HF", "No HF image to enhance.")
+            QMessageBox.information(self, "HF", self.tr("No HF image to enhance."))
             return
 
         # history for undo
@@ -1605,7 +1606,7 @@ class FrequencySeperationTab(QWidget):
             self._invalidate_combined_cache()
             self._update_previews()
         except Exception as e:
-            QMessageBox.critical(self, "HF Enhancement Error", str(e))
+            QMessageBox.critical(self, self.tr("HF Enhancement Error"), str(e))
         finally:
             self.unsetCursor()
 
@@ -1675,7 +1676,7 @@ class FrequencySeperationTab(QWidget):
 
     def _on_hf_error(self, msg: str):
         self._show_spinner(False)
-        QMessageBox.critical(self, "HF Enhancements", msg)
+        QMessageBox.critical(self, self.tr("HF Enhancements"), msg)
 
     def _undo_hf(self):
         if not self._hf_history:
@@ -1736,35 +1737,35 @@ class FrequencySeperationTab(QWidget):
         self.radius_slider.blockSignals(True)
         self.radius_slider.setValue(50)  # maps to 10.0
         self.radius_slider.blockSignals(False)
-        self.radius_label.setText("Radius: 10.00")
+        self.radius_label.setText(self.tr("Radius: {0:.2f}").format(10.0))
 
         self.tol_slider.blockSignals(True)
         self.tol_slider.setValue(50)
         self.tol_slider.blockSignals(False)
-        self.tol_label.setText("Tolerance: 50%")
+        self.tol_label.setText(self.tr("Tolerance: {0}%").format(50))
 
         self.cb_scale.setChecked(True)
         self.scale_slider.blockSignals(True)
         self.scale_slider.setValue(100)
         self.scale_slider.blockSignals(False)
-        self.scale_label.setText("Sharpen Scale: 1.00")
+        self.scale_label.setText(self.tr("Sharpen Scale: {0:.2f}").format(1.0))
 
         self.cb_wavelet.setChecked(True)
         self.wavelet_level_slider.blockSignals(True)
         self.wavelet_level_slider.setValue(2)
         self.wavelet_level_slider.blockSignals(False)
-        self.wavelet_level_label.setText("Wavelet Level: 2")
+        self.wavelet_level_label.setText(self.tr("Wavelet Level: {0}").format(2))
 
         self.wavelet_boost_slider.blockSignals(True)
         self.wavelet_boost_slider.setValue(120)
         self.wavelet_boost_slider.blockSignals(False)
-        self.wavelet_boost_label.setText("Wavelet Boost: 1.20")
+        self.wavelet_boost_label.setText(self.tr("Wavelet Boost: {0:.2f}").format(1.2))
 
         self.cb_denoise.setChecked(False)
         self.denoise_slider.blockSignals(True)
         self.denoise_slider.setValue(30)
         self.denoise_slider.blockSignals(False)
-        self.denoise_label.setText("Denoise Strength: 3.00")
+        self.denoise_label.setText(self.tr("Denoise Strength: {0:.2f}").format(3.0))
 
         # Clear HF enhancement history
         self._hf_history.clear()
@@ -1913,7 +1914,7 @@ class FrequencySeperationTab(QWidget):
                 self.labelLF.setPixmap(scaled)
                 self.labelLF.resize(scaled.size())
             else:
-                self.labelLF.setText("Combined (no data)")
+                self.labelLF.setText(self.tr("Combined (no data)"))
                 self.labelLF.resize(self.labelLF.sizeHint())
         else:
             # Normal mode: show both panels with LF and HF separate
@@ -1925,7 +1926,7 @@ class FrequencySeperationTab(QWidget):
                 self.labelLF.setPixmap(lf_scaled)
                 self.labelLF.resize(lf_scaled.size())
             else:
-                self.labelLF.setText("Low Frequency")
+                self.labelLF.setText(self.tr("Low Frequency"))
                 self.labelLF.resize(self.labelLF.sizeHint())
 
             # HF
@@ -1934,7 +1935,7 @@ class FrequencySeperationTab(QWidget):
                 self.labelHF.setPixmap(hf_scaled)
                 self.labelHF.resize(hf_scaled.size())
             else:
-                self.labelHF.setText("High Frequency")
+                self.labelHF.setText(self.tr("High Frequency"))
                 self.labelHF.resize(self.labelHF.sizeHint())
 
         # center if smaller than viewport
@@ -2005,12 +2006,12 @@ class FrequencySeperationTab(QWidget):
     # --------------- pushing to new views ---------------
     def _push_array(self, arr: np.ndarray | None, title: str):
         if arr is None:
-            QMessageBox.information(self, "Push", f"No {title} image to push.")
+            QMessageBox.information(self, self.tr("Push"), self.tr("No {0} image to push.").format(title))
             return
         mw = self._find_main_window()
         dm = getattr(mw, "docman", None) or self.doc_manager
         if not dm:
-            QMessageBox.critical(self, "UI", "DocManager not available.")
+            QMessageBox.critical(self, "UI", self.tr("DocManager not available."))
             return
         try:
             if hasattr(dm, "open_array"):
@@ -2025,7 +2026,7 @@ class FrequencySeperationTab(QWidget):
                 from setiastro.saspro.subwindow import ImageSubWindow
                 sw = ImageSubWindow(doc, parent=mw); sw.setWindowTitle(title); sw.show()
         except Exception as e:
-            QMessageBox.critical(self, "Push", f"Failed to open new view:\n{e}")
+            QMessageBox.critical(self, self.tr("Push"), self.tr("Failed to open new view:\n{0}").format(e))
 
     def _push_to_active(self, img: np.ndarray, step_name: str, extra_md: dict | None = None):
         dm = self.doc_manager
@@ -2034,7 +2035,7 @@ class FrequencySeperationTab(QWidget):
             mw = self.parent() or self.window()
             dm = getattr(mw, "docman", None)
         if dm is None:
-            QMessageBox.critical(self, "Error", "DocManager not available; cannot apply to active view.")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("DocManager not available; cannot apply to active view."))
             return
 
         # build metadata (keep what we know so history/exports are consistent)
@@ -2057,7 +2058,7 @@ class FrequencySeperationTab(QWidget):
             else:
                 raise RuntimeError("DocManager has no known update method")
         except Exception as e:
-            QMessageBox.critical(self, "Apply Failed", f"Could not apply result to the active view:\n{e}")
+            QMessageBox.critical(self, self.tr("Apply Failed"), self.tr("Could not apply result to the active view:\n{0}").format(e))
             return
 
 
@@ -2071,7 +2072,7 @@ class FrequencySeperationTab(QWidget):
     def _get_combined_result(self) -> tuple[np.ndarray, dict] | None:
         """Compute combined image and build metadata. Returns (blended_image, metadata) or None."""
         if self.low_freq_image is None or self.high_freq_image is None:
-            QMessageBox.information(self, "Combine", "LF or HF missing.")
+            QMessageBox.information(self, self.tr("Combine"), self.tr("LF or HF missing."))
             return None
 
         combined = np.clip(self.low_freq_image + self.high_freq_image, 0.0, 1.0).astype(np.float32)
@@ -2113,7 +2114,7 @@ class FrequencySeperationTab(QWidget):
                     raise RuntimeError("Source document has no known update method")
                 return
             except Exception as e:
-                QMessageBox.critical(self, "Apply Failed", f"Could not apply to source document:\n{e}")
+                QMessageBox.critical(self, self.tr("Apply Failed"), self.tr("Could not apply to source document:\n{0}").format(e))
                 return
 
         # Fallback: try the injected doc
@@ -2121,7 +2122,7 @@ class FrequencySeperationTab(QWidget):
             try:
                 self.doc.apply_edit(blended, metadata=md, step_name=step_name)
             except Exception as e:
-                QMessageBox.critical(self, "Apply Failed", f"Could not apply to document:\n{e}")
+                QMessageBox.critical(self, self.tr("Apply Failed"), self.tr("Could not apply to document:\n{0}").format(e))
             return
 
         # Last fallback: push to active via DocManager
@@ -2391,7 +2392,7 @@ class SelectViewDialog(QDialog):
         super().__init__(parent)
         # Use a nice default title if none provided
         if title is None:
-            title = f"Select View for {which.upper()}" if which else "Select View"
+            title = self.tr("Select View for {0}").format(which.upper()) if which else self.tr("Select View")
         self.setWindowTitle(title)
 
         self._items = items
@@ -2401,8 +2402,8 @@ class SelectViewDialog(QDialog):
 
         form = QFormLayout(self)
         if which:
-            form.addRow(QLabel(f"Load into: {which.upper()}"))
-        form.addRow("View:", self.combo)
+            form.addRow(QLabel(self.tr("Load into: {0}").format(which.upper())))
+        form.addRow(self.tr("View:"), self.combo)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                 QDialogButtonBox.StandardButton.Cancel, parent=self)

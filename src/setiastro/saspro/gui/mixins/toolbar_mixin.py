@@ -32,7 +32,7 @@ from setiastro.saspro.resources import (
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,gaia_path,surfacemosaic_path,
-    signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path, unwarp_path,
+    signature_icon_path, livestacking_path, quickstack_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path, unwarp_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path, slap_path,satchroma_path, fx_path,
@@ -134,10 +134,10 @@ class ToolbarMixin:
             menu.addAction(self.act_display_sigma)
             menu.addAction(self.act_no_black_clip)
 
-            presets = QMenu("Presets", menu)
-            a_norm = presets.addAction("Normal (target 0.30, σ 5)")
-            a_midy = presets.addAction("Mid (target 0.40, σ 3)")
-            a_hard = presets.addAction("Hard (target 0.50, σ 2)")
+            presets = QMenu(self.tr("Presets"), menu)
+            a_norm = presets.addAction(self.tr("Normal (target 0.30, σ 5)"))
+            a_midy = presets.addAction(self.tr("Mid (target 0.40, σ 3)"))
+            a_hard = presets.addAction(self.tr("Hard (target 0.50, σ 2)"))
             menu.addMenu(presets)
             menu.addSeparator()
             menu.addAction(self.act_bake_display_stretch)
@@ -280,7 +280,6 @@ class ToolbarMixin:
         tb_tl.setSettingsKey("Toolbar/Tools")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_tl)
 
-        tb_tl.addAction(self.act_blink)  # Tools start here; Blink shows with QIcon(blink_path)
         tb_tl.addAction(self.act_ppp)    # Perfect Palette Picker
         tb_tl.addAction(self.act_nbtorgb)
         
@@ -294,8 +293,6 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_narrowband_integration)
         tb_tl.addAction(self.act_image_combine)
         tb_tl.addAction(self.act_hdr_composition)
-        tb_tl.addAction(self.act_magnitude)
-        tb_tl.addAction(self.act_snr)
         tb_tl.addAction(self.act_slap_toolkit)
         tb_tl.addAction(self.act_planet_projection)   # on Star Stuff until 1.24.8
         tb_tl.addAction(self.act_flythrough)
@@ -335,6 +332,7 @@ class ToolbarMixin:
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_stack)
 
         tb_stack.addAction(self.act_stacking_suite)
+        tb_stack.addAction(self.act_quick_stack)
         tb_stack.addAction(self.act_live_stacking)
         tb_stack.addAction(self.act_planetary_stacker)
         tb_stack.addAction(self.act_star_align)
@@ -357,7 +355,8 @@ class ToolbarMixin:
         tb_star.setSettingsKey("Toolbar/StarStuff")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb_star)
 
-        tb_star.addAction(self.act_image_peeker)
+        tb_star.addAction(self.act_blink)          # on Tools until 2.0, as are
+        tb_star.addAction(self.act_image_peeker)   # Magnitude and SNR below
         tb_star.addAction(self.act_psf_viewer)
         tb_star.addAction(self.act_dither_analysis)
         tb_star.addAction(self.act_plate_solve)
@@ -365,6 +364,8 @@ class ToolbarMixin:
         tb_star.addAction(self.act_supernova_hunter)
         tb_star.addAction(self.act_exo_detector)
         tb_star.addAction(self.act_isophote)
+        tb_star.addAction(self.act_magnitude)
+        tb_star.addAction(self.act_snr)
         tb_star.addAction(self.act_gaia_database)
 
         self._restore_toolbar_order(tb_star, "Toolbar/StarStuff")
@@ -426,8 +427,12 @@ class ToolbarMixin:
         #tb_hidden.addAction(self.act_narrowband_normalization)
         tb_hidden.setVisible(False)  # <- always hidden
 
-        # Before memberships: drop drags that would pin a moved tool to Analysis.
+        self._arrange_toolbar_rows()
+
+        # Before memberships: drop drags that would pin a moved tool to the
+        # toolbar it left.
         self._migrate_star_stuff_split()
+        self._migrate_analysis_move()
 
         # This can move actions between toolbars, so do it after each toolbar has its base order restored.
         self._restore_toolbar_memberships()
@@ -454,10 +459,34 @@ class ToolbarMixin:
         self._rebind_extract_luma_dropdown()
         self._apply_toolbar_icon_size()
 
+    # Default toolbar rows, by object name ("Star Stuff" is Analysis). One row
+    # showed 41 of the 108 buttons at 1920 px wide, with eight toolbars down to
+    # a single icon. When a row doesn't fit, its last toolbars shrink first.
+    _TOOLBAR_ROWS = (
+        ("View", "Stacking", "Tools", "Star Stuff", "What's In My..."),
+        ("Functions", "Smart Tools", "Masks", "Bundles", "Geometry", "Hidden"),
+    )
+
+    def _arrange_toolbar_rows(self):
+        """Lay the toolbars out in the default rows. A saved layout, restored
+        after this, puts them wherever the user had them."""
+        from setiastro.saspro.shortcuts import DraggableToolBar
+        area = Qt.ToolBarArea.TopToolBarArea
+        bars = {tb.objectName(): tb for tb in self.findChildren(DraggableToolBar)}
+        for i, names in enumerate(self._TOOLBAR_ROWS):
+            if i:
+                self.addToolBarBreak(area)
+            for name in names:
+                tb = bars.pop(name, None)
+                if tb is not None:
+                    self.addToolBar(area, tb)
+        for tb in bars.values():                 # one the table doesn't list
+            self.addToolBar(area, tb)
+
     def _apply_toolbar_icon_size(self):
         from PyQt6.QtCore import QSize
         from setiastro.saspro.shortcuts import DraggableToolBar
-        size = int(self.settings.value("toolbar/icon_size", 24, type=int))
+        size = int(self.settings.value("toolbar/icon_size", 20, type=int))
         qs = QSize(size, size)
         for tb in self.findChildren(DraggableToolBar):
             tb.setIconSize(qs)
@@ -570,7 +599,10 @@ class ToolbarMixin:
             # ============================================================
             act = self._luma_sensor_actions.get(key)
             if act is None:
-                act = parent_menu.addAction(self.tr(display_name))
+                # Owned by the window: a menu's own action would be deleted with
+                # its toolbar button, leaving this cache with dead ones.
+                act = QAction(self.tr(display_name), self)
+                parent_menu.addAction(act)
                 act.setCheckable(True)
                 act.setData(key)  # IMPORTANT: enables group.triggered to set luma_method
 
@@ -989,7 +1021,7 @@ class ToolbarMixin:
         self.act_zoom_fit.setShortcut(QKeySequence("Ctrl+0"))
         self.act_zoom_fit.triggered.connect(self._zoom_active_fit)
         self.act_zoom_fit.setCheckable(True)
-        self._linux_force_text_action(self.act_zoom_fit, "Fit")
+        self._linux_force_text_action(self.act_zoom_fit, self.tr("Fit"))
 
         self.act_auto_fit_resize = QAction(self.tr("Auto-fit on Resize"), self)
         self.act_auto_fit_resize.setCheckable(True)
@@ -1187,9 +1219,9 @@ class ToolbarMixin:
             self._luma_group.addAction(act)
             return act
 
-        self.act_luma_rec709  = _mk("rec709",  "Broadband RGB (Rec.709)")
-        self.act_luma_max     = _mk("max",     "Narrowband mappings (Max)")
-        self.act_luma_snr     = _mk("snr",     "Unequal Noise (SNR)")
+        self.act_luma_rec709  = _mk("rec709",  self.tr("Broadband RGB (Rec.709)"))
+        self.act_luma_max     = _mk("max",     self.tr("Narrowband mappings (Max)"))
+        self.act_luma_snr     = _mk("snr",     self.tr("Unequal Noise (SNR)"))
         self.act_luma_rec601  = _mk("rec601",  "Rec.601")
         self.act_luma_rec2020 = _mk("rec2020", "Rec.2020")
 
@@ -1380,7 +1412,7 @@ class ToolbarMixin:
         self.actSyQonTools = QAction(syqon_icon, self.tr("SyQon Tools..."), self)
         self.actSyQonTools.triggered.connect(self._open_syqon_tools)
 
-        self.act_rcastro = QAction(QIcon(rcastro_path), "RC-Astro Tools…", self)
+        self.act_rcastro = QAction(QIcon(rcastro_path), self.tr("RC-Astro Tools…"), self)
         self.act_rcastro.setStatusTip(self.tr("Tools from RC-Astro (e.g. BXT, NXT, SXT)"))
         self.act_rcastro.triggered.connect(self._open_rcastro)
 
@@ -1465,6 +1497,11 @@ class ToolbarMixin:
         self.act_stacking_suite.setIconVisibleInMenu(True)
         self.act_stacking_suite.setStatusTip(self.tr("Stacking! Darks, Flats, Lights, Calibration, Drizzle, and more!!"))
         self.act_stacking_suite.triggered.connect(self._open_stacking_suite)
+
+        self.act_quick_stack = QAction(QIcon(quickstack_path), self.tr("Quick Stack..."), self)
+        self.act_quick_stack.setIconVisibleInMenu(True)
+        self.act_quick_stack.setStatusTip(self.tr("Fast trimmed-mean stack of a set of subs, aligned by position and rotation"))
+        self.act_quick_stack.triggered.connect(self._open_quick_stack)
 
         self.act_live_stacking = QAction(QIcon(livestacking_path), self.tr("Live Stacking..."), self)
         self.act_live_stacking.setIconVisibleInMenu(True)
@@ -1690,8 +1727,9 @@ class ToolbarMixin:
         self.act_bored.setShortcut(QKeySequence("Ctrl+Alt+M"))
         self.act_bored.triggered.connect(self._launch_bored_minigame)
         
-        self.act_welcome = QAction(self.tr("Show Welcome Screen…"), self)
-        self.act_welcome.setStatusTip(self.tr("Show the SASpro welcome screen again"))
+        self.act_welcome = QAction(self.tr("Welcome and Setup…"), self)
+        self.act_welcome.setStatusTip(self.tr(
+            "Install hardware acceleration, the AI models and the Gaia catalogs, or change layout"))
         self.act_welcome.triggered.connect(self._show_welcome)
 
         self.act_first_steps = QAction(self.tr("First Steps Tour…"), self)
@@ -1814,6 +1852,7 @@ class ToolbarMixin:
         reg("surface_mosaic", self.act_surface_mosaic)
         reg("image_peeker", self.act_image_peeker)
         reg("live_stacking", self.act_live_stacking)
+        reg("quick_stack", self.act_quick_stack)
         reg("stacking_suite", self.act_stacking_suite)
         reg("planet_projection", self.act_planet_projection)
         reg("supernova_hunter", self.act_supernova_hunter)
@@ -1855,7 +1894,7 @@ class ToolbarMixin:
         ok = QMessageBox.question(
             self, self.tr("Reset to Factory Layout"),
             self.tr("Reset the workspace to how a new install starts?\n\n"
-                    "\u2022 Toolbars: default icons, order and positions, nothing hidden.\n"
+                    "\u2022 Toolbars: default icons and icon size, order and positions, nothing hidden.\n"
                     "\u2022 Panels: all closed and back in their default places. Each "
                     "keeps its button on the edge rail.\n"
                     "\u2022 Gray theme, with the built-in SetiAstro background at 20% "
@@ -1865,13 +1904,17 @@ class ToolbarMixin:
             QMessageBox.StandardButton.Cancel)
         if ok != QMessageBox.StandardButton.Reset:
             return
+        self._apply_factory_layout()
 
+    def _apply_factory_layout(self):
+        """Reset to Factory Layout without the question."""
         # 1) Clear global toolbar persistence
         keys_to_clear = [
             "Toolbar/Assignments",
             "Toolbar/HiddenPrev",
             "Toolbar/HiddenMigrationDone",
             "Toolbar/StarStuffSplitDone",
+            "Toolbar/AnalysisMoveDone",
 
             # Per-toolbar order lists
             "Toolbar/View",
@@ -1918,7 +1961,19 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        # 3) Rebuild toolbars from code defaults
+        # 3) Rebuild toolbars from code defaults, at the default icon size (a
+        # layout from before 2.0 brings its own back).
+        from setiastro.saspro import workspace_layout
+        self.settings.setValue(workspace_layout.ICON_SIZE_KEY, workspace_layout.ICON_SIZE_DEFAULT)
+        self._rebuild_toolbars()
+
+        # 4) Toolbar rows, panels, theme and background, as on a new install.
+        reset_ws = getattr(self, "_reset_workspace_to_factory", None)
+        if reset_ws is not None:
+            reset_ws()
+
+    def _rebuild_toolbars(self):
+        """Build the toolbars again from code and the saved toolbar settings."""
         # Safest approach: remove existing toolbars and rebuild.
         from setiastro.saspro.shortcuts import DraggableToolBar
         # Detach each old toolbar now, not just deleteLater(): that only runs on
@@ -1946,12 +2001,6 @@ class ToolbarMixin:
         tb_hidden = self._hidden_toolbar()
         if tb_hidden:
             tb_hidden.setVisible(False)
-
-        # 4) Toolbar rows, panels, theme and background, as on a new install.
-        reset_ws = getattr(self, "_reset_workspace_to_factory", None)
-        if reset_ws is not None:
-            reset_ws()
-
 
     def _restore_toolbar_order(self, tb, settings_key: str):
         """
@@ -2099,6 +2148,47 @@ class ToolbarMixin:
                     mapping.pop(cid, None)
                 self.settings.setValue("Toolbar/Assignments", json.dumps(mapping))
         self.settings.setValue("Toolbar/StarStuffSplitDone", True)
+
+    # Tools that moved from Tools to Analysis in 2.0.
+    _ANALYSIS_MOVED = frozenset({"blink", "magnitude_tool", "snr_tool"})
+
+    def _migrate_analysis_move(self):
+        """
+        One-time, for the 2.0 move of Blink, Magnitude and Object SNR from Tools
+        to Analysis. As in _migrate_star_stuff_split, a saved drag out of Tools
+        and back in would pin one of them to Tools, so those entries are
+        dropped; a hidden one that came from Tools goes back to Analysis when
+        it is shown again. Every other assignment is kept.
+        """
+        if not hasattr(self, "settings"):
+            return
+        s = self.settings
+        if s.value("Toolbar/AnalysisMoveDone", False, type=bool):
+            return
+
+        def _load(key):
+            try:
+                raw = s.value(key, "", type=str) or ""
+                val = json.loads(raw) if raw else {}
+            except Exception:
+                val = {}
+            return val if isinstance(val, dict) else {}
+
+        mapping = _load("Toolbar/Assignments")
+        stale = [cid for cid, key in mapping.items()
+                 if cid in self._ANALYSIS_MOVED and key == "Toolbar/Tools"]
+        if stale:
+            for cid in stale:
+                mapping.pop(cid, None)
+            s.setValue("Toolbar/Assignments", json.dumps(mapping))
+        prev = _load("Toolbar/HiddenPrev")
+        back = [cid for cid, key in prev.items()
+                if cid in self._ANALYSIS_MOVED and key == "Toolbar/Tools"]
+        if back:
+            for cid in back:
+                prev[cid] = "Toolbar/StarStuff"
+            s.setValue("Toolbar/HiddenPrev", json.dumps(prev))
+        s.setValue("Toolbar/AnalysisMoveDone", True)
 
     def _hidden_toolbar(self):
         from setiastro.saspro.shortcuts import DraggableToolBar
@@ -2314,11 +2404,11 @@ class ToolbarMixin:
             except Exception:
                 pass
 
-            self.act_undo.setText(f"Undo {undo_name}" if (can_u and undo_name) else "Undo")
-            self.act_redo.setText(f"Redo {redo_name}" if (can_r and redo_name) else "Redo")
+            self.act_undo.setText(self.tr("Undo {0}").format(undo_name) if (can_u and undo_name) else self.tr("Undo"))
+            self.act_redo.setText(self.tr("Redo {0}").format(redo_name) if (can_r and redo_name) else self.tr("Redo"))
 
-            self.act_undo.setToolTip("Nothing to undo" if not can_u else (f"Undo: {undo_name}" if undo_name else "Undo last action"))
-            self.act_redo.setToolTip("Nothing to redo" if not can_r else (f"Redo: {redo_name}" if redo_name else "Redo last action"))
+            self.act_undo.setToolTip(self.tr("Nothing to undo") if not can_u else (self.tr("Undo: {0}").format(undo_name) if undo_name else self.tr("Undo last action")))
+            self.act_redo.setToolTip(self.tr("Nothing to redo") if not can_r else (self.tr("Redo: {0}").format(redo_name) if redo_name else self.tr("Redo last action")))
 
             self.act_undo.setStatusTip(self.act_undo.toolTip())
             self.act_redo.setStatusTip(self.act_redo.toolTip())
@@ -2327,10 +2417,11 @@ class ToolbarMixin:
             self.act_redo.setEnabled(can_r)
         else:
             # No active doc
-            for a, tip in ((self.act_undo, "Nothing to undo"),
-                           (self.act_redo, "Nothing to redo")):
+            for a, tip in ((self.act_undo, self.tr("Nothing to undo")),
+                           (self.act_redo, self.tr("Nothing to redo"))):
                 # Normalize label to plain "Undo"/"Redo"
-                base = "Undo" if "Undo" in a.text() else ("Redo" if "Redo" in a.text() else a.text())
+                # (by action identity, not by its text, which may be translated)
+                base = self.tr("Undo") if a is self.act_undo else self.tr("Redo")
                 a.setText(base)
                 a.setToolTip(tip)
                 a.setStatusTip(tip)
@@ -2342,7 +2433,7 @@ class ToolbarMixin:
         self.act_link_group.blockSignals(True)
         try:
             self.act_link_group.setChecked(bool(g))
-            self.act_link_group.setText(f"Link Pan/Zoom{'' if not g else f' ({g})'}")
+            self.act_link_group.setText(self.tr("Link Pan/Zoom ({0})").format(g) if g else self.tr("Link Pan/Zoom"))
             try:
                 if getattr(self, "_link_btn", None):
                     self._link_btn.setText(self.act_link_group.text())

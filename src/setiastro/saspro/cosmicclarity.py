@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QSlider, QCheckBox, QComboBox, QMessageBox, QWidget, QRadioButton, QProgressBar,
     QTextEdit, QFileDialog, QTreeWidget, QTreeWidgetItem, QMenu, QInputDialog, QDoubleSpinBox
 )
-from PyQt6.QtCore import QProcess
+from PyQt6.QtCore import QProcess, QCoreApplication, QT_TRANSLATE_NOOP
 
 # ---- bring in your image IO helpers ----
 # Adjust these imports to your project structure if needed.
@@ -46,6 +46,10 @@ from setiastro.saspro.widgets.preview_dialogs import ImagePreviewDialog
 
 import shutil
 import subprocess
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("CosmicClarity", text)
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +175,7 @@ def _cc_models_installed(kind: str = "core") -> tuple[bool, str]:
         pass
 
     if not models_dir or not os.path.isdir(models_dir):
-        return False, "Models directory is missing."
+        return False, _tr("Models directory is missing.")
 
     # Pick one stable sentinel per feature set.
     sentinels = {
@@ -192,19 +196,15 @@ def _cc_models_installed(kind: str = "core") -> tuple[bool, str]:
 
     missing = [name for name in required if not os.path.exists(os.path.join(models_dir, name))]
     if missing:
-        return False, "Missing model(s): " + ", ".join(missing)
+        return False, _tr("Missing model(s): {0}").format(", ".join(missing))
 
     return True, ""
 
 def _warn_models_missing_and_close(parent: QWidget, detail: str = ""):
-    msg = (
-        "Cosmic Clarity AI models are not installed.\n\n"
-        "Please go to Setting->Preferences to Download and Install.\n"
-    )
-    if detail:
-        msg += f"\nDetails: {detail}\n"
-
-    QMessageBox.warning(parent, "Cosmic Clarity", msg)
+    from setiastro.saspro.setup_center import offer_setup
+    offer_setup(parent, "models", "Cosmic Clarity",
+                _tr("Cosmic Clarity needs its AI models, and they are not installed yet."),
+                detail)
 
 
 def resolve_cosmic_root(parent=None) -> str:
@@ -238,8 +238,8 @@ def resolve_cosmic_root(parent=None) -> str:
 
     #sasprompt user once
     QMessageBox.information(parent, "Cosmic Clarity",
-        "Please select your Cosmic Clarity folder (the one that contains the CC executables and input/output).")
-    folder = QFileDialog.getExistingDirectory(parent, "Select Cosmic Clarity Folder", "")
+        _tr("Please select your Cosmic Clarity folder (the one that contains the CC executables and input/output)."))
+    folder = QFileDialog.getExistingDirectory(parent, _tr("Select Cosmic Clarity Folder"), "")
     if folder:
         s.setValue("paths/cosmic_clarity", folder); s.sync()
         os.makedirs(os.path.join(folder, "input"), exist_ok=True)
@@ -269,16 +269,16 @@ class WaitDialog(QDialog):
     """
     cancelled = pyqtSignal()
 
-    def __init__(self, title="Processing…", parent=None):
+    def __init__(self, title=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(title)
+        self.setWindowTitle(title if title is not None else self.tr("Processing…"))
         self._finished = False
         self._cancel_requested = False
         self._has_progress = False
         self._t0 = time.monotonic()
 
         v = QVBoxLayout(self)
-        self.lbl = QLabel("Processing, please wait…")
+        self.lbl = QLabel(self.tr("Processing, please wait…"))
         self.txt = QTextEdit()
         self.txt.setReadOnly(True)
 
@@ -287,7 +287,7 @@ class WaitDialog(QDialog):
         self.pb.setFormat("%p%")
 
         self.lbl_elapsed = QLabel("")
-        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
         self.btn_cancel.clicked.connect(self.request_cancel)
 
         v.addWidget(self.lbl)
@@ -306,7 +306,7 @@ class WaitDialog(QDialog):
         secs = int(time.monotonic() - self._t0)
         h, rem = divmod(secs, 3600)
         m, sec = divmod(rem, 60)
-        self.lbl_elapsed.setText(f"Elapsed {h}:{m:02d}:{sec:02d}" if h else f"Elapsed {m}:{sec:02d}")
+        self.lbl_elapsed.setText(self.tr("Elapsed {0}:{1:02d}:{2:02d}").format(h, m, sec) if h else self.tr("Elapsed {0}:{1:02d}").format(m, sec))
 
     def append_output(self, line: str):
         self.txt.append(line)
@@ -321,8 +321,8 @@ class WaitDialog(QDialog):
             return
         self._cancel_requested = True
         self.btn_cancel.setEnabled(False)
-        self.btn_cancel.setText("Cancelling…")
-        self.lbl.setText("Cancelling: stopping after the current tile batch…")
+        self.btn_cancel.setText(self.tr("Cancelling…"))
+        self.lbl.setText(self.tr("Cancelling: stopping after the current tile batch…"))
         self.txt.append("Cancel requested… waiting for the worker to stop.")
 
     def request_cancel(self):
@@ -379,17 +379,17 @@ class WaitDialog(QDialog):
         # Indeterminate mode
         if total <= 0:
             if not self._cancel_requested:
-                self.lbl.setText("Waiting for files…")
+                self.lbl.setText(self.tr("Waiting for files…"))
             self.pb.setRange(0, 0)
             return
 
         # done / total mode
         done = max(0, min(int(done), int(total)))
         if not self._cancel_requested:
-            self.lbl.setText("Batch processing files…")
+            self.lbl.setText(self.tr("Batch processing files…"))
         self.pb.setRange(0, int(total))
         self.pb.setValue(done)
-        self.pb.setFormat(f"{done} / {total} files")
+        self.pb.setFormat(self.tr("{0} / {1} files").format(done, total))
 
 
 # Worker threads are owned by thread_keeper, not by any window: closing or
@@ -447,10 +447,10 @@ class CosmicClarityEngineWorker(QThread):
     cancelled = pyqtSignal()        # stopped on request; nothing to apply
 
     _STAGE_LABELS = {
-        "sharpen": "Sharpening",
-        "denoise": "Denoising",
-        "superres": "Super resolution",
-        "aberration": "Aberration correction",
+        "sharpen": QT_TRANSLATE_NOOP("CosmicClarity", "Sharpening"),
+        "denoise": QT_TRANSLATE_NOOP("CosmicClarity", "Denoising"),
+        "superres": QT_TRANSLATE_NOOP("CosmicClarity", "Super resolution"),
+        "aberration": QT_TRANSLATE_NOOP("CosmicClarity", "Aberration correction"),
     }
 
     def __init__(self, img_rgb01: np.ndarray, preset: dict, parent=None, *,
@@ -547,7 +547,8 @@ class CosmicClarityEngineWorker(QThread):
 
                 base_pct = (100.0 * si) / float(n)
                 self.log.emit(f"Running {st}…")
-                self.stage.emit(self._STAGE_LABELS.get(st, st.title()) + "…")
+                _lbl = self._STAGE_LABELS.get(st)
+                self.stage.emit((QCoreApplication.translate("CosmicClarity", _lbl) if _lbl else st.title()) + "…")
 
                 if st == "sharpen":
                     sharpening_mode = p.get("sharpening_mode", "Both")
@@ -791,7 +792,7 @@ class CosmicClarityDialogPro(QDialog):
  
         gen.addWidget(QLabel(self.tr("Mode:")), 0, 0)
         self.cmb_mode = QComboBox()
-        self.cmb_mode.addItems(["Sharpen", "Denoise", "Both", "Super Resolution"])
+        self.cmb_mode.addItems([self.tr("Sharpen"), self.tr("Denoise"), self.tr("Both"), self.tr("Super Resolution")])
         gen.addWidget(self.cmb_mode, 0, 1)
  
         self.lbl_gpu = QLabel(self.tr("Use GPU:"))
@@ -802,7 +803,7 @@ class CosmicClarityDialogPro(QDialog):
  
         gen.addWidget(QLabel(self.tr("Apply to:")), 1, 0)
         self.cmb_target = QComboBox()
-        self.cmb_target.addItems(["Overwrite active view", "Create new view"])
+        self.cmb_target.addItems([self.tr("Overwrite active view"), self.tr("Create new view")])
         gen.addWidget(self.cmb_target, 1, 1, 1, 3)
  
         gen.setColumnStretch(1, 1)
@@ -824,82 +825,82 @@ class CosmicClarityDialogPro(QDialog):
         sh.setHorizontalSpacing(8)
         sh.setVerticalSpacing(6)
  
-        self.lbl_stellar_correct = QLabel("Stellar Correction:")
+        self.lbl_stellar_correct = QLabel(self.tr("Stellar Correction:"))
         sh.addWidget(self.lbl_stellar_correct, 0, 0)
- 
+
         corr_row = QHBoxLayout()
-        self.rb_correct_only    = QRadioButton("Correct Only")
-        self.rb_correct_sharpen = QRadioButton("Correct + Sharpen")
-        self.rb_sharpen_only    = QRadioButton("Sharpen Only")
+        self.rb_correct_only    = QRadioButton(self.tr("Correct Only"))
+        self.rb_correct_sharpen = QRadioButton(self.tr("Correct + Sharpen"))
+        self.rb_sharpen_only    = QRadioButton(self.tr("Sharpen Only"))
         self.rb_correct_sharpen.setChecked(True)
-        self.rb_correct_only.setToolTip(
+        self.rb_correct_only.setToolTip(self.tr(
             "Run the Aberration Correction model only.\n"
             "Fixes pinched optics, coma, spherical aberration, chromatic aberration etc.\n"
             "No sharpening is applied."
-        )
-        self.rb_correct_sharpen.setToolTip(
+        ))
+        self.rb_correct_sharpen.setToolTip(self.tr(
             "Run Aberration Correction first, then Stellar Sharpening.\n"
             "Best for images with both shape aberrations and soft stars."
-        )
-        self.rb_sharpen_only.setToolTip(
+        ))
+        self.rb_sharpen_only.setToolTip(self.tr(
             "Standard Cosmic Clarity stellar sharpening — no correction pre-pass."
-        )
+        ))
         corr_row.addWidget(self.rb_correct_only)
         corr_row.addWidget(self.rb_correct_sharpen)
         corr_row.addWidget(self.rb_sharpen_only)
         corr_row.addStretch(1)
         sh.addLayout(corr_row, 0, 1)
          # V1 / V2 model selector — shown only when correction is available
-        self.lbl_correct_ver = QLabel("Correction Model:")
+        self.lbl_correct_ver = QLabel(self.tr("Correction Model:"))
         self.cmb_correct_ver = QComboBox()
         self.cmb_correct_ver.addItems(["V2 (latest)", "V1"])
-        self.cmb_correct_ver.setToolTip(
+        self.cmb_correct_ver.setToolTip(self.tr(
             "V2: Updated weights, improved correction quality (recommended).\n"
             "V1: Original correction model."
-        )
+        ))
         sh.addWidget(self.lbl_correct_ver, 1, 0)
         sh.addWidget(self.cmb_correct_ver, 1, 1)
 
-        self.lbl_sh_mode = QLabel("Sharpening Mode:")
+        self.lbl_sh_mode = QLabel(self.tr("Sharpening Mode:"))
         self.cmb_sh_mode = QComboBox()
         self.cmb_sh_mode.addItems(["Both", "Stellar Only", "Non-Stellar Only"])
         sh.addWidget(self.lbl_sh_mode, 2, 0)
         sh.addWidget(self.cmb_sh_mode, 2, 1)
  
-        self.chk_sh_sep = QCheckBox("Sharpen RGB channels separately")
-        self.chk_sh_sep.setToolTip(
+        self.chk_sh_sep = QCheckBox(self.tr("Sharpen RGB channels separately"))
+        self.chk_sh_sep.setToolTip(self.tr(
             "Run the mono sharpening model independently on R, G, and B instead of a shared color model.\n"
             "Use for difficult color data where channels need slightly different sharpening."
-        )
+        ))
         sh.addWidget(self.chk_sh_sep, 3, 0, 1, 2)
- 
-        self.chk_auto_psf = QCheckBox("Auto Detect PSF")
+
+        self.chk_auto_psf = QCheckBox(self.tr("Auto Detect PSF"))
         self.chk_auto_psf.setChecked(True)
         sh.addWidget(self.chk_auto_psf, 4, 0, 1, 2)
- 
-        self.lbl_psf = QLabel("Non-Stellar PSF (1.0–8.0): 3.0")
+
+        self.lbl_psf = QLabel(self.tr("Non-Stellar PSF (1.0–8.0): {0:.1f}").format(3.0))
         self.sld_psf = QSlider(Qt.Orientation.Horizontal)
         self.sld_psf.setRange(10, 80)
         self.sld_psf.setValue(30)
         _add_inline_slider(sh, 5, self.lbl_psf, self.sld_psf)
  
-        self.lbl_st_amt = QLabel("Stellar Amount (0–1): 0.50")
+        self.lbl_st_amt = QLabel(self.tr("Stellar Amount (0–1): {0:.2f}").format(0.5))
         self.sld_st_amt = QSlider(Qt.Orientation.Horizontal)
         self.sld_st_amt.setRange(0, 100)
         self.sld_st_amt.setValue(50)
         _add_inline_slider(sh, 6, self.lbl_st_amt, self.sld_st_amt)
  
-        self.lbl_nst_amt = QLabel("Non-Stellar Amount (0–1): 0.50")
+        self.lbl_nst_amt = QLabel(self.tr("Non-Stellar Amount (0–1): {0:.2f}").format(0.5))
         self.sld_nst_amt = QSlider(Qt.Orientation.Horizontal)
         self.sld_nst_amt.setRange(0, 100)
         self.sld_nst_amt.setValue(50)
         _add_inline_slider(sh, 7, self.lbl_nst_amt, self.sld_nst_amt)
 
-        self.chk_correct_conservative = QCheckBox("Conservative White Compression (reduces tiling on high-contrast images)")
-        self.chk_correct_conservative.setToolTip(
+        self.chk_correct_conservative = QCheckBox(self.tr("Conservative White Compression (reduces tiling on high-contrast images)"))
+        self.chk_correct_conservative.setToolTip(self.tr(
             "When enabled, uses stronger white point compression during aberration correction.\n"
             "Reduces tiling artifacts on images with extreme bright/dark contrast within a single tile.\n"
-        )
+        ))
         sh.addWidget(self.chk_correct_conservative, 8, 0, 1, 2)
 
         sh.setColumnStretch(1, 1)
@@ -912,44 +913,44 @@ class CosmicClarityDialogPro(QDialog):
         dn.setHorizontalSpacing(8)
         dn.setVerticalSpacing(6)
  
-        self.lbl_dn_lum = QLabel("Luminance Denoise (0–1): 0.50")
+        self.lbl_dn_lum = QLabel(self.tr("Luminance Denoise (0–1): {0:.2f}").format(0.5))
         self.sld_dn_lum = QSlider(Qt.Orientation.Horizontal)
         self.sld_dn_lum.setRange(0, 100)
         self.sld_dn_lum.setValue(50)
         _add_inline_slider(dn, 0, self.lbl_dn_lum, self.sld_dn_lum)
  
-        self.lbl_dn_col = QLabel("Color Denoise (0–1): 0.50")
+        self.lbl_dn_col = QLabel(self.tr("Color Denoise (0–1): {0:.2f}").format(0.5))
         self.sld_dn_col = QSlider(Qt.Orientation.Horizontal)
         self.sld_dn_col.setRange(0, 100)
         self.sld_dn_col.setValue(50)
         _add_inline_slider(dn, 1, self.lbl_dn_col, self.sld_dn_col)
  
-        self.lbl_dn_mode = QLabel("Denoise Mode:")
+        self.lbl_dn_mode = QLabel(self.tr("Denoise Mode:"))
         self.cmb_dn_mode = QComboBox()
         self.cmb_dn_mode.addItems(["full", "luminance"])
         dn.addWidget(self.lbl_dn_mode, 2, 0)
         dn.addWidget(self.cmb_dn_mode, 2, 1)
- 
-        self.chk_dn_sep = QCheckBox("Denoise RGB channels separately")
+
+        self.chk_dn_sep = QCheckBox(self.tr("Denoise RGB channels separately"))
         dn.addWidget(self.chk_dn_sep, 3, 0, 1, 2)
- 
-        self.lbl_dn_model = QLabel("Denoise Model:")
+
+        self.lbl_dn_model = QLabel(self.tr("Denoise Model:"))
         self.cmb_dn_model = QComboBox()
         self.cmb_dn_model.addItems(["Standard", "Walking Noise", "Lite (faster)"])
-        self.cmb_dn_model.setToolTip(
+        self.cmb_dn_model.setToolTip(self.tr(
             "Standard: general-purpose AI4 denoise model.\n"
             "Walking Noise: specialist model for fixed-pattern drift streaks\n"
             "  (polar misalignment, no guiding). Also handles normal noise.\n"
             "Lite: smaller faster model, slightly less detail."
-        )
+        ))
         dn.addWidget(self.lbl_dn_model, 4, 0)
         dn.addWidget(self.cmb_dn_model, 4, 1)
- 
-        self.chk_dn_compat = QCheckBox("GPU Compatibility Mode (slower, safer)")
-        self.chk_dn_compat.setToolTip(
+
+        self.chk_dn_compat = QCheckBox(self.tr("GPU Compatibility Mode (slower, safer)"))
+        self.chk_dn_compat.setToolTip(self.tr(
             "Uses safer inference settings for Cosmic Clarity processing.\n"
             "Recommended if sharpen or denoise fails, hangs, or produces GPU errors on older or fragile hardware."
-        )
+        ))
         dn.addWidget(self.chk_dn_compat, 5, 0, 1, 2)
  
         dn.setColumnStretch(1, 1)
@@ -962,7 +963,7 @@ class CosmicClarityDialogPro(QDialog):
         sr.setContentsMargins(8, 8, 8, 8)
         sr.setHorizontalSpacing(8)
         sr.setVerticalSpacing(6)
-        self.lbl_scale = QLabel("Scale Factor:")
+        self.lbl_scale = QLabel(self.tr("Scale Factor:"))
         self.cmb_scale = QComboBox()
         self.cmb_scale.addItems(["2x", "3x", "4x"])
         sr.addWidget(self.lbl_scale, 0, 0)
@@ -977,42 +978,42 @@ class CosmicClarityDialogPro(QDialog):
         adv.setHorizontalSpacing(8)
         adv.setVerticalSpacing(6)
  
-        self.chk_temp_stretch = QCheckBox("Temporary Stretch for AI (linear assist)")
+        self.chk_temp_stretch = QCheckBox(self.tr("Temporary Stretch for AI (linear assist)"))
         self.chk_temp_stretch.setChecked(True)
-        self.chk_temp_stretch.setToolTip(
+        self.chk_temp_stretch.setToolTip(self.tr(
             "Optionally applies a temporary stretch before AI inference (then reverses it).\n"
             "Useful for very linear / low-signal data. If off, engines use automatic behavior."
-        )
+        ))
         adv.addWidget(self.chk_temp_stretch, 0, 0, 1, 2)
- 
-        self.lbl_target_median = QLabel("Target Median (0.01–0.50): 0.25")
+
+        self.lbl_target_median = QLabel(self.tr("Target Median (0.01–0.50): {0:.2f}").format(0.25))
         self.sld_target_median = QSlider(Qt.Orientation.Horizontal)
         self.sld_target_median.setRange(1, 50)
         self.sld_target_median.setValue(25)
         _add_inline_slider(adv, 1, self.lbl_target_median, self.sld_target_median)
  
-        self.chk_aberration_first = QCheckBox("Run Aberration Remover first")
+        self.chk_aberration_first = QCheckBox(self.tr("Run Aberration Remover first"))
         self.chk_aberration_first.setChecked(False)   # permanently disabled
         self.chk_aberration_first.setVisible(False)   # hidden — superseded by native correction
         adv.addWidget(self.chk_aberration_first, 2, 0, 1, 2)
- 
-        self.lbl_chunk = QLabel("Chunk Size:")
+
+        self.lbl_chunk = QLabel(self.tr("Chunk Size:"))
         self.cmb_chunk = QComboBox()
         self.cmb_chunk.addItems(["128", "192", "256", "320", "384", "512", "640", "768", "1024"])
         self.cmb_chunk.setCurrentText("256")
         adv.addWidget(self.lbl_chunk, 3, 0)
         adv.addWidget(self.cmb_chunk, 3, 1)
  
-        self.lbl_ov = QLabel("Overlap (% of tile):")
+        self.lbl_ov = QLabel(self.tr("Overlap (% of tile):"))
         self.cmb_ov = QComboBox()
         self.cmb_ov.addItems([f"{c}%" for c in OVERLAP_PCT_CHOICES])
         self.cmb_ov.setCurrentText(f"{int(DEFAULT_OVERLAP_PCT)}%")
-        self.cmb_ov.setToolTip(
+        self.cmb_ov.setToolTip(self.tr(
             "Tile overlap as a percentage of the chunk size.\n"
             "Higher overlap reduces edge seams but is slower — runtime climbs\n"
             "steeply as overlap grows, so it is capped at 50% of the tile.\n"
             "25% is a good default."
-        )
+        ))
         adv.addWidget(self.lbl_ov, 4, 0)
         adv.addWidget(self.cmb_ov, 4, 1)
  
@@ -1027,11 +1028,11 @@ class CosmicClarityDialogPro(QDialog):
         # ---------------- Buttons ----------------
         row = QHBoxLayout()
         self.btn_clear_cache = QPushButton(self.tr("Clear AI Cache"))
-        self.btn_clear_cache.setToolTip(
+        self.btn_clear_cache.setToolTip(self.tr(
             "Clears cached AI models from RAM/VRAM.\n"
             "This makes the next run slower (models must reload).\n\n"
             "Use if you are low on memory or troubleshooting."
-        )
+        ))
         self.btn_clear_cache.clicked.connect(self._clear_ai_cache_clicked)
         b_run = QPushButton(self.tr("Execute"))
         b_run.clicked.connect(self._run_main)
@@ -1103,10 +1104,10 @@ class CosmicClarityDialogPro(QDialog):
             item = self.cmb_correct_ver.model().item(v2_idx)
             if self._correct_v2_available:
                 item.setFlags(item.flags() | _Qt.ItemFlag.ItemIsEnabled | _Qt.ItemFlag.ItemIsSelectable)
-                item.setToolTip("V2 correction model — installed")
+                item.setToolTip(self.tr("V2 correction model — installed"))
             else:
                 item.setFlags(item.flags() & ~_Qt.ItemFlag.ItemIsEnabled & ~_Qt.ItemFlag.ItemIsSelectable)
-                item.setToolTip("V2 correction model — not installed (click Download/Update Models in Preferences)")
+                item.setToolTip(self.tr("V2 correction model — not installed (click Download/Update Models in Preferences)"))
 
         # Default selection
         if not self._correct_v2_available:
@@ -1128,10 +1129,10 @@ class CosmicClarityDialogPro(QDialog):
         self._psf_label()
         self._on_st_amt(self.sld_st_amt.value())
         self._on_nst_amt(self.sld_nst_amt.value())
-        self.lbl_dn_lum.setText(f"Luminance Denoise (0–1): {self.sld_dn_lum.value()/100:.2f}")
-        self.lbl_dn_col.setText(f"Color Denoise (0–1): {self.sld_dn_col.value()/100:.2f}")
+        self.lbl_dn_lum.setText(self.tr("Luminance Denoise (0–1): {0:.2f}").format(self.sld_dn_lum.value()/100))
+        self.lbl_dn_col.setText(self.tr("Color Denoise (0–1): {0:.2f}").format(self.sld_dn_col.value()/100))
         tm = self.sld_target_median.value()
-        self.lbl_target_median.setText(f"Target Median (0.01–0.50): {tm/100:.2f}")
+        self.lbl_target_median.setText(self.tr("Target Median (0.01–0.50): {0:.2f}").format(tm/100))
  
         # ------------------------------------------------------------------
         # Step 5: wire headless flag
@@ -1153,8 +1154,8 @@ class CosmicClarityDialogPro(QDialog):
         self.sld_psf.valueChanged.connect(self._psf_label)
         self.sld_st_amt.valueChanged.connect(self._on_st_amt)
         self.sld_nst_amt.valueChanged.connect(self._on_nst_amt)
-        self.sld_dn_lum.valueChanged.connect(lambda v: self.lbl_dn_lum.setText(f"Luminance Denoise (0–1): {v/100:.2f}"))
-        self.sld_dn_col.valueChanged.connect(lambda v: self.lbl_dn_col.setText(f"Color Denoise (0–1): {v/100:.2f}"))
+        self.sld_dn_lum.valueChanged.connect(lambda v: self.lbl_dn_lum.setText(self.tr("Luminance Denoise (0–1): {0:.2f}").format(v/100)))
+        self.sld_dn_col.valueChanged.connect(lambda v: self.lbl_dn_col.setText(self.tr("Color Denoise (0–1): {0:.2f}").format(v/100)))
         self.sld_target_median.valueChanged.connect(self._on_target_median)
         self.chk_temp_stretch.toggled.connect(self._temp_stretch_changed)
         self.chk_dn_sep.toggled.connect(self._dn_sep_changed)
@@ -1202,7 +1203,7 @@ class CosmicClarityDialogPro(QDialog):
     def _clear_ai_cache_clicked(self):
         # Don’t allow cache clearing mid-run (can invalidate active model refs)
         if self._engine_thread is not None and self._engine_thread.isRunning():
-            QMessageBox.information(self, "Cosmic Clarity", "Please wait for the current run to finish before clearing cache.")
+            QMessageBox.information(self, "Cosmic Clarity", self.tr("Please wait for the current run to finish before clearing cache."))
             return
 
         # Optional: “aggressive” flush
@@ -1233,15 +1234,15 @@ class CosmicClarityDialogPro(QDialog):
             QMessageBox.information(
                 self,
                 "Cosmic Clarity",
-                "AI cache cleared.\n\nNext AI run will take longer because models must reload."
+                self.tr("AI cache cleared.\n\nNext AI run will take longer because models must reload.")
             )
 
         except Exception as e:
-            QMessageBox.warning(self, "Cosmic Clarity", f"Failed to clear AI cache:\n{e}")
+            QMessageBox.warning(self, "Cosmic Clarity", self.tr("Failed to clear AI cache:\n{0}").format(e))
 
     def _on_target_median(self, v: int):
         tm = max(0.01, min(0.50, v / 100.0))
-        self.lbl_target_median.setText(f"Target Median (0.01–0.50): {tm:.2f}")
+        self.lbl_target_median.setText(self.tr("Target Median (0.01–0.50): {0:.2f}").format(tm))
         self._save_cc_ui_settings()
 
     def _temp_stretch_changed(self, checked: bool):
@@ -1419,7 +1420,7 @@ class CosmicClarityDialogPro(QDialog):
         self.cmb_dn_mode.setEnabled(not sep)
 
         # Optional: tooltip explanation when disabled
-        tip = ("Disabled because 'Process RGB channels separately' uses the mono model on R/G/B "
+        tip = self.tr("Disabled because 'Process RGB channels separately' uses the mono model on R/G/B "
             "and does not use the color model.")
         if sep:
             self.lbl_dn_col.setToolTip(tip)
@@ -1466,13 +1467,13 @@ class CosmicClarityDialogPro(QDialog):
         if ok:
             return True
 
-        msg = (
+        msg = self.tr(
             "Cosmic Clarity AI models are not installed (or are incomplete).\n\n"
             "To install them:\n"
             "  Preferences → AI Models → Download/Update Models\n"
         )
         if detail:
-            msg += f"\nDetails: {detail}\n"
+            msg += self.tr("\nDetails: {0}\n").format(detail)
 
         QMessageBox.warning(self, "Cosmic Clarity", msg)
         QTimer.singleShot(0, self.reject)
@@ -1482,24 +1483,17 @@ class CosmicClarityDialogPro(QDialog):
 
     # ----- UI helpers -----
     def _headless_guard_active(self) -> bool:
-        # 1) fast path: flags on the main window
+        # A headless run in this process: the preset runner flags the main
+        # window, this panel's parent, and clears it in a finally. Not the
+        # QSettings copy (cc/headless_in_progress): that is on disk, so after a
+        # SASpro that closed during a run, this panel closed itself unseen
+        # whenever it was opened from a shortcut.
         try:
             p = self.parent()
-            if p and (getattr(p, "_cosmicclarity_guard", False) or getattr(p, "_cosmicclarity_headless_running", False)):
-                return True
+            return bool(p and (getattr(p, "_cosmicclarity_guard", False)
+                               or getattr(p, "_cosmicclarity_headless_running", False)))
         except Exception:
-            pass
-        # 2) cross-module path: QSettings flag set by the preset runner
-        try:
-            s = QSettings()
-            v = s.value("cc/headless_in_progress", False, type=bool)
-            return bool(v)
-        except Exception:
-            # fallback if type kwarg unsupported in some Qt builds
-            try:
-                return bool(QSettings().value("cc/headless_in_progress", False))
-            except Exception:
-                return False
+            return False
 
     # Never show if guard is active
     def showEvent(self, e):
@@ -1516,11 +1510,11 @@ class CosmicClarityDialogPro(QDialog):
         return super().exec()
 
 
-    def _on_st_amt(self, v: int): self.lbl_st_amt.setText(f"Stellar Amount (0–1): {v/100:.2f}")
-    def _on_nst_amt(self, v: int): self.lbl_nst_amt.setText(f"Non-Stellar Amount (0–1): {v/100:.2f}")
+    def _on_st_amt(self, v: int): self.lbl_st_amt.setText(self.tr("Stellar Amount (0–1): {0:.2f}").format(v/100))
+    def _on_nst_amt(self, v: int): self.lbl_nst_amt.setText(self.tr("Non-Stellar Amount (0–1): {0:.2f}").format(v/100))
 
     def _psf_label(self):
-        self.lbl_psf.setText(f"Non-Stellar PSF (1.0–8.0): {self.sld_psf.value()/10:.1f}")
+        self.lbl_psf.setText(self.tr("Non-Stellar PSF (1.0–8.0): {0:.1f}").format(self.sld_psf.value()/10))
 
     def _mode_changed(self):
         idx = self.cmb_mode.currentIndex()  # 0 Sharpen, 1 Denoise, 2 Both, 3 Super-Res
@@ -1602,10 +1596,10 @@ class CosmicClarityDialogPro(QDialog):
         try:
             img = np.asarray(getattr(self.doc, "image", None))
             if img is None or img.size == 0:
-                QMessageBox.warning(self, "Cosmic Clarity", "No image loaded in the active view.")
+                QMessageBox.warning(self, "Cosmic Clarity", self.tr("No image loaded in the active view."))
                 return
         except Exception:
-            QMessageBox.warning(self, "Cosmic Clarity", "No image loaded in the active view.")
+            QMessageBox.warning(self, "Cosmic Clarity", self.tr("No image loaded in the active view."))
             return
 
         # --- Register this run as "last action" for replay (same as you had) ---
@@ -1637,25 +1631,17 @@ class CosmicClarityDialogPro(QDialog):
         # --- Walking noise model availability check ---
         if preset.get("denoise_walking", False) and mode in ("denoise", "both"):
             try:
-                from setiastro.saspro.resources import get_resources
-                R = get_resources()
-                mono_path  = getattr(R, "CC_DENOISE_MONO_WALKING_PTH", None)
-                color_path = getattr(R, "CC_DENOISE_COLOR_WALKING_PTH", None)
-                import os as _os
-                missing = []
-                if not mono_path or not _os.path.exists(mono_path):
-                    missing.append("deep_denoise_mono_AI4.1w_weights.pth")
-                if not color_path or not _os.path.exists(color_path):
-                    missing.append("deep_denoise_color_AI4.1w_weights.pth")
+                # Not through get_resources(): its lookup raises when the file is
+                # missing, which this try would swallow.
+                from setiastro.saspro.model_manager import optional_model_path
+                missing = [f for f in ("deep_denoise_mono_AI4_1w.pth",
+                                       "deep_denoise_color_AI4_1w.pth")
+                           if optional_model_path(f) is None]
                 if missing:
-                    QMessageBox.warning(
-                        self,
-                        "Walking Noise Model Not Installed",
-                        "The Walking Noise denoise model is not installed:\n\n"
-                        + "\n".join(f"  • {m}" for m in missing)
-                        + "\n\nPlease go to Settings → Preferences → AI Models "
-                        "to download and install the latest models."
-                    )
+                    from setiastro.saspro.setup_center import offer_setup
+                    offer_setup(self, "models", self.tr("Walking Noise Model Not Installed"),
+                                self.tr("The Walking Noise denoise model is not installed yet."),
+                                "\n".join(f"  • {m}" for m in missing))
                     return
             except Exception:
                 pass
@@ -1672,7 +1658,7 @@ class CosmicClarityDialogPro(QDialog):
         elif arr.ndim == 3 and arr.shape[2] >= 3:
             arr = arr[..., :3]
         else:
-            QMessageBox.critical(self, "Cosmic Clarity", f"Unsupported image shape: {arr.shape}")
+            QMessageBox.critical(self, "Cosmic Clarity", self.tr("Unsupported image shape: {0}").format(arr.shape))
             return
 
         arr = np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False)
@@ -1698,14 +1684,15 @@ class CosmicClarityDialogPro(QDialog):
             self._run_mask_id = None    # the worker does not use a mask for super-res
 
         # --- Show wait/progress UI ---
-        title = "Cosmic Clarity – " + (
-            "Sharpen + Denoise" if mode == "both" else
-            "Super Resolution"  if mode == "superres" else
-            mode.title()
-        )
+        title = {
+            "both": self.tr("Cosmic Clarity – Sharpen + Denoise"),
+            "superres": self.tr("Cosmic Clarity – Super Resolution"),
+            "sharpen": self.tr("Cosmic Clarity – Sharpen"),
+            "denoise": self.tr("Cosmic Clarity – Denoise"),
+        }.get(mode) or ("Cosmic Clarity – " + mode.title())
         self._wait = WaitDialog(title, self)
         self._wait.append_output("Starting…")
-        self._wait.set_stage("Starting…")
+        self._wait.set_stage(self.tr("Starting…"))
         self._wait.cancelled.connect(self._cancel_all_engine)
         self._wait.show()
 
@@ -1802,13 +1789,9 @@ class CosmicClarityDialogPro(QDialog):
         # handler swallowed it and told everyone to click Install/Repair, which
         # does not help when the runtime is installed-but-broken.
         if "GPU acceleration runtime" in text or "Hardware acceleration runtime" in text:
-            box = QMessageBox(host)
-            box.setIcon(QMessageBox.Icon.Warning)
-            box.setWindowTitle("Cosmic Clarity")
-            box.setText("Hardware acceleration is not usable for this run.")
-            box.setInformativeText(text)
-            box.setStandardButtons(QMessageBox.StandardButton.Ok)
-            box.exec()
+            from setiastro.saspro.setup_center import offer_setup
+            offer_setup(host, "accel", "Cosmic Clarity",
+                        self.tr("Hardware acceleration is not usable for this run."), text)
         else:
             QMessageBox.critical(host, "Cosmic Clarity", text)
 
@@ -1910,7 +1893,7 @@ class CosmicClarityDialogPro(QDialog):
                 mw._spawn_subwindow_for(new_doc)
             return True
         except Exception as e:
-            QMessageBox.critical(self, "Cosmic Clarity", f"Failed to create new view:\n{e}")
+            QMessageBox.critical(self, "Cosmic Clarity", self.tr("Failed to create new view:\n{0}").format(e))
             return False
 
 
@@ -2074,8 +2057,19 @@ class CosmicClarityDialogPro(QDialog):
         """Seed side for double-click — exact inverse of get_preset. apply_preset
         already inverts every divisor, sets mode first, and drives _mode_changed
         itself, so it is the seed. (dict(p or {}) guards the None case, which
-        apply_preset does not.)"""
-        self.apply_preset(dict(p or {}))
+        apply_preset does not.)
+
+        A preset that names only the mode (a canned workflow step) sets only the
+        mode. apply_preset gives every key it lacks a fixed default, and the
+        dialog saves what changes, so it would replace the user's own GPU, temp
+        stretch and strength settings."""
+        p = dict(p or {})
+        if set(p) == {"mode"}:
+            mode = str(p["mode"]).lower()
+            self.cmb_mode.setCurrentIndex({"sharpen": 0, "denoise": 1, "both": 2, "superres": 3}.get(mode, 0))
+            self._mode_changed()
+            return
+        self.apply_preset(p)
 
     def _deferred_resize(self):
         self.adjustSize()
@@ -2178,6 +2172,7 @@ def open_cosmic_clarity_with_preset(main_window, preset: dict | None = None):
         except Exception:
             doc = None
     if doc is None or getattr(doc, "image", None) is None:
+        QMessageBox.information(main_window, "Cosmic Clarity", _tr("No active image view."))
         return None
 
     _icon = QIcon()
@@ -2237,7 +2232,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             QTimer.singleShot(0, self.reject)
             return
 
-        self.setWindowTitle("Cosmic Clarity – Satellite Removal")
+        self.setWindowTitle(self.tr("Cosmic Clarity – Satellite Removal"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -2291,33 +2286,33 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         left = QVBoxLayout()
 
         row_io = QHBoxLayout()
-        self.btn_in  = QPushButton("Select Input Folder");  self.btn_in.clicked.connect(self._choose_input)
-        self.btn_out = QPushButton("Select Output Folder"); self.btn_out.clicked.connect(self._choose_output)
+        self.btn_in  = QPushButton(self.tr("Select Input Folder"));  self.btn_in.clicked.connect(self._choose_input)
+        self.btn_out = QPushButton(self.tr("Select Output Folder")); self.btn_out.clicked.connect(self._choose_output)
         row_io.addWidget(self.btn_in)
         row_io.addWidget(self.btn_out)
         row_io.addWidget(make_help_button("cosmic_clarity_satellite", self))
         left.addLayout(row_io)
 
-        left.addWidget(QLabel("Use GPU Acceleration:"))
+        left.addWidget(QLabel(self.tr("Use GPU Acceleration:")))
         self.cmb_gpu = QComboBox()
         self.cmb_gpu.addItems(["Yes", "No"])
         left.addWidget(self.cmb_gpu)
 
-        self.chk_gpu_compat = QCheckBox("GPU Compatibility Mode (slower, safer for low-VRAM GPUs)")
+        self.chk_gpu_compat = QCheckBox(self.tr("GPU Compatibility Mode (slower, safer for low-VRAM GPUs)"))
         self.chk_gpu_compat.setChecked(False)
         left.addWidget(self.chk_gpu_compat)
 
-        left.addWidget(QLabel("Satellite Removal Mode:"))
+        left.addWidget(QLabel(self.tr("Satellite Removal Mode:")))
         self.cmb_mode = QComboBox()
         self.cmb_mode.addItems(["Full", "Luminance"])
         left.addWidget(self.cmb_mode)
 
-        self.chk_clip = QCheckBox("Clip Satellite Trail to 0.000")
+        self.chk_clip = QCheckBox(self.tr("Clip Satellite Trail to 0.000"))
         self.chk_clip.setChecked(True)
         left.addWidget(self.chk_clip)
 
         row_sens = QHBoxLayout()
-        row_sens.addWidget(QLabel("Clipping Sensitivity (Lower = more aggressive):"))
+        row_sens.addWidget(QLabel(self.tr("Clipping Sensitivity (Lower = more aggressive):")))
         self.sld_sens = QSlider(Qt.Orientation.Horizontal)
         self.sld_sens.setRange(1, 50)
         self.sld_sens.setValue(int(self.sensitivity * 100))
@@ -2329,24 +2324,24 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         row_sens.addWidget(self.lbl_sens_val)
         left.addLayout(row_sens)
 
-        self.chk_skip = QCheckBox("Skip Save if No Satellite Trail Detected")
+        self.chk_skip = QCheckBox(self.tr("Skip Save if No Satellite Trail Detected"))
         self.chk_skip.setChecked(False)
         left.addWidget(self.chk_skip)
 
-        self.chk_delete_original = QCheckBox("Delete Original Image After Saving")
+        self.chk_delete_original = QCheckBox(self.tr("Delete Original Image After Saving"))
         self.chk_delete_original.setChecked(False)
         left.addWidget(self.chk_delete_original)
 
         row_proc = QHBoxLayout()
-        self.btn_single = QPushButton("Process Single Image")
+        self.btn_single = QPushButton(self.tr("Process Single Image"))
         self.btn_single.clicked.connect(self._process_single_image)
-        self.btn_batch = QPushButton("Batch Process Input Folder")
+        self.btn_batch = QPushButton(self.tr("Batch Process Input Folder"))
         self.btn_batch.clicked.connect(self._batch_process)
         row_proc.addWidget(self.btn_single)
         row_proc.addWidget(self.btn_batch)
         left.addLayout(row_proc)
 
-        self.btn_monitor = QPushButton("Live Monitor Input Folder")
+        self.btn_monitor = QPushButton(self.tr("Live Monitor Input Folder"))
         self.btn_monitor.clicked.connect(self._live_monitor)
         left.addWidget(self.btn_monitor)
 
@@ -2354,17 +2349,17 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
         # Right side
         right = QVBoxLayout()
-        right.addWidget(QLabel("Input Folder Files:"))
+        right.addWidget(QLabel(self.tr("Input Folder Files:")))
         self.tree_in = QTreeWidget()
-        self.tree_in.setHeaderLabels(["Filename"])
+        self.tree_in.setHeaderLabels([self.tr("Filename")])
         self.tree_in.itemDoubleClicked.connect(lambda *_: self._preview_from_tree(self.tree_in, is_input=True))
         self.tree_in.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_in.customContextMenuRequested.connect(lambda pos: self._context_menu(self.tree_in, pos, is_input=True))
         right.addWidget(self.tree_in)
 
-        right.addWidget(QLabel("Output Folder Files:"))
+        right.addWidget(QLabel(self.tr("Output Folder Files:")))
         self.tree_out = QTreeWidget()
-        self.tree_out.setHeaderLabels(["Filename"])
+        self.tree_out.setHeaderLabels([self.tr("Filename")])
         self.tree_out.itemDoubleClicked.connect(lambda *_: self._preview_from_tree(self.tree_out, is_input=False))
         self.tree_out.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_out.customContextMenuRequested.connect(lambda pos: self._context_menu(self.tree_out, pos, is_input=False))
@@ -2384,11 +2379,11 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self.input_folder = s.value("satellite/input_folder", "", type=str) or ""
         self.output_folder = s.value("satellite/output_folder", "", type=str) or ""
         if self.input_folder:
-            self.btn_in.setText(f"Input: {os.path.basename(self.input_folder)}")
+            self.btn_in.setText(self.tr("Input: {0}").format(os.path.basename(self.input_folder)))
             self._watch(self.input_folder)
             self._refresh_tree(self.tree_in, self.input_folder)
         if self.output_folder:
-            self.btn_out.setText(f"Output: {os.path.basename(self.output_folder)}")
+            self.btn_out.setText(self.tr("Output: {0}").format(os.path.basename(self.output_folder)))
             self._watch(self.output_folder)
             self._refresh_tree(self.tree_out, self.output_folder)
 
@@ -2428,13 +2423,13 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             return True
         resp = QMessageBox.warning(
             self,
-            "Delete Originals Enabled",
-            "The 'Delete Original Image After Saving' option is checked.\n\n"
+            self.tr("Delete Originals Enabled"),
+            self.tr("The 'Delete Original Image After Saving' option is checked.\n\n"
             "After each image is successfully processed and saved, the ORIGINAL "
             "file will be permanently deleted. This cannot be undone.\n\n"
             "If satellite removal produces an unexpected result, the original "
             "sub will be gone.\n\n"
-            "Do you want to proceed?",
+            "Do you want to proceed?"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -2442,21 +2437,21 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
     # ---------- IO folders ----------
     def _choose_input(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Input Folder", self.input_folder or "")
+        folder = QFileDialog.getExistingDirectory(self, self.tr("Select Input Folder"), self.input_folder or "")
         if not folder:
             return
         self.input_folder = folder
-        self.btn_in.setText(f"Input: {os.path.basename(folder)}")
+        self.btn_in.setText(self.tr("Input: {0}").format(os.path.basename(folder)))
         self._watch(folder)
         self._refresh_tree(self.tree_in, folder)
         self._save_satellite_settings()
 
     def _choose_output(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Output Folder", self.output_folder or "")
+        folder = QFileDialog.getExistingDirectory(self, self.tr("Select Output Folder"), self.output_folder or "")
         if not folder:
             return
         self.output_folder = folder
-        self.btn_out.setText(f"Output: {os.path.basename(folder)}")
+        self.btn_out.setText(self.tr("Output: {0}").format(os.path.basename(folder)))
         self._watch(folder)
         self._refresh_tree(self.tree_out, folder)
         self._save_satellite_settings()
@@ -2491,8 +2486,8 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         item = tree.itemAt(pos)
         if not item: return
         menu = QMenu(self)
-        act_del = QAction("Delete File", self)
-        act_ren = QAction("Rename File", self)
+        act_del = QAction(self.tr("Delete File"), self)
+        act_ren = QAction(self.tr("Rename File"), self)
         act_del.triggered.connect(lambda: self._delete_file(tree, is_input))
         act_ren.triggered.connect(lambda: self._rename_file(tree, is_input))
         menu.addAction(act_del); menu.addAction(act_ren)
@@ -2507,7 +2502,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         folder = self._folder_of(is_input)
         fp = os.path.join(folder, item.text(0))
         if not os.path.exists(fp): return
-        if QMessageBox.question(self, "Confirm Delete", f"Delete {item.text(0)}?",
+        if QMessageBox.question(self, self.tr("Confirm Delete"), self.tr("Delete {0}?").format(item.text(0)),
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             os.remove(fp)
@@ -2518,7 +2513,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         if not item: return
         folder = self._folder_of(is_input)
         fp = os.path.join(folder, item.text(0))
-        new, ok = QInputDialog.getText(self, "Rename File", "Enter new name:", text=item.text(0))
+        new, ok = QInputDialog.getText(self, self.tr("Rename File"), self.tr("Enter new name:"), text=item.text(0))
         if ok and new:
             np = os.path.join(folder, new)
             os.rename(fp, np)
@@ -2534,13 +2529,13 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         try:
             img, _, _, is_mono = load_image(fp)
             if img is None:
-                QMessageBox.critical(self, "Error", "Failed to load image for preview.")
+                QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to load image for preview."))
                 return
             dlg = ImagePreviewDialog(img, is_mono=is_mono, parent=self)
             dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
             dlg.show()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to preview image:\n{e}")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to preview image:\n{0}").format(e))
 
     # ---------- Single image processing ----------
     def _process_single_image(self):
@@ -2557,10 +2552,10 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
         if views:
             mb = QMessageBox(self)
-            mb.setWindowTitle("Process Single Image")
-            mb.setText("Choose the source to process:")
-            btn_view = mb.addButton("Open View", QMessageBox.ButtonRole.AcceptRole)
-            btn_file = mb.addButton("File on Disk", QMessageBox.ButtonRole.AcceptRole)
+            mb.setWindowTitle(self.tr("Process Single Image"))
+            mb.setText(self.tr("Choose the source to process:"))
+            btn_view = mb.addButton(self.tr("Open View"), QMessageBox.ButtonRole.AcceptRole)
+            btn_file = mb.addButton(self.tr("File on Disk"), QMessageBox.ButtonRole.AcceptRole)
             mb.addButton(QMessageBox.StandardButton.Cancel)
             mb.exec()
 
@@ -2594,25 +2589,25 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 chosen_doc = views[0][1]
             else:
                 titles = [t for (t, _) in views]
-                sel, ok = QInputDialog.getItem(self, "Select View", "Choose an open view:", titles, 0, False)
+                sel, ok = QInputDialog.getItem(self, self.tr("Select View"), self.tr("Choose an open view:"), titles, 0, False)
                 if not ok:
                     return
                 chosen_doc = views[titles.index(sel)][1]
 
             if chosen_doc is None or getattr(chosen_doc, "image", None) is None:
-                QMessageBox.warning(self, "Warning", "Selected view has no image.")
+                QMessageBox.warning(self, self.tr("Warning"), self.tr("Selected view has no image."))
                 return
 
             try:
                 img = np.asarray(chosen_doc.image, dtype=np.float32)
                 img = np.clip(img, 0.0, 1.0)
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to read image from view:\n{e}")
+                QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to read image from view:\n{0}").format(e))
                 return
 
         else:
             file_path, _ = QFileDialog.getOpenFileName(
-                self, "Select Image", "",
+                self, self.tr("Select Image"), "",
                 SAT_INPUT_FILTER
             )
             if not file_path:
@@ -2630,7 +2625,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 img = np.asarray(img, dtype=np.float32)
                 img = np.clip(img, 0.0, 1.0)
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to load image:\n{e}")
+                QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to load image:\n{0}").format(e))
                 return
 
         # ----------------------------------------------------
@@ -2668,8 +2663,8 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             "skip_if_none": skip_if_none,
         }
         self._sat_cancel_requested = False
-        self._wait = WaitDialog("Satellite removal", self)
-        self._wait.set_stage("Removing satellite trails…")
+        self._wait = WaitDialog(self.tr("Satellite removal"), self)
+        self._wait.set_stage(self.tr("Removing satellite trails…"))
         self._wait.cancelled.connect(self._cancel_sat_thread)
         thr.progress.connect(self._on_single_progress)
         thr.log.connect(self._wait.append_output)
@@ -2693,8 +2688,8 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
         if ctx.get("skip_if_none") and not detected:
             if not stopped:
-                QMessageBox.information(self, "Satellite Removal",
-                                        "No satellite trail detected (skip-save enabled).")
+                QMessageBox.information(self, self.tr("Satellite Removal"),
+                                        self.tr("No satellite trail detected (skip-save enabled)."))
             return
 
         if ctx.get("use_view"):
@@ -2711,7 +2706,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
         if not saved:
             return
-        QMessageBox.information(self, "Success", f"Processed image saved to:\n{saved}")
+        QMessageBox.information(self, self.tr("Success"), self.tr("Processed image saved to:\n{0}").format(saved))
         if self.chk_delete_original.isChecked():
             file_path = ctx.get("file_path") or ""
             try:
@@ -2720,18 +2715,18 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                     self._refresh_tree(self.tree_in, self.input_folder)
             except Exception as ex:
                 QMessageBox.warning(
-                    self, "Delete Original",
-                    f"Could not delete original:\n{ex}"
+                    self, self.tr("Delete Original"),
+                    self.tr("Could not delete original:\n{0}").format(ex)
                 )
 
     def _on_single_error(self, msg: str):
         self._close_sat_wait()
-        QMessageBox.critical(self, "Error", str(msg))
+        QMessageBox.critical(self, self.tr("Error"), str(msg))
 
     def _on_single_cancelled(self):
         self._close_sat_wait()
         if not self._closing_after_cancel:
-            QMessageBox.information(self, "Cancelled", "Operation cancelled.")
+            QMessageBox.information(self, self.tr("Cancelled"), self.tr("Operation cancelled."))
 
     def _on_single_finished(self):
         self._single_thread = None
@@ -2749,7 +2744,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         views = []
         # include self.doc first if valid
         if getattr(self, "doc", None) is not None and getattr(self.doc, "image", None) is not None:
-            title = getattr(self.doc, "display_name", lambda: "Active View")()
+            title = getattr(self.doc, "display_name", lambda: self.tr("Active View"))()
             views.append((title, self.doc))
 
         # try to enumerate MDI subwindows on the parent main window
@@ -2761,7 +2756,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                     w = sw.widget()
                     d = getattr(w, "document", None)
                     if d is not None and getattr(d, "image", None) is not None:
-                        t = w.windowTitle() if hasattr(w, "windowTitle") else getattr(d, "display_name", lambda:"View")()
+                        t = w.windowTitle() if hasattr(w, "windowTitle") else getattr(d, "display_name", lambda: self.tr("View"))()
                         # don’t duplicate self.doc if it’s the same object
                         if not any(d is existing for _, existing in views):
                             views.append((t, d))
@@ -2788,21 +2783,21 @@ class CosmicClaritySatelliteDialogPro(QDialog):
 
     def _batch_process(self):
         if not self.input_folder or not self.output_folder:
-            QMessageBox.warning(self, "Warning", "Please select both input and output folders.")
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("Please select both input and output folders."))
             return
         if not self._confirm_delete_originals():
             return
-        self._run_engine_thread(monitor=False, title="Satellite – Batch processing")
+        self._run_engine_thread(monitor=False, title=self.tr("Satellite – Batch processing"))
 
 
     def _live_monitor(self):
         if not self.input_folder or not self.output_folder:
-            QMessageBox.warning(self, "Warning", "Please select both input and output folders.")
+            QMessageBox.warning(self, self.tr("Warning"), self.tr("Please select both input and output folders."))
             return
         if not self._confirm_delete_originals():
             return
         self.sld_sens.setEnabled(False)
-        self._run_engine_thread(monitor=True, title="Satellite – Live monitoring",
+        self._run_engine_thread(monitor=True, title=self.tr("Satellite – Live monitoring"),
                                 on_finish=lambda: self.sld_sens.setEnabled(True))
 
     def _sat_busy(self) -> bool:
@@ -2902,11 +2897,11 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             QTimer.singleShot(0, self.close)
             return
         if monitor:
-            QMessageBox.information(self, "Live Monitor", "Live monitor stopped.")
+            QMessageBox.information(self, self.tr("Live Monitor"), self.tr("Live monitor stopped."))
         elif getattr(self, "_sat_cancel_requested", False):
-            QMessageBox.information(self, "Cancelled", "Processing cancelled.")
+            QMessageBox.information(self, self.tr("Cancelled"), self.tr("Processing cancelled."))
         else:
-            QMessageBox.information(self, "Done", "Processing finished.")
+            QMessageBox.information(self, self.tr("Done"), self.tr("Processing finished."))
 
     def closeEvent(self, e):
         if self._sat_busy():
@@ -3018,11 +3013,11 @@ class SatelliteSingleImageThread(QThread):
                 self.cancelled.emit()
             elif phase == "load":
                 import traceback as _tb
-                self.error.emit(f"Failed to load Satellite models:\n{e}\n\n{_tb.format_exc()}")
+                self.error.emit(self.tr("Failed to load Satellite models:\n{0}\n\n{1}").format(e, _tb.format_exc()))
             elif phase == "save":
-                self.error.emit(f"Failed to save result:\n{e}")
+                self.error.emit(self.tr("Failed to save result:\n{0}").format(e))
             else:
-                self.error.emit(f"Error processing image:\n{e}")
+                self.error.emit(self.tr("Error processing image:\n{0}").format(e))
 
 
 class SatelliteEngineThread(QThread):

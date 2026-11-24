@@ -23,7 +23,7 @@ import os
 
 import numpy as np
 from PyQt6.QtCore import (QCoreApplication, QEvent, QPoint, QRect, QSettings, Qt,
-                          QTimer, QUrl)
+                          QTimer, QUrl, QT_TRANSLATE_NOOP)
 from PyQt6.QtGui import (QColor, QDesktopServices, QFont, QFontMetrics, QPainter,
                          QPen, QRegion)
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QToolBar,
@@ -44,37 +44,44 @@ def _t(text: str) -> str:
 # "skip_to_curves" = go to the Curves step, "tutorial" = the video.
 _STEPS = {
     "open": (
-        "1 of 3", "Open an image",
-        "Double-click the empty workspace, or use File → Open.\n\n"
-        "Any image works. A stacked, unstretched FITS, XISF or TIFF straight "
-        "from your stacking software is ideal.",
-        "Open an image…", "open"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "1 of 3"), QT_TRANSLATE_NOOP("FirstStepsTour", "Open an image"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Double-click the empty workspace, or use File → Open.\n\n"
+        "Any image works. A stacked, unstretched FITS, XISF or TIFF is ideal. "
+        "Only have subs? Stacking → Quick Stack turns them into one."),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Open images…"), "open"),
     "stretch": (
-        "2 of 3", "Stretch it with Statistical Stretch",
-        "Stacked data is linear: nearly everything sits close to black, which "
+        QT_TRANSLATE_NOOP("FirstStepsTour", "2 of 3"), QT_TRANSLATE_NOOP("FirstStepsTour", "Stretch it with Statistical Stretch"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Stacked data is linear: nearly everything sits close to black, which "
         "is why it looks dark. If Display-Stretch is on in the toolbar, the view "
         "is brightened but the pixels are not.\n\n"
         "Statistical Stretch changes the pixels. It is under Functions → "
-        "Stretching & Tone → Statistical Stretch. Click Apply when it looks right.",
-        "Open Statistical Stretch", "stretch"),
+        "Stretching & Tone → Statistical Stretch. Click Apply when it looks right."),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Open Statistical Stretch"), "stretch"),
     "already_stretched": (
-        "2 of 3", "This image is already stretched",
-        "Its brightness is already spread out, so Statistical Stretch, which is "
-        "for linear data, isn't needed here. Go straight to Curves.",
-        "Continue to Curves", "skip_to_curves"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "2 of 3"), QT_TRANSLATE_NOOP("FirstStepsTour", "This image is already stretched"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Its brightness is already spread out, so Statistical Stretch, which is "
+        "for linear data, isn't needed here. Go straight to Curves."),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Continue to Curves"), "skip_to_curves"),
     "curves": (
-        "3 of 3", "Add contrast with Curves",
-        "Curves is under Functions → Stretching & Tone → Curves Editor. "
+        QT_TRANSLATE_NOOP("FirstStepsTour", "3 of 3"), QT_TRANSLATE_NOOP("FirstStepsTour", "Add contrast with Curves"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Curves is under Functions → Stretching & Tone → Curves Editor. "
         "Lift the middle of the curve a little to bring out faint detail, or "
-        "make a gentle S-curve for contrast, then click Apply.",
-        "Open Curves Editor", "curves"),
+        "make a gentle S-curve for contrast, then click Apply to Document."),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Open Curves Editor"), "curves"),
     "done": (
-        "Done", "You've processed your first image",
-        "Ctrl+Z undoes any step, and the History menu lists them all.\n\n"
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Done"), QT_TRANSLATE_NOOP("FirstStepsTour", "You've processed your first image"),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Ctrl+Z undoes any step, and the History menu lists them all.\n\n"
         "A full workflow removes gradients and calibrates colour before "
-        "stretching. The beginner tutorial walks through it.",
-        "Watch the tutorial", "tutorial"),
+        "stretching. The beginner tutorial walks through it."),
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Watch the tutorial"), "tutorial"),
 }
+
+# The "open" step while the start panel is up, which has both of these.
+_OPEN_ON_PANEL = (
+    QT_TRANSLATE_NOOP("FirstStepsTour", "Click Open images on the start panel, double-click the empty workspace, "
+    "or use File → Open.\n\n"
+    "Any image works. A stacked, unstretched FITS, XISF or TIFF is ideal. "
+    "Only have subs? Deep-Sky Stacking, also on the panel, turns them into one."))
 
 _STYLE = """
 #FirstStepsTour {
@@ -141,9 +148,16 @@ def _menu_route(main_window, act):
     return None, []
 
 
+def _start_panel(main_window):
+    """The start panel while it is showing, else None."""
+    panel = getattr(main_window, "_start_panel", None)
+    return panel if _alive(panel) and panel.isVisible() else None
+
+
 class _Spotlight(QWidget):
     """Pulsing rings on where the current step's tool lives: its toolbar icon
-    (with the tool's name under it) and its menu title.
+    (with the tool's name under it), its menu title, and its place on the start
+    panel when that is up.
 
     A transparent child spread over the main window that lets every click
     through. Only the ring areas are repainted each tick, so the image views
@@ -210,6 +224,13 @@ class _Spotlight(QWidget):
                     g = mb.actionGeometry(top)
                     if g.isValid() and g.width() > 0:
                         out.append((QRect(mb.mapTo(mw, g.topLeft()), g.size()), ""))
+        except RuntimeError:
+            pass
+        try:
+            panel = _start_panel(mw)
+            tile = panel.tile_for(act) if panel is not None else None
+            if tile is not None:
+                out.append((QRect(tile.mapTo(mw, QPoint(0, 0)), tile.size()), ""))
         except RuntimeError:
             pass
         return out
@@ -323,9 +344,12 @@ def open_sample_image(main_window):
     img, header, bit_depth, is_mono = load_image(path)[:4]
     if img is None:
         return None
-    return dm.open_array(img, {"original_header": header, "bit_depth": bit_depth,
-                               "is_mono": is_mono},
-                         title=_t("Sample image (linear)"))
+    meta = {"original_header": header, "bit_depth": bit_depth, "is_mono": is_mono}
+    opening = getattr(dm, "opening_new_data", None)
+    if opening is None:
+        return dm.open_array(img, meta, title=_t("Sample image (linear)"))
+    with opening():   # opens display-stretched, like any linear file
+        return dm.open_array(img, meta, title=_t("Sample image (linear)"))
 
 
 def _last_step_name(doc) -> str:
@@ -394,8 +418,13 @@ class FirstStepsTour(QFrame):
         lay.addLayout(row)
 
         main_window.installEventFilter(self)
+        panel = getattr(main_window, "_start_panel", None)
+        self._panel = panel if _alive(panel) else None
+        if self._panel is not None:
+            self._panel.installEventFilter(self)     # step 1 names it while it's up
         if self._dm is not None:
             self._dm.documentAdded.connect(self._on_doc_added)
+            self._dm.documentRemoved.connect(self._on_doc_removed)
             try:
                 for d in list(self._dm.all_documents() or []):
                     self._watch(d)
@@ -418,16 +447,38 @@ class FirstStepsTour(QFrame):
         counter, title, body, button, _action = _STEPS[step]
         self._counter.setText(_t("FIRST STEPS") + "  ·  " + _t(counter))
         self._title.setText(_t(title))
+        if step == "open" and _start_panel(self._mw) is not None:
+            body = _OPEN_ON_PANEL
         self._body.setText(_t(body))
         self._primary.setText(_t(button))
         self._skip.setText(_t("Close") if step == "done" else _t("Skip tour"))
         self._sample.setVisible(step == "open" and sample_image_path() is not None)
-        self.adjustSize()
-        self._reposition()
+        self._fit()
         act = getattr(self._mw, _STEP_ACTION[step], None) if step in _STEP_ACTION else None
         self._spot.point_at(act)
         self._guide_menus(act)
         self.raise_()                       # the card stays above the spotlight
+
+    def _fit(self):
+        """As tall as the text needs at the card's own width. adjustSize()
+        measures wrapped text at a width it picks itself and left the last
+        lines of the longer steps out."""
+        for w in (self, *self.findChildren(QWidget)):
+            w.ensurePolished()                  # the style sheet sets the fonts
+        lay = self.layout()
+        lay.invalidate()
+        self.resize(self.width(), lay.totalHeightForWidth(self.width()))
+        lay.activate()
+        self._reposition()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._fit()
+
+    def changeEvent(self, ev):
+        super().changeEvent(ev)
+        if ev.type() == QEvent.Type.FontChange and self._step:
+            QTimer.singleShot(0, lambda: _alive(self) and self._fit())
 
     # ---- the menu route ------------------------------------------------------
     def _guide_menus(self, act):
@@ -492,6 +543,21 @@ class FirstStepsTour(QFrame):
         if self._step == "open" and getattr(doc, "image", None) is not None:
             self._go("stretch" if looks_linear(doc.image) else "already_stretched")
 
+    def _on_doc_removed(self, _doc=None):
+        QTimer.singleShot(0, lambda: _alive(self) and self._back_to_open())
+
+    def _back_to_open(self):
+        """The last image was closed part way: nothing to stretch any more, and
+        the start panel is back."""
+        if self._torn_down or self._step not in ("stretch", "already_stretched", "curves"):
+            return
+        try:
+            docs = list(self._dm.all_documents() or [])
+        except Exception:
+            return
+        if not any(getattr(d, "image", None) is not None for d in docs):
+            self._go("open")
+
     def _on_doc_changed(self):
         name = _last_step_name(self.sender())
         if self._step in ("stretch", "already_stretched", "open") and name.startswith("Statistical Stretch"):
@@ -504,6 +570,10 @@ class FirstStepsTour(QFrame):
         if obj is self._mw and ev.type() in (QEvent.Type.Resize, QEvent.Type.Show,
                                              QEvent.Type.LayoutRequest):
             self._reposition()
+        elif (obj is self._panel and self._step == "open"
+                and ev.type() in (QEvent.Type.Show, QEvent.Type.Hide)):
+            QTimer.singleShot(0, lambda: _alive(self) and self._step == "open"
+                              and self._go("open"))
         return super().eventFilter(obj, ev)
 
     def _reposition(self):
@@ -536,10 +606,12 @@ class FirstStepsTour(QFrame):
         if self._torn_down:
             return
         self._torn_down = True
-        try:
-            self._mw.removeEventFilter(self)
-        except Exception:
-            pass
+        for obj in (self._mw, self._panel):
+            try:
+                if obj is not None:
+                    obj.removeEventFilter(self)
+            except Exception:
+                pass
         self._unguide_menus()
         try:
             self._spot.stop()
@@ -547,10 +619,12 @@ class FirstStepsTour(QFrame):
         except Exception:
             pass
         if self._dm is not None:
-            try:
-                self._dm.documentAdded.disconnect(self._on_doc_added)
-            except Exception:
-                pass
+            for sig, slot in ((self._dm.documentAdded, self._on_doc_added),
+                              (self._dm.documentRemoved, self._on_doc_removed)):
+                try:
+                    sig.disconnect(slot)
+                except Exception:
+                    pass
         for d in self._watched:
             try:
                 d.changed.disconnect(self._on_doc_changed)
@@ -578,6 +652,8 @@ def maybe_start_first_steps_tour(main_window):
     """After the welcome screen: only on a brand-new install, only once."""
     if not getattr(main_window, "_fresh_install", False):
         return None
+    if getattr(main_window, "_returning_user", False):
+        return None                      # new layout, not a new user
     if QSettings().value(DONE_KEY, False, type=bool):
         return None
     return start_first_steps_tour(main_window)

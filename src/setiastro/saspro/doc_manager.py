@@ -1,9 +1,10 @@
 # saspro/doc_manager.py
 from __future__ import annotations
-from PyQt6.QtCore import QObject, pyqtSignal, Qt, QTimer
+from PyQt6.QtCore import QObject, pyqtSignal, Qt, QTimer, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtWidgets import QApplication, QMessageBox
 import os
 import re
+from contextlib import contextmanager
 import numpy as np
 from setiastro.saspro.legacy.xisf import XISF as XISFReader
 from astropy.io import fits  # local import; optional dep
@@ -24,6 +25,11 @@ except ImportError:
 from setiastro.saspro.swap_manager import get_swap_manager
 from setiastro.saspro.widgets.image_utils import ensure_contiguous
 from typing import Any
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("DocManager", text)
+
 
 # --- WCS DEBUGGING ------------------------------------------------------
 _DEBUG_WCS = False  # flip to False when you’re done debugging
@@ -153,7 +159,9 @@ _DISPLAY_DESCRIPTORS: tuple[tuple[str, tuple[str, ...]], ...] = (
                   "nostars", "no_stars", "no-stars")),
     ("stars",    ("starsonly", "stars_only", "stars-only", "onlystars")),
     ("drizzle",  ("drizzle", "drizzled", "drz")),
-    ("crop",     ("crop", "cropped")),
+    # "autocrop": the Stacking Suite saves a master and its auto-cropped copy
+    # side by side; without it the copy opened as the master's title + "_1".
+    ("crop",     ("crop", "cropped", "autocrop")),
     ("mask",     ("mask",)),
 )
 
@@ -2116,13 +2124,13 @@ def _show_raw_preview_warning_nonmodal(path: str):
     parent = QApplication.activeWindow()
     box = QMessageBox(parent)
     box.setIcon(QMessageBox.Icon.Warning)
-    box.setWindowTitle("RAW preview loaded")
-    box.setText(
+    box.setWindowTitle(_tr("RAW preview loaded"))
+    box.setText(_tr(
         "Linear RAW decoding failed for:\n"
-        f"{path}\n\n"
+        "{0}\n\n"
         "Showing the camera’s embedded JPEG preview instead "
         "(8-bit, non-linear). Some processing tools may be limited."
-    )
+    ).format(path))
     box.setStandardButtons(QMessageBox.StandardButton.Ok)
     box.setWindowModality(Qt.WindowModality.NonModal)  # ← fix here
     box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -3123,7 +3131,27 @@ class DocManager(QObject):
         """Return a live, ROI-aware proxy for this view."""
         return LiveViewDocument(self, view, base_doc)
 
+    @contextmanager
+    def opening_new_data(self):
+        """Documents registered inside this block are new data the user asked
+        to see -- a file opened, a stack finished -- not a tool's by-product.
+        documentAdded is emitted synchronously, so the main window can ask
+        is_opening_new_data() while it builds the view, and shows a linear
+        one display-stretched (a fresh stack would otherwise open black)."""
+        self._new_data_depth = getattr(self, "_new_data_depth", 0) + 1
+        try:
+            yield
+        finally:
+            self._new_data_depth -= 1
+
+    def is_opening_new_data(self) -> bool:
+        return getattr(self, "_new_data_depth", 0) > 0
+
     def open_path(self, path: str, open_auxiliary_images: bool | None = None):
+        with self.opening_new_data():
+            return self._open_path(path, open_auxiliary_images)
+
+    def _open_path(self, path: str, open_auxiliary_images: bool | None = None):
         ext = os.path.splitext(path)[1].lower().lstrip('.')
         norm_ext = _normalize_ext(ext)
 
@@ -3230,11 +3258,13 @@ class DocManager(QObject):
 
                 # NEW
                 "is_hdrlet_table": bool(hdrlet_hint),
+                # Stored English (metadata); TableSubWindow translates it on display.
                 "table_notice": (
+                    QT_TRANSLATE_NOOP("TableSubWindow",
                     "This FITS extension appears to be an HDRLET/WCS-correction reference table. "
                     "It is preserved for inspection because it is valid data, but it is not a normal "
                     "science spectrum or image-profile table. Plotting it may look garbled unless you "
-                    "already know the instrument-specific meaning of the columns."
+                    "already know the instrument-specific meaning of the columns.")
                     if hdrlet_hint else ""
                 ),
             }

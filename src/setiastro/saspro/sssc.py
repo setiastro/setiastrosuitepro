@@ -1715,7 +1715,7 @@ class SSSCDialog(QDialog):
     def __init__(self, doc_manager, sasp_data_path: str, parent=None):
         super().__init__(parent)
         _force_mpl_no_tex()
-        self.setWindowTitle("Spectrophotometric Standard Star Calibration (SSSC)")
+        self.setWindowTitle(self.tr("Spectrophotometric Standard Star Calibration (SSSC)"))
         self.setWindowFlag(Qt.WindowType.Window, True)
  
         import platform
@@ -1967,22 +1967,22 @@ class SSSCDialog(QDialog):
         # ── Row 1: Step 1 + White Reference ──────────────────────────────────
         row1 = QHBoxLayout()
         row1.setSpacing(8)
-        self.solve_btn = QPushButton("🎯  Step 0: Plate Solve")
+        self.solve_btn = QPushButton(self.tr("🎯  Step 0: Plate Solve"))
         self.solve_btn.setStyleSheet(PLATESOLVE_STYLE)
         self.solve_btn.setMinimumHeight(30)
         self.solve_btn.setToolTip(
-            "Plate-solve the active image (writes a WCS) so Step 1 can map stars to sky coordinates.")
+            self.tr("Plate-solve the active image (writes a WCS) so Step 1 can map stars to sky coordinates."))
         self.solve_btn.clicked.connect(self.run_plate_solver)
         row1.addWidget(self.solve_btn)
         row1.addWidget(vsep())
-        self.fetch_btn = QPushButton("⭐  Step 1: Fetch Stars && Spectra")
+        self.fetch_btn = QPushButton(self.tr("⭐  Step 1: Fetch Stars && Spectra"))
         self.fetch_btn.setStyleSheet(STEP1_STYLE)
         self.fetch_btn.setMinimumHeight(30)
         self.fetch_btn.clicked.connect(self.fetch_stars)
         row1.addWidget(self.fetch_btn)
  
         row1.addWidget(vsep())
-        row1.addWidget(lbl("White Reference:"))
+        row1.addWidget(lbl(self.tr("White Reference:")))
         self.star_combo = QComboBox()
         self.star_combo.addItem("G2V (Solar)", userData="G2V")
         self.star_combo.addItem("Vega (A0V)",  userData="A0V")
@@ -1995,10 +1995,10 @@ class SSSCDialog(QDialog):
         row1.addWidget(self.star_combo)
         row1.addStretch()
 
-        self.sasp_btn = QPushButton("SASP Viewer")
+        self.sasp_btn = QPushButton(self.tr("SASP Viewer"))
         self.sasp_btn.setStyleSheet(UTIL_STYLE)
         self.sasp_btn.setToolTip(
-            "Open the SASP curve viewer (Pickles SEDs + filter/sensor responses)")
+            self.tr("Open the SASP curve viewer (Pickles SEDs + filter/sensor responses)"))
         self.sasp_btn.clicked.connect(self.open_sasp_viewer)
         row1.addWidget(self.sasp_btn)
 
@@ -2012,9 +2012,9 @@ class SSSCDialog(QDialog):
             " QPushButton:pressed { background: #111f33; }"
         )
 
-        self.about_btn = QPushButton("About")
+        self.about_btn = QPushButton(self.tr("About"))
         self.about_btn.setStyleSheet(INFO_STYLE)
-        self.about_btn.setToolTip("About SSSC — what it is and how it works")
+        self.about_btn.setToolTip(self.tr("About SSSC — what it is and how it works"))
         self.about_btn.clicked.connect(self._show_about)
         row1.addWidget(self.about_btn)
 
@@ -2023,9 +2023,9 @@ class SSSCDialog(QDialog):
         # same blue styling as About; the click handler is the same one
         # make_help_button wires up internally.
         from setiastro.saspro.help_support import show_tool_doc
-        self.btn_help = QPushButton("📄 Docs")
+        self.btn_help = QPushButton(self.tr("📄 Docs"))
         self.btn_help.setStyleSheet(INFO_STYLE)
-        self.btn_help.setToolTip("Open the SSSC documentation page")
+        self.btn_help.setToolTip(self.tr("Open the SSSC documentation page"))
         self.btn_help.clicked.connect(lambda: show_tool_doc("sssc", self))
         row1.addWidget(self.btn_help)
 
@@ -2035,7 +2035,7 @@ class SSSCDialog(QDialog):
         row2 = QHBoxLayout()
         row2.setSpacing(8)
  
-        row2.addWidget(lbl("R Filter:", LBL_R_STYLE))
+        row2.addWidget(lbl(self.tr("R Filter:"), LBL_R_STYLE))
         self.r_filter_combo = QComboBox()
         self.r_filter_combo.addItem("(None)")
         self.r_filter_combo.addItems(self.filter_list)
@@ -2043,7 +2043,7 @@ class SSSCDialog(QDialog):
         row2.addWidget(self.r_filter_combo)
  
         row2.addWidget(vsep())
-        row2.addWidget(lbl("G Filter:", LBL_G_STYLE))
+        row2.addWidget(lbl(self.tr("G Filter:"), LBL_G_STYLE))
         self.g_filter_combo = QComboBox()
         self.g_filter_combo.addItem("(None)")
         self.g_filter_combo.addItems(self.filter_list)
@@ -2051,7 +2051,7 @@ class SSSCDialog(QDialog):
         row2.addWidget(self.g_filter_combo)
  
         row2.addWidget(vsep())
-        row2.addWidget(lbl("B Filter:", LBL_B_STYLE))
+        row2.addWidget(lbl(self.tr("B Filter:"), LBL_B_STYLE))
         self.b_filter_combo = QComboBox()
         self.b_filter_combo.addItem("(None)")
         self.b_filter_combo.addItems(self.filter_list)
@@ -2064,7 +2064,7 @@ class SSSCDialog(QDialog):
         row3 = QHBoxLayout()
         row3.setSpacing(8)
  
-        row3.addWidget(lbl("LP/Cut 1:"))
+        row3.addWidget(lbl(self.tr("LP/Cut 1:")))
         self.lp_filter_combo = QComboBox()
         self.lp_filter_combo.addItem("(None)")
         self.lp_filter_combo.addItems(self.filter_list)
@@ -2072,7 +2072,7 @@ class SSSCDialog(QDialog):
         row3.addWidget(self.lp_filter_combo)
  
         row3.addWidget(vsep())
-        row3.addWidget(lbl("LP/Cut 2:"))
+        row3.addWidget(lbl(self.tr("LP/Cut 2:")))
         self.lp_filter_combo2 = QComboBox()
         self.lp_filter_combo2.addItem("(None)")
         self.lp_filter_combo2.addItems(self.filter_list)
@@ -2080,10 +2080,10 @@ class SSSCDialog(QDialog):
         row3.addWidget(self.lp_filter_combo2)
  
         row3.addWidget(vsep())
-        row3.addWidget(lbl("Camera / Rig:"))
+        row3.addWidget(lbl(self.tr("Camera / Rig:")))
         self.camera_label_edit = QLineEdit()
         self.camera_label_edit.setPlaceholderText(
-            "e.g. IMX492 · EdgeHD f/7  (separates session history per sensor)")
+            self.tr("e.g. IMX492 · EdgeHD f/7  (separates session history per sensor)"))
         self.camera_label_edit.setMaxLength(80)
         self.camera_label_edit.setStyleSheet(EDIT_STYLE)
         self.camera_label_edit.textChanged.connect(
@@ -2095,7 +2095,7 @@ class SSSCDialog(QDialog):
         row4 = QHBoxLayout()
         row4.setSpacing(8)
  
-        self.run_btn = QPushButton("🔬  Step 2: Run SSSC Calibration")
+        self.run_btn = QPushButton(self.tr("🔬  Step 2: Run SSSC Calibration"))
         self.run_btn.setStyleSheet(STEP2_STYLE)
         self.run_btn.setMinimumHeight(30)
         self.run_btn.clicked.connect(self.run_sssc)
@@ -2103,20 +2103,20 @@ class SSSCDialog(QDialog):
  
         row4.addWidget(vsep())
  
-        self.neutralize_chk = QCheckBox("BG Neutralize")
+        self.neutralize_chk = QCheckBox(self.tr("BG Neutralize"))
         self.neutralize_chk.setChecked(False)
         self.neutralize_chk.setStyleSheet(CHK_STYLE)
-        self.neutralize_chk.setToolTip("Background Neutralization")
+        self.neutralize_chk.setToolTip(self.tr("Background Neutralization"))
         row4.addWidget(self.neutralize_chk)
  
         row4.addWidget(vsep())
-        row4.addWidget(lbl("Star σ:"))
+        row4.addWidget(lbl(self.tr("Star σ:")))
         self.sep_thr_spin = QSpinBox()
         self.sep_thr_spin.setRange(2, 100)
         self.sep_thr_spin.setValue(15)
         self.sep_thr_spin.setFixedWidth(52)
         self.sep_thr_spin.setStyleSheet(SPIN_STYLE)
-        self.sep_thr_spin.setToolTip("Star detection threshold (SEP σ)")
+        self.sep_thr_spin.setToolTip(self.tr("Star detection threshold (SEP σ)"))
         self.sep_thr_spin.valueChanged.connect(
             lambda v: QSettings().setValue(_SK_SEP_THR, int(v)))
         row4.addWidget(self.sep_thr_spin)
@@ -2125,15 +2125,15 @@ class SSSCDialog(QDialog):
         # Starts at σ=100 and steps down [100,50,25,12,8,5,3] until the
         # detection returns at least SSSC_AUTO_SIGMA_MIN_STARS (1200) sources.
         # Falls back to the lowest σ in the ladder if nothing hits the bar.
-        self.auto_sigma_chk = QCheckBox("Auto")
+        self.auto_sigma_chk = QCheckBox(self.tr("Auto"))
         self.auto_sigma_chk.setStyleSheet(CHK_STYLE)
         self.auto_sigma_chk.setChecked(True)
         self.auto_sigma_chk.setToolTip(
-            "Auto σ waterfall:\n"
+            self.tr("Auto σ waterfall:\n"
             "  Tries σ = 100, 50, 25, 12, 8, 5, 3 in order and stops at the\n"
             "  first value that yields ≥ 1200 detections. Removes the need to\n"
             "  guess a threshold for different fields.\n\n"
-            "  Uncheck to use the manual σ value in the spin box."
+            "  Uncheck to use the manual σ value in the spin box.")
         )
         self.auto_sigma_chk.toggled.connect(self._on_auto_sigma_toggled)
         row4.addWidget(self.auto_sigma_chk)
@@ -2141,7 +2141,7 @@ class SSSCDialog(QDialog):
         self.sep_thr_spin.setEnabled(not self.auto_sigma_chk.isChecked())
  
 
-        adv_box = QGroupBox("Advanced")
+        adv_box = QGroupBox(self.tr("Advanced"))
         adv_box.setStyleSheet("""
             QGroupBox {
                 color: #555555;
@@ -2160,7 +2160,7 @@ class SSSCDialog(QDialog):
         adv_layout.setSpacing(6)
         adv_layout.setContentsMargins(6, 4, 6, 4)
 
-        adv_layout.addWidget(lbl("R(λ) ctrl pts:"))
+        adv_layout.addWidget(lbl(self.tr("R(λ) ctrl pts:")))
         self.nctrl_spin = QSpinBox()
         self.nctrl_spin.setRange(4, 24)
         self.nctrl_spin.setValue(8)
@@ -2168,15 +2168,15 @@ class SSSCDialog(QDialog):
         self.nctrl_spin.setFixedWidth(52)
         self.nctrl_spin.setStyleSheet(SPIN_STYLE)
         self.nctrl_spin.setToolTip(
-            "Control points per channel for Stage 3 R(λ) solver.\n"
+            self.tr("Control points per channel for Stage 3 R(λ) solver.\n"
             "8 = default (200–600 stars)\n"
             "12 = finer (~600+ stars)\n"
-            "16 = high resolution (~1000+ stars)")
+            "16 = high resolution (~1000+ stars)"))
         self.nctrl_spin.valueChanged.connect(
             lambda v: QSettings().setValue(_SK_N_CTRL, int(v)))
         adv_layout.addWidget(self.nctrl_spin)
 
-        adv_layout.addWidget(lbl("M(Σ) ctrl pts:"))
+        adv_layout.addWidget(lbl(self.tr("M(Σ) ctrl pts:")))
         self.max_stars_spin = QSpinBox()
         self.max_stars_spin.setRange(100, 2000)
         self.max_stars_spin.setValue(500)
@@ -2184,9 +2184,9 @@ class SSSCDialog(QDialog):
         self.max_stars_spin.setFixedWidth(58)
         self.max_stars_spin.setStyleSheet(SPIN_STYLE)
         self.max_stars_spin.setToolTip(
-            "Maximum calibrator stars for photometry.\n"
+            self.tr("Maximum calibrator stars for photometry.\n"
             "Stars are selected brightest-first, XP stars prioritized.\n"
-            "500 is recommended — dim stars add noise, not accuracy.")
+            "500 is recommended — dim stars add noise, not accuracy."))
         self.max_stars_spin.valueChanged.connect(
             lambda v: QSettings().setValue("SSSC/MaxStars", int(v)))
         adv_layout.addWidget(self.max_stars_spin)
@@ -2194,11 +2194,11 @@ class SSSCDialog(QDialog):
         row4.addWidget(vsep())
         row4.addWidget(adv_box)
 
-        self.curve_mgr_btn = QPushButton("Filter / Sensor Curves…")
+        self.curve_mgr_btn = QPushButton(self.tr("Filter / Sensor Curves…"))
         self.curve_mgr_btn.setStyleSheet(UTIL_STYLE)
         self.curve_mgr_btn.setToolTip(
-            "Open the Curve Manager: add, label, edit, share or delete filter and sensor curves\n"
-            "(paste data, import a CSV, digitize a chart image, or generate a bandpass).")
+            self.tr("Open the Curve Manager: add, label, edit, share or delete filter and sensor curves\n"
+            "(paste data, import a CSV, digitize a chart image, or generate a bandpass)."))
         self.curve_mgr_btn.clicked.connect(self.open_curve_manager)
         row4.addWidget(self.curve_mgr_btn)
         row4.addStretch()
@@ -2209,14 +2209,14 @@ class SSSCDialog(QDialog):
  
         row4.addWidget(vsep())
  
-        self.clear_session_btn = QPushButton("Clear History")
+        self.clear_session_btn = QPushButton(self.tr("Clear History"))
         self.clear_session_btn.setStyleSheet(DANGER_STYLE)
         self.clear_session_btn.setToolTip(
-            "Delete all saved R(λ) solutions for the current filter+camera combination")
+            self.tr("Delete all saved R(λ) solutions for the current filter+camera combination"))
         self.clear_session_btn.clicked.connect(self._clear_session_history)
         row4.addWidget(self.clear_session_btn)
  
-        self.close_btn = QPushButton("Close")
+        self.close_btn = QPushButton(self.tr("Close"))
         self.close_btn.setStyleSheet(UTIL_STYLE)
         self.close_btn.clicked.connect(self.reject)
         row4.addWidget(self.close_btn)
@@ -2233,7 +2233,7 @@ class SSSCDialog(QDialog):
         self.canvas.setVisible(False)
         layout.addWidget(self.canvas, stretch=1)
  
-        self.reset_btn = QPushButton("Reset View / Close")
+        self.reset_btn = QPushButton(self.tr("Reset View / Close"))
         self.reset_btn.setStyleSheet(UTIL_STYLE)
         self.reset_btn.clicked.connect(self.reject)
         layout.addWidget(self.reset_btn)
@@ -2281,8 +2281,8 @@ class SSSCDialog(QDialog):
             self.sasp_viewer_window.show()
             self.sasp_viewer_window.raise_()
         except Exception as e:
-            QMessageBox.critical(self, "SASP Viewer",
-                f"Could not open SASP viewer:\n{e}")
+            QMessageBox.critical(self, self.tr("SASP Viewer"),
+                self.tr("Could not open SASP viewer:\n{0}").format(e))
 
     def open_curve_manager(self):
         """Filter / Sensor Curve Manager (spectral_curves.py), opened with the
@@ -2554,18 +2554,18 @@ class SSSCDialog(QDialog):
 
         doc = self.doc_manager.get_active_document()
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "No Image",
-                "Open an image and make it the active view first.")
+            QMessageBox.warning(self, self.tr("No Image"),
+                self.tr("Open an image and make it the active view first."))
             return False
 
         try:
             ok, res = plate_solve_doc_inplace(self.main_win or self, doc, QSettings())
         except Exception as e:
-            QMessageBox.critical(self, "Plate Solve Error", str(e))
+            QMessageBox.critical(self, self.tr("Plate Solve Error"), str(e))
             return False
 
         if not ok:
-            QMessageBox.critical(self, "Plate Solve Failed", str(res))
+            QMessageBox.critical(self, self.tr("Plate Solve Failed"), str(res))
             return False
 
         # Refresh SSSC's cached image/header/WCS from the freshly-solved doc.
@@ -2575,8 +2575,8 @@ class SSSCDialog(QDialog):
         self.initialize_wcs_from_header(hdr)
 
         if announce:
-            QMessageBox.information(self, "Plate Solve",
-                "Solved. You can now run Step 1: Fetch Stars & Spectra.")
+            QMessageBox.information(self, self.tr("Plate Solve"),
+                self.tr("Solved. You can now run Step 1: Fetch Stars & Spectra."))
         return True
 
 
@@ -2591,14 +2591,14 @@ class SSSCDialog(QDialog):
         self.current_header = hdr
 
         if self.current_image is None:
-            QMessageBox.warning(self, "No Image",
-                "Open an image and make it the active view first.")
+            QMessageBox.warning(self, self.tr("No Image"),
+                self.tr("Open an image and make it the active view first."))
             return
 
         if self.current_header is None:
             resp = QMessageBox.question(
-                self, "No Plate Solution",
-                "This image isn't plate-solved yet. Run the plate solver now?",
+                self, self.tr("No Plate Solution"),
+                self.tr("This image isn't plate-solved yet. Run the plate solver now?"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
@@ -2611,16 +2611,16 @@ class SSSCDialog(QDialog):
         try:
             self.initialize_wcs_from_header(self.current_header)
         except Exception as e:
-            QMessageBox.critical(self, "WCS Error",
-                "Could not build a 2D WCS from header.\n\n"
-                f"{getattr(self, '_wcs_fail_reason', None) or e}")
+            QMessageBox.critical(self, self.tr("WCS Error"),
+                self.tr("Could not build a 2D WCS from header.\n\n{0}").format(
+                    getattr(self, '_wcs_fail_reason', None) or e))
             return
 
         if not getattr(self, "wcs", None):
-            QMessageBox.critical(self, "WCS Error",
-                "Could not build a 2D WCS from header.\n\n"
-                + (getattr(self, "_wcs_fail_reason", None)
-                   or "The header did not yield a usable 2D celestial WCS."))
+            QMessageBox.critical(self, self.tr("WCS Error"),
+                self.tr("Could not build a 2D WCS from header.\n\n{0}").format(
+                    getattr(self, "_wcs_fail_reason", None)
+                    or self.tr("The header did not yield a usable 2D celestial WCS.")))
             return
 
         wcs2 = self.wcs.celestial if hasattr(self.wcs, "celestial") else self.wcs
@@ -2645,7 +2645,7 @@ class SSSCDialog(QDialog):
         )
 
         if sources is None or sources.size == 0:
-            QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
+            QMessageBox.critical(self, self.tr("SEP Error"), self.tr("SEP found no sources."))
             return
 
         r_fluxrad, _ = sep.flux_radius(
@@ -2655,8 +2655,8 @@ class SSSCDialog(QDialog):
         mask    = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
         sources = sources[mask]
         if sources.size == 0:
-            QMessageBox.critical(self, "SEP Error",
-                "All SEP detections rejected by radius filter.")
+            QMessageBox.critical(self, self.tr("SEP Error"),
+                self.tr("All SEP detections rejected by radius filter."))
             return
 
         _sfcc_status(self,
@@ -2669,7 +2669,7 @@ class SSSCDialog(QDialog):
         try:
             sky_coords = wcs2.all_pix2world(np.column_stack([xs, ys]), 0)
         except Exception as e:
-            QMessageBox.critical(self, "WCS Error", str(e))
+            QMessageBox.critical(self, self.tr("WCS Error"), str(e))
             return
 
         valid_mask = (
@@ -2680,8 +2680,8 @@ class SSSCDialog(QDialog):
         sky_coords = sky_coords[valid_mask]
 
         if sources.size == 0:
-            QMessageBox.critical(self, "WCS Error",
-                "No valid sky coordinates after WCS conversion.")
+            QMessageBox.critical(self, self.tr("WCS Error"),
+                self.tr("No valid sky coordinates after WCS conversion."))
             return
 
         self.star_list      = []
@@ -2742,7 +2742,7 @@ class SSSCDialog(QDialog):
         try:
             sky_corners = wcs2.all_pix2world(pix_corners, 0)
         except Exception as e:
-            QMessageBox.critical(self, "WCS Error", str(e))
+            QMessageBox.critical(self, self.tr("WCS Error"), str(e))
             return
 
         center_sky  = SkyCoord(ra=float(sky_corners[0,0])*u.deg,
@@ -2770,7 +2770,7 @@ class SSSCDialog(QDialog):
                 radius=radius,
                 runner=lambda f, *a, **k: run_async_blocking(
                     f, *a, parent=self, title="SSSC",
-                    label="Querying SIMBAD…", cancellable=False, **k),
+                    label=self.tr("Querying SIMBAD…"), cancellable=False, **k),
                 status_cb=lambda m: _sfcc_status(self, m),
                 budget=self._simbad_budget,
                 attempts=2,
@@ -2991,7 +2991,7 @@ class SSSCDialog(QDialog):
         """Display the SSSC About dialog."""
         from PyQt6.QtWidgets import QScrollArea, QTextBrowser
         dlg = QDialog(self)
-        dlg.setWindowTitle("About SSSC — Spectrophotometric Standard Star Calibration")
+        dlg.setWindowTitle(self.tr("About SSSC — Spectrophotometric Standard Star Calibration"))
         dlg.setMinimumSize(720, 580)
         dlg.resize(760, 640)
         layout = QVBoxLayout(dlg)
@@ -3014,7 +3014,7 @@ class SSSCDialog(QDialog):
   code  { background: #2a2a2a; padding: 1px 4px; border-radius: 3px;
           color: #88ffcc; font-size: 12px; }
   hr    { border: none; border-top: 1px solid #333; margin: 14px 0; }
-</style>
+</style>""" + self.tr("""
  
 <h2>What is SSSC?</h2>
 <p>
@@ -3143,10 +3143,10 @@ sensor aging, filter changes all appear as drift in R(&lambda;) and trigger an u
 <p class="note" style="margin-top:16px;">
 SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
 </p>
-""")
+"""))
         layout.addWidget(browser)
 
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton(self.tr("Close"))
         close_btn.clicked.connect(dlg.accept)
         layout.addWidget(close_btn)
         dlg.exec()
@@ -3165,21 +3165,21 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
             cache = self._get_session_cache()
             n = cache.session_count(sid)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Could not read session cache:\n{e}")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Could not read session cache:\n{0}").format(e))
             return
 
         if n == 0:
-            QMessageBox.information(self, "Clear Session History",
-                "No saved solutions found for this filter+camera combination.")
+            QMessageBox.information(self, self.tr("Clear Session History"),
+                self.tr("No saved solutions found for this filter+camera combination."))
             return
 
         reply = QMessageBox.question(
             self,
-            "Clear Session History",
-            f"Delete all {n} saved R(λ) solution(s) for session {sid}?\n\n"
-            f"This will remove the accumulated calibration history for this\n"
-            f"filter+camera combination. The next run will start fresh.\n\n"
-            f"This cannot be undone.",
+            self.tr("Clear Session History"),
+            self.tr("Delete all {0} saved R(λ) solution(s) for session {1}?\n\n"
+            "This will remove the accumulated calibration history for this\n"
+            "filter+camera combination. The next run will start fresh.\n\n"
+            "This cannot be undone.").format(n, sid),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
@@ -3192,14 +3192,14 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
                 f"DELETE FROM {_SESSION_TABLE} WHERE session_id = ?", (sid,))
             cache._conn.commit()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to clear session:\n{e}")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to clear session:\n{0}").format(e))
             return
 
         self._update_session_info_label()
         _sfcc_status(self, f"[SSSC] Session history cleared — {n} run(s) deleted for {sid}")
-        QMessageBox.information(self, "Clear Session History",
-            f"Cleared {n} saved solution(s) for session {sid}.\n"
-            f"The next calibration run will start fresh.")
+        QMessageBox.information(self, self.tr("Clear Session History"),
+            self.tr("Cleared {0} saved solution(s) for session {1}.\n"
+            "The next calibration run will start fresh.").format(n, sid))
 
     def _update_session_info_label(self):
         try:
@@ -3216,12 +3216,12 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
             prev = cache.load_latest(sid)
             if prev:
                 self.session_info_lbl.setText(
-                    f"Session {sid}  ·  {n_sessions} prior run(s)  ·  "
-                    f"last: {prev.stage_label}  ·  {prev.n_stars} stars"
+                    self.tr("Session {0}  ·  {1} prior run(s)  ·  "
+                    "last: {2}  ·  {3} stars").format(sid, n_sessions, prev.stage_label, prev.n_stars)
                 )
             else:
                 self.session_info_lbl.setText(
-                    f"Session {sid}  ·  first run for this filter set"
+                    self.tr("Session {0}  ·  first run for this filter set").format(sid)
                 )
         except Exception:
             pass
@@ -3239,25 +3239,25 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
         ref_sed  = self.star_combo.currentData()
 
         if r_filt == "(None)" and g_filt == "(None)" and b_filt == "(None)":
-            QMessageBox.warning(self, "Error", "Select at least one R/G/B filter.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Select at least one R/G/B filter."))
             return
         if not ref_sed:
-            QMessageBox.warning(self, "Error", "Select a white reference SED.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Select a white reference SED."))
             return
 
         doc = self.doc_manager.get_active_document()
         if doc is None or doc.image is None:
-            QMessageBox.critical(self, "Error", "No active document.")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("No active document."))
             return
 
         img = doc.image
         if img.ndim != 3 or img.shape[2] != 3:
-            QMessageBox.critical(self, "Error", "Active document must be RGB.")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Active document must be RGB."))
             return
 
         if not getattr(self, "star_list", None):
-            QMessageBox.warning(self, "Error",
-                "Run Step 1: Fetch Stars before calibration.")
+            QMessageBox.warning(self, self.tr("Error"),
+                self.tr("Run Step 1: Fetch Stars before calibration."))
             return
 
         img_float = (img.astype(np.float32) / 255.0
@@ -3277,7 +3277,7 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
             data_sub, err, status_prefix="Re-detecting stars"
         )
         if sources is None or sources.size == 0:
-            QMessageBox.critical(self, "SEP Error", "No sources detected.")
+            QMessageBox.critical(self, self.tr("SEP Error"), self.tr("No sources detected."))
             return
 
         r_fluxrad, _ = sep.flux_radius(
@@ -3287,8 +3287,8 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
         mask    = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
         sources = sources[mask]
         if sources.size == 0:
-            QMessageBox.critical(self, "SEP Error",
-                "All detections rejected by radius filter.")
+            QMessageBox.critical(self, self.tr("SEP Error"),
+                self.tr("All detections rejected by radius filter."))
             return
 
         _sfcc_status(self, f"Matching {sources.size:,} SEP sources (σ={sep_sigma:.1f}) to star catalog…")
@@ -3311,8 +3311,8 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
                 })
 
         if not raw_matches:
-            QMessageBox.warning(self, "No Matches",
-                "No catalog stars matched to SEP detections.")
+            QMessageBox.warning(self, self.tr("No Matches"),
+                self.tr("No catalog stars matched to SEP detections."))
             return
 
         MAX_PHOT_STARS = int(self.max_stars_spin.value()) if hasattr(self, "max_stars_spin") else 500
@@ -3446,8 +3446,8 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
         QApplication.processEvents()
 
         if n_with_spectrum == 0:
-            QMessageBox.warning(self, "No Spectra",
-                "No stars with Gaia XP spectrum or Pickles template found.")
+            QMessageBox.warning(self, self.tr("No Spectra"),
+                self.tr("No stars with Gaia XP spectrum or Pickles template found."))
             return
 
         _sfcc_status(self, f"Pre-loading XP spectra for {n_with_spectrum} stars…")
@@ -3567,8 +3567,8 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
         QApplication.processEvents()
 
         if len(enriched) < _STAGE1_MIN:
-            QMessageBox.warning(self, "Too Few Stars",
-                f"Only {len(enriched)} valid calibrator stars — need ≥ {_STAGE1_MIN}.")
+            QMessageBox.warning(self, self.tr("Too Few Stars"),
+                self.tr("Only {0} valid calibrator stars — need ≥ {1}.").format(len(enriched), _STAGE1_MIN))
             return
 
         _sfcc_status(self, "Solving system response R(λ)…")
@@ -3601,8 +3601,8 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
                 status_cb=lambda m: _sfcc_status(self, m),
             )
         except Exception as e:
-            QMessageBox.critical(self, "Solver Error",
-                f"Failed to solve system response:\n{e}")
+            QMessageBox.critical(self, self.tr("Solver Error"),
+                self.tr("Failed to solve system response:\n{0}").format(e))
             return
 
         self._last_sr = sr
@@ -3681,26 +3681,31 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
         QApplication.processEvents()
 
         stars_needed = max(0, _STAGE3_MIN - sr.n_stars)
-        QMessageBox.information(self, "SSSC Complete",
-            f"Applied SSSC using {len(enriched)} calibrator stars\n\n"
-            f"  Gaia XP spectra:   {n_xp}\n"
-            f"  Pickles templates: {n_pkl}\n"
-            f"  Bootstrap stage:   {sr.stage_label}\n"
-            f"  B-V range:         {sr.bv_range[0]:.2f} – {sr.bv_range[1]:.2f}\n"
-            f"  Residual RMS:      {sr.residual_rms:.4f}\n"
-            f"  Session runs:      {n_sessions}\n"
-            f"  Gains:  k_R={sr.gains[0]:.4f}  k_G={sr.gains[1]:.4f}  k_B={sr.gains[2]:.4f}\n\n"
-            f"  No sensor QE curve was used.\n"
-            f"  Filter curves only — sensor response solved from stars.\n\n"
-            + (
-                f"  ✓ Stage 3 (full R(λ)) solved from {sr.n_stars} stars.\n"
-                f"  Each run refines R(λ) further — run again on the same\n"
-                f"  filter+camera combination to improve the solution."
-                if sr.stage >= 3 else
-                f"  {stars_needed} more stars needed for Stage 3 (full R(λ))."
-                if stars_needed > 0 else
-                f"  Stage 3 criteria met — will activate on next run."
-            )
+        if sr.stage >= 3:
+            _stage_note = self.tr(
+                "  ✓ Stage 3 (full R(λ)) solved from {0} stars.\n"
+                "  Each run refines R(λ) further — run again on the same\n"
+                "  filter+camera combination to improve the solution.").format(sr.n_stars)
+        elif stars_needed > 0:
+            _stage_note = self.tr(
+                "  {0} more stars needed for Stage 3 (full R(λ)).").format(stars_needed)
+        else:
+            _stage_note = self.tr("  Stage 3 criteria met — will activate on next run.")
+        QMessageBox.information(self, self.tr("SSSC Complete"),
+            self.tr("Applied SSSC using {0} calibrator stars\n\n"
+            "  Gaia XP spectra:   {1}\n"
+            "  Pickles templates: {2}\n"
+            "  Bootstrap stage:   {3}\n"
+            "  B-V range:         {4:.2f} – {5:.2f}\n"
+            "  Residual RMS:      {6:.4f}\n"
+            "  Session runs:      {7}\n"
+            "  Gains:  k_R={8:.4f}  k_G={9:.4f}  k_B={10:.4f}\n\n"
+            "  No sensor QE curve was used.\n"
+            "  Filter curves only — sensor response solved from stars.\n\n").format(
+                len(enriched), n_xp, n_pkl, sr.stage_label,
+                sr.bv_range[0], sr.bv_range[1], sr.residual_rms, n_sessions,
+                sr.gains[0], sr.gains[1], sr.gains[2])
+            + _stage_note
         )
 
     # ── Cleanup ───────────────────────────────────────────────────────────────

@@ -1734,7 +1734,7 @@ class RedetectThread(QThread):
             )
             entry["anomalies"] = anoms
             entry["anomalyCount"] = len(anoms)
-            self.progress.emit(i + 1, total, f"Re-detect {i + 1}/{total}")
+            self.progress.emit(i + 1, total, self.tr("Re-detect {0}/{1}").format(i + 1, total))
         self._payload["det_params"] = p
         self.done.emit(self._payload)
 
@@ -1757,7 +1757,7 @@ class MinorBodyWorker(QObject):
 
     def run(self):
         try:
-            self.progress.emit(0, "Minor-body search: preparing catalog query...")
+            self.progress.emit(0, self.tr("Minor-body search: preparing catalog query..."))
             result = self._owner._get_predicted_minor_bodies_for_field(
                 H_ast_max=self._owner.minor_H_ast_max,
                 H_com_max=self._owner.minor_H_com_max,
@@ -1963,7 +1963,7 @@ class ResultsDialog(QDialog):
 
     def __init__(self, payload: dict, icon: QIcon | None = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Anomaly Results")
+        self.setWindowTitle(self.tr("Anomaly Results"))
         if icon:
             self.setWindowIcon(icon)
         self.resize(1100, 820)
@@ -2000,10 +2000,10 @@ class ResultsDialog(QDialog):
         # Summary line.
         total_anom = sum(d["anomalyCount"] for d in self._anoms)
         n_frames = len(self._anoms)
-        self._summary_lbl = QLabel(
-            f"Processed {n_frames} search frame(s). "
-            f"Total candidate anomalies: {total_anom}"
-        )
+        self._summary_lbl = QLabel(self.tr(
+            "Processed {0} search frame(s). "
+            "Total candidate anomalies: {1}"
+        ).format(n_frames, total_anom))
         self._summary_lbl.setStyleSheet("font-weight: bold; padding: 4px;")
         lay.addWidget(self._summary_lbl)
 
@@ -2011,23 +2011,23 @@ class ResultsDialog(QDialog):
         tb = QHBoxLayout()
 
         # Zoom controls — the big ask from the previous rev.
-        self.btn_zoom_in = QPushButton("Zoom +")
-        self.btn_zoom_in.setToolTip("Zoom in on the viewer (Ctrl+wheel also works).")
+        self.btn_zoom_in = QPushButton(self.tr("Zoom +"))
+        self.btn_zoom_in.setToolTip(self.tr("Zoom in on the viewer (Ctrl+wheel also works)."))
         self.btn_zoom_in.clicked.connect(lambda: self.view.zoom(1.25))
         tb.addWidget(self.btn_zoom_in)
 
-        self.btn_zoom_out = QPushButton("Zoom −")
-        self.btn_zoom_out.setToolTip("Zoom out on the viewer.")
+        self.btn_zoom_out = QPushButton(self.tr("Zoom −"))
+        self.btn_zoom_out.setToolTip(self.tr("Zoom out on the viewer."))
         self.btn_zoom_out.clicked.connect(lambda: self.view.zoom(0.8))
         tb.addWidget(self.btn_zoom_out)
 
-        self.btn_fit = QPushButton("Fit")
-        self.btn_fit.setToolTip("Fit the current frame to the viewport.")
+        self.btn_fit = QPushButton(self.tr("Fit"))
+        self.btn_fit.setToolTip(self.tr("Fit the current frame to the viewport."))
         self.btn_fit.clicked.connect(lambda: self.view.fit_to_view())
         tb.addWidget(self.btn_fit)
 
         self.btn_1to1 = QPushButton("1:1")
-        self.btn_1to1.setToolTip("Reset to 100% zoom.")
+        self.btn_1to1.setToolTip(self.tr("Reset to 100% zoom."))
         self.btn_1to1.clicked.connect(lambda: self.view.set_1to1())
         tb.addWidget(self.btn_1to1)
 
@@ -2037,16 +2037,16 @@ class ResultsDialog(QDialog):
         # a flagged frame as Search / Reference / Difference without the
         # blink timer flipping it away. Default is Search because that's
         # the frame the drift animation plays over.
-        self.btn_mode_search = QPushButton("Search")
+        self.btn_mode_search = QPushButton(self.tr("Search"))
         self.btn_mode_search.setCheckable(True)
         self.btn_mode_search.setChecked(True)
         self.btn_mode_search.clicked.connect(
             lambda: self._set_mode(self.MODE_SEARCH))
-        self.btn_mode_ref = QPushButton("Reference")
+        self.btn_mode_ref = QPushButton(self.tr("Reference"))
         self.btn_mode_ref.setCheckable(True)
         self.btn_mode_ref.clicked.connect(
             lambda: self._set_mode(self.MODE_REF))
-        self.btn_mode_diff = QPushButton("Difference")
+        self.btn_mode_diff = QPushButton(self.tr("Difference"))
         self.btn_mode_diff.setCheckable(True)
         self.btn_mode_diff.clicked.connect(
             lambda: self._set_mode(self.MODE_DIFF))
@@ -2054,13 +2054,13 @@ class ResultsDialog(QDialog):
             tb.addWidget(b)
 
         tb.addSpacing(12)
-        self.chk_labels = QCheckBox("Labels")
+        self.chk_labels = QCheckBox(self.tr("Labels"))
         self.chk_labels.setChecked(True)
-        self.chk_labels.setToolTip(
+        self.chk_labels.setToolTip(self.tr(
             "Print the catalog designation next to each identified object,\n"
             "and the peak significance next to unidentified candidates.\n"
             "Turn off in a crowded field where the text obscures the stars."
-        )
+        ))
         self.chk_labels.toggled.connect(self._on_labels_toggled)
         tb.addWidget(self.chk_labels)
 
@@ -2070,26 +2070,26 @@ class ResultsDialog(QDialog):
         # which is what makes drifting objects (asteroids, satellites)
         # visibly move. The old ref/diff/search cycle is covered by the
         # three mode buttons to its left — orthogonal controls.
-        self.btn_play = QPushButton("▶ Play")
-        self.btn_play.setToolTip(
+        self.btn_play = QPushButton(self.tr("▶ Play"))
+        self.btn_play.setToolTip(self.tr(
             "Play through the search frames in order. An asteroid will\n"
             "drift visibly across the field; a static anomaly won't."
-        )
+        ))
         self.btn_play.setCheckable(True)
         self.btn_play.toggled.connect(self._on_play_toggled)
         tb.addWidget(self.btn_play)
 
         self.btn_prev = QPushButton("◀")
-        self.btn_prev.setToolTip("Previous search frame")
+        self.btn_prev.setToolTip(self.tr("Previous search frame"))
         self.btn_prev.clicked.connect(self._prev_frame)
         tb.addWidget(self.btn_prev)
 
         self.btn_next = QPushButton("▶|")
-        self.btn_next.setToolTip("Next search frame")
+        self.btn_next.setToolTip(self.tr("Next search frame"))
         self.btn_next.clicked.connect(self._next_frame)
         tb.addWidget(self.btn_next)
 
-        tb.addWidget(QLabel("Rate (ms):"))
+        tb.addWidget(QLabel(self.tr("Rate (ms):")))
         self.sp_rate = QSpinBox()
         self.sp_rate.setRange(50, 5000)
         self.sp_rate.setSingleStep(50)
@@ -2100,12 +2100,12 @@ class ResultsDialog(QDialog):
 
         tb.addStretch(1)
 
-        self.btn_push = QPushButton("Push to New View")
-        self.btn_push.setToolTip(
+        self.btn_push = QPushButton(self.tr("Push to New View"))
+        self.btn_push.setToolTip(self.tr(
             "Create a new SASpro view from the frame currently showing in\n"
             "the viewer. The overlays (anomaly boxes, minor-body circles)\n"
             "come along with it."
-        )
+        ))
         self.btn_push.clicked.connect(self._on_push)
         tb.addWidget(self.btn_push)
 
@@ -2125,58 +2125,58 @@ class ResultsDialog(QDialog):
         dp = self._payload.get("det_params", {}) or {}
         dr = QHBoxLayout()
 
-        dr.addWidget(QLabel("Detection σ:"))
+        dr.addWidget(QLabel(self.tr("Detection σ:")))
         self.sp_sigma = QDoubleSpinBox()
         self.sp_sigma.setRange(0.5, 30.0)
         self.sp_sigma.setSingleStep(0.25)
         self.sp_sigma.setDecimals(2)
         self.sp_sigma.setValue(float(dp.get("k_sigma", 5.0)))
-        self.sp_sigma.setToolTip(
+        self.sp_sigma.setToolTip(self.tr(
             "Threshold = σ × the measured noise of the DIFFERENCE image\n"
             "(sigma-clipped, computed per frame on valid pixels only).\n"
             "With star-flux photometric matching the noise floor is real,\n"
             "so 3-4σ is usable for faint objects."
-        )
+        ))
         dr.addWidget(self.sp_sigma)
 
-        dr.addWidget(QLabel("Min area:"))
+        dr.addWidget(QLabel(self.tr("Min area:")))
         self.sp_minarea = QSpinBox()
         self.sp_minarea.setRange(1, 2000)
         self.sp_minarea.setValue(int(dp.get("min_area", 5)))
-        self.sp_minarea.setToolTip(
+        self.sp_minarea.setToolTip(self.tr(
             "Minimum number of significant pixels, counted on the\n"
             "matched-filtered image BEFORE the connectivity dilation.\n"
             "5 is a good faint-object value; raise it to suppress\n"
             "marginal noise clumps."
-        )
+        ))
         dr.addWidget(self.sp_minarea)
 
-        dr.addWidget(QLabel("PSF σ:"))
+        dr.addWidget(QLabel(self.tr("PSF σ:")))
         self.sp_psf = QDoubleSpinBox()
         self.sp_psf.setRange(0.0, 6.0)
         self.sp_psf.setSingleStep(0.25)
         self.sp_psf.setDecimals(2)
         self.sp_psf.setValue(float(dp.get("psf_sigma", 1.5)))
-        self.sp_psf.setToolTip(
+        self.sp_psf.setToolTip(self.tr(
             "Matched-filter width, in binned pixels. Set it near your\n"
             "actual star PSF sigma (≈ FWHM / 2.35).\n\n"
             "This is the single most important control for faint\n"
             "objects: filtering at the PSF scale buys roughly 3x in\n"
             "SNR over raw pixel thresholding. 0 disables the filter."
-        )
+        ))
         dr.addWidget(self.sp_psf)
 
-        dr.addWidget(QLabel("Max dim:"))
+        dr.addWidget(QLabel(self.tr("Max dim:")))
         self.sp_maxdim = QSpinBox()
         self.sp_maxdim.setRange(10, 10000)
         self.sp_maxdim.setValue(int(dp.get("max_dim", 200)))
         dr.addWidget(self.sp_maxdim)
 
-        dr.addWidget(QLabel("Star mask grow:"))
+        dr.addWidget(QLabel(self.tr("Star mask grow:")))
         self.sp_grow = QSpinBox()
         self.sp_grow.setRange(0, 50)
         self.sp_grow.setValue(int(dp.get("star_grow_px", dp.get("grow_px", 4))))
-        self.sp_grow.setToolTip(
+        self.sp_grow.setToolTip(self.tr(
             "Grow the reference star mask by N px before it rejects\n"
             "detections. Turn this UP when a star's halo or diffraction\n"
             "spikes shift slightly between frames and light up a ring of\n"
@@ -2188,24 +2188,24 @@ class ResultsDialog(QDialog):
             "starts covering real objects that pass near a field star,\n"
             "so grow only as far as the residuals actually reach.\n\n"
             "Only active while 'Reject at ref stars' is on."
-        )
+        ))
         dr.addWidget(self.sp_grow)
 
-        self.chk_starmask = QCheckBox("Reject at ref stars")
+        self.chk_starmask = QCheckBox(self.tr("Reject at ref stars"))
         self.chk_starmask.setChecked(bool(dp.get("use_star_mask", True)))
-        self.chk_starmask.setToolTip(
+        self.chk_starmask.setToolTip(self.tr(
             "Suppress detections that land on a reference-frame star.\n"
             "Turn OFF when hunting a supernova inside a galaxy or an\n"
             "object passing close to a field star."
-        )
+        ))
         dr.addWidget(self.chk_starmask)
 
-        self.btn_redetect = QPushButton("Re-detect")
+        self.btn_redetect = QPushButton(self.tr("Re-detect"))
         self.btn_redetect.setStyleSheet("font-weight: bold;")
-        self.btn_redetect.setToolTip(
+        self.btn_redetect.setToolTip(self.tr(
             "Re-threshold the cached difference images with these\n"
             "settings. Sub-second — no reload, no re-align, no ADBE."
-        )
+        ))
         self.btn_redetect.clicked.connect(self._on_redetect)
         dr.addWidget(self.btn_redetect)
 
@@ -2224,7 +2224,7 @@ class ResultsDialog(QDialog):
         self._tree = QTreeWidget(self)
         self._tree.setColumnCount(4)
         self._tree.setHeaderLabels(
-            ["Image (double-click to show)", "Anomalies", "Peak σ", "Identified"])
+            [self.tr("Image (double-click to show)"), self.tr("Anomalies"), self.tr("Peak σ"), self.tr("Identified")])
         self._tree.setMaximumHeight(220)
         self._tree.itemDoubleClicked.connect(self._on_tree_double)
         self._rebuild_tree()
@@ -2252,35 +2252,37 @@ class ResultsDialog(QDialog):
         # ── Bottom button bar ───────────────────────────────────────────
         bb = QHBoxLayout()
         bb.addStretch(1)
-        self.btn_minor = QPushButton("Catalogue Minor Bodies in Field")
-        self.btn_minor.setToolTip(
+        self.btn_minor = QPushButton(self.tr("Catalogue Minor Bodies in Field"))
+        self.btn_minor.setToolTip(self.tr(
             "Query the minor-body catalog using the frame's own WCS/JD and\n"
             "cross-match against detected anomalies."
-        )
+        ))
         bb.addWidget(self.btn_minor)
-        self.btn_explore = QPushButton("Explore Orbit (3D)…")
-        self.btn_explore.setToolTip(
+        self.btn_explore = QPushButton(self.tr("Explore Orbit (3D)…"))
+        self.btn_explore.setToolTip(self.tr(
             "Open an interactive 3D heliocentric view of a catalogued\n"
             "body's orbit — Sun, planets, and the asteroid placed at this\n"
             "frame's exact observation time. Run the catalog search first."
-        )
+        ))
         self.btn_explore.setEnabled(bool(self._minor_bodies))
         self.btn_explore.clicked.connect(lambda: self.exploreRequested.emit())
         bb.addWidget(self.btn_explore)
-        self.btn_close = QPushButton("Close")
+        self.btn_close = QPushButton(self.tr("Close"))
         self.btn_close.clicked.connect(self.close)
         bb.addWidget(self.btn_close)
         lay.addLayout(bb)
 
     # ---- Minor-body progress mirroring ---------------------------------
 
-    def minor_body_begin(self, msg: str = "Minor-body search starting…"):
+    def minor_body_begin(self, msg: str | None = None):
         """
         Reveal the mirrored progress strip at the bottom of the results
         window and reset it to zero. Called by the main dialog when it
         kicks off the catalog query, so the user sees activity even when
         the parent window is covered.
         """
+        if msg is None:
+            msg = self.tr("Minor-body search starting…")
         self._mb_status.setText(msg)
         self._mb_status.setVisible(True)
         self._mb_progress.setValue(0)
@@ -2489,10 +2491,10 @@ class ResultsDialog(QDialog):
                for a in (self._anoms[idx].get("anomalies") or [])]
         ids = [i for i in ids if i]
         extra = f" · ID: {', '.join(ids)}" if ids else ""
-        self._status_lbl.setText(
-            f"Frame {idx + 1}/{len(self._anoms)} · {name} · {n} anomalies · "
-            f"[{mode}]{extra}"
-        )
+        self._status_lbl.setText(self.tr(
+            "Frame {0}/{1} · {2} · {3} anomalies · "
+            "[{4}]{5}"
+        ).format(idx + 1, len(self._anoms), name, n, mode, extra))
 
         # Sync tree selection without re-triggering double-click.
         try:
@@ -2519,14 +2521,14 @@ class ResultsDialog(QDialog):
     def _on_play_toggled(self, playing: bool):
         self._playing = playing
         if playing:
-            self.btn_play.setText("⏸ Pause")
+            self.btn_play.setText(self.tr("⏸ Pause"))
             # Flip to Search mode when play starts — that's the sequence
             # that makes drift visible. User can still manually mode-switch.
             if self._mode != self.MODE_SEARCH:
                 self._set_mode(self.MODE_SEARCH)
             self._timer.start(int(self.sp_rate.value()))
         else:
-            self.btn_play.setText("▶ Play")
+            self.btn_play.setText(self.tr("▶ Play"))
             self._timer.stop()
 
     def _advance_search_frame(self):
@@ -2611,7 +2613,7 @@ class ResultsDialog(QDialog):
                     str(data["anomalyCount"]),
                     f"{top_peak:.1f}" if top_peak else "",
                     named[0] if len(named) == 1 else
-                    (f"{len(named)} identified" if named else ""),
+                    (self.tr("{0} identified").format(len(named)) if named else ""),
                 ])
                 item.setData(0, Qt.ItemDataRole.UserRole, i)
                 for a in anoms:
@@ -2644,7 +2646,7 @@ class ResultsDialog(QDialog):
         if self.btn_play.isChecked():
             self.btn_play.setChecked(False)
         self.btn_redetect.setEnabled(False)
-        self.btn_redetect.setText("Re-detecting…")
+        self.btn_redetect.setText(self.tr("Re-detecting…"))
         self.redetectRequested.emit(self.current_det_params())
 
     def refresh(self, payload: dict | None = None):
@@ -2659,12 +2661,12 @@ class ResultsDialog(QDialog):
         self._cache.clear()
         self._rebuild_tree()
         total = sum(d["anomalyCount"] for d in self._anoms)
-        self._summary_lbl.setText(
-            f"Processed {len(self._anoms)} search frame(s). "
-            f"Total candidate anomalies: {total}"
-        )
+        self._summary_lbl.setText(self.tr(
+            "Processed {0} search frame(s). "
+            "Total candidate anomalies: {1}"
+        ).format(len(self._anoms), total))
         self.btn_redetect.setEnabled(True)
-        self.btn_redetect.setText("Re-detect")
+        self.btn_redetect.setText(self.tr("Re-detect"))
         if self._anoms:
             self._show(min(self._current_idx, len(self._anoms) - 1), self._mode)
 
@@ -2673,10 +2675,10 @@ class ResultsDialog(QDialog):
     def _on_push(self):
         img = self._frame_image(self._current_idx, self._mode)
         if img is None:
-            QMessageBox.information(self, "Push", "No frame to push.")
+            QMessageBox.information(self, self.tr("Push"), self.tr("No frame to push."))
             return
         data = self._anoms[self._current_idx]
-        title = f"Anomalies in {data['imageName']} [{self._mode}]"
+        title = self.tr("Anomalies in {0} [{1}]").format(data['imageName'], self._mode)
         self.pushed.emit(img, title, data["path"])
 
     # ---- Minor-body refresh --------------------------------------------
@@ -2700,13 +2702,20 @@ class ResultsDialog(QDialog):
         named = sum(1 for d in self._anoms
                     for a in (d.get("anomalies") or [])
                     if a.get("matched_bodies"))
-        self._summary_lbl.setText(
-            f"Processed {len(self._anoms)} search frame(s). "
-            f"Total candidate anomalies: {total}.  "
-            f"{len(self._minor_bodies)} catalogued minor bod"
-            f"{'y' if len(self._minor_bodies) == 1 else 'ies'} in frame, "
-            f"{named} detection(s) identified."
-        )
+        if len(self._minor_bodies) == 1:
+            self._summary_lbl.setText(self.tr(
+                "Processed {0} search frame(s). "
+                "Total candidate anomalies: {1}.  "
+                "{2} catalogued minor body in frame, "
+                "{3} detection(s) identified."
+            ).format(len(self._anoms), total, len(self._minor_bodies), named))
+        else:
+            self._summary_lbl.setText(self.tr(
+                "Processed {0} search frame(s). "
+                "Total candidate anomalies: {1}.  "
+                "{2} catalogued minor bodies in frame, "
+                "{3} detection(s) identified."
+            ).format(len(self._anoms), total, len(self._minor_bodies), named))
         if self._anoms:
             self._show(self._current_idx, self._mode)
 
@@ -2850,29 +2859,29 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.align_checkbox = QCheckBox(
             self.tr("Align search images to reference (astroalign)"))
         self.align_checkbox.setChecked(True)
-        self.align_checkbox.setToolTip(
+        self.align_checkbox.setToolTip(self.tr(
             "Register every search frame to the reference before differencing.\n"
             "Enable this unless the frames are already pixel-registered —\n"
             "pixel-wise subtraction on unregistered frames produces false\n"
             "anomalies around every star."
-        )
+        ))
         opts_lay.addWidget(self.align_checkbox, 1, 0, 1, 3)
 
         # row 2: ADBE on/off + degree + rbf
         self.adbe_checkbox = QCheckBox(self.tr("ADBE background removal"))
         self.adbe_checkbox.setChecked(True)
-        self.adbe_checkbox.setToolTip(
+        self.adbe_checkbox.setToolTip(self.tr(
             "Runs the modern Automatic Dynamic Background Extraction on\n"
             "every frame (reference + search) in parallel. Flattens gradients\n"
             "so photometric differences aren't swamped by sky slope."
-        )
+        ))
         opts_lay.addWidget(self.adbe_checkbox, 2, 0)
 
         opts_lay.addWidget(QLabel(self.tr("Degree:")), 2, 1)
         self.adbe_degree = QSpinBox()
         self.adbe_degree.setRange(0, 6)
         self.adbe_degree.setValue(2)
-        self.adbe_degree.setToolTip("Polynomial degree. 0 = RBF only.")
+        self.adbe_degree.setToolTip(self.tr("Polynomial degree. 0 = RBF only."))
         opts_lay.addWidget(self.adbe_degree, 2, 2)
 
         self.adbe_rbf = QCheckBox(self.tr("RBF refinement"))
@@ -2889,22 +2898,22 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.sigma_spin.setSingleStep(0.5)
         self.sigma_spin.setValue(5.0)
         self.sigma_spin.setDecimals(1)
-        self.sigma_spin.setToolTip(
+        self.sigma_spin.setToolTip(self.tr(
             "Threshold = σ × noise of the matched-filtered difference,\n"
             "measured per frame on valid pixels only.\n\n"
             "All of these can be re-tuned after a run without\n"
             "reprocessing — see 'Re-detect (cached)'."
-        )
+        ))
         opts_lay.addWidget(self.sigma_spin, 3, 1)
 
         opts_lay.addWidget(QLabel(self.tr("Min area (px):")), 3, 2)
         self.minarea_spin = QSpinBox()
         self.minarea_spin.setRange(1, 2000)
         self.minarea_spin.setValue(5)
-        self.minarea_spin.setToolTip(
+        self.minarea_spin.setToolTip(self.tr(
             "Minimum significant-pixel count, measured on the matched-\n"
             "filtered image before the connectivity dilation."
-        )
+        ))
         opts_lay.addWidget(self.minarea_spin, 3, 3)
 
         # row 4: max dim, border
@@ -2928,11 +2937,11 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.workers_spin.setRange(1, 64)
         default_workers = max(2, min((os.cpu_count() or 4), 16))
         self.workers_spin.setValue(default_workers)
-        self.workers_spin.setToolTip(
+        self.workers_spin.setToolTip(self.tr(
             "Number of parallel processes used for each pipeline stage.\n"
             "Defaults to roughly half your CPU count to leave headroom for\n"
             "the GUI and the OS. Raise it on headless/benchmark runs."
-        )
+        ))
         opts_lay.addWidget(self.workers_spin, 5, 1)
 
         opts_lay.addWidget(QLabel(self.tr("Bin factor:")), 5, 2)
@@ -2943,7 +2952,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         # 2 (block-average), and bounding boxes stay well above the
         # min-area filter. Transients wider than 1 pixel are unaffected.
         self.bin_spin.setValue(2)
-        self.bin_spin.setToolTip(
+        self.bin_spin.setToolTip(self.tr(
             "Downsample every frame on load by NxN block averaging.\n"
             "1 = no binning (full resolution — expect ~1.2 GB per 45MP\n"
             "    frame once ADBE, align and diff buffers are live).\n"
@@ -2954,7 +2963,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
             "3-4 = aggressive — for huge mosaics or low-RAM machines.\n"
             "The WCS is rescaled along with the pixels so minor-body\n"
             "cross-match still lands correctly."
-        )
+        ))
         opts_lay.addWidget(self.bin_spin, 5, 3)
 
         # row 6: matched-filter width — the key faint-object control
@@ -2964,7 +2973,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.psf_spin.setSingleStep(0.25)
         self.psf_spin.setDecimals(2)
         self.psf_spin.setValue(1.5)
-        self.psf_spin.setToolTip(
+        self.psf_spin.setToolTip(self.tr(
             "Width of the Gaussian the difference image is convolved with\n"
             "before thresholding, in BINNED pixels (≈ star FWHM / 2.35).\n\n"
             "Matched filtering is the optimal detector for a point source\n"
@@ -2973,7 +2982,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
             "than lost among single-pixel noise spikes. It also rejects\n"
             "single-pixel cosmic rays, which don't match the PSF.\n\n"
             "Set to 0 to threshold the raw difference instead."
-        )
+        ))
         opts_lay.addWidget(self.psf_spin, 6, 1)
 
         layout.addWidget(opts_box)
@@ -2992,11 +3001,11 @@ class SupernovaAsteroidHunterDialog(QDialog):
         # Changing only a detection knob never needs the pipeline again.
         self.redetect_button = QPushButton(self.tr("Re-detect (cached)"))
         self.redetect_button.setEnabled(False)
-        self.redetect_button.setToolTip(
+        self.redetect_button.setToolTip(self.tr(
             "Re-run only the detection stage against the difference images\n"
             "cached from the last run, using the detection settings above,\n"
             "and reopen the results. No reload, no re-align, no ADBE."
-        )
+        ))
         self.redetect_button.clicked.connect(self._on_redetect_from_main)
         run_row.addWidget(self.redetect_button)
         run_row.addWidget(make_help_button("supernova_asteroid_hunter", self))
@@ -3121,23 +3130,23 @@ class SupernovaAsteroidHunterDialog(QDialog):
         if total > 0:
             pct = int(round(100.0 * done / float(total)))
             self.progress_bar.setValue(max(0, min(100, pct)))
-        self.status_label.setText(f"Status: {msg}")
+        self.status_label.setText(self.tr("Status: {0}").format(msg))
 
     def process(self):
         if self._pipeline_thread is not None and self._pipeline_thread.isRunning():
             QMessageBox.information(
-                self, "Hunter",
-                "A pipeline run is already in progress — wait for it to\n"
-                "finish or press Cancel first.")
+                self, self.tr("Hunter"),
+                self.tr("A pipeline run is already in progress — wait for it to\n"
+                        "finish or press Cancel first."))
             return
 
         ref_path = self.parameters["referenceImagePath"]
         if not ref_path:
-            QMessageBox.warning(self, "Error", "Please select a reference image.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Please select a reference image."))
             return
         search_paths = self.parameters["searchImagePaths"]
         if not search_paths:
-            QMessageBox.warning(self, "Error", "Please add at least one search image.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Please add at least one search image."))
             return
 
         params = {
@@ -3160,7 +3169,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.log_view.clear()
         self._append_log(f"Starting hunter: {len(search_paths)} search frame(s)")
         self.progress_bar.setValue(0)
-        self.status_label.setText("Status: Running…")
+        self.status_label.setText(self.tr("Status: Running…"))
 
         self._pipeline_thread = HunterPipelineThread(params, parent=self)
         self._pipeline_thread.progress.connect(self._on_progress)
@@ -3176,7 +3185,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         if self._pipeline_thread is None:
             return
         self._pipeline_thread.request_cancel()
-        self.status_label.setText("Status: cancelling…")
+        self.status_label.setText(self.tr("Status: cancelling…"))
         self.cancel_button.setEnabled(False)
 
     def _on_pipeline_ok(self, payload):
@@ -3188,7 +3197,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.predicted_minor_bodies = None
 
         self.progress_bar.setValue(100)
-        self.status_label.setText("Status: Done.")
+        self.status_label.setText(self.tr("Status: Done."))
         self._append_log("✅ Pipeline complete.")
 
         # Show the results dialog.
@@ -3213,7 +3222,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         # the click registered.
         self._results_dialog.btn_minor.clicked.connect(
             lambda: self._results_dialog.minor_body_begin(
-                "Minor-body: preparing search…"))
+                self.tr("Minor-body: preparing search…")))
         self._results_dialog.btn_minor.clicked.connect(self.runMinorBodySearch)
         self._results_dialog.exploreRequested.connect(self.exploreOrbit)
         self._results_dialog.show()
@@ -3231,26 +3240,26 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
         if not _HAS_ORBIT_EXPLORER:
             QMessageBox.information(
-                self, "Orbit Explorer",
-                "The 3D orbit explorer could not be loaded.\n\n"
-                f"{_ORBIT_EXPLORER_ERR}\n\n"
-                "It needs pyqtgraph.opengl and PyOpenGL "
-                "(pip install PyOpenGL).")
+                self, self.tr("Orbit Explorer"),
+                self.tr("The 3D orbit explorer could not be loaded.\n\n"
+                        "{0}\n\n"
+                        "It needs pyqtgraph.opengl and PyOpenGL "
+                        "(pip install PyOpenGL).").format(_ORBIT_EXPLORER_ERR))
             return
 
         bodies = list(self.predicted_minor_bodies or [])
         if not bodies:
             QMessageBox.information(
-                self, "Orbit Explorer",
-                "No catalogued minor bodies yet — run "
-                "'Catalogue Minor Bodies in Field' first.")
+                self, self.tr("Orbit Explorer"),
+                self.tr("No catalogued minor bodies yet — run "
+                        "'Catalogue Minor Bodies in Field' first."))
             return
 
         jd = getattr(self, "_minor_jd", None) or self.ref_jd
         if jd is None:
             QMessageBox.warning(
-                self, "Orbit Explorer",
-                "No observation time is available to place the orbit at.")
+                self, self.tr("Orbit Explorer"),
+                self.tr("No observation time is available to place the orbit at."))
             return
 
         # Which designations actually matched a detection — flag and float
@@ -3282,22 +3291,23 @@ class SupernovaAsteroidHunterDialog(QDialog):
                     hs = f"  H={float(H):.1f}" if H is not None and np.isfinite(float(H)) else ""
                 except Exception:
                     hs = ""
-                flag = "  ✓ detected" if d in matched else ""
-                noel = "" if b.get("elements") else "  (no elements)"
+                flag = self.tr("  ✓ detected") if d in matched else ""
+                noel = "" if b.get("elements") else self.tr("  (no elements)")
                 labels.append(f"{d}{hs}{flag}{noel}")
             label, ok = QInputDialog.getItem(
-                self, "Explore Orbit",
-                "Choose a body to view in 3D:", labels, 0, False)
+                self, self.tr("Explore Orbit"),
+                self.tr("Choose a body to view in 3D:"), labels, 0, False)
             if not ok:
                 return
             chosen = bodies[labels.index(label)]
 
         if chosen.get("elements") is None:
             QMessageBox.information(
-                self, "Orbit Explorer",
-                f"{chosen.get('designation', 'This body')} has no orbital "
-                "elements in the catalog row, so its orbit can't be drawn.\n\n"
-                "Other bodies in the field may still have them.")
+                self, self.tr("Orbit Explorer"),
+                self.tr("{0} has no orbital "
+                        "elements in the catalog row, so its orbit can't be drawn.\n\n"
+                        "Other bodies in the field may still have them.").format(
+                    chosen.get('designation', self.tr('This body'))))
             return
 
         icon = QIcon(self.supernova_path) if self.supernova_path else None
@@ -3320,8 +3330,8 @@ class SupernovaAsteroidHunterDialog(QDialog):
         """
         if self._last_payload is None:
             QMessageBox.information(
-                self, "Re-detect",
-                "Nothing cached yet — run the hunter once first.")
+                self, self.tr("Re-detect"),
+                self.tr("Nothing cached yet — run the hunter once first."))
             return
         # The main dialog has no "Star mask grow" widget of its own —
         # that control lives in the results window. Carry forward whatever
@@ -3344,7 +3354,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
             return
         if self._redetect_thread is not None and self._redetect_thread.isRunning():
             return
-        self.status_label.setText("Status: re-detecting (cached diffs)…")
+        self.status_label.setText(self.tr("Status: re-detecting (cached diffs)…"))
         self._redetect_thread = RedetectThread(
             self._last_payload, det_params, parent=self)
         self._redetect_thread.progress.connect(self._on_progress)
@@ -3355,10 +3365,10 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self._last_payload = payload
         total = sum(d["anomalyCount"] for d in payload.get("anomaly_data", []))
         dp = payload.get("det_params", {})
-        self.status_label.setText(
-            f"Status: re-detect complete — {total} candidates at "
-            f"σ={dp.get('k_sigma', '?')}"
-        )
+        self.status_label.setText(self.tr(
+            "Status: re-detect complete — {0} candidates at "
+            "σ={1}"
+        ).format(total, dp.get('k_sigma', '?')))
         self._append_log(
             f"Re-detect: σ={dp.get('k_sigma')} min_area={dp.get('min_area')} "
             f"star_grow={dp.get('star_grow_px')} star_mask={dp.get('use_star_mask')} "
@@ -3376,9 +3386,9 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
     def _on_pipeline_err(self, message):
         self._reset_pipeline_buttons()
-        self.status_label.setText("Status: Error.")
+        self.status_label.setText(self.tr("Status: Error."))
         self._append_log(f"⚠ {message}")
-        QMessageBox.critical(self, "Hunter", message)
+        QMessageBox.critical(self, self.tr("Hunter"), message)
 
     def _reset_pipeline_buttons(self):
         self.process_button.setEnabled(True)
@@ -3395,22 +3405,22 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
     def _handle_push_to_new_view(self, np_img, title: str, source_path: str):
         if not self.doc_manager:
-            QMessageBox.warning(self, "No DocManager",
-                                "No document manager is available to push the preview.")
+            QMessageBox.warning(self, self.tr("No DocManager"),
+                                self.tr("No document manager is available to push the preview."))
             return
         if not source_path:
-            QMessageBox.warning(self, "No Source File",
-                                "Could not determine the original file for this preview.")
+            QMessageBox.warning(self, self.tr("No Source File"),
+                                self.tr("Could not determine the original file for this preview."))
             return
         try:
             res = load_image(source_path, return_metadata=True)
         except Exception as e:
-            QMessageBox.critical(self, "Load Error",
-                                 f"Failed to load original image:\n{e}")
+            QMessageBox.critical(self, self.tr("Load Error"),
+                                 self.tr("Failed to load original image:\n{0}").format(e))
             return
         if not res or res[0] is None:
-            QMessageBox.critical(self, "Load Error",
-                                 "Could not read original image data from disk.")
+            QMessageBox.critical(self, self.tr("Load Error"),
+                                 self.tr("Could not read original image data from disk."))
             return
         orig_img, original_header, bit_depth, is_mono, meta = res
         if not isinstance(meta, dict):
@@ -3481,9 +3491,9 @@ class SupernovaAsteroidHunterDialog(QDialog):
                   if isinstance(self.ref_header, (dict, Header)) else None)
         acq_base = _strip_wcs_keys(seed_h) if isinstance(seed_h, Header) else None
 
-        _solving_msg = ("Plate solving the reference frame "
-                        "(Gaia DR3 → ASTAP → Astrometry.net)…")
-        self.status_label.setText(f"Status: {_solving_msg}")
+        _solving_msg = self.tr("Plate solving the reference frame "
+                               "(Gaia DR3 → ASTAP → Astrometry.net)…")
+        self.status_label.setText(self.tr("Status: {0}").format(_solving_msg))
         if self._results_dialog is not None:
             try:
                 # Mirror the solve stage too — this is the step that
@@ -3564,14 +3574,14 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
         if idx >= 0:
             _entry = anoms[idx]
-            frame_label = (f"frame {idx + 1}/{len(anoms)} — "
-                           f"{_entry.get('imageName', '?')}")
+            frame_label = self.tr("frame {0}/{1} — "
+                                  "{2}").format(idx + 1, len(anoms), _entry.get('imageName', '?'))
             obs_iso = _entry.get("obs_iso")
             exptime = float(_entry.get("obs_exptime") or 0.0)
             obs_src = _entry.get("obs_source") or "unknown"
             utc_ok = bool(_entry.get("obs_utc_confirmed"))
         else:
-            frame_label = "reference frame"
+            frame_label = self.tr("reference frame")
             obs_iso = payload.get("ref_obs_iso")
             exptime = float(payload.get("ref_obs_exptime") or 0.0)
             obs_src = payload.get("ref_obs_source") or "unknown"
@@ -3593,7 +3603,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         tg = QGridLayout(tbox)
         rr = 0
         tg.addWidget(QLabel(self.tr("Header value:")), rr, 0)
-        lbl_src = QLabel(f"{obs_iso or '— none found —'}")
+        lbl_src = QLabel(str(obs_iso or self.tr("— none found —")))
         lbl_src.setStyleSheet("font-family: monospace;")
         tg.addWidget(lbl_src, rr, 1)
         tg.addWidget(QLabel(f"[{obs_src}]"), rr, 2)
@@ -3625,7 +3635,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
             # knew that would silently add hours, so proof wins over memory.
             _mode_default = 0
         cmb_tz.setCurrentIndex(max(0, min(3, _mode_default)))
-        cmb_tz.setToolTip(
+        cmb_tz.setToolTip(self.tr(
             "UTC (as written): trust DATE-OBS as UTC — the FITS standard.\n\n"
             "Local, this computer: convert using your system timezone, with\n"
             "    the DST rule that applied on the night of the exposure\n"
@@ -3636,7 +3646,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
             "    across the next DST change.\n\n"
             "Local, fixed offset: a hard number, for a site that does not\n"
             "    observe DST."
-        )
+        ))
         tg.addWidget(cmb_tz, rr, 1, 1, 2)
         rr += 1
 
@@ -3664,11 +3674,11 @@ class SupernovaAsteroidHunterDialog(QDialog):
                 pass
         _zi = cmb_zone.findText(_zone_default)
         cmb_zone.setCurrentIndex(_zi if _zi >= 0 else 0)
-        cmb_zone.setToolTip(
+        cmb_zone.setToolTip(self.tr(
             "The timezone the CAMERA was writing DATE-OBS in — the\n"
             "observing site's zone, which is not necessarily this\n"
             "computer's. DST is resolved for the night of the exposure."
-        )
+        ))
         tg.addWidget(cmb_zone, rr, 1, 1, 2)
         rr += 1
 
@@ -3697,11 +3707,11 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
         chk_mid = QCheckBox(self.tr("Use mid-exposure"))
         chk_mid.setChecked(bool(getattr(self, "minor_use_midexposure", True)))
-        chk_mid.setToolTip(
+        chk_mid.setToolTip(self.tr(
             "Evaluate the ephemeris at the middle of the exposure instead\n"
-            f"of its start — worth {exptime / 2.0:.0f}s here.\n"
+            "of its start — worth {0:.0f}s here.\n"
             "Untick to match tools that use DATE-OBS as written."
-        )
+        ).format(exptime / 2.0))
         tg.addWidget(chk_mid, rr, 0, 1, 2)
         rr += 1
 
@@ -3718,12 +3728,12 @@ class SupernovaAsteroidHunterDialog(QDialog):
             except Exception:
                 pass
         dt_spin.setValue(_off_default)
-        dt_spin.setToolTip(
+        dt_spin.setToolTip(self.tr(
             "Added to the header time. Use it when the camera wrote local\n"
             "time instead of UTC, or when a DST slip puts you an hour out.\n\n"
             "This shares the same saved setting as WIMI, so an offset you\n"
             "established there carries over here and vice versa."
-        )
+        ))
         tg.addWidget(dt_spin, rr, 1)
         rr += 1
 
@@ -3764,12 +3774,12 @@ class SupernovaAsteroidHunterDialog(QDialog):
                 lbl_tz.setText("UTC")
             else:
                 sign = "+" if off_tz >= 0 else "−"
-                note = {1: "   (this computer, DST-aware)",
-                        2: f"   ({cmb_zone.currentText()}, DST-aware)",
+                note = {1: self.tr("   (this computer, DST-aware)"),
+                        2: self.tr("   ({0}, DST-aware)").format(cmb_zone.currentText()),
                         3: ""}.get(idx, "")
                 lbl_tz.setText(f"UTC{sign}{abs(off_tz):05.2f}{note}")
             if t0 is None:
-                lbl_eff.setText("— unavailable —")
+                lbl_eff.setText(self.tr("— unavailable —"))
                 lbl_jd.setText("—")
                 state["t"] = None
                 return
@@ -3794,8 +3804,8 @@ class SupernovaAsteroidHunterDialog(QDialog):
         abox = QGroupBox(self.tr("Astrometry"))
         ag = QVBoxLayout(abox)
         ok_wcs, why = _wcs_is_usable(self.ref_wcs, self.ref_header)
-        lbl_wcs = QLabel(("Reference WCS: usable — " + why) if ok_wcs
-                         else ("Reference WCS: NOT usable — " + why))
+        lbl_wcs = QLabel(self.tr("Reference WCS: usable — {0}").format(why) if ok_wcs
+                         else self.tr("Reference WCS: NOT usable — {0}").format(why))
         lbl_wcs.setStyleSheet("color:#2c7;" if ok_wcs
                               else "color:#d66; font-weight: bold;")
         lbl_wcs.setWordWrap(True)
@@ -3803,11 +3813,11 @@ class SupernovaAsteroidHunterDialog(QDialog):
         chk_solve = QCheckBox(self.tr(
             "Plate solve the reference now  (in-house Gaia DR3 → ASTAP → Astrometry.net)"))
         chk_solve.setChecked(not ok_wcs)
-        chk_solve.setToolTip(
+        chk_solve.setToolTip(self.tr(
             "Runs SASpro's own solver chain on the binned reference frame.\n"
             "Forced on when the header has no usable solution, because\n"
             "nothing downstream can work without one."
-        )
+        ))
         if not ok_wcs:
             chk_solve.setEnabled(False)
         ag.addWidget(chk_solve)
@@ -3842,7 +3852,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         lon_spin = QDoubleSpinBox(dlg)
         lon_spin.setDecimals(5); lon_spin.setRange(-180.0, 180.0)
         lon_spin.setSingleStep(0.001); lon_spin.setValue(_lon)
-        lon_spin.setToolTip("East positive, west negative.")
+        lon_spin.setToolTip(self.tr("East positive, west negative."))
         sg.addWidget(lon_spin, 0, 3)
 
         sg.addWidget(QLabel(self.tr("Elevation m")), 1, 0)
@@ -3853,12 +3863,12 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
         chk_topo = QCheckBox(self.tr("Use topocentric positions"))
         chk_topo.setChecked(abs(_lat) > 1e-9 or abs(_lon) > 1e-9)
-        chk_topo.setToolTip(
+        chk_topo.setToolTip(self.tr(
             "Compute positions from your actual location on Earth rather\n"
             "than from the geocentre.\n\n"
             "Worth ~4\" on a main-belt asteroid at 2 AU and ~18\" at\n"
             "0.5 AU. Leave unticked for geocentric positions."
-        )
+        ))
         sg.addWidget(chk_topo, 1, 2, 1, 2)
         layout.addWidget(sbox)
 
@@ -3872,22 +3882,22 @@ class SupernovaAsteroidHunterDialog(QDialog):
         ast_max_default = getattr(self, "minor_ast_max_count", 5000)
         com_max_default = getattr(self, "minor_com_max_count", 1000)
 
-        row_layout.addWidget(QLabel("Asteroid H ≤"), 0, 0)
+        row_layout.addWidget(QLabel(self.tr("Asteroid H ≤")), 0, 0)
         ast_H_spin = QDoubleSpinBox(dlg)
         ast_H_spin.setDecimals(1); ast_H_spin.setRange(-5.0, 40.0)
         ast_H_spin.setSingleStep(0.1); ast_H_spin.setValue(ast_H_default)
         row_layout.addWidget(ast_H_spin, 0, 1)
-        row_layout.addWidget(QLabel("Max asteroid"), 0, 2)
+        row_layout.addWidget(QLabel(self.tr("Max asteroid")), 0, 2)
         ast_max_spin = QSpinBox(dlg)
         ast_max_spin.setRange(1, 2000000); ast_max_spin.setValue(ast_max_default)
         row_layout.addWidget(ast_max_spin, 0, 3)
 
-        row_layout.addWidget(QLabel("Comet H ≤"), 1, 0)
+        row_layout.addWidget(QLabel(self.tr("Comet H ≤")), 1, 0)
         com_H_spin = QDoubleSpinBox(dlg)
         com_H_spin.setDecimals(1); com_H_spin.setRange(-5.0, 40.0)
         com_H_spin.setSingleStep(0.1); com_H_spin.setValue(com_H_default)
         row_layout.addWidget(com_H_spin, 1, 1)
-        row_layout.addWidget(QLabel("Max comet"), 1, 2)
+        row_layout.addWidget(QLabel(self.tr("Max comet")), 1, 2)
         com_max_spin = QSpinBox(dlg)
         com_max_spin.setRange(1, 200000); com_max_spin.setValue(com_max_default)
         row_layout.addWidget(com_max_spin, 1, 3)
@@ -3895,9 +3905,9 @@ class SupernovaAsteroidHunterDialog(QDialog):
         btn_row = QHBoxLayout()
         layout.addLayout(btn_row)
         btn_row.addStretch(1)
-        ok_btn = QPushButton("Search", dlg)
+        ok_btn = QPushButton(self.tr("Search"), dlg)
         ok_btn.setStyleSheet("font-weight: bold;")
-        cancel_btn = QPushButton("Cancel", dlg)
+        cancel_btn = QPushButton(self.tr("Cancel"), dlg)
         btn_row.addWidget(ok_btn); btn_row.addWidget(cancel_btn)
 
         def on_ok():
@@ -3967,15 +3977,15 @@ class SupernovaAsteroidHunterDialog(QDialog):
         if self._results_dialog is not None:
             try:
                 self._results_dialog.minor_body_end(
-                    final_msg="Minor-body search failed." if error else "",
+                    final_msg=self.tr("Minor-body search failed.") if error else "",
                     keep_status=bool(error),
                 )
             except Exception:
                 pass
         if error:
-            QMessageBox.critical(self, "Minor-body Search",
-                                 f"Minor-body prediction failed:\n{error}")
-            self.status_label.setText("Minor-body search failed.")
+            QMessageBox.critical(self, self.tr("Minor-body Search"),
+                                 self.tr("Minor-body prediction failed:\n{0}").format(error))
+            self.status_label.setText(self.tr("Minor-body search failed."))
             return
         if isinstance(result, dict):
             bodies = result.get("ref") or []
@@ -3986,16 +3996,16 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.predicted_minor_bodies = bodies
         self.minor_bodies_per_frame = per_frame
         if not self.predicted_minor_bodies:
-            self.status_label.setText(
-                "Minor-body search complete: no catalogued objects in field.")
+            self.status_label.setText(self.tr(
+                "Minor-body search complete: no catalogued objects in field."))
             QMessageBox.information(
-                self, "Minor-body Search",
-                "No catalogued minor bodies were found in this field.")
+                self, self.tr("Minor-body Search"),
+                self.tr("No catalogued minor bodies were found in this field."))
             return
         n_tracked = sum(1 for v in per_frame.values() if v)
-        self.status_label.setText(
-            f"Minor-body search complete: {len(bodies)} object(s), "
-            f"tracked across {n_tracked} frame(s).")
+        self.status_label.setText(self.tr(
+            "Minor-body search complete: {0} object(s), "
+            "tracked across {1} frame(s).").format(len(bodies), n_tracked))
         self._append_log(
             f"Minor-body: {len(bodies)} in field; per-frame positions for "
             f"{n_tracked} frame(s)")
@@ -4015,20 +4025,20 @@ class SupernovaAsteroidHunterDialog(QDialog):
     def runMinorBodySearch(self):
         if self._last_payload is None:
             QMessageBox.warning(
-                self, "Minor-body Search",
-                "Run the hunter first — minor-body cross-match needs the\n"
-                "reference image's WCS/JD.")
+                self, self.tr("Minor-body Search"),
+                self.tr("Run the hunter first — minor-body cross-match needs the\n"
+                        "reference image's WCS/JD."))
             return
         ref_path = self.parameters.get("referenceImagePath") or ""
         if not ref_path:
-            QMessageBox.warning(self, "Minor-body Search",
-                                "No reference image selected.")
+            QMessageBox.warning(self, self.tr("Minor-body Search"),
+                                self.tr("No reference image selected."))
             return
         if self.settings is None:
             QMessageBox.warning(
-                self, "Minor-body Search",
-                "Settings object is not available; cannot locate the "
-                "minor-body database path.")
+                self, self.tr("Minor-body Search"),
+                self.tr("Settings object is not available; cannot locate the "
+                        "minor-body database path."))
             return
         if not self._prompt_minor_body_limits():
             return
@@ -4038,25 +4048,25 @@ class SupernovaAsteroidHunterDialog(QDialog):
             force=bool(getattr(self, "_minor_force_solve", False)))
         self._append_log(f"Minor-body: WCS — {msg}")
         if not ok_solve:
-            self.status_label.setText("Minor-body search aborted: no WCS.")
+            self.status_label.setText(self.tr("Minor-body search aborted: no WCS."))
             QMessageBox.warning(
-                self, "Minor-body Search",
-                "Could not obtain an astrometric solution for the reference "
-                f"frame.\n\n{msg}\n\n"
-                "Check that ASTAP and/or an Astrometry.net API key are set up "
-                "in SASpro's settings, or that the local Gaia DR3 index is "
-                "installed.")
+                self, self.tr("Minor-body Search"),
+                self.tr("Could not obtain an astrometric solution for the reference "
+                        "frame.\n\n{0}\n\n"
+                        "Check that ASTAP and/or an Astrometry.net API key are set up "
+                        "in SASpro's settings, or that the local Gaia DR3 index is "
+                        "installed.").format(msg))
             return
 
         # ---- Time: use exactly the JD the user verified in the dialog ----
         jd_for_calc = getattr(self, "_minor_jd", None)
         if jd_for_calc is None:
-            self.status_label.setText("Minor-body search aborted: no observation time.")
+            self.status_label.setText(self.tr("Minor-body search aborted: no observation time."))
             QMessageBox.warning(
-                self, "Minor-body Search",
-                "No observation time is available for the reference frame.\n\n"
-                "An ephemeris cannot be evaluated without DATE-OBS, MJD-OBS "
-                "or JD in the header.")
+                self, self.tr("Minor-body Search"),
+                self.tr("No observation time is available for the reference frame.\n\n"
+                        "An ephemeris cannot be evaluated without DATE-OBS, MJD-OBS "
+                        "or JD in the header."))
             return
         _tz_mode = {0: "header=UTC", 1: "header=local (system tz)",
                     2: f"header=local ({getattr(self, 'minor_header_timezone', '?')})",
@@ -4078,7 +4088,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         else:
             self._append_log("Minor-body: geocentric positions (no site set)")
 
-        self.status_label.setText("Minor-body: starting background query…")
+        self.status_label.setText(self.tr("Minor-body: starting background query…"))
         self.minor_progress.setVisible(True)
         self.minor_progress.setValue(0)
         # Light up the mirrored strip in the results window so a user
@@ -4086,7 +4096,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         if self._results_dialog is not None:
             try:
                 self._results_dialog.minor_body_begin(
-                    "Minor-body: starting background query…")
+                    self.tr("Minor-body: starting background query…"))
             except Exception:
                 pass
 
@@ -4182,7 +4192,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         ast_limit = getattr(self, "minor_ast_max_count", 50000)
         com_limit = getattr(self, "minor_com_max_count", 5000)
 
-        emit(5, "Minor-body search: opening minor-body database...")
+        emit(5, self.tr("Minor-body search: opening minor-body database..."))
         try:
             data_dir = Path(
                 self.settings.value("wimi/minorbody_data_dir", "", type=str)
@@ -4192,12 +4202,12 @@ class SupernovaAsteroidHunterDialog(QDialog):
             catalog = mbc.MinorBodyCatalog(db_path)
         except Exception as e:
             print("[MinorBodies] could not open DB:", e)
-            emit(100, "Minor-body search: failed to open database.")
+            emit(100, self.tr("Minor-body search: failed to open database."))
             return _EMPTY
         try:
             import pandas as pd
 
-            emit(10, "Minor-body search: selecting bright asteroids/comets…")
+            emit(10, self.tr("Minor-body search: selecting bright asteroids/comets…"))
             try:
                 ast_df = catalog.get_bright_asteroids(H_max=H_ast_max, limit=ast_limit)
             except Exception as e:
@@ -4213,7 +4223,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
             n_com = 0 if com_df is None else len(com_df)
             print(f"[MinorBodies] candidate rows: asteroids={n_ast} comets={n_com}")
             if n_ast == 0 and n_com == 0:
-                emit(100, "Minor-body search: no catalog rows matched those limits.")
+                emit(100, self.tr("Minor-body search: no catalog rows matched those limits."))
                 return _EMPTY
 
             # Designation → kind / magnitude maps, built before the concat
@@ -4257,10 +4267,10 @@ class SupernovaAsteroidHunterDialog(QDialog):
             def _pos_progress(done, total):
                 if total:
                     emit(15 + int(70.0 * done / float(total)),
-                         f"Minor-body search: propagating orbits {done}/{total}…")
+                         self.tr("Minor-body search: propagating orbits {0}/{1}…").format(done, total))
                 return True
 
-            emit(15, f"Minor-body search: propagating {total_rows} orbits…")
+            emit(15, self.tr("Minor-body search: propagating {0} orbits…").format(total_rows))
             positions = catalog.compute_positions_astropy(
                 asteroid_rows=rows_df,
                 jd=jd,
@@ -4271,7 +4281,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
             )
             print(f"[MinorBodies] positions computed: {len(positions)}")
 
-            emit(92, "Minor-body search: projecting onto image pixels…")
+            emit(92, self.tr("Minor-body search: projecting onto image pixels…"))
             h, w = ref_img.shape[:2]
             bodies = []
             for pos in positions:
@@ -4350,7 +4360,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
                     if fjd is None:
                         continue
                     emit(92 + int(7.0 * k / max(1, n_f)),
-                         f"Minor-body search: positions for frame {k}/{n_f}…")
+                         self.tr("Minor-body search: positions for frame {0}/{1}…").format(k, n_f))
                     try:
                         fpos = catalog.compute_positions_astropy(
                             asteroid_rows=sub, jd=float(fjd),
@@ -4380,7 +4390,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
                         })
                     per_frame[fpath] = lst
 
-            emit(100, f"Minor-body search: {len(bodies)} object(s) inside the frame.")
+            emit(100, self.tr("Minor-body search: {0} object(s) inside the frame.").format(len(bodies)))
             return {"ref": bodies, "per_frame": per_frame}
         finally:
             try:
@@ -4452,7 +4462,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.border_spin.setValue(5.0)
         self.bin_spin.setValue(2)
         self.progress_bar.setValue(0)
-        self.status_label.setText("Status: Idle")
+        self.status_label.setText(self.tr("Status: Idle"))
         self.log_view.clear()
 
         self._last_payload = None
@@ -4475,7 +4485,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self._minor_jd = None
         self._minor_force_solve = False
 
-        QMessageBox.information(self, "New Instance", "Reset for a new instance.")
+        QMessageBox.information(self, self.tr("New Instance"), self.tr("Reset for a new instance."))
 
     # ---- Cleanup --------------------------------------------------------
 

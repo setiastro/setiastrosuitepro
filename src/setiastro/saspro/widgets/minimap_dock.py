@@ -19,9 +19,13 @@ from __future__ import annotations
 
 import os
 
-from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer
+from PyQt6.QtCore import QCoreApplication, QPoint, QPointF, QRect, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QDockWidget, QSizePolicy, QWidget
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("MinimapDock", text)
 
 
 def minimap_icon(size: int = 24) -> QIcon:
@@ -77,9 +81,9 @@ class MinimapView(QWidget):
                            QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
         self.setToolTip(
-            "Workspace overview.\n\n"
+            self.tr("Workspace overview.\n\n"
             "Drag to pan the canvas, click a view to activate it, "
-            "double-click to centre on it.")
+            "double-click to centre on it."))
 
         self._timer = QTimer(self)
         self._timer.setInterval(400)
@@ -146,7 +150,7 @@ class MinimapView(QWidget):
         if c is None or m is None:
             p.setPen(pal.placeholderText().color())
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                       "No workspace")
+                       self.tr("No workspace"))
             return
 
         bounds, _k, _o = m
@@ -263,7 +267,7 @@ class MinimapView(QWidget):
 
 class MinimapDock(QDockWidget):
     def __init__(self, main_window):
-        super().__init__("Workspace Map", main_window)
+        super().__init__(_tr("Workspace Map"), main_window)
         self.setObjectName("MinimapDock")
         self.view = MinimapView(main_window, self)
         self.setWidget(self.view)

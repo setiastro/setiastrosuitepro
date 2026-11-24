@@ -660,9 +660,9 @@ class BlemishBlasterDialogPro(QDialog):
         # --- Zoom controls (standard themed toolbuttons) ---------------
         self._zoom = 1.0  # initial zoom factor
 
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
 
         # ── Controls
@@ -1677,7 +1677,7 @@ class BlemishBlasterDialogPro(QDialog):
             elif hasattr(self._doc, "image"):
                 self._doc.image = out; applied = True
         except Exception as e:
-            QMessageBox.critical(self, "Blemish Blaster", f"Failed to write to document:\n{e}")
+            QMessageBox.critical(self, self.tr("Blemish Blaster"), self.tr("Failed to write to document:\n{0}").format(e))
             return
 
         if applied and hasattr(self.parent(), "_refresh_active_view"):

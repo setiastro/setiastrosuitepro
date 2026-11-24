@@ -9,7 +9,7 @@ from typing import Optional
 import json
 import numpy as np
 
-from PyQt6.QtCore import Qt, pyqtSignal, QByteArray, QTimer, QPoint, QPointF, QRectF, QThread, QObject
+from PyQt6.QtCore import Qt, pyqtSignal, QByteArray, QTimer, QPoint, QPointF, QRectF, QThread, QObject, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QListWidget, QListWidgetItem, QAbstractItemView, QSlider, QCheckBox,
@@ -28,8 +28,12 @@ from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.shortcut_registry import declare_gesture
 
 # Cheat sheet: what LayersDock.dropEvent accepts.
-declare_gesture("Drag a view's ⧉ tab onto the Layers list", "Layers", "Add that image as a new layer on top")
-declare_gesture("Shift+drag a view's ⧉ tab onto the Layers list", "Layers", "Attach that image as a mask to the selected layer")
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Drag a view's ⧉ tab onto the Layers list"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Layers"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Add that image as a new layer on top"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Shift+drag a view's ⧉ tab onto the Layers list"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Layers"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Attach that image as a mask to the selected layer"))
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
@@ -168,7 +172,7 @@ class _PreviewCanvas(QWidget):
         if src is None:
             p.setPen(QColor(100, 100, 110))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                       "No image — add a layer or click Preview.")
+                       self.tr("No image — add a layer or click Preview."))
             p.end()
             return
 
@@ -209,12 +213,12 @@ class _PreviewCanvas(QWidget):
                 p.setPen(QColor(200, 200, 200, 180))
                 p.fillRect(QRectF(r.left() + 4, r.top() + 4, lbl_w, 18), QColor(0, 0, 0, 120))
                 p.drawText(QRectF(r.left() + 4, r.top() + 4, lbl_w, 18),
-                           Qt.AlignmentFlag.AlignCenter, "Before")
+                           Qt.AlignmentFlag.AlignCenter, self.tr("Before"))
             if r.right() - split_x > lbl_w + 4:
                 p.setPen(QColor(200, 200, 200, 180))
                 p.fillRect(QRectF(r.right() - lbl_w - 4, r.top() + 4, lbl_w, 18), QColor(0, 0, 0, 120))
                 p.drawText(QRectF(r.right() - lbl_w - 4, r.top() + 4, lbl_w, 18),
-                           Qt.AlignmentFlag.AlignCenter, "After")
+                           Qt.AlignmentFlag.AlignCenter, self.tr("After"))
         p.end()
 
     # ── mouse ─────────────────────────────────────────────────
@@ -295,7 +299,7 @@ class LayersPreviewWindow(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Layers Preview")
+        self.setWindowTitle(self.tr("Layers Preview"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
@@ -313,25 +317,25 @@ class LayersPreviewWindow(QDialog):
         # ── toolbar ──────────────────────────────────────────
         bar = QHBoxLayout()
 
-        self.btn_split = QPushButton("⧉  Split Before/After")
+        self.btn_split = QPushButton(self.tr("⧉  Split Before/After"))
         self.btn_split.setCheckable(True)
         self.btn_split.setChecked(True)
-        self.btn_split.setToolTip("Toggle before/after split view")
+        self.btn_split.setToolTip(self.tr("Toggle before/after split view"))
         self.btn_split.toggled.connect(self._on_split_toggled)
 
-        self.btn_fit = QPushButton("Fit")
+        self.btn_fit = QPushButton(self.tr("Fit"))
         self.btn_fit.setFixedWidth(48)
-        self.btn_fit.setToolTip("Reset zoom/pan to fit  (double-click preview also does this)")
+        self.btn_fit.setToolTip(self.tr("Reset zoom/pan to fit  (double-click preview also does this)"))
         self.btn_fit.clicked.connect(self.canvas.reset_view if False else lambda: self.canvas.reset_view())
 
-        self.btn_refresh = QPushButton("⟳  Refresh")
+        self.btn_refresh = QPushButton(self.tr("⟳  Refresh"))
         self.btn_refresh.setToolTip(
-            "Recompute the composite from the current source views.\n"
+            self.tr("Recompute the composite from the current source views.\n"
             "Use this after editing a view that feeds one of the layers\n"
-            "(e.g. running Curves on it) to pull in the latest pixels.")
+            "(e.g. running Curves on it) to pull in the latest pixels."))
         self.btn_refresh.clicked.connect(self.refreshRequested.emit)
 
-        self.lbl_info = QLabel("Ready.")
+        self.lbl_info = QLabel(self.tr("Ready."))
         self.lbl_info.setStyleSheet("color: #888; font-size: 10px;")
 
         bar.addWidget(self.btn_split)
@@ -351,7 +355,7 @@ class LayersPreviewWindow(QDialog):
 
     def _on_split_toggled(self, on: bool):
         self.canvas.set_split_mode(on)
-        self.btn_split.setText("⧉  Split Before/After" if on else "□  After Only")
+        self.btn_split.setText(self.tr("⧉  Split Before/After") if on else self.tr("□  After Only"))
 
     def update_composite(self, before_arr: Optional[np.ndarray],
                           after_arr: Optional[np.ndarray]):
@@ -383,7 +387,7 @@ class LayersPreviewWindow(QDialog):
                 self.canvas.set_after(after_px)
 
         n_px = after_arr.size if after_arr is not None else 0
-        self.lbl_info.setText(f"Composite ready — {n_px:,} px")
+        self.lbl_info.setText(self.tr("Composite ready — {0:,} px").format(n_px))
 
     def closeEvent(self, ev):
         # Hide rather than destroy so the dock can reopen it cheaply.
@@ -401,7 +405,7 @@ class _TransformDialog(QDialog):
     def __init__(self, parent=None, *, t: LayerTransform | None = None,
                  apply_cb=None, cancel_cb=None, debounce_ms: int = 200):
         super().__init__(parent)
-        self.setWindowTitle("Layer Transform")
+        self.setWindowTitle(self.tr("Layer Transform"))
         self.setModal(True)
 
         self._apply_cb  = apply_cb
@@ -434,17 +438,17 @@ class _TransformDialog(QDialog):
         self.sx  = mk(0.001,   1000.0, 0.01, 4, self._t0.sx)
         self.sy  = mk(0.001,   1000.0, 0.01, 4, self._t0.sy)
 
-        form.addRow("Translate X (px)", self.tx)
-        form.addRow("Translate Y (px)", self.ty)
-        form.addRow("Rotate (deg)",     self.rot)
-        form.addRow("Scale X",          self.sx)
-        form.addRow("Scale Y",          self.sy)
+        form.addRow(self.tr("Translate X (px)"), self.tx)
+        form.addRow(self.tr("Translate Y (px)"), self.ty)
+        form.addRow(self.tr("Rotate (deg)"),     self.rot)
+        form.addRow(self.tr("Scale X"),          self.sx)
+        form.addRow(self.tr("Scale Y"),          self.sy)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self)
         lay.addWidget(btns)
-        self.btn_reset = QPushButton("Reset")
+        self.btn_reset = QPushButton(self.tr("Reset"))
         btns.addButton(self.btn_reset, QDialogButtonBox.ButtonRole.ResetRole)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
@@ -533,12 +537,12 @@ class _LayerRow(QWidget):
         self.btn_up = QPushButton("↑"); self.btn_up.setFixedWidth(28)
         self.btn_dn = QPushButton("↓"); self.btn_dn.setFixedWidth(28)
         self.btn_x  = QPushButton("✕"); self.btn_x.setFixedWidth(28)
-        self.btn_tf = QPushButton("Transform…"); self.btn_tf.setFixedWidth(92)
+        self.btn_tf = QPushButton(self.tr("Transform…")); self.btn_tf.setFixedWidth(92)
 
         r1.addWidget(self.chk)
         r1.addWidget(self.lbl, 1)
         r1.addWidget(self.mode)
-        r1.addWidget(QLabel("Opacity"))
+        r1.addWidget(QLabel(self.tr("Opacity")))
         r1.addWidget(self.sld, 1)
         r1.addWidget(self.spin_opacity)
         r1.addWidget(self.btn_tf)
@@ -549,10 +553,10 @@ class _LayerRow(QWidget):
         # ── row 2: mask controls ──────────────────────────────────
         r2 = QHBoxLayout(); v.addLayout(r2)
         self.mask_combo  = QComboBox(); self.mask_combo.setMinimumWidth(140)
-        self.mask_combo.setPlaceholderText("Mask: (none)")
-        self.mask_invert    = QCheckBox("Invert")
-        self.btn_clear_mask = QPushButton("Clear"); self.btn_clear_mask.setFixedWidth(52)
-        r2.addWidget(QLabel("Mask"))
+        self.mask_combo.setPlaceholderText(self.tr("Mask: (none)"))
+        self.mask_invert    = QCheckBox(self.tr("Invert"))
+        self.btn_clear_mask = QPushButton(self.tr("Clear")); self.btn_clear_mask.setFixedWidth(52)
+        r2.addWidget(QLabel(self.tr("Mask")))
         r2.addWidget(self.mask_combo, 1)
         r2.addWidget(self.mask_invert)
         r2.addWidget(self.btn_clear_mask)
@@ -560,7 +564,7 @@ class _LayerRow(QWidget):
         # ── row 3: levels ─────────────────────────────────────────
         r3 = QHBoxLayout(); v.addLayout(r3)
         self.levels_enable = QCheckBox()
-        self.levels_enable.setToolTip("Enable per-layer levels adjustment")
+        self.levels_enable.setToolTip(self.tr("Enable per-layer levels adjustment"))
 
         def _mk_dspin(lo, hi, step, dec, val):
             s = QDoubleSpinBox()
@@ -568,11 +572,11 @@ class _LayerRow(QWidget):
             s.setDecimals(dec); s.setValue(float(val))
             return s
 
-        self.levels_bp_label = QLabel("Black")
+        self.levels_bp_label = QLabel(self.tr("Black"))
         self.levels_bp       = _mk_dspin(0.0, 1.0, 0.01, 3, 0.0)
-        self.levels_wp_label = QLabel("White")
+        self.levels_wp_label = QLabel(self.tr("White"))
         self.levels_wp       = _mk_dspin(0.0, 1.0, 0.01, 3, 1.0)
-        self.levels_mt_label = QLabel("Midtones")
+        self.levels_mt_label = QLabel(self.tr("Midtones"))
         self.levels_mt       = _mk_dspin(0.01, 1.0, 0.01, 3, 0.5)
 
         r3.addWidget(self.levels_enable)
@@ -586,9 +590,9 @@ class _LayerRow(QWidget):
         self.sig_strength_label = self.sig_strength = None
         if not self._is_base:
             r4 = QHBoxLayout(); v.addLayout(r4)
-            self.sig_center_label = QLabel("Sigmoid center")
+            self.sig_center_label = QLabel(self.tr("Sigmoid center"))
             self.sig_center       = _mk_dspin(0.0, 1.0, 0.01, 3, 0.5)
-            self.sig_strength_label = QLabel("Strength")
+            self.sig_strength_label = QLabel(self.tr("Strength"))
             self.sig_strength     = _mk_dspin(0.1, 50.0, 0.5, 2, 10.0)
             r4.addWidget(self.sig_center_label); r4.addWidget(self.sig_center)
             r4.addWidget(self.sig_strength_label); r4.addWidget(self.sig_strength)
@@ -656,7 +660,7 @@ class _LayerRow(QWidget):
 
     def setTransformDirty(self, dirty: bool):
         if self.btn_tf is not None:
-            self.btn_tf.setText("Transform… *" if dirty else "Transform…")
+            self.btn_tf.setText(self.tr("Transform… *") if dirty else self.tr("Transform…"))
 
     def set_levels_enabled(self, enabled: bool):
         self.levels_enable.blockSignals(True)
@@ -746,7 +750,7 @@ class _LayerRow(QWidget):
 
 class LayersDock(QDockWidget):
     def __init__(self, main_window):
-        super().__init__("Layers", main_window)
+        super().__init__(QCoreApplication.translate("LayersDock", "Layers"), main_window)
         self.setObjectName("LayersDock")
         self.mw     = main_window
         self.docman = main_window.docman
@@ -794,17 +798,17 @@ class LayersDock(QDockWidget):
 
         # Top bar: view selector + preview toggle
         top = QHBoxLayout(); v.addLayout(top)
-        top.addWidget(QLabel("View:"))
+        top.addWidget(QLabel(self.tr("View:")))
         self.view_combo = QComboBox()
         top.addWidget(self.view_combo, 1)
 
-        self.btn_preview = QPushButton("👁  Preview")
+        self.btn_preview = QPushButton(self.tr("👁  Preview"))
         self.btn_preview.setCheckable(True)
         self.btn_preview.setChecked(False)
         self.btn_preview.setToolTip(
-            "Open the composite preview window.\n"
+            self.tr("Open the composite preview window.\n"
             "The base image in the main view is never modified\n"
-            "until you click Merge → Push to View."
+            "until you click Merge → Push to View.")
         )
         self.btn_preview.toggled.connect(self._on_preview_toggled)
         top.addWidget(self.btn_preview)
@@ -818,16 +822,16 @@ class LayersDock(QDockWidget):
 
         # Bottom buttons
         row = QHBoxLayout(); v.addLayout(row)
-        self.btn_clear     = QPushButton("Clear All Layers")
-        self.btn_merge     = QPushButton("Merge → Push to View")
-        self.btn_merge_new = QPushButton("Merge → New Document")
-        self.btn_merge_sel = QPushButton("Merge Selected → Single Layer")
+        self.btn_clear     = QPushButton(self.tr("Clear All Layers"))
+        self.btn_merge     = QPushButton(self.tr("Merge → Push to View"))
+        self.btn_merge_new = QPushButton(self.tr("Merge → New Document"))
+        self.btn_merge_sel = QPushButton(self.tr("Merge Selected → Single Layer"))
         self.btn_merge.setToolTip(
-            "Flatten the cached composite and push it to the current view as an undo step.")
+            self.tr("Flatten the cached composite and push it to the current view as an undo step."))
         self.btn_merge_new.setToolTip(
-            "Flatten the cached composite into a new document.")
+            self.tr("Flatten the cached composite into a new document."))
         self.btn_merge_sel.setToolTip(
-            "Merge selected layers into a single raster layer.")
+            self.tr("Merge selected layers into a single raster layer."))
         row.addWidget(self.btn_merge)
         row.addWidget(self.btn_merge_new)
         row.addWidget(self.btn_merge_sel)
@@ -874,7 +878,7 @@ class LayersDock(QDockWidget):
         self._cached_before_img_id = 0
         self._cached_composite = None
         if self._preview_win is not None and self._preview_win.isVisible():
-            self._preview_win.lbl_info.setText("Refreshing from source views…")
+            self._preview_win.lbl_info.setText(self.tr("Refreshing from source views…"))
         self._schedule_composite()
 
     def _connect_source_watch(self, vw):
@@ -1058,7 +1062,7 @@ class LayersDock(QDockWidget):
 
         # Push fast result — will be overwritten by full-res shortly
         self._preview_win.update_composite(self._cached_before, fast_composite)
-        self._preview_win.lbl_info.setText("Fast composite ready — rendering full resolution…")
+        self._preview_win.lbl_info.setText(self.tr("Fast composite ready — rendering full resolution…"))
 
     def _run_composite_threaded(self):
         """
@@ -1316,7 +1320,7 @@ class LayersDock(QDockWidget):
             # Mask combo
             roww.mask_combo.blockSignals(True)
             roww.mask_combo.clear()
-            roww.mask_combo.addItem("(none)", userData=None)
+            roww.mask_combo.addItem(self.tr("(none)"), userData=None)
             for title, doc in choices:
                 roww.mask_combo.addItem(title, userData=doc)
             if getattr(lyr, "mask_doc", None) in docs:
@@ -1358,7 +1362,7 @@ class LayersDock(QDockWidget):
         except Exception:
             pass
 
-        base_row = _LayerRow(f"Base • {base_name}", "—", 1.0, True, is_base=True)
+        base_row = _LayerRow(self.tr("Base • {0}").format(base_name), "—", 1.0, True, is_base=True)
         base_levels = getattr(vw, "_base_levels", None)
         if base_levels:
             base_row.set_levels_enabled(base_levels.get("enabled", False))
@@ -1549,16 +1553,16 @@ class LayersDock(QDockWidget):
         if not vw: return
         layers = list(getattr(vw, "_layers", []) or [])
         if not layers:
-            QMessageBox.information(self, "Layers", "There are no layers to merge.")
+            QMessageBox.information(self, self.tr("Layers"), self.tr("There are no layers to merge."))
             return
         try:
             base_doc = getattr(vw, "document", None)
             if base_doc is None or getattr(base_doc, "image", None) is None:
-                QMessageBox.warning(self, "Layers", "No base image for this view.")
+                QMessageBox.warning(self, self.tr("Layers"), self.tr("No base image for this view."))
                 return
             merged = self._get_composite_for_push()
             if merged is None:
-                QMessageBox.warning(self, "Layers", "Composite failed.")
+                QMessageBox.warning(self, self.tr("Layers"), self.tr("Composite failed."))
                 return
             meta = dict(getattr(base_doc, "metadata", {}) or {})
             meta["step_name"] = "Layers Merge"
@@ -1572,49 +1576,49 @@ class LayersDock(QDockWidget):
             # Tell the view to re-render normally now (no composite active)
             try: vw._render(rebuild=True)
             except Exception: pass
-            QMessageBox.information(self, "Layers",
-                "Merged visible layers and pushed to the current view.")
+            QMessageBox.information(self, self.tr("Layers"),
+                self.tr("Merged visible layers and pushed to the current view."))
         except Exception as ex:
             print("[LayersDock] merge error:", ex)
-            QMessageBox.critical(self, "Layers", f"Merge failed:\n{ex}")
+            QMessageBox.critical(self, self.tr("Layers"), self.tr("Merge failed:\n{0}").format(ex))
 
     def _merge_to_new_doc(self):
         vw = self.current_view()
         if not vw: return
         if not getattr(vw, "_layers", []):
-            QMessageBox.information(self, "Layers", "There are no layers to merge.")
+            QMessageBox.information(self, self.tr("Layers"), self.tr("There are no layers to merge."))
             return
         try:
             base_doc = getattr(vw, "document", None)
             if base_doc is None or getattr(base_doc, "image", None) is None:
-                QMessageBox.warning(self, "Layers", "No base image for this view.")
+                QMessageBox.warning(self, self.tr("Layers"), self.tr("No base image for this view."))
                 return
             merged = self._get_composite_for_push()
             if merged is None:
-                QMessageBox.warning(self, "Layers", "Composite failed.")
+                QMessageBox.warning(self, self.tr("Layers"), self.tr("Composite failed."))
                 return
             self._push_merged_as_new_doc(base_doc, merged)
-            QMessageBox.information(self, "Layers",
-                "Merged visible layers and created a new document.")
+            QMessageBox.information(self, self.tr("Layers"),
+                self.tr("Merged visible layers and created a new document."))
         except Exception as ex:
             print("[LayersDock] merge_to_new_doc error:", ex)
-            QMessageBox.critical(self, "Layers", f"Merge failed:\n{ex}")
+            QMessageBox.critical(self, self.tr("Layers"), self.tr("Merge failed:\n{0}").format(ex))
 
     def _merge_selected_to_single_layer(self):
         vw = self.current_view()
         if not vw: return
         layers = list(getattr(vw, "_layers", []) or [])
         if not layers:
-            QMessageBox.information(self, "Layers", "There are no layers to merge.")
+            QMessageBox.information(self, self.tr("Layers"), self.tr("There are no layers to merge."))
             return
         sel = self._selected_layer_indices()
         if len(sel) < 2:
-            QMessageBox.information(self, "Layers", "Select two or more layers to merge.")
+            QMessageBox.information(self, self.tr("Layers"), self.tr("Select two or more layers to merge."))
             return
         try:
             base_doc = getattr(vw, "document", None)
             if base_doc is None or getattr(base_doc, "image", None) is None:
-                QMessageBox.warning(self, "Layers", "No base image."); return
+                QMessageBox.warning(self, self.tr("Layers"), self.tr("No base image.")); return
             base_img     = base_doc.image
             i0, i1       = sel[0], sel[-1]
             layers_above = layers[:i0]
@@ -1633,11 +1637,11 @@ class LayersDock(QDockWidget):
                 vw._reinstall_layer_watchers()
             self._rebuild_list()
             self._schedule_composite()
-            QMessageBox.information(self, "Layers",
-                f"Merged {len(layers_sel)} layers into one.")
+            QMessageBox.information(self, self.tr("Layers"),
+                self.tr("Merged {0} layers into one.").format(len(layers_sel)))
         except Exception as ex:
             print("[LayersDock] merge_selected error:", ex)
-            QMessageBox.critical(self, "Layers", f"Merge Selected failed:\n{ex}")
+            QMessageBox.critical(self, self.tr("Layers"), self.tr("Merge Selected failed:\n{0}").format(ex))
 
     def _push_merged_as_new_doc(self, base_doc, arr: np.ndarray):
         dm = getattr(self.mw, "docman", None)
@@ -1719,8 +1723,8 @@ class LayersDock(QDockWidget):
                 if mask_doc is None:
                     raise RuntimeError("Mask doc gone")
                 if not getattr(vw, "_layers", None):
-                    QMessageBox.information(self, "No Layers",
-                        "Add a layer first, then drop a mask onto it.")
+                    QMessageBox.information(self, self.tr("No Layers"),
+                        self.tr("Add a layer first, then drop a mask onto it."))
                     e.ignore(); return
                 sel_row = self.list.currentRow()
                 idx     = min(max(sel_row, 0), len(vw._layers) - 1)

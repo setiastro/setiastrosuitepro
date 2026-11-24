@@ -49,7 +49,12 @@ from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 from setiastro.saspro.psf_utils import detect_stars_waterfall, median_star_stamp
 
 from PyQt6.QtCore import QThread, pyqtSignal as _pyqtSignal
+from PyQt6.QtCore import QCoreApplication
 import numpy as np
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("Convo", text)
  
  
 class _Canceled(Exception):
@@ -354,16 +359,16 @@ class ConvoDeconvoDialog(QDialog):
         stretch_bar = QHBoxLayout()
         stretch_bar.setSpacing(8)
 
-        self.cb_autostretch = QCheckBox("Auto-stretch preview")
+        self.cb_autostretch = QCheckBox(self.tr("Auto-stretch preview"))
         self.cb_autostretch.setChecked(False)
         self.cb_autostretch.setToolTip(
-            "Apply a statistical stretch to the preview only.\n"
+            self.tr("Apply a statistical stretch to the preview only.\n"
             "The actual image data is NOT modified — this is display only.\n"
-            "Useful for checking denoising / convolution results on linear data."
+            "Useful for checking denoising / convolution results on linear data.")
         )
         stretch_bar.addWidget(self.cb_autostretch)
 
-        stretch_bar.addWidget(QLabel("Target median:"))
+        stretch_bar.addWidget(QLabel(self.tr("Target median:")))
         self.s_target_median = QDoubleSpinBox()
         self.s_target_median.setRange(0.01, 0.60)
         self.s_target_median.setSingleStep(0.01)
@@ -373,9 +378,9 @@ class ConvoDeconvoDialog(QDialog):
         self.s_target_median.setEnabled(False)   # disabled until checkbox on
         stretch_bar.addWidget(self.s_target_median)
 
-        self.cb_linked = QCheckBox("Linked")
+        self.cb_linked = QCheckBox(self.tr("Linked"))
         self.cb_linked.setChecked(True)
-        self.cb_linked.setToolTip("Stretch all RGB channels together (linked).")
+        self.cb_linked.setToolTip(self.tr("Stretch all RGB channels together (linked)."))
         self.cb_linked.setEnabled(False)
         stretch_bar.addWidget(self.cb_linked)
 
@@ -403,7 +408,7 @@ class ConvoDeconvoDialog(QDialog):
 
         # Strength
         self.strength_slider = FloatSliderWithEdit(minimum=0.0, maximum=1.0, step=0.01, initial=1.0, suffix="")
-        srow = QHBoxLayout(); srow.addWidget(QLabel("Strength:")); srow.addWidget(self.strength_slider)
+        srow = QHBoxLayout(); srow.addWidget(QLabel(self.tr("Strength:"))); srow.addWidget(self.strength_slider)
         left_layout.addLayout(srow)
 
         # Buttons
@@ -468,9 +473,9 @@ class ConvoDeconvoDialog(QDialog):
 
         # Zoom & Preview
         zrow = QHBoxLayout(); zrow.addStretch()
-        self.zoom_in_btn = QToolButton();  self.zoom_in_btn.setIcon(QIcon.fromTheme("zoom-in"));     self.zoom_in_btn.setToolTip("Zoom In")
-        self.zoom_out_btn= QToolButton();  self.zoom_out_btn.setIcon(QIcon.fromTheme("zoom-out"));    self.zoom_out_btn.setToolTip("Zoom Out")
-        self.fit_btn     = QToolButton();  self.fit_btn.setIcon(QIcon.fromTheme("zoom-fit-best"));    self.fit_btn.setToolTip("Fit to Preview")
+        self.zoom_in_btn = QToolButton();  self.zoom_in_btn.setIcon(QIcon.fromTheme("zoom-in"));     self.zoom_in_btn.setToolTip(self.tr("Zoom In"))
+        self.zoom_out_btn= QToolButton();  self.zoom_out_btn.setIcon(QIcon.fromTheme("zoom-out"));    self.zoom_out_btn.setToolTip(self.tr("Zoom Out"))
+        self.fit_btn     = QToolButton();  self.fit_btn.setIcon(QIcon.fromTheme("zoom-fit-best"));    self.fit_btn.setToolTip(self.tr("Fit to Preview"))
         zrow.addWidget(self.zoom_in_btn); zrow.addWidget(self.zoom_out_btn); zrow.addWidget(self.fit_btn)
         preview_layout.addLayout(zrow)
 
@@ -699,16 +704,16 @@ class ConvoDeconvoDialog(QDialog):
         form = QFormLayout(); form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.conv_radius_slider = FloatSliderWithEdit(minimum=0.1, maximum=200.0, step=0.1, initial=5.0, suffix=" px")
-        form.addRow("Radius:", self.conv_radius_slider)
+        form.addRow(self.tr("Radius:"), self.conv_radius_slider)
 
         self.conv_shape_slider = FloatSliderWithEdit(minimum=0.1, maximum=10.0, step=0.1, initial=2.0, suffix="σ")
-        form.addRow("Kurtosis (σ):", self.conv_shape_slider)
+        form.addRow(self.tr("Kurtosis (σ):"), self.conv_shape_slider)
 
         self.conv_aspect_slider = FloatSliderWithEdit(minimum=0.1, maximum=10.0, step=0.1, initial=1.0, suffix="")
-        form.addRow("Aspect Ratio:", self.conv_aspect_slider)
+        form.addRow(self.tr("Aspect Ratio:"), self.conv_aspect_slider)
 
         self.conv_rotation_slider = FloatSliderWithEdit(minimum=0.0, maximum=360.0, step=1.0, initial=0.0, suffix="°")
-        form.addRow("Rotation:", self.conv_rotation_slider)
+        form.addRow(self.tr("Rotation:"), self.conv_rotation_slider)
 
         layout.addLayout(form); layout.addStretch()
         self.tabs.addTab(conv_tab, self.tr("Convolution"))
@@ -719,7 +724,7 @@ class ConvoDeconvoDialog(QDialog):
 
         # Algo row
         algo_layout = QHBoxLayout()
-        algo_layout.addWidget(QLabel("Algorithm:"))
+        algo_layout.addWidget(QLabel(self.tr("Algorithm:")))
         self.deconv_algo_combo = QComboBox()
         self.deconv_algo_combo.addItems(["Richardson-Lucy", "Wiener", "Larson-Sekanina", "Van Cittert"])
         self.deconv_algo_combo.currentTextChanged.connect(self._on_deconv_algo_changed)
@@ -732,24 +737,24 @@ class ConvoDeconvoDialog(QDialog):
         psf_group_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.rl_psf_radius_slider = FloatSliderWithEdit(minimum=0.1, maximum=100.0, step=0.1, initial=3.0, suffix=" px")
-        psf_group_layout.addRow("PSF Radius:", self.rl_psf_radius_slider)
+        psf_group_layout.addRow(self.tr("PSF Radius:"), self.rl_psf_radius_slider)
         self.rl_psf_shape_slider = FloatSliderWithEdit(minimum=0.1, maximum=10.0, step=0.1, initial=2.0, suffix="σ")
-        psf_group_layout.addRow("PSF Kurtosis (σ):", self.rl_psf_shape_slider)
+        psf_group_layout.addRow(self.tr("PSF Kurtosis (σ):"), self.rl_psf_shape_slider)
         self.rl_psf_aspect_slider = FloatSliderWithEdit(minimum=0.1, maximum=10.0, step=0.1, initial=1.0, suffix="")
-        psf_group_layout.addRow("PSF Aspect Ratio:", self.rl_psf_aspect_slider)
+        psf_group_layout.addRow(self.tr("PSF Aspect Ratio:"), self.rl_psf_aspect_slider)
         self.rl_psf_rotation_slider = FloatSliderWithEdit(minimum=0.0, maximum=360.0, step=1.0, initial=0.0, suffix="°")
-        psf_group_layout.addRow("PSF Rotation:", self.rl_psf_rotation_slider)
+        psf_group_layout.addRow(self.tr("PSF Rotation:"), self.rl_psf_rotation_slider)
         outer_layout.addWidget(self.psf_param_group)
         self.psf_param_group.setVisible(self.deconv_algo_combo.currentText() in ("Richardson-Lucy", "Wiener"))
 
         # “Using Stellar PSF” bar
         self.custom_psf_bar = QWidget()
         bar_layout = QHBoxLayout(self.custom_psf_bar); bar_layout.setContentsMargins(0, 0, 0, 0); bar_layout.setSpacing(4)
-        self.rl_custom_label = QLabel("Using Stellar PSF")
+        self.rl_custom_label = QLabel(self.tr("Using Stellar PSF"))
         self.rl_custom_label.setStyleSheet("color:#fff;background-color:#007acc;padding:2px;")
         self.rl_custom_label.setVisible(False)
-        self.rl_disable_custom_btn = QPushButton("Disable Stellar PSF")
-        self.rl_disable_custom_btn.setToolTip("Revert to PSF sliders")
+        self.rl_disable_custom_btn = QPushButton(self.tr("Disable Stellar PSF"))
+        self.rl_disable_custom_btn.setToolTip(self.tr("Revert to PSF sliders"))
         self.rl_disable_custom_btn.setVisible(False)
         self.rl_disable_custom_btn.clicked.connect(self._clear_custom_psf_flag)
         bar_layout.addWidget(self.rl_custom_label); bar_layout.addWidget(self.rl_disable_custom_btn); bar_layout.addStretch()
@@ -764,13 +769,13 @@ class ConvoDeconvoDialog(QDialog):
         rl_widget = QWidget()
         rl_form = QFormLayout(rl_widget); rl_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.rl_iterations_slider = FloatSliderWithEdit(minimum=1.0, maximum=100.0, step=1.0, initial=30.0, suffix="")
-        rl_form.addRow("Iterations:", self.rl_iterations_slider)
+        rl_form.addRow(self.tr("Iterations:"), self.rl_iterations_slider)
         self.rl_reg_combo = QComboBox(); self.rl_reg_combo.addItems(["None (Plain R–L)", "Tikhonov (L2)", "Total Variation (TV)"])
-        rl_form.addRow("Regularization:", self.rl_reg_combo)
-        self.rl_clip_checkbox = QCheckBox("Enable de‐ring"); self.rl_clip_checkbox.setChecked(True)
+        rl_form.addRow(self.tr("Regularization:"), self.rl_reg_combo)
+        self.rl_clip_checkbox = QCheckBox(self.tr("Enable de‐ring")); self.rl_clip_checkbox.setChecked(True)
         rl_form.addRow("", self.rl_clip_checkbox)
-        self.rl_luminance_only_checkbox = QCheckBox("Deconvolve L* Only"); self.rl_luminance_only_checkbox.setChecked(True)
-        self.rl_luminance_only_checkbox.setToolTip("If checked and the image is color, RL runs only on the L* channel.")
+        self.rl_luminance_only_checkbox = QCheckBox(self.tr("Deconvolve L* Only")); self.rl_luminance_only_checkbox.setChecked(True)
+        self.rl_luminance_only_checkbox.setToolTip(self.tr("If checked and the image is color, RL runs only on the L* channel."))
         rl_form.addRow("", self.rl_luminance_only_checkbox)
         rl_widget.setLayout(rl_form)
         self.deconv_param_stack["Richardson-Lucy"] = rl_widget
@@ -779,14 +784,14 @@ class ConvoDeconvoDialog(QDialog):
         wiener_widget = QWidget(); wiener_layout = QVBoxLayout(wiener_widget)
         wiener_form = QFormLayout(); wiener_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.wiener_nsr_slider = FloatSliderWithEdit(minimum=0.0, maximum=1.0, step=0.001, initial=0.01, suffix="")
-        wiener_form.addRow("Noise/Signal (λ):", self.wiener_nsr_slider)
+        wiener_form.addRow(self.tr("Noise/Signal (λ):"), self.wiener_nsr_slider)
         self.wiener_reg_combo = QComboBox(); self.wiener_reg_combo.addItems(["None (Classical Wiener)", "Tikhonov (L2)"])
-        wiener_form.addRow("Regularization:", self.wiener_reg_combo)
-        self.wiener_luminance_only_checkbox = QCheckBox("Deconvolve L* Only"); self.wiener_luminance_only_checkbox.setChecked(True)
-        self.wiener_luminance_only_checkbox.setToolTip("If checked and the image is color, Wiener runs only on the L* channel.")
+        wiener_form.addRow(self.tr("Regularization:"), self.wiener_reg_combo)
+        self.wiener_luminance_only_checkbox = QCheckBox(self.tr("Deconvolve L* Only")); self.wiener_luminance_only_checkbox.setChecked(True)
+        self.wiener_luminance_only_checkbox.setToolTip(self.tr("If checked and the image is color, Wiener runs only on the L* channel."))
         wiener_form.addRow("", self.wiener_luminance_only_checkbox)
-        self.wiener_dering_checkbox = QCheckBox("Enable de-ring"); self.wiener_dering_checkbox.setChecked(True)
-        self.wiener_dering_checkbox.setToolTip("Applies a single bilateral pass after Wiener deconvolution")
+        self.wiener_dering_checkbox = QCheckBox(self.tr("Enable de-ring")); self.wiener_dering_checkbox.setChecked(True)
+        self.wiener_dering_checkbox.setToolTip(self.tr("Applies a single bilateral pass after Wiener deconvolution"))
         wiener_form.addRow("", self.wiener_dering_checkbox)
         wiener_layout.addLayout(wiener_form)
         self.deconv_param_stack["Wiener"] = wiener_widget
@@ -797,10 +802,10 @@ class ConvoDeconvoDialog(QDialog):
         self.ls_angular_slider = FloatSliderWithEdit(minimum=0.1, maximum=360.0, step=0.1, initial=1.0, suffix="°")
         self.ls_operator_combo = QComboBox(); self.ls_operator_combo.addItems(["Divide", "Subtract"])
         self.ls_blend_combo    = QComboBox(); self.ls_blend_combo.addItems(["SoftLight", "Screen"])
-        ls_form.addRow("Radial Step (px):", self.ls_radial_slider)
-        ls_form.addRow("Angular Step (°):", self.ls_angular_slider)
-        ls_form.addRow("LS Operator:", self.ls_operator_combo)
-        ls_form.addRow("Blend Mode:", self.ls_blend_combo)
+        ls_form.addRow(self.tr("Radial Step (px):"), self.ls_radial_slider)
+        ls_form.addRow(self.tr("Angular Step (°):"), self.ls_angular_slider)
+        ls_form.addRow(self.tr("LS Operator:"), self.ls_operator_combo)
+        ls_form.addRow(self.tr("Blend Mode:"), self.ls_blend_combo)
         self.ls_operator_combo.currentTextChanged.connect(self._on_ls_operator_changed)
         self.deconv_param_stack["Larson-Sekanina"] = ls_widget
 
@@ -808,8 +813,8 @@ class ConvoDeconvoDialog(QDialog):
         vc_widget = QWidget(); vc_form = QFormLayout(vc_widget); vc_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.vc_iterations_slider = FloatSliderWithEdit(minimum=1, maximum=1000, step=1, initial=10, suffix="")
         self.vc_relax_slider      = FloatSliderWithEdit(minimum=0.0, maximum=1.0, step=0.01, initial=0.0, suffix="")
-        vc_form.addRow("Iterations:", self.vc_iterations_slider)
-        vc_form.addRow("Relaxation (0–1):", self.vc_relax_slider)
+        vc_form.addRow(self.tr("Iterations:"), self.vc_iterations_slider)
+        vc_form.addRow(self.tr("Relaxation (0–1):"), self.vc_relax_slider)
         self.deconv_param_stack["Van Cittert"] = vc_widget
 
         # Add all panels (hidden initially)
@@ -833,53 +838,53 @@ class ConvoDeconvoDialog(QDialog):
         psf_tab = QWidget(); layout = QVBoxLayout(psf_tab)
 
         h_image = QHBoxLayout()
-        h_image.addWidget(QLabel("Image for PSF Estimate:"))
-        self.sep_image_label = QLabel("(Current Active Image)")
+        h_image.addWidget(QLabel(self.tr("Image for PSF Estimate:")))
+        self.sep_image_label = QLabel(self.tr("(Current Active Image)"))
         h_image.addWidget(self.sep_image_label); layout.addLayout(h_image)
 
         form = QFormLayout(); form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         # Detection is the PSF Viewer's (psf_utils): Auto descends the sigma
         # ladder until ~1000 good stars are in hand; unchecked, one extraction
         # at the slider value. Same range and default as the PSF Viewer.
-        self.sep_auto_checkbox = QCheckBox(f"Auto (waterfall → ~{PSF_AUTO_TARGET} stars)")
+        self.sep_auto_checkbox = QCheckBox(self.tr("Auto (waterfall → ~{0} stars)").format(PSF_AUTO_TARGET))
         self.sep_auto_checkbox.setToolTip(
-            "When checked, descend through σ = 100, 50, 25, 12, 6, 3 and stop "
-            f"as soon as ~{PSF_AUTO_TARGET} quality stars are detected, as the PSF Viewer does. "
+            self.tr("When checked, descend through σ = 100, 50, 25, 12, 6, 3 and stop "
+            "as soon as ~{0} quality stars are detected, as the PSF Viewer does. "
             "Fast on rich fields. Uncheck to use the Detection σ value literally "
-            "(low σ on a large, rich frame can take minutes)."
+            "(low σ on a large, rich frame can take minutes).").format(PSF_AUTO_TARGET)
         )
         self.sep_auto_checkbox.setChecked(True)
         form.addRow("", self.sep_auto_checkbox)
         self.sep_threshold_slider = FloatSliderWithEdit(minimum=1.0, maximum=50.0, step=0.1, initial=15.0, suffix=" σ")
         self.sep_threshold_slider.setEnabled(False)
         self.sep_auto_checkbox.toggled.connect(lambda on: self.sep_threshold_slider.setEnabled(not on))
-        form.addRow("Detection σ:", self.sep_threshold_slider)
+        form.addRow(self.tr("Detection σ:"), self.sep_threshold_slider)
         self.sep_minarea_spin = CustomSpinBox(minimum=1, maximum=100, initial=5, step=1)
-        form.addRow("Min Area (px²):", self.sep_minarea_spin)
+        form.addRow(self.tr("Min Area (px²):"), self.sep_minarea_spin)
         self.sep_sat_slider = FloatSliderWithEdit(minimum=1000, maximum=100000, step=500, initial=50000, suffix=" ADU")
         self.sep_sat_slider.setToolTip(
-            "Stars whose brightest pixel reaches this level are left out of the PSF. "
-            "16-bit ADU: on a normalised (0–1) image 65535 is full scale."
+            self.tr("Stars whose brightest pixel reaches this level are left out of the PSF. "
+            "16-bit ADU: on a normalised (0–1) image 65535 is full scale.")
         )
-        form.addRow("Saturation Cutoff:", self.sep_sat_slider)
+        form.addRow(self.tr("Saturation Cutoff:"), self.sep_sat_slider)
         self.sep_maxstars_spin = CustomSpinBox(minimum=1, maximum=500, initial=500, step=1)
         self.sep_maxstars_spin.setToolTip(
-            "Stars median-stacked into the PSF, spread evenly through the detections "
-            "(the PSF Viewer uses 500)."
+            self.tr("Stars median-stacked into the PSF, spread evenly through the detections "
+            "(the PSF Viewer uses 500).")
         )
-        form.addRow("Max Stars:", self.sep_maxstars_spin)
+        form.addRow(self.tr("Max Stars:"), self.sep_maxstars_spin)
         self.sep_stamp_spin = CustomSpinBox(minimum=5, maximum=50, initial=15, step=1)
-        form.addRow("Half‐Width (px):", self.sep_stamp_spin)
+        form.addRow(self.tr("Half‐Width (px):"), self.sep_stamp_spin)
         layout.addLayout(form)
 
         h_buttons = QHBoxLayout()
-        self.sep_run_button = QPushButton("Run SEP Extraction")
-        self.sep_save_button = QPushButton("Save PSF…")
-        self.sep_use_button  = QPushButton("Use as Current PSF")
+        self.sep_run_button = QPushButton(self.tr("Run SEP Extraction"))
+        self.sep_save_button = QPushButton(self.tr("Save PSF…"))
+        self.sep_use_button  = QPushButton(self.tr("Use as Current PSF"))
         h_buttons.addWidget(self.sep_run_button); h_buttons.addWidget(self.sep_save_button); h_buttons.addWidget(self.sep_use_button)
         layout.addLayout(h_buttons)
 
-        self.psf_estimate_title = QLabel("Estimated PSF (64×64):")
+        self.psf_estimate_title = QLabel(self.tr("Estimated PSF (64×64):"))
         layout.addWidget(self.psf_estimate_title, alignment=Qt.AlignmentFlag.AlignLeft)
         self.sep_psf_preview = QLabel(); self.sep_psf_preview.setFixedSize(64, 64)
         self.sep_psf_preview.setStyleSheet("border: 1px solid #888;")
@@ -904,7 +909,7 @@ class ConvoDeconvoDialog(QDialog):
     
         # ── Algorithm selector ───────────────────────────────────
         algo_row = QHBoxLayout()
-        algo_row.addWidget(QLabel("Method:"))
+        algo_row.addWidget(QLabel(self.tr("Method:")))
         self.denoise_algo_combo = QComboBox()
         self.denoise_algo_combo.addItems([
             "TV Chambolle",
@@ -920,13 +925,13 @@ class ConvoDeconvoDialog(QDialog):
     
         # ── Shared: L*-only ──────────────────────────────────────
         self.denoise_lum_only_chk = QCheckBox(
-            "Operate on L* only  (color images — preserves chroma)"
+            self.tr("Operate on L* only  (color images — preserves chroma)")
         )
         self.denoise_lum_only_chk.setChecked(True)
         self.denoise_lum_only_chk.setToolTip(
-            "When checked, the denoiser runs only on the L* (luminance) channel "
+            self.tr("When checked, the denoiser runs only on the L* (luminance) channel "
             "of a Lab-converted image and chroma is left untouched.\n"
-            "Uncheck to run on all channels independently."
+            "Uncheck to run on all channels independently.")
         )
         outer.addWidget(self.denoise_lum_only_chk)
     
@@ -940,12 +945,12 @@ class ConvoDeconvoDialog(QDialog):
         self.tv_weight_slider = FloatSliderWithEdit(
             minimum=0.0, maximum=1.0, step=0.01, initial=0.10, suffix=""
         )
-        tv_f.addRow("TV Weight:", self.tv_weight_slider)
+        tv_f.addRow(self.tr("TV Weight:"), self.tv_weight_slider)
         self.tv_iter_slider = FloatSliderWithEdit(
             minimum=1, maximum=100, step=1, initial=10, suffix=""
         )
-        tv_f.addRow("Max Iterations:", self.tv_iter_slider)
-        self.tv_multichannel_checkbox = QCheckBox("Multi-channel")
+        tv_f.addRow(self.tr("Max Iterations:"), self.tv_iter_slider)
+        self.tv_multichannel_checkbox = QCheckBox(self.tr("Multi-channel"))
         self.tv_multichannel_checkbox.setChecked(True)
         self.tv_multichannel_checkbox.setVisible(False)
         tv_f.addRow("", self.tv_multichannel_checkbox)
@@ -959,25 +964,25 @@ class ConvoDeconvoDialog(QDialog):
             minimum=0.001, maximum=0.30, step=0.001, initial=0.015, suffix=""
         )
         self.nlm_h_slider.setToolTip(
-            "Cut-off distance (h). Controls denoising strength.\n"
-            "Typical range: 0.01–0.05 for stretched astrophotos."
+            self.tr("Cut-off distance (h). Controls denoising strength.\n"
+            "Typical range: 0.01–0.05 for stretched astrophotos.")
         )
-        nlm_f.addRow("h (strength):", self.nlm_h_slider)
+        nlm_f.addRow(self.tr("h (strength):"), self.nlm_h_slider)
         self.nlm_patch_slider = FloatSliderWithEdit(
             minimum=3, maximum=15, step=2, initial=5, suffix=" px"
         )
         self.nlm_patch_slider.setToolTip(
-            "Patch size (pixels). Larger = more context per comparison, slower."
+            self.tr("Patch size (pixels). Larger = more context per comparison, slower.")
         )
-        nlm_f.addRow("Patch size:", self.nlm_patch_slider)
+        nlm_f.addRow(self.tr("Patch size:"), self.nlm_patch_slider)
         self.nlm_dist_slider = FloatSliderWithEdit(
             minimum=3, maximum=21, step=2, initial=7, suffix=" px"
         )
         self.nlm_dist_slider.setToolTip(
-            "Search distance. Larger = better quality, slower."
+            self.tr("Search distance. Larger = better quality, slower.")
         )
-        nlm_f.addRow("Search dist:", self.nlm_dist_slider)
-        nlm_hint = QLabel("  ⓘ  Fast mode — skimage NLM with sigma estimation.")
+        nlm_f.addRow(self.tr("Search dist:"), self.nlm_dist_slider)
+        nlm_hint = QLabel(self.tr("  ⓘ  Fast mode — skimage NLM with sigma estimation."))
         nlm_hint.setStyleSheet("color: #888; font-size: 10px;")
         nlm_f.addRow("", nlm_hint)
         self._denoise_param_stack["Non-Local Means"] = nlm_w
@@ -989,23 +994,23 @@ class ConvoDeconvoDialog(QDialog):
         self.bil_d_slider = FloatSliderWithEdit(
             minimum=1, maximum=25, step=2, initial=9, suffix=" px"
         )
-        self.bil_d_slider.setToolTip("Diameter of each pixel neighbourhood (d).")
-        bil_f.addRow("Diameter:", self.bil_d_slider)
+        self.bil_d_slider.setToolTip(self.tr("Diameter of each pixel neighbourhood (d)."))
+        bil_f.addRow(self.tr("Diameter:"), self.bil_d_slider)
         self.bil_sigma_color_slider = FloatSliderWithEdit(
             minimum=1.0, maximum=200.0, step=1.0, initial=50.0, suffix=""
         )
         self.bil_sigma_color_slider.setToolTip(
-            "Sigma in colour space. Higher = pixels further in colour are mixed."
+            self.tr("Sigma in colour space. Higher = pixels further in colour are mixed.")
         )
-        bil_f.addRow("Sigma colour:", self.bil_sigma_color_slider)
+        bil_f.addRow(self.tr("Sigma colour:"), self.bil_sigma_color_slider)
         self.bil_sigma_space_slider = FloatSliderWithEdit(
             minimum=1.0, maximum=200.0, step=1.0, initial=50.0, suffix=""
         )
         self.bil_sigma_space_slider.setToolTip(
-            "Sigma in coordinate space. Higher = pixels further apart are mixed."
+            self.tr("Sigma in coordinate space. Higher = pixels further apart are mixed.")
         )
-        bil_f.addRow("Sigma space:", self.bil_sigma_space_slider)
-        bil_hint = QLabel("  ⓘ  Uses OpenCV bilateralFilter (8-bit internally).")
+        bil_f.addRow(self.tr("Sigma space:"), self.bil_sigma_space_slider)
+        bil_hint = QLabel(self.tr("  ⓘ  Uses OpenCV bilateralFilter (8-bit internally)."))
         bil_hint.setStyleSheet("color: #888; font-size: 10px;")
         bil_f.addRow("", bil_hint)
         self._denoise_param_stack["Bilateral"] = bil_w
@@ -1018,9 +1023,9 @@ class ConvoDeconvoDialog(QDialog):
             minimum=0.1, maximum=10.0, step=0.1, initial=1.0, suffix=" px"
         )
         self.gau_sigma_slider.setToolTip(
-            "Gaussian sigma. 1.0 = gentle, 3.0+ = heavy blurring."
+            self.tr("Gaussian sigma. 1.0 = gentle, 3.0+ = heavy blurring.")
         )
-        gau_f.addRow("Sigma:", self.gau_sigma_slider)
+        gau_f.addRow(self.tr("Sigma:"), self.gau_sigma_slider)
         self._denoise_param_stack["Gaussian"] = gau_w
     
         # Median
@@ -1031,10 +1036,10 @@ class ConvoDeconvoDialog(QDialog):
             minimum=1, maximum=15, step=2, initial=3, suffix=" px"
         )
         self.med_size_slider.setToolTip(
-            "Kernel size (odd). 3 = minimal, 5 = moderate.\n"
-            "Good for cosmic ray speckles."
+            self.tr("Kernel size (odd). 3 = minimal, 5 = moderate.\n"
+            "Good for cosmic ray speckles.")
         )
-        med_f.addRow("Kernel size:", self.med_size_slider)
+        med_f.addRow(self.tr("Kernel size:"), self.med_size_slider)
         self._denoise_param_stack["Median"] = med_w
     
         # Wavelet
@@ -1045,25 +1050,25 @@ class ConvoDeconvoDialog(QDialog):
             minimum=0.0, maximum=0.30, step=0.001, initial=0.0, suffix=""
         )
         self.wav_sigma_slider.setToolTip(
-            "Noise sigma. 0.0 = auto-estimate (BayesShrink)."
+            self.tr("Noise sigma. 0.0 = auto-estimate (BayesShrink).")
         )
-        wav_f.addRow("Noise σ (0=auto):", self.wav_sigma_slider)
+        wav_f.addRow(self.tr("Noise σ (0=auto):"), self.wav_sigma_slider)
         self.wav_wavelet_combo = QComboBox()
         self.wav_wavelet_combo.addItems(
             ["db1", "db2", "db4", "db8", "sym4", "sym8", "coif1", "bior1.3"]
         )
         self.wav_wavelet_combo.setCurrentText("db2")
         self.wav_wavelet_combo.setToolTip(
-            "Wavelet family. db2–4 = good general purpose.\n"
-            "sym4/sym8 = near-symmetric, good for nebulosity."
+            self.tr("Wavelet family. db2–4 = good general purpose.\n"
+            "sym4/sym8 = near-symmetric, good for nebulosity.")
         )
-        wav_f.addRow("Wavelet:", self.wav_wavelet_combo)
+        wav_f.addRow(self.tr("Wavelet:"), self.wav_wavelet_combo)
         self.wav_mode_combo = QComboBox()
         self.wav_mode_combo.addItems(["soft", "hard"])
         self.wav_mode_combo.setToolTip(
-            "soft = smoother.  hard = sharper edges, may ring."
+            self.tr("soft = smoother.  hard = sharper edges, may ring.")
         )
-        wav_f.addRow("Threshold mode:", self.wav_mode_combo)
+        wav_f.addRow(self.tr("Threshold mode:"), self.wav_mode_combo)
         wav_hint = QLabel("  ⓘ  skimage.restoration.denoise_wavelet (BayesShrink).")
         wav_hint.setStyleSheet("color: #888; font-size: 10px;")
         wav_f.addRow("", wav_hint)
@@ -1086,7 +1091,7 @@ class ConvoDeconvoDialog(QDialog):
         )
         status_row.addWidget(self.denoise_status_label, stretch=1)
     
-        self.denoise_cancel_btn = QPushButton("Cancel")
+        self.denoise_cancel_btn = QPushButton(self.tr("Cancel"))
         self.denoise_cancel_btn.setFixedWidth(60)
         self.denoise_cancel_btn.setVisible(False)
         self.denoise_cancel_btn.setStyleSheet(
@@ -1187,11 +1192,11 @@ class ConvoDeconvoDialog(QDialog):
         algo = getattr(self, "deconv_algo_combo", None)
         algo_text = algo.currentText() if algo is not None else ""
 
-        if current_tab == "Convolution":
+        if current_tab in (self.tr("Convolution"), "Convolution"):
             r, k, a, rot = (self.conv_radius_slider.value(), self.conv_shape_slider.value(),
                             self.conv_aspect_slider.value(), self.conv_rotation_slider.value())
             self.conv_psf_label.setPixmap(self._make_psf_pixmap(r, k, a, rot))
-        elif current_tab == "Deconvolution" and algo_text in ("Richardson-Lucy", "Wiener"):
+        elif current_tab in (self.tr("Deconvolution"), "Deconvolution") and algo_text in ("Richardson-Lucy", "Wiener"):
             if self._use_custom_psf and (self._custom_psf is not None):
                 self.conv_psf_label.setPixmap(self._make_stellar_psf_pixmap(self._custom_psf))
             else:
@@ -1302,7 +1307,7 @@ class ConvoDeconvoDialog(QDialog):
             self.doc_manager.set_active_document(doc)
         img, _ = self._get_active_image_and_meta()
         if img is None:
-            self._show_message("No active image to process.")
+            self._show_message(self.tr("No active image to process."))
             return None
 
         if self._original_image is None:
@@ -1319,7 +1324,7 @@ class ConvoDeconvoDialog(QDialog):
         spec.label = self.tr("Computing preview…")
         spec.blend = lambda raw: raw * s + (1 - s) * img
 
-        if current_tab_name == "Convolution":
+        if current_tab_name in (self.tr("Convolution"), "Convolution"):
             radius  = self.conv_radius_slider.value()
             kurtosis= self.conv_shape_slider.value()
             aspect  = self.conv_aspect_slider.value()
@@ -1330,7 +1335,7 @@ class ConvoDeconvoDialog(QDialog):
             def compute_raw(report, canceled):
                 return _convolve_image(img, psf_kernel)
 
-        elif current_tab_name == "Deconvolution":
+        elif current_tab_name in (self.tr("Deconvolution"), "Deconvolution"):
             algo = self.deconv_algo_combo.currentText()
             if algo == "Richardson-Lucy":
                 iters = int(round(self.rl_iterations_slider.value()))
@@ -1390,8 +1395,8 @@ class ConvoDeconvoDialog(QDialog):
 
             elif algo == "Larson-Sekanina":
                 if not hasattr(self.view, "ls_center") or self.view.ls_center is None:
-                    QMessageBox.information(self, "Hold Shift + Click",
-                        "To choose a Larson–Sekanina center, hold Shift and click on the preview.")
+                    QMessageBox.information(self, self.tr("Hold Shift + Click"),
+                        self.tr("To choose a Larson–Sekanina center, hold Shift and click on the preview."))
                     return None
 
                 center = self.view.ls_center
@@ -1431,13 +1436,13 @@ class ConvoDeconvoDialog(QDialog):
                     return np.clip(processed, 0.0, 1.0)
 
             else:
-                self._show_message("Unknown deconvolution algorithm")
+                self._show_message(self.tr("Unknown deconvolution algorithm"))
                 return None
 
-        elif current_tab_name == "Classical Denoise":
+        elif current_tab_name in (self.tr("Classical Denoise"), "Classical Denoise"):
             p = self._denoise_params()
             spec.denoise = True
-            spec.label = f"Running {p['algo']}…"
+            spec.label = self.tr("Running {0}…").format(p['algo'])
             spec.raw_key = ("denoise", p["algo"], p["lum_only"] and is_rgb) + tuple(
                 p[k] for k in _DENOISE_PARAM_KEYS.get(p["algo"], ()))
             # The denoise path has always blended against the dialog's copy of the image.
@@ -1447,7 +1452,7 @@ class ConvoDeconvoDialog(QDialog):
                 return _classical_denoise(img, p)
 
         else:
-            self._show_message("Unknown tab")
+            self._show_message(self.tr("Unknown tab"))
             return None
 
         spec.compute_raw = compute_raw
@@ -1533,21 +1538,24 @@ class ConvoDeconvoDialog(QDialog):
             if payload.get("display") is not None and not job["for_push"]:
                 self._refresh_display(prebuilt=payload["display"])
             if spec.denoise:
-                self.denoise_status_label.setText("Done.")
+                self.denoise_status_label.setText(self.tr("Done."))
         elif err == "__canceled__":
             if spec.denoise:
-                self.denoise_status_label.setText("Canceled.")
+                self.denoise_status_label.setText(self.tr("Canceled."))
         else:
             if spec.denoise:
-                self.denoise_status_label.setText("Error.")
+                self.denoise_status_label.setText(self.tr("Error."))
             if self._push_spec is not None and self._push_spec.same_result(spec):
                 self._push_spec = None
             logging.getLogger(__name__).error("Convo/Deconvo preview failed:\n%s", err)
-            what = "Denoising" if spec.denoise else "The preview"
+            first = err.splitlines()[0] if err else self.tr("Unknown error")
+            if spec.denoise:
+                msg = self.tr("Denoising failed:\n\n{0}\n\nCheck the SASpro log for details.").format(first)
+            else:
+                msg = self.tr("The preview failed:\n\n{0}\n\nCheck the SASpro log for details.").format(first)
             QMessageBox.critical(
-                self, "Denoise Error" if spec.denoise else "Preview Error",
-                f"{what} failed:\n\n{err.splitlines()[0] if err else 'Unknown error'}\n\n"
-                "Check the SASpro log for details."
+                self, self.tr("Denoise Error") if spec.denoise else self.tr("Preview Error"),
+                msg
             )
 
         push = self._push_spec
@@ -1583,7 +1591,7 @@ class ConvoDeconvoDialog(QDialog):
             self._stop_job(job)
             self.rl_status_label.setText(self.tr("Canceling…"))
             if job["spec"].denoise:
-                self.denoise_status_label.setText("Canceling…")
+                self.denoise_status_label.setText(self.tr("Canceling…"))
         self.push_btn.setEnabled(True)
 
     def _teardown_jobs(self, *_):
@@ -1636,7 +1644,7 @@ class ConvoDeconvoDialog(QDialog):
             self._preview_spec = None
             self._refresh_display()
         else:
-            self._show_message("Nothing to undo.")
+            self._show_message(self.tr("Nothing to undo."))
 
     def _snapshot_reset_defaults(self):
         """Record each tab's controls as built, so Reset restores exactly those.
@@ -1696,7 +1704,7 @@ class ConvoDeconvoDialog(QDialog):
         strength = float(self.strength_slider.value())
 
         # ── Convolution tab ─────────────────────────────────────────────
-        if current_tab_name == "Convolution":
+        if current_tab_name in (self.tr("Convolution"), "Convolution"):
             return {
                 "op": "convolution",
                 "radius":   float(self.conv_radius_slider.value()),
@@ -1707,7 +1715,7 @@ class ConvoDeconvoDialog(QDialog):
             }
 
         # ── Deconvolution tab ───────────────────────────────────────────
-        if current_tab_name == "Deconvolution":
+        if current_tab_name in (self.tr("Deconvolution"), "Deconvolution"):
             algo = self.deconv_algo_combo.currentText()
             p: dict[str, object] = {
                 "op": "deconvolution",
@@ -1912,7 +1920,7 @@ class ConvoDeconvoDialog(QDialog):
                 kern = preset_psf_kernel(p)
             except ValueError as e:
                 kern = None
-                QMessageBox.warning(self, "Stellar PSF", f"{e}\nThe slider PSF is used instead.")
+                QMessageBox.warning(self, self.tr("Stellar PSF"), self.tr("{0}\nThe slider PSF is used instead.").format(e))
             if kern is not None:
                 self._activate_custom_psf(kern)
             else:
@@ -1992,7 +2000,7 @@ class ConvoDeconvoDialog(QDialog):
     def _on_push_to_doc(self):
         doc = self._active_doc()
         if doc is None:
-            QMessageBox.warning(self, "No Document", "No active document to push into.")
+            QMessageBox.warning(self, self.tr("No Document"), self.tr("No active document to push into."))
             return
         if self._push_spec is not None:
             return                                  # a push is already on its way
@@ -2039,11 +2047,11 @@ class ConvoDeconvoDialog(QDialog):
         prebuilt: an unstretched picture of `result` made by its push job."""
         doc = self._active_doc()
         if doc is None:
-            QMessageBox.warning(self, "No Document", "No active document to push into.")
+            QMessageBox.warning(self, self.tr("No Document"), self.tr("No active document to push into."))
             return
         if doc is not spec.doc:
-            QMessageBox.warning(self, "Not pushed",
-                                "The active image changed while the result was computing; nothing was pushed.")
+            QMessageBox.warning(self, self.tr("Not pushed"),
+                                self.tr("The active image changed while the result was computing; nothing was pushed."))
             self._refresh_display()
             return
 
@@ -2080,7 +2088,7 @@ class ConvoDeconvoDialog(QDialog):
                     step_name="Convo/Deconvo",
                 )
         except Exception as e:
-            QMessageBox.critical(self, "Push failed", str(e))
+            QMessageBox.critical(self, self.tr("Push failed"), str(e))
             self._refresh_display()
             return
 
@@ -2110,7 +2118,7 @@ class ConvoDeconvoDialog(QDialog):
             # Replay wiring should never break the actual push
             pass
 
-        QMessageBox.information(self, "Pushed", "Result committed to the active document.")
+        QMessageBox.information(self, self.tr("Pushed"), self.tr("Result committed to the active document."))
 
 
 
@@ -2165,7 +2173,7 @@ class ConvoDeconvoDialog(QDialog):
     def _on_run_sep(self):
         img, _ = self._get_active_image_and_meta()
         if img is None:
-            QMessageBox.warning(self, "No Image", "Please select an image before estimating PSF.")
+            QMessageBox.warning(self, self.tr("No Image"), self.tr("Please select an image before estimating PSF."))
             return
         if thread_running(self._psf_job):
             return
@@ -2197,7 +2205,7 @@ class ConvoDeconvoDialog(QDialog):
         self._psf_job = None
         if isinstance(res, Exception):   # sep raises plain Exception too (e.g. pixel buffer full)
             self._set_psf_busy(False, self.tr("PSF estimate failed."))
-            QMessageBox.critical(self, "PSF Error", str(res))
+            QMessageBox.critical(self, self.tr("PSF Error"), str(res))
             return
         psf_kernel, info = res
         self._set_psf_busy(False, info["status"])
@@ -2216,14 +2224,14 @@ class ConvoDeconvoDialog(QDialog):
 
     def _on_use_stellar_psf(self):
         if self._last_stellar_psf is None:
-            QMessageBox.warning(self, "No PSF", "Run SEP extraction first.")
+            QMessageBox.warning(self, self.tr("No PSF"), self.tr("Run SEP extraction first."))
             return
         self._activate_custom_psf(self._last_stellar_psf)
         self.deconv_algo_combo.setCurrentText("Richardson-Lucy")
         self.rl_custom_label.setVisible(True)
         self.rl_disable_custom_btn.setVisible(True)
         self.custom_psf_bar.setVisible(True)
-        QMessageBox.information(self, "PSF Selected", "Stellar PSF is now active for Richardson–Lucy.")
+        QMessageBox.information(self, self.tr("PSF Selected"), self.tr("Stellar PSF is now active for Richardson–Lucy."))
 
     def _activate_custom_psf(self, kernel: np.ndarray):
         """Make `kernel` the stellar PSF RL/Wiener use (a private float32 copy)."""
@@ -2245,12 +2253,12 @@ class ConvoDeconvoDialog(QDialog):
 
     def _on_save_stellar_psf(self):
         if self._last_stellar_psf is None:
-            QMessageBox.warning(self, "No PSF", "Run SEP extraction before saving.")
+            QMessageBox.warning(self, self.tr("No PSF"), self.tr("Run SEP extraction before saving."))
             return
 
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save PSF as...",
+            self.tr("Save PSF as..."),
             "",
             "TIFF (*.tif);;FITS (*.fits)"
         )
@@ -2267,10 +2275,10 @@ class ConvoDeconvoDialog(QDialog):
             tifffile.imwrite(path, self._last_stellar_psf.astype(np.float32))
 
         else:
-            QMessageBox.warning(self, "Invalid Extension", "Please choose .fits or .tif.")
+            QMessageBox.warning(self, self.tr("Invalid Extension"), self.tr("Please choose .fits or .tif."))
             return
 
-        QMessageBox.information(self, "Saved", f"PSF saved to:\n{path}")
+        QMessageBox.information(self, self.tr("Saved"), self.tr("PSF saved to:\n{0}").format(path))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2377,9 +2385,17 @@ def estimate_psf_from_image(image_array: np.ndarray,
     info = dict(n=int(cat["n"]), sigma_stopped=float(cat["sigma_stopped"]),
                 total_at_stop=int(cat["total_at_stop"]), saturated=int(np.count_nonzero(~keep)),
                 used=used, fwhm=fwhm)
-    sat_note = f", {info['saturated']} saturated left out" if info["saturated"] else ""
-    info["status"] = (f"{found}. PSF from {used} stars{sat_note}; "
-                      f"median FWHM {fwhm:.2f} px, kernel {2 * w + 1}×{2 * w + 1}.")
+    # The status line is shown in the dialog; `found` above stays English (exception text).
+    if auto:
+        found_ui = _tr("Auto: {0} stars at σ={1:g} (kept {0}/{2} at that threshold)")
+    else:
+        found_ui = _tr("Manual: {0} stars at σ={1:g} (kept {0}/{2} at that threshold)")
+    found_ui = found_ui.format(cat['n'], cat['sigma_stopped'], cat['total_at_stop'])
+    if info["saturated"]:
+        status = _tr("{0}. PSF from {1} stars, {2} saturated left out; median FWHM {3:.2f} px, kernel {4}×{4}.")
+    else:
+        status = _tr("{0}. PSF from {1} stars; median FWHM {3:.2f} px, kernel {4}×{4}.")
+    info["status"] = status.format(found_ui, used, info["saturated"], fwhm, 2 * w + 1)
     return kernel, info
 
 
@@ -2815,14 +2831,14 @@ def _rl_deconvolve(image: np.ndarray, psf_kernel: np.ndarray, iterations: int,
         return final_deconv
 
     if image.ndim == 2:
-        report(f"Running RL for {iters} iterations")
+        report(_tr("Running RL for {0} iterations").format(iters))
         deconv = _deconv_2d_parallel(image.astype(np.float32, copy=False))
         report("")
         return np.clip(deconv, 0.0, 1.0)
     elif image.ndim == 3 and image.shape[2] == 3:
         outs = []
         for c in range(3):
-            report(f"Running RL on ch {c+1} for {iters} iterations")
+            report(_tr("Running RL on ch {0} for {1} iterations").format(c+1, iters))
             outs.append(np.clip(_deconv_2d_parallel(image[:, :, c].astype(np.float32)), 0.0, 1.0))
         report("")
         return np.stack(outs, axis=2)

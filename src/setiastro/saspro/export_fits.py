@@ -6,7 +6,7 @@ import platform
 import re
 from dataclasses import dataclass
 
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
@@ -20,6 +20,11 @@ from setiastro.saspro.save_options import (
     KEEP_DOC_DEPTH, ExportOptionsPanel, _norm_ext as _norm_save_ext,
     bit_depth_from_state, export_opts_from_state, jpeg_quality_from_state,
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("ExportFits", text)
+
 
 _HEADER_KEYS = ("fits_header", "original_header", "header")
 _WCS_STRUCTURAL = {
@@ -38,7 +43,7 @@ _SPEC_SETTINGS_KEY = "export_fits/spec_v1"
 # Formats offered by the merged tool. "source" == keep the source file's
 # extension (the historical Checkpoint Save behaviour).
 FORMAT_CHOICES = (
-    ("Same as source", "source"),
+    (QT_TRANSLATE_NOOP("ExportFits", "Same as source"), "source"),
     ("FITS (.fits)",    "fits"),
     ("XISF (.xisf)",    "xisf"),
     ("TIFF (.tiff)",    "tiff"),
@@ -618,7 +623,7 @@ def _build_plan(mw, docs, spec: dict):
 def _run_plan(mw, plan, *, parent=None, spec_for_dir=None, title="Saving"):
     dm = _docman(mw)
     if dm is None:
-        return 0, ["Document manager not available."]
+        return 0, [_tr("Document manager not available.")]
 
     log = getattr(mw, "_log", None)
     applied = 0
@@ -645,7 +650,7 @@ def _run_plan(mw, plan, *, parent=None, spec_for_dir=None, title="Saving"):
         for i, (doc, s) in enumerate(plan, start=1):
             if pd is not None:
                 pd.setValue(i - 1)
-                pd.setLabelText(f"{title} ({i}/{total})…")
+                pd.setLabelText(_tr("{0} ({1}/{2})…").format(title, i, total))
                 QApplication.processEvents()
             result = export_document_as_fits(dm, doc, s)
             if result.ok:
@@ -678,9 +683,9 @@ def run_checkpoint_now(mw):
         return
     spec = checkpoint_preset()
     plan = _build_plan(mw, [doc], spec)
-    applied, errors = _run_plan(mw, plan, parent=mw, spec_for_dir=spec, title="Checkpoint Save")
+    applied, errors = _run_plan(mw, plan, parent=mw, spec_for_dir=spec, title=_tr("Checkpoint Save"))
     if applied == 0 and errors:
-        QMessageBox.warning(mw, "Checkpoint Save", errors[0])
+        QMessageBox.warning(mw, _tr("Checkpoint Save"), errors[0])
 
 
 # --------------------------------------------------------------------------- #
@@ -711,7 +716,7 @@ class _FormatOptionsSection(QGroupBox):
     """
 
     def __init__(self, format_options=None, source_ext_hint="", parent=None):
-        super().__init__("Format options", parent)
+        super().__init__(_tr("Format options"), parent)
         self._states = {}
         self._cur = None
         self._hint = _opt_key(source_ext_hint) or "fits"
@@ -815,11 +820,11 @@ def _scrolled(widget):
 class ExportFitsPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Save / Export — Preset")
+        self.setWindowTitle(self.tr("Save / Export — Preset"))
         init = normalize_export_fits_preset(initial)
 
-        self.rb_folder = QRadioButton("Into folder")
-        self.rb_beside = QRadioButton("Beside source file")
+        self.rb_folder = QRadioButton(self.tr("Into folder"))
+        self.rb_beside = QRadioButton(self.tr("Beside source file"))
         grp = QButtonGroup(self)
         grp.addButton(self.rb_folder)
         grp.addButton(self.rb_beside)
@@ -832,7 +837,7 @@ class ExportFitsPresetDialog(QDialog):
         dest_w.setLayout(dest_row)
 
         self.edit_dir = QLineEdit(init["out_dir"])
-        btn_browse = QPushButton("Browse…")
+        btn_browse = QPushButton(self.tr("Browse…"))
         btn_browse.clicked.connect(self._browse)
         row = QHBoxLayout()
         row.addWidget(self.edit_dir, 1)
@@ -842,26 +847,26 @@ class ExportFitsPresetDialog(QDialog):
 
         self.cmb_format = QComboBox()
         for label, val in FORMAT_CHOICES:
-            self.cmb_format.addItem(label, val)
+            self.cmb_format.addItem(QCoreApplication.translate("ExportFits", label), val)
         self._select_format(init["format"])
 
-        self.chk_autonumber = QCheckBox("Auto-number (_proc1, _proc2, …)")
+        self.chk_autonumber = QCheckBox(self.tr("Auto-number (_proc1, _proc2, …)"))
         self.chk_autonumber.setChecked(init["auto_number"])
         self.edit_tag = QLineEdit(init["tag"])
-        self.edit_tag.setPlaceholderText("_tag (optional, e.g. _dbe)")
-        self.chk_paired = QCheckBox("Also save paired _stars view")
+        self.edit_tag.setPlaceholderText(self.tr("_tag (optional, e.g. _dbe)"))
+        self.chk_paired = QCheckBox(self.tr("Also save paired _stars view"))
         self.chk_paired.setChecked(init["include_paired_stars"])
-        self.chk_overwrite = QCheckBox("Overwrite existing files")
+        self.chk_overwrite = QCheckBox(self.tr("Overwrite existing files"))
         self.chk_overwrite.setChecked(init["overwrite"])
         self.fmt_section = _FormatOptionsSection(init["format_options"], "fits", parent=self)
 
         outer = QVBoxLayout(self)
         form = QFormLayout()
-        form.addRow("Destination:", dest_w)
-        form.addRow("Output folder:", self.folder_w)
-        form.addRow("Format:", self.cmb_format)
+        form.addRow(self.tr("Destination:"), dest_w)
+        form.addRow(self.tr("Output folder:"), self.folder_w)
+        form.addRow(self.tr("Format:"), self.cmb_format)
         form.addRow("", self.chk_autonumber)
-        form.addRow("Tag:", self.edit_tag)
+        form.addRow(self.tr("Tag:"), self.edit_tag)
         form.addRow("", self.chk_paired)
         form.addRow("", self.chk_overwrite)
         outer.addLayout(form)
@@ -895,7 +900,7 @@ class ExportFitsPresetDialog(QDialog):
 
     def _browse(self):
         start = self.edit_dir.text().strip() or os.path.expanduser("~")
-        chosen = QFileDialog.getExistingDirectory(self, "Choose output folder", start)
+        chosen = QFileDialog.getExistingDirectory(self, self.tr("Choose output folder"), start)
         if chosen:
             self.edit_dir.setText(chosen)
 
@@ -919,7 +924,7 @@ class ExportFitsDialog(QDialog):
     def __init__(self, main_window, preset: dict | None = None):
         super().__init__(main_window)
         self._mw = main_window
-        self.setWindowTitle("Save Checkpoint / Export")
+        self.setWindowTitle(self.tr("Save Checkpoint / Export"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         if platform.system() == "Darwin":
             self.setWindowFlag(Qt.WindowType.Tool, True)
@@ -962,7 +967,7 @@ class ExportFitsDialog(QDialog):
         # Format + numbering + tag + companions + overwrite + scope
         self.cmb_format = QComboBox()
         for label, val in FORMAT_CHOICES:
-            self.cmb_format.addItem(label, val)
+            self.cmb_format.addItem(QCoreApplication.translate("ExportFits", label), val)
         self._select_format(init["format"])
 
         self.chk_autonumber = QCheckBox(self.tr("Auto-number (_proc1, _proc2, …)"))
@@ -1024,7 +1029,7 @@ class ExportFitsDialog(QDialog):
             COMMAND_ID,
             self.current_preset,
             icon=icon,
-            tooltip=(
+            tooltip=self.tr(
                 "Drag to the canvas to create a Save shortcut with these settings.\n"
                 "Drop on an image, or add to a Function Bundle, to save headlessly."
             ),
@@ -1090,7 +1095,7 @@ class ExportFitsDialog(QDialog):
 
     def _browse(self):
         start = self.edit_dir.text().strip() or os.path.expanduser("~")
-        chosen = QFileDialog.getExistingDirectory(self, "Choose output folder", start)
+        chosen = QFileDialog.getExistingDirectory(self, self.tr("Choose output folder"), start)
         if chosen:
             self.edit_dir.setText(chosen)
 
@@ -1100,7 +1105,7 @@ class ExportFitsDialog(QDialog):
             self._browse()
             spec = self.current_preset()
         if spec["dest_mode"] == "folder" and not spec["out_dir"]:
-            QMessageBox.warning(self, "Save Checkpoint / Export", "Choose an output folder first.")
+            QMessageBox.warning(self, self.tr("Save Checkpoint / Export"), self.tr("Choose an output folder first."))
             return None
         return spec
 
@@ -1119,23 +1124,23 @@ class ExportFitsDialog(QDialog):
             return
         self.fmt_section.warn_if_profile_missing(self)
         if _docman(self._mw) is None:
-            QMessageBox.warning(self, "Save Checkpoint / Export", "Document manager not available.")
+            QMessageBox.warning(self, self.tr("Save Checkpoint / Export"), self.tr("Document manager not available."))
             return
         docs = self._target_docs(spec)
         if not docs:
-            QMessageBox.information(self, "Save Checkpoint / Export", "No image in the active view.")
+            QMessageBox.information(self, self.tr("Save Checkpoint / Export"), self.tr("No image in the active view."))
             return
         plan = _build_plan(self._mw, docs, spec)
         applied, errors = _run_plan(self._mw, plan, parent=self, spec_for_dir=spec,
-                                    title="Save Checkpoint / Export")
+                                    title=self.tr("Save Checkpoint / Export"))
         _remember_spec(self._mw, spec)
         if applied == 0 and errors:
-            QMessageBox.warning(self, "Save Checkpoint / Export", errors[0])
+            QMessageBox.warning(self, self.tr("Save Checkpoint / Export"), errors[0])
             return
         if errors:
             QMessageBox.warning(
-                self, "Save Checkpoint / Export",
-                f"Saved {applied} file(s).\n\nSkipped:\n" + "\n".join(errors[:12]),
+                self, self.tr("Save Checkpoint / Export"),
+                self.tr("Saved {0} file(s).\n\nSkipped:\n{1}").format(applied, "\n".join(errors[:12])),
             )
         if applied:
             self.close()
@@ -1156,7 +1161,7 @@ class ExportFitsDialog(QDialog):
         for bundle in data:
             if not isinstance(bundle, dict):
                 continue
-            name = str(bundle.get("name") or "Bundle").strip() or "Bundle"
+            name = str(bundle.get("name") or self.tr("Bundle")).strip() or self.tr("Bundle")
             ptrs = []
             for x in (bundle.get("doc_ptrs") or []):
                 try:
@@ -1171,16 +1176,16 @@ class ExportFitsDialog(QDialog):
     def _pick_view_bundle(self):
         choices = self._load_view_bundle_choices()
         if not choices:
-            QMessageBox.information(self, "Save Checkpoint / Export", "No View Bundles found.")
+            QMessageBox.information(self, self.tr("Save Checkpoint / Export"), self.tr("No View Bundles found."))
             return None
         dlg = QDialog(self)
-        dlg.setWindowTitle("Apply to View Bundle…")
+        dlg.setWindowTitle(self.tr("Apply to View Bundle…"))
         dlg.setMinimumSize(420, 280)
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel("Select a View Bundle:"))
+        v.addWidget(QLabel(self.tr("Select a View Bundle:")))
         lb = QListWidget(dlg)
         for name, ptrs, files, uids in choices:
-            it = QListWidgetItem(f"{name}  ({len(ptrs)} views, {len(files)} files)")
+            it = QListWidgetItem(self.tr("{0}  ({1} views, {2} files)").format(name, len(ptrs), len(files)))
             it.setData(Qt.ItemDataRole.UserRole, (ptrs, files, uids))
             lb.addItem(it)
         if lb.count():
@@ -1242,21 +1247,21 @@ class ExportFitsDialog(QDialog):
             try:
                 docs.append(self._doc_from_file(path))
             except Exception as e:
-                QMessageBox.warning(self, "Save Checkpoint / Export", str(e))
+                QMessageBox.warning(self, self.tr("Save Checkpoint / Export"), str(e))
                 return
         if not docs:
-            QMessageBox.information(self, "Save Checkpoint / Export", "No valid targets in the selected bundle.")
+            QMessageBox.information(self, self.tr("Save Checkpoint / Export"), self.tr("No valid targets in the selected bundle."))
             return
         plan = _build_plan(mw, docs, spec)
         applied, errors = _run_plan(mw, plan, parent=self, spec_for_dir=spec,
-                                    title="Save Checkpoint / Export")
+                                    title=self.tr("Save Checkpoint / Export"))
         _remember_spec(self._mw, spec)
         if applied == 0 and errors:
-            QMessageBox.warning(self, "Save Checkpoint / Export", errors[0])
+            QMessageBox.warning(self, self.tr("Save Checkpoint / Export"), errors[0])
         elif errors:
             QMessageBox.warning(
-                self, "Save Checkpoint / Export",
-                f"Saved {applied} file(s).\n\nSkipped:\n" + "\n".join(errors[:12]),
+                self, self.tr("Save Checkpoint / Export"),
+                self.tr("Saved {0} file(s).\n\nSkipped:\n{1}").format(applied, "\n".join(errors[:12])),
             )
         else:
             self.close()

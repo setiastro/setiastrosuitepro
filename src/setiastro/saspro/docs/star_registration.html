@@ -56,13 +56,13 @@
 <h1>Stacking Suite</h1>
 <p class="sub">SASpro's complete calibration-and-integration pipeline: from raw camera RAW/TIFF through master darks and flats, debayer, cosmetic correction, satellite trail masking, registration against any alignment model up to 4th-order polynomial, drizzle, up to multi-panel mosaic sets, multi-frame deconvolution, and a final rejected-and-weighted integrated master &mdash; all driven from one window, with CPU, CUDA, MPS and DirectML backends shared across every heavy stage.</p>
 
-<p>The Stacking Suite is laid out as six tabs along the top (<i>Quick Stack</i>, <i>Convert Camera RAW/TIFF</i>, <i>Darks</i>, <i>Flats</i>, <i>Lights</i>, <i>Image Integration</i>) with a header strip above them (wrench, folder path, Change&hellip;, Open Log, document) and almost every parameter you'll want to touch living in the orange-wrench <b>Stacking Settings</b> dialog. The sections below walk through each tab in the order you'll meet them, then cover the Settings dialog, then the maths and plumbing behind the scenes.</p>
+<p>The Stacking Suite is laid out as six tabs along the top (<i>Pipeline</i>, <i>Convert Camera RAW/TIFF</i>, <i>Darks</i>, <i>Flats</i>, <i>Lights</i>, <i>Image Integration</i>) with a header strip above them (wrench, folder path, Change&hellip;, Open Log, document) and almost every parameter you'll want to touch living in the orange-wrench <b>Stacking Settings</b> dialog. The sections below walk through each tab in the order you'll meet them, then cover the Settings dialog, then the maths and plumbing behind the scenes.</p>
 
 <div class="toc">
 <h3>Contents</h3>
 <ul>
   <li><a href="#top-row">Top row &amp; the wrench</a></li>
-  <li><a href="#quick-stack">1. Quick Stack</a></li>
+  <li><a href="#pipeline">1. Pipeline</a></li>
   <li><a href="#convert">2. Convert Camera RAW/TIFF</a></li>
   <li><a href="#darks">3. Darks</a></li>
   <li><a href="#flats">4. Flats</a></li>
@@ -105,8 +105,8 @@
       <td>This help page. Added at the far right of the row.</td></tr>
 </table>
 
-<a id="quick-stack"></a>
-<h2>1. Quick Stack</h2>
+<a id="pipeline"></a>
+<h2>1. Pipeline</h2>
 <p>The default tab, and the easiest way to get a stack out the door. Five cards walk you top-left to bottom-right through the pipeline, each with a traffic-light indicator:</p>
 
 <div class="workflow"><b>Workflow</b><br>
@@ -333,7 +333,7 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 <ul>
   <li><b>🔥🚀 Register and Integrate Images 🔥🚀</b> &mdash; the full back-half: register every group against its reference, normalize, reject, weight, integrate, and save.</li>
   <li><b>Skip Registration and Integrate</b> &mdash; integrate only. Expects <code>_r.fit</code> registered frames to already exist (from a previous run). Great for re-running integration with different rejection settings.</li>
-  <li><b>🗑️ Clean Up Temp Files</b> &mdash; same cleanup action as on the Quick Stack tab.</li>
+  <li><b>🗑️ Clean Up Temp Files</b> &mdash; same cleanup action as on the Pipeline tab.</li>
 </ul>
 
 <a id="settings"></a>
@@ -508,7 +508,7 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
 
 <ul>
   <li>Changes made in the Settings dialog are saved <i>live</i> to QSettings. &ldquo;Loading&rdquo; a profile overwrites those keys and <b>restarts the Stacking Suite dialog</b> so every control re-reads them. Expect a brief flicker as the dialog re-opens.</li>
-  <li>Built-in profiles are seeded on first run (see <code>_ensure_builtin_stacking_profiles</code>). Your own override anything built-in with the same name.</li>
+  <li><b>Frank&rsquo;s Settings (Recommended)</b> is built in, and a fresh install starts on exactly these settings. When SASpro ships new recommendations the profile is refreshed (your live settings only change when you click <i>Load</i>). If you had saved your own settings over it, they are kept as a profile named <i>My Saved Settings</i>.</li>
   <li>Export writes a JSON file with just the shareable keys (nothing machine-specific like absolute paths). Import validates and merges; incompatible or old-format keys are mapped forward where possible.</li>
 </ul>
 
@@ -742,7 +742,7 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
   <li><b>Satellite trail CNN</b> &mdash; third-party CNN packaged with SASpro's runtime; invoked here as a post-calibration pass.</li>
   <li><b>Spectrophotometric Standard Star Calibration</b> work that informs the plate-solve-first master handling &mdash; Franklin Marek, DOI <code>10.5281/zenodo.23107662</code> (CC-BY 4.0).</li>
 </ul>
-Pipeline design, the quick-stack card UI, the shared GPU runtime, the three-thread calibration pipeline, Registration Sets, dual-band advanced split, the frame-weighting modes, and the per-group dark/flat overrides are original to this suite.
+Pipeline design, the Pipeline-tab card UI, the shared GPU runtime, the three-thread calibration pipeline, Registration Sets, dual-band advanced split, the frame-weighting modes, and the per-group dark/flat overrides are original to this suite.
 </div>
 
 </body>

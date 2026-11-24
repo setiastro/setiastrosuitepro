@@ -5,7 +5,7 @@ import uuid
 import os
 from typing import Iterable, Optional
 import sys
-from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QEventLoop
+from PyQt6.QtCore import Qt, QSettings, QByteArray, QMimeData, QSize, QPoint, QEventLoop, QT_TRANSLATE_NOOP
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem,QApplication,
     QPushButton, QSplitter, QLabel, QAbstractItemView, QDialogButtonBox,
@@ -404,7 +404,7 @@ class BundleChip(QWidget):
 
     def contextMenuEvent(self, ev):
         m = QMenu(self)
-        act_del = m.addAction(self._panel.tr("Delete Chip"))
+        act_del = m.addAction(self.tr("Delete Chip"))
         act = m.exec(ev.globalPos())
         if act is act_del:
             try:
@@ -499,7 +499,7 @@ class BundleChip(QWidget):
                 e.acceptProposedAction()
                 return
             except Exception as ex:
-                _QMB.warning(self, "Apply to Bundle", f"Could not parse/execute shortcut:\n{ex}")
+                _QMB.warning(self, self.tr("Apply to Bundle"), self.tr("Could not parse/execute shortcut:\n{0}").format(ex))
         e.ignore()
 
         try:
@@ -534,7 +534,7 @@ class SelectViewsDialog(QDialog):
     """Simple checkbox picker of all open views."""
     def __init__(self, parent: QWidget, choices: list[tuple[str, int]]):
         super().__init__(parent)
-        self.setWindowTitle("Add Views to Bundle")
+        self.setWindowTitle(self.tr("Add Views to Bundle"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -808,7 +808,8 @@ class ViewBundleDialog(QDialog):
         self.list.customContextMenuRequested.connect(self._bundles_context_menu)
         self.list.itemDoubleClicked.connect(lambda _it: self._rename_bundle())
         add_shortcut(self.list, "F2", self._rename_bundle,
-                     label="Rename the selected bundle", context="View Bundles")
+                     label=QT_TRANSLATE_NOOP("CheatSheet", "Rename the selected bundle"),
+                     context=QT_TRANSLATE_NOOP("CheatSheet", "View Bundles"))
 
 
         self.docs = QListWidget()
@@ -1030,7 +1031,7 @@ class ViewBundleDialog(QDialog):
             return
         last_dir = QSettings().value("last_opened_folder", "", type=str)
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Select Files for Bundle", last_dir,
+            self, self.tr("Select Files for Bundle"), last_dir,
             "Images (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.xisf *.tif *.tiff *.png *.jpg *.jpeg)"
         )
         if not files:
@@ -1044,7 +1045,7 @@ class ViewBundleDialog(QDialog):
         if not u:
             return
         last_dir = QSettings().value("last_opened_folder", "", type=str)
-        directory = QFileDialog.getExistingDirectory(self, "Select Directory for Bundle", last_dir)
+        directory = QFileDialog.getExistingDirectory(self, self.tr("Select Directory for Bundle"), last_dir)
         if not directory:
             return
         QSettings().setValue("last_opened_folder", directory)
@@ -1055,7 +1056,7 @@ class ViewBundleDialog(QDialog):
                 if f.lower().endswith(exts):
                     found.append(os.path.join(root, f))
         if not found:
-            _QMB.information(self, "Add Directory", "No supported images found recursively.")
+            _QMB.information(self, self.tr("Add Directory"), self.tr("No supported images found recursively."))
             return
         self._add_files_to_uuid(u, found)
 
@@ -1194,8 +1195,8 @@ class ViewBundleDialog(QDialog):
         if i < 0:
             return
         cur = self._bundles[i]
-        new_name, ok = QInputDialog.getText(self, "Rename Bundle",
-                                            "New name:", text=cur.get("name","Bundle"))
+        new_name, ok = QInputDialog.getText(self, self.tr("Rename Bundle"),
+                                            self.tr("New name:"), text=cur.get("name","Bundle"))
         if not ok:
             return
         self._rename_current_in_list(new_name)
@@ -1209,9 +1210,9 @@ class ViewBundleDialog(QDialog):
             self.list.setCurrentItem(it)
 
         m = QMenu(self)
-        act_ren = m.addAction("Rename…")
-        act_dup = m.addAction("Duplicate")
-        act_del = m.addAction("Delete")
+        act_ren = m.addAction(self.tr("Rename…"))
+        act_dup = m.addAction(self.tr("Duplicate"))
+        act_del = m.addAction(self.tr("Delete"))
         chosen = m.exec(self.list.mapToGlobal(pos))
         if chosen is act_ren:
             self._rename_bundle()
@@ -1231,18 +1232,18 @@ class ViewBundleDialog(QDialog):
         # --- views ---
         cur = self._current_bundle()
         for p in self.current_bundle_doc_ptrs():
-            title = f"(unresolved) [{p}]"
+            title = self.tr("(unresolved) [{0}]").format(p)
             if mw is not None:
                 d, sw = resolve_bundle_member(mw, cur, p)
                 if d is not None:
                     title = sw.windowTitle() if sw else (getattr(d, "display_name", lambda: "Untitled")())
-            it = QListWidgetItem(f"[view] {title}")
+            it = QListWidgetItem(self.tr("[view] {0}").format(title))
             it.setData(Qt.ItemDataRole.UserRole, int(p))
             it.setData(Qt.ItemDataRole.UserRole + 1, "view")
             self.docs.addItem(it)
         # --- files ---
         for path in self.current_bundle_file_paths():
-            it = QListWidgetItem(f"[file] {path}")
+            it = QListWidgetItem(self.tr("[file] {0}").format(path))
             it.setData(Qt.ItemDataRole.UserRole, path)
             it.setData(Qt.ItemDataRole.UserRole + 1, "file")
             self.docs.addItem(it)
@@ -1282,10 +1283,10 @@ class ViewBundleDialog(QDialog):
         m = QMenu(self)
         act_open_files = act_focus_views = None
         if file_items:
-            lab = "Open in New View" if len(file_items) == 1 else f"Open {len(file_items)} Files in New Views"
+            lab = self.tr("Open in New View") if len(file_items) == 1 else self.tr("Open {0} Files in New Views").format(len(file_items))
             act_open_files = m.addAction(lab)
         if view_items:
-            labv = "Focus View" if len(view_items) == 1 else f"Focus {len(view_items)} Views"
+            labv = self.tr("Focus View") if len(view_items) == 1 else self.tr("Focus {0} Views").format(len(view_items))
             act_focus_views = m.addAction(labv)
 
         chosen = m.exec(self.docs.mapToGlobal(pos))
@@ -1319,7 +1320,7 @@ class ViewBundleDialog(QDialog):
         """Open a bundle-listed file into a brand-new view (no save/overwrite)."""
         mw = self._find_mw()
         if mw is None:
-            _QMB.information(self, "Open", "Main window not available.")
+            _QMB.information(self, self.tr("Open"), self.tr("Main window not available."))
             return
         try:
             sw = None
@@ -1352,7 +1353,7 @@ class ViewBundleDialog(QDialog):
                     w.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
                 QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
         except Exception as e:
-            _QMB.warning(self, "Open", f"Could not open:\n{path}\n\n{e}")
+            _QMB.warning(self, self.tr("Open"), self.tr("Could not open:\n{0}\n\n{1}").format(path, e))
 
     # ---------- left controls ----------
     def _new_bundle(self):
@@ -1429,7 +1430,7 @@ class ViewBundleDialog(QDialog):
     def _add_from_open_picker(self):
         mw = self._find_mw()
         if mw is None:
-            _QMB.information(self, "Add from Open", "Main window not available.")
+            _QMB.information(self, self.tr("Add from Open"), self.tr("Main window not available."))
             return
         choices: list[tuple[str, int]] = []
         for sw in mw.mdi.subWindowList():
@@ -1438,7 +1439,7 @@ class ViewBundleDialog(QDialog):
             if d is not None:
                 choices.append((sw.windowTitle(), int(id(d))))
         if not choices:
-            _QMB.information(self, "Add from Open", "No open views.")
+            _QMB.information(self, self.tr("Add from Open"), self.tr("No open views."))
             return
         dlg = SelectViewsDialog(self, choices)
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -1453,7 +1454,7 @@ class ViewBundleDialog(QDialog):
 
         mw = self._find_mw()
         if not mw:
-            _QMB.information(self, "Compress", "Main window not available.")
+            _QMB.information(self, self.tr("Compress"), self.tr("Main window not available."))
             return
 
         # If a chip for this bundle already exists, just show/raise it
@@ -1461,7 +1462,7 @@ class ViewBundleDialog(QDialog):
         if chip is None or chip.parent() is None:
             chip = spawn_bundle_chip_on_canvas(mw, self, u, name)
             if chip is None:
-                _QMB.information(self, "Compress", "Shortcut canvas not available.")
+                _QMB.information(self, self.tr("Compress"), self.tr("Shortcut canvas not available."))
                 return
             self._chips[u] = chip
         else:
@@ -1539,7 +1540,7 @@ class ViewBundleDialog(QDialog):
                 e.acceptProposedAction()
                 return
             except Exception as ex:
-                _QMB.warning(self, "Apply to Bundle", f"Could not parse/execute shortcut:\n{ex}")
+                _QMB.warning(self, self.tr("Apply to Bundle"), self.tr("Could not parse/execute shortcut:\n{0}").format(ex))
         e.ignore()
 
     # ---------- copying an astrometric solution to all views in a bundle ----------
@@ -1548,24 +1549,24 @@ class ViewBundleDialog(QDialog):
         solution to every open view in the bundle, as dropping it on each view
         would (MainWindow._on_astrometry_drop). Files in the bundle are left
         alone -- copying to them would rewrite them on disk."""
-        title = "Copy Astrometry"
+        title = self.tr("Copy Astrometry")
         mw = self._find_mw()
         if mw is None or not all(hasattr(mw, a) for a in (
                 "_resolve_doc_from_payload", "_extract_wcs_dict",
                 "_apply_wcs_dict_to_doc", "_target_doc_from_subwindow")):
-            _QMB.information(self, title, "Main window not available.")
+            _QMB.information(self, title, self.tr("Main window not available."))
             return
 
         src_doc = mw._resolve_doc_from_payload(payload or {}, prefer_base=True)
         if src_doc is None:
-            _QMB.information(self, title, "Source view not found.")
+            _QMB.information(self, title, self.tr("Source view not found."))
             return
         try:
             wcs = mw._extract_wcs_dict(src_doc) or {}
         except Exception:
             wcs = {}
         if not wcs:
-            _QMB.information(self, title, "Source has no WCS/SIP solution.")
+            _QMB.information(self, title, self.tr("Source has no WCS/SIP solution."))
             return
 
         b = self._get_bundle(target_uuid) if target_uuid else self._current_bundle()
@@ -1606,29 +1607,29 @@ class ViewBundleDialog(QDialog):
 
         msg = []
         if copied:
-            msg.append(f"Copied the solution from '{_name(src_doc)}' to {len(copied)} "
-                       f"view(s) in '{bname}'.")
+            msg.append(self.tr("Copied the solution from '{0}' to {1} "
+                       "view(s) in '{2}'.").format(_name(src_doc), len(copied), bname))
         else:
-            msg.append(f"'{bname}' has no other open views to copy the solution to.")
+            msg.append(self.tr("'{0}' has no other open views to copy the solution to.").format(bname))
         if failed:
-            msg.append("Could not apply it to:\n  " + "\n  ".join(failed))
+            msg.append(self.tr("Could not apply it to:\n  {0}").format("\n  ".join(failed)))
         if n_files:
-            msg.append(f"{n_files} file(s) in the bundle were left unchanged; open them "
-                       f"as views to copy the solution to them.")
+            msg.append(self.tr("{0} file(s) in the bundle were left unchanged; open them "
+                       "as views to copy the solution to them.").format(n_files))
         (_QMB.warning if failed else _QMB.information)(self, title, "\n\n".join(msg))
 
     # ---------- applying shortcuts to all views in a bundle ----------
     def _apply_payload_to_bundle(self, payload: dict, target_uuid: Optional[str] = None):
         mw = self._find_mw()
         if mw is None or not hasattr(mw, "_handle_command_drop"):
-            _QMB.information(self, "Apply", "Main window not available.")
+            _QMB.information(self, self.tr("Apply"), self.tr("Main window not available."))
             return
 
         payload = _unwrap_cmd_payload(payload)
         cmd_val = (payload or {}).get("command_id")
         cmd = cmd_val if isinstance(cmd_val, str) else None
         if not cmd:
-            _QMB.information(self, "Apply", "Invalid shortcut payload.")
+            _QMB.information(self, self.tr("Apply"), self.tr("Invalid shortcut payload."))
             return
         if cmd == "bundle":
             return  # ignore nested bundles
@@ -1749,30 +1750,30 @@ class ViewBundleDialog(QDialog):
 
         if _was_cancelled:
             _QMB.information(
-                self, "Apply",
-                f"Cancelled.\n\nApplied to {total_applied} target(s) before "
-                f"stopping; the rest were left untouched.")
+                self, self.tr("Apply"),
+                self.tr("Cancelled.\n\nApplied to {0} target(s) before "
+                "stopping; the rest were left untouched.").format(total_applied))
             return
 
         if total_applied == 0 and not (view_errors or file_errors):
-            _QMB.information(self, "Apply", "No valid targets in the bundle.")
+            _QMB.information(self, self.tr("Apply"), self.tr("No valid targets in the bundle."))
             return
 
         # If there were any errors, show a detailed mixed summary
         if view_errors or file_errors:
             msg = []
             if view_applied:
-                msg.append(f"Applied to {view_applied} open view(s).")
+                msg.append(self.tr("Applied to {0} open view(s).").format(view_applied))
             if file_ok:
-                msg.append(f"Applied to {file_ok} file(s).")
+                msg.append(self.tr("Applied to {0} file(s).").format(file_ok))
             if view_errors:
-                msg.append("View errors:\n  " + "\n  ".join(view_errors))
+                msg.append(self.tr("View errors:\n  {0}").format("\n  ".join(view_errors)))
             if file_errors:
-                msg.append("File errors:\n  " + "\n  ".join(file_errors))
-            _QMB.warning(self, "Apply", "\n\n".join(msg))
+                msg.append(self.tr("File errors:\n  {0}").format("\n  ".join(file_errors)))
+            _QMB.warning(self, self.tr("Apply"), "\n\n".join(msg))
             return
 
-        _QMB.information(self, "Apply", f"Finished. Applied to {total_applied} target(s).")
+        _QMB.information(self, self.tr("Apply"), self.tr("Finished. Applied to {0} target(s).").format(total_applied))
             
 
 
@@ -1812,7 +1813,7 @@ class ViewBundleDialog(QDialog):
                     pass
 
         # 1) load from disk (no signals, no UI)
-        _say("loading…")
+        _say(self.tr("loading…"))
         img, header, bit_depth, is_mono = load_image(path)
         if img is None:
             raise RuntimeError(f"Could not load: {path}")
@@ -1838,14 +1839,14 @@ class ViewBundleDialog(QDialog):
             if not steps:
                 raise RuntimeError("Function Bundle has no usable steps")
             for _i, st in enumerate(steps, 1):
-                _say(f"step {_i}/{len(steps)}: {st.get('command_id')}")
+                _say(self.tr("step {0}/{1}: {2}").format(_i, len(steps), st.get('command_id')))
                 _apply_one_shortcut_to_doc(mw, doc, st)
         elif cid != "bundle":  # ignore nested bundles
-            _say(f"applying {cid}…")
+            _say(self.tr("applying {0}…").format(cid))
             _apply_one_shortcut_to_doc(mw, doc, pl)
 
         # 3) save back (still no UI)
-        _say("saving…")
+        _say(self.tr("saving…"))
         target_path = self._resolve_file_target(path, overwrite, out_dir)
         ext = os.path.splitext(target_path)[1].lower().lstrip(".")
         # use legacy writer directly; mirror DocManager’s parameter mapping

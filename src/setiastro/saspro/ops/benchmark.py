@@ -81,7 +81,7 @@ class _DownloadWorker(QObject):
 class BenchmarkDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Seti Astro Benchmark")
+        self.setWindowTitle(self.tr("Seti Astro Benchmark"))
         self.setModal(False)
         self.setMinimumSize(560, 520)
 
@@ -95,7 +95,7 @@ class BenchmarkDialog(QDialog):
         # Top row: image status + download
         top = QHBoxLayout()
         self.lbl_img = QLabel(self)
-        self.btn_dl = QPushButton("Download Benchmark Image…", self)
+        self.btn_dl = QPushButton(self.tr("Download Benchmark Image…"), self)
         self.btn_dl.clicked.connect(self._download_image)
         top.addWidget(self.lbl_img, 1)
         top.addWidget(self.btn_dl)
@@ -103,13 +103,13 @@ class BenchmarkDialog(QDialog):
 
         # Mode row
         row = QHBoxLayout()
-        row.addWidget(QLabel("Run:", self))
+        row.addWidget(QLabel(self.tr("Run:"), self))
         self.cmb = QComboBox(self)
         self.cmb.addItems(["CPU", "GPU", "Both"])
         self.cmb.setCurrentText("Both")
         row.addWidget(self.cmb)
 
-        self.btn_run = QPushButton("Run Benchmark", self)
+        self.btn_run = QPushButton(self.tr("Run Benchmark"), self)
         self.btn_run.clicked.connect(self._run_benchmark)
         row.addWidget(self.btn_run)
         row.addStretch(1)
@@ -127,18 +127,18 @@ class BenchmarkDialog(QDialog):
 
         # Bottom buttons
         bot = QHBoxLayout()
-        self.btn_copy = QPushButton("Copy JSON", self)
+        self.btn_copy = QPushButton(self.tr("Copy JSON"), self)
         self.btn_copy.setEnabled(False)
         self.btn_copy.clicked.connect(self._copy_json)
 
-        self.btn_save = QPushButton("Save Locally", self)
+        self.btn_save = QPushButton(self.tr("Save Locally"), self)
         self.btn_save.setEnabled(False)
         self.btn_save.clicked.connect(self._save_local)
 
-        self.btn_submit = QPushButton("Submit…", self)
+        self.btn_submit = QPushButton(self.tr("Submit…"), self)
         self.btn_submit.clicked.connect(self._submit)
 
-        self.btn_close = QPushButton("Close", self)
+        self.btn_close = QPushButton(self.tr("Close"), self)
         self.btn_close.clicked.connect(self.close)
 
         bot.addWidget(self.btn_copy)
@@ -153,10 +153,10 @@ class BenchmarkDialog(QDialog):
     def refresh_ui(self):
         p = benchmark_image_path()
         if p.exists():
-            self.lbl_img.setText(f"Benchmark image: Ready ({p.name})")
+            self.lbl_img.setText(self.tr("Benchmark image: Ready ({0})").format(p.name))
             self.btn_run.setEnabled(True)
         else:
-            self.lbl_img.setText("Benchmark image: Not downloaded")
+            self.lbl_img.setText(self.tr("Benchmark image: Not downloaded"))
             self.btn_run.setEnabled(False)
 
         self.pbar.setValue(0)
@@ -207,7 +207,7 @@ class BenchmarkDialog(QDialog):
             self.refresh_ui()
         else:
             self._log(f"❌ Download failed: {msg}")
-            QMessageBox.warning(self, "Download failed", msg)
+            QMessageBox.warning(self, self.tr("Download failed"), msg)
             self.refresh_ui()
 
     def closeEvent(self, e):
@@ -220,7 +220,7 @@ class BenchmarkDialog(QDialog):
     def _run_benchmark(self):
         p = benchmark_image_path()
         if not p.exists():
-            QMessageBox.information(self, "Benchmark image missing", "Please download the benchmark image first.")
+            QMessageBox.information(self, self.tr("Benchmark image missing"), self.tr("Please download the benchmark image first."))
             return
 
         self._stop_thread_if_any()
@@ -265,7 +265,7 @@ class BenchmarkDialog(QDialog):
                 # no scary dialog for user-cancel
                 self.pbar.setValue(0)
                 return
-            QMessageBox.warning(self, "Benchmark failed", err)
+            QMessageBox.warning(self, self.tr("Benchmark failed"), err)
             return
 
         self._results = results
@@ -281,7 +281,7 @@ class BenchmarkDialog(QDialog):
             return
         s = json.dumps([self._results], indent=4)
         QApplication.clipboard().setText(s)
-        QMessageBox.information(self, "Copied", "Benchmark JSON copied to clipboard.")
+        QMessageBox.information(self, self.tr("Copied"), self.tr("Benchmark JSON copied to clipboard."))
 
     def _save_local(self):
         if not self._results:
@@ -303,7 +303,7 @@ class BenchmarkDialog(QDialog):
                 json.dump(allr, f, indent=4)
             self._log(f"\n✅ Saved to {fn}")
         except Exception as e:
-            QMessageBox.warning(self, "Save failed", str(e))
+            QMessageBox.warning(self, self.tr("Save failed"), str(e))
 
     def _submit(self):
         import webbrowser

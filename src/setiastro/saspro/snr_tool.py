@@ -204,22 +204,22 @@ class SNRToolDialog(QDialog):
             try: self.setWindowIcon(icon)
             except Exception: pass
 
-        self.setWindowTitle("Object SNR Calculation")
+        self.setWindowTitle(self.tr("Object SNR Calculation"))
         self.resize(640, 420)
 
         v = QVBoxLayout(self)
 
-        self.lbl = QLabel(
+        self.lbl = QLabel(self.tr(
             "Pick a target region (signal of interest). Background will be auto-selected.\n"
             "SNR is computed per-channel using median(signal) − median(background), with noise from background stddev."
-        )
+        ))
         self.lbl.setWordWrap(True)
         v.addWidget(self.lbl)
 
         row = QHBoxLayout()
-        self.btn_pick = QPushButton("Select Target Region…")
-        self.btn_calc = QPushButton("Calculate SNR")
-        self.btn_copy = QPushButton("Copy Results")
+        self.btn_pick = QPushButton(self.tr("Select Target Region…"))
+        self.btn_calc = QPushButton(self.tr("Calculate SNR"))
+        self.btn_copy = QPushButton(self.tr("Copy Results"))
         row.addWidget(self.btn_pick)
         row.addWidget(self.btn_calc)
         row.addWidget(self.btn_copy)
@@ -240,7 +240,7 @@ class SNRToolDialog(QDialog):
 
         # channel selector for histogram (updates based on image)
         ch_row = QHBoxLayout()
-        ch_row.addWidget(QLabel("Channel:"))
+        ch_row.addWidget(QLabel(self.tr("Channel:")))
         self.cmb_plot_channel = QComboBox()
         self.cmb_plot_channel.addItems(["L"])  # will be refreshed when image is known
         self.cmb_plot_channel.currentIndexChanged.connect(self._refresh_distribution_plot)
@@ -259,7 +259,7 @@ class SNRToolDialog(QDialog):
         dist_tab_l = QVBoxLayout(dist_tab)
         dist_tab_l.setContentsMargins(0, 0, 0, 0)
         dist_tab_l.addWidget(self.canvas_dist)
-        self.tabs_plots.addTab(dist_tab, "Distributions")
+        self.tabs_plots.addTab(dist_tab, self.tr("Distributions"))
         # --- Tab 2: SNR bars ---
         self.fig_snr = Figure(figsize=(4.0, 3.0))
         self.canvas_snr = FigureCanvas(self.fig_snr)
@@ -267,9 +267,9 @@ class SNRToolDialog(QDialog):
         snr_tab_l = QVBoxLayout(snr_tab)
         snr_tab_l.setContentsMargins(0, 0, 0, 0)
         snr_tab_l.addWidget(self.canvas_snr)
-        self.tabs_plots.addTab(snr_tab, "SNR Chart")
+        self.tabs_plots.addTab(snr_tab, self.tr("SNR Chart"))
         # --- Tab 3: ROI Preview ---
-        self.lbl_roi = QLabel("ROI preview will appear after you run Calculate.")
+        self.lbl_roi = QLabel(self.tr("ROI preview will appear after you run Calculate."))
         self.lbl_roi.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_roi.setMinimumHeight(220)
         self.lbl_roi.setStyleSheet("border: 1px solid rgba(255,255,255,40); padding: 6px;")
@@ -279,7 +279,7 @@ class SNRToolDialog(QDialog):
         roi_tab_l.setContentsMargins(6, 6, 6, 6)
         roi_tab_l.addWidget(self.lbl_roi, 1)
 
-        self.tabs_plots.addTab(roi_tab, "ROI Preview")
+        self.tabs_plots.addTab(roi_tab, self.tr("ROI Preview"))
 
         # Keep a reference to the pixmap so it doesn't get GC'ed weirdly
         self._roi_pix = None
@@ -292,7 +292,7 @@ class SNRToolDialog(QDialog):
         self._last_calc = None  # dict or None
 
 
-        self.btn_close = QPushButton("Close")
+        self.btn_close = QPushButton(self.tr("Close"))
         v.addWidget(self.btn_close, 0, Qt.AlignmentFlag.AlignRight)
 
         self.btn_pick.clicked.connect(self._pick_region)
@@ -316,7 +316,7 @@ class SNRToolDialog(QDialog):
 
 
     def _write_header(self):
-        self.out.setPlainText("Object SNR\n")
+        self.out.setPlainText(self.tr("Object SNR\n"))
 
 
     # called by RegionPickerDialog (matches your Magnitude dialog pattern)
@@ -345,26 +345,26 @@ class SNRToolDialog(QDialog):
             return
 
         if self.object_mask is None or int(self.object_mask.sum()) < 25:
-            QMessageBox.warning(self, "SNR", "No target selected. Click 'Select Target Region…' first.")
+            QMessageBox.warning(self, "SNR", self.tr("No target selected. Click 'Select Target Region…' first."))
             return
 
         H, W = img.shape[:2]
         if self.bg_rect is None:
-            QMessageBox.warning(self, "SNR", "Background rectangle not set. Use the picker (it auto-finds background).")
+            QMessageBox.warning(self, "SNR", self.tr("Background rectangle not set. Use the picker (it auto-finds background)."))
             return
         self._ensure_plot_channels(img)
         bg_mask = _mask_from_qrect(H, W, self.bg_rect)
 
         # sanity
         if int(bg_mask.sum()) < 25:
-            QMessageBox.warning(self, "SNR", "Background region too small.")
+            QMessageBox.warning(self, "SNR", self.tr("Background region too small."))
             return
 
         sig_stats = _stats_on_mask(img, self.object_mask)  # (median,std) but we only use median
         bg_stats  = _stats_on_mask(img, bg_mask)
 
         lines = []
-        lines.append("Calculating Improved SNR\n")
+        lines.append(self.tr("Calculating Improved SNR\n"))
         # Determine channel count + names based on native image
         if img.ndim == 2:
             ch_names = ["L"]
@@ -398,7 +398,7 @@ class SNRToolDialog(QDialog):
                 f"SNR={snr:.3e}  {snr_db:.2f} dB"
             )
 
-        lines.append("\nDone.")
+        lines.append(self.tr("\nDone."))
         self.out.setPlainText("\n".join(lines))
         self._last_calc = {
             "img01": img,
@@ -451,7 +451,7 @@ class SNRToolDialog(QDialog):
         )
         ax.set_xticks(x)
         ax.set_xticklabels(ch_names)
-        ax.set_ylabel("SNR (linear)")
+        ax.set_ylabel(self.tr("SNR (linear)"))
 
         # --- dB bars on twin axis ---
         ax2 = ax.twinx()
@@ -465,7 +465,7 @@ class SNRToolDialog(QDialog):
         )
         ax2.set_ylabel("SNR (dB)")
 
-        ax.set_title("Object SNR")
+        ax.set_title(self.tr("Object SNR"))
         ax.grid(True, axis="y", alpha=0.25)
 
         # Legend across both axes
@@ -522,7 +522,7 @@ class SNRToolDialog(QDialog):
         Requires: self._last_calc present.
         """
         if not self._last_calc:
-            self.lbl_roi.setText("ROI preview will appear after you run Calculate.")
+            self.lbl_roi.setText(self.tr("ROI preview will appear after you run Calculate."))
             self.lbl_roi.setPixmap(QPixmap())
             self._roi_pix = None
             return
@@ -536,7 +536,7 @@ class SNRToolDialog(QDialog):
         # bbox from target mask (tight)
         bbox = _bbox_from_mask(obj_mask)
         if bbox.isNull():
-            self.lbl_roi.setText("No target mask (ROI preview unavailable).")
+            self.lbl_roi.setText(self.tr("No target mask (ROI preview unavailable)."))
             self.lbl_roi.setPixmap(QPixmap())
             self._roi_pix = None
             return
@@ -594,7 +594,7 @@ class SNRToolDialog(QDialog):
             # show empty
             self.fig_dist.clear()
             ax = self.fig_dist.add_subplot(111)
-            ax.set_title("Object vs Background (run Calculate)")
+            ax.set_title(self.tr("Object vs Background (run Calculate)"))
             ax.set_xticks([])
             ax.set_yticks([])
             _force_no_tex_on_figure(self.fig_dist)
@@ -633,12 +633,12 @@ class SNRToolDialog(QDialog):
             hi = lo + 1e-6
 
         bins = 80
-        ax.hist(bg_vals, bins=bins, range=(lo, hi), alpha=0.5, label="Background", density=True)
-        ax.hist(obj_vals, bins=bins, range=(lo, hi), alpha=0.5, label="Object", density=True)
+        ax.hist(bg_vals, bins=bins, range=(lo, hi), alpha=0.5, label=self.tr("Background"), density=True)
+        ax.hist(obj_vals, bins=bins, range=(lo, hi), alpha=0.5, label=self.tr("Object"), density=True)
 
-        ax.set_title(f"Distributions ({names[c]})")
-        ax.set_xlabel("Pixel value (0–1)")
-        ax.set_ylabel("Density")
+        ax.set_title(self.tr("Distributions ({0})").format(names[c]))
+        ax.set_xlabel(self.tr("Pixel value (0–1)"))
+        ax.set_ylabel(self.tr("Density"))
         ax.grid(True, axis="y", alpha=0.25)
         ax.legend(loc="best")
         _force_no_tex_on_figure(self.fig_dist)
@@ -665,7 +665,7 @@ class SNRToolDialog(QDialog):
             from PyQt6.QtWidgets import QApplication
             QApplication.clipboard().setText(self.out.toPlainText())
         except Exception:
-            QMessageBox.information(self, "Copy", "Could not access clipboard.")
+            QMessageBox.information(self, self.tr("Copy"), self.tr("Could not access clipboard."))
 
 
 class RegionPickerDialog(QDialog):
@@ -690,7 +690,7 @@ class RegionPickerDialog(QDialog):
             try: self.setWindowIcon(icon)
             except Exception: pass
 
-        self.setWindowTitle("SNR Tool — Select Target Region")
+        self.setWindowTitle(self.tr("SNR Tool — Select Target Region"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -730,7 +730,7 @@ class RegionPickerDialog(QDialog):
         self.view.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
         # --- layout ---
         v = QVBoxLayout(self)
-        self.lbl = QLabel("Draw a Target region (Box/Ellipse/Freehand). Background will be auto-selected (gold).")
+        self.lbl = QLabel(self.tr("Draw a Target region (Box/Ellipse/Freehand). Background will be auto-selected (gold)."))
 
         self.lbl.setWordWrap(True)
         v.addWidget(self.lbl)
@@ -742,10 +742,10 @@ class RegionPickerDialog(QDialog):
         v.addWidget(self.view, 1)
 
         btn_row = QHBoxLayout()
-        self.btn_apply = QPushButton("Use Target")
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_find_bg = QPushButton("Find Background")
-        self.btn_toggle = QPushButton("Disable Auto-Stretch" if self.auto_stretch else "Enable Auto-Stretch")
+        self.btn_apply = QPushButton(self.tr("Use Target"))
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
+        self.btn_find_bg = QPushButton(self.tr("Find Background"))
+        self.btn_toggle = QPushButton(self.tr("Disable Auto-Stretch") if self.auto_stretch else self.tr("Enable Auto-Stretch"))
 
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_cancel)
@@ -756,10 +756,10 @@ class RegionPickerDialog(QDialog):
         from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
         zoom_row = QHBoxLayout()
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
         self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit"))
 
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.btn_zoom_in)
@@ -931,7 +931,7 @@ class RegionPickerDialog(QDialog):
         try:
             img = self._doc_image_float01()
         except Exception as e:
-            QMessageBox.warning(self, "No Image", str(e))
+            QMessageBox.warning(self, self.tr("No Image"), str(e))
             self.close()
             return
 
@@ -969,7 +969,7 @@ class RegionPickerDialog(QDialog):
         view_state = self._capture_view_state() if self._user_zoomed else None
 
         self.auto_stretch = not self.auto_stretch
-        self.btn_toggle.setText("Disable Auto-Stretch" if self.auto_stretch else "Enable Auto-Stretch")
+        self.btn_toggle.setText(self.tr("Disable Auto-Stretch") if self.auto_stretch else self.tr("Enable Auto-Stretch"))
 
         # reload image but keep zoom/pan if user zoomed
         self._load_image(preserve_view_state=view_state, keep_overlays=True)
@@ -1025,7 +1025,7 @@ class RegionPickerDialog(QDialog):
             x, y, w, h = auto_rect_box(img, box=box, margin=100)
             # (or auto_rect_50x50(img) if you want fixed behavior)
         except Exception as e:
-            QMessageBox.warning(self, "Background", str(e))
+            QMessageBox.warning(self, self.tr("Background"), str(e))
             return
 
         if self.bg_item:
@@ -1141,7 +1141,7 @@ class RegionPickerDialog(QDialog):
                 if mode in ("Box", "Ellipse"):
                     self.target_rect_scene = QRectF(self._origin_scene, cur).normalized()
                     if self.target_rect_scene.width() < 10 or self.target_rect_scene.height() < 10:
-                        QMessageBox.warning(self, "Selection Too Small", "Please draw a larger target selection.")
+                        QMessageBox.warning(self, self.tr("Selection Too Small"), self.tr("Please draw a larger target selection."))
                         self._clear_target_items()
                         return True
 
@@ -1154,7 +1154,7 @@ class RegionPickerDialog(QDialog):
                 else:  # Freehand
                     # close path and finalize
                     if self._path.elementCount() < 10:
-                        QMessageBox.warning(self, "Selection Too Small", "Freehand selection too small.")
+                        QMessageBox.warning(self, self.tr("Selection Too Small"), self.tr("Freehand selection too small."))
                         self._clear_target_items()
                         return True
                     self._path.closeSubpath()
@@ -1190,7 +1190,7 @@ class RegionPickerDialog(QDialog):
     def _on_use_target(self):
         mask = self._target_mask()
         if mask is None or int(mask.sum()) < 25:
-            QMessageBox.warning(self, "No Target", "Draw a target selection first.")
+            QMessageBox.warning(self, self.tr("No Target"), self.tr("Draw a target selection first."))
             return
 
         # background is whatever is drawn (gold); if missing, recompute
@@ -1226,10 +1226,10 @@ class RegionPickerDialog(QDialog):
             # convenience: update label if present
             if hasattr(parent, "lbl_info"):
                 parent.lbl_info.setText(
-                    f"Target set: {int(mask.sum())} px"
+                    self.tr("Target set: {0} px").format(int(mask.sum()))
                     + (f"  (bbox x={bbox.x()}, y={bbox.y()}, w={bbox.width()}, h={bbox.height()})" if not bbox.isNull() else "")
                     + "\n"
-                    f"Background(auto): x={bgq.x()}, y={bgq.y()}, w={bgq.width()}, h={bgq.height()}"
+                    + self.tr("Background(auto): x={0}, y={1}, w={2}, h={3}").format(bgq.x(), bgq.y(), bgq.width(), bgq.height())
                 )
 
         self.close()

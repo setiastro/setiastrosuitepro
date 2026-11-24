@@ -352,7 +352,7 @@ class BatchRenamerDialog(QDialog):
         elif os.path.exists(new): status = self.tr("will overwrite")
         else: status = self.tr("ok")
         it = QTableWidgetItem(status)
-        if conflict or status == "will overwrite":
+        if conflict or status == self.tr("will overwrite"):
             it.setForeground(Qt.GlobalColor.red)
         self.table.setItem(r, 3, it)
         it_old = self.table.item(r, 0)

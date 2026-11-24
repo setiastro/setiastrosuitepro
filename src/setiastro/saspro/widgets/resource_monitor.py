@@ -895,7 +895,7 @@ class ResourceMonitorPanel(QWidget):
         self._cpu.gauge.setValue(v)
         self._cpu.gauge.setAccent(
             "#ff4444" if v > 80 else ("#ffbb33" if v > 50 else self.ACCENT_CPU))
-        self._cpu.gauge.setToolTip(f"CPU: {int(round(v))}%")
+        self._cpu.gauge.setToolTip(self.tr("CPU: {0}%").format(int(round(v))))
 
     def _refresh_ram(self) -> None:
         v = float(self._backend.ramUsage)
@@ -903,9 +903,9 @@ class ResourceMonitorPanel(QWidget):
         rs = self._backend.ramString
         if rs:
             self._ram.gauge.setToolTip(
-                f"RAM: {rs}  (this app: {self._backend.appRamString})")
+                self.tr("RAM: {0}  (this app: {1})").format(rs, self._backend.appRamString))
         else:
-            self._ram.gauge.setToolTip(f"RAM: {int(round(v))}%")
+            self._ram.gauge.setToolTip(self.tr("RAM: {0}%").format(int(round(v))))
 
     def _refresh_gpu(self) -> None:
         v = float(self._backend.gpuUsage)

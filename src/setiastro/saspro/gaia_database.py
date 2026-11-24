@@ -115,7 +115,7 @@ import numpy as np
 
 from PyQt6.QtCore import (
     Qt, QThread, QStandardPaths, QSettings, QTimer,
-    pyqtSignal as _Signal,
+    pyqtSignal as _Signal, QCoreApplication, QT_TRANSLATE_NOOP,
 )
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
@@ -126,6 +126,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QColor
 from PyQt6 import sip
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("GaiaDatabase", text)
+
 # Matplotlib is used ONLY by the spectrum viewer, but importing it here cost
 # every CLI plate solve ~99 modules and ~460 ms it never touches. Same
 # except-ImportError semantics as the eager probe this replaces -- a real
@@ -268,7 +273,7 @@ class GroupDef:
     dec_lo:      Optional[float] = None
     dec_hi:      Optional[float] = None
     # Word used in status text ("spectra" for XP groups, "stars" for astrometric).
-    unit_label:  str = "spectra"
+    unit_label:  str = QT_TRANSLATE_NOOP("GaiaDatabase", "spectra")
     # Overrides the tab's default table name when counting rows. The
     # neighborhood extract uses a `neighborhood` table, not `stars`.
     table_name:  Optional[str] = None
@@ -282,31 +287,31 @@ class GroupDef:
 GROUP_DEFS: List[GroupDef] = [
     GroupDef(
         key="ultra_bright",
-        label="Ultra-Bright  (G < 8)",
+        label=QT_TRANSLATE_NOOP("GaiaDatabase", "Ultra-Bright  (G < 8)"),
         mag_lo=None, mag_hi=8.0,
         filenames=["gaia_xp_lt8.sqlite"],
         est_size="~220 MB",
-        est_stars="54,735 spectra",
+        est_stars=QT_TRANSLATE_NOOP("GaiaDatabase", "54,735 spectra"),
         n_items=54735,
-        description="Bright stars from G≈2.2 to G<8 — Arneb, Muphrid, Tania Australis, and tens of "
+        description=QT_TRANSLATE_NOOP("GaiaDatabase", "Bright stars from G≈2.2 to G<8 — Arneb, Muphrid, Tania Australis, and tens of "
                     "thousands more. Note: Gaia's detector saturates below G≈2.2, so stars "
-                    "like Vega, Sirius, Arcturus and Rigel are not in the dataset.",
+                    "like Vega, Sirius, Arcturus and Rigel are not in the dataset."),
         recommended=True,
     ),
     GroupDef(
         key="bright",
-        label="Bright  (G 8–10)",
+        label=QT_TRANSLATE_NOOP("GaiaDatabase", "Bright  (G 8–10)"),
         mag_lo=8.0, mag_hi=10.0,
         filenames=["gaia_xp_8_10.sqlite"],
         est_size="~1.5 GB",
-        est_stars="385,269 spectra",
+        est_stars=QT_TRANSLATE_NOOP("GaiaDatabase", "385,269 spectra"),
         n_items=385269,
-        description="Covers most calibration stars reachable from backyard setups.",
+        description=QT_TRANSLATE_NOOP("GaiaDatabase", "Covers most calibration stars reachable from backyard setups."),
         recommended=True,
     ),
     GroupDef(
         key="medium",
-        label="Medium  (G 10–12)",
+        label=QT_TRANSLATE_NOOP("GaiaDatabase", "Medium  (G 10–12)"),
         mag_lo=10.0, mag_hi=12.0,
         filenames=[
             "gaia_xp_100_105.sqlite",
@@ -314,15 +319,15 @@ GROUP_DEFS: List[GroupDef] = [
             "gaia_xp_110_115.sqlite",
             "gaia_xp_115_120.sqlite",
         ],
-        est_size="~9.5 GB  (4 files)",
-        est_stars="2,426,887 spectra",
+        est_size=QT_TRANSLATE_NOOP("GaiaDatabase", "~9.5 GB  (4 files)"),
+        est_stars=QT_TRANSLATE_NOOP("GaiaDatabase", "2,426,887 spectra"),
         n_items=2426887,
-        description="Dense coverage — recommended for wide-field and narrowband imaging.",
+        description=QT_TRANSLATE_NOOP("GaiaDatabase", "Dense coverage — recommended for wide-field and narrowband imaging."),
         recommended=True,
     ),
     GroupDef(
         key="faint",
-        label="Faint  (G 12–14)",
+        label=QT_TRANSLATE_NOOP("GaiaDatabase", "Faint  (G 12–14)"),
         mag_lo=12.0, mag_hi=14.0,
         filenames=[
             "gaia_xp_120_122.sqlite", "gaia_xp_122_124.sqlite",
@@ -331,16 +336,16 @@ GROUP_DEFS: List[GroupDef] = [
             "gaia_xp_132_134.sqlite", "gaia_xp_134_136.sqlite",
             "gaia_xp_136_138.sqlite", "gaia_xp_138_140.sqlite",
         ],
-        est_size="~50 GB  (10 files)",
-        est_stars="12,852,953 spectra",
+        est_size=QT_TRANSLATE_NOOP("GaiaDatabase", "~50 GB  (10 files)"),
+        est_stars=QT_TRANSLATE_NOOP("GaiaDatabase", "12,852,953 spectra"),
         n_items=12852953,
-        description="Deep coverage for long-exposure narrowband work. "
-                    "Note: file sizes range from 2–9 GB each.",
-        warning="Large download — ~50 GB total. Allow many hours on a typical connection.",
+        description=QT_TRANSLATE_NOOP("GaiaDatabase", "Deep coverage for long-exposure narrowband work. "
+                    "Note: file sizes range from 2–9 GB each."),
+        warning=QT_TRANSLATE_NOOP("GaiaDatabase", "Large download — ~50 GB total. Allow many hours on a typical connection."),
     ),
     GroupDef(
         key="very_faint",
-        label="Very Faint  (G 14–15)",
+        label=QT_TRANSLATE_NOOP("GaiaDatabase", "Very Faint  (G 14–15)"),
         mag_lo=14.0, mag_hi=15.0,
         filenames=[
             "gaia_xp_140_141.sqlite", "gaia_xp_141_142.sqlite",
@@ -349,13 +354,13 @@ GROUP_DEFS: List[GroupDef] = [
             "gaia_xp_146_147.sqlite", "gaia_xp_147_148.sqlite",
             "gaia_xp_148_149.sqlite", "gaia_xp_149_150.sqlite",
         ],
-        est_size="~73 GB  (10 files)",
-        est_stars="18,694,260 spectra",
+        est_size=QT_TRANSLATE_NOOP("GaiaDatabase", "~73 GB  (10 files)"),
+        est_stars=QT_TRANSLATE_NOOP("GaiaDatabase", "18,694,260 spectra"),
         n_items=18694260,
-        description="Maximum depth. For the deepest narrowband fields. "
-                    "Gaia DR3 XP spectra top out at G≈15.",
-        warning="Very large download — ~73 GB total. Files range 5–10 GB each. "
-                "Only needed for extreme deep-field work.",
+        description=QT_TRANSLATE_NOOP("GaiaDatabase", "Maximum depth. For the deepest narrowband fields. "
+                    "Gaia DR3 XP spectra top out at G≈15."),
+        warning=QT_TRANSLATE_NOOP("GaiaDatabase", "Very large download — ~73 GB total. Files range 5–10 GB each. "
+                "Only needed for extreme deep-field work."),
     ),
 ]
 
@@ -391,83 +396,83 @@ def _astro_filenames(lo: float, hi: float, step: float) -> List[str]:
 ASTRO_GROUP_DEFS: List[GroupDef] = [
     GroupDef(
         key="astro_neighborhood",
-        label="Stellar Neighborhood  (within 300 pc)",
+        label=QT_TRANSLATE_NOOP("GaiaDatabase", "Stellar Neighborhood  (within 300 pc)"),
         mag_lo=None, mag_hi=None,
         filenames=[NEIGHBORHOOD_FILENAME],
-        est_size="~2.5 GB  (1 file)",
-        est_stars="14,708,327 stars",
-        description="Precomputed 3D positions (galactic XYZ, Sun at origin) for every "
+        est_size=QT_TRANSLATE_NOOP("GaiaDatabase", "~2.5 GB  (1 file)"),
+        est_stars=QT_TRANSLATE_NOOP("GaiaDatabase", "14,708,327 stars"),
+        description=QT_TRANSLATE_NOOP("GaiaDatabase", "Precomputed 3D positions (galactic XYZ, Sun at origin) for every "
                     "Gaia DR3 source with a usable parallax within 300 parsecs. Powers "
                     "the Stellar Neighborhood Explorer tab. Complete and self-contained — "
-                    "no magnitude tiers needed.",
+                    "no magnitude tiers needed."),
         recommended=True,
-        unit_label="stars",
+        unit_label=QT_TRANSLATE_NOOP("GaiaDatabase", "stars"),
         table_name="neighborhood",
     ),
     GroupDef(
         key="astro_bright",
-        label="Bright  (G < 17)",
+        label=QT_TRANSLATE_NOOP("GaiaDatabase", "Bright  (G < 17)"),
         mag_lo=None, mag_hi=17.0,
         filenames=(
             ["gaia_astro_lt15.sqlite", "gaia_astro_150_160.sqlite"]
             + _astro_filenames(16.0, 17.0, 0.5)
         ),
-        est_size="16.9 GB  (4 files)",
-        est_stars="139,482,635 stars",
-        description="Bright astrometric anchors — enough for most wide-field plate solves.",
+        est_size=QT_TRANSLATE_NOOP("GaiaDatabase", "16.9 GB  (4 files)"),
+        est_stars=QT_TRANSLATE_NOOP("GaiaDatabase", "139,482,635 stars"),
+        description=QT_TRANSLATE_NOOP("GaiaDatabase", "Bright astrometric anchors — enough for most wide-field plate solves."),
         recommended=True,
-        unit_label="stars",
+        unit_label=QT_TRANSLATE_NOOP("GaiaDatabase", "stars"),
         n_items=139482635,
     ),
     GroupDef(
         key="astro_faint",
-        label="Faint  (G 17–18)",
+        label=QT_TRANSLATE_NOOP("GaiaDatabase", "Faint  (G 17–18)"),
         mag_lo=17.0, mag_hi=18.0,
         filenames=_astro_filenames(17.0, 18.0, 0.2),
-        est_size="15.7 GB  (5 files)",
-        est_stars="129,386,971 stars",
-        description="Dense coverage for typical narrow-field solves and fainter guide stars.",
+        est_size=QT_TRANSLATE_NOOP("GaiaDatabase", "15.7 GB  (5 files)"),
+        est_stars=QT_TRANSLATE_NOOP("GaiaDatabase", "129,386,971 stars"),
+        description=QT_TRANSLATE_NOOP("GaiaDatabase", "Dense coverage for typical narrow-field solves and fainter guide stars."),
         recommended=True,
-        unit_label="stars",
+        unit_label=QT_TRANSLATE_NOOP("GaiaDatabase", "stars"),
         n_items=129386971,
     ),
     GroupDef(
         key="astro_very_faint",
-        label="Very Faint  (G 18–19)",
+        label=QT_TRANSLATE_NOOP("GaiaDatabase", "Very Faint  (G 18–19)"),
         mag_lo=18.0, mag_hi=19.0,
         filenames=_astro_filenames(18.0, 19.0, 0.1),
-        est_size="28.9 GB  (10 files)",
-        est_stars="239,207,768 stars",
-        description="For deep, narrow-field solves needing very dense star fields.",
-        warning="Large download — ~29 GB total across 10 files.",
-        unit_label="stars",
+        est_size=QT_TRANSLATE_NOOP("GaiaDatabase", "28.9 GB  (10 files)"),
+        est_stars=QT_TRANSLATE_NOOP("GaiaDatabase", "239,207,768 stars"),
+        description=QT_TRANSLATE_NOOP("GaiaDatabase", "For deep, narrow-field solves needing very dense star fields."),
+        warning=QT_TRANSLATE_NOOP("GaiaDatabase", "Large download — ~29 GB total across 10 files."),
+        unit_label=QT_TRANSLATE_NOOP("GaiaDatabase", "stars"),
         n_items=239207768,
     ),
     GroupDef(
         key="astro_extreme",
-        label="Extreme  (G 19–20)",
+        label=QT_TRANSLATE_NOOP("GaiaDatabase", "Extreme  (G 19–20)"),
         mag_lo=19.0, mag_hi=20.0,
         filenames=_astro_filenames(19.0, 20.0, 0.1),
-        est_size="50.4 GB  (10 files)",
-        est_stars="420,229,783 stars",
-        description="Rarely needed — extremely deep solving fields only.",
-        warning="Very large download — ~50 GB total across 10 files.",
-        unit_label="stars",
+        est_size=QT_TRANSLATE_NOOP("GaiaDatabase", "50.4 GB  (10 files)"),
+        est_stars=QT_TRANSLATE_NOOP("GaiaDatabase", "420,229,783 stars"),
+        description=QT_TRANSLATE_NOOP("GaiaDatabase", "Rarely needed — extremely deep solving fields only."),
+        warning=QT_TRANSLATE_NOOP("GaiaDatabase", "Very large download — ~50 GB total across 10 files."),
+        unit_label=QT_TRANSLATE_NOOP("GaiaDatabase", "stars"),
         n_items=420229783,
     ),
     GroupDef(
         key="astro_max_depth",
-        label="Maximum Depth  (G ≥ 20, full DR3)",
+        label=QT_TRANSLATE_NOOP("GaiaDatabase", "Maximum Depth  (G ≥ 20, full DR3)"),
         mag_lo=20.0, mag_hi=None,
         filenames=_astro_filenames(20.0, 21.0, 0.1) + [
             "gaia_astro_210_213.sqlite", "gaia_astro_gt213.sqlite",
         ],
-        est_size="72.0 GB  (12 files)",
-        est_stars="656,820,963 stars",
-        description="Full DR3 depth — the practical faint limit of the catalog. "
-                    "Includes sources with no measured G magnitude.",
-        warning="Enormous download — ~72 GB total across 12 files.",
-        unit_label="stars",
+        est_size=QT_TRANSLATE_NOOP("GaiaDatabase", "72.0 GB  (12 files)"),
+        est_stars=QT_TRANSLATE_NOOP("GaiaDatabase", "656,820,963 stars"),
+        description=QT_TRANSLATE_NOOP("GaiaDatabase", "Full DR3 depth — the practical faint limit of the catalog. "
+                    "Includes sources with no measured G magnitude."),
+        warning=QT_TRANSLATE_NOOP("GaiaDatabase", "Enormous download — ~72 GB total across 12 files."),
+        unit_label=QT_TRANSLATE_NOOP("GaiaDatabase", "stars"),
         n_items=656820963,
     ),
 ]
@@ -1423,7 +1428,8 @@ class _MigrateWorker(QThread):
     """
     file_progress  = _Signal(int, int, str)   # files_done, files_total, current_filename
     file_done      = _Signal(str, bool)        # filename, success
-    finished       = _Signal(bool, str)        # success, message
+    # Not "finished": that would shadow QThread.finished (see _FileDownloadWorker).
+    result         = _Signal(bool, str)        # success, message
     cancelled      = _Signal()
 
     def __init__(self, src_dir: Path, dest_dir: Path,
@@ -1483,18 +1489,18 @@ class _MigrateWorker(QThread):
                 self.file_progress.emit(done, total, fname)
             except Exception as e:
                 self.file_done.emit(fname, False)
-                self.finished.emit(
+                self.result.emit(
                     False,
-                    f"Failed on {fname}:\n{e}\n\n"
-                    f"{done}/{total} files completed before the error.\n"
-                    f"The new location has been saved — files already transferred "
-                    f"are accessible, and the remaining originals are still in the "
-                    f"old location."
+                    self.tr("Failed on {0}:\n"
+                            "{1}\n"
+                            "\n"
+                            "{2}/{3} files completed before the error.\n"
+                            "The new location has been saved — files already transferred are accessible, and the remaining originals are still in the old location.").format(fname, e, done, total)
                 )
                 return
 
         verb = "moved" if self._mode == "move" else "copied"
-        self.finished.emit(True, f"{done} file(s) {verb} successfully.")
+        self.result.emit(True, f"{done} file(s) {verb} successfully.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1510,7 +1516,7 @@ class _ChangeLocationDialog(QDialog):
     def __init__(self, current_dir: Path, installed_files: List[str],
                  kind: str = "spectral", parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Change Library Location")
+        self.setWindowTitle(self.tr("Change Library Location"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(True)
         self.setMinimumWidth(520)
@@ -1525,14 +1531,14 @@ class _ChangeLocationDialog(QDialog):
         v.setSpacing(12)
 
         # Current path
-        v.addWidget(QLabel("<b>Current location:</b>"))
+        v.addWidget(QLabel(self.tr("<b>Current location:</b>")))
         cur_lbl = QLabel(str(current_dir))
         cur_lbl.setStyleSheet("color:#6688aa; font-family:monospace; font-size:11px;")
         cur_lbl.setWordWrap(True)
         v.addWidget(cur_lbl)
 
         # New path picker
-        v.addWidget(QLabel("<b>New location:</b>"))
+        v.addWidget(QLabel(self.tr("<b>New location:</b>")))
         path_row = QHBoxLayout()
         self._path_edit = QLineEdit(str(current_dir))
         self._path_edit.setReadOnly(True)
@@ -1540,7 +1546,7 @@ class _ChangeLocationDialog(QDialog):
             "background:#12121f; color:#ddd; border:1px solid #334; "
             "border-radius:3px; padding:3px 6px; font-family:monospace;")
         path_row.addWidget(self._path_edit, 1)
-        btn_browse = QPushButton("Browse…")
+        btn_browse = QPushButton(self.tr("Browse…"))
         btn_browse.setFixedWidth(80)
         btn_browse.clicked.connect(self._browse)
         path_row.addWidget(btn_browse)
@@ -1557,15 +1563,14 @@ class _ChangeLocationDialog(QDialog):
                         else f"{size_mb:.0f} MB")
 
             v.addWidget(QLabel(
-                f"<b>What to do with {len(installed_files)} installed file(s) "
-                f"({size_str})?</b>"))
+                self.tr("<b>What to do with {0} installed file(s) ({1})?</b>").format(len(installed_files), size_str)))
 
             self._rdo_move   = QRadioButton(
-                "Move files to new location  (recommended — frees space on old drive)")
+                self.tr("Move files to new location  (recommended — frees space on old drive)"))
             self._rdo_copy   = QRadioButton(
-                "Copy files  (keep originals — useful as backup)")
+                self.tr("Copy files  (keep originals — useful as backup)"))
             self._rdo_switch = QRadioButton(
-                "Just switch pointer  (leave files where they are)")
+                self.tr("Just switch pointer  (leave files where they are)"))
             self._rdo_move.setChecked(True)
 
             grp = QButtonGroup(self)
@@ -1583,7 +1588,7 @@ class _ChangeLocationDialog(QDialog):
             self._rdo_switch = None
             self._chosen_mode = "switch"
             v.addWidget(QLabel(
-                "No files installed yet — new downloads will go to the chosen folder."))
+                self.tr("No files installed yet — new downloads will go to the chosen folder.")))
 
         #sasprogress bar (hidden until migration starts)
         self._prog_label = QLabel("")
@@ -1607,10 +1612,10 @@ class _ChangeLocationDialog(QDialog):
         # Buttons
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        self._btn_ok     = QPushButton("Apply")
+        self._btn_ok     = QPushButton(self.tr("Apply"))
         self._btn_ok.setFixedWidth(90)
         self._btn_ok.clicked.connect(self._apply)
-        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel = QPushButton(self.tr("Cancel"))
         self._btn_cancel.setFixedWidth(90)
         self._btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(self._btn_ok)
@@ -1621,7 +1626,7 @@ class _ChangeLocationDialog(QDialog):
 
     def _browse(self):
         chosen = QFileDialog.getExistingDirectory(
-            self, "Choose Library Folder", str(self._chosen_dir))
+            self, self.tr("Choose Library Folder"), str(self._chosen_dir))
         if chosen:
             self._chosen_dir = Path(chosen)
             self._path_edit.setText(chosen)
@@ -1644,8 +1649,8 @@ class _ChangeLocationDialog(QDialog):
         try:
             dest.mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            QMessageBox.critical(self, "Error",
-                                f"Could not create directory:\n{e}")
+            QMessageBox.critical(self, self.tr("Error"),
+                                self.tr("Could not create directory:\n{0}").format(e))
             return
 
         # ── Close the relevant open SQLite connections before touching files ──
@@ -1676,7 +1681,7 @@ class _ChangeLocationDialog(QDialog):
 
         # Start migration worker
         self._btn_ok.setEnabled(False)
-        self._btn_cancel.setText("Cancel Migration")
+        self._btn_cancel.setText(self.tr("Cancel Migration"))
         self._prog_label.setVisible(True)
         self._prog_bar.setVisible(True)
         self._prog_bar.setMaximum(len(self._installed))
@@ -1688,7 +1693,7 @@ class _ChangeLocationDialog(QDialog):
             parent=None,
         )
         self._worker.file_progress.connect(self._on_file_progress)
-        self._worker.finished.connect(self._on_finished)
+        self._worker.result.connect(self._on_finished)
         self._worker.cancelled.connect(self._on_cancelled)
         self._btn_cancel.clicked.disconnect()
         self._btn_cancel.clicked.connect(self._cancel_migration)
@@ -1700,8 +1705,9 @@ class _ChangeLocationDialog(QDialog):
 
     def _on_file_progress(self, done: int, total: int, fname: str):
         self._prog_bar.setValue(done)
-        self._prog_bar.setFormat(f"{done}/{total} files")
-        self._prog_label.setText(f"{'Moving' if self._chosen_mode == 'move' else 'Copying'}: {fname}")
+        self._prog_bar.setFormat(self.tr("{0}/{1} files").format(done, total))
+        self._prog_label.setText(self.tr("Moving: {0}").format(fname) if self._chosen_mode == 'move'
+                                 else self.tr("Copying: {0}").format(fname))
 
     def _on_finished(self, ok: bool, msg: str):
         if self._worker:
@@ -1711,7 +1717,7 @@ class _ChangeLocationDialog(QDialog):
         if ok:
             self.accept()
         else:
-            QMessageBox.warning(self, "Migration Incomplete", msg)
+            QMessageBox.warning(self, self.tr("Migration Incomplete"), msg)
             # Still accept — the new path is already saved, partial migration is valid
             self.accept()
 
@@ -1721,12 +1727,20 @@ class _ChangeLocationDialog(QDialog):
         self._worker = None
         # New path is already saved; files transferred so far are usable
         QMessageBox.information(
-            self, "Migration Cancelled",
-            "Migration was cancelled. The library location has been updated — "
+            self, self.tr("Migration Cancelled"),
+            self.tr("Migration was cancelled. The library location has been updated — "
             "files that were already transferred are accessible at the new location. "
-            "Remaining files are still in the old location and will be skipped by SASpro."
+            "Remaining files are still in the old location and will be skipped by SASpro.")
         )
         self.accept()
+
+    def reject(self):
+        # Esc / title-bar close while files are moving: keep the dialog and its
+        # progress up. Cancelling here would strand the rest of the library in
+        # the old folder; "Cancel Migration" is the deliberate way to do that.
+        if self._worker is not None and self._worker.isRunning():
+            return
+        super().reject()
 
     def chosen_dir(self) -> Path:
         return self._chosen_dir
@@ -1878,7 +1892,9 @@ def _verify_sqlite_download(tmp, done: int, total: int) -> None:
 
 class _FileDownloadWorker(QThread):
     progress  = _Signal(int, int, str)
-    finished  = _Signal(bool, str)
+    # Not "finished": that name would shadow QThread.finished, which fires only
+    # after run() returns; this one is emitted from inside run().
+    result    = _Signal(bool, str)
     cancelled = _Signal()
 
     def __init__(self, url: str, dest: Path, parent=None):
@@ -1920,10 +1936,10 @@ class _FileDownloadWorker(QThread):
 
             _verify_sqlite_download(tmp, done, total)
             tmp.rename(self._dest)
-            self.finished.emit(True, self._dest.name)
+            self.result.emit(True, self._dest.name)
         except Exception as e:
             tmp.unlink(missing_ok=True)
-            self.finished.emit(False, str(e))
+            self.result.emit(False, str(e))
 
 
 class _GroupDownloadWorker(QThread):
@@ -1997,16 +2013,19 @@ class _GroupDownloadWorker(QThread):
                 self.file_done.emit(fname, False)
                 self.group_finished.emit(
                     False,
-                    f"Failed to download {fname}:\n{e}\n\n"
-                    f"{done_files}/{total_files} files completed before failure.\n"
-                    f"You can retry — already-downloaded files will be skipped."
+                    self.tr("Failed to download {0}:\n"
+                            "{1}\n"
+                            "\n"
+                            "{2}/{3} files completed before failure.\n"
+                            "You can retry — already-downloaded files will be skipped.").format(fname, e, done_files, total_files)
                 )
                 return
 
         self.group_finished.emit(
             True,
-            f"{self._group.label} installed successfully "
-            f"({total_files} file{'s' if total_files != 1 else ''})."
+            (self.tr("{0} installed successfully ({1} files).") if total_files != 1
+             else self.tr("{0} installed successfully ({1} file)."))
+            .format(_tr(self._group.label), total_files)
         )
 
 
@@ -2033,7 +2052,7 @@ class SpectrumViewerWidget(QWidget):
             layout.addWidget(self._canvas)
             self._draw_empty()
         else:
-            lbl = QLabel("matplotlib required for spectrum viewer")
+            lbl = QLabel(self.tr("matplotlib required for spectrum viewer"))
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(lbl)
 
@@ -2047,7 +2066,7 @@ class SpectrumViewerWidget(QWidget):
             return
         self._ax.clear()
         self._ax.set_facecolor("#1a1a2e")
-        self._ax.text(0.5, 0.5, "No spectrum loaded",
+        self._ax.text(0.5, 0.5, self.tr("No spectrum loaded"),
                       transform=self._ax.transAxes,
                       ha="center", va="center", color="#555", fontsize=12,
                       usetex=False)
@@ -2087,8 +2106,8 @@ class SpectrumViewerWidget(QWidget):
                                   flux + spectrum.flux_error,
                                   alpha=0.12, color="#ffffff")
 
-        self._ax.set_xlabel("Wavelength (nm)", color="#aaa", fontsize=9)
-        self._ax.set_ylabel("Flux (W nm⁻¹ m⁻²)", color="#aaa", fontsize=9)
+        self._ax.set_xlabel(self.tr("Wavelength (nm)"), color="#aaa", fontsize=9)
+        self._ax.set_ylabel(self.tr("Flux (W nm⁻¹ m⁻²)"), color="#aaa", fontsize=9)
         self._ax.tick_params(colors="#888", labelsize=8)
         for sp in self._ax.spines.values():
             sp.set_color("#333")
@@ -2101,8 +2120,7 @@ class SpectrumViewerWidget(QWidget):
 
         peak_wl = float(wl[np.argmax(flux)])
         self._info_lbl.setText(
-            f"source_id: {spectrum.source_id}   peak: {peak_wl:.0f} nm   "
-            f"flux: {float(np.min(flux)):.2e} – {float(np.max(flux)):.2e}"
+            self.tr("source_id: {0}   peak: {1:.0f} nm   flux: {2:.2e} – {3:.2e}").format(spectrum.source_id, peak_wl, float(np.min(flux)), float(np.max(flux)))
         )
 
     def clear(self):
@@ -2204,24 +2222,24 @@ class _GroupRowWidget(QFrame):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(6)
 
-        self._btn_install = QPushButton("Install")
+        self._btn_install = QPushButton(self.tr("Install"))
         self._btn_install.setFixedWidth(80)
         self._btn_install.clicked.connect(
             lambda: self.install_requested.emit(self._key))
         self._btn_install.setStyleSheet(self._btn_style("#224488", "#3366cc"))
 
-        self._btn_browse = QPushButton("Browse…")
+        self._btn_browse = QPushButton(self.tr("Browse…"))
         self._btn_browse.setFixedWidth(80)
         self._btn_browse.clicked.connect(
             lambda: self.browse_requested.emit(self._key))
         self._btn_browse.setStyleSheet(self._btn_style("#223322", "#336633"))
 
-        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel = QPushButton(self.tr("Cancel"))
         self._btn_cancel.setFixedWidth(80)
         self._btn_cancel.setVisible(False)
         self._btn_cancel.setStyleSheet(self._btn_style("#443322", "#885533"))
 
-        self._btn_remove = QPushButton("Remove")
+        self._btn_remove = QPushButton(self.tr("Remove"))
         self._btn_remove.setFixedWidth(80)
         self._btn_remove.clicked.connect(
             lambda: self.remove_requested.emit(self._key))
@@ -2242,17 +2260,17 @@ class _GroupRowWidget(QFrame):
 
     def update_status(self, status: GroupStatus):
         g = status.group
-        unit = getattr(g, "unit_label", "spectra")
+        unit = _tr(getattr(g, "unit_label", "spectra"))
 
-        self._lbl_title.setText(g.label)
-        self._lbl_desc.setText(g.description)
+        self._lbl_title.setText(_tr(g.label))
+        self._lbl_desc.setText(_tr(g.description))
 
         if g.recommended:
-            self._lbl_badge.setText("Recommended")
+            self._lbl_badge.setText(self.tr("Recommended"))
             self._lbl_badge.setVisible(True)
 
         if g.warning:
-            self._lbl_warning.setText(f"⚠  {g.warning}")
+            self._lbl_warning.setText(f"⚠  {_tr(g.warning)}")
             self._lbl_warning.setVisible(True)
 
         if status.fully_installed:
@@ -2262,9 +2280,7 @@ class _GroupRowWidget(QFrame):
             n = g.n_items if g.n_items is not None else status.total_spectra
             n_str = f"{n:,} {unit}" if n else f"— {unit}"
             self._lbl_stats.setText(
-                f"{n_str}  ·  "
-                f"{status.total_mb / 1024:.1f} GB on disk  ·  "
-                f"{len(status.installed)}/{len(g.filenames)} files"
+                self.tr("{0}  ·  {1:.1f} GB on disk  ·  {2}/{3} files").format(n_str, status.total_mb / 1024, len(status.installed), len(g.filenames))
             )
             self._btn_install.setVisible(False)
             self._btn_browse.setVisible(False)
@@ -2277,12 +2293,9 @@ class _GroupRowWidget(QFrame):
             counted = (f"{status.total_spectra:,} {unit}  ·  "
                        if status.total_spectra else "")
             self._lbl_stats.setText(
-                f"Partial: {len(status.installed)}/{len(g.filenames)} files  ·  "
-                f"{counted}"
-                f"{status.total_mb / 1024:.1f} GB on disk  —  "
-                f"click Install to resume"
+                self.tr("Partial: {0}/{1} files  ·  {2}{3:.1f} GB on disk  —  click Install to resume").format(len(status.installed), len(g.filenames), counted, status.total_mb / 1024)
             )
-            self._btn_install.setText("Resume")
+            self._btn_install.setText(self.tr("Resume"))
             self._btn_install.setVisible(True)
             self._btn_browse.setVisible(True)
             self._btn_remove.setVisible(True)
@@ -2290,9 +2303,9 @@ class _GroupRowWidget(QFrame):
         else:
             self._dot.setStyleSheet("color: #555; font-size: 14px;")
             self._lbl_stats.setText(
-                f"Not installed  ·  {g.est_stars}  ·  {g.est_size}"
+                self.tr("Not installed  ·  {0}  ·  {1}").format(_tr(g.est_stars), _tr(g.est_size))
             )
-            self._btn_install.setText("Install")
+            self._btn_install.setText(self.tr("Install"))
             self._btn_install.setVisible(True)
             self._btn_browse.setVisible(True)
             self._btn_remove.setVisible(False)
@@ -2343,11 +2356,11 @@ class _GroupRowWidget(QFrame):
         except Exception:
             return
         if self._progress.maximum() > 0:
-            self._lbl_file_count.setText(f"{done}/{total} files")
+            self._lbl_file_count.setText(self.tr("{0}/{1} files").format(done, total))
         else:
             current = self._lbl_file_count.text()
             mb_part = current.split("·")[0].strip() if "·" in current else current
-            self._lbl_file_count.setText(f"{mb_part}  ·  {done}/{total} files")
+            self._lbl_file_count.setText(f"{mb_part}  ·  " + self.tr("{0}/{1} files").format(done, total))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2492,7 +2505,7 @@ class _SpectrumColourWorker(QThread):
         try:
             lib = get_library()
             if not lib.installed_bands():
-                self.failed.emit("No XP spectral tiers installed.")
+                self.failed.emit(self.tr("No XP spectral tiers installed."))
                 return
 
             n = len(self._sids)
@@ -2902,7 +2915,7 @@ class _NeighborhoodLoadWorker(QThread):
                                    self._max_gmag, self._limit,
                                    min_pc=self._min, wedge=self._wedge)
             if data is None:
-                self.failed.emit("Neighborhood library is not installed.")
+                self.failed.emit(self.tr("Neighborhood library is not installed."))
                 return
             self.loaded.emit(data)
         except Exception as e:
@@ -3045,7 +3058,7 @@ class _WedgeDialog(QDialog):
     """
     def __init__(self, star_name, l0, b0, plane_init, ns_init, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Wedge Slice")
+        self.setWindowTitle(self.tr("Wedge Slice"))
         self.setModal(True)
         self.setStyleSheet("QDialog{background:#0d0d1a;color:#ddd;}"
                            "QLabel{color:#ccc;}"
@@ -3056,53 +3069,53 @@ class _WedgeDialog(QDialog):
         v.setSpacing(10)
         v.setContentsMargins(14, 14, 14, 14)
 
-        head = QLabel(f"Slice a wedge centred on <b>{star_name}</b>")
+        head = QLabel(self.tr("Slice a wedge centred on <b>{0}</b>").format(star_name))
         head.setWordWrap(True)
         v.addWidget(head)
-        sub = QLabel(f"direction: galactic l = {l0:.1f}°,  b = {b0:+.1f}°")
+        sub = QLabel(self.tr("direction: galactic l = {0:.1f}°,  b = {1:+.1f}°").format(l0, b0))
         sub.setStyleSheet("color:#89a; font-size:11px; font-family:monospace;")
         v.addWidget(sub)
 
         p_row = QHBoxLayout()
-        p_row.addWidget(QLabel("Along plane  ±"))
+        p_row.addWidget(QLabel(self.tr("Along plane  ±")))
         self._sp_plane = QDoubleSpinBox()
         self._sp_plane.setRange(1.0, 90.0)
         self._sp_plane.setDecimals(0)
         self._sp_plane.setSuffix("°")
         self._sp_plane.setValue(plane_init)
-        self._sp_plane.setToolTip("Half-width in galactic longitude — how far the "
+        self._sp_plane.setToolTip(self.tr("Half-width in galactic longitude — how far the "
                                   "wedge opens left/right along the disk.\n90° = no "
-                                  "longitude limit.")
+                                  "longitude limit."))
         p_row.addWidget(self._sp_plane)
         p_row.addStretch()
         v.addLayout(p_row)
 
         n_row = QHBoxLayout()
-        n_row.addWidget(QLabel("North–south ±"))
+        n_row.addWidget(QLabel(self.tr("North–south ±")))
         self._sp_ns = QDoubleSpinBox()
         self._sp_ns.setRange(1.0, 90.0)
         self._sp_ns.setDecimals(0)
         self._sp_ns.setSuffix("°")
         self._sp_ns.setValue(ns_init)
-        self._sp_ns.setToolTip("Half-width in galactic latitude — how far the wedge "
+        self._sp_ns.setToolTip(self.tr("Half-width in galactic latitude — how far the wedge "
                                "opens above/below the disk.\nKeep it small to slice a "
-                               "flat structure edge-on.")
+                               "flat structure edge-on."))
         n_row.addWidget(self._sp_ns)
         n_row.addStretch()
         v.addLayout(n_row)
 
-        tip = QLabel("Radial depth is still set by the Radius / Min-distance "
+        tip = QLabel(self.tr("Radial depth is still set by the Radius / Min-distance "
                      "controls — combine a thin shell with a narrow wedge to "
-                     "isolate a structure.")
+                     "isolate a structure."))
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#667; font-size:10px;")
         v.addWidget(tip)
 
         b_row = QHBoxLayout()
         b_row.addStretch()
-        ok = QPushButton("Slice")
+        ok = QPushButton(self.tr("Slice"))
         ok.clicked.connect(self.accept)
-        cancel = QPushButton("Cancel")
+        cancel = QPushButton(self.tr("Cancel"))
         cancel.clicked.connect(self.reject)
         b_row.addWidget(ok)
         b_row.addWidget(cancel)
@@ -3338,11 +3351,7 @@ class StellarNeighborhoodTab(QWidget):
 
         if not _has_gl():
             msg = QLabel(
-                "<b>3D view unavailable.</b><br><br>"
-                "The Stellar Neighborhood Explorer needs <code>pyqtgraph.opengl</code> "
-                "and <code>PyOpenGL</code>.<br><br>"
-                f"<span style='color:#a66;'>Import error: {_gl_import_error()}</span><br><br>"
-                "Install with:<br><code>pip install PyOpenGL</code>"
+                self.tr("<b>3D view unavailable.</b><br><br>The Stellar Neighborhood Explorer needs <code>pyqtgraph.opengl</code> and <code>PyOpenGL</code>.<br><br><span style='color:#a66;'>Import error: {0}</span><br><br>Install with:<br><code>pip install PyOpenGL</code>").format(_gl_import_error())
             )
             msg.setWordWrap(True)
             msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3368,7 +3377,7 @@ class StellarNeighborhoodTab(QWidget):
         self._view_slot = QVBoxLayout(self._view_container)
         self._view_slot.setContentsMargins(0, 0, 0, 0)
 
-        self._view_placeholder = QLabel("Initialising 3D view…")
+        self._view_placeholder = QLabel(self.tr("Initialising 3D view…"))
         self._view_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._view_placeholder.setStyleSheet(
             "color:#556; font-size:12px; background:#0a0a12; "
@@ -3410,21 +3419,21 @@ class StellarNeighborhoodTab(QWidget):
 
         # region shape
         sh_row = QHBoxLayout()
-        sh_row.addWidget(QLabel("Region:"))
+        sh_row.addWidget(QLabel(self.tr("Region:")))
         self._combo_shape = QComboBox()
-        self._combo_shape.addItems(["Sphere (radius)", "Cube (fills the grid)"])
+        self._combo_shape.addItems([self.tr("Sphere (radius)"), self.tr("Cube (fills the grid)")])
         self._combo_shape.setToolTip(
-            "Sphere: every star within the radius of the Sun.\n"
+            self.tr("Sphere: every star within the radius of the Sun.\n"
             "Cube: an axis-aligned box of half-side = the value below, centred\n"
             "on the Sun. Fills the square grid's corners a sphere leaves empty —\n"
-            "the box spans ±value on each axis and matches the drawn grid.")
+            "the box spans ±value on each axis and matches the drawn grid."))
         self._combo_shape.currentIndexChanged.connect(self._on_shape_changed)
         sh_row.addWidget(self._combo_shape, stretch=1)
         cl.addLayout(sh_row)
 
         # radius
         r_row = QHBoxLayout()
-        self._lbl_radius = QLabel("Radius (pc):")
+        self._lbl_radius = QLabel(self.tr("Radius (pc):"))
         r_row.addWidget(self._lbl_radius)
         self._spin_radius = QDoubleSpinBox()
         # The extract stops at NEIGHBORHOOD_MAX_PC, but the hardcoded bright
@@ -3455,13 +3464,13 @@ class StellarNeighborhoodTab(QWidget):
         # minimum distance -> carve a shell (e.g. 200–220 pc) instead of a solid
         # region from the Sun outward.
         mn_row = QHBoxLayout()
-        self._chk_min = QCheckBox("Min dist (pc):")
+        self._chk_min = QCheckBox(self.tr("Min dist (pc):"))
         self._chk_min.setChecked(False)
         self._chk_min.setToolTip(
-            "Exclude everything closer than this, leaving a shell between the\n"
+            self.tr("Exclude everything closer than this, leaving a shell between the\n"
             "min distance and the radius. Slice out (say) 200–220 pc to see\n"
             "where a structure actually lives instead of burying it under all\n"
-            "the foreground stars.")
+            "the foreground stars."))
         self._chk_min.toggled.connect(self._schedule_reload)
         mn_row.addWidget(self._chk_min)
         self._spin_min = QDoubleSpinBox()
@@ -3476,7 +3485,7 @@ class StellarNeighborhoodTab(QWidget):
 
         # ruwe
         q_row = QHBoxLayout()
-        self._chk_ruwe = QCheckBox("Max RUWE:")
+        self._chk_ruwe = QCheckBox(self.tr("Max RUWE:"))
         self._chk_ruwe.setChecked(True)
         self._chk_ruwe.toggled.connect(self._schedule_reload)
         q_row.addWidget(self._chk_ruwe)
@@ -3492,7 +3501,7 @@ class StellarNeighborhoodTab(QWidget):
 
         # magnitude cut
         m_row = QHBoxLayout()
-        self._chk_mag = QCheckBox("Max G mag:")
+        self._chk_mag = QCheckBox(self.tr("Max G mag:"))
         self._chk_mag.setChecked(False)
         self._chk_mag.toggled.connect(self._schedule_reload)
         m_row.addWidget(self._chk_mag)
@@ -3508,55 +3517,55 @@ class StellarNeighborhoodTab(QWidget):
 
         # colour mode
         c_row = QHBoxLayout()
-        c_row.addWidget(QLabel("Colour by:"))
+        c_row.addWidget(QLabel(self.tr("Colour by:")))
         self._combo_color = QComboBox()
-        self._combo_color.addItems(["Absolute G (luminosity)",
-                                    "Apparent G", "Distance",
-                                    "XP Spectrum (true colour)"])
+        self._combo_color.addItems([self.tr("Absolute G (luminosity)"),
+                                    self.tr("Apparent G"), self.tr("Distance"),
+                                    self.tr("XP Spectrum (true colour)")])
         self._combo_color.currentIndexChanged.connect(self._on_color_mode_changed)
         c_row.addWidget(self._combo_color, stretch=1)
         cl.addLayout(c_row)
 
         # asterism overlay
         a_row = QHBoxLayout()
-        a_row.addWidget(QLabel("Asterism:"))
+        a_row.addWidget(QLabel(self.tr("Asterism:")))
         self._combo_asterism = QComboBox()
-        self._combo_asterism.addItem("— none —")
+        self._combo_asterism.addItem(self.tr("— none —"))
         for nm in ASTERISM_ORDER:
             self._combo_asterism.addItem(nm)
         self._combo_asterism.setToolTip(
-            "Overlay a familiar constellation with its stars at their real\n"
+            self.tr("Overlay a familiar constellation with its stars at their real\n"
             "distances and the connecting lines drawn in true 3D. The pattern\n"
             "only lines up from the Sun's viewpoint — orbit to see how far apart\n"
             "the stars actually are. (These stars are too bright for Gaia, so\n"
-            "their positions are hardcoded from Hipparcos/Gaia parallaxes.)")
+            "their positions are hardcoded from Hipparcos/Gaia parallaxes.)"))
         # Connect AFTER populating so filling the list doesn't fire the handler.
         self._combo_asterism.currentIndexChanged.connect(self._on_asterism_changed)
         a_row.addWidget(self._combo_asterism, stretch=1)
-        self._btn_earth_view = QPushButton("Earth View")
+        self._btn_earth_view = QPushButton(self.tr("Earth View"))
         self._btn_earth_view.setEnabled(False)
         self._btn_earth_view.setToolTip(
-            "Snap the camera to the Sun, looking toward the asterism — the 3D\n"
+            self.tr("Snap the camera to the Sun, looking toward the asterism — the 3D\n"
             "lines collapse into the flat shape you see from Earth. Then orbit\n"
-            "to watch the stars pull apart in depth.")
+            "to watch the stars pull apart in depth."))
         self._btn_earth_view.clicked.connect(self._asterism_earth_view)
         a_row.addWidget(self._btn_earth_view)
         cl.addLayout(a_row)
 
         # render cap
         rc_row = QHBoxLayout()
-        rc_row.addWidget(QLabel("Render cap:"))
+        rc_row.addWidget(QLabel(self.tr("Render cap:")))
         self._spin_max_points = QSpinBox()
         self._spin_max_points.setRange(10_000, self.MAX_POINTS_HARD_CAP)
         self._spin_max_points.setSingleStep(100_000)
         self._spin_max_points.setGroupSeparatorShown(True)
-        self._spin_max_points.setSuffix(" stars")
+        self._spin_max_points.setSuffix(self.tr(" stars"))
         self._spin_max_points.setValue(self.MAX_POINTS)
         self._spin_max_points.setToolTip(
-            "Maximum stars to fetch, decompress and render.\n"
+            self.tr("Maximum stars to fetch, decompress and render.\n"
             "Larger values cost RAM (~64 bytes per star for positions +\n"
             "colours) and GPU upload time. Values above a few million may\n"
-            "stutter on integrated GPUs and take tens of seconds to draw."
+            "stutter on integrated GPUs and take tens of seconds to draw.")
         )
         self._spin_max_points.editingFinished.connect(self._on_max_points_changed)
         rc_row.addWidget(self._spin_max_points)
@@ -3565,7 +3574,7 @@ class StellarNeighborhoodTab(QWidget):
 
         # point size
         s_row = QHBoxLayout()
-        s_row.addWidget(QLabel("Point size:"))
+        s_row.addWidget(QLabel(self.tr("Point size:")))
         self._slider_size = QSlider(Qt.Orientation.Horizontal)
         self._slider_size.setRange(10, 120)
         self._slider_size.setValue(40)
@@ -3575,32 +3584,32 @@ class StellarNeighborhoodTab(QWidget):
 
         # Depth cues
         v_row = QHBoxLayout()
-        self._chk_droplines = QCheckBox("Drop lines")
+        self._chk_droplines = QCheckBox(self.tr("Drop lines"))
         self._chk_droplines.setChecked(True)
         self._chk_droplines.setToolTip(
-            "Vertical line from each star down to the galactic plane.\n"
+            self.tr("Vertical line from each star down to the galactic plane.\n"
             "Without it, height above the plane and distance from you\n"
-            "are visually indistinguishable.")
+            "are visually indistinguishable."))
         self._chk_droplines.toggled.connect(lambda _=False: self._recolor())
         v_row.addWidget(self._chk_droplines)
 
-        self._chk_axes = QCheckBox("Galactic axes")
+        self._chk_axes = QCheckBox(self.tr("Galactic axes"))
         self._chk_axes.setChecked(True)
         self._chk_axes.setToolTip(
-            "Red   — toward the galactic centre (l=0°)\n"
+            self.tr("Red   — toward the galactic centre (l=0°)\n"
             "Green — the direction the Sun is moving in its galactic orbit (l=90°)\n"
             "Blue  — galactic north\n"
             "Yellow— the Sun's own rotation axis (a tilt, not a motion)\n\n"
             "The grid is the galactic midplane, inclined ~60° to the ecliptic —\n"
-            "it is not the plane the planets orbit in.")
+            "it is not the plane the planets orbit in."))
         self._chk_axes.toggled.connect(lambda _=False: self._update_axes())
         v_row.addWidget(self._chk_axes)
 
-        self._chk_ticks = QCheckBox("Scale ticks")
+        self._chk_ticks = QCheckBox(self.tr("Scale ticks"))
         self._chk_ticks.setChecked(True)
         self._chk_ticks.setToolTip(
-            "Label each grid ring with its distance from the Sun, in parsecs.\n"
-            "Grid spacing is one fifth of the current radius.")
+            self.tr("Label each grid ring with its distance from the Sun, in parsecs.\n"
+            "Grid spacing is one fifth of the current radius."))
         self._chk_ticks.toggled.connect(lambda _=False: self._update_tick_labels())
         v_row.addWidget(self._chk_ticks)
 
@@ -3608,23 +3617,23 @@ class StellarNeighborhoodTab(QWidget):
         cl.addLayout(v_row)
 
         btn_row = QHBoxLayout()
-        btn_reset = QPushButton("Reset View")
-        btn_reset.setToolTip("Recenter on the Sun and restore the default "
-                             "angle and zoom for the current radius.")
+        btn_reset = QPushButton(self.tr("Reset View"))
+        btn_reset.setToolTip(self.tr("Recenter on the Sun and restore the default "
+                             "angle and zoom for the current radius."))
         btn_reset.clicked.connect(self._reset_view)
         btn_row.addWidget(btn_reset)
-        btn_fit = QPushButton("Fit View")
-        btn_fit.setToolTip("Rescale zoom and grid to the current radius "
-                           "without changing the camera angle.")
+        btn_fit = QPushButton(self.tr("Fit View"))
+        btn_fit.setToolTip(self.tr("Rescale zoom and grid to the current radius "
+                           "without changing the camera angle."))
         btn_fit.clicked.connect(self._fit_view)
         btn_row.addWidget(btn_fit)
-        btn_reload = QPushButton("Reload")
+        btn_reload = QPushButton(self.tr("Reload"))
         btn_reload.clicked.connect(self._reload)
         btn_row.addWidget(btn_reload)
-        self._btn_clear_wedge = QPushButton("Clear Wedge")
+        self._btn_clear_wedge = QPushButton(self.tr("Clear Wedge"))
         self._btn_clear_wedge.setEnabled(False)
         self._btn_clear_wedge.setToolTip(
-            "Remove the angular wedge slice and show the full field again.")
+            self.tr("Remove the angular wedge slice and show the full field again."))
         self._btn_clear_wedge.clicked.connect(self._clear_wedge)
         btn_row.addWidget(self._btn_clear_wedge)
         cl.addLayout(btn_row)
@@ -3638,7 +3647,7 @@ class StellarNeighborhoodTab(QWidget):
 
         # nearest-star table
         self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["star", "dist (pc)", "mag", "RUWE"])
+        self._table.setHorizontalHeaderLabels([self.tr("star"), self.tr("dist (pc)"), self.tr("mag"), "RUWE"])
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -3664,22 +3673,22 @@ class StellarNeighborhoodTab(QWidget):
         side.addWidget(self._info)
 
         sb_row = QHBoxLayout()
-        self._btn_simbad = QPushButton("Resolve in SIMBAD")
+        self._btn_simbad = QPushButton(self.tr("Resolve in SIMBAD"))
         self._btn_simbad.setEnabled(False)
         self._btn_simbad.clicked.connect(self._resolve_simbad)
         sb_row.addWidget(self._btn_simbad)
-        self._btn_simbad_web = QPushButton("Open in browser")
+        self._btn_simbad_web = QPushButton(self.tr("Open in browser"))
         self._btn_simbad_web.setEnabled(False)
         self._btn_simbad_web.clicked.connect(self._open_simbad_web)
         sb_row.addWidget(self._btn_simbad_web)
         side.addLayout(sb_row)
 
         note = QLabel(
-            "Drag to orbit · scroll to zoom · Ctrl+drag to pan · click a star to select.<br>"
+            self.tr("Drag to orbit · scroll to zoom · Ctrl+drag to pan · click a star to select.<br>"
             "<span style='color:#886;'>Gaia saturates below G≈3, so the naked-eye stars "
             "(Sirius, Alpha Cen, Vega, Procyon…) carry distances and colours derived from "
             "other catalogues — Hipparcos parallaxes and B–V photometry via SIMBAD — rather "
-            "than from Gaia astrometry.</span>")
+            "than from Gaia astrometry.</span>"))
         note.setWordWrap(True)
         note.setStyleSheet("color:#667; font-size:10px;")
         note.setMaximumHeight(44)
@@ -3714,7 +3723,7 @@ class StellarNeighborhoodTab(QWidget):
         self._reload_timer.start()
 
     def _on_shape_changed(self, index: int):
-        self._lbl_radius.setText("Half-size (pc):" if index == 1 else "Radius (pc):")
+        self._lbl_radius.setText(self.tr("Half-size (pc):") if index == 1 else self.tr("Radius (pc):"))
         self._schedule_reload()
 
     def _empty_gaia(self) -> Dict[str, np.ndarray]:
@@ -3745,8 +3754,8 @@ class StellarNeighborhoodTab(QWidget):
         min_pc = self._spin_min.value() if self._chk_min.isChecked() else None
         if min_pc is not None and min_pc >= self._spin_radius.value():
             self._data = None
-            self._status.setText("Min distance ≥ radius — nothing to show. "
-                                 "Lower the min or raise the radius.")
+            self._status.setText(self.tr("Min distance ≥ radius — nothing to show. "
+                                 "Lower the min or raise the radius."))
             self._set_points(None)
             return
 
@@ -3765,7 +3774,7 @@ class StellarNeighborhoodTab(QWidget):
         if self._worker is not None and self._worker.isRunning():
             return
 
-        self._status.setText("Loading…")
+        self._status.setText(self.tr("Loading…"))
         QApplication.processEvents()
 
         max_ruwe = self._spin_ruwe.value() if self._chk_ruwe.isChecked() else None
@@ -3789,10 +3798,10 @@ class StellarNeighborhoodTab(QWidget):
         SOFT_WARN = 5_000_000
         if v > SOFT_WARN and not getattr(self, "_ack_render_cap_high", False):
             ret = QMessageBox.warning(
-                self, "High render cap",
-                f"Rendering {v:,} stars can use several hundred MB of RAM "
-                "and may take tens of seconds to draw and pan smoothly, "
-                "especially on integrated graphics.\n\nContinue?",
+                self, self.tr("High render cap"),
+                self.tr("Rendering {0:,} stars can use several hundred MB of RAM and may take tens of seconds to draw and pan smoothly, especially on integrated graphics.\n"
+                        "\n"
+                        "Continue?").format(v),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
             if ret != QMessageBox.StandardButton.Yes:
@@ -3810,7 +3819,7 @@ class StellarNeighborhoodTab(QWidget):
         self._schedule_reload()
 
     def _on_failed(self, msg: str):
-        self._status.setText(f"Load failed: {msg}")
+        self._status.setText(self.tr("Load failed: {0}").format(msg))
         self._worker = None
 
     def _on_loaded(self, data: dict):
@@ -3847,26 +3856,25 @@ class StellarNeighborhoodTab(QWidget):
 
         r = self._spin_radius.value()
         if min_pc is not None and min_pc > 0.0:
-            kind = "cube shell" if shape == "cube" else "shell"
-            region = f"{min_pc:.1f}–{r:.1f} pc {kind}"
+            if shape == "cube":
+                region = self.tr("{0:.1f}–{1:.1f} pc cube shell").format(min_pc, r)
+            else:
+                region = self.tr("{0:.1f}–{1:.1f} pc shell").format(min_pc, r)
         else:
-            region = f"±{r:.1f} pc cube" if shape == "cube" else f"{r:.1f} pc"
+            region = self.tr("±{0:.1f} pc cube").format(r) if shape == "cube" else f"{r:.1f} pc"
         if wedge is not None:
             l0, b0, hl, hb = wedge
-            region += f", wedge l={l0:.0f}°±{hl:.0f}° b={b0:+.0f}°±{hb:.0f}°"
+            region += self.tr(", wedge l={0:.0f}°±{1:.0f}° b={2:+.0f}°±{3:.0f}°").format(l0, hl, b0, hb)
 
         if n == 0:
             if self._gaia_missing and load_bright_stars() is None:
                 self._status.setText(
-                    "Nothing to show: the neighborhood library isn't installed "
-                    "(Astrometry tab) and bright_stars_3d.py is missing "
-                    f"({_BRIGHT_LOAD_ERROR}).")
+                    self.tr("Nothing to show: the neighborhood library isn't installed (Astrometry tab) and bright_stars_3d.py is missing ({0}).").format(_BRIGHT_LOAD_ERROR))
             elif self._gaia_missing:
                 self._status.setText(
-                    f"No stars within {region}. Install “Stellar Neighborhood "
-                    f"(within 300 pc)” on the Astrometry tab for the ~10M faint ones.")
+                    self.tr("No stars within {0}. Install “Stellar Neighborhood (within 300 pc)” on the Astrometry tab for the ~10M faint ones.").format(region))
             else:
-                self._status.setText(f"No stars within {region} matching the cuts.")
+                self._status.setText(self.tr("No stars within {0} matching the cuts.").format(region))
             self._set_points(data)
             self._fill_table(data)
             if getattr(self, "_suppress_fit", False):
@@ -3877,19 +3885,19 @@ class StellarNeighborhoodTab(QWidget):
 
         extra = ""
         if self._gaia_missing:
-            extra = ("  ·  Gaia neighborhood library not installed — showing only "
-                     "naked-eye stars. Install it on the Astrometry tab.")
+            extra = self.tr("  ·  Gaia neighborhood library not installed — showing only "
+                            "naked-eye stars. Install it on the Astrometry tab.")
         elif n_bright:
-            extra = f"  ·  incl. {n_bright} naked-eye stars (distances from Hipparcos)"
+            extra = self.tr("  ·  incl. {0} naked-eye stars (distances from Hipparcos)").format(n_bright)
         if r > NEIGHBORHOOD_MAX_PC and not self._gaia_missing:
-            extra += (f"  ·  ⚠ beyond {NEIGHBORHOOD_MAX_PC:.0f} pc only the "
-                      f"naked-eye stars are plotted")
+            extra += self.tr("  ·  ⚠ beyond {0:.0f} pc only the "
+                             "naked-eye stars are plotted").format(NEIGHBORHOOD_MAX_PC)
         self._status.setText(
-            f"{n:,} stars within {region}{cut_str}{extra}"
-            + (f"  ·  ⚠ truncated at render cap ({self.MAX_POINTS:,}); "
-               "raise it in the controls to see more"
+            self.tr("{0:,} stars within {1}{2}{3}").format(n, region, cut_str, extra)
+            + (self.tr("  ·  ⚠ truncated at render cap ({0:,}); "
+                       "raise it in the controls to see more").format(self.MAX_POINTS)
                if truncated else
-               ("  ·  entire local catalog"
+               (self.tr("  ·  entire local catalog")
                 if n > 1_000_000 and r >= NEIGHBORHOOD_MAX_PC else "")))
 
         self._set_points(data)
@@ -3970,9 +3978,7 @@ class StellarNeighborhoodTab(QWidget):
             self._spec_rgb, self._spec_found = rgb, found
             n_bright = int(found.sum())
             self._status.setText(
-                f"True colour: {n_bright} naked-eye stars coloured from B–V. "
-                f"Gaia stars need XP spectra — install a tier on the Spectrum "
-                f"Library tab (Ultra-Bright is only ~220 MB)."
+                self.tr("True colour: {0} naked-eye stars coloured from B–V. Gaia stars need XP spectra — install a tier on the Spectrum Library tab (Ultra-Bright is only ~220 MB).").format(n_bright)
             )
             self._recolor()
             return
@@ -3985,9 +3991,13 @@ class StellarNeighborhoodTab(QWidget):
         order = todo[np.argsort(g)][: self.MAX_SPECTRUM_STARS]
 
         self._spec_rgb, self._spec_found = rgb, found
-        self._status.setText(
-            f"Integrating XP spectra for {len(order):,} stars…"
-            + (f"  (capped from {len(todo):,})" if len(todo) > len(order) else ""))
+        if len(todo) > len(order):
+            self._status.setText(
+                self.tr("Integrating XP spectra for {0:,} stars…  (capped from {1:,})")
+                .format(len(order), len(todo)))
+        else:
+            self._status.setText(
+                self.tr("Integrating XP spectra for {0:,} stars…").format(len(order)))
 
         self._colour_worker = _SpectrumColourWorker(sids, order, parent=None)
         self._colour_worker.finished_colours.connect(self._on_colours_ready)
@@ -3996,7 +4006,7 @@ class StellarNeighborhoodTab(QWidget):
 
     def _on_colours_failed(self, msg: str):
         self._colour_worker = None
-        self._status.setText(f"Colour resolve failed: {msg}")
+        self._status.setText(self.tr("Colour resolve failed: {0}").format(msg))
 
     def _on_colours_ready(self, rgb: np.ndarray, found: np.ndarray):
         self._colour_worker = None
@@ -4030,15 +4040,12 @@ class StellarNeighborhoodTab(QWidget):
         n_bright = int(is_bright.sum())
         if n_gaia == 0:
             self._status.setText(
-                f"True colour: {n_bright} naked-eye stars coloured from B–V "
-                f"(no Gaia stars loaded).")
+                self.tr("True colour: {0} naked-eye stars coloured from B–V (no Gaia stars loaded).").format(n_bright))
         else:
-            bright_note = (f" + {n_bright} naked-eye stars coloured from B–V."
+            bright_note = (self.tr(" + {0} naked-eye stars coloured from B–V.").format(n_bright)
                            if n_bright else "")
             self._status.setText(
-                f"True colour: {n_found:,}/{n_gaia:,} Gaia stars have XP spectra "
-                f"({n_found/n_gaia:.0%}). Grey = no spectrum "
-                f"(Gaia XP covers G≈2.2–15).{bright_note}"
+                self.tr("True colour: {0:,}/{1:,} Gaia stars have XP spectra ({2:.0%}). Grey = no spectrum (Gaia XP covers G≈2.2–15).{3}").format(n_found, n_gaia, n_found/n_gaia, bright_note)
             )
         self._recolor()
 
@@ -4127,10 +4134,10 @@ class StellarNeighborhoodTab(QWidget):
         self._axes.setData(pos=pts, color=cols, width=2.0, antialias=True)
 
         labels = [
-            (np.array([L * 1.02, 0, 0]), "toward Galactic Centre", (255, 130, 115, 255)),
-            (np.array([0, L * 1.02, 0]), "Sun's orbital direction", (120, 240, 145, 255)),
-            (np.array([0, 0, L * 0.62]), "Galactic North", (130, 180, 255, 255)),
-            (sp * 1.06,                  "Sun's N pole",  (255, 230, 110, 255)),
+            (np.array([L * 1.02, 0, 0]), self.tr("toward Galactic Centre"), (255, 130, 115, 255)),
+            (np.array([0, L * 1.02, 0]), self.tr("Sun's orbital direction"), (120, 240, 145, 255)),
+            (np.array([0, 0, L * 0.62]), self.tr("Galactic North"), (130, 180, 255, 255)),
+            (sp * 1.06,                  self.tr("Sun's N pole"),  (255, 230, 110, 255)),
         ]
         for item, (pos, text, col) in zip(self._axis_labels, labels):
             item.setData(pos=pos, text=text, color=col)
@@ -4281,7 +4288,7 @@ class StellarNeighborhoodTab(QWidget):
             import astropy.units as u
             from astropy.coordinates import SkyCoord
         except Exception as e:
-            self._status.setText(f"astropy required for asterisms: {e}")
+            self._status.setText(self.tr("astropy required for asterisms: {0}").format(e))
             return None
         ra   = np.array([s[1] for s in stars], dtype=np.float64)
         dec  = np.array([s[2] for s in stars], dtype=np.float64)
@@ -4358,10 +4365,7 @@ class StellarNeighborhoodTab(QWidget):
 
         dists = [s[3] for s in ASTERISMS[name]["stars"]]
         self._status.setText(
-            f"{name}: {len(xyz)} stars spanning {min(dists):.0f}–{max(dists):.0f} pc "
-            f"in depth. The flat shape you know is a line-of-sight illusion — click "
-            f"“Earth View” to flatten it, then drag to orbit and watch the stars "
-            f"pull apart. (Bright naked-eye stars, hardcoded — not from Gaia.)")
+            self.tr("{0}: {1} stars spanning {2:.0f}–{3:.0f} pc in depth. The flat shape you know is a line-of-sight illusion — click “Earth View” to flatten it, then drag to orbit and watch the stars pull apart. (Bright naked-eye stars, hardcoded — not from Gaia.)").format(name, len(xyz), min(dists), max(dists)))
 
     def _clear_asterism(self):
         self._asterism_active = False
@@ -4389,7 +4393,7 @@ class StellarNeighborhoodTab(QWidget):
         x, y, z = (float(v) for v in self._data["xyz"][idx])
         r = math.sqrt(x * x + y * y + z * z)
         if r < 1e-9:
-            self._status.setText("Can't wedge on the Sun — pick a star.")
+            self._status.setText(self.tr("Can't wedge on the Sun — pick a star."))
             return
         l0 = math.degrees(math.atan2(y, x)) % 360.0
         b0 = math.degrees(math.asin(max(-1.0, min(1.0, z / r))))
@@ -4453,9 +4457,9 @@ class StellarNeighborhoodTab(QWidget):
         self._view.setCameraPosition(pos=Vector(*c), distance=r,
                                      azimuth=az, elevation=el)
         self._status.setText(
-            "Earth View — camera at the Sun. The lines now match the flat pattern "
+            self.tr("Earth View — camera at the Sun. The lines now match the flat pattern "
             "you see in the night sky. Drag to orbit and watch the stars separate "
-            "in depth.")
+            "in depth."))
 
     # ── table + selection ─────────────────────────────────────────────────
 
@@ -4479,7 +4483,7 @@ class StellarNeighborhoodTab(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if bright:
                     item.setForeground(QColor("#ffd966"))
-                    item.setToolTip("Naked-eye star — too bright for Gaia (saturates below G≈3)")
+                    item.setToolTip(self.tr("Naked-eye star — too bright for Gaia (saturates below G≈3)"))
                 self._table.setItem(i, c, item)
         self._table.resizeColumnsToContents()
 
@@ -4544,22 +4548,22 @@ class StellarNeighborhoodTab(QWidget):
         # one genuine exception: Gaia saturates on them, so no XP spectrum
         # exists by construction.
         is_bright = self._selected_is_bright()
-        act_spec = menu.addAction("View XP Spectrum")
+        act_spec = menu.addAction(self.tr("View XP Spectrum"))
         act_spec.setEnabled(not is_bright)
         if is_bright:
             act_spec.setToolTip(
-                "Too bright for Gaia — saturates below G≈3, which is exactly "
-                "why this star is hardcoded")
+                self.tr("Too bright for Gaia — saturates below G≈3, which is exactly "
+                "why this star is hardcoded"))
 
         menu.addSeparator()
-        act_simbad = menu.addAction("Resolve in SIMBAD")
-        act_web    = menu.addAction("Open in SIMBAD (browser)")
+        act_simbad = menu.addAction(self.tr("Resolve in SIMBAD"))
+        act_web    = menu.addAction(self.tr("Open in SIMBAD (browser)"))
         menu.addSeparator()
-        act_wedge = menu.addAction("Wedge slice from here…")
-        act_wedge_clear = menu.addAction("Clear wedge slice") if self._wedge_active else None
+        act_wedge = menu.addAction(self.tr("Wedge slice from here…"))
+        act_wedge_clear = menu.addAction(self.tr("Clear wedge slice")) if self._wedge_active else None
         menu.addSeparator()
         act_copy = menu.addAction(
-            "Copy name" if self._selected_is_bright() else "Copy source_id")
+            self.tr("Copy name") if self._selected_is_bright() else self.tr("Copy source_id"))
 
         # Menus don't show disabled-item tooltips by default.
         menu.setToolTipsVisible(True)
@@ -4581,7 +4585,7 @@ class StellarNeighborhoodTab(QWidget):
             txt = (str(self._data["name"][self._selected_idx])
                    if self._selected_is_bright() else str(sid))
             QApplication.clipboard().setText(txt)
-            self._status.setText(f"Copied “{txt}” to clipboard.")
+            self._status.setText(self.tr("Copied “{0}” to clipboard.").format(txt))
 
     def _on_table_context_menu(self, pos):
         """Right-click a row in the nearest-star table -> same menu."""
@@ -4634,27 +4638,30 @@ class StellarNeighborhoodTab(QWidget):
             plx_ok = bool(self._data["plx_ok"][idx])
 
             warn = ("" if plx_ok else
-                    "\n⚠ weak parallax (SNR<5) — distance is indicative only")
+                    self.tr("\n⚠ weak parallax (SNR<5) — distance is indicative only"))
             self._info.setPlainText(
-                f"{name}    [not in Gaia — saturates below G≈3]\n"
-                f"SIMBAD  {simbad_id}    type {sp}\n"
-                f"dist  {d:.4f} pc   ({ly:.3f} ly)\n"
-                f"V {g:.2f}"
-                + (f"   T_eff≈{teff:.0f} K (from B–V)" if teff else "")
-                + f"\nRA {ra:.6f}°   Dec {dec:.6f}°\n"
-                f"galactic XYZ  ({x:.3f}, {y:.3f}, {z:.3f}) pc"
+                self.tr("{0}    [not in Gaia — saturates below G≈3]\n"
+                        "SIMBAD  {1}    type {2}\n"
+                        "dist  {3:.4f} pc   ({4:.3f} ly)\n"
+                        "V {5:.2f}").format(name, simbad_id, sp, d, ly, g)
+                + (self.tr("   T_eff≈{0:.0f} K (from B–V)").format(teff) if teff else "")
+                + self.tr("\nRA {0:.6f}°   Dec {1:.6f}°\n"
+                          "galactic XYZ  ({2:.3f}, {3:.3f}, {4:.3f}) pc").format(ra, dec, x, y, z)
                 + warn
             )
         else:
             absg = (g - 5.0 * math.log10(max(d, 1e-6)) + 5.0) if np.isfinite(g) else float("nan")
             self._info.setPlainText(
-                f"Gaia DR3 {sid}\n"
-                f"dist  {d:.4f} pc   ({ly:.3f} ly)\n"
-                f"G {'—' if not np.isfinite(g) else f'{g:.3f}'}"
-                f"   M_G {'—' if not np.isfinite(absg) else f'{absg:.3f}'}"
-                f"   RUWE {'—' if not np.isfinite(ruwe) else f'{ruwe:.3f}'}\n"
-                f"RA {ra:.6f}°   Dec {dec:.6f}°\n"
-                f"galactic XYZ  ({x:.3f}, {y:.3f}, {z:.3f}) pc"
+                self.tr("Gaia DR3 {0}\n"
+                        "dist  {1:.4f} pc   ({2:.3f} ly)\n"
+                        "G {3}   M_G {4}   RUWE {5}\n"
+                        "RA {6:.6f}°   Dec {7:.6f}°\n"
+                        "galactic XYZ  ({8:.3f}, {9:.3f}, {10:.3f}) pc").format(
+                    sid, d, ly,
+                    '—' if not np.isfinite(g) else f'{g:.3f}',
+                    '—' if not np.isfinite(absg) else f'{absg:.3f}',
+                    '—' if not np.isfinite(ruwe) else f'{ruwe:.3f}',
+                    ra, dec, x, y, z)
             )
         self._btn_simbad.setEnabled(True)
         self._btn_simbad_web.setEnabled(True)
@@ -4732,7 +4739,7 @@ class StellarNeighborhoodTab(QWidget):
             ident = self._selected_identifier()
             if ident is None:
                 return
-            self._status.setText(f"Resolving {ident} via SIMBAD…")
+            self._status.setText(self.tr("Resolving {0} via SIMBAD…").format(ident))
             QApplication.processEvents()
             try:
                 from setiastro.saspro import cds_health
@@ -4744,7 +4751,7 @@ class StellarNeighborhoodTab(QWidget):
                     pass
                 res = s.query_object(ident)
                 if res is None or len(res) == 0:
-                    self._status.setText(f"SIMBAD has no entry for {ident}.")
+                    self._status.setText(self.tr("SIMBAD has no entry for {0}.").format(ident))
                     return
                 main, otype = self._simbad_row_ids(res, 0)
                 self._info.setPlainText(
@@ -4752,7 +4759,7 @@ class StellarNeighborhoodTab(QWidget):
                     + f"\nSIMBAD: {main}" + (f"   ({otype})" if otype else ""))
                 self._status.setText(f"SIMBAD: {main}")
             except Exception as e:
-                self._status.setText(f"SIMBAD lookup failed: {e}")
+                self._status.setText(self.tr("SIMBAD lookup failed: {0}").format(e))
             return
 
         # Gaia stars: cone search. `Gaia DR3 <id>` only resolves for the subset
@@ -4765,7 +4772,7 @@ class StellarNeighborhoodTab(QWidget):
         dec = float(self._data["dec"][i])
         sid = int(self._data["source_id"][i])
 
-        self._status.setText(f"Cone-searching SIMBAD near Gaia DR3 {sid}…")
+        self._status.setText(self.tr("Cone-searching SIMBAD near Gaia DR3 {0}…").format(sid))
         QApplication.processEvents()
 
         try:
@@ -4796,30 +4803,29 @@ class StellarNeighborhoodTab(QWidget):
 
             if res is None or len(res) == 0:
                 self._status.setText(
-                    f"No SIMBAD object within 60\" of Gaia DR3 {sid}. "
-                    f"Most faint neighborhood dwarfs are not in SIMBAD.")
+                    self.tr("No SIMBAD object within 60\" of Gaia DR3 {0}. Most faint neighborhood dwarfs are not in SIMBAD.").format(sid))
                 return
 
             j, sep = self._nearest_simbad_row(res, ra, dec)
             if j is None:
-                self._status.setText("SIMBAD returned rows with unusable coordinates.")
+                self._status.setText(self.tr("SIMBAD returned rows with unusable coordinates."))
                 return
 
             main, otype = self._simbad_row_ids(res, j)
             n_hits = len(res)
 
             extra = f"\nSIMBAD: {main}" + (f"   ({otype})" if otype else "")
-            extra += f"\n  cone match, sep={sep:.2f}\""
+            extra += self.tr("\n  cone match, sep={0:.2f}\"").format(sep)
             if n_hits > 1:
-                extra += f"  ({n_hits} objects in {used_r:.0f}\" — nearest shown)"
+                extra += self.tr("  ({0} objects in {1:.0f}\" — nearest shown)").format(n_hits, used_r)
             if sep > 20.0:
-                extra += "\n  ⚠ large separation — likely proper motion (J2016 vs J2000), verify"
+                extra += self.tr("\n  ⚠ large separation — likely proper motion (J2016 vs J2000), verify")
 
             self._info.setPlainText(self._info.toPlainText() + extra)
-            self._status.setText(f"SIMBAD: {main}  (sep {sep:.2f}\")")
+            self._status.setText(self.tr("SIMBAD: {0}  (sep {1:.2f}\")").format(main, sep))
 
         except Exception as e:
-            self._status.setText(f"SIMBAD cone search failed: {e}")
+            self._status.setText(self.tr("SIMBAD cone search failed: {0}").format(e))
 
     def _open_simbad_web(self):
         from PyQt6.QtGui import QDesktopServices
@@ -4920,11 +4926,11 @@ class SpectrumPopupDialog(QDialog):
         self._status.setStyleSheet("color:#668; font-size:11px;")
         self._status.setWordWrap(True)
         row.addWidget(self._status, stretch=1)
-        btn_copy = QPushButton("Copy source_id")
+        btn_copy = QPushButton(self.tr("Copy source_id"))
         btn_copy.clicked.connect(
             lambda: QApplication.clipboard().setText(str(sid)))
         row.addWidget(btn_copy)
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.close)
         row.addWidget(btn_close)
         v.addLayout(row)
@@ -4937,8 +4943,8 @@ class SpectrumPopupDialog(QDialog):
             self._viewer.clear()
             self._info.setPlainText(f"source_id: {sid}")
             self._status.setText(
-                "No XP spectrum for this star in Gaia DR3. XP spectra cover "
-                "roughly G ≈ 2.2–15; most neighborhood dwarfs are fainter.")
+                self.tr("No XP spectrum for this star in Gaia DR3. XP spectra cover "
+                "roughly G ≈ 2.2–15; most neighborhood dwarfs are fainter."))
             return
 
         info = None
@@ -4963,7 +4969,7 @@ class SpectrumPopupDialog(QDialog):
         except Exception:
             local = False
         self._status.setText(
-            f"Loaded from {'local library' if local else 'live cache'}.")
+            self.tr("Loaded from local library.") if local else self.tr("Loaded from live cache."))
         
 # ══════════════════════════════════════════════════════════════════════════════
 #  Main dialog
@@ -4974,7 +4980,7 @@ class GaiaDatabaseDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Gaia DR3 Library")
+        self.setWindowTitle(self.tr("Gaia DR3 Library"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
@@ -5111,7 +5117,7 @@ class GaiaDatabaseDialog(QDialog):
         hdr.setStyleSheet("background: #0a0a18; border-bottom: 1px solid #1a1a3e;")
         hdr_layout = QHBoxLayout(hdr)
         hdr_layout.setContentsMargins(20, 14, 20, 14)
-        title_lbl = QLabel("Gaia DR3 Library")
+        title_lbl = QLabel(self.tr("Gaia DR3 Library"))
         title_lbl.setStyleSheet(
             "font-size: 18px; font-weight: bold; color: #8899ee; "
             "letter-spacing: 1px; border: none;")
@@ -5125,8 +5131,8 @@ class GaiaDatabaseDialog(QDialog):
         self._tabs = tabs
         root.addWidget(tabs, stretch=1)
 
-        tabs.addTab(self._build_group_tab("spectral"), "Spectrum Library")
-        tabs.addTab(self._build_group_tab("astro"), "Astrometry")
+        tabs.addTab(self._build_group_tab("spectral"), self.tr("Spectrum Library"))
+        tabs.addTab(self._build_group_tab("astro"), self.tr("Astrometry"))
 
         # Tab: Blind Solve Index (quad-hash layers, BUILT locally from the
         # catalogs above — nothing is downloaded here). Wrapped so a missing
@@ -5135,7 +5141,7 @@ class GaiaDatabaseDialog(QDialog):
             from setiastro.saspro.gaia_quad_tab import BlindSolveIndexTab
             self._quad_tab = BlindSolveIndexTab()
             self._quad_tab.library_changed.connect(self.library_changed.emit)
-            tabs.addTab(self._quad_tab, "Blind Solve Index")
+            tabs.addTab(self._quad_tab, self.tr("Blind Solve Index"))
         except Exception as e:
             print(f"[GaiaDatabaseDialog] Blind Solve Index tab unavailable: {e}")
             self._quad_tab = None
@@ -5143,7 +5149,7 @@ class GaiaDatabaseDialog(QDialog):
         # Tab: Stellar Neighborhood Explorer (3D)
         self._neighborhood_tab = StellarNeighborhoodTab()
         self._neighborhood_tab.spectrumRequested.connect(self._show_spectrum_for_source)
-        tabs.addTab(self._neighborhood_tab, "Neighborhood Explorer")
+        tabs.addTab(self._neighborhood_tab, self.tr("Neighborhood Explorer"))
 
         # Tab: Spectrum Viewer
         viewer_tab    = QWidget()
@@ -5152,9 +5158,9 @@ class GaiaDatabaseDialog(QDialog):
         viewer_layout.setSpacing(8)
 
         mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Search by:"))
+        mode_row.addWidget(QLabel(self.tr("Search by:")))
         self._search_mode = QComboBox()
-        self._search_mode.addItems(["Star Name (SIMBAD)", "RA / Dec", "Gaia source_id"])
+        self._search_mode.addItems([self.tr("Star Name (SIMBAD)"), "RA / Dec", "Gaia source_id"])
         self._search_mode.setFixedWidth(200)
         self._search_mode.currentIndexChanged.connect(self._on_search_mode_changed)
         mode_row.addWidget(self._search_mode)
@@ -5165,10 +5171,10 @@ class GaiaDatabaseDialog(QDialog):
         name_layout = QHBoxLayout(self._name_row)
         name_layout.setContentsMargins(0, 0, 0, 0)
         self._name_edit  = QLineEdit()
-        self._name_edit.setPlaceholderText("e.g. Arneb, Muphrid, Tania Australis, HD 12345…")
+        self._name_edit.setPlaceholderText(self.tr("e.g. Arneb, Muphrid, Tania Australis, HD 12345…"))
         self._name_edit.returnPressed.connect(self._lookup_spectrum)
         name_layout.addWidget(self._name_edit, stretch=1)
-        btn_name = QPushButton("Look Up")
+        btn_name = QPushButton(self.tr("Look Up"))
         btn_name.clicked.connect(self._lookup_spectrum)
         name_layout.addWidget(btn_name)
         viewer_layout.addWidget(self._name_row)
@@ -5176,23 +5182,23 @@ class GaiaDatabaseDialog(QDialog):
         self._radec_row  = QWidget()
         radec_layout = QHBoxLayout(self._radec_row)
         radec_layout.setContentsMargins(0, 0, 0, 0)
-        radec_layout.addWidget(QLabel("RA (deg):"))
+        radec_layout.addWidget(QLabel(self.tr("RA (deg):")))
         self._ra_edit = QLineEdit()
-        self._ra_edit.setPlaceholderText("e.g. 279.234")
+        self._ra_edit.setPlaceholderText(self.tr("e.g. 279.234"))
         self._ra_edit.setFixedWidth(110)
         self._ra_edit.returnPressed.connect(self._lookup_spectrum)
         radec_layout.addWidget(self._ra_edit)
-        radec_layout.addWidget(QLabel("Dec (deg):"))
+        radec_layout.addWidget(QLabel(self.tr("Dec (deg):")))
         self._dec_edit = QLineEdit()
-        self._dec_edit.setPlaceholderText("e.g. 38.783")
+        self._dec_edit.setPlaceholderText(self.tr("e.g. 38.783"))
         self._dec_edit.setFixedWidth(110)
         self._dec_edit.returnPressed.connect(self._lookup_spectrum)
         radec_layout.addWidget(self._dec_edit)
-        radec_layout.addWidget(QLabel("Radius (arcsec):"))
+        radec_layout.addWidget(QLabel(self.tr("Radius (arcsec):")))
         self._radius_edit = QLineEdit("5.0")
         self._radius_edit.setFixedWidth(60)
         radec_layout.addWidget(self._radius_edit)
-        btn_radec = QPushButton("Look Up")
+        btn_radec = QPushButton(self.tr("Look Up"))
         btn_radec.clicked.connect(self._lookup_spectrum)
         radec_layout.addWidget(btn_radec)
         radec_layout.addStretch()
@@ -5203,17 +5209,17 @@ class GaiaDatabaseDialog(QDialog):
         sid_layout = QHBoxLayout(self._sid_row)
         sid_layout.setContentsMargins(0, 0, 0, 0)
         self._sid_edit = QLineEdit()
-        self._sid_edit.setPlaceholderText("Enter Gaia DR3 source_id…")
+        self._sid_edit.setPlaceholderText(self.tr("Enter Gaia DR3 source_id…"))
         self._sid_edit.returnPressed.connect(self._lookup_spectrum)
         sid_layout.addWidget(self._sid_edit, stretch=1)
-        btn_sid = QPushButton("Look Up")
+        btn_sid = QPushButton(self.tr("Look Up"))
         btn_sid.clicked.connect(self._lookup_spectrum)
         sid_layout.addWidget(btn_sid)
         self._sid_row.setVisible(False)
         viewer_layout.addWidget(self._sid_row)
 
         self._viewer_status = QLabel(
-            "Search for a star by name, coordinates, or Gaia source_id.")
+            self.tr("Search for a star by name, coordinates, or Gaia source_id."))
         self._viewer_status.setStyleSheet("color: #668; font-size: 11px;")
         viewer_layout.addWidget(self._viewer_status)
 
@@ -5227,7 +5233,7 @@ class GaiaDatabaseDialog(QDialog):
             "background: #0a0a18; color: #99aacc; border: 1px solid #2a2a3e; "
             "font-size: 11px; font-family: monospace;")
         viewer_layout.addWidget(self._source_info)
-        self._spectrum_tab_index = tabs.addTab(viewer_tab, "Spectrum Viewer")
+        self._spectrum_tab_index = tabs.addTab(viewer_tab, self.tr("Spectrum Viewer"))
 
         # Tab: About
         about_tab    = QWidget()
@@ -5237,7 +5243,7 @@ class GaiaDatabaseDialog(QDialog):
         about_text.setReadOnly(True)
         about_text.setStyleSheet(
             "background: #0a0a18; color: #aab; border: none; font-size: 12px;")
-        about_text.setHtml("""
+        about_text.setHtml(self.tr("""
         <h3 style="color:#8899ee;">Gaia DR3 XP Spectral Library</h3>
         <p>Pre-calibrated Gaia BP/RP spectra (336–1020 nm, 343 points, 2 nm step)
         from Gaia Data Release 3, stored in compact compressed SQLite databases.</p>
@@ -5293,9 +5299,9 @@ class GaiaDatabaseDialog(QDialog):
         https://gea.esac.esa.int/archive/</a></p>
         <p style="color:#556; font-size:10px;">
         Written by Franklin Marek / www.setiastro.com</p>
-        """)
+        """))
         about_layout.addWidget(about_text)
-        tabs.addTab(about_tab, "About")
+        tabs.addTab(about_tab, self.tr("About"))
 
         # Footer
         footer = QWidget()
@@ -5303,7 +5309,7 @@ class GaiaDatabaseDialog(QDialog):
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(16, 8, 16, 8)
         footer_layout.addStretch()
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.close)
         footer_layout.addWidget(btn_close)
         root.addWidget(footer)
@@ -5317,13 +5323,13 @@ class GaiaDatabaseDialog(QDialog):
         layout.setSpacing(8)
 
         if kind == "spectral":
-            info_text = (
+            info_text = self.tr(
                 "Install Gaia DR3 XP spectral library files for offline color calibration. "
                 "SASpro checks these before hitting the live Gaia archive. "
                 "Interrupted downloads resume automatically — just click Install again."
             )
         else:
-            info_text = (
+            info_text = self.tr(
                 "Install Gaia DR3 astrometric library files (RA/Dec/proper motion/parallax) "
                 "for plate solving and star identification, split by magnitude — start with "
                 "the brightest tier and add fainter ones only as needed, same approach as "
@@ -5338,23 +5344,23 @@ class GaiaDatabaseDialog(QDialog):
 
         # Directory row
         dir_row = QHBoxLayout()
-        dir_row.addWidget(QLabel("Library folder:"))
+        dir_row.addWidget(QLabel(self.tr("Library folder:")))
         dir_lbl = QLabel(str(self._lib_dir(kind)))
         dir_lbl.setStyleSheet("color: #6688aa; font-size: 11px; font-family: monospace;")
         dir_lbl.setWordWrap(True)
         dir_row.addWidget(dir_lbl, stretch=1)
 
-        btn_change_loc = QPushButton("Change Location…")
+        btn_change_loc = QPushButton(self.tr("Change Location…"))
         btn_change_loc.setFixedWidth(130)
         btn_change_loc.setToolTip(
-            "Move the library to a different drive or folder.\n"
-            "Useful for keeping large files off your system drive.")
+            self.tr("Move the library to a different drive or folder.\n"
+            "Useful for keeping large files off your system drive."))
         btn_change_loc.clicked.connect(
             self._change_location_spectral if kind == "spectral"
             else self._change_location_astro)
         dir_row.addWidget(btn_change_loc)
 
-        btn_open_dir = QPushButton("Open Folder")
+        btn_open_dir = QPushButton(self.tr("Open Folder"))
         btn_open_dir.setFixedWidth(100)
         btn_open_dir.clicked.connect(
             self._open_library_dir_spectral if kind == "spectral"
@@ -5414,9 +5420,9 @@ class GaiaDatabaseDialog(QDialog):
         if not isinstance(kind, str):
             kind = "spectral"
         if self._workers_dict(kind):
-            QMessageBox.warning(self, "Downloads Active",
-                                "Please wait for active downloads to finish "
-                                "before changing the library location.")
+            QMessageBox.warning(self, self.tr("Downloads Active"),
+                                self.tr("Please wait for active downloads to finish "
+                                "before changing the library location."))
             return
 
         current_dir = self._lib_dir(kind)
@@ -5479,7 +5485,7 @@ class GaiaDatabaseDialog(QDialog):
         defs     = self._group_defs(kind)
         lib_dir  = self._lib_dir(kind)
         n_groups = self._n_installed_groups(kind)
-        unit     = "spectra" if kind == "spectral" else "stars"
+        unit     = self.tr("spectra") if kind == "spectral" else self.tr("stars")
 
         installed_total = sum(
             (g.n_items or 0) for g in defs
@@ -5489,12 +5495,14 @@ class GaiaDatabaseDialog(QDialog):
         catalog_total = sum(g.n_items or 0 for g in defs)
 
         if installed_total:
-            txt = (f"{n_groups}/{len(defs)} groups installed  ·  "
-                   f"{installed_total:,} {unit} installed "
-                   f"of {catalog_total:,} in the catalog")
+            txt = self.tr("{0}/{1} groups installed  ·  "
+                          "{2:,} {3} installed "
+                          "of {4:,} in the catalog").format(
+                n_groups, len(defs), installed_total, unit, catalog_total)
         else:
-            txt = (f"{n_groups}/{len(defs)} groups installed  ·  "
-                   f"{catalog_total:,} {unit} available")
+            txt = self.tr("{0}/{1} groups installed  ·  "
+                          "{2:,} {3} available").format(
+                n_groups, len(defs), catalog_total, unit)
         self._total_lbl_for(kind).setText(txt)
 
     def _n_installed_groups(self, kind: str = "spectral") -> int:
@@ -5517,7 +5525,7 @@ class GaiaDatabaseDialog(QDialog):
 
         worker = _GroupDownloadWorker(
             group_def, missing, lib_dir,
-            download_base=self._download_base(kind), parent=self)
+            download_base=self._download_base(kind), parent=None)
         self._workers_dict(kind)[key] = worker
 
         row.set_downloading(True, cancel_cb=worker.cancel)
@@ -5553,16 +5561,21 @@ class GaiaDatabaseDialog(QDialog):
         self.library_changed.emit()
 
         if ok:
-            QMessageBox.information(self, "Install Complete", msg)
+            QMessageBox.information(self, self.tr("Install Complete"), msg)
         else:
-            QMessageBox.critical(self, "Download Failed", msg)
+            QMessageBox.critical(self, self.tr("Download Failed"), msg)
 
     def _on_cancelled(self, key: str, kind: str = "spectral"):
         rows = self._rows_dict(kind)
         row = rows.get(key)
         if row:
             row.set_downloading(False)
-        self._workers_dict(kind).pop(key, None)
+        # parent=None (a child thread of this WA_DeleteOnClose dialog was deleted
+        # with it while still downloading): let run() return -- it does right
+        # after emitting cancelled -- before dropping the last reference.
+        worker = self._workers_dict(kind).pop(key, None)
+        if worker:
+            worker.wait()
         self._refresh_library_obj(kind)
         self._refresh_groups(kind)
 
@@ -5576,18 +5589,20 @@ class GaiaDatabaseDialog(QDialog):
         )
 
         fallback_note = (
-            "SASpro will fall back to live Gaia archive downloads for "
-            "sources in this magnitude range."
+            self.tr("SASpro will fall back to live Gaia archive downloads for "
+                    "sources in this magnitude range.")
             if kind == "spectral" else
-            "SASpro will no longer have offline astrometry for this "
-            "declination band."
+            self.tr("SASpro will no longer have offline astrometry for this "
+                    "declination band.")
         )
 
         reply = QMessageBox.question(
-            self, "Remove Group",
-            f"Delete all installed files for '{group_def.label}'?\n\n"
-            f"{len(installed)} file(s) · {total_gb:.1f} GB will be freed.\n\n"
-            f"{fallback_note}",
+            self, self.tr("Remove Group"),
+            self.tr("Delete all installed files for '{0}'?\n"
+                    "\n"
+                    "{1} file(s) · {2:.1f} GB will be freed.\n"
+                    "\n"
+                    "{3}").format(_tr(group_def.label), len(installed), total_gb, fallback_note),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -5600,7 +5615,7 @@ class GaiaDatabaseDialog(QDialog):
             try:
                 path.unlink(missing_ok=True)
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not delete {fname}:\n{e}")
+                QMessageBox.critical(self, self.tr("Error"), self.tr("Could not delete {0}:\n{1}").format(fname, e))
                 break
 
         self._refresh_library_obj(kind)
@@ -5613,13 +5628,13 @@ class GaiaDatabaseDialog(QDialog):
         missing   = [f for f in group_def.filenames if not (lib_dir / f).exists()]
 
         if not missing:
-            QMessageBox.information(self, "Already Installed",
-                                    f"{group_def.label} is already fully installed.")
+            QMessageBox.information(self, self.tr("Already Installed"),
+                                    self.tr("{0} is already fully installed.").format(_tr(group_def.label)))
             return
 
         start_dir = getattr(self, "_last_browse_dir", str(lib_dir))
         path, _ = QFileDialog.getOpenFileName(
-            self, f"Locate a file for '{group_def.label}'", start_dir,
+            self, self.tr("Locate a file for '{0}'").format(_tr(group_def.label)), start_dir,
             "SQLite files (*.sqlite);;All files (*)")
         if not path:
             return
@@ -5637,10 +5652,12 @@ class GaiaDatabaseDialog(QDialog):
         if found_others:
             names_list = "\n".join(f"  {f}" for f, _ in found_others)
             reply = QMessageBox.question(
-                self, "Additional Files Found",
-                f"Found {len(found_others)} other file(s) for '{group_def.label}' "
-                f"in the same folder:\n\n{names_list}\n\n"
-                f"Install all of them?",
+                self, self.tr("Additional Files Found"),
+                self.tr("Found {0} other file(s) for '{1}' in the same folder:\n"
+                        "\n"
+                        "{2}\n"
+                        "\n"
+                        "Install all of them?").format(len(found_others), _tr(group_def.label), names_list),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.Yes:
@@ -5655,7 +5672,7 @@ class GaiaDatabaseDialog(QDialog):
                 shutil.copy2(src, dest)
                 copied += 1
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not copy {fname}:\n{e}")
+                QMessageBox.critical(self, self.tr("Error"), self.tr("Could not copy {0}:\n{1}").format(fname, e))
 
         if copied > 0:
             self._refresh_library_obj(kind)
@@ -5706,8 +5723,8 @@ class GaiaDatabaseDialog(QDialog):
             dlg.raise_()
             dlg.activateWindow()
         except Exception as e:
-            QMessageBox.warning(self, "Spectrum",
-                                f"Could not open spectrum for {sid}:\n{e}")
+            QMessageBox.warning(self, self.tr("Spectrum"),
+                                self.tr("Could not open spectrum for {0}:\n{1}").format(sid, e))
 
     def _prune_spectrum_popups(self):
         try:
@@ -5733,7 +5750,7 @@ class GaiaDatabaseDialog(QDialog):
             name = self._name_edit.text().strip()
             if not name:
                 return
-            self._viewer_status.setText(f"Resolving '{name}' via SIMBAD…")
+            self._viewer_status.setText(self.tr("Resolving '{0}' via SIMBAD…").format(name))
             QApplication.processEvents()
             try:
                 from setiastro.saspro import cds_health
@@ -5762,15 +5779,15 @@ class GaiaDatabaseDialog(QDialog):
                                     sid = int(part.replace("Gaia DR3 ", "").strip())
                                     label = name
                                     self._viewer_status.setText(
-                                        f"Resolved '{name}' → Gaia DR3 {sid} — searching library…")
+                                        self.tr("Resolved '{0}' → Gaia DR3 {1} — searching library…").format(name, sid))
                                     QApplication.processEvents()
 
                                     spec = self._library.get_spectrum(sid)
                                     if spec is not None:
                                         info = self._library.get_source_info(sid)
                                         if info:
-                                            label = (f"{name}  →  source {sid}  "
-                                                    f"(G={info['gmag']:.2f})")
+                                            label = self.tr("{0}  →  source {1}  "
+                                                            "(G={2:.2f})").format(name, sid, info['gmag'])
                                             self._source_info.setPlainText(
                                                 f"source_id: {sid}\n"
                                                 f"RA: {info['ra']:.6f}°    Dec: {info['dec']:.6f}°    "
@@ -5778,12 +5795,11 @@ class GaiaDatabaseDialog(QDialog):
                                         else:
                                             self._source_info.setPlainText(f"source_id: {sid}")
                                         self._spectrum_viewer.show_spectrum(spec, title=label)
-                                        self._viewer_status.setText("Spectrum loaded — local library")
+                                        self._viewer_status.setText(self.tr("Spectrum loaded — local library"))
                                         return
                                     else:
                                         self._viewer_status.setText(
-                                            f"Gaia DR3 {sid} found in SIMBAD but not in installed "
-                                            f"library groups — trying positional fallback…")
+                                            self.tr("Gaia DR3 {0} found in SIMBAD but not in installed library groups — trying positional fallback…").format(sid))
                                         QApplication.processEvents()
                                 except ValueError:
                                     pass
@@ -5799,19 +5815,19 @@ class GaiaDatabaseDialog(QDialog):
                     ra, dec = ra_val, dec_val
                     label = name
                     self._viewer_status.setText(
-                        f"Resolved {name} → RA={ra:.5f}°  Dec={dec:.5f}°  — searching…")
+                        self.tr("Resolved {0} → RA={1:.5f}°  Dec={2:.5f}°  — searching…").format(name, ra, dec))
                     QApplication.processEvents()
                 else:
                     coord = SkyCoord.from_name(name)
                     ra, dec = coord.ra.deg, coord.dec.deg
                     label = name
                     self._viewer_status.setText(
-                        f"Resolved {name} → RA={ra:.5f}°  Dec={dec:.5f}°  — searching…")
+                        self.tr("Resolved {0} → RA={1:.5f}°  Dec={2:.5f}°  — searching…").format(name, ra, dec))
                     QApplication.processEvents()
 
             except Exception as e:
                 self._viewer_status.setText(
-                    f"Could not resolve '{name}' via SIMBAD: {e}")
+                    self.tr("Could not resolve '{0}' via SIMBAD: {1}").format(name, e))
                 return
 
         elif mode == 1:
@@ -5820,14 +5836,14 @@ class GaiaDatabaseDialog(QDialog):
                 dec = float(self._dec_edit.text().strip())
                 label = f"RA={ra:.5f}° Dec={dec:.5f}°"
             except ValueError:
-                self._viewer_status.setText("Invalid RA or Dec — enter decimal degrees.")
+                self._viewer_status.setText(self.tr("Invalid RA or Dec — enter decimal degrees."))
                 return
 
         elif mode == 2:
             try:
                 sid = int(self._sid_edit.text().strip())
             except ValueError:
-                self._viewer_status.setText("Invalid source_id — must be an integer.")
+                self._viewer_status.setText(self.tr("Invalid source_id — must be an integer."))
                 return
 
         spec = None
@@ -5837,9 +5853,9 @@ class GaiaDatabaseDialog(QDialog):
             info = self._library.get_source_info(sid)
             if info:
                 ra, dec = info["ra"], info["dec"]
-                label = f"Gaia source {sid}  (G={info['gmag']:.2f})"
+                label = self.tr("Gaia source {0}  (G={1:.2f})").format(sid, info['gmag'])
             else:
-                label = f"Gaia source {sid}"
+                label = self.tr("Gaia source {0}").format(sid)
 
         elif ra is not None and dec is not None:
             try:
@@ -5855,15 +5871,13 @@ class GaiaDatabaseDialog(QDialog):
                 if result is not None:
                     if r > radius and mode == 0:
                         self._viewer_status.setText(
-                            f"Found at {r:.0f}\" (SIMBAD/Gaia epoch offset) — loading…")
+                            self.tr("Found at {0:.0f}\" (SIMBAD/Gaia epoch offset) — loading…").format(r))
                         QApplication.processEvents()
                     break
 
             if result is None:
                 self._viewer_status.setText(
-                    f"No spectrum found within {search_radii[-1]:.0f}\" of {label}. "
-                    f"Try RA/Dec mode or source_id directly. "
-                    f"Note: very bright stars (G<2.2) are not in Gaia XP.")
+                    self.tr("No spectrum found within {0:.0f}\" of {1}. Try RA/Dec mode or source_id directly. Note: very bright stars (G<2.2) are not in Gaia XP.").format(search_radii[-1], label))
                 self._spectrum_viewer.clear()
                 self._source_info.clear()
                 return
@@ -5872,18 +5886,17 @@ class GaiaDatabaseDialog(QDialog):
             spec = self._library.get_spectrum(sid)
             info = self._library.get_source_info(sid)
             if info:
-                label = (f"{label}  →  source {sid}  "
-                         f"(G={info['gmag']:.2f}, sep={sep:.2f}\")")
+                label = self.tr("{0}  →  source {1}  "
+                                "(G={2:.2f}, sep={3:.2f}\")").format(label, sid, info['gmag'], sep)
             else:
-                label = f"{label}  →  source {sid}  (sep={sep:.2f}\")"
+                label = self.tr("{0}  →  source {1}  (sep={2:.2f}\")").format(label, sid, sep)
 
         if spec is None and sid is not None:
             spec = get_spectrum_any(sid)
 
         if spec is None:
             self._viewer_status.setText(
-                f"No spectrum found for {label}. "
-                f"The relevant magnitude group may not be installed.")
+                self.tr("No spectrum found for {0}. The relevant magnitude group may not be installed.").format(label))
             self._spectrum_viewer.clear()
             self._source_info.clear()
             return
@@ -5901,10 +5914,22 @@ class GaiaDatabaseDialog(QDialog):
             self._source_info.clear()
 
         self._spectrum_viewer.show_spectrum(spec, title=label)
-        source_str = "local library" if self._library.has_spectrum(sid) else "live cache"
-        self._viewer_status.setText(f"Spectrum loaded — {source_str}")
+        if self._library.has_spectrum(sid):
+            self._viewer_status.setText(self.tr("Spectrum loaded — local library"))
+        else:
+            self._viewer_status.setText(self.tr("Spectrum loaded — live cache"))
 
     def closeEvent(self, event):
+        self._shutdown()
+        super().closeEvent(event)
+
+    def reject(self):
+        # Esc deletes this WA_DeleteOnClose dialog without a closeEvent, so the
+        # cleanup (tab shutdown, cancel + wait for downloads) must run here too.
+        self._shutdown()
+        super().reject()
+
+    def _shutdown(self):
         for _t in (getattr(self, "_neighborhood_tab", None),
                    getattr(self, "_quad_tab", None)):
             if _t is not None:
@@ -5922,7 +5947,6 @@ class GaiaDatabaseDialog(QDialog):
                 worker.cancel()
                 worker.wait()
             workers_dict.clear()
-        super().closeEvent(event)
 
 
 # ── Public entry point ────────────────────────────────────────────────────────

@@ -208,9 +208,9 @@ class CloneStampDialogPro(QDialog):
         self.scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self._zoom = 1.0
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         ctrls = QGroupBox(self.tr("Controls"))
         form = QFormLayout(ctrls)
@@ -578,7 +578,7 @@ class CloneStampDialogPro(QDialog):
 
     def _start_paint_at(self, scene_pos: QPointF) -> None:
         if not self._has_source:
-            QMessageBox.information(self, "Clone Stamp", "Ctrl+Click to set a source point first.")
+            QMessageBox.information(self, self.tr("Clone Stamp"), self.tr("Ctrl+Click to set a source point first."))
             return
         tx, ty = int(round(scene_pos.x())), int(round(scene_pos.y()))
         if not (0 <= tx < self._image.shape[1] and 0 <= ty < self._image.shape[0]):
@@ -815,7 +815,7 @@ class CloneStampDialogPro(QDialog):
                 self._doc.image = out
                 applied = True
         except Exception as e:
-            QMessageBox.critical(self, "Clone Stamp", f"Failed to write to document:\n{e}")
+            QMessageBox.critical(self, self.tr("Clone Stamp"), self.tr("Failed to write to document:\n{0}").format(e))
             return
 
         if applied and hasattr(self.parent(), "_refresh_active_view"):

@@ -39,7 +39,10 @@ from pathlib import Path
 
 import numpy as np
 
-from PyQt6.QtCore import Qt, QRectF, QPointF, QSize, QSizeF, QMarginsF, QRect, QTimer, pyqtSignal
+from PyQt6.QtCore import (
+    Qt, QRectF, QPointF, QSize, QSizeF, QMarginsF, QRect, QTimer, pyqtSignal,
+    QCoreApplication, QT_TRANSLATE_NOOP,
+)
 from PyQt6.QtGui import (
     QPainter, QPainterPath, QPen, QBrush, QColor, QFont, QFontMetricsF,
     QTransform, QPolygonF, QImage, QPicture, QPageSize, QPdfWriter,
@@ -52,6 +55,11 @@ from PyQt6.QtWidgets import (
     QProgressDialog, QSplitter, QFontComboBox, QSpinBox, QHeaderView,
     QListWidget, QListWidgetItem, QDialogButtonBox,
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("SkychartEngine", text)
+
 
 D2R = math.pi / 180.0
 R2D = 180.0 / math.pi
@@ -199,6 +207,21 @@ KIND_NAMES = {
     K_CLNEB: "Cluster with nebula", K_RFN: "Reflection nebula",
     K_DARK: "Dark nebula", K_ASSOC: "Stellar association",
 }
+
+
+def _kind_label(name: str) -> str:
+    """Translated display text for a KIND_NAMES value. The English name stays the
+    key everywhere else (DSO_STYLE_DEFAULTS, saved dso_styles); only labels use this."""
+    labels = {
+        "Galaxy": _tr("Galaxy"), "Group of galaxies": _tr("Group of galaxies"),
+        "Open cluster": _tr("Open cluster"), "Globular cluster": _tr("Globular cluster"),
+        "Planetary nebula": _tr("Planetary nebula"), "Bright nebula": _tr("Bright nebula"),
+        "Cluster with nebula": _tr("Cluster with nebula"),
+        "Reflection nebula": _tr("Reflection nebula"), "Dark nebula": _tr("Dark nebula"),
+        "Stellar association": _tr("Stellar association"),
+    }
+    return labels.get(name, name)
+
 _ONGC_KIND = {
     "G": K_GALAXY, "GPair": K_GALAXY, "GTrpl": K_GALAXY, "GGroup": K_GROUP,
     "OCl": K_OC, "GCl": K_GC, "PN": K_PN, "Cl+N": K_CLNEB, "Neb": K_NEB,
@@ -657,9 +680,9 @@ class ChartData:
             return None
         dlg = None
         if QApplication.instance() is not None:
-            dlg = QProgressDialog("Reading bright stars from the local Gaia DR3 library\n"
-                                  "(one time only, a few minutes)...", "Cancel", 0, 100)
-            dlg.setWindowTitle("Sky Chart")
+            dlg = QProgressDialog(_tr("Reading bright stars from the local Gaia DR3 library\n"
+                                      "(one time only, a few minutes)..."), _tr("Cancel"), 0, 100)
+            dlg.setWindowTitle(_tr("Sky Chart"))
             dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
             dlg.setMinimumDuration(0)
             dlg.setValue(0)
@@ -1866,34 +1889,59 @@ PAGE_FORMATS = {
 }
 
 LAYERS = [
-    ("milkyway", "Milky Way", "The Milky Way filled with its isophotes", True),
-    ("halpha", "Emission Nebulae", "Real shapes of emission nebulae from the all-sky H-alpha map "
-                                   "(Finkbeiner 2003, 6' resolution)", True),
-    ("dust", "Dark Nebulae", "Real shapes of dark nebulae from 2MASS extinction (Dobashi 2011, 2' "
-                             "resolution); SFD 1998 dust map beyond |b| 70°", True),
-    ("grid", "Grid", "Grid in ICRS equatorial coordinates", True),
-    ("ecliptic", "Ecliptic", "The ecliptic great circle", False),
-    ("galactic", "Galactic Equator", "The ICRS galactic equator great circle", False),
-    ("borders", "Constellation Borders", "Borders of the constellations", True),
-    ("lines", "Constellation Lines", "Asterisms of the constellations", True),
-    ("connames", "Constellation Names", "Names of the constellations", True),
-    ("messier", "Messier", "Messier catalog (110 objects)", True),
-    ("ngc", "NGC", "New General Catalogue (OpenNGC)", True),
-    ("ic", "IC", "Index Catalogue (OpenNGC)", True),
-    ("other", "Other DSO", "OpenNGC addendum (Barnard, Melotte, Collinder...)", False),
-    ("sharpless", "Sharpless", "Sh2 HII regions (SASpro catalog)", False),
-    ("lbn", "LBN", "Lynds bright nebulae (SASpro catalog)", False),
-    ("ldn", "LDN", "Lynds dark nebulae (SASpro catalog)", False),
-    ("abell", "Abell", "Abell galaxy clusters (SASpro catalog)", False),
-    ("png", "PNG", "Galactic planetary nebulae (SASpro catalog)", False),
-    ("outlines", "Nebula Outlines", "Real outlines of nebulae at three brightness levels (OpenNGC)", True),
-    ("stars", "Bright Stars", "HYG 4.1: bright stars with names, Bayer letters and B-V colors", True),
-    ("gaia", "Gaia DR3 (local)", "All other stars, from SASpro's local Gaia DR3 library "
-                                 "(colors from the XP spectra when installed)", True),
-    ("starnames", "Star Names", "Proper names of bright stars", True),
-    ("bayer", "Bayer / Flamsteed", "Bayer letters and Flamsteed numbers", True),
-    ("variable", "Variable Stars", "Mark catalogued variable stars (GCVS designation)", True),
-    ("double", "Double Stars", "Mark double stars (Washington Double Star catalog)", True),
+    ("milkyway", QT_TRANSLATE_NOOP("SkychartEngine", "Milky Way"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "The Milky Way filled with its isophotes"), True),
+    ("halpha", QT_TRANSLATE_NOOP("SkychartEngine", "Emission Nebulae"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Real shapes of emission nebulae from the all-sky H-alpha map "
+                                         "(Finkbeiner 2003, 6' resolution)"), True),
+    ("dust", QT_TRANSLATE_NOOP("SkychartEngine", "Dark Nebulae"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Real shapes of dark nebulae from 2MASS extinction (Dobashi 2011, 2' "
+                                         "resolution); SFD 1998 dust map beyond |b| 70°"), True),
+    ("grid", QT_TRANSLATE_NOOP("SkychartEngine", "Grid"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Grid in ICRS equatorial coordinates"), True),
+    ("ecliptic", QT_TRANSLATE_NOOP("SkychartEngine", "Ecliptic"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "The ecliptic great circle"), False),
+    ("galactic", QT_TRANSLATE_NOOP("SkychartEngine", "Galactic Equator"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "The ICRS galactic equator great circle"), False),
+    ("borders", QT_TRANSLATE_NOOP("SkychartEngine", "Constellation Borders"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Borders of the constellations"), True),
+    ("lines", QT_TRANSLATE_NOOP("SkychartEngine", "Constellation Lines"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Asterisms of the constellations"), True),
+    ("connames", QT_TRANSLATE_NOOP("SkychartEngine", "Constellation Names"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Names of the constellations"), True),
+    ("messier", "Messier",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Messier catalog (110 objects)"), True),
+    ("ngc", "NGC",
+     QT_TRANSLATE_NOOP("SkychartEngine", "New General Catalogue (OpenNGC)"), True),
+    ("ic", "IC",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Index Catalogue (OpenNGC)"), True),
+    ("other", QT_TRANSLATE_NOOP("SkychartEngine", "Other DSO"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "OpenNGC addendum (Barnard, Melotte, Collinder...)"), False),
+    ("sharpless", "Sharpless",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Sh2 HII regions (SASpro catalog)"), False),
+    ("lbn", "LBN",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Lynds bright nebulae (SASpro catalog)"), False),
+    ("ldn", "LDN",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Lynds dark nebulae (SASpro catalog)"), False),
+    ("abell", "Abell",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Abell galaxy clusters (SASpro catalog)"), False),
+    ("png", "PNG",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Galactic planetary nebulae (SASpro catalog)"), False),
+    ("outlines", QT_TRANSLATE_NOOP("SkychartEngine", "Nebula Outlines"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Real outlines of nebulae at three brightness levels (OpenNGC)"), True),
+    ("stars", QT_TRANSLATE_NOOP("SkychartEngine", "Bright Stars"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "HYG 4.1: bright stars with names, Bayer letters and B-V colors"), True),
+    ("gaia", QT_TRANSLATE_NOOP("SkychartEngine", "Gaia DR3 (local)"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "All other stars, from SASpro's local Gaia DR3 library "
+                                         "(colors from the XP spectra when installed)"), True),
+    ("starnames", QT_TRANSLATE_NOOP("SkychartEngine", "Star Names"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Proper names of bright stars"), True),
+    ("bayer", "Bayer / Flamsteed",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Bayer letters and Flamsteed numbers"), True),
+    ("variable", QT_TRANSLATE_NOOP("SkychartEngine", "Variable Stars"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Mark catalogued variable stars (GCVS designation)"), True),
+    ("double", QT_TRANSLATE_NOOP("SkychartEngine", "Double Stars"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Mark double stars (Washington Double Star catalog)"), True),
 ]
 
 
@@ -4138,10 +4186,12 @@ class ChartRenderer:
         y = top + 1.5 * ts + tsz
         TT.draw(painter, x0, y, title, tsz, col, bold=tb, italic=ti)
         lines = [
-            f"Center α {fmt_ra(P.ra)}  δ {fmt_dec(P.dec)}",
-            f"Field {self.fov_w:.4g}° × {self.fov_h:.4g}°, 1° = {self.mm_per_deg:.3g} mm",
-            f"{self.proj.kind} projection" + (", mirrored" if P.mirrored else ""),
-            f"Epoch J2000.0, stars to magnitude {self.star_mag:.1f}",
+            _tr("Center α {0}  δ {1}").format(fmt_ra(P.ra), fmt_dec(P.dec)),
+            _tr("Field {0:.4g}° × {1:.4g}°, 1° = {2:.3g} mm").format(
+                self.fov_w, self.fov_h, self.mm_per_deg),
+            (_tr("{0} projection, mirrored") if P.mirrored
+             else _tr("{0} projection")).format(self.proj.kind),
+            _tr("Epoch J2000.0, stars to magnitude {0:.1f}").format(self.star_mag),
         ]
         y += 0.6 * ts
         for ln in lines:
@@ -4164,15 +4214,15 @@ class ChartRenderer:
             painter.drawEllipse(QPointF(mx + k * step, cy), r, r)
             T.draw(painter, mx + k * step, cy + 3.0 * ts + s, str(m), s, col, align="c", bold=bb, italic=bi)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        T.draw(painter, mx + (len(mags) - 1) * step / 2.0, cy + 4.6 * ts + 2 * s, "Magnitudes", s, col,
+        T.draw(painter, mx + (len(mags) - 1) * step / 2.0, cy + 4.6 * ts + 2 * s, _tr("Magnitudes"), s, col,
                align="c", bold=bb, italic=bi)
         # --- symbol key: only what appears on the chart
         kinds = [K_GALAXY, K_GROUP, K_OC, K_GC, K_PN, K_NEB, K_RFN, K_CLNEB, K_DARK, K_ASSOC]
-        items = [("dso", k, KIND_NAMES[k]) for k in kinds if k in self.kinds_drawn]
+        items = [("dso", k, _kind_label(KIND_NAMES[k])) for k in kinds if k in self.kinds_drawn]
         if self.has_var:
-            items.append(("var", None, "Variable star"))
+            items.append(("var", None, _tr("Variable star")))
         if self.has_dbl:
-            items.append(("dbl", None, "Double star"))
+            items.append(("dbl", None, _tr("Double star")))
         if not items:
             items = []
         rows = 3
@@ -4208,8 +4258,8 @@ class ChartRenderer:
         # --- credits
         cs = max(1.5 * ts, 0.83 * s)
         yb = top + self.legend_h - 3.2 * ts
-        T.draw(painter, x1, yb - 2.6 * ts, "Seti Astro Suite Pro — sky chart", cs, col, align="r")
-        T.draw(painter, x1, yb, "Data: Gaia DR3, HYG 4.1, OpenNGC, d3-celestial", cs, col, align="r")
+        T.draw(painter, x1, yb - 2.6 * ts, _tr("Seti Astro Suite Pro — sky chart"), cs, col, align="r")
+        T.draw(painter, x1, yb, _tr("Data: Gaia DR3, HYG 4.1, OpenNGC, d3-celestial"), cs, col, align="r")
 
 
 # -----------------------------------------------------------------------------
@@ -4469,8 +4519,9 @@ WCS_OVERLAY_DEFAULTS = {k: (k in {m for g in WCS_OVERLAY_GROUPS.values() for m i
 WCS_OVERLAY_OPTION_DEFAULTS = {"dso_mag": 0.0, "text_scale": 1.6, "graphics_scale": 1.3}
 _WCS_OVERLAY_LEGACY = {"constellations": "wcs_chart/constellations", "dso": "wcs_chart/dso",
                        "stars": "wcs_chart/star_names"}
-_WCS_OVERLAY_GROUP_NAMES = {"constellations": "Constellations",
-                            "dso": "all deep-sky catalogs", "stars": "star labels"}
+_WCS_OVERLAY_GROUP_NAMES = {"constellations": QT_TRANSLATE_NOOP("SkychartEngine", "Constellations"),
+                            "dso": QT_TRANSLATE_NOOP("SkychartEngine", "all deep-sky catalogs"),
+                            "stars": QT_TRANSLATE_NOOP("SkychartEngine", "star labels")}
 
 
 def wcs_overlay_config(settings) -> dict:
@@ -4518,12 +4569,12 @@ def wcs_overlay_summary(cfg: dict) -> str:
     parts, done = [], set()
     for g, keys in WCS_OVERLAY_GROUPS.items():
         if all(lay.get(k) for k in keys):
-            parts.append(_WCS_OVERLAY_GROUP_NAMES[g])
+            parts.append(QCoreApplication.translate("SkychartEngine", _WCS_OVERLAY_GROUP_NAMES[g]))
             done.update(keys)
     for k in OVERLAY_LAYERS:
         if lay.get(k) and k not in done:
-            parts.append(names.get(k, k))
-    return ", ".join(parts) if parts else "None"
+            parts.append(QCoreApplication.translate("SkychartEngine", names.get(k, k)))
+    return ", ".join(parts) if parts else _tr("None")
 
 
 def paint_wcs_overlay(painter: QPainter, wcs, w_full: int, h_full: int, zoom: float,

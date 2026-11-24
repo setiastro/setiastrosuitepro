@@ -62,7 +62,7 @@ except AttributeError:
     _trapz = np.trapz
 
 from astropy.io import fits
-from PyQt6.QtCore import Qt, QSettings, QStandardPaths
+from PyQt6.QtCore import Qt, QSettings, QStandardPaths, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QComboBox, QDoubleSpinBox, QPushButton,
@@ -88,6 +88,11 @@ from setiastro.saspro.sfcc import (
     SFCCDialog,
 )
 from setiastro.saspro.help_support import make_help_button
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("NbExtract", text)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
@@ -574,16 +579,16 @@ def condition_number_warning(A: np.ndarray) -> Tuple[Optional[str], str]:
         k = float(np.linalg.cond(A))
         if k >= 100:
             return (
-                f"Condition number is {k:.1f} — channel separation is too poor for\n"
-                f"reliable NNLS extraction (noise amplified ~{k**2:.0f}×).\n"
-                "The stellar flux color mixing fallback will give better results.",
+                _tr("Condition number is {0:.1f} — channel separation is too poor for\n"
+                    "reliable NNLS extraction (noise amplified ~{1:.0f}×).\n"
+                    "The stellar flux color mixing fallback will give better results.").format(k, k**2),
                 "severe"
             )
         if k >= 25:
             return (
-                f"Condition number is {k:.1f} — moderate channel overlap.\n"
-                "Auto-Q has been set conservatively. Check the extracted channels\n"
-                "for dark halos and reduce Q further if needed.",
+                _tr("Condition number is {0:.1f} — moderate channel overlap.\n"
+                    "Auto-Q has been set conservatively. Check the extracted channels\n"
+                    "for dark halos and reduce Q further if needed.").format(k),
                 "caution"
             )
     except Exception:
@@ -679,7 +684,7 @@ class NBExtractDialog(SFCCDialog):
         super().__init__(doc_manager, sasp_data_path, parent)
 
         _force_mpl_no_tex()
-        self.setWindowTitle("Narrowband Channel Extractor (NBExtract)")
+        self.setWindowTitle(self.tr("Narrowband Channel Extractor (NBExtract)"))
         self.setMinimumSize(740, 560)
 
         # Internal state
@@ -716,12 +721,12 @@ class NBExtractDialog(SFCCDialog):
 
         self._hide_sfcc_filter_labels()
 
-        grp = QGroupBox("Narrowband Filter Configuration")
+        grp = QGroupBox(self.tr("Narrowband Filter Configuration"))
         grp_lay = QVBoxLayout(grp)
 
         # Preset selector row
         row_preset = QHBoxLayout()
-        row_preset.addWidget(QLabel("Filter type:"))
+        row_preset.addWidget(QLabel(self.tr("Filter type:")))
         self.nb_preset_combo = QComboBox()
         for name in FILTER_PRESETS:
             self.nb_preset_combo.addItem(name)
@@ -732,7 +737,7 @@ class NBExtractDialog(SFCCDialog):
 
         # Line 1 row
         row_l1 = QHBoxLayout()
-        self.nb_line1_label = QLabel("Ha center (nm):")
+        self.nb_line1_label = QLabel(self.tr("{0} center (nm):").format("Ha"))
         row_l1.addWidget(self.nb_line1_label)
         self.nb_center1_spin = QDoubleSpinBox()
         self.nb_center1_spin.setRange(400.0, 800.0)
@@ -741,7 +746,7 @@ class NBExtractDialog(SFCCDialog):
         self.nb_center1_spin.setSuffix(" nm")
         row_l1.addWidget(self.nb_center1_spin)
         row_l1.addSpacing(16)
-        row_l1.addWidget(QLabel("Bandwidth (FWHM):"))
+        row_l1.addWidget(QLabel(self.tr("Bandwidth (FWHM):")))
         self.nb_bw1_spin = QDoubleSpinBox()
         self.nb_bw1_spin.setRange(1.0, 30.0)
         self.nb_bw1_spin.setDecimals(1)
@@ -753,7 +758,7 @@ class NBExtractDialog(SFCCDialog):
 
         # Line 2 row
         row_l2 = QHBoxLayout()
-        self.nb_line2_label = QLabel("OIII center (nm):")
+        self.nb_line2_label = QLabel(self.tr("{0} center (nm):").format("OIII"))
         row_l2.addWidget(self.nb_line2_label)
         self.nb_center2_spin = QDoubleSpinBox()
         self.nb_center2_spin.setRange(400.0, 800.0)
@@ -762,7 +767,7 @@ class NBExtractDialog(SFCCDialog):
         self.nb_center2_spin.setSuffix(" nm")
         row_l2.addWidget(self.nb_center2_spin)
         row_l2.addSpacing(16)
-        row_l2.addWidget(QLabel("Bandwidth (FWHM):"))
+        row_l2.addWidget(QLabel(self.tr("Bandwidth (FWHM):")))
         self.nb_bw2_spin = QDoubleSpinBox()
         self.nb_bw2_spin.setRange(1.0, 30.0)
         self.nb_bw2_spin.setDecimals(1)
@@ -774,18 +779,18 @@ class NBExtractDialog(SFCCDialog):
 
         # Custom line name row — only visible for Custom preset
         row_names = QHBoxLayout()
-        row_names.addWidget(QLabel("Line 1 name:"))
+        row_names.addWidget(QLabel(self.tr("Line 1 name:")))
         self.nb_line1_name = QLineEdit("Line1")
         self.nb_line1_name.setMaximumWidth(80)
-        self.nb_line1_name.setPlaceholderText("e.g. NII")
-        self.nb_line1_name.setToolTip("Short label for line 1 (used in output document names)")
+        self.nb_line1_name.setPlaceholderText(self.tr("e.g. NII"))
+        self.nb_line1_name.setToolTip(self.tr("Short label for line 1 (used in output document names)"))
         row_names.addWidget(self.nb_line1_name)
         row_names.addSpacing(24)
-        row_names.addWidget(QLabel("Line 2 name:"))
+        row_names.addWidget(QLabel(self.tr("Line 2 name:")))
         self.nb_line2_name = QLineEdit("Line2")
         self.nb_line2_name.setMaximumWidth(80)
-        self.nb_line2_name.setPlaceholderText("e.g. HeI")
-        self.nb_line2_name.setToolTip("Short label for line 2 (used in output document names)")
+        self.nb_line2_name.setPlaceholderText(self.tr("e.g. HeI"))
+        self.nb_line2_name.setToolTip(self.tr("Short label for line 2 (used in output document names)"))
         row_names.addWidget(self.nb_line2_name)
         row_names.addStretch()
         self.nb_custom_names_row = QWidget()
@@ -796,14 +801,14 @@ class NBExtractDialog(SFCCDialog):
         # Action buttons row
         row_act = QHBoxLayout()
 
-        self.nb_calibrate_btn = QPushButton("Step 2: Calibrate Mixing Matrix")
+        self.nb_calibrate_btn = QPushButton(self.tr("Step 2: Calibrate Mixing Matrix"))
         f = self.nb_calibrate_btn.font()
         f.setBold(True)
         self.nb_calibrate_btn.setFont(f)
         self.nb_calibrate_btn.clicked.connect(self._calibrate_mixing_matrix)
         row_act.addWidget(self.nb_calibrate_btn)
 
-        self.nb_extract_btn = QPushButton("Step 3: Extract Channels")
+        self.nb_extract_btn = QPushButton(self.tr("Step 3: Extract Channels"))
         f2 = self.nb_extract_btn.font()
         f2.setBold(True)
         self.nb_extract_btn.setFont(f2)
@@ -811,44 +816,44 @@ class NBExtractDialog(SFCCDialog):
         self.nb_extract_btn.clicked.connect(self._extract_channels)
         row_act.addWidget(self.nb_extract_btn)
 
-        self.nb_stretch_chk = QCheckBox("Match output median to source")
+        self.nb_stretch_chk = QCheckBox(self.tr("Match output median to source"))
         self.nb_stretch_chk.setChecked(True)
-        self.nb_stretch_chk.setToolTip(
+        self.nb_stretch_chk.setToolTip(self.tr(
             "Scales each extracted channel by a single gain so its median\n"
             "matches the corresponding source channel median.\n"
             "Gain-only, so the output stays linear and sits at the same\n"
             "intensity level as the input image."
-        )
+        ))
         row_act.addWidget(self.nb_stretch_chk)
         row_act.addStretch()
         # Max calibration stars
         row_act.addSpacing(16)
-        row_act.addWidget(QLabel("Max cal stars:"))
+        row_act.addWidget(QLabel(self.tr("Max cal stars:")))
         self.nb_max_cal_spin = QSpinBox()
         self.nb_max_cal_spin.setRange(6, 2000)
         self.nb_max_cal_spin.setValue(300)
         self.nb_max_cal_spin.setSingleStep(50)
-        self.nb_max_cal_spin.setToolTip(
+        self.nb_max_cal_spin.setToolTip(self.tr(
             "Maximum number of Gaia XP stars used to fit the mixing matrix.\n"
             "The brightest N re-detected stars are selected.\n"
             "300 is more than sufficient — increase only for very sparse fields."
-        )
+        ))
         row_act.addWidget(self.nb_max_cal_spin)
         self.nb_max_cal_spin.valueChanged.connect(self._save_nb_settings)
         grp_lay.addLayout(row_act)
         # Matrix readout
-        self.nb_matrix_label = QLabel("Mixing matrix: (not yet calibrated)")
+        self.nb_matrix_label = QLabel(self.tr("Mixing matrix: (not yet calibrated)"))
         self.nb_matrix_label.setWordWrap(True)
         grp_lay.addWidget(self.nb_matrix_label)
 
         # ── Advanced: per-channel Q blending ─────────────────────────────
         adv_hdr = QHBoxLayout()
-        self.nb_adv_btn = QPushButton("Advanced ▸")
+        self.nb_adv_btn = QPushButton(self.tr("Advanced ▸"))
         self.nb_adv_btn.setFlat(True)
         self.nb_adv_btn.setStyleSheet("font-size:11px; text-align:left;")
         self.nb_adv_btn.clicked.connect(self._toggle_nb_advanced)
 
-        self.nb_adv_summary = QLabel("Q auto")
+        self.nb_adv_summary = QLabel(self.tr("Q auto"))
         self.nb_adv_summary.setStyleSheet("font-size:10px; color: palette(placeholderText);")
         adv_hdr.addWidget(self.nb_adv_btn)
         adv_hdr.addStretch(1)
@@ -861,29 +866,29 @@ class NBExtractDialog(SFCCDialog):
         adv_l.setSpacing(6)
 
         # Auto-Q explanation label
-        self.nb_q_auto_label = QLabel(
+        self.nb_q_auto_label = QLabel(self.tr(
             "Q values are set automatically from the matrix condition number.\n"
             "Lower Q = more conservative (less NNLS correction, closer to raw channel).\n"
             "Override below if needed."
-        )
+        ))
         self.nb_q_auto_label.setStyleSheet("font-size:10px; color: palette(placeholderText);")
         self.nb_q_auto_label.setWordWrap(True)
         adv_l.addWidget(self.nb_q_auto_label)
 
         # Q1 row (line1)
         q1_row = QHBoxLayout()
-        self.nb_q1_label = QLabel("Line 1 (Ha) mixing strength Q:")
+        self.nb_q1_label = QLabel(self.tr("Line 1 ({0}) mixing strength Q:").format("Ha"))
         self.nb_q1_label.setStyleSheet("font-size:11px;")
         self.nb_q1_spin = QDoubleSpinBox()
         self.nb_q1_spin.setRange(0.0, 1.0)
         self.nb_q1_spin.setDecimals(2)
         self.nb_q1_spin.setSingleStep(0.05)
         self.nb_q1_spin.setValue(1.0)
-        self.nb_q1_spin.setToolTip(
+        self.nb_q1_spin.setToolTip(self.tr(
             "Blend between raw R channel (0.0) and full NNLS extraction (1.0).\n"
             "Auto-set from condition number after calibration.\n"
             "If the Ha channel shows dark halos or over-subtraction, reduce toward 0.5-0.7."
-        )
+        ))
         q1_row.addWidget(self.nb_q1_label)
         q1_row.addWidget(self.nb_q1_spin)
         q1_row.addStretch(1)
@@ -891,18 +896,18 @@ class NBExtractDialog(SFCCDialog):
 
         # Q2 row (line2)
         q2_row = QHBoxLayout()
-        self.nb_q2_label = QLabel("Line 2 (OIII) mixing strength Q:")
+        self.nb_q2_label = QLabel(self.tr("Line 2 ({0}) mixing strength Q:").format("OIII"))
         self.nb_q2_label.setStyleSheet("font-size:11px;")
         self.nb_q2_spin = QDoubleSpinBox()
         self.nb_q2_spin.setRange(0.0, 1.0)
         self.nb_q2_spin.setDecimals(2)
         self.nb_q2_spin.setSingleStep(0.05)
         self.nb_q2_spin.setValue(1.0)
-        self.nb_q2_spin.setToolTip(
+        self.nb_q2_spin.setToolTip(self.tr(
             "Blend between raw G channel (0.0) and full NNLS extraction (1.0).\n"
             "Auto-set from condition number after calibration.\n"
             "If the OIII channel shows dark holes or over-subtraction, reduce toward 0.5-0.7."
-        )
+        ))
         q2_row.addWidget(self.nb_q2_label)
         q2_row.addWidget(self.nb_q2_spin)
         q2_row.addStretch(1)
@@ -954,13 +959,17 @@ class NBExtractDialog(SFCCDialog):
         """
         from PyQt6.QtWidgets import QPushButton
 
-        # Find the Reset View/Close button in the inherited SFCC UI
-        reset_btn = None
-        for b in self.findChildren(QPushButton):
-            txt = b.text() or ""
-            if "Reset View" in txt and "Close" in txt:
-                reset_btn = b
-                break
+        # Find the Reset View/Close button in the inherited SFCC UI. SFCCDialog
+        # keeps it as self.reset_btn; its label is translated, so matching on
+        # the English text is only a fallback for older SFCC layouts.
+        reset_btn = getattr(self, "reset_btn", None)
+        if not isinstance(reset_btn, QPushButton):
+            reset_btn = None
+            for b in self.findChildren(QPushButton):
+                txt = b.text() or ""
+                if "Reset View" in txt and "Close" in txt:
+                    reset_btn = b
+                    break
         if reset_btn is None:
             return
 
@@ -998,6 +1007,15 @@ class NBExtractDialog(SFCCDialog):
             "R Filter", "G Filter", "B Filter",
             "Sensor", "LP/Cut", "Select White",
         )
+        # SFCCDialog creates these labels with self.tr(); self is this
+        # NBExtractDialog at runtime, so self.tr() here returns the same
+        # text in any UI language. The fragments above cover English.
+        _sfcc_label_texts = {
+            self.tr(t) for t in (
+                "R Filter:", "G Filter:", "B Filter:", "Sensor (QE):",
+                "LP/Cut Filter1:", "LP/Cut Filter2:", "Select White Reference:",
+            )
+        }
         for i in range(layout.count()):
             item = layout.itemAt(i)
             if item is None:
@@ -1011,7 +1029,8 @@ class NBExtractDialog(SFCCDialog):
                     continue
                 w = sub_item.widget()
                 if isinstance(w, QLabel):
-                    if any(frag in w.text() for frag in _sfcc_label_fragments):
+                    txt = w.text()
+                    if txt in _sfcc_label_texts or any(frag in txt for frag in _sfcc_label_fragments):
                         w.hide()
 
     @staticmethod
@@ -1073,22 +1092,22 @@ class NBExtractDialog(SFCCDialog):
         else:
             n1, n2 = l1_key, l2_key
 
-        self.nb_line1_label.setText(f"{n1} center (nm):")
-        self.nb_line2_label.setText(f"{n2} center (nm):")
+        self.nb_line1_label.setText(self.tr("{0} center (nm):").format(n1))
+        self.nb_line2_label.setText(self.tr("{0} center (nm):").format(n2))
 
         if hasattr(self, "nb_q1_label"):
-            self.nb_q1_label.setText(f"Line 1 ({n1}) mixing strength Q:")
+            self.nb_q1_label.setText(self.tr("Line 1 ({0}) mixing strength Q:").format(n1))
         if hasattr(self, "nb_q2_label"):
-            self.nb_q2_label.setText(f"Line 2 ({n2}) mixing strength Q:")
+            self.nb_q2_label.setText(self.tr("Line 2 ({0}) mixing strength Q:").format(n2))
 
         self._A_matrix = None
         self.nb_extract_btn.setEnabled(False)
-        self.nb_matrix_label.setText("Mixing matrix: (not yet calibrated)")
+        self.nb_matrix_label.setText(self.tr("Mixing matrix: (not yet calibrated)"))
 
     def _toggle_nb_advanced(self):
         show = not self.nb_adv_panel.isVisible()
         self.nb_adv_panel.setVisible(show)
-        self.nb_adv_btn.setText("Advanced ▾" if show else "Advanced ▸")
+        self.nb_adv_btn.setText(self.tr("Advanced ▾") if show else self.tr("Advanced ▸"))
         self.nb_adv_summary.setVisible(not show)
 
     def _update_nb_adv_summary(self):
@@ -1116,21 +1135,21 @@ class NBExtractDialog(SFCCDialog):
         self._update_nb_adv_summary()
 
         if k < 5:
-            quality = "well-conditioned — channels separate cleanly"
+            quality = self.tr("well-conditioned — channels separate cleanly")
         elif k < 15:
-            quality = "moderate — some channel overlap"
+            quality = self.tr("moderate — some channel overlap")
         elif k < 50:
-            quality = "poorly conditioned — significant channel overlap"
+            quality = self.tr("poorly conditioned — significant channel overlap")
         else:
-            quality = "very poorly conditioned — channels barely separable"
+            quality = self.tr("very poorly conditioned — channels barely separable")
 
-        self.nb_q_auto_label.setText(
-            f"Q auto-derived from matrix structure (condition number {k:.2f}, {quality}).\n"
-            f"Q₁ = {q1:.2f} ({q1*100:.0f}% NNLS + {(1-q1)*100:.0f}% raw R).\n"
-            f"Q₂ = {q2:.2f} ({q2*100:.0f}% NNLS + {(1-q2)*100:.0f}% raw G) — "
-            f"penalised by G/B channel similarity in OIII column.\n"
-            f"Override below if needed."
-        )
+        self.nb_q_auto_label.setText(self.tr(
+            "Q auto-derived from matrix structure (condition number {0:.2f}, {1}).\n"
+            "Q₁ = {2:.2f} ({3:.0f}% NNLS + {4:.0f}% raw R).\n"
+            "Q₂ = {5:.2f} ({6:.0f}% NNLS + {7:.0f}% raw G) — "
+            "penalised by G/B channel similarity in OIII column.\n"
+            "Override below if needed."
+        ).format(k, quality, q1, q1*100, (1-q1)*100, q2, q2*100, (1-q2)*100))
 
     # ── fetch_stars override ──────────────────────────────────────────────────
     def fetch_stars(self):
@@ -1144,11 +1163,11 @@ class NBExtractDialog(SFCCDialog):
         self._redraw_fetch_histogram()
 
         if getattr(self, "count_label", None) is not None:
-            self.count_label.setText(
-                f"Step 1 complete — {len(self.star_list):,} stars detected  ·  "
-                f"{n_gaia_xp:,} Gaia XP spectra available for calibration  ·  "
-                f"{n_no_xp:,} no XP spectrum"
-            )
+            self.count_label.setText(self.tr(
+                "Step 1 complete — {0:,} stars detected  ·  "
+                "{1:,} Gaia XP spectra available for calibration  ·  "
+                "{2:,} no XP spectrum"
+            ).format(len(self.star_list), n_gaia_xp, n_no_xp))
 
     def _redraw_fetch_histogram(self):
         if not getattr(self, "star_list", None):
@@ -1365,21 +1384,21 @@ class NBExtractDialog(SFCCDialog):
     def _calibrate_mixing_matrix(self):
         if not getattr(self, "star_list", None):
             self._nb_abort(
-                "No Stars",
-                "Please run Step 1: Fetch Stars first.\n"
-                "The image must be plate-solved.",
+                QT_TRANSLATE_NOOP("NbExtract", "No Stars"),
+                QT_TRANSLATE_NOOP("NbExtract", "Please run Step 1: Fetch Stars first.\n"
+                "The image must be plate-solved."),
                 level="warning",
             )
             return
 
         doc = self.doc_manager.get_active_document()
         if doc is None or doc.image is None:
-            self._nb_abort("Error", "No active document.")
+            self._nb_abort(QT_TRANSLATE_NOOP("NbExtract", "Error"), QT_TRANSLATE_NOOP("NbExtract", "No active document."))
             return
 
         img = doc.image
         if img.ndim != 3 or img.shape[2] != 3:
-            self._nb_abort("Error", "Active document must be RGB (3 channels).")
+            self._nb_abort(QT_TRANSLATE_NOOP("NbExtract", "Error"), QT_TRANSLATE_NOOP("NbExtract", "Active document must be RGB (3 channels)."))
             return
 
         center1_nm  = float(self.nb_center1_spin.value())
@@ -1425,7 +1444,7 @@ class NBExtractDialog(SFCCDialog):
 
         sources = sep.extract(data_sub, sep_sigma, err=err, mask=_inv)
         if sources.size == 0:
-            self._nb_abort("SEP Error", "SEP found no sources.")
+            self._nb_abort(QT_TRANSLATE_NOOP("NbExtract", "SEP Error"), QT_TRANSLATE_NOOP("NbExtract", "SEP found no sources."))
             return
 
         r_fluxrad, _ = sep.flux_radius(
@@ -1436,8 +1455,8 @@ class NBExtractDialog(SFCCDialog):
         mask    = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
         sources = sources[mask]
         if sources.size == 0:
-            self._nb_abort("SEP Error",
-                           "All SEP detections rejected by radius filter.")
+            self._nb_abort(QT_TRANSLATE_NOOP("NbExtract", "SEP Error"),
+                           QT_TRANSLATE_NOOP("NbExtract", "All SEP detections rejected by radius filter."))
             return
 
         _sfcc_status(self,
@@ -1456,9 +1475,9 @@ class NBExtractDialog(SFCCDialog):
             lib = None
 
         if lib is None:
-            self._nb_abort("No Gaia Library",
-                "Gaia XP spectral library is required for NBExtract calibration.\n"
-                "Please install at least the Ultra-Bright or Bright group.")
+            self._nb_abort(QT_TRANSLATE_NOOP("NbExtract", "No Gaia Library"),
+                QT_TRANSLATE_NOOP("NbExtract", "Gaia XP spectral library is required for NBExtract calibration.\n"
+                "Please install at least the Ultra-Bright or Bright group."))
             return
 
         # ── Match star_list XP stars to SEP detections ────────────────────
@@ -1492,9 +1511,9 @@ class NBExtractDialog(SFCCDialog):
         QApplication.processEvents()
 
         if n_matched == 0:
-            self._nb_abort("No XP Stars Detected",
-                "No Gaia XP stars were re-detected by SEP at the current threshold.\n\n"
-                "Try lowering the Star detect σ, or install more Gaia XP library groups.",
+            self._nb_abort(QT_TRANSLATE_NOOP("NbExtract", "No XP Stars Detected"),
+                QT_TRANSLATE_NOOP("NbExtract", "No Gaia XP stars were re-detected by SEP at the current threshold.\n\n"
+                "Try lowering the Star detect σ, or install more Gaia XP library groups."),
                 level="warning")
             return
 
@@ -1592,13 +1611,14 @@ class NBExtractDialog(SFCCDialog):
 
         if n_used < 6:
             if not self._nb_confirm_fallback(
-                "Too Few Stars — Use Fallback?",
-                f"Only {n_used} Gaia XP calibration stars found (need ≥ 6 for NNLS).\n\n"
-                f"  {n_matched:,} XP stars re-detected by SEP\n"
-                f"  {n_xp_used} XP spectra successfully integrated\n"
-                f"  {n_no_spectrum} spectra missing from local library\n\n"
+                self.tr("Too Few Stars — Use Fallback?"),
+                self.tr("Only {0} Gaia XP calibration stars found (need ≥ 6 for NNLS).\n\n"
+                "  {1:,} XP stars re-detected by SEP\n"
+                "  {2} XP spectra successfully integrated\n"
+                "  {3} spectra missing from local library\n\n"
                 "Try installing more Gaia XP library groups, or lower the\n"
-                "Star detect σ to detect more stars, or use the fallback.",
+                "Star detect σ to detect more stars, or use the fallback.").format(
+                    n_used, n_matched, n_xp_used, n_no_spectrum),
             ):
                 return
             self._run_wb_fallback(doc, img_float, l1_key, l2_key)
@@ -1613,12 +1633,12 @@ class NBExtractDialog(SFCCDialog):
         A, n_clipped_used = fit_mixing_matrix(star_records)
         if A is None:
             if not self._nb_confirm_fallback(
-                "Matrix Fit Failed — Use Fallback?",
-                "Could not fit the NNLS mixing matrix.\n\n"
+                self.tr("Matrix Fit Failed — Use Fallback?"),
+                self.tr("Could not fit the NNLS mixing matrix.\n\n"
                 "Common causes:\n"
                 "  • Image is a synthetic palette (e.g. HOO where G=B=OIII exactly)\n"
                 "  • Too few spectrally diverse stars survived sigma clipping.\n\n"
-                "Use the stellar flux mixing fallback instead?",
+                "Use the stellar flux mixing fallback instead?"),
             ):
                 return
             self._run_wb_fallback(doc, img_float, l1_key, l2_key)
@@ -1651,13 +1671,14 @@ class NBExtractDialog(SFCCDialog):
         q2_val = float(self.nb_q2_spin.value())
 
         matrix_lines = [
-            f"Calibrated from {n_clipped_used} Gaia XP stars  "
-            f"({n_matched:,} re-detected  ·  {n_used - n_clipped_used} outliers clipped)",
-            f"Channel sensitivity  ({l1_key} %  |  {l2_key} %):",
+            self.tr("Calibrated from {0} Gaia XP stars  "
+            "({1:,} re-detected  ·  {2} outliers clipped)").format(
+                n_clipped_used, n_matched, n_used - n_clipped_used),
+            self.tr("Channel sensitivity  ({0} %  |  {1} %):").format(l1_key, l2_key),
             f"  R :  {_pct(0,0):.1f}%  {l1_key}   {_pct(0,1):.1f}%  {l2_key}",
             f"  G :  {_pct(1,0):.1f}%  {l1_key}   {_pct(1,1):.1f}%  {l2_key}",
             f"  B :  {_pct(2,0):.1f}%  {l1_key}   {_pct(2,1):.1f}%  {l2_key}",
-            f"  Condition number : {k:.2f}   Q₁={q1_val:.2f}  Q₂={q2_val:.2f}",
+            self.tr("  Condition number : {0:.2f}   Q₁={1:.2f}  Q₂={2:.2f}").format(k, q1_val, q2_val),
         ]
         if warn_text:
             prefix = "  🛑  " if warn_severity == "severe" else "  ⚠  "
@@ -1666,12 +1687,12 @@ class NBExtractDialog(SFCCDialog):
 
         if warn_severity == "severe":
             if self._nb_confirm_fallback(
-                "Poor Channel Separation — Use Fallback?",
-                f"Condition number is {k:.1f} — noise would be amplified "
-                f"~{k**2:.0f}× by the NNLS inversion.\n\n"
-                f"At this level the extracted channels will be dominated by amplified "
-                f"noise rather than real emission signal.\n\n"
-                f"Switch to the stellar flux color mixing fallback instead?",
+                self.tr("Poor Channel Separation — Use Fallback?"),
+                self.tr("Condition number is {0:.1f} — noise would be amplified "
+                "~{1:.0f}× by the NNLS inversion.\n\n"
+                "At this level the extracted channels will be dominated by amplified "
+                "noise rather than real emission signal.\n\n"
+                "Switch to the stellar flux color mixing fallback instead?").format(k, k**2),
             ):
                 self.nb_extract_btn.setEnabled(False)
                 self._run_wb_fallback(doc, img_float, l1_key, l2_key)
@@ -1685,17 +1706,17 @@ class NBExtractDialog(SFCCDialog):
             f"condition number {k:.2f}  ·  Q₁={q1_val:.2f}  Q₂={q2_val:.2f}  ·  "
             f"ready for Step 3")
 
-        summary = (
-            f"Mixing matrix fitted from {n_clipped_used} Gaia XP stars "
-            f"({n_used - n_clipped_used} clipped as outliers)\n"
-            f"  {n_matched:,} XP stars re-detected by SEP\n"
-            f"  300 brightest selected for calibration\n\n"
-            f"Condition number: {k:.2f}\n"
-            f"Auto Q₁ = {q1_val:.2f}  Q₂ = {q2_val:.2f}\n\n"
-        )
-        summary += warn_text if warn_text else "Matrix looks well-conditioned ✓"
+        summary = self.tr(
+            "Mixing matrix fitted from {0} Gaia XP stars "
+            "({1} clipped as outliers)\n"
+            "  {2:,} XP stars re-detected by SEP\n"
+            "  300 brightest selected for calibration\n\n"
+            "Condition number: {3:.2f}\n"
+            "Auto Q₁ = {4:.2f}  Q₂ = {5:.2f}\n\n"
+        ).format(n_clipped_used, n_used - n_clipped_used, n_matched, k, q1_val, q2_val)
+        summary += warn_text if warn_text else self.tr("Matrix looks well-conditioned ✓")
         if not self._headless:
-            QMessageBox.information(self, "Calibration Complete", summary)
+            QMessageBox.information(self, self.tr("Calibration Complete"), summary)
 
     def _plot_calibration_diagnostics(
         self,
@@ -1912,12 +1933,12 @@ class NBExtractDialog(SFCCDialog):
         d2 = self._push_new_document(line2_img, meta2, f"{l2_key} (NBExtract)")
         self._last_output_docs = [d for d in (d1, d2) if d is not None]
 
-        self.nb_matrix_label.setText(
-            f"Method: Stellar flux color mixing fallback\n"
-            f"  {l1_key} = color-corrected R channel\n"
-            f"  {l2_key} = color-corrected G channel\n"
-            f"  Stars used: {star_count}"
-        )
+        self.nb_matrix_label.setText(self.tr(
+            "Method: Stellar flux color mixing fallback\n"
+            "  {0} = color-corrected R channel\n"
+            "  {1} = color-corrected G channel\n"
+            "  Stars used: {2}"
+        ).format(l1_key, l2_key, star_count))
         self.nb_extract_btn.setEnabled(False)
 
         _sfcc_status(self,
@@ -1926,11 +1947,12 @@ class NBExtractDialog(SFCCDialog):
 
         if not self._headless:
             QMessageBox.information(
-                self, "Color Mixing Fallback Complete",
-                f"Created two new documents using stellar flux color mixing:\n"
-                f"  •  {l1_key} (NBExtract) — color-corrected R channel\n"
-                f"  •  {l2_key} (NBExtract) — color-corrected G channel\n\n"
-                f"3×3 color mixing matrix fitted from {star_count} stellar flux measurements.\n"
+                self, self.tr("Color Mixing Fallback Complete"),
+                self.tr("Created two new documents using stellar flux color mixing:\n"
+                "  •  {0} (NBExtract) — color-corrected R channel\n"
+                "  •  {1} (NBExtract) — color-corrected G channel\n\n"
+                "3×3 color mixing matrix fitted from {2} stellar flux measurements.\n"
+                ).format(l1_key, l2_key, star_count)
             )
         return list(self._last_output_docs)
 
@@ -1938,8 +1960,13 @@ class NBExtractDialog(SFCCDialog):
 
     def _nb_abort(self, title: str, text: str, level: str = "critical"):
         """Headless → raise NBExtractError; interactive → show a message box."""
+        # title/text arrive as untranslated English (QT_TRANSLATE_NOOP at the
+        # call site) so the headless NBExtractError stays English; only the
+        # message box is translated.
         if self._headless:
             raise NBExtractError(text)
+        title = _tr(title)
+        text = _tr(text)
         if level == "warning":
             QMessageBox.warning(self, title, text)
         else:
@@ -2139,19 +2166,19 @@ class NBExtractDialog(SFCCDialog):
 
     def _extract_channels(self):
         if self._A_matrix is None:
-            self._nb_abort("Not Calibrated",
-                           "Please run Step 2: Calibrate Mixing Matrix first.",
+            self._nb_abort(QT_TRANSLATE_NOOP("NbExtract", "Not Calibrated"),
+                           QT_TRANSLATE_NOOP("NbExtract", "Please run Step 2: Calibrate Mixing Matrix first."),
                            level="warning")
             return
 
         doc = self.doc_manager.get_active_document()
         if doc is None or doc.image is None:
-            self._nb_abort("Error", "No active document.")
+            self._nb_abort(QT_TRANSLATE_NOOP("NbExtract", "Error"), QT_TRANSLATE_NOOP("NbExtract", "No active document."))
             return
 
         img = doc.image
         if img.ndim != 3 or img.shape[2] != 3:
-            self._nb_abort("Error", "Active document must be RGB (3 channels).")
+            self._nb_abort(QT_TRANSLATE_NOOP("NbExtract", "Error"), QT_TRANSLATE_NOOP("NbExtract", "Active document must be RGB (3 channels)."))
             return
 
         preset_name = self.nb_preset_combo.currentText()
@@ -2252,15 +2279,16 @@ class NBExtractDialog(SFCCDialog):
 
         if not self._headless:
             QMessageBox.information(
-                self, "Extraction Complete",
-                f"Two new documents created:\n"
-                f"  •  {l1_key}  (NBExtract)\n"
-                f"  •  {l2_key}  (NBExtract)\n\n"
-                f"Calibrated from {n_cal} stars.\n"
-                f"Condition number: {k:.2f}\n"
-                f"Q₁ = {q1:.2f}   Q₂ = {q2:.2f}  (auto-derived from condition number)\n\n"
-                f"Tip: if you see over-subtraction (dark halos/holes), open Advanced\n"
-                f"and reduce Q. If under-subtraction (residual bleed), increase Q."
+                self, self.tr("Extraction Complete"),
+                self.tr("Two new documents created:\n"
+                "  •  {0}  (NBExtract)\n"
+                "  •  {1}  (NBExtract)\n\n"
+                "Calibrated from {2} stars.\n"
+                "Condition number: {3:.2f}\n"
+                "Q₁ = {4:.2f}   Q₂ = {5:.2f}  (auto-derived from condition number)\n\n"
+                "Tip: if you see over-subtraction (dark halos/holes), open Advanced\n"
+                "and reduce Q. If under-subtraction (residual bleed), increase Q."
+                ).format(l1_key, l2_key, n_cal, k, q1, q2)
             )
         return list(self._last_output_docs)
 
@@ -2304,7 +2332,7 @@ class NBExtractDialog(SFCCDialog):
         except Exception as e:
             if self._headless:
                 raise NBExtractError(f"Failed to create document '{title}': {e}")
-            QMessageBox.critical(self, "NBExtract", f"Failed to create document '{title}':\n{e}")
+            QMessageBox.critical(self, "NBExtract", self.tr("Failed to create document '{0}':\n{1}").format(title, e))
             return None
 
 

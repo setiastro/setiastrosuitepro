@@ -815,6 +815,20 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
             pass
 
     def closeEvent(self, ev):
+        self._close_teardown()
+        super().closeEvent(ev)
+
+    def done(self, r):
+        # Close / Esc end a QDialog through done(), which never delivers
+        # closeEvent: without this they skipped the teardown and the dialog
+        # kept its full-size buffers until collected. Runs once.
+        self._close_teardown()
+        super().done(r)
+
+    def _close_teardown(self):
+        if getattr(self, "_close_torn_down", False):
+            return
+        self._close_torn_down = True
         # Running jobs are held by thread_keeper and finish on their own; their
         # results are dropped once the dialog has released its buffers.
         try:
@@ -827,7 +841,6 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
             self._release_memory()
         except Exception:
             pass
-        super().closeEvent(ev)
 
     def _release_memory(self):
         """Drop full-frame RGB buffers and preview pixmap on close."""
@@ -887,7 +900,8 @@ def install_wavescale_dark_enhancer(main_window: QMainWindow,
     act = getattr(main_window, "act_wavescalede", None)
     if act is None:
         from PyQt6.QtGui import QAction
-        act = QAction(QIcon(dse_icon_path), "WaveScale Dark Enhancer", main_window)
+        from PyQt6.QtCore import QCoreApplication
+        act = QAction(QIcon(dse_icon_path), QCoreApplication.translate("WaveScaleDarkEnhancerDialogPro", "WaveScale Dark Enhancer"), main_window)
         act.setObjectName(command_id)
         act.setProperty("command_id", command_id)
 

@@ -4058,6 +4058,51 @@ def _minimal_fits_header_for_array(data_for_fits: np.ndarray) -> fits.Header:
     return _apply_fits_shape_keywords(hdr, data_for_fits)
 
 
+# PixInsight's WCS reader (PCL WCSKeywords) takes the linear part of a celestial
+# solution from the four CDi_j cards, else from CDELTi + CROTA2, and never reads
+# PCi_j. astropy's WCS.to_header() writes PC + CDELT, usually CDELT = 1.0 with the
+# whole scale in PC, so PixInsight loaded every plate-solved SASpro FITS at
+# 1 deg/px (3600"/px, a field thousands of degrees wide) and anything needing
+# coordinates there broke. CD = diag(CDELT) @ PC is the identical solution in the
+# form every reader takes; SASpro's own master lights already carry it.
+# A header holding both (a stale CD beside a fresh PC) is read from PC by astropy,
+# and so by SASpro, but from CD by PixInsight; rebuilding CD from PC makes them agree.
+_WCS_PC_KEYS = ("PC1_1", "PC1_2", "PC2_1", "PC2_2")
+_WCS_CD_KEYS = ("CD1_1", "CD1_2", "CD2_1", "CD2_2")
+
+
+def _wcs_pc_to_cd(hdr):
+    """Rewrite a PC + CDELT linear WCS as CD cards, in place, on a header that is
+    about to be written. Headers with no PC are left alone, as is anything that
+    does not parse as numbers."""
+    if not isinstance(hdr, fits.Header):
+        return hdr
+    if not any(k in hdr for k in _WCS_PC_KEYS):
+        return hdr
+    try:
+        c1 = float(hdr.get("CDELT1", 1.0))
+        c2 = float(hdr.get("CDELT2", 1.0))
+        cd = (("CD1_1", c1 * float(hdr.get("PC1_1", 1.0))),
+              ("CD1_2", c1 * float(hdr.get("PC1_2", 0.0))),
+              ("CD2_1", c2 * float(hdr.get("PC2_1", 0.0))),
+              ("CD2_2", c2 * float(hdr.get("PC2_2", 1.0))))
+    except Exception:
+        return hdr
+    try:
+        for k in _WCS_CD_KEYS:                # a stale CD never outlives the PC beside it
+            if k in hdr:
+                del hdr[k]
+        anchor = next(k for k in _WCS_PC_KEYS if k in hdr)
+        for k, v in cd:                       # CD cards take the PC cards' place
+            hdr.insert(anchor, (k, v, "Linear WCS matrix, CDELT folded in"))
+        for k in _WCS_PC_KEYS + ("CDELT1", "CDELT2"):
+            if k in hdr:
+                del hdr[k]
+    except Exception:
+        pass
+    return hdr
+
+
 def _build_fits_header_for_export(data_for_fits, original_header=None, wcs_header=None):
     """
     Build a FITS header whose dimensional keywords match data_for_fits exactly.
@@ -4108,6 +4153,7 @@ def _build_fits_header_for_export(data_for_fits, original_header=None, wcs_heade
             except Exception:
                 pass
 
+    _wcs_pc_to_cd(fits_header)
     return _apply_fits_shape_keywords(fits_header, data_for_fits)
 
 
@@ -5139,6 +5185,8 @@ def save_image(img_array,
             _sync_fits_level_cards(fits_header, data_to_write,
                                    int(fits_header["BITPIX"]))
 
+            _wcs_pc_to_cd(fits_header)        # PixInsight reads CD, never PC
+
             # --- Write with the same robust path you already had ---
             hdu = fits.PrimaryHDU(data_to_write, header=fits_header)
 
@@ -5288,7 +5336,7 @@ def save_image(img_array,
             if not clean_meta.get("FITSKeywords") and isinstance(original_header, fits.Header):
                 synth_fk = {}
                 try:
-                    for card in _drop_invalid_cards(original_header).cards:
+                    for card in _wcs_pc_to_cd(_drop_invalid_cards(original_header)).cards:
                         kw = str(card.keyword)
                         if not kw or kw in ("SIMPLE", "EXTEND", "END"):
                             continue

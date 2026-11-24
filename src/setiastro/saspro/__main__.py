@@ -155,6 +155,14 @@ def entry(argv: list[str] | None = None) -> int:
 
         return int(cli_main(argv))
 
+    # setiastrosuitepro --run-script SCRIPT.py: run a script in the SASpro that
+    # is already open and pass its output back (script_bridge.py). It never
+    # opens a window of its own, so it goes before the sandbox and the hand-off.
+    from setiastro.saspro.script_bridge import wants_run_script
+    if wants_run_script(argv):
+        from setiastro.saspro.script_bridge import client_main as run_script_main
+        return int(run_script_main(argv))
+
     # ── Single-instance handoff (earliest possible point) ───────────────────
     # If another SASpro is already running (and the user didn't pass
     # --new-instance / set SASPRO_NEW_INSTANCE=1), hand our argv off and exit
@@ -168,11 +176,11 @@ def entry(argv: list[str] | None = None) -> int:
     # importing it here is virtually free. If the probe succeeds, PyQt6 never
     # loads in this process at all and we exit in ~50ms + Python startup.
     #
-    # --firstrun: switch to a throwaway settings store before gui_entry's
-    # import reads any setting (icon pack, language). It never hands off.
-    from setiastro.saspro.settings_sandbox import wants_firstrun, enter_firstrun_sandbox
-    if wants_firstrun(argv):
-        enter_firstrun_sandbox()
+    # --firstrun / --upgraderun: switch to a throwaway settings store before
+    # gui_entry's import reads any setting (icon pack, language). Never hands off.
+    from setiastro.saspro.settings_sandbox import wants_sandbox, enter_sandbox
+    if wants_sandbox(argv):
+        enter_sandbox(argv)
     try:
         from setiastro.saspro.single_instance import maybe_handoff_and_exit
         _cleaned = maybe_handoff_and_exit(argv)

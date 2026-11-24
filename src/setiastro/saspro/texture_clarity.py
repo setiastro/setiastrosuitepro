@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QEvent, QSettings
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QEvent, QSettings, QCoreApplication
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QSlider, QHBoxLayout,
     QPushButton, QMessageBox, QCheckBox, QScrollArea, QWidget, QGroupBox
@@ -21,6 +21,10 @@ from setiastro.saspro.widgets.image_utils import (
 
 from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("TextureClarity", text)
 
 # ─── image helpers ────────────────────────────────────────────────────────────
 
@@ -243,7 +247,7 @@ class TextureClarityDialog(QDialog):
         super().__init__(parent)
         self.main = main
         self.doc  = doc
-        self.setWindowTitle("Texture and Clarity")
+        self.setWindowTitle(self.tr("Texture and Clarity"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -320,38 +324,38 @@ class TextureClarityDialog(QDialog):
             return grp, sld, lbl, scale, fmt
 
         # Texture
-        tex_grp = QGroupBox("Texture")
+        tex_grp = QGroupBox(self.tr("Texture"))
         tg = QVBoxLayout(tex_grp)
-        self.lbl_t_amt = QLabel("Amount: 0.00")
+        self.lbl_t_amt = QLabel(self.tr("Amount: {0:.2f}").format(0.0))
         self.sl_t_amt  = QSlider(Qt.Orientation.Horizontal)
         self.sl_t_amt.setRange(-100, 100); self.sl_t_amt.setValue(0)
-        self.lbl_t_rad = QLabel("Radius: 1.0")
+        self.lbl_t_rad = QLabel(self.tr("Radius: {0:.1f}").format(1.0))
         self.sl_t_rad  = QSlider(Qt.Orientation.Horizontal)
         # extended range: 0.1 → 10.0 (slider 1–100)
         self.sl_t_rad.setRange(1, 100); self.sl_t_rad.setValue(10)
-        self.sl_t_rad.setToolTip("0.1 – 10.0 px  (fine detail → coarse texture)")
+        self.sl_t_rad.setToolTip(self.tr("0.1 – 10.0 px  (fine detail → coarse texture)"))
         for w in (self.lbl_t_amt, self.sl_t_amt,
                   self.lbl_t_rad, self.sl_t_rad):
             tg.addWidget(w)
         left.addWidget(tex_grp)
 
         # Unsharp Mask
-        usm_grp = QGroupBox("Unsharp Mask")
+        usm_grp = QGroupBox(self.tr("Unsharp Mask"))
         ug = QVBoxLayout(usm_grp)
-        self.lbl_u_amt = QLabel("Amount: 0.00")
+        self.lbl_u_amt = QLabel(self.tr("Amount: {0:.2f}").format(0.0))
         self.sl_u_amt  = QSlider(Qt.Orientation.Horizontal)
         self.sl_u_amt.setRange(0, 200); self.sl_u_amt.setValue(0)
-        self.sl_u_amt.setToolTip("0.00 – 2.00  (strength of the sharpening)")
-        self.lbl_u_rad = QLabel("Radius: 2.0")
+        self.sl_u_amt.setToolTip(self.tr("0.00 – 2.00  (strength of the sharpening)"))
+        self.lbl_u_rad = QLabel(self.tr("Radius: {0:.1f}").format(2.0))
         self.sl_u_rad  = QSlider(Qt.Orientation.Horizontal)
         self.sl_u_rad.setRange(1, 100); self.sl_u_rad.setValue(20)
-        self.sl_u_rad.setToolTip("0.1 – 10.0 px  (Gaussian sigma)")
-        self.lbl_u_thr = QLabel("Threshold: 0.000")
+        self.sl_u_rad.setToolTip(self.tr("0.1 – 10.0 px  (Gaussian sigma)"))
+        self.lbl_u_thr = QLabel(self.tr("Threshold: {0:.3f}").format(0.0))
         self.sl_u_thr  = QSlider(Qt.Orientation.Horizontal)
         self.sl_u_thr.setRange(0, 100); self.sl_u_thr.setValue(0)
         self.sl_u_thr.setToolTip(
-            "0.000 – 0.100  — differences below this are not sharpened\n"
-            "(protects background noise)"
+            self.tr("0.000 – 0.100  — differences below this are not sharpened\n"
+            "(protects background noise)")
         )
         for w in (self.lbl_u_amt, self.sl_u_amt,
                   self.lbl_u_rad, self.sl_u_rad,
@@ -360,12 +364,12 @@ class TextureClarityDialog(QDialog):
         left.addWidget(usm_grp)
 
         # Clarity
-        clar_grp = QGroupBox("Clarity")
+        clar_grp = QGroupBox(self.tr("Clarity"))
         cg = QVBoxLayout(clar_grp)
-        self.lbl_c_amt = QLabel("Amount: 0.00")
+        self.lbl_c_amt = QLabel(self.tr("Amount: {0:.2f}").format(0.0))
         self.sl_c_amt  = QSlider(Qt.Orientation.Horizontal)
         self.sl_c_amt.setRange(-100, 100); self.sl_c_amt.setValue(0)
-        self.lbl_c_rad = QLabel("Radius: 3.0")
+        self.lbl_c_rad = QLabel(self.tr("Radius: {0:.1f}").format(3.0))
         self.sl_c_rad  = QSlider(Qt.Orientation.Horizontal)
         self.sl_c_rad.setRange(1, 100); self.sl_c_rad.setValue(30)
         for w in (self.lbl_c_amt, self.sl_c_amt,
@@ -374,15 +378,15 @@ class TextureClarityDialog(QDialog):
         left.addWidget(clar_grp)
 
         # Midtone mask strength
-        mask_grp = QGroupBox("Clarity Mask")
+        mask_grp = QGroupBox(self.tr("Clarity Mask"))
         mg = QVBoxLayout(mask_grp)
-        self.lbl_mask = QLabel("Midtone strength: 1.00  (1=midtones only, 0=everywhere)")
+        self.lbl_mask = QLabel(self.tr("Midtone strength: {0:.2f}  (1=midtones only, 0=everywhere)").format(1.0))
         self.lbl_mask.setWordWrap(True)
         self.sl_mask  = QSlider(Qt.Orientation.Horizontal)
         self.sl_mask.setRange(0, 100); self.sl_mask.setValue(100)
         self.sl_mask.setToolTip(
-            "1.0 = affect midtones only (standard clarity behaviour)\n"
-            "0.0 = apply clarity uniformly across shadows and highlights too"
+            self.tr("1.0 = affect midtones only (standard clarity behaviour)\n"
+            "0.0 = apply clarity uniformly across shadows and highlights too")
         )
         mg.addWidget(self.lbl_mask)
         mg.addWidget(self.sl_mask)
@@ -391,11 +395,11 @@ class TextureClarityDialog(QDialog):
         left.addSpacing(4)
 
         # ── before/after toggle ───────────────────────────────────────────────
-        self.btn_toggle = QPushButton("⇄  Toggle Before / After")
+        self.btn_toggle = QPushButton(self.tr("⇄  Toggle Before / After"))
         self.btn_toggle.setCheckable(True)
         self.btn_toggle.setToolTip(
-            "Instantly switch between original and processed preview.\n"
-            "No recalculation — uses cached images."
+            self.tr("Instantly switch between original and processed preview.\n"
+            "No recalculation — uses cached images.")
         )
         self.btn_toggle.toggled.connect(self._on_toggle)
         left.addWidget(self.btn_toggle)
@@ -404,9 +408,9 @@ class TextureClarityDialog(QDialog):
 
         # action buttons
         btn_row = QHBoxLayout()
-        self.btn_apply  = QPushButton("Apply")
-        self.btn_reset  = QPushButton("Reset")
-        self.btn_cancel = QPushButton("Cancel")
+        self.btn_apply  = QPushButton(self.tr("Apply"))
+        self.btn_reset  = QPushButton(self.tr("Reset"))
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
         self.btn_apply.clicked.connect(self._apply)
         self.btn_reset.clicked.connect(self._reset)
         self.btn_cancel.clicked.connect(self.close)
@@ -470,22 +474,22 @@ class TextureClarityDialog(QDialog):
 
         # wire signals
         self.sl_t_amt.valueChanged.connect(
-            lambda v: self._param_changed(self.lbl_t_amt, f"Amount: {v/100:.2f}"))
+            lambda v: self._param_changed(self.lbl_t_amt, self.tr("Amount: {0:.2f}").format(v/100)))
         self.sl_t_rad.valueChanged.connect(
-            lambda v: self._param_changed(self.lbl_t_rad, f"Radius: {v/10:.1f}"))
+            lambda v: self._param_changed(self.lbl_t_rad, self.tr("Radius: {0:.1f}").format(v/10)))
         self.sl_u_amt.valueChanged.connect(
-            lambda v: self._param_changed(self.lbl_u_amt, f"Amount: {v/100:.2f}"))
+            lambda v: self._param_changed(self.lbl_u_amt, self.tr("Amount: {0:.2f}").format(v/100)))
         self.sl_u_rad.valueChanged.connect(
-            lambda v: self._param_changed(self.lbl_u_rad, f"Radius: {v/10:.1f}"))
+            lambda v: self._param_changed(self.lbl_u_rad, self.tr("Radius: {0:.1f}").format(v/10)))
         self.sl_u_thr.valueChanged.connect(
-            lambda v: self._param_changed(self.lbl_u_thr, f"Threshold: {v/1000:.3f}"))
+            lambda v: self._param_changed(self.lbl_u_thr, self.tr("Threshold: {0:.3f}").format(v/1000)))
         self.sl_c_amt.valueChanged.connect(
-            lambda v: self._param_changed(self.lbl_c_amt, f"Amount: {v/100:.2f}"))
+            lambda v: self._param_changed(self.lbl_c_amt, self.tr("Amount: {0:.2f}").format(v/100)))
         self.sl_c_rad.valueChanged.connect(
-            lambda v: self._param_changed(self.lbl_c_rad, f"Radius: {v/10:.1f}"))
+            lambda v: self._param_changed(self.lbl_c_rad, self.tr("Radius: {0:.1f}").format(v/10)))
         self.sl_mask.valueChanged.connect(
             lambda v: self._param_changed(self.lbl_mask,
-                f"Midtone strength: {v/100:.2f}  (1=midtones only, 0=everywhere)"))
+                self.tr("Midtone strength: {0:.2f}  (1=midtones only, 0=everywhere)").format(v/100)))
 
     # ── param change ──────────────────────────────────────────────────────────
 
@@ -581,14 +585,14 @@ class TextureClarityDialog(QDialog):
                     self.sl_u_amt, self.sl_u_rad, self.sl_u_thr,
                     self.sl_c_amt, self.sl_c_rad, self.sl_mask):
             sld.blockSignals(False)
-        self.lbl_t_amt.setText("Amount: 0.00")
-        self.lbl_t_rad.setText("Radius: 1.0")
-        self.lbl_u_amt.setText("Amount: 0.00")
-        self.lbl_u_rad.setText("Radius: 2.0")
-        self.lbl_u_thr.setText("Threshold: 0.000")
-        self.lbl_c_amt.setText("Amount: 0.00")
-        self.lbl_c_rad.setText("Radius: 3.0")
-        self.lbl_mask.setText("Midtone strength: 1.00  (1=midtones only, 0=everywhere)")
+        self.lbl_t_amt.setText(self.tr("Amount: {0:.2f}").format(0.0))
+        self.lbl_t_rad.setText(self.tr("Radius: {0:.1f}").format(1.0))
+        self.lbl_u_amt.setText(self.tr("Amount: {0:.2f}").format(0.0))
+        self.lbl_u_rad.setText(self.tr("Radius: {0:.1f}").format(2.0))
+        self.lbl_u_thr.setText(self.tr("Threshold: {0:.3f}").format(0.0))
+        self.lbl_c_amt.setText(self.tr("Amount: {0:.2f}").format(0.0))
+        self.lbl_c_rad.setText(self.tr("Radius: {0:.1f}").format(3.0))
+        self.lbl_mask.setText(self.tr("Midtone strength: {0:.2f}  (1=midtones only, 0=everywhere)").format(1.0))
         self._preview_timer.start()
 
     # ── apply ─────────────────────────────────────────────────────────────────
@@ -695,8 +699,8 @@ class TextureClarityDialog(QDialog):
         if doc is self.doc:
             return
         self.doc = doc
-        title = doc.display_name() if hasattr(doc, "display_name") else "Image"
-        self.setWindowTitle(f"Texture and Clarity — {title}")
+        title = doc.display_name() if hasattr(doc, "display_name") else self.tr("Image")
+        self.setWindowTitle(self.tr("Texture and Clarity — {0}").format(title))
         self._pix_processed = None
         self._showing_original = False
         self.btn_toggle.blockSignals(True)
@@ -866,7 +870,7 @@ def open_texture_clarity_dialog(main, doc=None, preset: dict | None = None):
         if callable(doc):
             doc = doc()
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.information(main, "Texture & Clarity", "Open an image first.")
+        QMessageBox.information(main, _tr("Texture & Clarity"), _tr("Open an image first."))
         return
     dlg = TextureClarityDialog(main, doc, parent=main, preset=preset)
     dlg.show()

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import Iterable, List, Sequence, Tuple
 
+from PyQt6.QtCore import QT_TRANSLATE_NOOP
+
 # ---------------------------------------------------------------------------
 # Authoritative contents of every top-level menu, in menu order.
 # These are attribute names on the main window, not QAction objects.
@@ -67,12 +69,12 @@ MENU_CONTENTS: dict[str, List[str]] = {
         "actSyQonTools", "act_remove_stars", "act_rcastro",
     ],
     "tools": [
-        "act_blink", "act_contsub", "act_freqsep", "act_image_combine",
+        "act_contsub", "act_freqsep", "act_image_combine",
         "act_hdr_composition",
         "act_multiscale_decomp", "act_narrowband_integration",
         "act_narrowband_normalization", "act_nbtorgb", "act_ppp",
         "act_selective_color", "act_selective_lum", "act_slap_toolkit",
-        "act_magnitude", "act_snr", "act_view_bundles", "act_function_bundles",
+        "act_view_bundles", "act_function_bundles",
         "act_planet_projection", "act_flythrough",
     ],
     "geometry": [
@@ -83,14 +85,14 @@ MENU_CONTENTS: dict[str, List[str]] = {
     ],
     # "Star Stuff" until 1.24.8, split so stacking can be found by name.
     "stacking": [
-        "act_stacking_suite", "act_live_stacking", "act_planetary_stacker",
+        "act_stacking_suite", "act_quick_stack", "act_live_stacking", "act_planetary_stacker",
         "act_star_align", "act_star_register", "act_rgb_align",
         "act_mosaic_master", "act_surface_mosaic",
     ],
     "analysis": [
-        "act_plate_solve", "act_unwarp", "act_psf_viewer", "act_image_peeker",
-        "act_dither_analysis", "act_isophote", "act_exo_detector",
-        "act_supernova_hunter",
+        "act_plate_solve", "act_unwarp", "act_blink", "act_psf_viewer",
+        "act_image_peeker", "act_dither_analysis", "act_magnitude", "act_snr",
+        "act_isophote", "act_exo_detector", "act_supernova_hunter",
     ],
     "masks": [
         "act_create_mask", "act_apply_mask", "act_remove_mask",
@@ -139,119 +141,119 @@ MENU_CONTENTS: dict[str, List[str]] = {
 
 SUBMENUS: dict[str, List[Tuple[str, List[str]]]] = {
     "functions": [
-        ("Gradient && Background", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Gradient && Background"), [
             "act_abe", "act_srgc", "act_graxpert", "act_pedestal",
         ]),
-        ("Color Calibration", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Color Calibration"), [
             "act_background_neutral", "act_white_balance", "act_sfcc",
             "act_sssc", "act_curve_manager", "act_linear_fit",
         ]),
-        ("Color && Saturation", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Color && Saturation"), [
             "act_remove_green", "act_satchroma",
         ]),
-        ("Stretching && Tone", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Stretching && Tone"), [
             "act_stat_stretch", "act_star_stretch", "act_ghs", "act_curves",
             "act_hist_transform", "act_histogram",
         ]),
-        ("Detail && Contrast", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Detail && Contrast"), [
             "act_convo", "act_texture_clarity", "act_wavescale_hdr",
             "act_wavescale_de", "act_clahe", "act_morphology",
         ]),
-        ("Stars", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Stars"), [
             "act_remove_stars", "act_add_stars", "act_halobgon",
             "act_star_spikes", "act_astrospike",
         ]),
-        ("Channels && Luminance", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Channels && Luminance"), [
             "act_extract_luma", "act_recombine_luma", "act_rgb_extract",
             "act_rgb_combine", "act_nbextract",
         ]),
-        ("Repair && Retouch", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Repair && Retouch"), [
             "act_blemish", "act_clone_stamp", "act_cosmetic_correction",
             "act_crop",
         ]),
-        ("Creative && Overlays", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Creative && Overlays"), [
             "act_fx", "act_signature", "act_pixelmath",
         ]),
     ],
     "tools": [
-        ("Narrowband", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Narrowband"), [
             "act_narrowband_integration", "act_narrowband_normalization",
             "act_nbtorgb", "act_ppp", "act_contsub",
         ]),
-        ("Selective Correction", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Selective Correction"), [
             "act_selective_color", "act_selective_lum",
         ]),
-        ("Decomposition", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Decomposition"), [
             "act_freqsep", "act_multiscale_decomp",
         ]),
-        ("Measurement && Inspection", [
-            "act_blink", "act_magnitude", "act_snr",
-        ]),
-        ("Compositing", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Compositing"), [
             "act_image_combine", "act_hdr_composition", "act_slap_toolkit",
         ]),
-        ("Visualization", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Visualization"), [
             "act_planet_projection", "act_flythrough",
         ]),
-        ("Bundles", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Bundles"), [
             "act_view_bundles", "act_function_bundles",
         ]),
     ],
     "stacking": [
-        ("Stacking", [
-            "act_stacking_suite", "act_live_stacking", "act_planetary_stacker",
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Stacking"), [
+            "act_stacking_suite", "act_quick_stack", "act_live_stacking", "act_planetary_stacker",
         ]),
-        ("Registration && Alignment", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Registration && Alignment"), [
             "act_star_align", "act_star_register", "act_rgb_align",
         ]),
-        ("Mosaics", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Mosaics"), [
             "act_mosaic_master", "act_surface_mosaic",
         ]),
     ],
     "analysis": [
-        ("Astrometry", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Astrometry"), [
             "act_plate_solve", "act_unwarp",
         ]),
-        ("Inspection", [
-            "act_psf_viewer", "act_image_peeker", "act_dither_analysis",
-            "act_isophote",
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Inspection"), [
+            "act_blink", "act_psf_viewer", "act_image_peeker",
+            "act_dither_analysis",
         ]),
-        ("Discovery", [
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Measurement"), [
+            "act_magnitude", "act_snr", "act_isophote",
+        ]),
+        (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Discovery"), [
             "act_exo_detector", "act_supernova_hunter",
         ]),
     ],
 }
 
 # Menus whose groups are laid out inline (separators, no submenus, no "All"
-# list): with eight tools each, every one stays a single click away.
+# list): with about ten tools each, every one stays a single click away.
 SECTIONED_MENUS: frozenset[str] = frozenset({"stacking", "analysis"})
 
 # Label used for the flat "everything" submenu at the bottom of a grouped menu.
 ALL_LABELS: dict[str, str] = {
-    "functions": "All Functions",
-    "tools": "All Tools",
+    "functions": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "All Functions"),
+    "tools": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "All Tools"),
 }
 
 # Human-readable names for cheat-sheet group headers.
 MENU_TITLES: dict[str, str] = {
-    "file": "File",
-    "edit": "Edit",
-    "display": "Display",
-    "functions": "Functions",
-    "smart_tools": "Smart Tools",
-    "tools": "Tools",
-    "geometry": "Geometry",
-    "stacking": "Stacking",
-    "analysis": "Analysis",
-    "masks": "Masks",
-    "whats_in_my": "What's In My…",
-    "header_misc": "Header & Misc",
-    "history": "History",
-    "shortcuts": "Shortcuts",
-    "view": "View",
-    "workflows": "Workflows",
-    "settings": "Settings",
-    "about": "About",
+    "file": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "File"),
+    "edit": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Edit"),
+    "display": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Display"),
+    "functions": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Functions"),
+    "smart_tools": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Smart Tools"),
+    "tools": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Tools"),
+    "geometry": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Geometry"),
+    "stacking": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Stacking"),
+    "analysis": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Analysis"),
+    "masks": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Masks"),
+    "whats_in_my": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "What's In My…"),
+    "header_misc": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Header & Misc"),
+    "history": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "History"),
+    "shortcuts": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Shortcuts"),
+    "view": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "View"),
+    "workflows": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Workflows"),
+    "settings": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Settings"),
+    "about": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "About"),
 }
 
 # Order the Icon Cheat Sheet walks the menus in.
@@ -400,7 +402,7 @@ def cheat_sheet_groups(window) -> List[Tuple[str, List]]:
     groups: List[Tuple[str, List]] = []
 
     for key in CHEAT_SHEET_ORDER:
-        title = MENU_TITLES.get(key, key.replace("_", " ").title())
+        title = _tr(window, MENU_TITLES.get(key, key.replace("_", " ").title()))
         subs = SUBMENUS.get(key)
 
         if not subs:
@@ -414,12 +416,12 @@ def cheat_sheet_groups(window) -> List[Tuple[str, List]]:
             acts = _resolve(window, attrs)
             categorized.update(attrs)
             if acts:
-                groups.append((f"{title} — {label.replace('&&', '&')}", acts))
+                groups.append((f"{title} — {_tr(window, label).replace('&&', '&')}", acts))
 
         leftovers = [a for a in MENU_CONTENTS.get(key, []) if a not in categorized]
         leftover_acts = _resolve(window, leftovers)
         if leftover_acts:
-            groups.append((f"{title} — Other", leftover_acts))
+            groups.append((f"{title} — {_tr(window, 'Other')}", leftover_acts))
 
     return groups
 

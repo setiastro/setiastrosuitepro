@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QDockWidget, QMdiSubWindow,
 )
 from PyQt6.QtGui import QAction, QShortcut, QKeySequence, QColor, QFont
-from PyQt6.QtCore import Qt, QCoreApplication, QTimer
+from PyQt6.QtCore import Qt, QCoreApplication, QTimer, QT_TRANSLATE_NOOP
 
 from setiastro.saspro.shortcut_registry import declared_keys, declared_gestures
 
@@ -40,8 +40,8 @@ _WARN = "⚠ "
 # and main-window shortcuts. A key used twice across these -- or once here and
 # once in an image view, which is active inside the same window -- is ambiguous.
 _APP_SCOPE = "app"
-_GLOBAL = "Global"
-_IMAGE_VIEW = "Image view"
+_GLOBAL = QT_TRANSLATE_NOOP("CheatSheet", "Global")
+_IMAGE_VIEW = QT_TRANSLATE_NOOP("CheatSheet", "Image view")
 
 
 def _tr(text: str) -> str:

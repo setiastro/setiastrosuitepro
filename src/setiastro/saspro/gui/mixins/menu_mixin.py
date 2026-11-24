@@ -285,6 +285,21 @@ class MenuMixin:
         m_view.addAction(self.act_open_panel_host)
         m_view.addAction(self.act_send_panels_to_host)
         m_view.addAction(self.act_return_panels_to_main)
+        self.act_start_panel = m_view.addAction(self.tr("Start Panel"))
+        self.act_start_panel.setStatusTip(self.tr(
+            "Show the start panel while no images are open"))
+        self.act_start_panel.setCheckable(True)
+        panel = getattr(self, "_start_panel", None)   # none yet at startup
+        self.act_start_panel.setChecked(
+            panel.on if panel is not None
+            else self.settings.value("ui/start_panel", True, type=bool))
+        self.act_start_panel.triggered.connect(lambda on: self._set_start_panel(on))
+        m_layout = m_view.addMenu(self.tr("Layout"))
+        m_layout.addAction(self.tr("Reset to Factory Layout..."),
+                           self._reset_all_toolbars_to_factory)
+        if getattr(self, "_returning_user", False):
+            m_layout.addAction(self.tr("Restore Layout From Before 2.0..."),
+                               self._restore_old_layout_clicked)
         m_view.addSeparator()
 
         # Native menus need ordinary actions for keyboard navigation and Help
@@ -342,7 +357,7 @@ class MenuMixin:
         ):
             _act = QAction(
                 self.tr("Link: None") if _group is None
-                else self.tr(f"Link: Group {_group}"),
+                else self.tr("Link: Group {0}").format(_group),
                 self
             )
             _act.setShortcut(QKeySequence(
@@ -395,7 +410,7 @@ class MenuMixin:
         m_about.addSeparator()
         m_about.addAction(self.act_welcome)
         m_about.addAction(self.act_first_steps)
-        act_tips = QAction("Enable / Disable Tip of the Day", self)
+        act_tips = QAction(self.tr("Enable / Disable Tip of the Day"), self)
         act_tips.triggered.connect(self._toggle_tips)
         m_about.addAction(act_tips)
         m_about.addSeparator()
@@ -425,8 +440,8 @@ class MenuMixin:
                 register_help_menu(menu.title().replace("&", ""))
 
     def _init_tools_menu(self):
-        tools = self.menuBar().addMenu("Tools")
-        act_batch = QAction("Batch Convert...", self)
+        tools = self.menuBar().addMenu(self.tr("Tools"))
+        act_batch = QAction(self.tr("Batch Convert..."), self)
         act_batch.triggered.connect(self._open_batch_convert)
         tools.addAction(act_batch)
 
@@ -474,6 +489,10 @@ class MenuMixin:
             clear_act = self.m_recent_projects_menu.addAction(self.tr("Clear List"))
             clear_act.triggered.connect(self._clear_recent_projects)
 
+        panel = getattr(self, "_start_panel", None)
+        if panel is not None:
+            panel.recents_changed()
+
     def _iter_menu_actions(self, menu: QMenu):
         """Depth-first iterator over all actions inside a QMenu tree."""
         for act in menu.actions():
@@ -514,7 +533,7 @@ class MenuMixin:
             except Exception:
                 self._icon_cheat_sheet_dlg = None
         dlg = QDialog(self)
-        dlg.setWindowTitle("Icon Cheat Sheet")
+        dlg.setWindowTitle(self.tr("Icon Cheat Sheet"))
         dlg.setMinimumSize(900, 650)
 
         root = QVBoxLayout(dlg)
@@ -523,11 +542,11 @@ class MenuMixin:
 
         search_row = QHBoxLayout()
         search = QLineEdit()
-        search.setPlaceholderText("Search by name, tooltip, or category…")
+        search.setPlaceholderText(self.tr("Search by name, tooltip, or category…"))
         search.setFixedHeight(32)
         search_row.addWidget(search)
 
-        btn_pdf = QPushButton("Export PDF…")
+        btn_pdf = QPushButton(self.tr("Export PDF…"))
         btn_pdf.setFixedHeight(32)
         search_row.addWidget(btn_pdf)
         root.addLayout(search_row)
@@ -678,7 +697,7 @@ class MenuMixin:
 
         def _export_pdf():
             path, _ = QFileDialog.getSaveFileName(
-                dlg, "Export Icon Cheat Sheet", "saspro_icons.pdf",
+                dlg, self.tr("Export Icon Cheat Sheet"), "saspro_icons.pdf",
                 "PDF Files (*.pdf)"
             )
             if not path:
@@ -817,11 +836,11 @@ class MenuMixin:
 
                 painter.end()
                 from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.information(dlg, "Export PDF", f"Saved to:\n{path}")
+                QMessageBox.information(dlg, self.tr("Export PDF"), self.tr("Saved to:\n{0}").format(path))
 
             except Exception as e:
                 from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.warning(dlg, "Export PDF", f"PDF export failed:\n{e}")
+                QMessageBox.warning(dlg, self.tr("Export PDF"), self.tr("PDF export failed:\n{0}").format(e))
 
         btn_pdf.clicked.connect(_export_pdf)
 

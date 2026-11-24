@@ -1206,20 +1206,55 @@ register(CommandSpec(
             type="float",
             default=50.0,
             min=1.0,
-            max=100.0,
+            max=200.0,
             optional=True,
             desc=(
-                "SEP star threshold (sigma) for star mode. "
+                "Star mode: SEP detection threshold (sigma). "
+                "Used only when auto_sigma is False. "
                 "Higher = fewer/brighter stars."
             ),
         ),
         PresetSpec(
-            key="reuse_cached_sources",
+            key="auto_sigma",
             type="bool",
             default=True,
             optional=True,
             desc=(
-                "Reuse cached SEP detections for speed (star mode)."
+                "Star mode: pick the threshold automatically, as the dialog's "
+                "Auto sigma (waterfall) does: tries sigma 200, 100, 50, 25, 12, 8, 5, 3 "
+                "and keeps the first that finds auto_sigma_min_stars stars. "
+                "Set False to use 'threshold'."
+            ),
+        ),
+        PresetSpec(
+            key="auto_sigma_min_stars",
+            type="int",
+            default=1200,
+            min=1,
+            optional=True,
+            desc="Star mode with auto_sigma: how many stars the waterfall stops at.",
+        ),
+        PresetSpec(
+            key="use_color_matrix",
+            type="bool",
+            default=False,
+            optional=True,
+            desc=(
+                "Star mode: Advanced Color Matrix WB, a 3x3 matrix solved from the "
+                "stars that rotates their colors onto the blackbody locus. "
+                "For broadband RGB; not for narrowband or duoband data."
+            ),
+        ),
+        PresetSpec(
+            key="matrix_strength",
+            type="float",
+            default=0.70,
+            min=0.0,
+            max=1.0,
+            optional=True,
+            desc=(
+                "Star mode with use_color_matrix: rotation strength, "
+                "0 = no rotation, 1 = full."
             ),
         ),
         PresetSpec(
@@ -1251,7 +1286,9 @@ register(CommandSpec(
         ),
     ],
     examples=[
-        "ctx.run_command('white_balance', {'mode': 'star', 'threshold': 45})",
+        "ctx.run_command('white_balance', {'mode': 'star'})",
+        "ctx.run_command('white_balance', {'mode': 'star', 'auto_sigma': False, 'threshold': 45})",
+        "ctx.run_command('white_balance', {'mode': 'star', 'use_color_matrix': True, 'matrix_strength': 0.7})",
         "ctx.run_command('white_balance', {'mode': 'auto'})",
         "ctx.run_command('white_balance', {'mode': 'manual', 'r_gain': 1.12, 'g_gain': 1.0, 'b_gain': 0.94})",
     ],

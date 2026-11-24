@@ -8,7 +8,7 @@ from typing import Optional, Union, Sequence
 
 SourceSpec = Union[str, Sequence[str]]
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QEvent, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QEvent, QTimer, QCoreApplication, QT_TRANSLATE_NOOP
 # === SASpro flat calibration dialog wiring (v1) ===
 from PyQt6.QtWidgets import (
     QWidget, QSpinBox, QMessageBox,
@@ -27,7 +27,9 @@ from setiastro.saspro.ser_stacker import _shift_image
 # ── Platform-aware anchor gesture text (mirrors serviewer.py) ───────
 import platform as _platform
 _IS_MAC = (_platform.system() == "Darwin")
-ANCHOR_GESTURE_SHORT = "⌃⇧-drag" if _IS_MAC else "Ctrl+Shift+drag"
+# UI sites translate this with context "SerStackerDialog"; log lines use it as-is (English).
+ANCHOR_GESTURE_SHORT = (QT_TRANSLATE_NOOP("SerStackerDialog", "⌃⇧-drag") if _IS_MAC
+                        else QT_TRANSLATE_NOOP("SerStackerDialog", "Ctrl+Shift+drag"))
 
 # ---------------------------------------------------------------------------
 # CollapsibleGroup
@@ -303,7 +305,7 @@ class APEditorDialog(QDialog):
         initial_centers: np.ndarray | None = None
     ):
         super().__init__(parent)
-        self.setWindowTitle("Edit Alignment Points (APs)")
+        self.setWindowTitle(self.tr("Edit Alignment Points (APs)"))
         self.setModal(True)
         self.resize(1000, 750)
 
@@ -340,7 +342,7 @@ class APEditorDialog(QDialog):
         zoom_row = QHBoxLayout()
         self.btn_zoom_out = QPushButton("–", self)
         self.btn_zoom_in = QPushButton("+", self)
-        self.btn_fit = QPushButton("Fit", self)
+        self.btn_fit = QPushButton(self.tr("Fit"), self)
         self.btn_100 = QPushButton("1:1", self)
 
         self.sld_zoom = QSlider(Qt.Orientation.Horizontal, self)
@@ -352,7 +354,7 @@ class APEditorDialog(QDialog):
         self.btn_zoom_out.setFixedWidth(34)
         self.btn_zoom_in.setFixedWidth(34)
 
-        zoom_row.addWidget(QLabel("Zoom:", self))
+        zoom_row.addWidget(QLabel(self.tr("Zoom:"), self))
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.sld_zoom, 1)
         zoom_row.addWidget(self.btn_zoom_in)
@@ -363,13 +365,13 @@ class APEditorDialog(QDialog):
 
         outer.addLayout(zoom_row)
 
-        self._lbl_hint = QLabel("Left click: add AP   |   Right click: delete nearest AP   |   Ctrl+Wheel: zoom", self)
+        self._lbl_hint = QLabel(self.tr("Left click: add AP   |   Right click: delete nearest AP   |   Ctrl+Wheel: zoom"), self)
         self._lbl_hint.setStyleSheet("color:#aaa;")
         outer.addWidget(self._lbl_hint, 0)
 
         ap_row = QHBoxLayout()
 
-        self.lbl_ap = QLabel("AP:", self)
+        self.lbl_ap = QLabel(self.tr("AP:"), self)
         self.lbl_ap.setStyleSheet("color:#aaa;")
 
         self.spin_ap_size = QSpinBox(self)
@@ -386,27 +388,27 @@ class APEditorDialog(QDialog):
         self.spin_ap_min_mean.setDecimals(3)
         self.spin_ap_min_mean.setSingleStep(0.005)
         self.spin_ap_min_mean.setValue(float(self._ap_min_mean))
-        self.spin_ap_min_mean.setToolTip("Minimum mean intensity (0..1) required for an AP tile to be placed.")
+        self.spin_ap_min_mean.setToolTip(self.tr("Minimum mean intensity (0..1) required for an AP tile to be placed."))
 
         ap_row.addWidget(self.lbl_ap)
         ap_row.addSpacing(6)
-        ap_row.addWidget(QLabel("Size", self))
+        ap_row.addWidget(QLabel(self.tr("Size"), self))
         ap_row.addWidget(self.spin_ap_size)
         ap_row.addSpacing(10)
-        ap_row.addWidget(QLabel("Spacing", self))
+        ap_row.addWidget(QLabel(self.tr("Spacing"), self))
         ap_row.addWidget(self.spin_ap_spacing)
         ap_row.addSpacing(10)
-        ap_row.addWidget(QLabel("Min mean", self))
+        ap_row.addWidget(QLabel(self.tr("Min mean"), self))
         ap_row.addWidget(self.spin_ap_min_mean)        
         ap_row.addStretch(1)
 
         outer.addLayout(ap_row, 0)
 
         btn_row = QHBoxLayout()
-        self.btn_auto = QPushButton("Auto-place", self)
-        self.btn_clear = QPushButton("Clear", self)
-        self.btn_ok = QPushButton("OK", self)
-        self.btn_cancel = QPushButton("Cancel", self)
+        self.btn_auto = QPushButton(self.tr("Auto-place"), self)
+        self.btn_clear = QPushButton(self.tr("Clear"), self)
+        self.btn_ok = QPushButton(self.tr("OK"), self)
+        self.btn_cancel = QPushButton(self.tr("Cancel"), self)
         btn_row.addWidget(self.btn_auto)
         btn_row.addWidget(self.btn_clear)
         btn_row.addStretch(1)
@@ -717,7 +719,7 @@ class QualityGraph(QWidget):
 
         if self._q is None or self._q.size < 2:
             p.setPen(QPen(QColor(160, 160, 160), 1))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, "Analyze to see quality graph")
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.tr("Analyze to see quality graph"))
             p.end()
             return
 
@@ -747,7 +749,7 @@ class QualityGraph(QWidget):
         p.drawLine(int(r.left()), int(ymed), int(r.right()), int(ymed))
 
         p.setPen(QPen(QColor(180, 180, 180), 1))
-        p.drawText(int(r.right()) - 34, int(ymed) - 2, "Med")
+        p.drawText(int(r.right()) - 34, int(ymed) - 2, self.tr("Med"))
 
         p.setPen(QPen(QColor(0, 220, 0), 2))
         lastx = lasty = None
@@ -768,12 +770,12 @@ class QualityGraph(QWidget):
         p.drawText(
             self.rect().adjusted(6, 0, 0, 0),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
-            "Best",
+            self.tr("Best"),
         )
         p.drawText(
             self.rect().adjusted(0, 0, -6, 0),
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
-            "Worst",
+            self.tr("Worst"),
         )
 
         p.drawText(4, int(r.top()) + 10, f"{qmax:.3g}")
@@ -970,7 +972,7 @@ class SERStackerDialog(QDialog):
             **kwargs
         ):
         super().__init__(parent)
-        self.setWindowTitle("Planetary Stacker")
+        self.setWindowTitle(self.tr("Planetary Stacker"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -1064,7 +1066,7 @@ class SERStackerDialog(QDialog):
         # =========================
 
         # --- Stack Settings ---
-        gb = QGroupBox("Stack Settings", self)
+        gb = QGroupBox(self.tr("Stack Settings"), self)
         form = QFormLayout(gb)
 
         self.cmb_track = QComboBox(self)
@@ -1076,42 +1078,43 @@ class SERStackerDialog(QDialog):
         self.spin_keep.setSingleStep(1.0)
         self.spin_keep.setValue(20.0)
 
-        self.chk_debayer = QCheckBox("Debayer (Bayer SER)", self)
+        self.chk_debayer = QCheckBox(self.tr("Debayer (Bayer SER)"), self)
         self.chk_debayer.setChecked(True)
 
         self.lbl_anchor = QLabel("", self)
         self.lbl_anchor.setWordWrap(True)
         self.lbl_anchor.setToolTip(
-            "Set the anchor in the Planetary Stacker Viewer, then re-run Analyze.\n"
-            f"Gesture: {ANCHOR_GESTURE_SHORT} inside the preview."
+            self.tr("Set the anchor in the Planetary Stacker Viewer, then re-run Analyze.\n"
+                    "Gesture: {0} inside the preview.").format(
+                QCoreApplication.translate("SerStackerDialog", ANCHOR_GESTURE_SHORT))
         )
 
-        form.addRow("Tracking", self.cmb_track)
-        form.addRow("Keep %", self.spin_keep)
+        form.addRow(self.tr("Tracking"), self.cmb_track)
+        form.addRow(self.tr("Keep %"), self.spin_keep)
         form.addRow("", self.chk_debayer)
-        self.chk_center_planet = QCheckBox("Center planet in output", self)
+        self.chk_center_planet = QCheckBox(self.tr("Center planet in output"), self)
         self.chk_center_planet.setChecked(False)
-        self.chk_center_planet.setToolTip(
+        self.chk_center_planet.setToolTip(self.tr(
             "Shift every frame so the planet's centroid lands at the exact\n"
             "center of the output image, rather than aligned to the reference\n"
             "frame position. Only available in Planetary tracking mode."
-        )
+        ))
         form.addRow("", self.chk_center_planet)
-        self.chk_atm_dispersion = QCheckBox("Correct atmospheric dispersion", self)
+        self.chk_atm_dispersion = QCheckBox(self.tr("Correct atmospheric dispersion"), self)
         self.chk_atm_dispersion.setChecked(False)
-        self.chk_atm_dispersion.setToolTip(
+        self.chk_atm_dispersion.setToolTip(self.tr(
             "Align R, G, and B channel centroids independently so atmospheric\n"
             "prismatic dispersion (colour fringing) is removed before stacking.\n"
             "Only effective for debayered colour frames in Planetary mode."
-        )
+        ))
         form.addRow("", self.chk_atm_dispersion)
 
-        form.addRow("Surface anchor", self.lbl_anchor)
+        form.addRow(self.tr("Surface anchor"), self.lbl_anchor)
 
         left.addWidget(gb, 0)
 
         # --- Drizzle (collapsible, default collapsed) ---
-        gbD = CollapsibleGroup("Drizzle", self, collapsed=True)
+        gbD = CollapsibleGroup(self.tr("Drizzle"), self, collapsed=True)
         fD = gbD.content_layout()
 
         self.spin_pixfrac = QDoubleSpinBox(self)
@@ -1129,7 +1132,7 @@ class SERStackerDialog(QDialog):
         self.spin_sigma.setDecimals(2)
         self.spin_sigma.setSingleStep(0.05)
         self.spin_sigma.setValue(0.00)
-        self.spin_sigma.setToolTip("Gaussian sigma in output pixels (0 = auto from pixfrac)")
+        self.spin_sigma.setToolTip(self.tr("Gaussian sigma in output pixels (0 = auto from pixfrac)"))
 
         scale_row = QHBoxLayout()
         scale_row.setContentsMargins(0, 0, 0, 0)
@@ -1139,7 +1142,7 @@ class SERStackerDialog(QDialog):
 
         self.btn_drizzle_info = QToolButton(self)
         self.btn_drizzle_info.setText("?")
-        self.btn_drizzle_info.setToolTip("Drizzle info")
+        self.btn_drizzle_info.setToolTip(self.tr("Drizzle info"))
         self.btn_drizzle_info.setFixedSize(22, 22)
 
         scale_row.addWidget(self.cmb_drizzle, 1)
@@ -1148,17 +1151,17 @@ class SERStackerDialog(QDialog):
         scale_row_w = QWidget(self)
         scale_row_w.setLayout(scale_row)
 
-        fD.addRow("Scale", scale_row_w)
-        fD.addRow("Pixfrac", self.spin_pixfrac)
+        fD.addRow(self.tr("Scale"), scale_row_w)
+        fD.addRow(self.tr("Pixfrac"), self.spin_pixfrac)
         self.cmb_kernel.hide()
         lbl = fD.labelForField(self.cmb_kernel)
         if lbl:
             lbl.hide()
 
-        self.lbl_kernel_info = QLabel("Advanced Gaussian Kernel Drizzling", self)
+        self.lbl_kernel_info = QLabel(self.tr("Advanced Gaussian Kernel Drizzling"), self)
         self.lbl_kernel_info.setStyleSheet("color:#6a9fd8; font-style:italic; font-size:11px;")
-        fD.addRow("Kernel", self.lbl_kernel_info)
-        fD.addRow("Sigma", self.spin_sigma)
+        fD.addRow(self.tr("Kernel"), self.lbl_kernel_info)
+        fD.addRow(self.tr("Sigma"), self.spin_sigma)
 
         def _sync_drizzle_ui():
             t = self.cmb_drizzle.currentText()
@@ -1186,8 +1189,8 @@ class SERStackerDialog(QDialog):
         def _show_drizzle_info():
             QMessageBox.information(
                 self,
-                "Drizzle Info",
-                "Drizzle increases output resolution by resampling and re-depositing pixels.\n\n"
+                self.tr("Drizzle Info"),
+                self.tr("Drizzle increases output resolution by resampling and re-depositing pixels.\n\n"
                 "Compute cost:\n"
                 "• 1.5× drizzle ≈ 225% compute (2.25×)\n"
                 "• 2× drizzle ≈ 400% compute (4×)\n\n"
@@ -1204,7 +1207,7 @@ class SERStackerDialog(QDialog):
                 "• If you're already well-sampled (common around f/10–f/20 depending on pixel size),\n"
                 "  gains can be minimal.\n"
                 "• If seeing is very poor, drizzle often just magnifies blur/noise.\n\n"
-                "Tip: Start with 1.5× and pixfrac ~0.8. If coverage looks sparse/noisy, increase pixfrac."
+                "Tip: Start with 1.5× and pixfrac ~0.8. If coverage looks sparse/noisy, increase pixfrac.")
             )
 
         self.btn_drizzle_info.clicked.connect(_show_drizzle_info)
@@ -1212,12 +1215,12 @@ class SERStackerDialog(QDialog):
         left.addWidget(gbD, 0)
 
         # --- Planet Axial Rotation (collapsible, default collapsed) ---
-        gbR = CollapsibleGroup("Planet Axial Rotation", self, collapsed=True)
+        gbR = CollapsibleGroup(self.tr("Planet Axial Rotation"), self, collapsed=True)
         fR = gbR.content_layout()
 
-        self.chk_derotate = QCheckBox("Enable derotation", self)
+        self.chk_derotate = QCheckBox(self.tr("Enable derotation"), self)
         self.chk_derotate.setChecked(False)
-        self.btn_set_disk = QPushButton("Set disk…", self)
+        self.btn_set_disk = QPushButton(self.tr("Set disk…"), self)
         self.btn_set_disk.setEnabled(False)
         self.btn_set_disk.setFlat(False)
         self.btn_set_disk.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1234,7 +1237,7 @@ class SERStackerDialog(QDialog):
             "QPushButton:disabled { border: 1px solid palette(mid); color: palette(mid); }"
         )
 
-        self.lbl_derot_disk = QLabel("(not set)", self)
+        self.lbl_derot_disk = QLabel(self.tr("(not set)"), self)
         self.lbl_derot_disk.setWordWrap(True)
         self.lbl_derot_disk.setStyleSheet("color:#888;")
 
@@ -1243,40 +1246,40 @@ class SERStackerDialog(QDialog):
         self.cmb_derot_planet.addItems(list(_PLANET_ROT_PRESETS_DEG_PER_MIN.keys()))
         self.cmb_derot_planet.setCurrentText("Custom…")
 
-        self.chk_derot_reverse = QCheckBox("Reverse sign", self)
-        self.chk_derot_reverse.setToolTip(
-            "Flip direction if your camera orientation makes smearing worse with the default sign.")
+        self.chk_derot_reverse = QCheckBox(self.tr("Reverse sign"), self)
+        self.chk_derot_reverse.setToolTip(self.tr(
+            "Flip direction if your camera orientation makes smearing worse with the default sign."))
 
         self.spin_derot_rate = QDoubleSpinBox(self)
         self.spin_derot_rate.setRange(-10.0, 10.0)
         self.spin_derot_rate.setDecimals(6)
         self.spin_derot_rate.setSingleStep(0.001)
         self.spin_derot_rate.setValue(0.0)
-        self.spin_derot_rate.setToolTip(
+        self.spin_derot_rate.setToolTip(self.tr(
             "Rotation rate in degrees per minute.\n"
             "Use a preset or enter a custom value.\n"
             "Tip: if derotation makes smearing worse, try 'Reverse sign'."
-        )
-        fR.addRow("Preset", self.cmb_derot_planet)
+        ))
+        fR.addRow(self.tr("Preset"), self.cmb_derot_planet)
         fR.addRow("", self.chk_derot_reverse)
-        fR.addRow("Rate (deg/min)", self.spin_derot_rate)
+        fR.addRow(self.tr("Rate (deg/min)"), self.spin_derot_rate)
         fR.addRow("", self.btn_set_disk)
-        fR.addRow("Disk", self.lbl_derot_disk)
+        fR.addRow(self.tr("Disk"), self.lbl_derot_disk)
 
         left.addWidget(gbR, 0)
 
         # --- Field Rotation (collapsible, default collapsed) ---
-        gbFR = CollapsibleGroup("Field Rotation", self, collapsed=True)
+        gbFR = CollapsibleGroup(self.tr("Field Rotation"), self, collapsed=True)
         fFR = gbFR.content_layout()
 
-        self.chk_field_rotation = QCheckBox("Correct field rotation", self)
+        self.chk_field_rotation = QCheckBox(self.tr("Correct field rotation"), self)
         self.chk_field_rotation.setChecked(False)
-        self.chk_field_rotation.setToolTip(
+        self.chk_field_rotation.setToolTip(self.tr(
             "After translation alignment, search for a small rotation that further\n"
             "reduces residual error. Useful for alt-az mounts without a field rotator.\n"
             "Rotation center: planet centroid (planetary) or surface anchor (surface).\n"
             "Searches up to the max rotation set below, with a hysteresis quality check."
-        )
+        ))
         fFR.addRow("", self.chk_field_rotation)
 
         self.spin_field_rot_max = QDoubleSpinBox(self)
@@ -1284,38 +1287,38 @@ class SERStackerDialog(QDialog):
         self.spin_field_rot_max.setDecimals(1)
         self.spin_field_rot_max.setSingleStep(1.0)
         self.spin_field_rot_max.setValue(10.0)
-        self.spin_field_rot_max.setToolTip(
+        self.spin_field_rot_max.setToolTip(self.tr(
             "Maximum field rotation to search for (degrees).\n"
             "Increase for longer clips or faster alt-az mounts."
-        )
+        ))
         self.spin_field_rot_max.setEnabled(False)
-        fFR.addRow("Max rotation (°)", self.spin_field_rot_max)
+        fFR.addRow(self.tr("Max rotation (°)"), self.spin_field_rot_max)
 
         left.addWidget(gbFR, 0)
 
         # --- Calibration (collapsible, default collapsed) ---
-        gbC = CollapsibleGroup("Calibration", self, collapsed=True)
+        gbC = CollapsibleGroup(self.tr("Calibration"), self, collapsed=True)
         fC = gbC.content_layout()
 
-        self.chk_flat_enabled = QCheckBox("Apply master flat", self)
+        self.chk_flat_enabled = QCheckBox(self.tr("Apply master flat"), self)
         self.chk_flat_enabled.setChecked(False)
-        self.chk_flat_enabled.setToolTip(
+        self.chk_flat_enabled.setToolTip(self.tr(
             "Divide every raw frame by a normalised master flat to remove\n"
             "vignetting, dust motes, and Newton's rings before stacking.\n"
             "Analogous to AutoStakkert's flat-frame slot."
-        )
+        ))
 
         # File row: label + line-edit + browse button
         self.ln_flat_path = QLineEdit(self)
         self.ln_flat_path.setReadOnly(True)
-        self.ln_flat_path.setPlaceholderText("(no flat selected)")
-        self.ln_flat_path.setToolTip(
+        self.ln_flat_path.setPlaceholderText(self.tr("(no flat selected)"))
+        self.ln_flat_path.setToolTip(self.tr(
             "Path to a flat file. Accepted formats:\n"
             "  .ser  — flat video, will be median/mean-stacked\n"
             "  .tif / .tiff — single averaged flat\n"
             "  .fit / .fits / .fits.gz / .fz — single averaged flat"
-        )
-        self.btn_flat_browse = QPushButton("Browse…", self)
+        ))
+        self.btn_flat_browse = QPushButton(self.tr("Browse…"), self)
         self.btn_flat_browse.setFlat(False)
         self.btn_flat_browse.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -1330,20 +1333,20 @@ class SERStackerDialog(QDialog):
         self.cmb_flat_method = QComboBox(self)
         self.cmb_flat_method.addItems(["Median", "Mean"])
         self.cmb_flat_method.setCurrentText("Median")
-        self.cmb_flat_method.setToolTip(
+        self.cmb_flat_method.setToolTip(self.tr(
             "How to combine frames when the flat is a .ser video.\n"
             "Median rejects outliers (cosmic rays, satellite streaks) and is\n"
             "safe to leave as default. Mean is marginally smoother for very\n"
             "clean flat runs. Ignored for single-frame .tif/.fits inputs."
-        )
+        ))
 
         # Info + status row
         self.btn_flat_info = QToolButton(self)
         self.btn_flat_info.setText("?")
         self.btn_flat_info.setFixedSize(22, 22)
-        self.btn_flat_info.setToolTip("What is a flat, and when do I need one?")
+        self.btn_flat_info.setToolTip(self.tr("What is a flat, and when do I need one?"))
 
-        self.lbl_flat_status = QLabel("(disabled)", self)
+        self.lbl_flat_status = QLabel(self.tr("(disabled)"), self)
         self.lbl_flat_status.setWordWrap(True)
         self.lbl_flat_status.setStyleSheet("color:#888;")
 
@@ -1355,9 +1358,9 @@ class SERStackerDialog(QDialog):
         info_row_w.setLayout(info_row)
 
         fC.addRow("", self.chk_flat_enabled)
-        fC.addRow("Flat file", flat_row_w)
-        fC.addRow("Combine (SER only)", self.cmb_flat_method)
-        fC.addRow("Status", info_row_w)
+        fC.addRow(self.tr("Flat file"), flat_row_w)
+        fC.addRow(self.tr("Combine (SER only)"), self.cmb_flat_method)
+        fC.addRow(self.tr("Status"), info_row_w)
 
         left.addWidget(gbC, 0)
 
@@ -1374,11 +1377,11 @@ class SERStackerDialog(QDialog):
             self.btn_flat_browse.setEnabled(en)
             self.cmb_flat_method.setEnabled(en)
             if not en:
-                self.lbl_flat_status.setText("(disabled)")
+                self.lbl_flat_status.setText(self.tr("(disabled)"))
                 self.lbl_flat_status.setStyleSheet("color:#888;")
                 return
             if not self._flat_path:
-                self.lbl_flat_status.setText("⚠️  No flat selected — pick a .ser / .tif / .fit file")
+                self.lbl_flat_status.setText(self.tr("⚠️  No flat selected — pick a .ser / .tif / .fit file"))
                 self.lbl_flat_status.setStyleSheet("color:#c66;")
             else:
                 base = os.path.basename(self._flat_path)
@@ -1396,7 +1399,7 @@ class SERStackerDialog(QDialog):
                 start_dir = os.path.dirname(self._flat_path)
             path, _ = QFileDialog.getOpenFileName(
                 self,
-                "Select master flat",
+                self.tr("Select master flat"),
                 start_dir,
                 "Flat files (*.ser *.tif *.tiff *.fit *.fits *.fits.gz *.fz);;"
                 "SER videos (*.ser);;"
@@ -1419,8 +1422,8 @@ class SERStackerDialog(QDialog):
 
         def _show_flat_info():
             QMessageBox.information(
-                self, "Master flat calibration",
-                "A master flat is an image of a uniformly-lit field (twilight sky,\n"
+                self, self.tr("Master flat calibration"),
+                self.tr("A master flat is an image of a uniformly-lit field (twilight sky,\n"
                 "T-shirt over the scope, or ASI/LED flat panel) captured with the\n"
                 "same optical train as your lights. Dividing every raw frame by\n"
                 "the normalised flat removes:\n"
@@ -1437,7 +1440,7 @@ class SERStackerDialog(QDialog):
                 "\n"
                 "The flat must be captured at the SAME sensor resolution,\n"
                 "binning, and ROI setting as your lights. The dialog will\n"
-                "abort with a clear error otherwise."
+                "abort with a clear error otherwise.")
             )
 
         self.chk_flat_enabled.stateChanged.connect(lambda _=None: _sync_flat_ui())
@@ -1448,7 +1451,7 @@ class SERStackerDialog(QDialog):
 
 
         # --- Analyze ---
-        gbA = QGroupBox("Analyze", self)
+        gbA = QGroupBox(self.tr("Analyze"), self)
         fA = QFormLayout(gbA)
 
         self.cmb_ref = QComboBox(self)
@@ -1463,9 +1466,9 @@ class SERStackerDialog(QDialog):
         self.spin_ap_min.setDecimals(3)
         self.spin_ap_min.setSingleStep(0.005)
         self.spin_ap_min.setValue(0.03)
-        fA.addRow("AP min mean (0..1)", self.spin_ap_min)
+        fA.addRow(self.tr("AP min mean (0..1)"), self.spin_ap_min)
 
-        self.btn_edit_aps = QPushButton("(2) Edit APs…", self)
+        self.btn_edit_aps = QPushButton(self.tr("(2) Edit APs…"), self)
         self.btn_edit_aps.setEnabled(False)
         fA.addRow("", self.btn_edit_aps)
 
@@ -1479,34 +1482,34 @@ class SERStackerDialog(QDialog):
         self.spin_ap_spacing.setSingleStep(8)
         self.spin_ap_spacing.setValue(48)
 
-        fA.addRow("Reference", self.cmb_ref)
-        fA.addRow("Ref stack N", self.spin_refN)
+        fA.addRow(self.tr("Reference"), self.cmb_ref)
+        fA.addRow(self.tr("Ref stack N"), self.spin_refN)
 
         self.cmb_ap_scale = QComboBox(self)
-        self.cmb_ap_scale.addItems(["Single", "Multi-scale (2× / 1× / ½×)"])
-        fA.addRow("AP scale", self.cmb_ap_scale)
+        self.cmb_ap_scale.addItems([self.tr("Single"), self.tr("Multi-scale (2× / 1× / ½×)")])
+        fA.addRow(self.tr("AP scale"), self.cmb_ap_scale)
 
         self.chk_ssd_bruteforce = QCheckBox(
-            "SSD refine: brute force (slower, can rescue tough data)", self)
+            self.tr("SSD refine: brute force (slower, can rescue tough data)"), self)
         self.chk_ssd_bruteforce.setChecked(False)
         fA.addRow("", self.chk_ssd_bruteforce)
 
-        fA.addRow("AP size (px)", self.spin_ap_size)
-        fA.addRow("AP spacing (px)", self.spin_ap_spacing)
+        fA.addRow(self.tr("AP size (px)"), self.spin_ap_size)
+        fA.addRow(self.tr("AP spacing (px)"), self.spin_ap_spacing)
 
         left.addWidget(gbA, 0)
 
         # --- Action buttons ---
         row = QHBoxLayout()
-        self.btn_analyze = QPushButton("(1) Analyze", self)
+        self.btn_analyze = QPushButton(self.tr("(1) Analyze"), self)
         self.btn_analyze.setEnabled(True)
-        self.btn_blink = QPushButton("(3) Blink Keepers", self)
+        self.btn_blink = QPushButton(self.tr("(3) Blink Keepers"), self)
         self.btn_blink.setEnabled(False)
-        self.btn_export_aligned = QPushButton("(4) Export Aligned SER…", self)
+        self.btn_export_aligned = QPushButton(self.tr("(4) Export Aligned SER…"), self)
         self.btn_export_aligned.setEnabled(False)
-        self.btn_stack = QPushButton("(5) Stack Now", self)
+        self.btn_stack = QPushButton(self.tr("(5) Stack Now"), self)
         self.btn_stack.setEnabled(False)
-        self.btn_close = QPushButton("Close", self)
+        self.btn_close = QPushButton(self.tr("Close"), self)
 
         row.addWidget(self.btn_analyze)
         row.addStretch(1)
@@ -1540,7 +1543,7 @@ class SERStackerDialog(QDialog):
         # RIGHT COLUMN
         # =========================
 
-        gbQ = QGroupBox("Quality", self)
+        gbQ = QGroupBox(self.tr("Quality"), self)
         vQ = QVBoxLayout(gbQ)
         vQ.setContentsMargins(8, 8, 8, 8)
         vQ.setSpacing(6)
@@ -1549,7 +1552,7 @@ class SERStackerDialog(QDialog):
         self.graph.setMinimumHeight(180)
         self.graph.setMinimumWidth(480)
 
-        self.lbl_graph_hint = QLabel("Tip: click the graph to set Keep cutoff.", self)
+        self.lbl_graph_hint = QLabel(self.tr("Tip: click the graph to set Keep cutoff."), self)
         self.lbl_graph_hint.setStyleSheet("color:#888; font-size:11px;")
         self.lbl_graph_hint.setWordWrap(True)
 
@@ -1558,14 +1561,14 @@ class SERStackerDialog(QDialog):
 
         right.addWidget(gbQ, 1)
 
-        gbL = QGroupBox("Log", self)
+        gbL = QGroupBox(self.tr("Log"), self)
         vL = QVBoxLayout(gbL)
         vL.setContentsMargins(8, 8, 8, 8)
 
         self.log = QTextEdit(self)
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(140)
-        self.log.setPlaceholderText("Log…")
+        self.log.setPlaceholderText(self.tr("Log…"))
 
         vL.addWidget(self.log, 1)
         right.addWidget(gbL, 1)
@@ -1675,7 +1678,7 @@ class SERStackerDialog(QDialog):
                 self.prog.setVisible(True)
                 self.prog.setRange(0, 100)
                 self.prog.setValue(0)
-                self.lbl_prog.setText("Re-aligning with APs…")
+                self.lbl_prog.setText(self.tr("Re-aligning with APs…"))
                 self.btn_stack.setEnabled(False)
                 self.btn_analyze.setEnabled(False)
                 self.btn_edit_aps.setEnabled(False)
@@ -1691,7 +1694,7 @@ class SERStackerDialog(QDialog):
                 self._append_log("AP edit cancelled.")
         except Exception as e:
             tb = traceback.format_exc()
-            QMessageBox.critical(self, "AP Editor Error", f"{e}\n\n{tb}")
+            QMessageBox.critical(self, self.tr("AP Editor Error"), f"{e}\n\n{tb}")
             self._append_log(f"AP editor failed: {e}")
             self._append_log(tb)
 
@@ -1719,18 +1722,18 @@ class SERStackerDialog(QDialog):
 
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QRadioButton, QDialogButtonBox, QFileDialog
         sel_dlg = QDialog(self)
-        sel_dlg.setWindowTitle("Export Aligned SER")
+        sel_dlg.setWindowTitle(self.tr("Export Aligned SER"))
         vl = QVBoxLayout(sel_dlg)
-        rb_all = QRadioButton(f"All frames ({N})", sel_dlg)
+        rb_all = QRadioButton(self.tr("All frames ({0})").format(N), sel_dlg)
         keep_k = max(1, min(N, int(round(N * float(self.spin_keep.value()) / 100.0))))
-        rb_keep = QRadioButton(f"Keep % only ({keep_k} frames)", sel_dlg)
+        rb_keep = QRadioButton(self.tr("Keep % only ({0} frames)").format(keep_k), sel_dlg)
         rb_all.setChecked(True)
         from PyQt6.QtWidgets import QCheckBox as _QCB
-        chk_field_rot = _QCB("Apply field rotation correction", sel_dlg)
+        chk_field_rot = _QCB(self.tr("Apply field rotation correction"), sel_dlg)
         chk_field_rot.setChecked(bool(getattr(self, "chk_field_rotation", None) and self.chk_field_rotation.isChecked()))
-        chk_planet_derot = _QCB("Apply planet axial derotation", sel_dlg)
+        chk_planet_derot = _QCB(self.tr("Apply planet axial derotation"), sel_dlg)
         chk_planet_derot.setChecked(bool(getattr(self._analysis, "planet_derotate", False)))
-        chk_local_warp = _QCB("Apply local AP warp", sel_dlg)
+        chk_local_warp = _QCB(self.tr("Apply local AP warp"), sel_dlg)
         chk_local_warp.setChecked(True)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, sel_dlg)
         bb.accepted.connect(sel_dlg.accept)
@@ -1754,7 +1757,7 @@ class SERStackerDialog(QDialog):
             default_name = "aligned.ser"
 
         out_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Aligned SER",
+            self, self.tr("Save Aligned SER"),
             os.path.join(default_dir, default_name),
             "SER Videos (*.ser)"
         )
@@ -1771,7 +1774,7 @@ class SERStackerDialog(QDialog):
         self.prog.setVisible(True)
         self.prog.setRange(0, 100)
         self.prog.setValue(0)
-        self.lbl_prog.setText("Exporting aligned SER…")
+        self.lbl_prog.setText(self.tr("Exporting aligned SER…"))
         self._append_log(f"Exporting aligned SER → {os.path.basename(out_path)}")
 
         self._worker_export = _ExportAlignedWorker(
@@ -1796,15 +1799,15 @@ class SERStackerDialog(QDialog):
         self.btn_close.setEnabled(True)
         self._append_log(f"Export done: {os.path.basename(out_path)}")
         self._append_log("Tip: load this SER with Tracking=Off for fast restacking.")
-        QMessageBox.information(self, "Export Aligned SER",
-            f"Saved aligned SER:\n{out_path}\n\n"
-            "To restack this file quickly:\n"
-            "  1. Open it in the Planetary Stacker\n"
-            "  2. Set Tracking = Off\n"
-            "  3. Run Analyze (fast — no shift computation)\n"
-            "  4. Stack Now\n\n"
-            "Alignment is already baked in — Analyze just scores quality\n"
-            "and places AP points for the local warp.")
+        QMessageBox.information(self, self.tr("Export Aligned SER"),
+            self.tr("Saved aligned SER:\n{0}\n\n"
+                    "To restack this file quickly:\n"
+                    "  1. Open it in the Planetary Stacker\n"
+                    "  2. Set Tracking = Off\n"
+                    "  3. Run Analyze (fast — no shift computation)\n"
+                    "  4. Stack Now\n\n"
+                    "Alignment is already baked in — Analyze just scores quality\n"
+                    "and places AP points for the local warp.").format(out_path))
         
     def _on_export_aligned_fail(self, msg: str):
         self.prog.setVisible(False)
@@ -1859,24 +1862,25 @@ class SERStackerDialog(QDialog):
     def _update_anchor_warning(self):
         mode = self._track_mode_value()
         if mode != "surface":
-            self.lbl_anchor.setText("(not used)")
+            self.lbl_anchor.setText(self.tr("(not used)"))
             self.lbl_anchor.setStyleSheet("color:#888;")
             return
 
         if self._surface_anchor is None:
-            self.lbl_anchor.setText(f"REQUIRED (set in SER Viewer with {ANCHOR_GESTURE_SHORT})")
+            self.lbl_anchor.setText(self.tr("REQUIRED (set in SER Viewer with {0})").format(
+                QCoreApplication.translate("SerStackerDialog", ANCHOR_GESTURE_SHORT)))
             self.lbl_anchor.setStyleSheet("color:#c66;")
             return
 
         x, y, w, h = [int(v) for v in self._surface_anchor]
 
-        txt = f"✅ ROI-space: x={x}, y={y}, w={w}, h={h}"
+        txt = self.tr("✅ ROI-space: x={0}, y={1}, w={2}, h={3}").format(x, y, w, h)
 
         if self._roi is not None:
             rx, ry, rw, rh = [int(v) for v in self._roi]
             fx = rx + x
             fy = ry + y
-            txt += f"   |   Full-frame: x={fx}, y={fy}, w={w}, h={h}"
+            txt += self.tr("   |   Full-frame: x={0}, y={1}, w={2}, h={3}").format(fx, fy, w, h)
 
         self.lbl_anchor.setText(txt)
         self.lbl_anchor.setStyleSheet("color:#4a4;")
@@ -1901,7 +1905,7 @@ class SERStackerDialog(QDialog):
         self.btn_blink.setEnabled(False)
         self.btn_export_aligned.setEnabled(False)
         self.lbl_prog.setVisible(True)
-        self.lbl_prog.setText("Analyzing…")
+        self.lbl_prog.setText(self.tr("Analyzing…"))
         self.prog.setVisible(True)
         self.prog.setRange(0, 100)
         self.prog.setValue(0)
@@ -2003,7 +2007,7 @@ class SERStackerDialog(QDialog):
                 self._append_log("Blink Keepers cancelled (no changes).")
         except Exception as e:
             tb = traceback.format_exc()
-            QMessageBox.critical(self, "Blink Keepers Error", f"{e}\n\n{tb}")
+            QMessageBox.critical(self, self.tr("Blink Keepers Error"), f"{e}\n\n{tb}")
             self._append_log(f"Blink Keepers failed: {e}")
             self._append_log(tb)
 
@@ -2100,15 +2104,15 @@ class SERStackerDialog(QDialog):
         self.spin_derot_rate.setEnabled(en)
         self.btn_set_disk.setEnabled(en and (self._analysis is not None))
         if not en:
-            self.lbl_derot_disk.setText("(disabled)")
+            self.lbl_derot_disk.setText(self.tr("(disabled)"))
             self.lbl_derot_disk.setStyleSheet("color:#888;")
         else:
             if self._derot is None:
-                self.lbl_derot_disk.setText("⚠️ Set disk center/radius (uses Analyze ref image)")
+                self.lbl_derot_disk.setText(self.tr("⚠️ Set disk center/radius (uses Analyze ref image)"))
                 self.lbl_derot_disk.setStyleSheet("color:#c66;")
             else:
                 cx, cy, r = self._derot["cx"], self._derot["cy"], self._derot["r"]
-                self.lbl_derot_disk.setText(f"✅ cx={cx:.1f}, cy={cy:.1f}, r={r:.1f} (ROI-space)")
+                self.lbl_derot_disk.setText(self.tr("✅ cx={0:.1f}, cy={1:.1f}, r={2:.1f} (ROI-space)").format(cx, cy, r))
                 self.lbl_derot_disk.setStyleSheet("color:#4a4;")
 
     def _set_derotation_disk(self):
@@ -2145,7 +2149,7 @@ class SERStackerDialog(QDialog):
             self._append_log("Derotation disk set.")
         except Exception as e:
             tb = traceback.format_exc()
-            QMessageBox.critical(self, "Derotation Disk Error", f"{e}\n\n{tb}")
+            QMessageBox.critical(self, self.tr("Derotation Disk Error"), f"{e}\n\n{tb}")
 
 
     def _start_stack(self):
@@ -2156,10 +2160,10 @@ class SERStackerDialog(QDialog):
             return
         if self._analysis is None:
             QMessageBox.warning(
-                self, "Analyze Required",
-                "Please run Analyze first.\n\n"
-                "Even with Tracking=Off, Analyze is needed to score frame quality\n"
-                "and place alignment points for the local warp.")
+                self, self.tr("Analyze Required"),
+                self.tr("Please run Analyze first.\n\n"
+                        "Even with Tracking=Off, Analyze is needed to score frame quality\n"
+                        "and place alignment points for the local warp."))
             return
         cfg = self._make_cfg()
         cfg.keep_mask = self._keep_mask
@@ -2188,7 +2192,7 @@ class SERStackerDialog(QDialog):
         self.prog.setVisible(True)
         self.prog.setRange(0, 100)
         self.prog.setValue(0)
-        self.lbl_prog.setText("Stack: 0%")
+        self.lbl_prog.setText(self.tr("Stack: 0%"))
 
         self._append_log("Stacking...")
 
@@ -2259,7 +2263,7 @@ class BlinkKeepersDialog(QDialog):
     def __init__(self, parent=None, *, cfg: SERStackConfig, analysis: AnalyzeResult,
                  debayer: bool, to_rgb: bool, keep_k: int):
         super().__init__(parent)
-        self.setWindowTitle("Blink Keepers")
+        self.setWindowTitle(self.tr("Blink Keepers"))
         self.resize(1000, 750)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setFocus()
@@ -2301,13 +2305,13 @@ class BlinkKeepersDialog(QDialog):
             "color:#9aa; background:#151515; border:1px solid #2a2a2a;"
             "border-radius:6px; padding:6px; font-size:11px;"
         )
-        self.lbl_help.setText(
+        self.lbl_help.setText(self.tr(
             "Shortcuts: "
             "←/→ (or ↑/↓) = Prev/Next   |   PgUp/PgDn = Prev/Next\n"
             "R or Space = Toggle Reject + Next   |   Backspace = Toggle Reject + Prev\n"
             "Ctrl+Wheel = Zoom   |   Left-drag scrollbars to pan   |   "
             "Esc = Cancel   |   Enter = OK"
-        )
+        ))
         outer.addWidget(self.lbl_help, 0)
         info_row = QHBoxLayout()
         self.lbl_info = QLabel("", self)
@@ -2315,7 +2319,7 @@ class BlinkKeepersDialog(QDialog):
         self.lbl_info.setWordWrap(True)
         info_row.addWidget(self.lbl_info, 1)
 
-        self.btn_toggle = QPushButton("Reject", self)
+        self.btn_toggle = QPushButton(self.tr("Reject"), self)
         self.btn_toggle.setCheckable(True)
         info_row.addWidget(self.btn_toggle, 0)
 
@@ -2324,7 +2328,7 @@ class BlinkKeepersDialog(QDialog):
         zoom_row = QHBoxLayout()
         self.btn_zoom_out = QPushButton("–", self)
         self.btn_zoom_in = QPushButton("+", self)
-        self.btn_fit = QPushButton("Fit", self)
+        self.btn_fit = QPushButton(self.tr("Fit"), self)
         self.btn_100 = QPushButton("1:1", self)
         self.btn_zoom_out.setFixedWidth(34)
         self.btn_zoom_in.setFixedWidth(34)
@@ -2333,7 +2337,7 @@ class BlinkKeepersDialog(QDialog):
         self.sld_zoom.setRange(10, 800)
         self.sld_zoom.setValue(100)
 
-        self.lbl_zoom = QLabel("Fit", self)
+        self.lbl_zoom = QLabel(self.tr("Fit"), self)
         self.lbl_zoom.setStyleSheet("color:#aaa; min-width:60px;")
 
         # Keep arrow keys / R / Space on frame navigation, not the zoom widgets
@@ -2341,7 +2345,7 @@ class BlinkKeepersDialog(QDialog):
                    self.btn_100, self.sld_zoom):
             _w.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
-        zoom_row.addWidget(QLabel("Zoom:", self))
+        zoom_row.addWidget(QLabel(self.tr("Zoom:"), self))
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.sld_zoom, 1)
         zoom_row.addWidget(self.btn_zoom_in)
@@ -2352,8 +2356,8 @@ class BlinkKeepersDialog(QDialog):
         outer.addLayout(zoom_row)
 
         nav = QHBoxLayout()
-        self.btn_prev = QPushButton("◀ Prev", self)
-        self.btn_next = QPushButton("Next ▶", self)
+        self.btn_prev = QPushButton(self.tr("◀ Prev"), self)
+        self.btn_next = QPushButton(self.tr("Next ▶"), self)
 
         self.sld = QSlider(Qt.Orientation.Horizontal, self)
         self.sld.setRange(0, max(0, self.keepers.size - 1))
@@ -2369,8 +2373,8 @@ class BlinkKeepersDialog(QDialog):
         outer.addLayout(nav)
 
         btns = QHBoxLayout()
-        self.btn_ok = QPushButton("OK", self)
-        self.btn_cancel = QPushButton("Cancel", self)
+        self.btn_ok = QPushButton(self.tr("OK"), self)
+        self.btn_cancel = QPushButton(self.tr("Cancel"), self)
         btns.addStretch(1)
         btns.addWidget(self.btn_ok)
         btns.addWidget(self.btn_cancel)
@@ -2381,12 +2385,12 @@ class BlinkKeepersDialog(QDialog):
         self.sld_bright.setRange(-100, 100)
         self.sld_bright.setValue(0)
         self.sld_bright.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.sld_bright.setToolTip("Brightness (preview only)")
+        self.sld_bright.setToolTip(self.tr("Brightness (preview only)"))
 
-        self.lbl_bright = QLabel("Bright: 0", self)
+        self.lbl_bright = QLabel(self.tr("Bright: 0"), self)
         self.lbl_bright.setStyleSheet("color:#aaa; min-width:90px;")
 
-        disp_row.addWidget(QLabel("Preview", self))
+        disp_row.addWidget(QLabel(self.tr("Preview"), self))
         disp_row.addSpacing(6)
         disp_row.addWidget(self.sld_bright, 1)
         disp_row.addWidget(self.lbl_bright, 0)
@@ -2453,7 +2457,7 @@ class BlinkKeepersDialog(QDialog):
 
     def _fit_to_window(self):
         self._fit_mode = True
-        self.lbl_zoom.setText("Fit")
+        self.lbl_zoom.setText(self.tr("Fit"))
         self._show_index(self.sld.value())
 
     def eventFilter(self, obj, event):
@@ -2472,7 +2476,7 @@ class BlinkKeepersDialog(QDialog):
 
     def _on_brightness_changed(self, v: int):
         self._preview_brightness = float(int(v)) / 100.0
-        self.lbl_bright.setText(f"Bright: {int(v)}")
+        self.lbl_bright.setText(self.tr("Bright: {0}").format(int(v)))
         self._show_index(self.sld.value())
 
     def _toggle_reject_at(self, idx: int):
@@ -2555,8 +2559,8 @@ class BlinkKeepersDialog(QDialog):
 
         self.lbl_pos.setText(f"{i+1}/{int(self.keepers.size)}")
         self.lbl_info.setText(
-            f"Keeper #{i+1}  |  Frame index: {fi}  |  Quality: {q:.6g}  |  "
-            f"{'REJECTED' if is_rej else 'KEEP'}"
+            self.tr("Keeper #{0}  |  Frame index: {1}  |  Quality: {2:.6g}  |  {3}").format(
+                i + 1, fi, q, self.tr("REJECTED") if is_rej else self.tr("KEEP"))
         )
 
         if is_rej:
@@ -2571,7 +2575,7 @@ class BlinkKeepersDialog(QDialog):
         block = self.btn_toggle.blockSignals(True)
         try:
             self.btn_toggle.setChecked(is_rej)
-            self.btn_toggle.setText("Un-reject" if is_rej else "Reject")
+            self.btn_toggle.setText(self.tr("Un-reject") if is_rej else self.tr("Reject"))
         finally:
             self.btn_toggle.blockSignals(block)
 

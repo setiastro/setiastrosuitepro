@@ -11,7 +11,7 @@ import numpy as np
 
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer, QSettings, QLockFile
 from PyQt6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QComboBox, QCheckBox, QMessageBox, QApplication, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer, QSettings, QLockFile, QEventLoop
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QTimer, QSettings, QLockFile, QEventLoop, QCoreApplication
 
 
 # reuse your legacy IO + helpers
@@ -25,6 +25,11 @@ from .cosmicclarity_headless import (
     OVERLAP_PCT_CHOICES,
     DEFAULT_OVERLAP_PCT,
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("CosmicClarityPreset", text)
+
 
 # pull tiny helpers from the main CC module (or re-declare)
 def _platform_exe_names(mode: str) -> str:
@@ -302,7 +307,7 @@ def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None, 
             if ctx is not None:
                 failure = "Cosmic Clarity: no image to process."
                 return False
-            QMessageBox.warning(main, "Cosmic Clarity", "Load an image first.")
+            QMessageBox.warning(main, "Cosmic Clarity", _tr("Load an image first."))
             return False
 
         dlg = CosmicClarityDialogPro(main, doc, headless=True, bypass_guard=True)
@@ -364,7 +369,7 @@ def run_cosmicclarity_via_preset(main, preset: dict | None = None, *, doc=None, 
 class _CosmicClarityPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Cosmic Clarity — Preset")
+        self.setWindowTitle(self.tr("Cosmic Clarity — Preset"))
         p = dict(initial or {})
 
         # Check if correction model is available
@@ -382,31 +387,31 @@ class _CosmicClarityPresetDialog(QDialog):
         self.mode.addItems(["sharpen", "denoise", "both", "superres"])
         self.mode.setCurrentText(str(p.get("mode", "sharpen")))
         self.mode.currentTextChanged.connect(self._mode_changed)
-        f.addRow("Mode:", self.mode)
+        f.addRow(self.tr("Mode:"), self.mode)
 
-        self.gpu = QCheckBox("Use GPU")
+        self.gpu = QCheckBox(self.tr("Use GPU"))
         self.gpu.setChecked(bool(p.get("gpu", True)))
         f.addRow(self.gpu)
 
-        self.ab_first = QCheckBox("Run Aberration Remover first")
+        self.ab_first = QCheckBox(self.tr("Run Aberration Remover first"))
         self.ab_first.setChecked(False)   # permanently disabled — superseded by native correction
         self.ab_first.setVisible(False)   # hidden
         f.addRow(self.ab_first)
 
-        self.newview = QCheckBox("Create new view")
+        self.newview = QCheckBox(self.tr("Create new view"))
         self.newview.setChecked(bool(p.get("create_new_view", False)))
         f.addRow(self.newview)
 
         # --- Global controls (apply to sharpen AND denoise) ---
-        self.compat = QCheckBox("GPU Compatibility Mode (slower, safer)")
+        self.compat = QCheckBox(self.tr("GPU Compatibility Mode (slower, safer)"))
         self.compat.setChecked(bool(p.get("compat_mode", p.get("denoise_compat_mode", False))))
-        self.compat.setToolTip(
+        self.compat.setToolTip(self.tr(
             "Safer inference settings. Recommended if sharpen/denoise fails,\n"
             "hangs, or produces GPU errors on older hardware."
-        )
+        ))
         f.addRow(self.compat)
 
-        self.temp_stretch = QCheckBox("Temporary Stretch for AI (linear assist)")
+        self.temp_stretch = QCheckBox(self.tr("Temporary Stretch for AI (linear assist)"))
         self.temp_stretch.setChecked(bool(p.get("temp_stretch", False)))
         f.addRow(self.temp_stretch)
 
@@ -417,7 +422,7 @@ class _CosmicClarityPresetDialog(QDialog):
             self.target_median.setValue(max(0.01, min(0.50, float(p.get("target_median", 0.25)))))
         except Exception:
             self.target_median.setValue(0.25)
-        self._target_median_label = QLabel("Target Median (0.01–0.50):")
+        self._target_median_label = QLabel(self.tr("Target Median (0.01–0.50):"))
         f.addRow(self._target_median_label, self.target_median)
         self.temp_stretch.toggled.connect(
             lambda on: (self.target_median.setEnabled(on), self._target_median_label.setEnabled(on)))
@@ -425,14 +430,14 @@ class _CosmicClarityPresetDialog(QDialog):
         self._target_median_label.setEnabled(self.temp_stretch.isChecked())
 
         # --- Stellar Correction Mode (only shown if model installed) ---
-        self._corr_label = QLabel("Stellar Correction:")
+        self._corr_label = QLabel(self.tr("Stellar Correction:"))
         corr_row = QWidget()
         corr_lay = QHBoxLayout(corr_row)
         corr_lay.setContentsMargins(0, 0, 0, 0)
         from PyQt6.QtWidgets import QRadioButton
-        self.rb_correct_only    = QRadioButton("Correct Only")
-        self.rb_correct_sharpen = QRadioButton("Correct + Sharpen")
-        self.rb_sharpen_only    = QRadioButton("Sharpen Only")
+        self.rb_correct_only    = QRadioButton(self.tr("Correct Only"))
+        self.rb_correct_sharpen = QRadioButton(self.tr("Correct + Sharpen"))
+        self.rb_sharpen_only    = QRadioButton(self.tr("Sharpen Only"))
         self.rb_sharpen_only.setChecked(True)
         corr_lay.addWidget(self.rb_correct_only)
         corr_lay.addWidget(self.rb_correct_sharpen)
@@ -457,7 +462,7 @@ class _CosmicClarityPresetDialog(QDialog):
         self.sh_mode.addItems(["Both", "Stellar Only", "Non-Stellar Only"])
         self.sh_mode.setCurrentText(p.get("sharpening_mode", "Both"))
 
-        self.auto_psf = QCheckBox("Auto PSF")
+        self.auto_psf = QCheckBox(self.tr("Auto PSF"))
         self.auto_psf.setChecked(bool(p.get("auto_psf", True)))
 
         self.psf = QDoubleSpinBox()
@@ -475,25 +480,25 @@ class _CosmicClarityPresetDialog(QDialog):
         self.nst_amt.setSingleStep(0.05)
         self.nst_amt.setValue(float(p.get("nonstellar_amount", 0.5)))
 
-        self.sh_sep = QCheckBox("Sharpen RGB channels separately")
+        self.sh_sep = QCheckBox(self.tr("Sharpen RGB channels separately"))
         self.sh_sep.setChecked(bool(p.get("sharpen_channels_separately", False)))
 
-        self._sh_mode_label = QLabel("Sharpening Mode:")
+        self._sh_mode_label = QLabel(self.tr("Sharpening Mode:"))
         f.addRow(self._sh_mode_label, self.sh_mode)
         f.addRow(self.auto_psf)
-        self._psf_label = QLabel("Non-stellar PSF:")
+        self._psf_label = QLabel(self.tr("Non-stellar PSF:"))
         f.addRow(self._psf_label, self.psf)
-        self._st_label = QLabel("Stellar Amount (0-1):")
+        self._st_label = QLabel(self.tr("Stellar Amount (0-1):"))
         f.addRow(self._st_label, self.st_amt)
-        self._nst_label = QLabel("Non-stellar Amount (0-1):")
+        self._nst_label = QLabel(self.tr("Non-stellar Amount (0-1):"))
         f.addRow(self._nst_label, self.nst_amt)
         f.addRow(self.sh_sep)
-        self.correct_conservative = QCheckBox("Conservative White Compression (reduces tiling on high-contrast images)")
+        self.correct_conservative = QCheckBox(self.tr("Conservative White Compression (reduces tiling on high-contrast images)"))
         self.correct_conservative.setChecked(bool(p.get("correct_conservative", False)))
-        self.correct_conservative.setToolTip(
+        self.correct_conservative.setToolTip(self.tr(
             "Uses stronger white point compression (0.75 vs 0.95) during aberration correction.\n"
             "Reduces tiling artifacts on images with extreme bright/dark contrast within a single tile."
-        )
+        ))
         f.addRow(self.correct_conservative)
 
         # Correction model version (sharpen-only; mirrors main dialog combo)
@@ -502,22 +507,22 @@ class _CosmicClarityPresetDialog(QDialog):
         cv = str(p.get("correct_model_version", "V2 (latest)"))
         if self.correct_ver.findText(cv) >= 0:
             self.correct_ver.setCurrentText(cv)
-        self._correct_ver_label = QLabel("Correction Model:")
+        self._correct_ver_label = QLabel(self.tr("Correction Model:"))
         f.addRow(self._correct_ver_label, self.correct_ver)
 
         # Tiling (sharpen-only; mirrors main dialog chunk/overlap dropdowns)
         self.chunk = QComboBox()
         self.chunk.addItems(["128", "192", "256", "320", "384", "512", "640", "768", "1024"])
         self.chunk.setCurrentText(str(int(p.get("chunk_size", 256))))
-        self._chunk_label = QLabel("Chunk Size:")
+        self._chunk_label = QLabel(self.tr("Chunk Size:"))
         f.addRow(self._chunk_label, self.chunk)
 
         self.overlap = QComboBox()
         self.overlap.addItems([f"{c}%" for c in OVERLAP_PCT_CHOICES])
-        self.overlap.setToolTip(
+        self.overlap.setToolTip(self.tr(
             "Tile overlap as a percentage of the chunk size (capped at 50%).\n"
             "Higher overlap reduces seams but is slower. 25% is a good default."
-        )
+        ))
         # Seed from overlap_pct if present, else migrate a legacy pixel overlap.
         if p.get("overlap_pct") is not None:
             _init_pct = p["overlap_pct"]
@@ -530,7 +535,7 @@ class _CosmicClarityPresetDialog(QDialog):
         else:
             _init_pct = DEFAULT_OVERLAP_PCT
         self.overlap.setCurrentText(f"{nearest_overlap_pct(_init_pct)}%")
-        self._overlap_label = QLabel("Overlap (% of tile):")
+        self._overlap_label = QLabel(self.tr("Overlap (% of tile):"))
         f.addRow(self._overlap_label, self.overlap)
         # Track sharpen sub-widgets for visibility toggling
         self._sharpen_sub_widgets = [
@@ -561,7 +566,7 @@ class _CosmicClarityPresetDialog(QDialog):
         self.dn_mode.addItems(["full", "luminance"])
         self.dn_mode.setCurrentText(p.get("denoise_mode", "full"))
 
-        self.dn_sep = QCheckBox("Separate RGB channels")
+        self.dn_sep = QCheckBox(self.tr("Separate RGB channels"))
         self.dn_sep.setChecked(bool(p.get("separate_channels", False)))
 
         self.dn_model = QComboBox()
@@ -573,10 +578,10 @@ class _CosmicClarityPresetDialog(QDialog):
         else:
             self.dn_model.setCurrentText("Standard")
 
-        self._dn_lum_label = QLabel("Denoise Luma:")
-        self._dn_col_label = QLabel("Denoise Color:")
-        self._dn_mode_label = QLabel("Denoise Mode:")
-        self._dn_model_label = QLabel("Denoise Model:")
+        self._dn_lum_label = QLabel(self.tr("Denoise Luma:"))
+        self._dn_col_label = QLabel(self.tr("Denoise Color:"))
+        self._dn_mode_label = QLabel(self.tr("Denoise Mode:"))
+        self._dn_model_label = QLabel(self.tr("Denoise Model:"))
         f.addRow(self._dn_lum_label, self.dn_lum)
         f.addRow(self._dn_col_label, self.dn_col)
         f.addRow(self._dn_mode_label, self.dn_mode)
@@ -595,7 +600,7 @@ class _CosmicClarityPresetDialog(QDialog):
         self.scale = QComboBox()
         self.scale.addItems(["2", "3", "4"])
         self.scale.setCurrentText(str(int(p.get("scale", 2))))
-        self._scale_label = QLabel("Super-Res Scale:")
+        self._scale_label = QLabel(self.tr("Super-Res Scale:"))
         f.addRow(self._scale_label, self.scale)
 
         btns = QDialogButtonBox(

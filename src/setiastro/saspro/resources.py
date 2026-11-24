@@ -199,6 +199,7 @@ class Icons:
     # Stacking
     STACKING = property(lambda self: _resource_path('stacking.png'))
     LIVE_STACKING = property(lambda self: _resource_path('livestacking.png'))
+    QUICK_STACK = property(lambda self: _resource_path('quickstack.png'))
     DITHER_ANALYSIS = property(lambda self: _resource_path('ditheranalysis.png'))
     IMAGE_COMBINE = property(lambda self: _resource_path('imagecombine.png'))
     PLANETARY_STACKER = property(lambda self: _resource_path('planetarystacker.png'))
@@ -481,6 +482,7 @@ _LEGACY_ICON_MAP = {
     'jwstpupil_path': 'jwstpupil.png',
     'signature_icon_path': 'pen.png',
     'livestacking_path': 'livestacking.png',
+    'quickstack_path': 'quickstack.png',
     'hrdiagram_path': 'HRDiagram.png',
     'convoicon_path': 'convo.png',
     'spcc_icon_path': 'spcc.png',

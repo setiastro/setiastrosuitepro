@@ -99,14 +99,18 @@ from PyQt6.QtGui import (QPixmap,QImage,    QPainter,    QPen,    QColor,    QTr
 
 # ----- QtCore -----
 from PyQt6.QtCore import (    Qt,    QRectF,    QLineF,    QPointF,    QThread,    pyqtSignal,    QTimer,    QEvent,    pyqtSlot,  
-   QSettings,    QSignalBlocker,    QDateTime, QEventLoop, QStandardPaths
+   QSettings,    QSignalBlocker,    QDateTime, QEventLoop, QStandardPaths, QCoreApplication
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("Wimi", text)
 
 
 # Math functions
 from math import sqrt
 
-from setiastro.saspro.legacy.image_manager import load_image, save_image
+from setiastro.saspro.legacy.image_manager import load_image, save_image, _wcs_pc_to_cd
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
 from setiastro.saspro import minorbodycatalog as mbc
 
@@ -949,7 +953,7 @@ class CustomGraphicsView(QGraphicsView):
                     self.parent.main_scene.addItem(self.drawing_item)
 
                 elif self.parent.current_tool == "Text":
-                    text, ok = QInputDialog.getText(self, "Add Text", "Enter text:")
+                    text, ok = QInputDialog.getText(self, self.tr("Add Text"), self.tr("Enter text:"))
                     if ok and text:
                         text_item = QGraphicsTextItem(text)
                         text_item.setPos(self.start_pos)
@@ -969,7 +973,7 @@ class CustomGraphicsView(QGraphicsView):
                 self.drawing_circle = True
                 self.circle_center = self.mapToScene(event.pos())
                 self.circle_radius = 0
-                self.parent.status_label.setText("Drawing circle: Shift + Drag")
+                self.parent.status_label.setText(self.tr("Drawing circle: Shift + Drag"))
                 self.update_circle()
 
             elif event.modifiers() == Qt.KeyboardModifier.AltModifier:
@@ -1134,12 +1138,12 @@ class CustomGraphicsView(QGraphicsView):
                 if self.parent.pixscale:
                     radius_arcmin = self.circle_radius * self.parent.pixscale / 60.0
                     self.parent.status_label.setText(
-                        f"Circle set at center RA={ra:.6f}, Dec={dec:.6f}, radius={radius_arcmin:.2f} arcmin"
+                        self.tr("Circle set at center RA={0:.6f}, Dec={1:.6f}, radius={2:.2f} arcmin").format(ra, dec, radius_arcmin)
                     )
                 else:
-                    self.parent.status_label.setText("Pixscale not available for radius calculation.")
+                    self.parent.status_label.setText(self.tr("Pixscale not available for radius calculation."))
             else:
-                self.parent.status_label.setText("Unable to determine RA/Dec due to missing WCS.")
+                self.parent.status_label.setText(self.tr("Unable to determine RA/Dec due to missing WCS."))
 
             # Update circle data and redraw
             self.parent.update_circle_data()
@@ -1250,16 +1254,16 @@ class CustomGraphicsView(QGraphicsView):
         dec    = clicked_object.get("dec")
         source = (clicked_object.get("source", "Simbad") or "Simbad").strip()
 
-        act_open = menu.addAction(f"Open Website ({source})")
+        act_open = menu.addAction(self.tr("Open Website ({0})").format(source))
         act_open.triggered.connect(lambda: self._open_object_website(clicked_object))
 
-        act_zoom = menu.addAction("Zoom to Object")
+        act_zoom = menu.addAction(self.tr("Zoom to Object"))
         act_zoom.triggered.connect(lambda: self.zoom_to_coordinates(ra, dec))
 
-        act_copy_radec = menu.addAction("Copy RA/Dec")
+        act_copy_radec = menu.addAction(self.tr("Copy RA/Dec"))
         act_copy_radec.triggered.connect(lambda: self._copy_object_radec(clicked_object))
 
-        act_copy_info = menu.addAction("Copy Object Information")
+        act_copy_info = menu.addAction(self.tr("Copy Object Information"))
         act_copy_info.triggered.connect(lambda: self.parent.copy_object_information(
             self._tree_item_for_object(clicked_object)
         ))
@@ -1272,17 +1276,17 @@ class CustomGraphicsView(QGraphicsView):
         except Exception:
             has_lib = False
 
-        act_spectrum = menu.addAction("View Gaia XP Spectrum")
+        act_spectrum = menu.addAction(self.tr("View Gaia XP Spectrum"))
         act_spectrum.setEnabled(has_lib)
         if not has_lib:
-            act_spectrum.setToolTip("No Gaia library installed — use Settings → Gaia XP Spectral Library")
+            act_spectrum.setToolTip(self.tr("No Gaia library installed — use Settings → Gaia XP Spectral Library"))
         act_spectrum.triggered.connect(lambda: self.parent._show_gaia_spectrum_for_item(
             self._tree_item_for_object(clicked_object)
         ))
 
         menu.addSeparator()
 
-        act_delete = menu.addAction("Delete Object")
+        act_delete = menu.addAction(self.tr("Delete Object"))
         act_delete.triggered.connect(lambda: self._delete_object(clicked_object))
 
         menu.exec(event.globalPos())
@@ -1351,7 +1355,7 @@ class CustomGraphicsView(QGraphicsView):
         except (TypeError, ValueError):
             text = f"{ra}, {dec}"
         QApplication.clipboard().setText(text)
-        self.parent.status_label.setText(f"Copied RA/Dec: {text}")
+        self.parent.status_label.setText(self.tr("Copied RA/Dec: {0}").format(text))
 
     def _delete_object(self, obj):
         item = self._tree_item_for_object(obj)
@@ -1531,7 +1535,7 @@ class CustomGraphicsView(QGraphicsView):
 
     def delete_selected_object(self):
         if self.selected_object is None:
-            self.parent.status_label.setText("No object selected to delete.")
+            self.parent.status_label.setText(self.tr("No object selected to delete."))
             return
 
         # Remove the selected object from the results list
@@ -1553,12 +1557,12 @@ class CustomGraphicsView(QGraphicsView):
         self.update_mini_preview()
 
         # Update the status label
-        self.parent.status_label.setText("Selected object and marker removed.")
+        self.parent.status_label.setText(self.tr("Selected object and marker removed."))
 
     def delete_selected_objects(self):
         items = self.parent.results_tree.selectedItems()
         if not items:
-            self.parent.status_label.setText("No objects selected to delete.")
+            self.parent.status_label.setText(self.tr("No objects selected to delete."))
             return
 
         # Collect names from the selected rows (column 2 is "Name")
@@ -1592,9 +1596,9 @@ class CustomGraphicsView(QGraphicsView):
         self.update_mini_preview()
 
         # Update counters / status
-        self.parent.object_count_label.setText(f"Objects Found: {after}")
+        self.parent.object_count_label.setText(self.tr("Objects Found: {0}").format(after))
         removed = before - after
-        self.parent.status_label.setText(f"Removed {removed} object(s).")
+        self.parent.status_label.setText(self.tr("Removed {0} object(s).").format(removed))
 
 
     def scrollContentsBy(self, dx, dy):
@@ -2126,11 +2130,11 @@ class CustomGraphicsView(QGraphicsView):
 class ThreeDSettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("3D Model Settings")
+        self.setWindowTitle(self.tr("3D Model Settings"))
         layout = QVBoxLayout(self)
 
         # Image Plane Style
-        layout.addWidget(QLabel("Image Plane Style:"))
+        layout.addWidget(QLabel(self.tr("Image Plane Style:")))
         self.plane_style_cb = QComboBox()
         self.plane_style_cb.addItems([
             "Mesh RGB Scatter Plane",
@@ -2140,7 +2144,7 @@ class ThreeDSettingsDialog(QDialog):
 
         # Resolution
         res_layout = QHBoxLayout()
-        res_layout.addWidget(QLabel("Resolution:"))
+        res_layout.addWidget(QLabel(self.tr("Resolution:")))
         self.res_spin = QSpinBox()
         self.res_spin.setRange(50, 2000)
         self.res_spin.setSingleStep(50)
@@ -2149,19 +2153,19 @@ class ThreeDSettingsDialog(QDialog):
         layout.addLayout(res_layout)
 
         # Z-Axis Range Options (Min-Max/Custom as before)
-        layout.addWidget(QLabel("Z-Axis Range:"))
+        layout.addWidget(QLabel(self.tr("Z-Axis Range:")))
         self.zaxis_cb = QComboBox()
         self.zaxis_cb.addItems(["Default", "Min-Max", "Custom"])
         layout.addWidget(self.zaxis_cb)
 
         self.custom_widget = QWidget()
         cl = QHBoxLayout(self.custom_widget)
-        cl.addWidget(QLabel("Min:"))
+        cl.addWidget(QLabel(self.tr("Min:")))
         self.zmin_spin = QDoubleSpinBox()
         self.zmin_spin.setRange(-1e6, 1e6)
         self.zmin_spin.setValue(0.0)
         cl.addWidget(self.zmin_spin)
-        cl.addWidget(QLabel("Max:"))
+        cl.addWidget(QLabel(self.tr("Max:")))
         self.zmax_spin = QDoubleSpinBox()
         self.zmax_spin.setRange(-1e6, 1e6)
         self.zmax_spin.setValue(10.0)
@@ -2173,7 +2177,7 @@ class ThreeDSettingsDialog(QDialog):
         )
 
         # Z-Axis Scale: Log vs Linear
-        layout.addWidget(QLabel("Z-Axis Scale:"))
+        layout.addWidget(QLabel(self.tr("Z-Axis Scale:")))
         self.zscale_cb = QComboBox()
         self.zscale_cb.addItems(["Logarithmic", "Linear"])
         layout.addWidget(self.zscale_cb)
@@ -2181,7 +2185,7 @@ class ThreeDSettingsDialog(QDialog):
         # Linear max input
         self.linear_widget = QWidget()
         ll = QHBoxLayout(self.linear_widget)
-        ll.addWidget(QLabel("Linear Z-Max:"))
+        ll.addWidget(QLabel(self.tr("Linear Z-Max:")))
         self.linear_max_spin = QDoubleSpinBox()
         self.linear_max_spin.setRange(0.1, 1e12)
         self.linear_max_spin.setValue(1e4)
@@ -2192,17 +2196,17 @@ class ThreeDSettingsDialog(QDialog):
             lambda idx: self.linear_widget.setVisible(self.zscale_cb.currentText() == "Linear")
         )
 
-        self.reverse_cb = QCheckBox("Reverse Z-Axis")
+        self.reverse_cb = QCheckBox(self.tr("Reverse Z-Axis"))
         self.reverse_cb.setChecked(False)
         layout.addWidget(self.reverse_cb)
 
         # Object Color
-        layout.addWidget(QLabel("Object Color:"))
+        layout.addWidget(QLabel(self.tr("Object Color:")))
         self.color_cb = QComboBox()
         self.color_cb.addItems(["Image-Based", "Legend Color", "Solid (Custom)"])
         layout.addWidget(self.color_cb)
 
-        self.color_btn = QPushButton("Choose Color…")
+        self.color_btn = QPushButton(self.tr("Choose Color…"))
         self.custom_color = QColor(255, 0, 0)
         self.color_btn.setVisible(False)
         layout.addWidget(self.color_btn)
@@ -2212,7 +2216,7 @@ class ThreeDSettingsDialog(QDialog):
         )
 
         # Z-Axis Height control
-        layout.addWidget(QLabel("Z-Axis Height (aspect ratio z):"))
+        layout.addWidget(QLabel(self.tr("Z-Axis Height (aspect ratio z):")))
         self.zheight_spin = QDoubleSpinBox()
         self.zheight_spin.setRange(0.1, 10.0)
         self.zheight_spin.setSingleStep(0.1)
@@ -2220,7 +2224,7 @@ class ThreeDSettingsDialog(QDialog):
         layout.addWidget(self.zheight_spin)
 
         # ─── Show Connector Lines ─────────────────────────────
-        self.lines_cb = QCheckBox("Show Connector Lines")
+        self.lines_cb = QCheckBox(self.tr("Show Connector Lines"))
         self.lines_cb.setChecked(True)
         layout.addWidget(self.lines_cb)
 
@@ -2577,36 +2581,36 @@ from PyQt6.QtWidgets import QColorDialog
 class HRSettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("H-R Diagram Settings")
+        self.setWindowTitle(self.tr("H-R Diagram Settings"))
         layout = QVBoxLayout(self)
  
         # ── 1) Gaia XP photometry toggle ─────────────────────────────────
         self.use_xp_chk = QCheckBox(
-            "Use Gaia XP synthetic photometry (recommended if library installed)")
+            self.tr("Use Gaia XP synthetic photometry (recommended if library installed)"))
         self.use_xp_chk.setChecked(True)
-        self.use_xp_chk.setToolTip(
+        self.use_xp_chk.setToolTip(self.tr(
             "When checked, B and V magnitudes are synthesised from Gaia XP spectra\n"
             "rather than taken from the SIMBAD catalogue. This gives consistent\n"
             "photometry for every star with an XP spectrum and typically triples\n"
             "or more the number of stars on the diagram.\n\n"
-            "Requires the Gaia XP spectral library to be installed.")
+            "Requires the Gaia XP spectral library to be installed."))
         layout.addWidget(self.use_xp_chk)
  
         # ── 2) Teff source ────────────────────────────────────────────────
-        layout.addWidget(QLabel("Teff estimation:"))
+        layout.addWidget(QLabel(self.tr("Teff estimation:")))
         self.teff_mode_cb = QComboBox()
         self.teff_mode_cb.addItems([
             "Blackbody fit to XP spectrum (best, requires XP)",
             "Ballesteros B-V formula (classic)",
         ])
-        self.teff_mode_cb.setToolTip(
+        self.teff_mode_cb.setToolTip(self.tr(
             "Blackbody fit directly fits a Planck function to the XP continuum.\n"
             "More accurate especially for cool/red stars. Falls back to Ballesteros\n"
-            "if no XP spectrum is available.")
+            "if no XP spectrum is available."))
         layout.addWidget(self.teff_mode_cb)
  
         # ── 3) Star Color Mode ────────────────────────────────────────────
-        layout.addWidget(QLabel("Star Color Mode:"))
+        layout.addWidget(QLabel(self.tr("Star Color Mode:")))
         self.color_mode_cb = QComboBox()
         self.color_mode_cb.addItems([
             "Realistic (blackbody)",
@@ -2615,7 +2619,7 @@ class HRSettingsDialog(QDialog):
         ])
         layout.addWidget(self.color_mode_cb)
  
-        self.color_btn = QPushButton("Choose Solid Color…")
+        self.color_btn = QPushButton(self.tr("Choose Solid Color…"))
         self.custom_color = QColor(255, 255, 255)
         self.color_btn.setVisible(False)
         layout.addWidget(self.color_btn)
@@ -2628,22 +2632,22 @@ class HRSettingsDialog(QDialog):
  
         # ── 4) Outlier flagging ───────────────────────────────────────────
         self.flag_outliers_chk = QCheckBox(
-            "Flag spectral outliers (carbon stars, emission-line, peculiar)")
+            self.tr("Flag spectral outliers (carbon stars, emission-line, peculiar)"))
         self.flag_outliers_chk.setChecked(True)
-        self.flag_outliers_chk.setToolTip(
+        self.flag_outliers_chk.setToolTip(self.tr(
             "Stars whose XP-derived Teff diverges strongly from the B-V prediction\n"
             "are marked with a distinct symbol (triangle) so they stand out as\n"
-            "non-standard objects rather than appearing as H-R diagram noise.")
+            "non-standard objects rather than appearing as H-R diagram noise."))
         layout.addWidget(self.flag_outliers_chk)
  
         # ── 5) Background ─────────────────────────────────────────────────
-        layout.addWidget(QLabel("Background:"))
+        layout.addWidget(QLabel(self.tr("Background:")))
         self.bg_mode_cb = QComboBox()
         self.bg_mode_cb.addItems(["HR Diagram Image", "Solid Black"])
         layout.addWidget(self.bg_mode_cb)
  
         # ── 6) Marker Size ────────────────────────────────────────────────
-        layout.addWidget(QLabel("Marker Size:"))
+        layout.addWidget(QLabel(self.tr("Marker Size:")))
         self.marker_size_mode_cb = QComboBox()
         self.marker_size_mode_cb.addItems(["Auto (recommended)", "Manual"])
         layout.addWidget(self.marker_size_mode_cb)
@@ -2651,7 +2655,7 @@ class HRSettingsDialog(QDialog):
         self.marker_size_widget = QWidget()
         ms_layout = QHBoxLayout(self.marker_size_widget)
         ms_layout.setContentsMargins(0, 0, 0, 0)
-        ms_layout.addWidget(QLabel("Marker Size:"))
+        ms_layout.addWidget(QLabel(self.tr("Marker Size:")))
         self.marker_size_spin = QSpinBox()
         self.marker_size_spin.setRange(2, 40)
         self.marker_size_spin.setValue(8)
@@ -2666,7 +2670,7 @@ class HRSettingsDialog(QDialog):
         )
  
         # ── 7) Axis Range ─────────────────────────────────────────────────
-        layout.addWidget(QLabel("Axis Range:"))
+        layout.addWidget(QLabel(self.tr("Axis Range:")))
         self.range_mode_cb = QComboBox()
         self.range_mode_cb.addItems(["Default (–0.3→2.25, –9→19)", "Custom"])
         layout.addWidget(self.range_mode_cb)
@@ -2674,10 +2678,10 @@ class HRSettingsDialog(QDialog):
         self.custom_range_widget = QWidget()
         cr_layout = QHBoxLayout(self.custom_range_widget)
         for lbl, attr, val in [
-            ("X Min:", "xmin_spin", -0.3),
-            ("X Max:", "xmax_spin",  2.25),
-            ("Y Min:", "ymin_spin", -9.0),
-            ("Y Max:", "ymax_spin", 19.0),
+            (self.tr("X Min:"), "xmin_spin", -0.3),
+            (self.tr("X Max:"), "xmax_spin",  2.25),
+            (self.tr("Y Min:"), "ymin_spin", -9.0),
+            (self.tr("Y Max:"), "ymax_spin", 19.0),
         ]:
             cr_layout.addWidget(QLabel(lbl))
             spin = QDoubleSpinBox()
@@ -2695,7 +2699,7 @@ class HRSettingsDialog(QDialog):
         )
  
         # ── 8) Show Sun ───────────────────────────────────────────────────
-        self.show_sun_cb = QCheckBox("Include Sun on diagram")
+        self.show_sun_cb = QCheckBox(self.tr("Include Sun on diagram"))
         self.show_sun_cb.setChecked(True)
         layout.addWidget(self.show_sun_cb)
         # ── 3D CMD options ────────────────────────────────────────────────
@@ -2705,23 +2709,23 @@ class HRSettingsDialog(QDialog):
         sep_line.setStyleSheet("color: #333;")
         layout.addWidget(sep_line)
 
-        layout.addWidget(QLabel("── 3D Color-Magnitude Diagram ──"))
+        layout.addWidget(QLabel(self.tr("── 3D Color-Magnitude Diagram ──")))
 
-        self.cmd_3d_btn_chk = QCheckBox("Add '3D CMD' button to output")
+        self.cmd_3d_btn_chk = QCheckBox(self.tr("Add '3D CMD' button to output"))
         self.cmd_3d_btn_chk.setChecked(True)
         layout.addWidget(self.cmd_3d_btn_chk)
 
-        layout.addWidget(QLabel("Distance axis units:"))
+        layout.addWidget(QLabel(self.tr("Distance axis units:")))
         self.dist_units_cb = QComboBox()
         self.dist_units_cb.addItems(["Parsecs", "Light-years"])
         layout.addWidget(self.dist_units_cb)
 
-        layout.addWidget(QLabel("Distance axis scale:"))
+        layout.addWidget(QLabel(self.tr("Distance axis scale:")))
         self.dist_scale_cb = QComboBox()
         self.dist_scale_cb.addItems(["Linear", "Logarithmic"])
         layout.addWidget(self.dist_scale_cb)
 
-        layout.addWidget(QLabel("Distance range:"))
+        layout.addWidget(QLabel(self.tr("Distance range:")))
         self.dist_range_cb = QComboBox()
         self.dist_range_cb.addItems(["Auto", "Custom"])
         layout.addWidget(self.dist_range_cb)
@@ -2729,13 +2733,13 @@ class HRSettingsDialog(QDialog):
         self.dist_range_widget = QWidget()
         dr_layout = QHBoxLayout(self.dist_range_widget)
         dr_layout.setContentsMargins(0, 0, 0, 0)
-        dr_layout.addWidget(QLabel("Min:"))
+        dr_layout.addWidget(QLabel(self.tr("Min:")))
         self.dist_min_spin = QDoubleSpinBox()
         self.dist_min_spin.setRange(0.1, 1e7)
         self.dist_min_spin.setDecimals(1)
         self.dist_min_spin.setValue(0.0)
         dr_layout.addWidget(self.dist_min_spin)
-        dr_layout.addWidget(QLabel("Max:"))
+        dr_layout.addWidget(QLabel(self.tr("Max:")))
         self.dist_max_spin = QDoubleSpinBox()
         self.dist_max_spin.setRange(1.0, 1e7)
         self.dist_max_spin.setDecimals(1)
@@ -2844,7 +2848,7 @@ class HRSettingsDialog(QDialog):
 class LegendDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Object Type Legend")
+        self.setWindowTitle(self.tr("Object Type Legend"))
         self.swatches = {}
         layout = QVBoxLayout(self)
 
@@ -2863,7 +2867,7 @@ class LegendDialog(QDialog):
             row.addWidget(QLabel(category))
 
             # edit‐color button
-            btn = QPushButton("Edit…")
+            btn = QPushButton(self.tr("Edit…"))
             btn.clicked.connect(lambda _, cat=category: self.change_color(cat))
             row.addWidget(btn)
 
@@ -2872,9 +2876,9 @@ class LegendDialog(QDialog):
 
         # OK / Cancel buttons
         btn_row = QHBoxLayout()
-        ok = QPushButton("OK")
+        ok = QPushButton(self.tr("OK"))
         ok.clicked.connect(self.accept)
-        cancel = QPushButton("Cancel")
+        cancel = QPushButton(self.tr("Cancel"))
         cancel.clicked.connect(self.reject)
         btn_row.addStretch()
         btn_row.addWidget(ok)
@@ -2884,7 +2888,7 @@ class LegendDialog(QDialog):
     def change_color(self, category):
         """Open a QColorDialog, update the swatch and CATEGORY_TO_COLOR."""
         initial = CATEGORY_TO_COLOR[category]
-        c = QColorDialog.getColor(initial, self, f"Select color for {category}")
+        c = QColorDialog.getColor(initial, self, self.tr("Select color for {0}").format(category))
         if c.isValid():
             CATEGORY_TO_COLOR[category] = c
             sw = self.swatches[category]
@@ -3334,34 +3338,34 @@ def _open_sas_orbit_explorer(window, name: str, kind: str = "Asteroid") -> None:
 
     if not _HAS_ORBIT_EXPLORER:
         QMessageBox.information(
-            window, "Orbit Explorer",
-            "The 3D orbit explorer could not be loaded.\n\n"
-            f"{_ORBIT_EXPLORER_ERR}\n\n"
-            "It needs pyqtgraph.opengl and PyOpenGL (pip install PyOpenGL).")
+            window, _tr("Orbit Explorer"),
+            _tr("The 3D orbit explorer could not be loaded.\n\n"
+                "{0}\n\n"
+                "It needs pyqtgraph.opengl and PyOpenGL (pip install PyOpenGL).").format(_ORBIT_EXPLORER_ERR))
         return
 
     jd = getattr(window, "_minor_jd", None)
     db_path = getattr(window, "_minor_db_path", None)
     if jd is None or not db_path:
         QMessageBox.information(
-            window, "Orbit Explorer",
-            "Run a minor-body search first — I need the observation time it "
-            "was computed at to place the orbit.")
+            window, _tr("Orbit Explorer"),
+            _tr("Run a minor-body search first — I need the observation time it "
+                "was computed at to place the orbit."))
         return
 
     row = _lookup_minor_body_row(db_path, name, kind)
     if row is None:
         QMessageBox.information(
-            window, "Orbit Explorer",
-            f"Couldn't find {name} in the catalog to read its orbit.")
+            window, _tr("Orbit Explorer"),
+            _tr("Couldn't find {0} in the catalog to read its orbit.").format(name))
         return
 
     el = extract_elements_from_row(row)
     if el is None:
         QMessageBox.information(
-            window, "Orbit Explorer",
-            f"{name} has no usable orbital elements in the catalog, so its "
-            "orbit can't be drawn.")
+            window, _tr("Orbit Explorer"),
+            _tr("{0} has no usable orbital elements in the catalog, so its "
+                "orbit can't be drawn.").format(name))
         return
 
     H = None
@@ -3403,16 +3407,16 @@ def prompt_minor_body_choice(window, name: str, kind: str = "Asteroid") -> None:
     if not name:
         return
     box = QMessageBox(window)
-    box.setWindowTitle("Explore Minor Body")
+    box.setWindowTitle(_tr("Explore Minor Body"))
     box.setIcon(QMessageBox.Icon.Question)
-    box.setText(f"How would you like to explore {name}?")
-    box.setInformativeText(
+    box.setText(_tr("How would you like to explore {0}?").format(name))
+    box.setInformativeText(_tr(
         "Orbit Explorer draws it in 3D inside SASpro from the local catalog.\n"
         "JPL Small-Body Database is the authoritative record (orbit, physical\n"
-        "parameters, close approaches). 3D Model Site is 3d-asteroids.space.")
-    b_orbit = box.addButton("SASpro Orbit Explorer", QMessageBox.ButtonRole.AcceptRole)
-    b_jpl = box.addButton("JPL Small-Body Database", QMessageBox.ButtonRole.AcceptRole)
-    b_model = box.addButton("3D Model Site", QMessageBox.ButtonRole.AcceptRole)
+        "parameters, close approaches). 3D Model Site is 3d-asteroids.space."))
+    b_orbit = box.addButton(_tr("SASpro Orbit Explorer"), QMessageBox.ButtonRole.AcceptRole)
+    b_jpl = box.addButton(_tr("JPL Small-Body Database"), QMessageBox.ButtonRole.AcceptRole)
+    b_model = box.addButton(_tr("3D Model Site"), QMessageBox.ButtonRole.AcceptRole)
     box.addButton(QMessageBox.StandardButton.Cancel)
     box.setDefaultButton(b_orbit)
     box.exec()
@@ -3548,14 +3552,14 @@ class SimbadQueryWorker(QThread):
         for host in (cds_health.current_server(), *cds_health.MIRRORS):
             if self._cancel:
                 return None
-            self.stage.emit(f"Retrying SIMBAD directly via {host}…")
+            self.stage.emit(self.tr("Retrying SIMBAD directly via {0}…").format(host))
             try:
                 table = cds_health.query_tap_direct(self._tap_query,
                                                     server=host)
             except Exception:
                 table = None
             if table is not None:
-                self.stage.emit(f"SIMBAD answered directly via {host}.")
+                self.stage.emit(self.tr("SIMBAD answered directly via {0}.").format(host))
                 return table
         return None
 
@@ -3563,14 +3567,14 @@ class SimbadQueryWorker(QThread):
         try:
             # ——— Stage 1: TAP query with retries ———
             # (cds_health is imported at module level; no local import needed.)
-            self.stage.emit("Contacting SIMBAD TAP service…")
+            self.stage.emit(self.tr("Contacting SIMBAD TAP service…"))
             result = None
             last_err = None
             for attempt in range(1, self._max_attempts + 1):
                 self._check_cancel()
                 self.attempt_info.emit(attempt, self._max_attempts)
                 self.stage.emit(
-                    f"Querying SIMBAD TAP (attempt {attempt}/{self._max_attempts})…"
+                    self.tr("Querying SIMBAD TAP (attempt {0}/{1})…").format(attempt, self._max_attempts)
                 )
                 try:
                     result = Simbad.query_tap(self._tap_query)
@@ -3595,20 +3599,20 @@ class SimbadQueryWorker(QThread):
                             last_err = None
                             cds_health.note_success()
                             break
-                        self.failed.emit(
+                        self.failed.emit(self.tr(
                             "SIMBAD is unreachable (connection failed).\n\n"
                             "Every CDS mirror was tried, including a direct "
                             "TAP request.\n\n"
-                            f"{type(e).__name__}: {e}\n\n"
-                            f"{cds_health.status_detail()}"
-                        )
+                            "{0}: {1}\n\n"
+                            "{2}"
+                        ).format(type(e).__name__, e, cds_health.status_detail()))
                         return
                     # A different mirror may now be configured; the next
                     # attempt goes there rather than back to the dead one.
                     if attempt < self._max_attempts:
                         self.stage.emit(
-                            f"TAP attempt {attempt} failed ({type(e).__name__}); "
-                            f"retrying in {self._retry_wait_s:.0f}s…"
+                            self.tr("TAP attempt {0} failed ({1}); "
+                            "retrying in {2:.0f}s…").format(attempt, type(e).__name__, self._retry_wait_s)
                         )
                         # Cooperative sleep so cancel is responsive
                         slept = 0.0
@@ -3622,12 +3626,12 @@ class SimbadQueryWorker(QThread):
             if last_err is not None:
                 result = self._direct_tap()
                 if result is None:
-                    self.failed.emit(
+                    self.failed.emit(self.tr(
                         "SIMBAD TAP service unreachable after "
-                        f"{self._max_attempts} attempts.\n\n"
-                        f"Last error:\n{last_err}\n\n"
-                        f"{cds_health.status_detail()}"
-                    )
+                        "{0} attempts.\n\n"
+                        "Last error:\n{1}\n\n"
+                        "{2}"
+                    ).format(self._max_attempts, last_err, cds_health.status_detail()))
                     return
                 cds_health.note_success()
 
@@ -3635,11 +3639,11 @@ class SimbadQueryWorker(QThread):
 
             if result is None or len(result) == 0:
                 # Empty result is NOT an error — upstream decides what to do
-                self.stage.emit("SIMBAD returned no objects in this region.")
+                self.stage.emit(self.tr("SIMBAD returned no objects in this region."))
                 self.finished_ok.emit(None, {})
                 return
 
-            self.stage.emit(f"TAP returned {len(result)} rows. Fetching star extras…")
+            self.stage.emit(self.tr("TAP returned {0} rows. Fetching star extras…").format(len(result)))
 
             # ——— Stage 2: sim-sam for FLUX/PLX/SP extras ———
             self._check_cancel()
@@ -3648,14 +3652,14 @@ class SimbadQueryWorker(QThread):
             # No stellar types selected -> the caller passed sam_url=None.
             # Nothing to fetch; skip the slowest request in the query.
             if not self._sam_url:
-                self.stage.emit("No star types selected; skipping photometry fetch.")
+                self.stage.emit(self.tr("No star types selected; skipping photometry fetch."))
                 self._check_cancel()
-                self.stage.emit("Merging results…")
+                self.stage.emit(self.tr("Merging results…"))
                 self.finished_ok.emit(result, {})
                 return
 
             try:
-                self.stage.emit("Downloading star photometry/parallax (sim-sam)…")
+                self.stage.emit(self.tr("Downloading star photometry/parallax (sim-sam)…"))
                 # (connect, read). 300 s was a single combined timeout — five
                 # minutes of nothing when the host is dead. 5 s to establish a
                 # connection is generous; 90 s of read covers a genuinely slow
@@ -3665,20 +3669,20 @@ class SimbadQueryWorker(QThread):
                 resp.raise_for_status()
 
                 self._check_cancel()
-                self.stage.emit("Parsing VOTable response…")
+                self.stage.emit(self.tr("Parsing VOTable response…"))
                 vot = parse_single_table(BytesIO(resp.content))
                 tbl = vot.to_table(use_names_over_ids=True)
                 extras = {row["MAIN_ID"]: row for row in tbl}
-                self.stage.emit(f"Got extras for {len(extras)} stars.")
+                self.stage.emit(self.tr("Got extras for {0} stars.").format(len(extras)))
             except Exception as e:
                 # Non-fatal — the caller will note we have no extras
                 self.stage.emit(
-                    f"sim-sam extras unavailable ({type(e).__name__}); continuing without."
+                    self.tr("sim-sam extras unavailable ({0}); continuing without.").format(type(e).__name__)
                 )
                 extras = {}
 
             self._check_cancel()
-            self.stage.emit("Merging results…")
+            self.stage.emit(self.tr("Merging results…"))
             self.finished_ok.emit(result, extras)
 
         except RuntimeError as e:
@@ -3778,7 +3782,7 @@ def _ballesteros_teff(bv):
 class WIMIDialog(QDialog):
     def __init__(self, parent=None, settings=None, doc_manager=None, wimi_path: Optional[str] = None, wrench_path: Optional[str] = None):
         super().__init__(parent)
-        self.setWindowTitle("What's In My Image")
+        self.setWindowTitle(self.tr("What's In My Image"))
         if wimi_path:
             self.setWindowIcon(QIcon(wimi_path))
 
@@ -3844,12 +3848,12 @@ class WIMIDialog(QDialog):
         atlas_banner_layout.setContentsMargins(10, 8, 10, 8)
         atlas_banner_layout.setSpacing(4)
 
-        self._atlas_banner_label = QLabel("🌌 Community Atlas")
+        self._atlas_banner_label = QLabel(self.tr("🌌 Community Atlas"))
         self._atlas_banner_label.setStyleSheet("color: #8bc88b; font-size: 11px; font-weight: bold;")
         self._atlas_banner_label.setWordWrap(True)
         atlas_banner_layout.addWidget(self._atlas_banner_label)
 
-        self._atlas_banner_btn = QPushButton("View in Sky Atlas →")
+        self._atlas_banner_btn = QPushButton(self.tr("View in Sky Atlas →"))
         self._atlas_banner_btn.setStyleSheet(
             "QPushButton { background: #2a4a2a; color: #8bc88b; border: 1px solid #3a6a3a; "
             "border-radius: 4px; padding: 4px 10px; font-size: 11px; }"
@@ -3941,7 +3945,7 @@ class WIMIDialog(QDialog):
         self.toggle_visible_objects_button.setCheckable(True)  # Toggle button state
         self.toggle_visible_objects_button.setIcon(QIcon(eye_icon_path))
         self.toggle_visible_objects_button.clicked.connect(self.filter_visible_objects)
-        self.toggle_visible_objects_button.setToolTip("Toggle the visibility of objects based on brightness.")
+        self.toggle_visible_objects_button.setToolTip(self.tr("Toggle the visibility of objects based on brightness."))
         button_layout.addWidget(self.toggle_visible_objects_button)
 
         # Save CSV button
@@ -3983,8 +3987,8 @@ class WIMIDialog(QDialog):
         button_layout.addWidget(make_help_button("whats_in_my_image", self))
 
         # Settings button (wrench icon)
-        self.settings_button = QPushButton("⚙ Settings")
-        self.settings_button.setToolTip("Settings")
+        self.settings_button = QPushButton(self.tr("⚙ Settings"))
+        self.settings_button.setToolTip(self.tr("Settings"))
         self.settings_button.clicked.connect(self.open_settings_dialog)
         button_layout.addWidget(self.settings_button)
 
@@ -4035,7 +4039,7 @@ class WIMIDialog(QDialog):
         zoom_controls_layout.addStretch(1)
 
         # Crosshair toggle button
-        self.crosshair_button = QPushButton("⊕ Crosshair")
+        self.crosshair_button = QPushButton(self.tr("⊕ Crosshair"))
         self.crosshair_button.setCheckable(True)
         self.crosshair_button.clicked.connect(self._cycle_crosshair)
         zoom_controls_layout.addWidget(self.crosshair_button)
@@ -4276,12 +4280,12 @@ class WIMIDialog(QDialog):
         # installed. Persists across sessions.
         self.augment_with_gaia_checkbox = QCheckBox(
             self.tr("Augment search with local Gaia DR3"))
-        self.augment_with_gaia_checkbox.setToolTip(
+        self.augment_with_gaia_checkbox.setToolTip(self.tr(
             "Adds Gaia DR3 sources from the local astrometric library that\n"
             "Simbad didn't return. Useful for faint fields where most stars\n"
             "aren't in Simbad. Requires an installed astrometric band (Settings\n"
             "→ Gaia DR3 Library → Astrometry)."
-        )
+        ))
         self.augment_with_gaia_checkbox.setChecked(
             self.settings.value("wimi/augment_with_gaia", False, type=bool))
         self.augment_with_gaia_checkbox.toggled.connect(
@@ -4308,13 +4312,13 @@ class WIMIDialog(QDialog):
         from PyQt6.QtWidgets import QCheckBox as _QCheckBox  # local alias; QCheckBox is already in scope
         mag_filter_row = QHBoxLayout()
         self.mag_limit_checkbox = QCheckBox(self.tr("Limit by magnitude"))
-        self.mag_limit_checkbox.setToolTip(
+        self.mag_limit_checkbox.setToolTip(self.tr(
             "When checked, drop any result fainter than the magnitude\n"
             "below from the tree, markers, and all downstream views.\n"
             "Any result with no magnitude in a known band (Vmag / Bmag /\n"
             "Gmag / mag / H / g / k) is also dropped — if you asked for\n"
             "a magnitude cut, 'unknown' fails it. Default: off."
-        )
+        ))
         self.mag_limit_checkbox.setChecked(
             self.settings.value("wimi/mag_filter_enabled", False, type=bool))
         self.mag_limit_spinbox = QDoubleSpinBox()
@@ -4326,10 +4330,10 @@ class WIMIDialog(QDialog):
         self.mag_limit_spinbox.setValue(
             self.settings.value("wimi/mag_filter_limit", 18.0, type=float))
         self.mag_limit_spinbox.setSuffix(" mag")
-        self.mag_limit_spinbox.setToolTip(
+        self.mag_limit_spinbox.setToolTip(self.tr(
             "Drop results with magnitude > this value.\n"
             "Fainter stars have larger magnitudes."
-        )
+        ))
         self.mag_limit_spinbox.setEnabled(self.mag_limit_checkbox.isChecked())
 
         def _on_mag_filter_toggled(on: bool):
@@ -4472,15 +4476,15 @@ class WIMIDialog(QDialog):
         # --- Optional specific target (designation / name) ---
         target_label = QLabel(self.tr("Target (optional):"))
         self.minor_target_edit = QLineEdit()
-        self.minor_target_edit.setPlaceholderText("e.g. 584, Semiramis, C/2023 A3...")
+        self.minor_target_edit.setPlaceholderText(self.tr("e.g. 584, Semiramis, C/2023 A3..."))
 
         minor_layout.addWidget(target_label,          5, 0)
         minor_layout.addWidget(self.minor_target_edit, 5, 1, 1, 3)
 
         self.minor_count_button = QPushButton(self.tr("Count Objects Brighter Than Limits"))
-        self.minor_count_button.setToolTip(
+        self.minor_count_button.setToolTip(self.tr(
             "Show how many catalog objects are brighter than the selected H limits."
-        )
+        ))
         self.minor_count_button.clicked.connect(self.count_minor_bodies_brighter_than_limits)
         # Put it on its own row spanning all 4 columns
         minor_layout.addWidget(self.minor_count_button, 6, 0, 1, 4)
@@ -4494,10 +4498,10 @@ class WIMIDialog(QDialog):
         self.minor_time_offset_spin.setValue(
             float(self.settings.value("wimi/minor/time_offset_hours", 0.0))
         )
-        self.minor_time_offset_spin.setToolTip(
+        self.minor_time_offset_spin.setToolTip(self.tr(
             "Applied to observation time before computing minor-body ephemerides.\n"
             "Negative = earlier, positive = later."
-        )
+        ))
 
         minor_layout.addWidget(time_offset_label,          7, 0)
         minor_layout.addWidget(self.minor_time_offset_spin, 7, 1)
@@ -4512,7 +4516,7 @@ class WIMIDialog(QDialog):
         # Adding the "Deep Vizier Search" button below the other search buttons
         self.deep_vizier_button = QPushButton(self.tr("Caution - Deep Vizier Search"))
         self.deep_vizier_button.setIcon(QIcon(nuke_path))  # Assuming `nuke_path` is the correct path for the icon
-        self.deep_vizier_button.setToolTip("Perform a deep search with Vizier. Caution: May return large datasets.")
+        self.deep_vizier_button.setToolTip(self.tr("Perform a deep search with Vizier. Caution: May return large datasets."))
 
         # Connect the button to a placeholder method for the deep Vizier search
         self.deep_vizier_button.clicked.connect(self.perform_deep_vizier_search)
@@ -4523,7 +4527,7 @@ class WIMIDialog(QDialog):
         self.mast_search_button = QPushButton(self.tr("Search M.A.S.T Database"))
         self.mast_search_button.setIcon(QIcon(hubble_path))
         self.mast_search_button.clicked.connect(self.perform_mast_search)
-        self.mast_search_button.setToolTip("Search Hubble, JWST, Spitzer, TESS and More.")
+        self.mast_search_button.setToolTip(self.tr("Search Hubble, JWST, Spitzer, TESS and More."))
         self.advanced_search_panel.addWidget(self.mast_search_button)                        
 
         # Combine left and right panels
@@ -4587,16 +4591,16 @@ class WIMIDialog(QDialog):
                         ast = f"{manifest.counts_asteroids:,}"
                         com = f"{manifest.counts_comets:,}"
                         self.minor_db_label.setText(
-                            f"Database: v{manifest.version} — {ast} asteroids, {com} comets"
+                            self.tr("Database: v{0} — {1} asteroids, {2} comets").format(manifest.version, ast, com)
                         )
                     else:
-                        self.minor_db_label.setText(f"Database: {p.name}")
+                        self.minor_db_label.setText(self.tr("Database: {0}").format(p.name))
                 except Exception:
-                    self.minor_db_label.setText(f"Database: {p.name}")
+                    self.minor_db_label.setText(self.tr("Database: {0}").format(p.name))
             else:
-                self.minor_db_label.setText("Database: not downloaded")
+                self.minor_db_label.setText(self.tr("Database: not downloaded"))
         else:
-            self.minor_db_label.setText("Database: not downloaded")      
+            self.minor_db_label.setText(self.tr("Database: not downloaded"))      
         #self._legend_dock = QDockWidget("Object Type Legend", self)
         legend = LegendDialog(self)
         legend.setModal(False)
@@ -4632,9 +4636,9 @@ class WIMIDialog(QDialog):
         if count == 0:
             self._atlas_banner.setVisible(False)
         else:
-            plural = "images" if count != 1 else "image"
             self._atlas_banner_label.setText(
-                f"🌌 {count} community {plural} overlap this field"
+                (self.tr("🌌 {0} community images overlap this field") if count != 1
+                 else self.tr("🌌 {0} community image overlaps this field")).format(count)
             )
             self._atlas_banner.setVisible(True)
 
@@ -4700,16 +4704,16 @@ class WIMIDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(
                 self,
-                "Minor-Body Catalog",
-                f"Could not access the minor-body database:\n{e}",
+                self.tr("Minor-Body Catalog"),
+                self.tr("Could not access the minor-body database:\n{0}").format(e),
             )
             return
 
         if not db_path:
             QMessageBox.warning(
                 self,
-                "Minor-Body Catalog",
-                "Minor-body database is not available. Please download it first.",
+                self.tr("Minor-Body Catalog"),
+                self.tr("Minor-body database is not available. Please download it first."),
             )
             return
 
@@ -4717,8 +4721,8 @@ class WIMIDialog(QDialog):
         if not db_path.is_file():
             QMessageBox.warning(
                 self,
-                "Minor-Body Catalog",
-                f"Minor-body database file not found:\n{db_path}",
+                self.tr("Minor-Body Catalog"),
+                self.tr("Minor-body database file not found:\n{0}").format(db_path),
             )
             return
 
@@ -4784,24 +4788,24 @@ class WIMIDialog(QDialog):
 
         # Build message
         msg_lines = [
-            f"Asteroids with H ≤ {H_ast:.1f}: {ast_count:,}",
-            f"Comets with H ≤ {H_com:.1f}: {com_count:,}",
+            self.tr("Asteroids with H ≤ {0:.1f}: {1:,}").format(H_ast, ast_count),
+            self.tr("Comets with H ≤ {0:.1f}: {1:,}").format(H_com, com_count),
             "",
-            "Note: This counts objects in the entire catalog,",
-            "not just those in your current image field of view.",
+            self.tr("Note: This counts objects in the entire catalog,\n"
+                    "not just those in your current image field of view."),
         ]
         msg = "\n".join(msg_lines)
 
         QMessageBox.information(
             self,
-            "Minor-Body Catalog Counts",
+            self.tr("Minor-Body Catalog Counts"),
             msg,
         )
 
         # Optionally also reflect this in the status bar
         self.status_label.setText(
-            f"Minor bodies brighter than limits — Asteroids: {ast_count:,}, "
-            f"Comets: {com_count:,}"
+            self.tr("Minor bodies brighter than limits — Asteroids: {0:,}, "
+            "Comets: {1:,}").format(ast_count, com_count)
         )
 
 
@@ -5181,13 +5185,13 @@ class WIMIDialog(QDialog):
             docs = []
 
         if not docs:
-            a = self.load_from_view_menu.addAction("No open views")
+            a = self.load_from_view_menu.addAction(self.tr("No open views"))
             a.setEnabled(False)
             return
 
         # most-recent last → show newest at bottom (or reverse if you prefer)
         for doc in docs:
-            title = getattr(doc, "display_name", lambda: "Untitled")()
+            title = getattr(doc, "display_name", lambda: self.tr("Untitled"))()
             act = self.load_from_view_menu.addAction(title)
             act.triggered.connect(lambda _, d=doc: self._load_from_view(d))
 
@@ -5213,7 +5217,7 @@ class WIMIDialog(QDialog):
         # status hint
         try:
             if hasattr(self, "status_label"):
-                self.status_label.setText("Status: Solving (ASTAP)…")
+                self.status_label.setText(self.tr("Status: Solving (ASTAP)…"))
                 QApplication.processEvents()
         except Exception:
             pass
@@ -5235,17 +5239,17 @@ class WIMIDialog(QDialog):
                 self.check_astrometry_data(meta.get("wcs_header"))
             try:
                 if hasattr(self, "status_label"):
-                    self.status_label.setText("Status: Solve complete.")
+                    self.status_label.setText(self.tr("Status: Solve complete."))
             except Exception:
                 pass
             return bool(got)
 
         # unified solver already tried ASTAP and Astrometry.net; just report failure
         try:
-            QMessageBox.critical(self, "Solve Failed",
-                                "Automatic plate solve failed (ASTAP → Astrometry.net).")
+            QMessageBox.critical(self, self.tr("Solve Failed"),
+                                self.tr("Automatic plate solve failed (ASTAP → Astrometry.net)."))
             if hasattr(self, "status_label"):
-                self.status_label.setText("Status: Solve failed.")
+                self.status_label.setText(self.tr("Status: Solve failed."))
         except Exception:
             pass
         return False
@@ -5321,7 +5325,7 @@ class WIMIDialog(QDialog):
 
     def update_object_count(self):
         count = self.results_tree.topLevelItemCount()
-        self.object_count_label.setText(f"Objects Found: {count}")
+        self.object_count_label.setText(self.tr("Objects Found: {0}").format(count))
 
     def open_context_menu(self, position):
         from setiastro.saspro.gaia_database import get_library
@@ -5360,7 +5364,7 @@ class WIMIDialog(QDialog):
         act_spectrum.setEnabled(has_lib)
         if not has_lib:
             act_spectrum.setToolTip(
-                "No Gaia library installed — use Settings → Gaia XP Spectral Library")
+                self.tr("No Gaia library installed — use Settings → Gaia XP Spectral Library"))
         menu.addAction(act_spectrum)
 
         menu.exec(self.results_tree.viewport().mapToGlobal(position))
@@ -5381,41 +5385,41 @@ class WIMIDialog(QDialog):
         lib = get_library()
         if not lib.installed_bands():
             QMessageBox.information(
-                self, "Gaia Library",
-                "No Gaia XP spectral library installed.\n"
-                "Open Settings → Gaia XP Spectral Library to install bands."
+                self, self.tr("Gaia Library"),
+                self.tr("No Gaia XP spectral library installed.\n"
+                "Open Settings → Gaia XP Spectral Library to install bands.")
             )
             return
 
         result = lib.find_nearest(ra, dec, radius_arcsec=3.0)
         if result is None:
             QMessageBox.information(
-                self, "No Spectrum",
-                f"No Gaia XP spectrum found within 3\" of {name}.\n"
-                f"The relevant magnitude band may not be installed."
+                self, self.tr("No Spectrum"),
+                self.tr("No Gaia XP spectrum found within 3\" of {0}.\n"
+                "The relevant magnitude band may not be installed.").format(name)
             )
             return
 
         source_id, sep = result
         spec = lib.get_spectrum(source_id)
         if spec is None:
-            QMessageBox.information(self, "No Spectrum", "Source found but spectrum data missing.")
+            QMessageBox.information(self, self.tr("No Spectrum"), self.tr("Source found but spectrum data missing."))
             return
 
         # Show in a small popup
         dlg = QDialog(self)
-        dlg.setWindowTitle(f"Gaia XP Spectrum — {name}")
+        dlg.setWindowTitle(self.tr("Gaia XP Spectrum — {0}").format(name))
         dlg.setMinimumSize(600, 320)
         layout = QVBoxLayout(dlg)
         viewer = SpectrumViewerWidget(dlg)
         layout.addWidget(viewer)
-        info = QLabel(f"source_id: {source_id}   separation: {sep:.2f}\"")
+        info = QLabel(self.tr("source_id: {0}   separation: {1:.2f}\"").format(source_id, sep))
         info.setStyleSheet("font-size: 10px; color: #888;")
         layout.addWidget(info)
-        btn = QPushButton("Close")
+        btn = QPushButton(self.tr("Close"))
         btn.clicked.connect(dlg.accept)
         layout.addWidget(btn)
-        viewer.show_spectrum(spec, title=f"{name}  (G source {source_id})")
+        viewer.show_spectrum(spec, title=self.tr("{0}  (G source {1})").format(name, source_id))
         dlg.exec()
 
     def toggle_autostretch(self):
@@ -5434,14 +5438,14 @@ class WIMIDialog(QDialog):
             stretched_image = stretch_color_image(self.image_data, target_median=0.25, linked=False, normalize=True, no_black_clip=True)
         
         # If the AutoStretch is toggled off (using the same button), restore the original image
-        if self.auto_stretch_button.text() == "AutoStretch":
+        if self.auto_stretch_button.text() == self.tr("AutoStretch"):
             # Store the stretched image and update the button text to indicate it's on
             self.stretched_image = stretched_image
-            self.auto_stretch_button.setText("Turn Off AutoStretch")
+            self.auto_stretch_button.setText(self.tr("Turn Off AutoStretch"))
         else:
             # Revert to the original image and update the button text to indicate it's off
             stretched_image = self.original_image
-            self.auto_stretch_button.setText("AutoStretch")
+            self.auto_stretch_button.setText(self.tr("AutoStretch"))
         
 
         stretched_image = (stretched_image * 255).astype(np.uint8)
@@ -5498,7 +5502,7 @@ class WIMIDialog(QDialog):
         self.update_green_box()
 
         # Optionally, you can also update any other parts of the UI after stretching the image
-        print(f"AutoStretch {'applied to' if self.auto_stretch_button.text() == 'Turn Off AutoStretch' else 'removed from'} the image.")
+        print(f"AutoStretch {'applied to' if self.auto_stretch_button.text() == self.tr('Turn Off AutoStretch') else 'removed from'} the image.")
 
 
     def zoom_to_object(self, item):
@@ -5542,18 +5546,18 @@ class WIMIDialog(QDialog):
         """Toggle the visibility of the annotation tools section."""
         is_visible = self.annotation_tools_section.isVisible()
         self.annotation_tools_section.setVisible(not is_visible)
-        self.show_annotations_button.setText("Hide Annotation Tools" if not is_visible else "Show Annotation Tools")
+        self.show_annotations_button.setText(self.tr("Hide Annotation Tools") if not is_visible else self.tr("Show Annotation Tools"))
 
     def save_plate_solved_fits(self):
         bit_depth, ok = QInputDialog.getItem(
-            self, "Select Bit Depth", "Choose the bit depth for the FITS file:",
+            self, self.tr("Select Bit Depth"), self.tr("Choose the bit depth for the FITS file:"),
             ["8-bit", "16-bit", "32-bit"], 0, False
         )
         if not ok: return
-        out_path, _ = QFileDialog.getSaveFileName(self, "Save Plate Solved FITS", "", "FITS Files (*.fits *.fit)")
+        out_path, _ = QFileDialog.getSaveFileName(self, self.tr("Save Plate Solved FITS"), "", "FITS Files (*.fits *.fit)")
         if not out_path: return
         if self.wcs is None:
-            QMessageBox.warning(self, "WCS Data Missing", "WCS header data is not available.")
+            QMessageBox.warning(self, self.tr("WCS Data Missing"), self.tr("WCS header data is not available."))
             return
 
         img = self.image_data
@@ -5606,22 +5610,23 @@ class WIMIDialog(QDialog):
         hdr = (self.original_header.copy() if getattr(self, 'original_header', None) else fits.Header())
         try:
             hdr.update(self.wcs.to_header(relax=True))
+            _wcs_pc_to_cd(hdr)                # PixInsight reads CD, never PC
         except Exception:
             pass  # still save whatever we have
 
         # Let astropy infer NAXIS/BITPIX from data; don’t set them manually
         try:
             fits.writeto(out_path, arr, header=hdr, overwrite=True)
-            QMessageBox.information(self, "File Saved", f"FITS file saved as {out_path}")
+            QMessageBox.information(self, self.tr("File Saved"), self.tr("FITS file saved as {0}").format(out_path))
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save FITS file: {e}")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to save FITS file: {0}").format(e))
 
     def push_annotated_to_view(self):
         if not self.main_image:
-            QMessageBox.warning(self, "No Image", "No image loaded.")
+            QMessageBox.warning(self, self.tr("No Image"), self.tr("No image loaded."))
             return
         if self._doc_manager is None:
-            QMessageBox.warning(self, "No Document Manager", "Cannot push to view without a document manager.")
+            QMessageBox.warning(self, self.tr("No Document Manager"), self.tr("Cannot push to view without a document manager."))
             return
 
         # Render full scene (same as save_annotated_image full mode)
@@ -5665,18 +5670,18 @@ class WIMIDialog(QDialog):
             else:
                 self._doc_manager.create_document(image=arr, name=title)
         except Exception as e:
-            QMessageBox.critical(self, "Push Failed", f"Failed to push to view:\n{e}")
+            QMessageBox.critical(self, self.tr("Push Failed"), self.tr("Failed to push to view:\n{0}").format(e))
 
     def save_annotated_image(self):
         """Save the annotated image as a full or cropped view, excluding the search circle."""
         # Create a custom message box
         msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Save Annotated Image")
-        msg_box.setText("Do you want to save the Full Image or Cropped Only?")
+        msg_box.setWindowTitle(self.tr("Save Annotated Image"))
+        msg_box.setText(self.tr("Do you want to save the Full Image or Cropped Only?"))
         
         # Add custom buttons
-        full_image_button = msg_box.addButton("Save Full", QMessageBox.ButtonRole.AcceptRole)
-        cropped_image_button = msg_box.addButton("Save Cropped", QMessageBox.ButtonRole.DestructiveRole)
+        full_image_button = msg_box.addButton(self.tr("Save Full"), QMessageBox.ButtonRole.AcceptRole)
+        cropped_image_button = msg_box.addButton(self.tr("Save Cropped"), QMessageBox.ButtonRole.DestructiveRole)
         msg_box.addButton(QMessageBox.StandardButton.Cancel)
 
         # Show the message box and get the user's response
@@ -5693,7 +5698,7 @@ class WIMIDialog(QDialog):
         # Open a file dialog to select the file name and format
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Annotated Image",
+            self.tr("Save Annotated Image"),
             "",
             "JPEG (*.jpg *.jpeg);;PNG (*.png);;TIFF (*.tiff *.tif)"
         )
@@ -5736,11 +5741,11 @@ class WIMIDialog(QDialog):
         # Save the QPixmap as an image file in the selected format
         try:
             if pixmap.save(file_path, file_path.split('.')[-1].upper()):
-                QMessageBox.information(self, "Save Successful", f"Annotated image saved as {file_path}")
+                QMessageBox.information(self, self.tr("Save Successful"), self.tr("Annotated image saved as {0}").format(file_path))
             else:
                 raise Exception("Failed to save image due to format or file path issues.")
         except Exception as e:
-            QMessageBox.critical(self, "Save Failed", f"An error occurred while saving the image: {str(e)}")
+            QMessageBox.critical(self, self.tr("Save Failed"), self.tr("An error occurred while saving the image: {0}").format(str(e)))
 
 
     def save_collage_of_objects(self):
@@ -5750,7 +5755,7 @@ class WIMIDialog(QDialog):
 
         # Create a custom dialog to select information to display
         dialog = QDialog(self)
-        dialog.setWindowTitle("Select Information to Display")
+        dialog.setWindowTitle(self.tr("Select Information to Display"))
         layout = QVBoxLayout(dialog)
         
         # Add checkboxes for each option
@@ -5784,7 +5789,7 @@ class WIMIDialog(QDialog):
         number_of_objects = len(self.results)
 
         if number_of_objects == 0:
-            QMessageBox.warning(self, "No Objects", "No objects available to create a collage.")
+            QMessageBox.warning(self, self.tr("No Objects"), self.tr("No objects available to create a collage."))
             return
 
         # Determine grid size for the collage
@@ -5877,12 +5882,12 @@ class WIMIDialog(QDialog):
 
         # Save the collage
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Collage of Objects", "", "JPEG (*.jpg *.jpeg);;PNG (*.png);;TIFF (*.tiff *.tif)"
+            self, self.tr("Save Collage of Objects"), "", "JPEG (*.jpg *.jpeg);;PNG (*.png);;TIFF (*.tiff *.tif)"
         )
 
         if file_path:
             collage_image.save(file_path)
-            QMessageBox.information(self, "Save Successful", f"Collage saved as {file_path}")
+            QMessageBox.information(self, self.tr("Save Successful"), self.tr("Collage saved as {0}").format(file_path))
 
 
         # Restore the search circle in the custom graphics view
@@ -5911,10 +5916,10 @@ class WIMIDialog(QDialog):
 
         # ─── 1) Sanity checks ─────────────────────────────────────────
         if not self.results or self.image_data is None:
-            QMessageBox.warning(self, "Data Error", "No image or results available.")
+            QMessageBox.warning(self, self.tr("Data Error"), self.tr("No image or results available."))
             return
         if self.wcs is None:
-            QMessageBox.warning(self, "WCS Missing", "WCS data is required to generate the 3D plot.")
+            QMessageBox.warning(self, self.tr("WCS Missing"), self.tr("WCS data is required to generate the 3D plot."))
             return
 
         # ─── 2) Get user settings ────────────────────────────────────
@@ -6037,19 +6042,19 @@ class WIMIDialog(QDialog):
                 continue
 
         if not rows:
-            QMessageBox.warning(self, "No Objects", "No valid distance objects to plot.")
+            QMessageBox.warning(self, self.tr("No Objects"), self.tr("No valid distance objects to plot."))
             return
 
         # ─── 6) Filter rows by finite z (and optional range) ──────────
         rows = [r for r in rows if math.isfinite(r["z"])]
         if not rows:
-            QMessageBox.warning(self, "No Objects", "All distance values are invalid.")
+            QMessageBox.warning(self, self.tr("No Objects"), self.tr("All distance values are invalid."))
             return
 
         if z_option == "Custom":
             rows = [r for r in rows if z_min <= r["z"] <= z_max]
             if not rows:
-                QMessageBox.warning(self, "No Objects", "No objects fall within the custom Z range.")
+                QMessageBox.warning(self, self.tr("No Objects"), self.tr("No objects fall within the custom Z range."))
                 return
             plane_z = z_min
             z_range = (z_min, z_max)
@@ -6142,13 +6147,13 @@ class WIMIDialog(QDialog):
             aspectmode="manual",
             aspectratio=dict(x=1, y=1, z=z_height),
             zaxis=dict(
-                title=("log10(Distance in ly)" if z_scale == "Logarithmic" else "Distance (ly)"),
+                title=(self.tr("log10(Distance in ly)") if z_scale == "Logarithmic" else self.tr("Distance (ly)")),
                 tickformat="~s",
                 **({"range": list(z_range)} if z_range else {}),
                 **({"autorange": "reversed"} if reverse_z else {})
             )
         )
-        fig.update_layout(title="3D Distance Model", autosize=True, scene=scene,
+        fig.update_layout(title=self.tr("3D Distance Model"), autosize=True, scene=scene,
                         margin=dict(l=0, r=0, b=0, t=40))
 
         # ─── 12) Build & inject HTML ───────────────────────────────────
@@ -6157,7 +6162,7 @@ class WIMIDialog(QDialog):
         sidebar = (
             '<div style="padding:10px;font-family:sans-serif;'
             'margin-top:20px;border-top:1px solid #ccc;">'
-            '<h3>Objects</h3><ul>' + items + '</ul></div>'
+            '<h3>' + self.tr("Objects") + '</h3><ul>' + items + '</ul></div>'
         )
         js = """
         <script>
@@ -6172,7 +6177,7 @@ class WIMIDialog(QDialog):
 
         # Save & preview
         default = os.path.expanduser("~/3d_distance_model.html")
-        fn, _ = QFileDialog.getSaveFileName(self, "Save 3D Plot As", default, "HTML Files (*.html)")
+        fn, _ = QFileDialog.getSaveFileName(self, self.tr("Save 3D Plot As"), default, "HTML Files (*.html)")
         if fn:
             if not fn.lower().endswith(".html"):
                 fn += ".html"
@@ -6241,9 +6246,9 @@ class WIMIDialog(QDialog):
                 lib = None
             if lib is None:
                 QMessageBox.information(
-                    self, "Gaia Library",
-                    "No Gaia XP library installed — falling back to SIMBAD catalog photometry.\n"
-                    "Install bands via Settings → Gaia XP Spectral Library for best results.")
+                    self, self.tr("Gaia Library"),
+                    self.tr("No Gaia XP library installed — falling back to SIMBAD catalog photometry.\n"
+                    "Install bands via Settings → Gaia XP Spectral Library for best results."))
     
         # ── Build stellar data ────────────────────────────────────────────────
         # We'll build from self.results (all objects from SIMBAD) so we can
@@ -6443,9 +6448,9 @@ class WIMIDialog(QDialog):
             QApplication.restoreOverrideCursor()
     
         if not B_list:
-            QMessageBox.warning(self, "Insufficient Data",
-                "No stars with usable photometry found.\n"
-                "Run a SIMBAD query first, and install the Gaia XP library for best results.")
+            QMessageBox.warning(self, self.tr("Insufficient Data"),
+                self.tr("No stars with usable photometry found.\n"
+                "Run a SIMBAD query first, and install the Gaia XP library for best results."))
             return
     
         bv_arr   = np.array(bv_list, dtype=float)
@@ -6532,8 +6537,8 @@ class WIMIDialog(QDialog):
                 name=name_legend,
             ))
     
-        _subset(norm_idx, "circle",           f"Stars ({len(norm_idx)})")
-        _subset(out_idx,  "triangle-up-open", f"Outliers ({len(out_idx)})", size_mult=1.4)
+        _subset(norm_idx, "circle",           self.tr("Stars ({0})").format(len(norm_idx)))
+        _subset(out_idx,  "triangle-up-open", self.tr("Outliers ({0})").format(len(out_idx)), size_mult=1.4)
     
         fig = go.Figure(traces)
     
@@ -6557,7 +6562,7 @@ class WIMIDialog(QDialog):
             fig.add_trace(go.Scatter(
                 x=[0.66], y=[4.8], mode="markers+text",
                 marker=dict(color="gold", size=sun_sz, symbol="star"),
-                name="Sun", hoverinfo="skip",
+                name=self.tr("Sun"), hoverinfo="skip",
             ))
     
         # ── Spectral class color legend (sidebar annotation) ─────────────────
@@ -6570,8 +6575,8 @@ class WIMIDialog(QDialog):
                 for cls, col in _CLASS_COLORS.items() if cls != "?"
             )
             class_legend_html = (
-                f'<div style="margin-top:8px;font-size:12px;color:#ccc;">'
-                f'Spectral class:&nbsp;{swatches}</div>'
+                '<div style="margin-top:8px;font-size:12px;color:#ccc;">'
+                + self.tr("Spectral class:") + f'&nbsp;{swatches}</div>'
             )
     
         # ── Axis ticks ───────────────────────────────────────────────────────
@@ -6590,13 +6595,13 @@ class WIMIDialog(QDialog):
         tick_lbl = [f"{x:.2f}<br>{int(t):,} K" for x, t in zip(bv_ticks, t_ticks)]
     
         fig.update_xaxes(
-            title_text="B−V color (mag) ↔ Teff",
+            title_text=self.tr("B−V color (mag) ↔ Teff"),
             tickvals=bv_ticks, ticktext=tick_lbl,
             tickfont_color="white", title_font=dict(color="white"),
             gridcolor="gray", zerolinecolor="gray", range=[x0, x1],
         )
         fig.update_yaxes(
-            title_text="Absolute V magnitude (mag)",
+            title_text=self.tr("Absolute V magnitude (mag)"),
             range=[y1, y0], autorange=False,
             tickfont_color="white", title_font=dict(color="white"),
             gridcolor="gray", zerolinecolor="gray",
@@ -6623,10 +6628,11 @@ class WIMIDialog(QDialog):
         fig.update_layout(
             title=dict(
                 text=(
-                    f"Hertzsprung–Russell Diagram  ·  {n_total} stars  "
-                    f"({'Gaia XP synthetic + catalog' if n_xp > 0 else 'catalog photometry'})"
-                    f"  ·  {n_xp} XP / {n_total-n_xp} catalog"
-                    + (f"  ·  {len(rejected_color)} rejected (unphysical colour)"
+                    self.tr("Hertzsprung–Russell Diagram  ·  {0} stars  ({1})  ·  {2} XP / {3} catalog").format(
+                        n_total,
+                        self.tr("Gaia XP synthetic + catalog") if n_xp > 0 else self.tr("catalog photometry"),
+                        n_xp, n_total-n_xp)
+                    + (self.tr("  ·  {0} rejected (unphysical colour)").format(len(rejected_color))
                        if rejected_color else "")
                 ),
                 font_color="white",
@@ -6664,20 +6670,22 @@ class WIMIDialog(QDialog):
             rejected_html = (
                 '<div style="margin-top:14px;padding-top:10px;'
                 'border-top:1px dashed #663333;">'
-                f'<h3 style="color:#ff9a9a;">Unphysical colour '
-                f'({len(rejected_color)})</h3>'
+                '<h3 style="color:#ff9a9a;">'
+                + self.tr("Unphysical colour ({0})").format(len(rejected_color))
+                + '</h3>'
                 '<div style="font-size:11px;color:#aaa;margin-bottom:6px;">'
-                'Dropped from the diagram: colour bluer than any real star '
-                '(past the B−V ≈ −0.67 blackbody limit). Usually bad photometry, '
-                'a blend, reddening error, or a peculiar atmosphere — inspect the '
-                'source before trusting it.</div>'
+                + self.tr('Dropped from the diagram: colour bluer than any real star '
+                          '(past the B−V ≈ −0.67 blackbody limit). Usually bad photometry, '
+                          'a blend, reddening error, or a peculiar atmosphere — inspect the '
+                          'source before trusting it.')
+                + '</div>'
                 '<ul>' + rej_items + '</ul></div>'
             )
 
         sidebar = (
             '<div style="padding:10px;font-family:sans-serif;'
             'border-top:1px solid #444;background:black;color:white;">'
-            f'<h3>Stars ({n_total})</h3>'
+            '<h3>' + self.tr("Stars ({0})").format(n_total) + '</h3>'
             f'{class_legend_html}'
             '<ul>' + items + '</ul>'
             + rejected_html +
@@ -6697,7 +6705,7 @@ class WIMIDialog(QDialog):
         html = html.replace("</body>", sidebar + js + "</body>")
     
         default = os.path.join(os.path.expanduser("~"), "hr_diagram.html")
-        fn, _ = QFileDialog.getSaveFileName(self, "Save H-R Diagram As",
+        fn, _ = QFileDialog.getSaveFileName(self, self.tr("Save H-R Diagram As"),
                                             default, "HTML Files (*.html)")
         if fn:
             if not fn.lower().endswith(".html"):
@@ -6785,7 +6793,7 @@ class WIMIDialog(QDialog):
         if not pts:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "3D CMD",
-                "No stars with valid parallax distances available.")
+                self.tr("No stars with valid parallax distances available."))
             return
 
         # Apply distance range filter
@@ -6794,10 +6802,10 @@ class WIMIDialog(QDialog):
         if not pts:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "3D CMD",
-                "No stars within the specified distance range.")
+                self.tr("No stars within the specified distance range."))
             return
 
-        dist_unit_label = "Distance (ly)" if use_ly else "Distance (pc)"
+        dist_unit_label = self.tr("Distance (ly)") if use_ly else self.tr("Distance (pc)")
 
         xs     = [p["bv"]   for p in pts]
         ys     = [p["mv"]   for p in pts]
@@ -6826,7 +6834,7 @@ class WIMIDialog(QDialog):
             hovertext=hovers,
             hoverinfo="text",
             customdata=custom,
-            name=f"Stars ({len(pts)})",
+            name=self.tr("Stars ({0})").format(len(pts)),
         )
 
         # Distance iso-planes — faint reference planes at round distances
@@ -6880,13 +6888,13 @@ class WIMIDialog(QDialog):
 
         fig.update_layout(
             title=dict(
-                text=f"3D Color-Magnitude Diagram  ·  {len(pts)} stars",
+                text=self.tr("3D Color-Magnitude Diagram  ·  {0} stars").format(len(pts)),
                 font=dict(color="white"),
             ),
             paper_bgcolor="rgb(5,5,15)",
             scene=dict(
                 xaxis=dict(
-                    title="B-V color index",
+                    title=self.tr("B-V color index"),
                     gridcolor="rgba(255,255,255,0.15)",
                     showbackground=True,
                     backgroundcolor="rgb(5,5,15)",
@@ -6894,7 +6902,7 @@ class WIMIDialog(QDialog):
                     title_font=dict(color="white"),
                 ),
                 yaxis=dict(
-                    title="Absolute V magnitude",
+                    title=self.tr("Absolute V magnitude"),
                     autorange="reversed",
                     gridcolor="rgba(255,255,255,0.15)",
                     showbackground=True,
@@ -6935,7 +6943,7 @@ class WIMIDialog(QDialog):
         """Perform a Simbad search for the defined region and filter by selected object types."""
         selected_types = self.get_selected_object_types()
         if not selected_types:
-            QMessageBox.warning(self, "No Object Types Selected", "Please select at least one object type.")
+            QMessageBox.warning(self, self.tr("No Object Types Selected"), self.tr("Please select at least one object type."))
             return
 
         # Calculate the radius in degrees for the defined region (circle radius)
@@ -6949,7 +6957,7 @@ class WIMIDialog(QDialog):
         """Search the entire image using Simbad with selected object types."""
         selected_types = self.get_selected_object_types()  # Get selected types from the advanced search panel
         if not selected_types:
-            QMessageBox.warning(self, "No Object Types Selected", "Please select at least one object type.")
+            QMessageBox.warning(self, self.tr("No Object Types Selected"), self.tr("Please select at least one object type."))
             return
 
         # Calculate radius as the distance from the image center to a corner
@@ -7035,7 +7043,7 @@ class WIMIDialog(QDialog):
         types = self.get_selected_object_types()
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Custom Type List",
+            self.tr("Save Custom Type List"),
             "",
             "JSON Files (*.json)"
         )
@@ -7046,9 +7054,9 @@ class WIMIDialog(QDialog):
         try:
             with open(path, "w") as f:
                 json.dump(types, f, indent=2)
-            self.status_label.setText(f"👍 Saved list to {os.path.basename(path)}")
+            self.status_label.setText(self.tr("👍 Saved list to {0}").format(os.path.basename(path)))
         except Exception as e:
-            QMessageBox.critical(self, "Save Failed", str(e))
+            QMessageBox.critical(self, self.tr("Save Failed"), str(e))
 
 
     def load_custom_list(self):
@@ -7057,7 +7065,7 @@ class WIMIDialog(QDialog):
         """
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Load Custom Type List",
+            self.tr("Load Custom Type List"),
             "",
             "JSON Files (*.json)"
         )
@@ -7068,7 +7076,7 @@ class WIMIDialog(QDialog):
             with open(path, "r") as f:
                 types = set(json.load(f))
         except Exception as e:
-            QMessageBox.critical(self, "Load Failed", str(e))
+            QMessageBox.critical(self, self.tr("Load Failed"), str(e))
             return
 
         # block signals so we don't recurse
@@ -7082,7 +7090,7 @@ class WIMIDialog(QDialog):
 
         # now update parents
         self._update_parent_states()
-        self.status_label.setText(f"📂 Loaded list from {os.path.basename(path)}")
+        self.status_label.setText(self.tr("📂 Loaded list from {0}").format(os.path.basename(path)))
 
     def toggle_advanced_search(self):
         """Toggle the visibility of the advanced search panel."""
@@ -7099,7 +7107,7 @@ class WIMIDialog(QDialog):
         matched by name.
         """
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save CSV", "", "CSV Files (*.csv)"
+            self, self.tr("Save CSV"), "", "CSV Files (*.csv)"
         )
         if not path:
             return
@@ -7108,7 +7116,7 @@ class WIMIDialog(QDialog):
 
         tree = self.results_tree
         if tree.topLevelItemCount() == 0:
-            QMessageBox.information(self, "No Data", "There are no results to save.")
+            QMessageBox.information(self, self.tr("No Data"), self.tr("There are no results to save."))
             return
 
         # --- 1) Base headers from the tree itself (old behaviour) ---
@@ -7212,8 +7220,8 @@ class WIMIDialog(QDialog):
 
                 writer.writerow(row_data + extra_row)
 
-        QMessageBox.information(self, "CSV Saved",
-                                f"Results successfully saved to {path}")
+        QMessageBox.information(self, self.tr("CSV Saved"),
+                                self.tr("Results successfully saved to {0}").format(path))
 
 
       
@@ -7221,7 +7229,7 @@ class WIMIDialog(QDialog):
     def filter_visible_objects(self):
         """Filter objects based on visibility threshold."""
         if not self.main_image:  # Ensure there's an image loaded
-            QMessageBox.warning(self, "No Image", "Please load an image first.")
+            QMessageBox.warning(self, self.tr("No Image"), self.tr("Please load an image first."))
             return
 
         n = 0.2  # Threshold multiplier, adjust as needed
@@ -7324,7 +7332,7 @@ class WIMIDialog(QDialog):
         self.main_preview.results = []   # Clear results from the main preview
         self.main_preview.selected_object = None
         self.main_preview.draw_query_results()  # Redraw the main image without markers
-        self.status_label.setText("Results cleared.")
+        self.status_label.setText(self.tr("Results cleared."))
 
     def on_tree_current_item_changed(self, current, previous):
         """Keep arrow-key navigation in sync with the main preview, same as a click."""
@@ -7447,7 +7455,7 @@ class WIMIDialog(QDialog):
         clipboard = QApplication.instance().clipboard()
         clipboard.setText(clipboard_text)
         
-        QMessageBox.information(self, "Copied", "Current RA/Dec copied to clipboard!")
+        QMessageBox.information(self, self.tr("Copied"), self.tr("Current RA/Dec copied to clipboard!"))
     
     def _load_from_view(self, doc):
         """
@@ -7459,7 +7467,7 @@ class WIMIDialog(QDialog):
             3) XISF metadata (image_meta/file_meta) converted into a FITS-like header
         """
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "Load from View", "That view has no image data.")
+            QMessageBox.information(self, self.tr("Load from View"), self.tr("That view has no image data."))
             return
 
         self._loaded_doc = doc 
@@ -7501,10 +7509,10 @@ class WIMIDialog(QDialog):
                 header = candidate
 
         if header is None:
-            QMessageBox.information(self, "Blind Solve", "No WCS found.\nPerforming blind solve…")
+            QMessageBox.information(self, self.tr("Blind Solve"), self.tr("No WCS found.\nPerforming blind solve…"))
             if not self._ensure_wcs_on_doc(doc):
                 self.wcs = None
-                self.status_label.setText("Status: Loaded view (no WCS) — auto-solve failed.")
+                self.status_label.setText(self.tr("Status: Loaded view (no WCS) — auto-solve failed."))
                 return
             # refresh from doc after solving
             meta = dict(getattr(doc, "metadata", {}) or {})
@@ -7515,14 +7523,14 @@ class WIMIDialog(QDialog):
             try:
                 header = self._sanitize_wcs_header(header)
                 self.initialize_wcs_from_header(header)
-                self.status_label.setText("Status: Loaded view with astrometric solution.")
+                self.status_label.setText(self.tr("Status: Loaded view with astrometric solution."))
                 QTimer.singleShot(0, self._fetch_atlas_catalog)
             except Exception as e:
                 self.wcs = None
-                self.status_label.setText(f"Status: Loaded view (no valid WCS) — {e}")
+                self.status_label.setText(self.tr("Status: Loaded view (no valid WCS) — {0}").format(e))
         else:
             self.wcs = None
-            self.status_label.setText("Status: Loaded view (no astrometric solution found).")
+            self.status_label.setText(self.tr("Status: Loaded view (no astrometric solution found)."))
 
     def _set_image_from_array(self, arr: np.ndarray):
         self.image_data = arr
@@ -7571,7 +7579,7 @@ class WIMIDialog(QDialog):
     def open_image(self):
         """Slot for the “Load...” button — always pops up the file dialog."""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open Image", "", 
+            self, self.tr("Open Image"), "", 
             "Images (*.png *.jpg *.jpeg *.tif *.tiff *.fit *.fits *.xisf)"
         )
         if path:
@@ -7771,7 +7779,7 @@ class WIMIDialog(QDialog):
         img_array, original_header, bit_depth, is_mono = load_image(path)
         self.image_path = path
         if img_array is None:
-            QMessageBox.warning(self, "Open Image", "Could not load the selected file.")
+            QMessageBox.warning(self, self.tr("Open Image"), self.tr("Could not load the selected file."))
             return
 
         # persist basics
@@ -7809,24 +7817,24 @@ class WIMIDialog(QDialog):
             try:
                 header = self._sanitize_wcs_header(header)
                 self.initialize_wcs_from_header(header)
-                self.status_label.setText("Status: Loaded image with astrometric solution.")
+                self.status_label.setText(self.tr("Status: Loaded image with astrometric solution."))
                 return
             except Exception as e:
                 # embedded header present but unusable → fall through to auto-solve
                 self.wcs = None
-                self.status_label.setText(f"Status: Embedded WCS invalid — {e}. Attempting auto-solve…")
+                self.status_label.setText(self.tr("Status: Embedded WCS invalid — {0}. Attempting auto-solve…").format(e))
                 QApplication.processEvents()
 
         # 4) no valid WCS → follow the same auto-solve path as _load_from_view
         #    (ASTAP first; if that fails, Astrometry.net)
-        self.status_label.setText("Status: No WCS found. Performing auto-solve…")
-        QMessageBox.information(self, "Auto-Solve", "No astrometric solution found.\nPerforming auto-solve…")
+        self.status_label.setText(self.tr("Status: No WCS found. Performing auto-solve…"))
+        QMessageBox.information(self, self.tr("Auto-Solve"), self.tr("No astrometric solution found.\nPerforming auto-solve…"))
         QApplication.processEvents()
 
 
         doc = self._doc_for_solver()  # returns the view doc if present, else adapter around image_data
         if doc is None:
-            QMessageBox.warning(self, "Auto-Solve", "No image loaded.")
+            QMessageBox.warning(self, self.tr("Auto-Solve"), self.tr("No image loaded."))
             return
 
         mw = _find_main_window(self) or self.parent()
@@ -7847,13 +7855,13 @@ class WIMIDialog(QDialog):
                 if hdr is None:
                     raise RuntimeError("Solver returned no header.")
                 self.initialize_wcs_from_header(hdr)
-                self.status_label.setText("Status: Blind solve succeeded.")
+                self.status_label.setText(self.tr("Status: Blind solve succeeded."))
             except Exception as e:
-                self.status_label.setText(f"Status: WCS init failed — {e}")
-                QMessageBox.warning(self, "Apply WCS", f"Solve succeeded but WCS init failed: {e}")
+                self.status_label.setText(self.tr("Status: WCS init failed — {0}").format(e))
+                QMessageBox.warning(self, self.tr("Apply WCS"), self.tr("Solve succeeded but WCS init failed: {0}").format(e))
         else:
-            self.status_label.setText(f"Status: Blind solve failed — {res}")
-            QMessageBox.critical(self, "Auto-Solve Failed", str(res))
+            self.status_label.setText(self.tr("Status: Blind solve failed — {0}").format(res))
+            QMessageBox.critical(self, self.tr("Auto-Solve Failed"), str(res))
 
     def extract_xisf_metadata(self, xisf_path):
         """
@@ -7936,13 +7944,13 @@ class WIMIDialog(QDialog):
                 try:
                     self.orientation = float(self.orientation)
                     print(f"Orientation: {self.orientation:.2f}°")
-                    self.orientation_label.setText(f"Orientation: {self.orientation:.2f}°")
+                    self.orientation_label.setText(self.tr("Orientation: {0:.2f}°").format(self.orientation))
                 except (ValueError, TypeError):
                     print("Final conversion failed. Orientation is not a float.")
-                    self.orientation_label.setText("Orientation: N/A")
+                    self.orientation_label.setText(self.tr("Orientation: N/A"))
             else:
                 print("Orientation is None.")
-                self.orientation_label.setText("Orientation: N/A")
+                self.orientation_label.setText(self.tr("Orientation: N/A"))
 
             print(f"WCS data loaded: RA={self.center_ra}, Dec={self.center_dec}, "
                   f"Pixel Scale={self.pixscale} arcsec/px")
@@ -8091,16 +8099,16 @@ class WIMIDialog(QDialog):
                 if self.orientation is not None:
                     try:
                         self.orientation = float(self.orientation)  # Final safeguard conversion
-                        self.orientation_label.setText(f"Orientation: {self.orientation:.2f}°")
+                        self.orientation_label.setText(self.tr("Orientation: {0:.2f}°").format(self.orientation))
                     except (ValueError, TypeError):
                         print(f"Failed to format orientation: {self.orientation}")
-                        self.orientation_label.setText("Orientation: N/A")
+                        self.orientation_label.setText(self.tr("Orientation: N/A"))
                 else:
-                    self.orientation_label.setText("Orientation: N/A")
+                    self.orientation_label.setText(self.tr("Orientation: N/A"))
         else:
-            self.ra_label.setText("RA: N/A")
-            self.dec_label.setText("Dec: N/A")
-            self.orientation_label.setText("Orientation: N/A")
+            self.ra_label.setText(self.tr("RA: N/A"))
+            self.dec_label.setText(self.tr("Dec: N/A"))
+            self.orientation_label.setText(self.tr("Orientation: N/A"))
 
 
 
@@ -8159,12 +8167,12 @@ class WIMIDialog(QDialog):
             return self.minor_db_path
 
         if not path:
-            self.minor_db_label.setText("Database: not downloaded")
+            self.minor_db_label.setText(self.tr("Database: not downloaded"))
             return self.minor_db_path
 
         p = Path(path)
         if not p.is_file():
-            self.minor_db_label.setText("Database: not downloaded")
+            self.minor_db_label.setText(self.tr("Database: not downloaded"))
             return self.minor_db_path
 
         # Try to load local manifest to show version + counts
@@ -8175,10 +8183,10 @@ class WIMIDialog(QDialog):
             ast = f"{manifest.counts_asteroids:,}"
             com = f"{manifest.counts_comets:,}"
             self.minor_db_label.setText(
-                f"Database: v{manifest.version} — {ast} asteroids, {com} comets"
+                self.tr("Database: v{0} — {1} asteroids, {2} comets").format(manifest.version, ast, com)
             )
         else:
-            self.minor_db_label.setText(f"Database: {p.name}")
+            self.minor_db_label.setText(self.tr("Database: {0}").format(p.name))
 
         return self.minor_db_path
 
@@ -8214,7 +8222,7 @@ class WIMIDialog(QDialog):
         data_dir = self._minorbody_data_dir()
 
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        self.status_label.setText("Status: Installing minor-body catalog…")
+        self.status_label.setText(self.tr("Status: Installing minor-body catalog…"))
         try:
             db_path, manifest = mbc.install_local_db_file(
                 src_path=Path(src_path),
@@ -8222,7 +8230,7 @@ class WIMIDialog(QDialog):
             )
         except Exception as exc:
             QApplication.restoreOverrideCursor()
-            self.status_label.setText("Status: Minor-body catalog install failed.")
+            self.status_label.setText(self.tr("Status: Minor-body catalog install failed."))
             QMessageBox.critical(
                 self,
                 self.tr("Minor-Body Catalog Error"),
@@ -8236,7 +8244,7 @@ class WIMIDialog(QDialog):
 
         ast = f"{manifest.counts_asteroids:,}"
         com = f"{manifest.counts_comets:,}"
-        self.status_label.setText("Status: Minor-body catalog ready.")
+        self.status_label.setText(self.tr("Status: Minor-body catalog ready."))
         QMessageBox.information(
             self,
             self.tr("Minor-Body Catalog"),
@@ -8278,18 +8286,18 @@ class WIMIDialog(QDialog):
         if hasattr(self, "btn_minor_download"):
             self.btn_minor_download.setEnabled(False)
 
-        self.status_label.setText("Status: Downloading minor-body catalog…")
+        self.status_label.setText(self.tr("Status: Downloading minor-body catalog…"))
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
         dlg = QProgressDialog(
-            "Downloading minor-body catalog…\n"
-            "This may take a minute ~350MB file.",
+            self.tr("Downloading minor-body catalog…\n"
+            "This may take a minute (~350 MB file)."),
             "",
             0,
             0,
             self,
         )
-        dlg.setWindowTitle("Minor-Body Catalog")
+        dlg.setWindowTitle(self.tr("Minor-Body Catalog"))
         dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
         dlg.setAutoClose(False)
         dlg.setAutoReset(False)
@@ -8340,12 +8348,12 @@ class WIMIDialog(QDialog):
             self.btn_minor_download.setEnabled(True)
 
         if not result["ok"]:
-            self.status_label.setText("Status: Minor-body catalog download failed.")
-            msg = result["error"] or "Unknown error."
+            self.status_label.setText(self.tr("Status: Minor-body catalog download failed."))
+            msg = result["error"] or self.tr("Unknown error.")
             QMessageBox.critical(
                 self,
-                "Minor-Body Catalog Error",
-                f"Failed to download minor-body catalog:\n{msg}",
+                self.tr("Minor-Body Catalog Error"),
+                self.tr("Failed to download minor-body catalog:\n{0}").format(msg),
             )
             return
 
@@ -8355,14 +8363,14 @@ class WIMIDialog(QDialog):
         ast = f"{result['ast']:,}"
         com = f"{result['com']:,}"
 
-        self.status_label.setText("Status: Minor-body catalog ready.")
+        self.status_label.setText(self.tr("Status: Minor-body catalog ready."))
         QMessageBox.information(
             self,
-            "Minor-Body Catalog",
-            f"Minor-body catalog downloaded/updated successfully.\n"
-            f"Version: {result['version']}\n"
-            f"Asteroids: {ast}\n"
-            f"Comets: {com}",
+            self.tr("Minor-Body Catalog"),
+            self.tr("Minor-body catalog downloaded/updated successfully.\n"
+            "Version: {0}\n"
+            "Asteroids: {1}\n"
+            "Comets: {2}").format(result['version'], ast, com),
         )
 
     def _ensure_minor_planet_db(self) -> str | None:
@@ -8387,9 +8395,9 @@ class WIMIDialog(QDialog):
         # 2) Ask user to download / update
         reply = QMessageBox.question(
             self,
-            "Minor-Body Catalog",
-            "The minor-body catalog is not available.\n"
-            "Do you want to download or update it now?",
+            self.tr("Minor-Body Catalog"),
+            self.tr("The minor-body catalog is not available.\n"
+            "Do you want to download or update it now?"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -8404,8 +8412,8 @@ class WIMIDialog(QDialog):
 
         QMessageBox.critical(
             self,
-            "Minor-Body Catalog",
-            "Failed to download or locate the minor-body database.",
+            self.tr("Minor-Body Catalog"),
+            self.tr("Failed to download or locate the minor-body database."),
         )
         return None
 
@@ -8667,16 +8675,16 @@ class WIMIDialog(QDialog):
         import pytz
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Observation Date & Time")
+        dialog.setWindowTitle(self.tr("Observation Date & Time"))
 
         layout = QFormLayout(dialog)
-        lbl = QLabel(
+        lbl = QLabel(self.tr(
             "This image's metadata has no observation date/time "
             "(no DATE-OBS / MJD-OBS / JD).\n"
             "Enter the midpoint of the exposure. Astro capture software "
             "writes DATE-OBS in UTC, so leave the timezone on UTC unless "
             "you know this value was recorded in local time."
-        )
+        ))
         lbl.setWordWrap(True)
         layout.addRow(lbl)
 
@@ -8684,7 +8692,7 @@ class WIMIDialog(QDialog):
         dt_edit.setCalendarPopup(True)
         dt_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         dt_edit.setDateTime(QDateTime.currentDateTime())  # local time as default
-        layout.addRow("Date & Time:", dt_edit)
+        layout.addRow(self.tr("Date & Time:"), dt_edit)
 
         tz_combo = QComboBox(dialog)
         # Common timezones first, then all
@@ -8708,7 +8716,7 @@ class WIMIDialog(QDialog):
         # offset, forcing the user to hunt for "Universal" in the list).
         tz_combo.setCurrentText("UTC")
 
-        layout.addRow("Timezone:", tz_combo)
+        layout.addRow(self.tr("Timezone:"), tz_combo)
 
         utc_preview = QLabel("UTC: —")
         utc_preview.setStyleSheet("color: #aaa; font-size: 11px;")
@@ -8802,8 +8810,8 @@ class WIMIDialog(QDialog):
         if self.wcs is None or self.pixscale is None:
             QMessageBox.warning(
                 self,
-                "No WCS",
-                "No valid WCS/pixel scale is available. Please solve the image first."
+                self.tr("No WCS"),
+                self.tr("No valid WCS/pixel scale is available. Please solve the image first.")
             )
             return
 
@@ -8813,8 +8821,8 @@ class WIMIDialog(QDialog):
             if ra_center is None or radius_deg is None:
                 QMessageBox.warning(
                     self,
-                    "Minor-Body Search",
-                    "Could not determine the field of view for this image."
+                    self.tr("Minor-Body Search"),
+                    self.tr("Could not determine the field of view for this image.")
                 )
                 return
         else:
@@ -8822,8 +8830,8 @@ class WIMIDialog(QDialog):
             if not self.circle_center or self.circle_radius <= 0:
                 QMessageBox.warning(
                     self,
-                    "No Search Area",
-                    "Please define a search circle by Shift-clicking and dragging."
+                    self.tr("No Search Area"),
+                    self.tr("Please define a search circle by Shift-clicking and dragging.")
                 )
                 return
 
@@ -8833,8 +8841,8 @@ class WIMIDialog(QDialog):
             if ra_center is None or dec_center is None:
                 QMessageBox.warning(
                     self,
-                    "Invalid Coordinates",
-                    "Could not determine the RA/Dec of the circle center."
+                    self.tr("Invalid Coordinates"),
+                    self.tr("Could not determine the RA/Dec of the circle center.")
                 )
                 return
 
@@ -8846,8 +8854,8 @@ class WIMIDialog(QDialog):
         if obs_dt is None:
             QMessageBox.information(
                 self,
-                "Minor-Body Search",
-                "No observation date/time specified; search cancelled."
+                self.tr("Minor-Body Search"),
+                self.tr("No observation date/time specified; search cancelled.")
             )
             return
 
@@ -8883,14 +8891,14 @@ class WIMIDialog(QDialog):
 
         # 4) Run query in a worker thread with a progress dialog
         prog = QProgressDialog(
-            "Computing minor-body ephemerides...\n"
-            "This may take awhile...",
-            "Cancel",
+            self.tr("Computing minor-body ephemerides...\n"
+            "This may take a while..."),
+            self.tr("Cancel"),
             0,
             0,
             self,
         )
-        prog.setWindowTitle("Minor-Body Search")
+        prog.setWindowTitle(self.tr("Minor-Body Search"))
         prog.setWindowModality(Qt.WindowModality.ApplicationModal)
         prog.setAutoClose(True)
         prog.setAutoReset(True)
@@ -8950,21 +8958,22 @@ class WIMIDialog(QDialog):
         prog.close()
 
         if container["error"] is not None:
-            QMessageBox.critical(self, "Minor-Body Search", f"Query failed:\n{container['error']}")
+            QMessageBox.critical(self, self.tr("Minor-Body Search"), self.tr("Query failed:\n{0}").format(container['error']))
             return
 
         results = container["results"] or []
 
 
         if not results:
-            where = "the specified region" if mode == "circle" else "the image field of view"
             extra = ""
             if target_name:
-                extra = f"\n(Target '{target_name}' not found in the catalog subset.)"
+                extra = self.tr("\n(Target '{0}' not found in the catalog subset.)").format(target_name)
             QMessageBox.information(
                 self,
-                "Minor-Body Search",
-                f"No minor planets or comets found in {where} at the given time.{extra}"
+                self.tr("Minor-Body Search"),
+                (self.tr("No minor planets or comets found in the specified region at the given time.{0}")
+                 if mode == "circle" else
+                 self.tr("No minor planets or comets found in the image field of view at the given time.{0}")).format(extra)
             )
             return
 
@@ -9035,10 +9044,11 @@ class WIMIDialog(QDialog):
         # the sub where the object has drifted into frame to see it on-image.
         total_mb = n_on + n_off
         if total_mb:
-            msg = f"{total_mb} minor bod{'y' if total_mb == 1 else 'ies'} in field"
+            msg = (self.tr("{0} minor body in field") if total_mb == 1
+                   else self.tr("{0} minor bodies in field")).format(total_mb)
             if n_off:
-                msg += f" — {n_on} on-frame, {n_off} just off the sensor edge"
-            self.status_label.setText("Status: " + msg + ".")
+                msg += self.tr(" — {0} on-frame, {1} just off the sensor edge").format(n_on, n_off)
+            self.status_label.setText(self.tr("Status: {0}.").format(msg))
 
     def _query_minor_planets_from_db(
         self,
@@ -9641,7 +9651,7 @@ class WIMIDialog(QDialog):
             if self.pixscale is None:
                 self.pixscale = self.compute_pixscale()
                 if self.pixscale is None:
-                    self.status_label.setText("No pixscale available for radius calculation.")
+                    self.status_label.setText(self.tr("No pixscale available for radius calculation."))
                     print("Warning: Pixscale is None. Cannot calculate radius in arcminutes.")
                     return
 
@@ -9649,10 +9659,10 @@ class WIMIDialog(QDialog):
             ra, dec = self.calculate_ra_dec_from_pixel(self.circle_center.x(), self.circle_center.y())
             radius_arcmin = self.circle_radius * self.pixscale / 60.0  # from arcsec to arcmin
             self.status_label.setText(
-                f"Circle set at center RA={ra:.6f}, Dec={dec:.6f}, radius={radius_arcmin:.2f} arcmin"
+                self.tr("Circle set at center RA={0:.6f}, Dec={1:.6f}, radius={2:.2f} arcmin").format(ra, dec, radius_arcmin)
             )
         else:
-            self.status_label.setText("No search area defined.")
+            self.status_label.setText(self.tr("No search area defined."))
 
 
 
@@ -9800,22 +9810,22 @@ class WIMIDialog(QDialog):
 
         # ——— 1) Validate inputs (unchanged) ———
         if not self.circle_center or self.circle_radius <= 0:
-            QMessageBox.warning(self, "No Search Area",
-                                "Please define a search circle by Shift-clicking and dragging.")
+            QMessageBox.warning(self, self.tr("No Search Area"),
+                                self.tr("Please define a search circle by Shift-clicking and dragging."))
             return
 
         ra_center, dec_center = self.calculate_ra_dec_from_pixel(
             self.circle_center.x(), self.circle_center.y()
         )
         if ra_center is None or dec_center is None:
-            QMessageBox.warning(self, "Invalid Coordinates",
-                                "Could not determine the RA/Dec of the circle center.")
+            QMessageBox.warning(self, self.tr("Invalid Coordinates"),
+                                self.tr("Could not determine the RA/Dec of the circle center."))
             return
 
         selected_types = self.get_selected_object_types()
         if not selected_types:
-            QMessageBox.warning(self, "No Object Types Selected",
-                                "Please select at least one object type.")
+            QMessageBox.warning(self, self.tr("No Object Types Selected"),
+                                self.tr("Please select at least one object type."))
             return
 
         # ——— 1b) CDS preflight ———
@@ -9823,22 +9833,23 @@ class WIMIDialog(QDialog):
         # query. So probe (hard 4 s deadline, falls over to the Harvard
         # mirror) and tell the user plainly rather than spending minutes of
         # retries to reach the same conclusion.
-        self.status_label.setText("Status: Checking SIMBAD availability…")
+        self.status_label.setText(self.tr("Status: Checking SIMBAD availability…"))
         QApplication.processEvents()
         if not cds_health.simbad_available(
-                status_cb=lambda m: (self.status_label.setText(f"Status: {m}"),
+                status_cb=lambda m: (self.status_label.setText(self.tr("Status: {0}").format(m)),
                                      QApplication.processEvents())):
-            self.status_label.setText("Status: SIMBAD unavailable.")
+            self.status_label.setText(self.tr("Status: SIMBAD unavailable."))
             QMessageBox.warning(
-                self, "SIMBAD Unavailable",
-                "SIMBAD could not be reached.\n\n"
-                f"{cds_health.status_text()}\n\n"
+                self, self.tr("SIMBAD Unavailable"),
+                self.tr("SIMBAD could not be reached.\n\n"
+                "{0}\n\n"
                 "Mirrors tried:\n"
-                f"{cds_health.status_detail()}\n\n"
+                "{1}\n\n"
                 "CDS (Strasbourg) has scheduled and unscheduled outages; "
                 "check https://cds.unistra.fr/ and try again later.\n\n"
                 "Minor-body search, the deep VizieR search and the local "
-                "Gaia DR3 augment do not depend on SIMBAD.")
+                "Gaia DR3 augment do not depend on SIMBAD.").format(
+                    cds_health.status_text(), cds_health.status_detail()))
             return
         simbad_host = _configure_simbad_endpoint()
 
@@ -9924,12 +9935,12 @@ class WIMIDialog(QDialog):
 
         # ——— 3) Progress dialog + worker + event loop (same pattern as minor-body) ———
         prog = QProgressDialog(
-            "Preparing SIMBAD query…",
-            "Cancel",
+            self.tr("Preparing SIMBAD query…"),
+            self.tr("Cancel"),
             0, 0,  # indeterminate; worker switches to determinate per-attempt
             self,
         )
-        prog.setWindowTitle("Query SIMBAD")
+        prog.setWindowTitle(self.tr("Query SIMBAD"))
         prog.setWindowModality(Qt.WindowModality.ApplicationModal)
         prog.setAutoClose(True)
         prog.setAutoReset(True)
@@ -9958,7 +9969,7 @@ class WIMIDialog(QDialog):
         def on_attempt(cur: int, total: int):
             # Flash the window title with retry count
             try:
-                prog.setWindowTitle(f"Query SIMBAD — attempt {cur}/{total}")
+                prog.setWindowTitle(self.tr("Query SIMBAD — attempt {0}/{1}").format(cur, total))
             except Exception:
                 pass
 
@@ -9999,7 +10010,7 @@ class WIMIDialog(QDialog):
             # Cancellation shows a quieter message
             if container["error"].strip().lower().startswith("cancelled"):
                 return
-            QMessageBox.warning(self, "SIMBAD Query Failed", container["error"])
+            QMessageBox.warning(self, self.tr("SIMBAD Query Failed"), container["error"])
             return
 
         if container["empty"]:
@@ -10008,8 +10019,8 @@ class WIMIDialog(QDialog):
                 [], ra_center, dec_center, radius_deg)
             if not query_results:
                 QMessageBox.information(
-                    self, "No Results",
-                    "No objects found in the specified area."
+                    self, self.tr("No Results"),
+                    self.tr("No objects found in the specified area.")
                 )
             self.main_preview.set_query_results(query_results)
             self.query_results = query_results
@@ -10022,7 +10033,7 @@ class WIMIDialog(QDialog):
 
         # ——— 5) Merge rows with live progress ———
         n_total = int(len(result))
-        prog.setLabelText(f"Parsing SIMBAD rows (0 / {n_total})…")
+        prog.setLabelText(self.tr("Parsing SIMBAD rows ({0} / {1})…").format(0, n_total))
         prog.setMaximum(max(1, n_total))
         prog.setValue(0)
         QApplication.processEvents()
@@ -10120,7 +10131,7 @@ class WIMIDialog(QDialog):
             # Progress update (throttled)
             if (i + 1) % tick == 0 or (i + 1) == n_total:
                 prog.setValue(i + 1)
-                prog.setLabelText(f"Parsing SIMBAD rows ({i + 1} / {n_total})…")
+                prog.setLabelText(self.tr("Parsing SIMBAD rows ({0} / {1})…").format(i + 1, n_total))
                 QApplication.processEvents()
 
         # ——— 6) Gaia augmentation ———
@@ -10130,14 +10141,14 @@ class WIMIDialog(QDialog):
 
         prog.setMaximum(0)   # indeterminate while augmenting
         prog.setValue(0)
-        prog.setLabelText("Augmenting with local Gaia DR3 (if enabled)…")
+        prog.setLabelText(self.tr("Augmenting with local Gaia DR3 (if enabled)…"))
         QApplication.processEvents()
 
         try:
             query_results = self._augment_results_with_local_gaia(
                 query_results, ra_center, dec_center, radius_deg)
         except Exception as _ae:
-            prog.setLabelText(f"Gaia augment failed ({type(_ae).__name__}); continuing…")
+            prog.setLabelText(self.tr("Gaia augment failed ({0}); continuing…").format(type(_ae).__name__))
             QApplication.processEvents()
 
         if _cancelled():
@@ -10146,7 +10157,7 @@ class WIMIDialog(QDialog):
 
         # ——— 7) Hand off to main preview (marker draw) ———
         n_final = len(query_results)
-        prog.setLabelText(f"Drawing {n_final} markers on image…")
+        prog.setLabelText(self.tr("Drawing {0} markers on image…").format(n_final))
         QApplication.processEvents()
 
         self.main_preview.set_query_results(query_results)
@@ -10162,7 +10173,7 @@ class WIMIDialog(QDialog):
         # use the batched addTopLevelItems API.
         prog.setMaximum(max(1, n_final))
         prog.setValue(0)
-        prog.setLabelText(f"Populating results table (0 / {n_final})…")
+        prog.setLabelText(self.tr("Populating results table ({0} / {1})…").format(0, n_final))
         QApplication.processEvents()
 
         tree = self.results_tree
@@ -10194,7 +10205,7 @@ class WIMIDialog(QDialog):
                     tree.addTopLevelItems(batch)
                     batch = []
                     prog.setValue(i + 1)
-                    prog.setLabelText(f"Populating results table ({i + 1} / {n_final})…")
+                    prog.setLabelText(self.tr("Populating results table ({0} / {1})…").format(i + 1, n_final))
                     QApplication.processEvents()
             if batch and not _cancelled():
                 tree.addTopLevelItems(batch)
@@ -10203,7 +10214,7 @@ class WIMIDialog(QDialog):
             tree.setUpdatesEnabled(True)
 
         # ——— 9) Final counts & close ———
-        prog.setLabelText("Finalizing…")
+        prog.setLabelText(self.tr("Finalizing…"))
         QApplication.processEvents()
         self.update_object_count()
 
@@ -10218,8 +10229,8 @@ class WIMIDialog(QDialog):
         # by rows the client filter was about to throw away.
         if n_total >= max_results:
             self.status_label.setText(
-                f"Status: showing the first {max_results:,} matches — there "
-                f"may be more. Raise Max Results in Settings.")
+                self.tr("Status: showing the first {0:,} matches — there "
+                "may be more. Raise Max Results in Settings.").format(max_results))
 
         # STOP HERE. Everything below this point is the pre-worker synchronous
         # implementation, kept by accident when the threaded path was added.
@@ -10249,8 +10260,8 @@ class WIMIDialog(QDialog):
         }        
         """Perform a Vizier catalog search and parse results, querying redshift surveys first."""
         if not self.circle_center or self.circle_radius <= 0:
-            QMessageBox.warning(self, "No Search Area",
-                                "Please define a search circle by Shift-clicking and dragging.")
+            QMessageBox.warning(self, self.tr("No Search Area"),
+                                self.tr("Please define a search circle by Shift-clicking and dragging."))
             return
 
         # Convert center to RA/Dec
@@ -10258,8 +10269,8 @@ class WIMIDialog(QDialog):
             self.circle_center.x(), self.circle_center.y()
         )
         if ra_center is None or dec_center is None:
-            QMessageBox.warning(self, "Invalid Coordinates",
-                                "Could not determine the RA/Dec of the circle center.")
+            QMessageBox.warning(self, self.tr("Invalid Coordinates"),
+                                self.tr("Could not determine the RA/Dec of the circle center."))
             return
 
         radius_arcmin = float((self.circle_radius * self.pixscale) / 60.0)
@@ -10329,22 +10340,23 @@ class WIMIDialog(QDialog):
         # unreachable host means 12 full timeouts behind a frozen window.
         # prepare_vizier races the mirror list, picks one that just served a
         # real query, and points astroquery at it.
-        _vz_status = lambda m: (self.status_label.setText(f"Status: {m}"),
+        _vz_status = lambda m: (self.status_label.setText(self.tr("Status: {0}").format(m)),
                                 QApplication.processEvents())
         vizier_host = cds_health.prepare_vizier(status_cb=_vz_status,
                                                 timeout=45.0)
         if not vizier_host:
-            self.status_label.setText("Status: VizieR unavailable.")
+            self.status_label.setText(self.tr("Status: VizieR unavailable."))
             QMessageBox.warning(
-                self, "VizieR Unavailable",
-                "No VizieR mirror answered a query.\n\n"
-                f"{cds_health.vizier_status_text()}\n\n"
+                self, self.tr("VizieR Unavailable"),
+                self.tr("No VizieR mirror answered a query.\n\n"
+                "{0}\n\n"
                 "Mirrors tried:\n"
-                f"{cds_health.vizier_status_detail()}\n\n"
+                "{1}\n\n"
                 "The deep VizieR search needs one of these. "
-                "Try again later.")
+                "Try again later.").format(
+                    cds_health.vizier_status_text(), cds_health.vizier_status_detail()))
             return
-        self.status_label.setText(f"Status: VizieR — using {vizier_host}")
+        self.status_label.setText(self.tr("Status: VizieR — using {0}").format(vizier_host))
         QApplication.processEvents()
         try:
             Vizier.TIMEOUT = 45
@@ -10363,11 +10375,11 @@ class WIMIDialog(QDialog):
             for catalog_id in catalog_ids:
                 if _vz_budget.expired():
                     self.status_label.setText(
-                        "Status: time budget spent — VizieR search stopped early.")
+                        self.tr("Status: time budget spent — VizieR search stopped early."))
                     QApplication.processEvents()
                     break
                 cat_name = CATALOG_NAMES.get(catalog_id, catalog_id)
-                self.status_label.setText(f"Status: VizieR — querying {cat_name}…")
+                self.status_label.setText(self.tr("Status: VizieR — querying {0}…").format(cat_name))
                 QApplication.processEvents()
 
                 # Two tries per catalogue, because the second one happens on
@@ -10388,13 +10400,13 @@ class WIMIDialog(QDialog):
                             status_cb=_vz_status)
                         if give_up:
                             self.status_label.setText(
-                                "Status: no VizieR mirror left — stopping search.")
+                                self.tr("Status: no VizieR mirror left — stopping search."))
                             QApplication.processEvents()
                             break
                         if _vz_try == 1:
                             self.status_label.setText(
-                                f"Status: VizieR — retrying {cat_name} on "
-                                f"{cds_health.vizier_server()}…")
+                                self.tr("Status: VizieR — retrying {0} on "
+                                "{1}…").format(cat_name, cds_health.vizier_server()))
                             QApplication.processEvents()
                 if result is None and cds_health.vizier_status_text().startswith(
                         "VizieR: unavailable"):
@@ -10506,38 +10518,38 @@ class WIMIDialog(QDialog):
 
             if _vz_missing and vizier_host != cds_health.VIZIER_MIRRORS[0]:
                 self.status_label.setText(
-                    f"Status: VizieR ({vizier_host}) — {len(all_results)} "
-                    f"objects; {len(_vz_missing)} catalogues unavailable on "
-                    f"this mirror.")
+                    self.tr("Status: VizieR ({0}) — {1} "
+                    "objects; {2} catalogues unavailable on "
+                    "this mirror.").format(vizier_host, len(all_results), len(_vz_missing)))
                 QMessageBox.information(
-                    self, "Deep VizieR Search — Partial Mirror",
-                    f"Found {len(all_results)} objects using the VizieR "
-                    f"mirror {vizier_host}, because the primary "
-                    f"({cds_health.VIZIER_MIRRORS[0]}) did not answer.\n\n"
+                    self, self.tr("Deep VizieR Search — Partial Mirror"),
+                    self.tr("Found {0} objects using the VizieR "
+                    "mirror {1}, because the primary "
+                    "({2}) did not answer.\n\n"
                     "Mirrors do not all carry every catalogue. These returned "
                     "nothing here, and may return results once the primary "
-                    "is back:\n\n  • "
+                    "is back:\n\n  • ").format(len(all_results), vizier_host, cds_health.VIZIER_MIRRORS[0])
                     + "\n  • ".join(_vz_missing))
             else:
                 self.status_label.setText(
-                    f"Status: VizieR ({vizier_host}) — "
-                    f"{len(all_results)} objects.")
+                    self.tr("Status: VizieR ({0}) — "
+                    "{1} objects.").format(vizier_host, len(all_results)))
 
         except Exception as err:
-            QMessageBox.critical(self, "Vizier Search Failed", f"Failed to query Vizier: {err}")
+            QMessageBox.critical(self, self.tr("Vizier Search Failed"), self.tr("Failed to query Vizier: {0}").format(err))
 
 
 
     def perform_mast_search(self):
         """Perform a MAST cone search in the user-defined region using astroquery."""
         if not self.circle_center or self.circle_radius <= 0:
-            QMessageBox.warning(self, "No Search Area", "Please define a search circle by Shift-clicking and dragging.")
+            QMessageBox.warning(self, self.tr("No Search Area"), self.tr("Please define a search circle by Shift-clicking and dragging."))
             return
 
         # Calculate RA and Dec for the center point
         ra_center, dec_center = self.calculate_ra_dec_from_pixel(self.circle_center.x(), self.circle_center.y())
         if ra_center is None or dec_center is None:
-            QMessageBox.warning(self, "Invalid Coordinates", "Could not determine the RA/Dec of the circle center.")
+            QMessageBox.warning(self, self.tr("Invalid Coordinates"), self.tr("Could not determine the RA/Dec of the circle center."))
             return
 
         # Convert radius from arcseconds to degrees (MAST uses degrees)
@@ -10558,7 +10570,7 @@ class WIMIDialog(QDialog):
             limited_observations = observations[:100]
 
             if len(observations) == 0:
-                QMessageBox.information(self, "No Results", "No objects found in the specified area on MAST.")
+                QMessageBox.information(self, self.tr("No Results"), self.tr("No objects found in the specified area on MAST."))
                 return
 
             # Clear previous results
@@ -10601,7 +10613,7 @@ class WIMIDialog(QDialog):
             self.update_object_count()
 
         except Exception as e:
-            QMessageBox.critical(self, "MAST Query Failed", f"Failed to query MAST: {str(e)}")
+            QMessageBox.critical(self, self.tr("MAST Query Failed"), self.tr("Failed to query MAST: {0}").format(str(e)))
 
     def toggle_show_names(self, state):
         """Toggle showing/hiding names on the main image."""
@@ -10612,7 +10624,7 @@ class WIMIDialog(QDialog):
         """Clear the search results and remove markers from the main image."""
         self.results_tree.clear()
         self.main_preview.clear_query_results()
-        self.status_label.setText("Results cleared.")
+        self.status_label.setText(self.tr("Results cleared."))
 
     def _load_name_label_style(self):
         """Load the Show-Object-Names label font + colour from QSettings."""
@@ -10650,7 +10662,7 @@ class WIMIDialog(QDialog):
     def open_settings_dialog(self):
         """Open settings dialog to adjust max results and marker type."""
         dialog = QDialog(self)
-        dialog.setWindowTitle("Settings")
+        dialog.setWindowTitle(self.tr("Settings"))
         layout = QFormLayout(dialog)
 
         # --- Max Results (use native QSpinBox) ---
@@ -10672,13 +10684,13 @@ class WIMIDialog(QDialog):
         cur = max(1, min(100000, cur))
         max_results_spinbox.setValue(cur)
 
-        layout.addRow("Max Results:", max_results_spinbox)
+        layout.addRow(self.tr("Max Results:"), max_results_spinbox)
 
         # --- Marker Style ---
         marker_style_combo = QComboBox(dialog)
         marker_style_combo.addItems(["Circle", "Crosshair"])
         marker_style_combo.setCurrentText(getattr(self, "marker_style", "Circle"))
-        layout.addRow("Marker Style:", marker_style_combo)
+        layout.addRow(self.tr("Marker Style:"), marker_style_combo)
 
         # --- Object-name label font + colour ----------------------------
         # Separate from the annotation-tools font (which only styles added
@@ -10688,7 +10700,7 @@ class WIMIDialog(QDialog):
             "color": QColor(self.name_label_color),
         }
 
-        preview = QLabel("Sample  (6281) Strnad", dialog)
+        preview = QLabel(self.tr("Sample  (6281) Strnad"), dialog)
         preview.setAutoFillBackground(True)
         preview.setMinimumHeight(34)
         preview.setFrameShape(QFrame.Shape.StyledPanel)
@@ -10708,40 +10720,40 @@ class WIMIDialog(QDialog):
             bits = [fnt.family(),
                     f"{(fnt.pointSizeF() if fnt.pointSizeF() > 0 else fnt.pixelSize()):g} pt"]
             if fnt.bold():
-                bits.append("Bold")
+                bits.append(self.tr("Bold"))
             if fnt.italic():
-                bits.append("Italic")
+                bits.append(self.tr("Italic"))
             font_btn.setText("  ".join(bits))
 
         font_btn = QPushButton(dialog)
-        font_btn.setToolTip("Family, size and style of the object-name labels")
+        font_btn.setToolTip(self.tr("Family, size and style of the object-name labels"))
 
         def _pick_font():
-            f, ok = QFontDialog.getFont(state["font"], dialog, "Object Name Font")
+            f, ok = QFontDialog.getFont(state["font"], dialog, self.tr("Object Name Font"))
             if ok:
                 state["font"] = f
                 _refresh_preview()
         font_btn.clicked.connect(_pick_font)
 
-        color_btn = QPushButton("Colour…", dialog)
-        color_btn.setToolTip("Colour of the object-name labels")
+        color_btn = QPushButton(self.tr("Colour…"), dialog)
+        color_btn.setToolTip(self.tr("Colour of the object-name labels"))
 
         def _pick_color():
             c = QColorDialog.getColor(
-                state["color"], dialog, "Object Name Colour",
+                state["color"], dialog, self.tr("Object Name Colour"),
                 QColorDialog.ColorDialogOption.ShowAlphaChannel)
             if c.isValid():
                 state["color"] = c
                 _refresh_preview()
         color_btn.clicked.connect(_pick_color)
 
-        layout.addRow("Object Name Font:", font_btn)
-        layout.addRow("Object Name Colour:", color_btn)
-        layout.addRow("Preview:", preview)
+        layout.addRow(self.tr("Object Name Font:"), font_btn)
+        layout.addRow(self.tr("Object Name Colour:"), color_btn)
+        layout.addRow(self.tr("Preview:"), preview)
         _refresh_preview()
 
         # --- Force Blind Solve ---
-        force_blind_solve_button = QPushButton("Force Blind Solve", dialog)
+        force_blind_solve_button = QPushButton(self.tr("Force Blind Solve"), dialog)
         force_blind_solve_button.clicked.connect(self.force_blind_solve)
         layout.addRow(force_blind_solve_button)
 
@@ -10783,7 +10795,7 @@ class WIMIDialog(QDialog):
     def force_blind_solve(self):
         doc = self._doc_for_solver()
         if doc is None:
-            QMessageBox.information(self, "Force Blind Solve", "No image is loaded.")
+            QMessageBox.information(self, self.tr("Force Blind Solve"), self.tr("No image is loaded."))
             return
 
         mw = _find_main_window(self) or self.parent()
@@ -10803,16 +10815,16 @@ class WIMIDialog(QDialog):
             try:
                 if hdr is not None:
                     self.initialize_wcs_from_header(hdr)
-                    self.status_label.setText("Status: Blind solve succeeded.")
-                    QMessageBox.information(self, "Blind Solve", "Astrometric solution applied successfully.")
+                    self.status_label.setText(self.tr("Status: Blind solve succeeded."))
+                    QMessageBox.information(self, self.tr("Blind Solve"), self.tr("Astrometric solution applied successfully."))
                 else:
                     raise RuntimeError("Solver returned no header.")
             except Exception as e:
-                QMessageBox.warning(self, "Apply WCS", f"Solve succeeded but WCS init failed: {e}")
-                self.status_label.setText(f"Status: WCS init failed — {e}")
+                QMessageBox.warning(self, self.tr("Apply WCS"), self.tr("Solve succeeded but WCS init failed: {0}").format(e))
+                self.status_label.setText(self.tr("Status: WCS init failed — {0}").format(e))
         else:
-            QMessageBox.critical(self, "Blind Solve Failed", str(res))
-            self.status_label.setText(f"Status: Blind solve failed — {res}")
+            QMessageBox.critical(self, self.tr("Blind Solve Failed"), str(res))
+            self.status_label.setText(self.tr("Status: Blind solve failed — {0}").format(res))
 
     def _restore_ui_state(self):
         """

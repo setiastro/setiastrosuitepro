@@ -14,7 +14,7 @@ try:
 except Exception:
     sep = None
 
-from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer, QEvent
+from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer, QEvent, QCoreApplication
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QPen, QBrush,
     QPainterPath, QWheelEvent, QPolygonF, QMouseEvent, QShortcut, QKeySequence,
@@ -40,6 +40,11 @@ from setiastro.saspro.imageops.diffuse_structure_mask import (
     suggest_diffuse_structure_settings,
 )
 from setiastro.saspro.help_support import make_help_button
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("MaskCreation", text)
+
 # PI-style "new instance" grip. Imported lazily inside _build_ui below so this
 # module stays importable even in a build where shortcuts.py was trimmed.
 # ---------- small utils ----------
@@ -141,12 +146,12 @@ def _push_numpy_as_new_document(
     mw = _find_main_window(owner_widget)
     if mw is None or not hasattr(mw, "docman"):
         QMessageBox.warning(
-            owner_widget, "Cannot Create Document",
-            "Main window / DocManager not found."
+            owner_widget, _tr("Cannot Create Document"),
+            _tr("Main window / DocManager not found.")
         )
         return False
     name, ok = QInputDialog.getText(
-        owner_widget, "New Document Name", "Name:", text=default_name
+        owner_widget, _tr("New Document Name"), _tr("Name:"), text=default_name
     )
     if not ok:
         return False
@@ -367,9 +372,9 @@ class LivePreviewDialog(QDialog):
 
         # ── toolbar ────────────────────────────────────────────────────────
         tb = QHBoxLayout()
-        b_out = themed_toolbtn("zoom-out",      "Zoom Out  (scroll wheel)")
-        b_in  = themed_toolbtn("zoom-in",       "Zoom In   (scroll wheel)")
-        b_fit = themed_toolbtn("zoom-fit-best", "Fit to Window  (F)")
+        b_out = themed_toolbtn("zoom-out",      self.tr("Zoom Out  (scroll wheel)"))
+        b_in  = themed_toolbtn("zoom-in",       self.tr("Zoom In   (scroll wheel)"))
+        b_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit to Window  (F)"))
 
         b_out.clicked.connect(self._view.zoom_out)
         b_in.clicked.connect(self._view.zoom_in)
@@ -866,9 +871,9 @@ class MaskPreviewDialog(QDialog):
 
         # toolbar
         tb = QHBoxLayout()
-        b_out  = themed_toolbtn("zoom-out",      "Zoom Out")
-        b_in   = themed_toolbtn("zoom-in",       "Zoom In")
-        b_fit  = themed_toolbtn("zoom-fit-best", "Fit to Window")
+        b_out  = themed_toolbtn("zoom-out",      self.tr("Zoom Out"))
+        b_in   = themed_toolbtn("zoom-in",       self.tr("Zoom In"))
+        b_fit  = themed_toolbtn("zoom-fit-best", self.tr("Fit to Window"))
         b_push = QPushButton(self.tr("Push as New Document…"))
 
         b_out.clicked.connect(self._view.zoom_out)
@@ -899,17 +904,17 @@ class MaskPreviewDialog(QDialog):
 
     def push_as_new_document(self):
         if self.mask is None:
-            QMessageBox.warning(self, "No Mask", "No mask to push.")
+            QMessageBox.warning(self, self.tr("No Mask"), self.tr("No mask to push."))
             return
         host = self.parent()
         while host is not None and not hasattr(host, "docman"):
             host = host.parent()
         if host is None or not hasattr(host, "docman"):
-            QMessageBox.warning(self, "No DocManager",
-                                "Could not find the document manager.")
+            QMessageBox.warning(self, self.tr("No DocManager"),
+                                self.tr("Could not find the document manager."))
             return
         name, ok = QInputDialog.getText(
-            self, "New Document Name", "Name:", text="Mask"
+            self, self.tr("New Document Name"), self.tr("Name:"), text="Mask"
         )
         if not ok:
             return
@@ -994,9 +999,9 @@ class MaskCreationDialog(QDialog):
         layout.addLayout(mode_bar)
 
         zoom_bar = QHBoxLayout()
-        z_out = themed_toolbtn("zoom-out", "Zoom Out")
-        z_in  = themed_toolbtn("zoom-in", "Zoom In")
-        z_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        z_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        z_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        z_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
         z_out.clicked.connect(lambda: self._zoom_canvas(1/1.25))
         z_in.clicked.connect(lambda: self._zoom_canvas(1.25))
         z_fit.clicked.connect(self._fit_canvas)
@@ -1007,12 +1012,12 @@ class MaskCreationDialog(QDialog):
         self.btn_disp_stretch = QPushButton(self.tr("Toggle Display Stretch"))
         self.btn_disp_stretch.setCheckable(True)
         self.btn_disp_stretch.setToolTip(
-            "Display-only stretch for easier masking on linear images.\n"
-            "This does NOT change the image data or the generated mask."
+            self.tr("Display-only stretch for easier masking on linear images.\n"
+            "This does NOT change the image data or the generated mask.")
         )
         self.btn_disp_stretch.toggled.connect(self._toggle_display_stretch)
         self.btn_disp_stretch.setChecked(False)
-        self.btn_disp_stretch.setText("Enable Display Stretch")
+        self.btn_disp_stretch.setText(self.tr("Enable Display Stretch"))
         zoom_bar.addWidget(self.btn_disp_stretch)
 
         # Canvas
@@ -1021,7 +1026,7 @@ class MaskCreationDialog(QDialog):
 
         # Mask type & blur
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("Mask Type:"))
+        controls.addWidget(QLabel(self.tr("Mask Type:")))
         self.type_dd = QComboBox()
         self.type_dd.addItems([
             "Binary","Range Selection","Diffuse Structure",
@@ -1042,9 +1047,9 @@ class MaskCreationDialog(QDialog):
         layout.addLayout(controls)
 
         # Range Selection
-        self.range_box = QGroupBox("Range Selection"); g = QGridLayout(self.range_box)
-        def add_slider(row: int, name: str, maxv: int):
-            g.addWidget(QLabel(name + ":"), row, 0)
+        self.range_box = QGroupBox(self.tr("Range Selection")); g = QGridLayout(self.range_box)
+        def add_slider(row: int, name: str, maxv: int, label: str):
+            g.addWidget(QLabel(label), row, 0)
             s = QSlider(Qt.Orientation.Horizontal); s.setRange(0, maxv)
             s.setValue(maxv if name == "Upper" else 0)
             lbl = QLabel(f"{(s.value()/maxv):.2f}")
@@ -1052,10 +1057,10 @@ class MaskCreationDialog(QDialog):
             s.valueChanged.connect(self._schedule_live_preview)
             g.addWidget(s, row, 1); g.addWidget(lbl, row, 2)
             return s, lbl
-        self.lower_sl, _ = add_slider(0, "Lower", 100)
-        self.upper_sl, _ = add_slider(1, "Upper", 100)
-        self.fuzz_sl,  _ = add_slider(2, "Transition", 100)
-        g.addWidget(QLabel("Blur:"), 3, 0)
+        self.lower_sl, _ = add_slider(0, "Lower", 100, self.tr("Lower:"))
+        self.upper_sl, _ = add_slider(1, "Upper", 100, self.tr("Upper:"))
+        self.fuzz_sl,  _ = add_slider(2, "Transition", 100, self.tr("Transition:"))
+        g.addWidget(QLabel(self.tr("Blur:")), 3, 0)
         self.smooth_sl = QSlider(Qt.Orientation.Horizontal)
         self.smooth_sl.setRange(1, 200)           # σ in pixels
         self.smooth_sl.setValue(3)                 # a sensible default
@@ -1069,10 +1074,16 @@ class MaskCreationDialog(QDialog):
             self.smooth_lbl.setText(f"σ = {int(v)} px")
             self._schedule_live_preview()
         self.smooth_sl.valueChanged.connect(_upd_smooth)
-        self.link_cb   = QCheckBox("Link limits"); g.addWidget(self.link_cb, 0, 3, 2, 1)
-        self.screen_cb = QCheckBox("Screening");   g.addWidget(self.screen_cb, 4, 0, 1, 4)
-        self.light_cb  = QCheckBox("Lightness");   g.addWidget(self.light_cb, 5, 0, 1, 4)
-        self.invert_cb = QCheckBox("Invert");      g.addWidget(self.invert_cb, 6, 0, 1, 4)
+        self.link_cb   = QCheckBox(self.tr("Link limits")); g.addWidget(self.link_cb, 0, 3, 2, 1)
+        self.screen_cb = QCheckBox(self.tr("Screening"));   g.addWidget(self.screen_cb, 4, 0, 1, 4)
+        self.light_cb  = QCheckBox(self.tr("Lightness"));   g.addWidget(self.light_cb, 5, 0, 1, 4)
+        self.invert_cb = QCheckBox(self.tr("Invert"));      g.addWidget(self.invert_cb, 6, 0, 1, 4)
+        self.light_cb.setToolTip(self.tr(
+            "Select on CIE lightness (L*) instead of luminance. Saturated colour, "
+            "such as red Ha nebulosity, then counts as bright as it looks."
+        ))
+        for _cb in (self.screen_cb, self.light_cb, self.invert_cb):
+            _cb.toggled.connect(self._schedule_live_preview)
         self.lower_sl.valueChanged.connect(self._on_linked)
         self.link_cb.toggled.connect(self._on_link_switch)
         layout.addWidget(self.range_box); self.range_box.hide()
@@ -1257,11 +1268,11 @@ class MaskCreationDialog(QDialog):
         # Preview & Clear
         # Preview & Clear
         rowb = QHBoxLayout()
-        b_preview = QPushButton("Preview Mask"); b_preview.clicked.connect(self._preview_mask)
+        b_preview = QPushButton(self.tr("Preview Mask")); b_preview.clicked.connect(self._preview_mask)
 
-        b_undo = QPushButton("Undo Shape"); b_undo.clicked.connect(self._undo_shape)
+        b_undo = QPushButton(self.tr("Undo Shape")); b_undo.clicked.connect(self._undo_shape)
 
-        b_clear = QPushButton("Clear Shapes");   b_clear.clicked.connect(self._clear_shapes)
+        b_clear = QPushButton(self.tr("Clear Shapes"));   b_clear.clicked.connect(self._clear_shapes)
         rowb.addStretch(1)
         rowb.addWidget(b_preview)
         rowb.addWidget(b_undo)
@@ -1354,7 +1365,7 @@ class MaskCreationDialog(QDialog):
         row_layout = QHBoxLayout(self._star_thresh_row)
         row_layout.setContentsMargins(0, 0, 0, 0)
 
-        lbl = QLabel("Detection Threshold (σ):")
+        lbl = QLabel(self.tr("Detection Threshold (σ):"))
         lbl.setStyleSheet("color:#eaeaea;font-size:11px;")
 
         self._spin_star_thresh = QDoubleSpinBox()
@@ -1363,9 +1374,9 @@ class MaskCreationDialog(QDialog):
         self._spin_star_thresh.setValue(3.0)
         self._spin_star_thresh.setFixedWidth(70)
         self._spin_star_thresh.setToolTip(
-            "Lower = detect more/fainter stars (may over-detect).\n"
+            self.tr("Lower = detect more/fainter stars (may over-detect).\n"
             "Higher = only bright stars detected.\n"
-            "Use Trial Detect to test before generating the mask."
+            "Use Trial Detect to test before generating the mask.")
         )
         self._spin_star_thresh.valueChanged.connect(
             lambda v: setattr(self, "_star_thresh", float(v))
@@ -1383,7 +1394,7 @@ class MaskCreationDialog(QDialog):
         gar_layout = QHBoxLayout(self._gaia_augment_row)
         gar_layout.setContentsMargins(0, 0, 0, 0)
 
-        self._chk_gaia_augment = QCheckBox("Augment with Gaia Local DB")
+        self._chk_gaia_augment = QCheckBox(self.tr("Augment with Gaia Local DB"))
         self._chk_gaia_augment.setStyleSheet("color:#eaeaea;font-size:11px;")
         try:
             from PyQt6.QtCore import QSettings
@@ -1411,14 +1422,14 @@ class MaskCreationDialog(QDialog):
             self._chk_gaia_augment.setToolTip(gaia_reason)
         else:
             self._chk_gaia_augment.setToolTip(
-                "Add Gaia Local DB catalogued stars to the mask, sized to match\n"
+                self.tr("Add Gaia Local DB catalogued stars to the mask, sized to match\n"
                 "the SEP-detected stars. Handles saturated cores SEP misses.\n"
-                "Requires a plate-solved image and an installed astrometric band."
+                "Requires a plate-solved image and an installed astrometric band.")
             )
 
         # Max-G limit so wide-field frames don't spend a minute masking
         # 10,000 faint stars nobody cares about.
-        lbl_g = QLabel("Max G:")
+        lbl_g = QLabel(self.tr("Max G:"))
         lbl_g.setStyleSheet("color:#eaeaea;font-size:11px;")
         self._spin_gaia_maxg = QDoubleSpinBox()
         self._spin_gaia_maxg.setRange(6.0, 20.0)
@@ -1427,8 +1438,8 @@ class MaskCreationDialog(QDialog):
         self._spin_gaia_maxg.setValue(17.0)
         self._spin_gaia_maxg.setFixedWidth(60)
         self._spin_gaia_maxg.setToolTip(
-            "Skip Gaia stars fainter than this G magnitude.\n"
-            "17 is a good default; raise for very deep/narrowband data."
+            self.tr("Skip Gaia stars fainter than this G magnitude.\n"
+            "17 is a good default; raise for very deep/narrowband data.")
         )
 
         gar_layout.addWidget(self._chk_gaia_augment)
@@ -1439,15 +1450,15 @@ class MaskCreationDialog(QDialog):
         parent_layout.addWidget(self._gaia_augment_row)
 
         # Trial Detect button
-        self._btn_trial_detect = QPushButton("🔍 Trial Detect")
+        self._btn_trial_detect = QPushButton(self.tr("🔍 Trial Detect"))
         self._btn_trial_detect.setFixedHeight(26)
         self._btn_trial_detect.setStyleSheet(
             "QPushButton{background:#0f3460;color:#eaeaea;border-radius:4px;font-size:11px;}"
             "QPushButton:hover{background:#e94560;color:#fff;}"
         )
         self._btn_trial_detect.setToolTip(
-            "Run star detection with the current threshold and report how many\n"
-            "stars were found — without generating the full mask."
+            self.tr("Run star detection with the current threshold and report how many\n"
+            "stars were found — without generating the full mask.")
         )
         self._btn_trial_detect.clicked.connect(self._run_trial_detect)
         parent_layout.addWidget(self._btn_trial_detect)
@@ -1473,14 +1484,14 @@ class MaskCreationDialog(QDialog):
 
         img = getattr(self, "image", None)
         if img is None:
-            self._lbl_trial_result.setText("⚠  No image loaded.")
+            self._lbl_trial_result.setText(self.tr("⚠  No image loaded."))
             self._lbl_trial_result.setVisible(True)
             return
 
         thresh = float(getattr(self, "_star_thresh", 3.0))
 
         self._btn_trial_detect.setEnabled(False)
-        self._lbl_trial_result.setText("Detecting…")
+        self._lbl_trial_result.setText(self.tr("Detecting…"))
         self._lbl_trial_result.setVisible(True)
         QApplication.processEvents()
 
@@ -1499,18 +1510,18 @@ class MaskCreationDialog(QDialog):
             n = len(objs)
 
             if n == 0:
-                msg = f"⚠  No stars detected at σ={thresh:.1f} — try lowering the threshold."
+                msg = self.tr("⚠  No stars detected at σ={0:.1f} — try lowering the threshold.").format(thresh)
                 color = "#ffc107"
             elif n > 100000:
-                msg = (f"⚠  {n:,} objects detected at σ={thresh:.1f} — "
-                       f"threshold is probably too low. Try raising it.")
+                msg = (self.tr("⚠  {0:,} objects detected at σ={1:.1f} — "
+                       "threshold is probably too low. Try raising it.").format(n, thresh))
                 color = "#ff9800"
             elif n > 20000:
-                msg = (f"⚠  {n:,} stars detected at σ={thresh:.1f} — "
-                       f"quite high, consider raising the threshold.")
+                msg = (self.tr("⚠  {0:,} stars detected at σ={1:.1f} — "
+                       "quite high, consider raising the threshold.").format(n, thresh))
                 color = "#ffc107"
             else:
-                msg = f"✓  {n:,} stars detected at σ={thresh:.1f}"
+                msg = self.tr("✓  {0:,} stars detected at σ={1:.1f}").format(n, thresh)
                 color = "#4caf50"
 
             self._lbl_trial_result.setText(msg)
@@ -1521,11 +1532,11 @@ class MaskCreationDialog(QDialog):
         except Exception as e:
             err = str(e)
             if "pixel buffer full" in err or "pixstack" in err.lower():
-                msg = (f"⚠  Too many active pixels at σ={thresh:.1f}. "
-                       f"Raise the threshold significantly.")
+                msg = (self.tr("⚠  Too many active pixels at σ={0:.1f}. "
+                       "Raise the threshold significantly.").format(thresh))
                 color = "#e94560"
             else:
-                msg = f"⚠  Detection error: {err}"
+                msg = self.tr("⚠  Detection error: {0}").format(err)
                 color = "#e94560"
             self._lbl_trial_result.setText(msg)
             self._lbl_trial_result.setStyleSheet(f"color:{color};font-size:10px;")
@@ -1548,7 +1559,7 @@ class MaskCreationDialog(QDialog):
                 self._cached_base_mask_full = self._create_mask_from_shapes_at_size(h, w)
                 self._cached_base_mask_full_dirty = False
             except RuntimeError as e:
-                QMessageBox.warning(self, "Mask creation failed", str(e))
+                QMessageBox.warning(self, self.tr("Mask creation failed"), str(e))
                 return None
         return self._cached_base_mask_full
 
@@ -1560,7 +1571,7 @@ class MaskCreationDialog(QDialog):
                 self._cached_base_mask_preview = self._create_mask_from_shapes_at_size(h, w)
                 self._cached_base_mask_preview_dirty = False
             except RuntimeError as e:
-                QMessageBox.warning(self, "Mask creation failed", str(e))
+                QMessageBox.warning(self, self.tr("Mask creation failed"), str(e))
                 return None
         return self._cached_base_mask_preview
 
@@ -1697,7 +1708,7 @@ class MaskCreationDialog(QDialog):
 
     def _generate_color_mask(self, color: str) -> np.ndarray:
         if cv2 is None:
-            QMessageBox.warning(self, "Missing OpenCV", "Color masks require OpenCV (cv2).")
+            QMessageBox.warning(self, self.tr("Missing OpenCV"), self.tr("Color masks require OpenCV (cv2)."))
             return np.zeros(self.image.shape[:2], dtype=np.float32)
         ranges = {
             "Red": [(0, 10), (350, 360)], "Orange": [(10, 40)], "Yellow": [(40, 70)],
@@ -1718,7 +1729,7 @@ class MaskCreationDialog(QDialog):
 
     def _generate_chrominance(self) -> np.ndarray:
         if cv2 is None or self.image.ndim != 3:
-            QMessageBox.warning(self, "Needs RGB + OpenCV", "Chrominance mask requires an RGB image and OpenCV.")
+            QMessageBox.warning(self, self.tr("Needs RGB + OpenCV"), self.tr("Chrominance mask requires an RGB image and OpenCV."))
             return np.zeros(self.image.shape[:2], dtype=np.float32)
         rgb8 = (np.clip(self.image, 0, 1) * 255).astype(np.uint8)
         ycrcb = cv2.cvtColor(rgb8, cv2.COLOR_RGB2YCrCb)
@@ -1731,16 +1742,16 @@ class MaskCreationDialog(QDialog):
         """Availability + reason string for the Gaia augment checkbox."""
         if getattr(self, "wcs", None) is None:
             return (False,
-                    "Gaia augment requires a plate-solved image.\n"
-                    "Run Plate Solve on the image first.")
+                    self.tr("Gaia augment requires a plate-solved image.\n"
+                    "Run Plate Solve on the image first."))
         try:
             from setiastro.saspro.gaia_database import get_astro_library
             if not get_astro_library().installed_bands():
                 return (False,
-                        "No Gaia Local DB astrometric bands installed.\n"
-                        "Open Settings → Gaia Local DB Library → Astrometry to install.")
+                        self.tr("No Gaia Local DB astrometric bands installed.\n"
+                        "Open Settings → Gaia Local DB Library → Astrometry to install."))
         except Exception as e:
-            return (False, f"Gaia astrometric library unavailable:\n{e}")
+            return (False, self.tr("Gaia astrometric library unavailable:\n{0}").format(e))
         return (True, "")
 
     def _augment_star_mask_with_gaia(self, out: np.ndarray, sep_objs) -> np.ndarray:
@@ -1936,10 +1947,7 @@ class MaskCreationDialog(QDialog):
             m = base
 
         elif t == "Range Selection":
-            comp = (
-                (img[..., 0]*0.2989 + img[..., 1]*0.5870 + img[..., 2]*0.1140).astype(np.float32)
-                if img.ndim == 3 else img.astype(np.float32)
-            )
+            comp = _mc_range_component(img, self.light_cb.isChecked())
             L = self.lower_sl.value() / self.lower_sl.maximum()
             U = self.upper_sl.value() / self.upper_sl.maximum()
             fuzz = self.fuzz_sl.value() / self.fuzz_sl.maximum()
@@ -1997,13 +2005,13 @@ class MaskCreationDialog(QDialog):
             if base is None:
                 return None
         except RuntimeError as e:
-            QMessageBox.warning(self, "Mask creation failed", str(e)); return None
+            QMessageBox.warning(self, self.tr("Mask creation failed"), str(e)); return None
 
         t = self.mask_type
         if t == "Binary":
             m = base
         elif t == "Range Selection":
-            comp = self._component_lightness() if self.light_cb.isChecked() else self._component_lightness()
+            comp = _mc_range_component(self.image, self.light_cb.isChecked())
             L = self.lower_sl.value() / self.lower_sl.maximum()
             U = self.upper_sl.value() / self.upper_sl.maximum()
             fuzz = self.fuzz_sl.value() / self.fuzz_sl.maximum()
@@ -2052,7 +2060,7 @@ class MaskCreationDialog(QDialog):
         self.live_preview.update_mask(m)
 
     def _preview_mask(self):
-        self._set_status("Building full-resolution mask preview...")
+        self._set_status(self.tr("Building full-resolution mask preview..."))
         try:
             m = self.generate_mask()
             if m is None:
@@ -2261,7 +2269,7 @@ class MaskCreationDialog(QDialog):
             pass
 
     def _accept_apply(self):
-        self._set_status("Creating full-resolution mask document...")
+        self._set_status(self.tr("Creating full-resolution mask document..."))
         try:
             m = self.generate_mask()
             if m is None:
@@ -2272,7 +2280,7 @@ class MaskCreationDialog(QDialog):
 
             # if this dialog was opened in "tool" mode, push it as a new doc
             if self.auto_push_on_ok:
-                self._set_status("Calculating full mask and creating document...")
+                self._set_status(self.tr("Calculating full mask and creating document..."))
                 _push_numpy_as_new_document(
                     self, m,
                     # Prime the "Name:" field with a type-aware default so
@@ -2313,7 +2321,7 @@ class MaskCreationDialog(QDialog):
                 return
         except Exception:
             pass  # fall through to friendly message
-        QMessageBox.information(self, "Zoom", "Zoom is not supported by this canvas build.")
+        QMessageBox.information(self, self.tr("Zoom"), self.tr("Zoom is not supported by this canvas build."))
 
     def _fit_canvas(self):
         c = self.canvas
@@ -2329,7 +2337,7 @@ class MaskCreationDialog(QDialog):
                     return
         except Exception:
             pass
-        QMessageBox.information(self, "Fit", "Fit-to-preview is not supported by this canvas build.")
+        QMessageBox.information(self, self.tr("Fit"), self.tr("Fit-to-preview is not supported by this canvas build."))
 
     # --- NEW: Ctrl+Wheel zoom passthrough -----------------------------------
     def eventFilter(self, obj, ev):
@@ -2405,7 +2413,7 @@ def create_mask_and_attach(parent, document, *, make_active: bool = False) -> bo
     refused (no image, construction failure).
     """
     if document is None or getattr(document, "image", None) is None:
-        QMessageBox.information(parent, "No image", "Open an image first.")
+        QMessageBox.information(parent, _tr("No image"), _tr("Open an image first."))
         return False
 
     # Pull WCS from the doc for the Gaia augment. _extract_wcs_from_document
@@ -2425,8 +2433,8 @@ def create_mask_and_attach(parent, document, *, make_active: bool = False) -> bo
         dlg = MaskCreationDialog(document.image, parent=parent,
                                  auto_push_on_ok=True, wcs=wcs)
     except Exception as e:
-        QMessageBox.warning(parent, "Mask Creation",
-                            f"Failed to open mask dialog:\n{e}")
+        QMessageBox.warning(parent, _tr("Mask Creation"),
+                            _tr("Failed to open mask dialog:\n{0}").format(e))
         return False
 
     # Keep-alive. Prefer a set on `parent` so dialogs land next to the
@@ -2489,8 +2497,8 @@ def create_mask_and_attach(parent, document, *, make_active: bool = False) -> bo
         dlg.finished.connect(_on_finished)
     except Exception as e:
         tracker.discard(dlg)
-        QMessageBox.warning(parent, "Mask Creation",
-                            f"Failed to connect dialog signals:\n{e}")
+        QMessageBox.warning(parent, _tr("Mask Creation"),
+                            _tr("Failed to connect dialog signals:\n{0}").format(e))
         try:
             dlg.deleteLater()
         except Exception:
@@ -2567,6 +2575,40 @@ def _mc_component_lightness(image: np.ndarray) -> np.ndarray:
                 + image[..., 1] * 0.5870
                 + image[..., 2] * 0.1140).astype(np.float32)
     return image.astype(np.float32)
+
+
+def _mc_cie_lightness(image: np.ndarray) -> np.ndarray:
+    """CIE L*/100 in [0, 1], the "Lightness" option of Range Selection.
+
+    Values are treated as sRGB-encoded (as PixInsight's RangeSelection does
+    with its default RGB working space): linearize, take Rec.709 Y, then L*.
+    Unlike the plain luma weighting, saturated colour (e.g. red Ha nebulosity)
+    reads as bright as it looks instead of being down-weighted.
+    """
+    def _lin(c):
+        c = np.clip(c, 0.0, 1.0).astype(np.float32, copy=False)
+        return np.where(c <= 0.04045, c / 12.92,
+                        np.power((c + 0.055) / 1.055, 2.4)).astype(np.float32)
+
+    if image.ndim == 3 and image.shape[2] >= 3:
+        y = (0.2126 * _lin(image[..., 0])
+             + 0.7152 * _lin(image[..., 1])
+             + 0.0722 * _lin(image[..., 2]))
+    else:
+        y = _lin(image[..., 0] if image.ndim == 3 else image)
+    eps = (6.0 / 29.0) ** 3
+    f = np.where(y > eps, np.cbrt(y), y / (3.0 * (6.0 / 29.0) ** 2) + 4.0 / 29.0)
+    return np.clip((116.0 * f - 16.0) / 100.0, 0.0, 1.0).astype(np.float32)
+
+
+def _mc_range_component(image: np.ndarray, use_lightness: bool) -> np.ndarray:
+    """Range Selection input: CIE lightness when the Lightness box is checked,
+    otherwise the luma weighting Range Selection has always used."""
+    if image.ndim == 3 and image.shape[2] == 1:
+        image = image[..., 0]
+    if use_lightness:
+        return _mc_cie_lightness(image)
+    return _mc_component_lightness(image)
 
 
 def _mc_range_mask(comp01: np.ndarray, L: float, U: float, fuzz: float,
@@ -2687,7 +2729,7 @@ def generate_mask_from_preset(image: np.ndarray, preset: dict | None,
             m = base
 
         elif mask_type == "Range Selection":
-            comp = _mc_component_lightness(img)
+            comp = _mc_range_component(img, bool(preset.get("lightness", False)))
             m = base * _mc_range_mask(
                 comp,
                 L=float(preset.get("lower", 0.0)),

@@ -271,7 +271,7 @@ class _FitWorker(QObject):
             if Ellipse is None or EllipseGeometry is None or build_ellipse_model is None:
                 raise RuntimeError("photutils.isophote not available")
 
-            self.progress.emit(5, "Preparing…")
+            self.progress.emit(5, self.tr("Preparing…"))
             ds = int(max(1, self.p.get("downsample", 1)))
 
             # --- geometry at full-res ---
@@ -313,7 +313,7 @@ class _FitWorker(QObject):
             else:
                 full_shape = (self.img.shape[0], self.img.shape[1])
 
-            self.progress.emit(20, "Building mask…")
+            self.progress.emit(20, self.tr("Building mask…"))
 
             # --- wedge mask on the fit grid ---
             h, w = img_for_fit.shape
@@ -348,12 +348,12 @@ class _FitWorker(QObject):
             if mode_key:
                 fit_kwargs[mode_key] = "bilinear"
 
-            self.progress.emit(40, "Fitting isophotes…")
+            self.progress.emit(40, self.tr("Fitting isophotes…"))
             isolist = ell.fit_image(**fit_kwargs)
             if hasattr(isolist, "__len__") and len(isolist) == 0:
                 raise ValueError("isolist must not be empty")
 
-            self.progress.emit(60, "Building model…")
+            self.progress.emit(60, self.tr("Building model…"))
             model_fit = build_ellipse_model(
                 img_for_fit.shape,
                 isolist,
@@ -361,7 +361,7 @@ class _FitWorker(QObject):
             )
             resid_fit = img_for_fit - model_fit
 
-            self.progress.emit(95, "Upsampling / finalizing…")
+            self.progress.emit(95, self.tr("Upsampling / finalizing…"))
 
             # --- send full-size arrays to the UI ---
             if ds > 1:
@@ -428,11 +428,11 @@ class IsophoteModelerDialog(QDialog):
         self._last_run_timer = None
 
         if Ellipse is None:
-            QMessageBox.critical(self, "Photutils Missing",
-                                 "photutils.isophote is required for GLIMR.")
+            QMessageBox.critical(self, self.tr("Photutils Missing"),
+                                 self.tr("photutils.isophote is required for GLIMR."))
             self.close(); return
 
-        self.setWindowTitle(title_hint or "GLIMR — GaLaxy Isophote Modeler & Residual Revealer")
+        self.setWindowTitle(title_hint or self.tr("GLIMR — GaLaxy Isophote Modeler & Residual Revealer"))
         self.setMinimumSize(1100, 700)
         self.setWindowFlags(self.windowFlags()
                             | Qt.WindowType.WindowMaximizeButtonHint
@@ -466,10 +466,10 @@ class IsophoteModelerDialog(QDialog):
         # ---- Controls ----
         ctl = QWidget(); form = QFormLayout(ctl)
 
-        self.fix_center = QCheckBox("Fix Center")
-        self.fix_pa = QCheckBox("Fix PA")
-        self.fix_eps = QCheckBox("Fix Ellipticity")
-        self.high_harm = QCheckBox("Add a3/b3/a4/b4 in model")
+        self.fix_center = QCheckBox(self.tr("Fix Center"))
+        self.fix_pa = QCheckBox(self.tr("Fix PA"))
+        self.fix_eps = QCheckBox(self.tr("Fix Ellipticity"))
+        self.high_harm = QCheckBox(self.tr("Add a3/b3/a4/b4 in model"))
 
         h, w = self._img.shape
         max_rad = min(h, w) / 1.2
@@ -484,54 +484,54 @@ class IsophoteModelerDialog(QDialog):
         self.eps       = FloatSlider(0.0, 0.95, 0.20, decimals=3)
         self.pa_deg    = FloatSlider(-180.0, 180.0, 90.0, decimals=1, unit="°")
 
-        self.use_wedge   = QCheckBox("Exclude wedge (deg)")
+        self.use_wedge   = QCheckBox(self.tr("Exclude wedge (deg)"))
         self.wedge_pa    = FloatSlider(-180.0, 180.0, 0.0, decimals=1, unit="°")
         self.wedge_width = FloatSlider(0.0, 180.0, 30.0, decimals=1, unit="°")
 
         self._cx, self._cy = w/2.0, h/2.0
-        self.center_label = QLabel(f"Center: ({self._cx:.1f}, {self._cy:.1f})")
-        pick_center_btn = QPushButton("Pick Center (Shift+click)  •  Move (Ctrl+drag ellipse)")
+        self.center_label = QLabel(self.tr("Center: ({0:.1f}, {1:.1f})").format(self._cx, self._cy))
+        pick_center_btn = QPushButton(self.tr("Pick Center (Shift+click)  •  Move (Ctrl+drag ellipse)"))
 
-        self.hq_interp = QCheckBox("High-quality interpolation (slower)")
+        self.hq_interp = QCheckBox(self.tr("High-quality interpolation (slower)"))
         self.hq_interp.setChecked(False)
-        self.quick_preview = QCheckBox("Quick preview (4× downsample)")
+        self.quick_preview = QCheckBox(self.tr("Quick preview (4× downsample)"))
         self.quick_preview.setChecked(True)
 
-        run_btn = QPushButton("Fit Model"); run_btn.clicked.connect(self._run_fit)
-        self.preview_blend = QCheckBox("Show original outside max ellipse")
+        run_btn = QPushButton(self.tr("Fit Model")); run_btn.clicked.connect(self._run_fit)
+        self.preview_blend = QCheckBox(self.tr("Show original outside max ellipse"))
         self.preview_blend.setChecked(True)
 
-        self.normalize_input = QCheckBox("Normalize before fitting (Linear Data)")
-        self.normalize_input.setToolTip(
+        self.normalize_input = QCheckBox(self.tr("Normalize before fitting (Linear Data)"))
+        self.normalize_input.setToolTip(self.tr(
             "Apply global statistical stretch to the input before fitting/preview.\n"
             "Uses mono median target of 0.25."
-        )
+        ))
         self.normalize_input.setChecked(False)
 
         form.addRow(self.normalize_input)
-        form.addRow(QLabel("<b>Geometry & Start</b>"))
+        form.addRow(QLabel(self.tr("<b>Geometry & Start</b>")))
         form.addRow("sma0", self.sma0)
-        form.addRow("min sma", self.minsma)
-        form.addRow("max sma", self.maxsma)
-        form.addRow("step", self.step)
-        self.ring_est_label = QLabel("≈ 0 rings"); form.addRow(self.ring_est_label)
-        form.addRow("σ-clip (sclip)", self.sclip)
-        form.addRow("σ-clip iters", self.nclip)
-        form.addRow(self._help_row(self.fix_center, "Fix (x0,y0) across radii."))
-        form.addRow(self._help_row(self.fix_pa, "Fix PA across radii."))
-        form.addRow(self._help_row(self.fix_eps, "Fix ellipticity ε across radii."))
-        form.addRow(self._help_row(self.high_harm, "Include a3/b3/a4/b4 in model."))
+        form.addRow(self.tr("min sma"), self.minsma)
+        form.addRow(self.tr("max sma"), self.maxsma)
+        form.addRow(self.tr("step"), self.step)
+        self.ring_est_label = QLabel(self.tr("≈ 0 rings")); form.addRow(self.ring_est_label)
+        form.addRow(self.tr("σ-clip (sclip)"), self.sclip)
+        form.addRow(self.tr("σ-clip iters"), self.nclip)
+        form.addRow(self._help_row(self.fix_center, self.tr("Fix (x0,y0) across radii.")))
+        form.addRow(self._help_row(self.fix_pa, self.tr("Fix PA across radii.")))
+        form.addRow(self._help_row(self.fix_eps, self.tr("Fix ellipticity ε across radii.")))
+        form.addRow(self._help_row(self.high_harm, self.tr("Include a3/b3/a4/b4 in model.")))
         form.addRow(pick_center_btn)
 
-        form.addRow(QLabel("<b>Center / Shape</b>"))
+        form.addRow(QLabel(self.tr("<b>Center / Shape</b>")))
         form.addRow(self.center_label)
-        form.addRow("ellipticity ε", self.eps)
-        form.addRow("PA (deg)", self.pa_deg)
+        form.addRow(self.tr("ellipticity ε"), self.eps)
+        form.addRow(self.tr("PA (deg)"), self.pa_deg)
 
-        form.addRow(QLabel("<b>Wedge Mask</b>"))
+        form.addRow(QLabel(self.tr("<b>Wedge Mask</b>")))
         wr = QWidget(); wr_l = QHBoxLayout(wr); wr_l.setContentsMargins(0,0,0,0)
         wr_l.addWidget(self.use_wedge); wr_l.addWidget(QLabel("PA0")); wr_l.addWidget(self.wedge_pa)
-        wr_l.addWidget(QLabel("±width/2")); wr_l.addWidget(self.wedge_width)
+        wr_l.addWidget(QLabel(self.tr("±width/2"))); wr_l.addWidget(self.wedge_width)
         form.addRow(wr)
         form.addRow(self.hq_interp)
         form.addRow(self.preview_blend)
@@ -541,7 +541,7 @@ class IsophoteModelerDialog(QDialog):
         _rl.addWidget(make_help_button("glimr", self))
         form.addRow(run_row)
 
-        self.save_resid_shifted = QCheckBox("Shift residuals to ≥ 0 on save")
+        self.save_resid_shifted = QCheckBox(self.tr("Shift residuals to ≥ 0 on save"))
         self.save_resid_shifted.setChecked(True)
         form.addRow(self.save_resid_shifted)
 
@@ -558,9 +558,9 @@ class IsophoteModelerDialog(QDialog):
 
         # connections
         pick_center_btn.clicked.connect(lambda: QMessageBox.information(
-            self, "Center Picking",
-            "Shift+LeftClick in the left image to set the center.\n"
-            "Hold Ctrl and drag the cyan ellipse to adjust."
+            self, self.tr("Center Picking"),
+            self.tr("Shift+LeftClick in the left image to set the center.\n"
+                    "Hold Ctrl and drag the cyan ellipse to adjust.")
         ))
         for s in (self.sma0, self.maxsma, self.eps, self.pa_deg, self.minsma):
             s.valueChanged.connect(lambda _=None: self._create_or_update_overlay())
@@ -592,10 +592,10 @@ class IsophoteModelerDialog(QDialog):
                     else:
                         h, m = divmod(m, 60)
                         eta = f"{m:d}m {s:d}s" if h < 1 else f"{h:d}h {m:d}m"
-                tag = "quick" if ds > 1 else "full"
-                self.ring_est_label.setText(f"≈ {n:,} rings • est: {eta} ({tag})")
+                tag = self.tr("quick") if ds > 1 else self.tr("full")
+                self.ring_est_label.setText(self.tr("≈ {0:,} rings • est: {1} ({2})").format(n, eta, tag))
             else:
-                self.ring_est_label.setText(f"≈ {n:,} rings")
+                self.ring_est_label.setText(self.tr("≈ {0:,} rings").format(n))
             if n > 10000:
                 new_step = max(st, (mx - mn) / 10000.0)
                 if abs(new_step - st) > 1e-12:
@@ -642,28 +642,30 @@ class IsophoteModelerDialog(QDialog):
     def _update_lowres_hints(self):
         on = self.quick_preview.isChecked()
         ds = 4 if on else 1
-        text = f"low-res (fit at {ds}× downsample)" if on else ""
+        text = self.tr("low-res (fit at {0}× downsample)").format(ds) if on else ""
         for lbl in (self._model_lowres_hint, self._resid_lowres_hint):
             lbl.setText(text); lbl.setVisible(on)
 
     def _make_export_row(self, which: str):
         row = QWidget(self); lay = QHBoxLayout(row); lay.setContentsMargins(0,0,0,0)
-        save_btn = QPushButton(f"Save {which.capitalize()} FITS…", row)
+        save_btn = QPushButton(self.tr("Save Model FITS…") if which == "model"
+                               else self.tr("Save Resid FITS…"), row)
         save_btn.clicked.connect(lambda: self._save_fits(which=which))
         lay.addWidget(save_btn, 0)
 
-        new_btn = QPushButton(f"New Doc: {which.capitalize()} (normalized)", row)
+        new_btn = QPushButton(self.tr("New Doc: Model (normalized)") if which == "model"
+                              else self.tr("New Doc: Resid (normalized)"), row)
         new_btn.clicked.connect(lambda: self._push_product(which=which, variant="normalized"))
         lay.addWidget(new_btn, 0)
 
         if which == "resid":
-            vis_btn = QPushButton("New Doc: Residual (visible)", row)
-            vis_btn.setToolTip("Push exactly what you see in the right preview pane")
+            vis_btn = QPushButton(self.tr("New Doc: Residual (visible)"), row)
+            vis_btn.setToolTip(self.tr("Push exactly what you see in the right preview pane"))
             vis_btn.clicked.connect(lambda: self._push_product(which="resid", variant="visible"))
             lay.addWidget(vis_btn, 0)
 
-            stretch_btn = QPushButton("New Doc: Residual (stretched)", row)
-            stretch_btn.setToolTip("Symmetric preview stretch (0 → gray)")
+            stretch_btn = QPushButton(self.tr("New Doc: Residual (stretched)"), row)
+            stretch_btn.setToolTip(self.tr("Symmetric preview stretch (0 → gray)"))
             stretch_btn.clicked.connect(lambda: self._push_product(which="resid", variant="stretched"))
             lay.addWidget(stretch_btn, 0)
 
@@ -688,7 +690,7 @@ class IsophoteModelerDialog(QDialog):
                 rings = int(max(0, (mx - mn) / st))
 
         ds = 4 if self.quick_preview.isChecked() else 1
-        txt = f"≈ {rings:,} rings"
+        txt = self.tr("≈ {0:,} rings").format(rings)
 
         # Seconds-per-ring profile (EMA-learned); scale from the other ds if missing
         spr = self._perf.get(ds)
@@ -699,7 +701,8 @@ class IsophoteModelerDialog(QDialog):
 
         if spr is not None and rings > 0:
             eta = self._humanize_secs(spr * rings)
-            txt += f"  •  est: {eta}" + (" (quick preview)" if ds > 1 else "")
+            txt = (self.tr("≈ {0:,} rings  •  est: {1} (quick preview)") if ds > 1
+                   else self.tr("≈ {0:,} rings  •  est: {1}")).format(rings, eta)
 
         self.ring_est_label.setText(txt)
 
@@ -738,7 +741,7 @@ class IsophoteModelerDialog(QDialog):
         q = np.quantile(img, 0.80)
         mask = img >= q
         if not np.any(mask):
-            QMessageBox.information(self, "Auto-estimate", "Could not find bright core pixels.")
+            QMessageBox.information(self, self.tr("Auto-estimate"), self.tr("Could not find bright core pixels."))
             return
         I = img[mask]; x = xx[mask]; y = yy[mask]
         I_sum = I.sum()
@@ -914,7 +917,7 @@ class IsophoteModelerDialog(QDialog):
         btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxQuestion))
         btn.setFixedSize(QSize(18, 18)); btn.setIconSize(QSize(14, 14))
         btn.setToolTip(help_text); ctrl.setToolTip(help_text); ctrl.setWhatsThis(help_text)
-        title = ctrl.text() if hasattr(ctrl, "text") else "Help"
+        title = ctrl.text() if hasattr(ctrl, "text") else self.tr("Help")
         btn.clicked.connect(lambda: QMessageBox.information(self, title, help_text))
         lay.addWidget(btn, 0)
         return row
@@ -922,7 +925,7 @@ class IsophoteModelerDialog(QDialog):
     def _set_center(self, x: float, y: float):
         h, w = self._img.shape
         self._cx = float(np.clip(x, 0, w-1)); self._cy = float(np.clip(y, 0, h-1))
-        self.center_label.setText(f"Center: ({self._cx:.1f}, {self._cy:.1f})")
+        self.center_label.setText(self.tr("Center: ({0:.1f}, {1:.1f})").format(self._cx, self._cy))
         self._update_wedge_overlay(); self._create_or_update_overlay()
 
     def _on_left_click(self, x, y):
@@ -972,10 +975,10 @@ class IsophoteModelerDialog(QDialog):
                 else:
                     h, m = divmod(m, 60)
                     eta = f"{m:d}m {s:d}s" if h < 1 else f"{h:d}h {m:d}m"
-            busy_hint = f" (~{n_est:,} rings, est {eta})"
+            busy_hint = self.tr(" (~{0:,} rings, est {1})").format(n_est, eta)
 
         self._last_fit_params = dict(p)
-        self._busy = QProgressDialog(f"Fitting…{busy_hint}", None, 0, 100, self)
+        self._busy = QProgressDialog(self.tr("Fitting…{0}").format(busy_hint), None, 0, 100, self)
         self._busy.setWindowModality(Qt.WindowModality.ApplicationModal)
         self._busy.setAutoClose(False); self._busy.setAutoReset(False)
         self._busy.show()
@@ -1114,16 +1117,17 @@ class IsophoteModelerDialog(QDialog):
         if hasattr(self, "_busy") and self._busy is not None:
             self._busy.close(); self._busy = None
         self._last_run_timer = None
-        QMessageBox.critical(self, "Isophote Fit Error", msg)
+        QMessageBox.critical(self, self.tr("Isophote Fit Error"), msg)
 
     # ---------- export (push to doc_manager) ----------
     def _push_product(self, which: str, variant: str):
         if self.doc_manager is None:
-            QMessageBox.information(self, "GLIMR", "No document manager available.")
+            QMessageBox.information(self, "GLIMR", self.tr("No document manager available."))
             return
         arr = self._resid if which == "resid" else self._model
         if arr is None:
-            QMessageBox.information(self, "GLIMR", f"Run the fit first to generate the {which}.")
+            QMessageBox.information(self, "GLIMR", self.tr("Run the fit first to generate the resid.")
+                                    if which == "resid" else self.tr("Run the fit first to generate the model."))
             return
 
         step_name = f"Isophote {which.capitalize()}"
@@ -1174,7 +1178,7 @@ class IsophoteModelerDialog(QDialog):
 
         ok = self._push_array_to_doc_manager(data01, title, meta)
         if not ok:
-            QMessageBox.warning(self, "GLIMR", "Could not create a new document in doc manager.")
+            QMessageBox.warning(self, "GLIMR", self.tr("Could not create a new document in doc manager."))
 
     def _push_array_to_doc_manager(self, arr01: np.ndarray, title: str, meta: dict) -> bool:
         """Create a brand-new document in your DocManager."""
@@ -1220,10 +1224,13 @@ class IsophoteModelerDialog(QDialog):
     def _save_fits(self, which="resid"):
         arr = self._resid if which == "resid" else self._model
         if arr is None:
-            QMessageBox.information(self, "Nothing to save",
-                                    f"Run the fit first to generate the {which}.")
+            QMessageBox.information(self, self.tr("Nothing to save"),
+                                    self.tr("Run the fit first to generate the resid.")
+                                    if which == "resid" else self.tr("Run the fit first to generate the model."))
             return
-        fn, _ = QFileDialog.getSaveFileName(self, f"Save {which} FITS", f"{which}.fits", "FITS files (*.fits *.fit)")
+        fn, _ = QFileDialog.getSaveFileName(self, self.tr("Save resid FITS") if which == "resid"
+                                            else self.tr("Save model FITS"),
+                                            f"{which}.fits", "FITS files (*.fits *.fit)")
         if not fn:
             return
         try:
@@ -1262,4 +1269,4 @@ class IsophoteModelerDialog(QDialog):
                 hdr["ISO_WWID"] = (float(p.get("wedge_width", np.nan)),"Wedge width (deg)")
             fits.PrimaryHDU(data.astype(np.float32), header=hdr).writeto(fn, overwrite=True)
         except Exception as e:
-            QMessageBox.critical(self, "Save Error", str(e))
+            QMessageBox.critical(self, self.tr("Save Error"), str(e))

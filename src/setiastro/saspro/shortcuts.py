@@ -8,7 +8,8 @@ import uuid
 import numpy as np
 
 from PyQt6.QtCore import (Qt, QPoint, QRect, QMimeData, QSettings, QByteArray,
-                          QDataStream, QIODevice, QEvent, QSize)
+                          QDataStream, QIODevice, QEvent, QSize,
+                          QCoreApplication, QT_TRANSLATE_NOOP)
 from PyQt6.QtGui import (QAction, QDrag, QIcon, QMouseEvent, QPixmap, QKeyEvent, QKeyEvent, QCursor, QKeySequence)
 from PyQt6.QtWidgets import (QToolBar, QWidget, QToolButton, QMenu, QApplication, QVBoxLayout, QHBoxLayout, QComboBox, QGroupBox, QGridLayout, QDoubleSpinBox, QSpinBox,
                              QInputDialog, QMessageBox, QDialog, QSlider,
@@ -31,19 +32,31 @@ from pathlib import Path
 import os  # ← NEW
 from setiastro.saspro.shortcut_registry import declare_key, declare_gesture
 
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("Shortcuts", text)
+
+
+def _tr_ctx(context: str, text: str) -> str:
+    """Translate display text from another module's QT_TRANSLATE_NOOP table
+    (fx_module EFFECTS, syqon_studio STUDIO_MODELS, survey_gradient
+    _AVAILABILITY) in that module's own context."""
+    return QCoreApplication.translate(context, text) if text else text
+
+
 # Cheat sheet. Keys: ShortcutCanvas.keyPressEvent. Toolbar drags:
 # _start_drag_for_action (any of Alt/Ctrl/Shift starts one; Alt also carries
 # the command, so a view accepts the drop). Canvas: ShortcutButton handlers.
-declare_key("Delete", "Delete the selected desktop shortcuts", "Desktop shortcuts")
-declare_key("Backspace", "Delete the selected desktop shortcuts", "Desktop shortcuts")
-declare_key("Ctrl+A", "Select all desktop shortcuts", "Desktop shortcuts")
-declare_gesture("Alt, Ctrl or Shift+drag a toolbar button onto the canvas", "Toolbar", "Create a desktop shortcut for that command")
-declare_gesture("Alt+drag a toolbar button onto a view", "Toolbar", "Run that command on the view")
-declare_gesture("Double-click a desktop shortcut", "Desktop shortcuts", "Open its tool, with its preset if it has one")
-declare_gesture("Drag a desktop shortcut onto a view", "Desktop shortcuts", "Run its command and preset on that view")
-declare_gesture("Drag desktop shortcuts", "Desktop shortcuts", "Move them; a selection moves together")
-declare_gesture("Ctrl/Shift+click a desktop shortcut", "Desktop shortcuts", "Add it to or remove it from the selection")
-declare_gesture("Drag on empty canvas", "Desktop shortcuts", "Rubber-band select; hold Ctrl/Shift to add")
+declare_key("Delete", QT_TRANSLATE_NOOP("CheatSheet", "Delete the selected desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Desktop shortcuts"))
+declare_key("Backspace", QT_TRANSLATE_NOOP("CheatSheet", "Delete the selected desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Desktop shortcuts"))
+declare_key("Ctrl+A", QT_TRANSLATE_NOOP("CheatSheet", "Select all desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Desktop shortcuts"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Alt, Ctrl or Shift+drag a toolbar button onto the canvas"), QT_TRANSLATE_NOOP("CheatSheet", "Toolbar"), QT_TRANSLATE_NOOP("CheatSheet", "Create a desktop shortcut for that command"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Alt+drag a toolbar button onto a view"), QT_TRANSLATE_NOOP("CheatSheet", "Toolbar"), QT_TRANSLATE_NOOP("CheatSheet", "Run that command on the view"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Double-click a desktop shortcut"), QT_TRANSLATE_NOOP("CheatSheet", "Desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Open its tool, with its preset if it has one"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Drag a desktop shortcut onto a view"), QT_TRANSLATE_NOOP("CheatSheet", "Desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Run its command and preset on that view"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Drag desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Move them; a selection moves together"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Ctrl/Shift+click a desktop shortcut"), QT_TRANSLATE_NOOP("CheatSheet", "Desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Add it to or remove it from the selection"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Drag on empty canvas"), QT_TRANSLATE_NOOP("CheatSheet", "Desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Rubber-band select; hold Ctrl/Shift to add"))
 
 SASS_KIND   = "sas.shortcuts"
 SASS_VER    = 1
@@ -1117,7 +1130,7 @@ class ShortcutButton(QToolButton):
         self._did_command_drag = False
         self._moved = False
         self.setToolTip(
-            f"{label}\n• Double-click: open\n• Drag onto a view: headless apply\n• Drag on empty canvas: move"
+            self.tr("{0}\n• Double-click: open\n• Drag onto a view: headless apply\n• Drag on empty canvas: move").format(label)
         )
 
     # --- Preset helpers (QSettings) -------------------------------------
@@ -2913,7 +2926,7 @@ class _LevelsPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Levels — Preset")
+        self.setWindowTitle(self.tr("Levels — Preset"))
         init = dict(initial or {})
 
         self.sp_black = QDoubleSpinBox(self)
@@ -2935,8 +2948,8 @@ class _LevelsPresetDialog(QDialog):
         self.sp_white.setValue(float(init.get("white", 1.0)))
 
         self.cmb_channel = QComboBox(self)
-        self.cmb_channel.addItem("L (Luminance)", "L")
-        self.cmb_channel.addItem("K (Brightness / RGB linked)", "K")
+        self.cmb_channel.addItem(self.tr("L (Luminance)"), "L")
+        self.cmb_channel.addItem(self.tr("K (Brightness / RGB linked)"), "K")
         self.cmb_channel.addItem("R", "R")
         self.cmb_channel.addItem("G", "G")
         self.cmb_channel.addItem("B", "B")
@@ -2949,8 +2962,8 @@ class _LevelsPresetDialog(QDialog):
             self.cmb_channel.setCurrentIndex(idx)
 
         self.cmb_apply = QComboBox(self)
-        self.cmb_apply.addItem("Apply in place (overwrite target)", "inplace")
-        self.cmb_apply.addItem("Apply as new view", "new_view")
+        self.cmb_apply.addItem(self.tr("Apply in place (overwrite target)"), "inplace")
+        self.cmb_apply.addItem(self.tr("Apply as new view"), "new_view")
         am0 = str(init.get("apply_mode", "inplace") or "inplace")
         j = self.cmb_apply.findData(am0)
         if j >= 0:
@@ -2964,12 +2977,12 @@ class _LevelsPresetDialog(QDialog):
         )
 
         form = QFormLayout(self)
-        form.addRow("Black point:", self.sp_black)
-        form.addRow("Midtones:", self.sp_mid)
-        form.addRow("White point:", self.sp_white)
-        form.addRow("Channel:", self.cmb_channel)
-        form.addRow("Apply mode:", self.cmb_apply)
-        form.addRow("New view title:", self.ed_title)
+        form.addRow(self.tr("Black point:"), self.sp_black)
+        form.addRow(self.tr("Midtones:"), self.sp_mid)
+        form.addRow(self.tr("White point:"), self.sp_white)
+        form.addRow(self.tr("Channel:"), self.cmb_channel)
+        form.addRow(self.tr("Apply mode:"), self.cmb_apply)
+        form.addRow(self.tr("New view title:"), self.ed_title)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -3008,7 +3021,7 @@ class _FXPresetDialog(QDialog):
 
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("FX Preset")
+        self.setWindowTitle(self.tr("FX Preset"))
         self.setModal(True)
         self.resize(420, 420)
 
@@ -3025,9 +3038,9 @@ class _FXPresetDialog(QDialog):
         root.setSpacing(6)
 
         effect_row = QHBoxLayout()
-        effect_row.addWidget(QLabel("Effect:"))
+        effect_row.addWidget(QLabel(self.tr("Effect:")))
         self._combo_effect = QComboBox(self)
-        self._combo_effect.addItems([e["name"] for e in self._effects])
+        self._combo_effect.addItems([_tr_ctx("FXModule", e["name"]) for e in self._effects])
         idx0 = next((i for i, e in enumerate(self._effects)
                     if e["key"] == self._current_effect["key"]), 0)
         self._combo_effect.setCurrentIndex(idx0)
@@ -3040,11 +3053,11 @@ class _FXPresetDialog(QDialog):
         self._lbl_desc.setStyleSheet("font-size: 10px; color: #999;")
         root.addWidget(self._lbl_desc)
 
-        self._params_grp = QGroupBox("Parameters", self)
+        self._params_grp = QGroupBox(self.tr("Parameters"), self)
         self._controls_lay = QVBoxLayout(self._params_grp)
         root.addWidget(self._params_grp, 1)
 
-        btn_reset = QPushButton("Reset to Defaults", self)
+        btn_reset = QPushButton(self.tr("Reset to Defaults"), self)
         btn_reset.clicked.connect(self._reset_current)
         root.addWidget(btn_reset)
 
@@ -3071,7 +3084,7 @@ class _FXPresetDialog(QDialog):
                 self._clear_layout(item.layout())
 
     def _rebuild_controls(self, eff: dict, seed: dict | None = None):
-        self._lbl_desc.setText(eff["description"])
+        self._lbl_desc.setText(_tr_ctx("FXModule", eff["description"]))
         self._clear_layout(self._controls_lay)
         self._param_widgets = {}
         seed = seed or {}
@@ -3088,19 +3101,19 @@ class _FXPresetDialog(QDialog):
                     raw_default = spec.slider_default
 
                 real_default = raw_default / spec.scale
-                lbl = QLabel(f"{spec.label}: {spec.fmt(real_default)}")
+                lbl = QLabel(f"{_tr_ctx('FXModule', spec.label)}: {spec.fmt(real_default)}")
                 sld = QSlider(Qt.Orientation.Horizontal, self)
                 sld.setRange(spec.slider_lo, spec.slider_hi)
                 sld.setValue(raw_default)
-                sld.setToolTip(spec.tooltip)
+                sld.setToolTip(_tr_ctx("FXModule", spec.tooltip))
                 sld.valueChanged.connect(
-                    lambda v, s=spec, l=lbl: l.setText(f"{s.label}: {s.fmt(v / s.scale)}"))
+                    lambda v, s=spec, l=lbl: l.setText(f"{_tr_ctx('FXModule', s.label)}: {s.fmt(v / s.scale)}"))
                 self._controls_lay.addWidget(lbl)
                 self._controls_lay.addWidget(sld)
                 self._param_widgets[spec.key] = ("slider", sld, spec)
             else:
                 row = QHBoxLayout()
-                row.addWidget(QLabel(f"{spec.label}:"))
+                row.addWidget(QLabel(f"{_tr_ctx('FXModule', spec.label)}:"))
                 combo = QComboBox(self)
                 combo.addItems(spec.choices or [])
                 default_choice = seed.get(spec.key, spec.default_choice)
@@ -3108,7 +3121,7 @@ class _FXPresetDialog(QDialog):
                     combo.setCurrentText(default_choice)
                 elif spec.default_choice:
                     combo.setCurrentText(spec.default_choice)
-                combo.setToolTip(spec.tooltip)
+                combo.setToolTip(_tr_ctx("FXModule", spec.tooltip))
                 row.addWidget(combo, 1)
                 self._controls_lay.addLayout(row)
                 self._param_widgets[spec.key] = ("combo", combo, spec)
@@ -3146,7 +3159,7 @@ class _SatChromaPresetDialog(QDialog):
  
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("SatChroma Preset")
+        self.setWindowTitle(self.tr("SatChroma Preset"))
         self.setModal(True)
         self.resize(560, 460)
  
@@ -3156,9 +3169,9 @@ class _SatChromaPresetDialog(QDialog):
  
         # Mode
         mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Mode:"))
+        mode_row.addWidget(QLabel(self.tr("Mode:")))
         self._combo_mode = QComboBox(self)
-        self._combo_mode.addItems(["Saturation  (HSV)", "Chroma  (CIE Lab)"])
+        self._combo_mode.addItems([self.tr("Saturation  (HSV)"), self.tr("Chroma  (CIE Lab)")])
         self._combo_mode.setCurrentIndex(int(cur.get("mode", 0)))
         mode_row.addWidget(self._combo_mode, 1)
         root.addLayout(mode_row)
@@ -3173,7 +3186,7 @@ class _SatChromaPresetDialog(QDialog):
  
         # Strength
         str_row = QHBoxLayout()
-        str_row.addWidget(QLabel("Global strength:"))
+        str_row.addWidget(QLabel(self.tr("Global strength:")))
         self._sld = QSlider(Qt.Orientation.Horizontal, self)
         self._sld.setRange(0, 300)
         self._spin = QDoubleSpinBox(self)
@@ -3189,14 +3202,14 @@ class _SatChromaPresetDialog(QDialog):
         str_row.addWidget(self._sld, 1)
         str_row.addWidget(self._spin)
  
-        btn_reset = QPushButton("Reset Curve")
+        btn_reset = QPushButton(self.tr("Reset Curve"))
         btn_reset.setFixedWidth(84)
         btn_reset.clicked.connect(self._canvas.reset_points)
         str_row.addWidget(btn_reset)
         root.addLayout(str_row)
  
         # Mask
-        self._chk_mask = QCheckBox("Respect active mask", self)
+        self._chk_mask = QCheckBox(self.tr("Respect active mask"), self)
         self._chk_mask.setChecked(bool(cur.get("use_mask", True)))
         root.addWidget(self._chk_mask)
  
@@ -3238,13 +3251,13 @@ class _MaskCreationPresetDialog(QDialog):
         "Color: Green", "Color: Cyan", "Color: Blue", "Color: Magenta",
     ]
     _DIFFUSE_PROFILES = [
-        ("Extended structure", "extended"),
-        ("Brightness weighted", "brightness_weighted"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Extended structure"), "extended"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Brightness weighted"), "brightness_weighted"),
     ]
     _DIFFUSE_QUALITY = [
-        ("Low",    700),
-        ("Medium", 1400),
-        ("Ultra",  0),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Low"),    700),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Medium"), 1400),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Ultra"),  0),
     ]
     _APPLY_MODES = [
         # Order sets the default (first entry). apply_mask_creation_via_preset
@@ -3257,14 +3270,14 @@ class _MaskCreationPresetDialog(QDialog):
         #                 Requires Block 2 of _handle_command_drop to pass
         #                 target_sw through to apply_mask_creation_via_preset.
         #   both        — synonym for attach_only, kept for backward-compat
-        ("Push as new document",             "push_only"),
-        ("Push and apply to the dropped view", "attach_only"),
-        ("Both (same as 'Push and apply')",  "both"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Push as new document"),             "push_only"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Push and apply to the dropped view"), "attach_only"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Both (same as 'Push and apply')"),  "both"),
     ]
 
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Mask Creation — Preset")
+        self.setWindowTitle(self.tr("Mask Creation — Preset"))
         init = dict(initial or {})
 
         root = QVBoxLayout(self)
@@ -3277,12 +3290,12 @@ class _MaskCreationPresetDialog(QDialog):
         want_type = str(init.get("mask_type", "Binary"))
         i = self.cmb_type.findText(want_type)
         self.cmb_type.setCurrentIndex(max(0, i))
-        form_core.addRow("Mask type:", self.cmb_type)
+        form_core.addRow(self.tr("Mask type:"), self.cmb_type)
 
         self.sp_blur = QSpinBox()
         self.sp_blur.setRange(0, 300)
         self.sp_blur.setValue(int(init.get("blur_amount", 0)))
-        form_core.addRow("Edge blur (px):", self.sp_blur)
+        form_core.addRow(self.tr("Edge blur (px):"), self.sp_blur)
 
         # Default name is derived from the current mask type (e.g. a Color:
         # Green preset lands as "ColorMaskGreen", a Diffuse Structure preset
@@ -3310,7 +3323,7 @@ class _MaskCreationPresetDialog(QDialog):
             _init_name = self._derive_mask_name(want_type)
         self.ed_name = QLineEdit()
         self.ed_name.setText(_init_name)
-        form_core.addRow("Mask name:", self.ed_name)
+        form_core.addRow(self.tr("Mask name:"), self.ed_name)
 
         # Auto-sync when the mask type changes, unless the user customized.
         def _on_type_change_update_name(new_type: str):
@@ -3325,18 +3338,18 @@ class _MaskCreationPresetDialog(QDialog):
 
         self.cmb_apply = QComboBox()
         for label, key in self._APPLY_MODES:
-            self.cmb_apply.addItem(label, userData=key)
+            self.cmb_apply.addItem(_tr(label), userData=key)
         _am = str(init.get("apply_mode", "push_only"))
         j = self.cmb_apply.findData(_am)
         self.cmb_apply.setCurrentIndex(max(0, j))
-        form_core.addRow("On apply:", self.cmb_apply)
+        form_core.addRow(self.tr("On apply:"), self.cmb_apply)
 
         # Apply-only knobs — only meaningful when apply_mode is attach_only
         # or both. Keys are "apply_invert" / "apply_feather" (NOT plain
         # "invert" / "feather") because the Range Selection group below
         # already owns those names in the preset dict for its own mask-
         # inversion / blur controls. Confusing them was a real bug.
-        self.chk_apply_invert = QCheckBox("Invert mask when applied to view")
+        self.chk_apply_invert = QCheckBox(self.tr("Invert mask when applied to view"))
         self.chk_apply_invert.setChecked(bool(init.get("apply_invert", False)))
         form_core.addRow("", self.chk_apply_invert)
 
@@ -3346,12 +3359,12 @@ class _MaskCreationPresetDialog(QDialog):
         self.sp_apply_feather.setSingleStep(0.5)
         self.sp_apply_feather.setSuffix(" px")
         self.sp_apply_feather.setValue(float(init.get("apply_feather", 0.0)))
-        form_core.addRow("Feather on apply:", self.sp_apply_feather)
+        form_core.addRow(self.tr("Feather on apply:"), self.sp_apply_feather)
 
         root.addLayout(form_core)
 
         # ── Range Selection group ──────────────────────────────────────────
-        self.grp_range = QGroupBox("Range Selection")
+        self.grp_range = QGroupBox(self.tr("Range Selection"))
         fr = QGridLayout(self.grp_range)
         self.sp_lower = QDoubleSpinBox(); self.sp_lower.setRange(0.0, 1.0)
         self.sp_lower.setDecimals(3); self.sp_lower.setSingleStep(0.01)
@@ -3365,80 +3378,80 @@ class _MaskCreationPresetDialog(QDialog):
         self.sp_smooth = QDoubleSpinBox(); self.sp_smooth.setRange(0.0, 200.0)
         self.sp_smooth.setDecimals(2); self.sp_smooth.setSingleStep(0.5)
         self.sp_smooth.setValue(float(init.get("smooth", 3.0)))
-        self.chk_screen = QCheckBox("Screening"); self.chk_screen.setChecked(bool(init.get("screen", False)))
-        self.chk_light  = QCheckBox("Lightness"); self.chk_light.setChecked(bool(init.get("lightness", False)))
-        self.chk_invert = QCheckBox("Invert");    self.chk_invert.setChecked(bool(init.get("invert", False)))
-        self.chk_link   = QCheckBox("Link limits"); self.chk_link.setChecked(bool(init.get("link", False)))
-        fr.addWidget(QLabel("Lower:"), 0, 0); fr.addWidget(self.sp_lower, 0, 1)
-        fr.addWidget(QLabel("Upper:"), 1, 0); fr.addWidget(self.sp_upper, 1, 1)
-        fr.addWidget(QLabel("Fuzz:"),  2, 0); fr.addWidget(self.sp_fuzz,  2, 1)
-        fr.addWidget(QLabel("Blur σ (px):"), 3, 0); fr.addWidget(self.sp_smooth, 3, 1)
+        self.chk_screen = QCheckBox(self.tr("Screening")); self.chk_screen.setChecked(bool(init.get("screen", False)))
+        self.chk_light  = QCheckBox(self.tr("Lightness")); self.chk_light.setChecked(bool(init.get("lightness", False)))
+        self.chk_invert = QCheckBox(self.tr("Invert"));    self.chk_invert.setChecked(bool(init.get("invert", False)))
+        self.chk_link   = QCheckBox(self.tr("Link limits")); self.chk_link.setChecked(bool(init.get("link", False)))
+        fr.addWidget(QLabel(self.tr("Lower:")), 0, 0); fr.addWidget(self.sp_lower, 0, 1)
+        fr.addWidget(QLabel(self.tr("Upper:")), 1, 0); fr.addWidget(self.sp_upper, 1, 1)
+        fr.addWidget(QLabel(self.tr("Fuzz:")),  2, 0); fr.addWidget(self.sp_fuzz,  2, 1)
+        fr.addWidget(QLabel(self.tr("Blur σ (px):")), 3, 0); fr.addWidget(self.sp_smooth, 3, 1)
         fr.addWidget(self.chk_screen, 0, 2); fr.addWidget(self.chk_light, 1, 2)
         fr.addWidget(self.chk_invert, 2, 2); fr.addWidget(self.chk_link,  3, 2)
         root.addWidget(self.grp_range)
 
         # ── Diffuse Structure group ────────────────────────────────────────
-        self.grp_diffuse = QGroupBox("Diffuse Structure")
+        self.grp_diffuse = QGroupBox(self.tr("Diffuse Structure"))
         fd = QFormLayout(self.grp_diffuse)
         self.cmb_profile = QComboBox()
         for label, key in self._DIFFUSE_PROFILES:
-            self.cmb_profile.addItem(label, userData=key)
+            self.cmb_profile.addItem(_tr(label), userData=key)
         _dp = str(init.get("diffuse_profile", "extended"))
         pi = self.cmb_profile.findData(_dp)
         self.cmb_profile.setCurrentIndex(max(0, pi))
-        fd.addRow("Profile:", self.cmb_profile)
+        fd.addRow(self.tr("Profile:"), self.cmb_profile)
 
         self.sp_sens = QDoubleSpinBox(); self.sp_sens.setRange(0.5, 20.0)
         self.sp_sens.setDecimals(2); self.sp_sens.setSingleStep(0.05)
         self.sp_sens.setValue(float(init.get("diffuse_sensitivity", 1.0)))
-        fd.addRow("Sensitivity:", self.sp_sens)
+        fd.addRow(self.tr("Sensitivity:"), self.sp_sens)
 
         self.sp_feather = QDoubleSpinBox(); self.sp_feather.setRange(0.0, 10.0)
         self.sp_feather.setDecimals(3); self.sp_feather.setSingleStep(0.1)
         self.sp_feather.setSuffix(" %")
         self.sp_feather.setValue(float(init.get("diffuse_feather_frac", 0.0075)) * 100.0)
-        fd.addRow("Feather (% of short side):", self.sp_feather)
+        fd.addRow(self.tr("Feather (% of short side):"), self.sp_feather)
 
         self.sp_minarea = QDoubleSpinBox(); self.sp_minarea.setRange(0.0, 5.0)
         self.sp_minarea.setDecimals(3); self.sp_minarea.setSingleStep(0.05)
         self.sp_minarea.setSuffix(" %")
         self.sp_minarea.setValue(float(init.get("diffuse_min_area_frac", 0.001)) * 100.0)
-        fd.addRow("Minimum object area:", self.sp_minarea)
+        fd.addRow(self.tr("Minimum object area:"), self.sp_minarea)
 
         self.sp_envelope = QDoubleSpinBox(); self.sp_envelope.setRange(0.0, 25.0)
         self.sp_envelope.setDecimals(3); self.sp_envelope.setSingleStep(0.1)
         self.sp_envelope.setSuffix(" %")
         self.sp_envelope.setValue(float(init.get("diffuse_envelope_frac", 0.0)) * 100.0)
-        fd.addRow("Envelope fill:", self.sp_envelope)
+        fd.addRow(self.tr("Envelope fill:"), self.sp_envelope)
 
-        self.chk_reject_stars = QCheckBox("Suppress compact stars")
+        self.chk_reject_stars = QCheckBox(self.tr("Suppress compact stars"))
         self.chk_reject_stars.setChecked(bool(init.get("diffuse_reject_stars", False)))
         fd.addRow("", self.chk_reject_stars)
 
         self.cmb_quality = QComboBox()
         for label, key in self._DIFFUSE_QUALITY:
-            self.cmb_quality.addItem(label, userData=key)
+            self.cmb_quality.addItem(_tr(label), userData=key)
         _q = int(init.get("diffuse_quality", 1400))
         qi = self.cmb_quality.findData(_q)
         self.cmb_quality.setCurrentIndex(max(0, qi))
-        fd.addRow("Quality:", self.cmb_quality)
+        fd.addRow(self.tr("Quality:"), self.cmb_quality)
 
-        self.chk_diff_invert = QCheckBox("Invert (protect background)")
+        self.chk_diff_invert = QCheckBox(self.tr("Invert (protect background)"))
         self.chk_diff_invert.setChecked(bool(init.get("diffuse_invert", False)))
         fd.addRow("", self.chk_diff_invert)
 
         root.addWidget(self.grp_diffuse)
 
         # ── Star Mask group ────────────────────────────────────────────────
-        self.grp_star = QGroupBox("Star Mask")
+        self.grp_star = QGroupBox(self.tr("Star Mask"))
         fs = QFormLayout(self.grp_star)
         self.sp_star_thresh = QDoubleSpinBox()
         self.sp_star_thresh.setRange(0.5, 50.0); self.sp_star_thresh.setDecimals(1)
         self.sp_star_thresh.setSingleStep(0.5)
         self.sp_star_thresh.setValue(float(init.get("star_threshold", 3.0)))
-        fs.addRow("Detection threshold (σ):", self.sp_star_thresh)
+        fs.addRow(self.tr("Detection threshold (σ):"), self.sp_star_thresh)
 
-        self.chk_gaia = QCheckBox("Augment with Gaia Local DB (requires plate-solved WCS)")
+        self.chk_gaia = QCheckBox(self.tr("Augment with Gaia Local DB (requires plate-solved WCS)"))
         self.chk_gaia.setChecked(bool(init.get("gaia_augment", False)))
         fs.addRow("", self.chk_gaia)
 
@@ -3446,7 +3459,7 @@ class _MaskCreationPresetDialog(QDialog):
         self.sp_gaia_g.setRange(6.0, 20.0); self.sp_gaia_g.setDecimals(1)
         self.sp_gaia_g.setSingleStep(0.5)
         self.sp_gaia_g.setValue(float(init.get("gaia_max_g", 17.0)))
-        fs.addRow("Max Gaia G mag:", self.sp_gaia_g)
+        fs.addRow(self.tr("Max Gaia G mag:"), self.sp_gaia_g)
 
         root.addWidget(self.grp_star)
 
@@ -3527,7 +3540,7 @@ class _StatStretchPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Statistical Stretch — Preset")
+        self.setWindowTitle(self.tr("Statistical Stretch — Preset"))
         init = dict(initial or {})
 
         # --- Target median ---
@@ -3538,14 +3551,14 @@ class _StatStretchPresetDialog(QDialog):
         self.spin_target.setValue(float(init.get("target_median", 0.25)))
 
         # --- Linked / Normalize ---
-        self.chk_linked = QCheckBox("Linked RGB channels")
+        self.chk_linked = QCheckBox(self.tr("Linked RGB channels"))
         self.chk_linked.setChecked(bool(init.get("linked", False)))
 
-        self.chk_normalize = QCheckBox("Normalize to [0..1]")
+        self.chk_normalize = QCheckBox(self.tr("Normalize to [0..1]"))
         self.chk_normalize.setChecked(bool(init.get("normalize", False)))
 
         # --- Curves ---
-        self.chk_curves = QCheckBox("Apply Curves")
+        self.chk_curves = QCheckBox(self.tr("Apply Curves"))
         self.chk_curves.setChecked(bool(init.get("apply_curves", False)))
 
         self.spin_curves = QDoubleSpinBox()
@@ -3563,11 +3576,11 @@ class _StatStretchPresetDialog(QDialog):
         self.spin_bp.setSingleStep(0.05)
         self.spin_bp.setValue(float(init.get("blackpoint_sigma", 0.0)))
 
-        self.chk_no_black_clip = QCheckBox("No black clip")
+        self.chk_no_black_clip = QCheckBox(self.tr("No black clip"))
         self.chk_no_black_clip.setChecked(bool(init.get("no_black_clip", False)))
 
         # --- HDR compress ---
-        self.chk_hdr = QCheckBox("HDR compression")
+        self.chk_hdr = QCheckBox(self.tr("HDR compression"))
         self.chk_hdr.setChecked(bool(init.get("hdr_compress", False)))
 
         self.spin_hdr_amt = QDoubleSpinBox()
@@ -3591,7 +3604,7 @@ class _StatStretchPresetDialog(QDialog):
         self.chk_hdr.toggled.connect(_set_hdr_enabled)
 
         # --- Luma only ---
-        self.chk_luma_only = QCheckBox("Luma-only mode")
+        self.chk_luma_only = QCheckBox(self.tr("Luma-only mode"))
         self.chk_luma_only.setChecked(bool(init.get("luma_only", False)))
 
         self.cmb_luma = QComboBox()
@@ -3619,26 +3632,26 @@ class _StatStretchPresetDialog(QDialog):
         # --- Layout ---
         form = QFormLayout()
 
-        form.addRow("Target median:", self.spin_target)
+        form.addRow(self.tr("Target median:"), self.spin_target)
         form.addRow("", self.chk_linked)
         form.addRow("", self.chk_normalize)
 
-        form.addRow("", QLabel("— Tone shaping —"))
+        form.addRow("", QLabel(self.tr("— Tone shaping —")))
         form.addRow("", self.chk_curves)
-        form.addRow("Curves boost (0–1):", self.spin_curves)
+        form.addRow(self.tr("Curves boost (0–1):"), self.spin_curves)
 
-        form.addRow("", QLabel("— Blackpoint / HDR —"))
-        form.addRow("Blackpoint σ (0–1):", self.spin_bp)
+        form.addRow("", QLabel(self.tr("— Blackpoint / HDR —")))
+        form.addRow(self.tr("Blackpoint σ (0–1):"), self.spin_bp)
         form.addRow("", self.chk_no_black_clip)
 
         form.addRow("", self.chk_hdr)
-        form.addRow("HDR amount (0–1):", self.spin_hdr_amt)
-        form.addRow("HDR knee (0–1):", self.spin_hdr_knee)
+        form.addRow(self.tr("HDR amount (0–1):"), self.spin_hdr_amt)
+        form.addRow(self.tr("HDR knee (0–1):"), self.spin_hdr_knee)
 
-        form.addRow("", QLabel("— Luma mode —"))
+        form.addRow("", QLabel(self.tr("— Luma mode —")))
         form.addRow("", self.chk_luma_only)
-        form.addRow("Luma mode:", self.cmb_luma)
-        form.addRow("Luma blend (0–1):", self.spin_luma_blend)
+        form.addRow(self.tr("Luma mode:"), self.cmb_luma)
+        form.addRow(self.tr("Luma blend (0–1):"), self.spin_luma_blend)
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self
@@ -3677,7 +3690,7 @@ class _StatStretchPresetDialog(QDialog):
 class _StarStretchPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Star Stretch — Preset")
+        self.setWindowTitle(self.tr("Star Stretch — Preset"))
         init = dict(initial or {})
 
         self.spin_amount = QDoubleSpinBox()
@@ -3690,12 +3703,12 @@ class _StarStretchPresetDialog(QDialog):
         self.spin_sat.setSingleStep(0.05)
         self.spin_sat.setValue(float(init.get("color_boost", 1.00)))
 
-        self.chk_scnr = QCheckBox("Remove Green via SCNR")
+        self.chk_scnr = QCheckBox(self.tr("Remove Green via SCNR"))
         self.chk_scnr.setChecked(bool(init.get("scnr_green", False)))
 
         form = QFormLayout(self)
-        form.addRow("Stretch amount (0–8):", self.spin_amount)
-        form.addRow("Color boost (0–2):", self.spin_sat)
+        form.addRow(self.tr("Stretch amount (0–8):"), self.spin_amount)
+        form.addRow(self.tr("Color boost (0–2):"), self.spin_sat)
         form.addRow("", self.chk_scnr)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
@@ -3723,7 +3736,7 @@ class _CosmeticCorrectionPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Cosmetic Correction — Preset")
+        self.setWindowTitle(self.tr("Cosmetic Correction — Preset"))
         init = dict(initial or {})
 
         self.spin_hot = QDoubleSpinBox()
@@ -3738,19 +3751,19 @@ class _CosmeticCorrectionPresetDialog(QDialog):
         self.spin_cold.setSingleStep(0.1)
         self.spin_cold.setValue(float(init.get("cold_sigma", 3.0)))
 
-        self.chk_hot = QCheckBox("Correct hot pixels")
+        self.chk_hot = QCheckBox(self.tr("Correct hot pixels"))
         self.chk_hot.setChecked(bool(init.get("correct_hot", True)))
         self.spin_hot.setEnabled(self.chk_hot.isChecked())
         self.chk_hot.toggled.connect(self.spin_hot.setEnabled)
 
-        self.chk_cold = QCheckBox("Correct cold pixels")
+        self.chk_cold = QCheckBox(self.tr("Correct cold pixels"))
         self.chk_cold.setChecked(bool(init.get("correct_cold", True)))
         self.spin_cold.setEnabled(self.chk_cold.isChecked())
         self.chk_cold.toggled.connect(self.spin_cold.setEnabled)
 
         self.cmb_bayer = QComboBox()
-        self.cmb_bayer.addItem("Auto-detect", userData="")
-        self.cmb_bayer.addItem("None (mono / debayered)", userData="__none__")
+        self.cmb_bayer.addItem(self.tr("Auto-detect"), userData="")
+        self.cmb_bayer.addItem(self.tr("None (mono / debayered)"), userData="__none__")
         for pat in ("RGGB", "BGGR", "GRBG", "GBRG"):
             self.cmb_bayer.addItem(pat, userData=pat)
         bp = str(init.get("bayer_pattern", "") or "")
@@ -3764,11 +3777,11 @@ class _CosmeticCorrectionPresetDialog(QDialog):
         self.cmb_bayer.setCurrentIndex(idx)
 
         form = QFormLayout(self)
-        form.addRow("Hot pixels σ (0.5–10):", self.spin_hot)
-        form.addRow("Cold pixels σ (0.5–10):", self.spin_cold)
+        form.addRow(self.tr("Hot pixels σ (0.5–10):"), self.spin_hot)
+        form.addRow(self.tr("Cold pixels σ (0.5–10):"), self.spin_cold)
         form.addRow("", self.chk_hot)
         form.addRow("", self.chk_cold)
-        form.addRow("Bayer pattern:", self.cmb_bayer)
+        form.addRow(self.tr("Bayer pattern:"), self.cmb_bayer)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -3793,7 +3806,7 @@ class _TextureClarityPresetDialog(QDialog):
 
     def __init__(self, parent, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Texture & Clarity — Preset")
+        self.setWindowTitle(self.tr("Texture & Clarity — Preset"))
         self.setModal(True)
         cur = dict(initial or {})
 
@@ -3819,39 +3832,39 @@ class _TextureClarityPresetDialog(QDialog):
             parent_layout.addLayout(row)
 
         # Texture
-        tex_grp = QGroupBox("Texture", self)
+        tex_grp = QGroupBox(self.tr("Texture"), self)
         tg = QVBoxLayout(tex_grp)
         self.t_amt = _spin(-1.0, 1.0, 0.05, 2, cur.get("t_amt", 0.0))
         self.t_rad = _spin( 0.1, 10.0, 0.1, 1, cur.get("t_rad", 1.0))
-        _row(tg, "Amount (−1.00 to 1.00):", self.t_amt)
-        _row(tg, "Radius (0.1 – 10.0 px):",  self.t_rad)
+        _row(tg, self.tr("Amount (−1.00 to 1.00):"), self.t_amt)
+        _row(tg, self.tr("Radius (0.1 – 10.0 px):"),  self.t_rad)
         v.addWidget(tex_grp)
 
         # Unsharp Mask
-        usm_grp = QGroupBox("Unsharp Mask", self)
+        usm_grp = QGroupBox(self.tr("Unsharp Mask"), self)
         ug = QVBoxLayout(usm_grp)
         self.u_amt = _spin(0.0, 2.0,  0.05, 2, cur.get("u_amt", 0.0))
         self.u_rad = _spin(0.1, 10.0, 0.1,  1, cur.get("u_rad", 2.0))
         self.u_thr = _spin(0.0, 0.1,  0.001, 3, cur.get("u_thr", 0.0))
-        _row(ug, "Amount (0.00 – 2.00):",     self.u_amt)
-        _row(ug, "Radius (0.1 – 10.0 px):",   self.u_rad)
-        _row(ug, "Threshold (0.000 – 0.100):", self.u_thr)
+        _row(ug, self.tr("Amount (0.00 – 2.00):"),     self.u_amt)
+        _row(ug, self.tr("Radius (0.1 – 10.0 px):"),   self.u_rad)
+        _row(ug, self.tr("Threshold (0.000 – 0.100):"), self.u_thr)
         v.addWidget(usm_grp)
 
         # Clarity
-        clar_grp = QGroupBox("Clarity", self)
+        clar_grp = QGroupBox(self.tr("Clarity"), self)
         cg = QVBoxLayout(clar_grp)
         self.c_amt = _spin(-1.0, 1.0, 0.05, 2, cur.get("c_amt", 0.0))
         self.c_rad = _spin( 0.1, 10.0, 0.1, 1, cur.get("c_rad", 3.0))
-        _row(cg, "Amount (−1.00 to 1.00):", self.c_amt)
-        _row(cg, "Radius (0.1 – 10.0 px):",  self.c_rad)
+        _row(cg, self.tr("Amount (−1.00 to 1.00):"), self.c_amt)
+        _row(cg, self.tr("Radius (0.1 – 10.0 px):"),  self.c_rad)
         v.addWidget(clar_grp)
 
         # Clarity midtone mask
-        mask_grp = QGroupBox("Clarity Mask", self)
+        mask_grp = QGroupBox(self.tr("Clarity Mask"), self)
         mg = QVBoxLayout(mask_grp)
         self.mask_str = _spin(0.0, 1.0, 0.05, 2, cur.get("mask_str", 1.0))
-        _row(mg, "Midtone strength (1=midtones, 0=everywhere):", self.mask_str)
+        _row(mg, self.tr("Midtone strength (1=midtones, 0=everywhere):"), self.mask_str)
         v.addWidget(mask_grp)
 
         # OK / Cancel
@@ -3888,7 +3901,7 @@ class _SyQonToolsPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("SyQon Tools — Preset")
+        self.setWindowTitle(self.tr("SyQon Tools — Preset"))
         init = dict(initial or {})
  
         lay = QVBoxLayout(self)
@@ -3896,16 +3909,16 @@ class _SyQonToolsPresetDialog(QDialog):
  
         # ── Family ──
         self.cmb_family = QComboBox(self)
-        self.cmb_family.addItem("Studio (all models)",   "studio")
-        self.cmb_family.addItem("Starless (legacy)",     "starless")
-        self.cmb_family.addItem("Denoise (legacy)",      "denoise")
-        self.cmb_family.addItem("Sharpening (legacy)",   "sharpening")
+        self.cmb_family.addItem(self.tr("Studio (all models)"),   "studio")
+        self.cmb_family.addItem(self.tr("Starless (legacy)"),     "starless")
+        self.cmb_family.addItem(self.tr("Denoise (legacy)"),      "denoise")
+        self.cmb_family.addItem(self.tr("Sharpening (legacy)"),   "sharpening")
  
         fam0 = str(init.get("family", "studio") or "studio").strip().lower()
         idx  = self.cmb_family.findData(fam0)
         if idx < 0: idx = 0
         self.cmb_family.setCurrentIndex(idx)
-        form.addRow("Tool family:", self.cmb_family)
+        form.addRow(self.tr("Tool family:"), self.cmb_family)
  
         lay.addLayout(form)
 
@@ -3915,7 +3928,7 @@ class _SyQonToolsPresetDialog(QDialog):
         try:
             from setiastro.saspro.syqon_studio import STUDIO_MODELS as _SM, studio_family_for as _sff
             self._studio_fam = {m[0]: m[3] for m in _SM}
-            _studio_choices = [(m[0], m[1]) for m in _SM]
+            _studio_choices = [(m[0], _tr_ctx("SyQonStudio", m[1])) for m in _SM]
         except Exception:
             _studio_choices = [
                 ("prism-essential", "Prism Essential — Denoise"),
@@ -3934,7 +3947,7 @@ class _SyQonToolsPresetDialog(QDialog):
                 "parallax": "parallax", "axiom": "axiom", "deep-gradient": "deep-gradient",
             }
 
-        self.grp_studio = QGroupBox("SyQon Studio Preset", self)
+        self.grp_studio = QGroupBox(self.tr("SyQon Studio Preset"), self)
         fst = QFormLayout(self.grp_studio)
 
         self.cmb_studio_model = QComboBox(self)
@@ -3943,76 +3956,76 @@ class _SyQonToolsPresetDialog(QDialog):
         _sm0 = str(init.get("studio_model", "prism-essential") or "prism-essential").strip()
         _smi = self.cmb_studio_model.findData(_sm0)
         self.cmb_studio_model.setCurrentIndex(max(0, _smi))
-        fst.addRow("Model:", self.cmb_studio_model)
+        fst.addRow(self.tr("Model:"), self.cmb_studio_model)
 
         self.cmb_studio_domain = QComboBox(self)
-        self.cmb_studio_domain.addItem("Auto (read metadata)", userData="auto")
-        self.cmb_studio_domain.addItem("Linear", userData="linear")
-        self.cmb_studio_domain.addItem("Non-linear", userData="nonlinear")
+        self.cmb_studio_domain.addItem(self.tr("Auto (read metadata)"), userData="auto")
+        self.cmb_studio_domain.addItem(self.tr("Linear"), userData="linear")
+        self.cmb_studio_domain.addItem(self.tr("Non-linear"), userData="nonlinear")
         _sd = self.cmb_studio_domain.findData(str(init.get("studio_domain", "auto") or "auto").lower())
         self.cmb_studio_domain.setCurrentIndex(max(0, _sd))
-        fst.addRow("Input domain:", self.cmb_studio_domain)
+        fst.addRow(self.tr("Input domain:"), self.cmb_studio_domain)
 
         self.spin_studio_tile = QSpinBox(self)
         self.spin_studio_tile.setRange(256, 2048); self.spin_studio_tile.setSingleStep(64)
         self.spin_studio_tile.setValue(int(init.get("studio_tile", 512)))
-        fst.addRow("Tile size:", self.spin_studio_tile)
+        fst.addRow(self.tr("Tile size:"), self.spin_studio_tile)
 
         self.spin_studio_overlap = QSpinBox(self)
         self.spin_studio_overlap.setRange(0, 512)
         self.spin_studio_overlap.setValue(int(init.get("studio_overlap", 64)))
-        fst.addRow("Overlap:", self.spin_studio_overlap)
+        fst.addRow(self.tr("Overlap:"), self.spin_studio_overlap)
 
         self.spin_studio_app = QDoubleSpinBox(self)
         self.spin_studio_app.setRange(0.0, 1.0); self.spin_studio_app.setDecimals(2)
         self.spin_studio_app.setSingleStep(0.05)
         self.spin_studio_app.setValue(float(init.get("studio_application", 1.0)))
-        self.spin_studio_app.setToolTip("Prism only: blends the inferred result with the original (0..1).")
-        self.lbl_studio_app = QLabel("Application (blend):", self)
+        self.spin_studio_app.setToolTip(self.tr("Prism only: blends the inferred result with the original (0..1)."))
+        self.lbl_studio_app = QLabel(self.tr("Application (blend):"), self)
         fst.addRow(self.lbl_studio_app, self.spin_studio_app)
 
         # Parallax sub-controls
         self.cmb_studio_px_family = QComboBox(self)
-        self.cmb_studio_px_family.addItem("Aesthetics", userData="aesthetics")
-        self.cmb_studio_px_family.addItem("Classic", userData="classic")
+        self.cmb_studio_px_family.addItem(self.tr("Aesthetics"), userData="aesthetics")
+        self.cmb_studio_px_family.addItem(self.tr("Classic"), userData="classic")
         _pf = self.cmb_studio_px_family.findData(str(init.get("studio_px_family", "aesthetics") or "aesthetics").lower())
         self.cmb_studio_px_family.setCurrentIndex(max(0, _pf))
-        self.row_studio_px_family_lbl = QLabel("Parallax family:", self)
+        self.row_studio_px_family_lbl = QLabel(self.tr("Parallax family:"), self)
         fst.addRow(self.row_studio_px_family_lbl, self.cmb_studio_px_family)
 
-        self.chk_studio_px_correct = QCheckBox("Stellar correction / defect repair", self)
+        self.chk_studio_px_correct = QCheckBox(self.tr("Stellar correction / defect repair"), self)
         self.chk_studio_px_correct.setChecked(bool(init.get("studio_px_correct", True)))
         fst.addRow("", self.chk_studio_px_correct)
 
         _red = QWidget(self); _redl = QHBoxLayout(_red); _redl.setContentsMargins(0, 0, 0, 0)
-        self.chk_studio_px_reduce = QCheckBox("Star reduction", self)
+        self.chk_studio_px_reduce = QCheckBox(self.tr("Star reduction"), self)
         self.chk_studio_px_reduce.setChecked(bool(init.get("studio_px_reduce", True)))
         self.spin_studio_px_reduce = QSpinBox(self); self.spin_studio_px_reduce.setRange(0, 10)
         self.spin_studio_px_reduce.setValue(int(init.get("studio_px_reduce_level", 5)))
         self.spin_studio_px_reduce.setFixedWidth(56)
-        _redl.addWidget(self.chk_studio_px_reduce); _redl.addWidget(QLabel("level:", self))
+        _redl.addWidget(self.chk_studio_px_reduce); _redl.addWidget(QLabel(self.tr("level:"), self))
         _redl.addWidget(self.spin_studio_px_reduce); _redl.addStretch(1)
         fst.addRow("", _red)
 
         _deb = QWidget(self); _debl = QHBoxLayout(_deb); _debl.setContentsMargins(0, 0, 0, 0)
-        self.chk_studio_px_deblur = QCheckBox("Deblur (deconvolution)", self)
+        self.chk_studio_px_deblur = QCheckBox(self.tr("Deblur (deconvolution)"), self)
         self.chk_studio_px_deblur.setChecked(bool(init.get("studio_px_deblur", True)))
         self.spin_studio_px_deblur = QDoubleSpinBox(self); self.spin_studio_px_deblur.setRange(0.0, 1.0)
         self.spin_studio_px_deblur.setDecimals(2); self.spin_studio_px_deblur.setSingleStep(0.05)
         self.spin_studio_px_deblur.setValue(float(init.get("studio_px_deblur_strength", 0.5)))
         self.spin_studio_px_deblur.setFixedWidth(64)
-        _debl.addWidget(self.chk_studio_px_deblur); _debl.addWidget(QLabel("strength:", self))
+        _debl.addWidget(self.chk_studio_px_deblur); _debl.addWidget(QLabel(self.tr("strength:"), self))
         _debl.addWidget(self.spin_studio_px_deblur); _debl.addStretch(1)
         fst.addRow("", _deb)
 
         # Axiom sub-controls
         self.cmb_studio_ax_stretch = QComboBox(self)
-        self.cmb_studio_ax_stretch.addItem("Auto", userData="auto")
-        self.cmb_studio_ax_stretch.addItem("Identity (already stretched)", userData="identity")
-        self.cmb_studio_ax_stretch.addItem("Custom", userData="custom")
+        self.cmb_studio_ax_stretch.addItem(self.tr("Auto"), userData="auto")
+        self.cmb_studio_ax_stretch.addItem(self.tr("Identity (already stretched)"), userData="identity")
+        self.cmb_studio_ax_stretch.addItem(self.tr("Custom"), userData="custom")
         _ax = self.cmb_studio_ax_stretch.findData(str(init.get("studio_ax_stretch", "auto") or "auto").lower())
         self.cmb_studio_ax_stretch.setCurrentIndex(max(0, _ax))
-        self.row_studio_ax_stretch_lbl = QLabel("Axiom stretch:", self)
+        self.row_studio_ax_stretch_lbl = QLabel(self.tr("Axiom stretch:"), self)
         fst.addRow(self.row_studio_ax_stretch_lbl, self.cmb_studio_ax_stretch)
 
         _axc = QWidget(self); _axcl = QHBoxLayout(_axc); _axcl.setContentsMargins(0, 0, 0, 0)
@@ -4025,19 +4038,19 @@ class _SyQonToolsPresetDialog(QDialog):
         self.spin_studio_ax_white = QDoubleSpinBox(self); self.spin_studio_ax_white.setRange(0.0, 1.0)
         self.spin_studio_ax_white.setDecimals(4); self.spin_studio_ax_white.setSingleStep(0.001)
         self.spin_studio_ax_white.setValue(float(init.get("studio_ax_white", 1.0)))
-        for _cap, _sp in (("black", self.spin_studio_ax_black), ("mid", self.spin_studio_ax_mid), ("white", self.spin_studio_ax_white)):
+        for _cap, _sp in ((self.tr("black"), self.spin_studio_ax_black), (self.tr("mid"), self.spin_studio_ax_mid), (self.tr("white"), self.spin_studio_ax_white)):
             _axcl.addWidget(QLabel(_cap, self)); _axcl.addWidget(_sp)
         _axcl.addStretch(1)
         self.row_studio_ax_custom = _axc
-        self.row_studio_ax_custom_lbl = QLabel("Custom points:", self)
+        self.row_studio_ax_custom_lbl = QLabel(self.tr("Custom points:"), self)
         fst.addRow(self.row_studio_ax_custom_lbl, _axc)
 
-        self.chk_studio_ax_stars = QCheckBox("Also create a Stars-Only document", self)
+        self.chk_studio_ax_stars = QCheckBox(self.tr("Also create a Stars-Only document"), self)
         self.chk_studio_ax_stars.setChecked(bool(init.get("studio_ax_make_stars", True)))
         fst.addRow("", self.chk_studio_ax_stars)
 
         # Deep Gradient sub-control
-        self.chk_studio_dg_gradient = QCheckBox("Also create the extracted-gradient document", self)
+        self.chk_studio_dg_gradient = QCheckBox(self.tr("Also create the extracted-gradient document"), self)
         self.chk_studio_dg_gradient.setChecked(bool(init.get("studio_dg_make_gradient", False)))
         fst.addRow("", self.chk_studio_dg_gradient)
 
@@ -4060,7 +4073,7 @@ class _SyQonToolsPresetDialog(QDialog):
         self.chk_studio_px_deblur.toggled.connect(lambda on: self.spin_studio_px_deblur.setEnabled(on))
 
         # ── Starless group ──
-        self.grp_starless = QGroupBox("Starless Preset", self)
+        self.grp_starless = QGroupBox(self.tr("Starless Preset"), self)
         fs = QFormLayout(self.grp_starless)
  
         self.cmb_starless_model = QComboBox(self)
@@ -4071,9 +4084,9 @@ class _SyQonToolsPresetDialog(QDialog):
         sm0 = str(init.get("starless_model_kind", "nadir") or "nadir").strip().lower()
         idx = self.cmb_starless_model.findData(sm0)
         self.cmb_starless_model.setCurrentIndex(max(0, idx))
-        fs.addRow("Model:", self.cmb_starless_model)
+        fs.addRow(self.tr("Model:"), self.cmb_starless_model)
  
-        self.chk_starless_mtf = QCheckBox("Apply temporary stretch (recommended for linear data)", self)
+        self.chk_starless_mtf = QCheckBox(self.tr("Apply temporary stretch (recommended for linear data)"), self)
         self.chk_starless_mtf.setChecked(bool(init.get("starless_use_mtf", True)))
         fs.addRow("", self.chk_starless_mtf)
  
@@ -4083,44 +4096,44 @@ class _SyQonToolsPresetDialog(QDialog):
         self.spin_starless_mtf.setValue(float(init.get("starless_mtf_target_median", 0.25)))
         self.spin_starless_mtf.setEnabled(self.chk_starless_mtf.isChecked())
         self.chk_starless_mtf.toggled.connect(self.spin_starless_mtf.setEnabled)
-        fs.addRow("Stretch target median:", self.spin_starless_mtf)
+        fs.addRow(self.tr("Stretch target median:"), self.spin_starless_mtf)
  
         lay.addWidget(self.grp_starless)
  
         # ── Prism group ──
-        self.grp_prism = QGroupBox("Prism Preset", self)
+        self.grp_prism = QGroupBox(self.tr("Prism Preset"), self)
         fp = QFormLayout(self.grp_prism)
  
         self.cmb_prism_model = QComboBox(self)
-        self.cmb_prism_model.addItem("Prism Mini (free)", "prism_mini")
-        self.cmb_prism_model.addItem("Prism Deep (paid)", "prism_deep")
+        self.cmb_prism_model.addItem(self.tr("Prism Mini (free)"), "prism_mini")
+        self.cmb_prism_model.addItem(self.tr("Prism Deep (paid)"), "prism_deep")
         pm0 = str(init.get("prism_model_kind", "prism_mini") or "prism_mini").strip().lower()
         idx = self.cmb_prism_model.findData(pm0)
         self.cmb_prism_model.setCurrentIndex(max(0, idx))
-        fp.addRow("Model:", self.cmb_prism_model)
+        fp.addRow(self.tr("Model:"), self.cmb_prism_model)
  
         self.spin_prism_tile = QSpinBox(self)
         self.spin_prism_tile.setRange(128, 2048)
         self.spin_prism_tile.setValue(int(init.get("prism_tile_size", 512)))
-        fp.addRow("Tile size:", self.spin_prism_tile)
+        fp.addRow(self.tr("Tile size:"), self.spin_prism_tile)
  
         self.spin_prism_overlap = QSpinBox(self)
         self.spin_prism_overlap.setRange(16, 512)
         self.spin_prism_overlap.setValue(int(init.get("prism_overlap", 64)))
-        fp.addRow("Overlap:", self.spin_prism_overlap)
+        fp.addRow(self.tr("Overlap:"), self.spin_prism_overlap)
  
         self.spin_prism_pad = QSpinBox(self)
         self.spin_prism_pad.setRange(0, 2048)
         self.spin_prism_pad.setValue(int(init.get("prism_pad", 64)))
-        fp.addRow("Edge pad:", self.spin_prism_pad)
+        fp.addRow(self.tr("Edge pad:"), self.spin_prism_pad)
  
         self.spin_prism_strength = QDoubleSpinBox(self)
         self.spin_prism_strength.setRange(0.0, 1.0); self.spin_prism_strength.setDecimals(2)
         self.spin_prism_strength.setSingleStep(0.01)
         self.spin_prism_strength.setValue(float(init.get("prism_strength", 0.85)))
-        fp.addRow("Strength:", self.spin_prism_strength)
+        fp.addRow(self.tr("Strength:"), self.spin_prism_strength)
  
-        self.chk_prism_mtf = QCheckBox("Apply temporary stretch for model", self)
+        self.chk_prism_mtf = QCheckBox(self.tr("Apply temporary stretch for model"), self)
         self.chk_prism_mtf.setChecked(bool(init.get("prism_use_mtf", True)))
         fp.addRow("", self.chk_prism_mtf)
  
@@ -4130,31 +4143,31 @@ class _SyQonToolsPresetDialog(QDialog):
         self.spin_prism_mtf.setValue(float(init.get("prism_mtf_target_median", 0.10)))
         self.spin_prism_mtf.setEnabled(self.chk_prism_mtf.isChecked())
         self.chk_prism_mtf.toggled.connect(self.spin_prism_mtf.setEnabled)
-        fp.addRow("MTF target median:", self.spin_prism_mtf)
+        fp.addRow(self.tr("MTF target median:"), self.spin_prism_mtf)
  
-        self.chk_prism_amp = QCheckBox("Use AMP (mixed precision)", self)
+        self.chk_prism_amp = QCheckBox(self.tr("Use AMP (mixed precision)"), self)
         self.chk_prism_amp.setChecked(bool(init.get("prism_use_amp", False)))
         fp.addRow("", self.chk_prism_amp)
  
         lay.addWidget(self.grp_prism)
  
         # ── Parallax group ──
-        self.grp_parallax = QGroupBox("Parallax Preset", self)
+        self.grp_parallax = QGroupBox(self.tr("Parallax Preset"), self)
         fpar = QFormLayout(self.grp_parallax)
 
         self.cmb_par_mode = QComboBox(self)
-        self.cmb_par_mode.addItem("Natural", userData="classic")
-        self.cmb_par_mode.addItem("Defined", userData="aesthetics")
+        self.cmb_par_mode.addItem(self.tr("Natural"), userData="classic")
+        self.cmb_par_mode.addItem(self.tr("Defined"), userData="aesthetics")
         _pm = str(init.get("parallax_mode", "classic") or "classic").strip().lower()
         _pmi = self.cmb_par_mode.findData(_pm)
         self.cmb_par_mode.setCurrentIndex(max(0, _pmi))
         self.cmb_par_mode.setToolTip(
-            "Model set used for all Parallax stages.\n"
+            self.tr("Model set used for all Parallax stages.\n"
             "Natural — classic models.\n"
-            "Defined — aesthetics models.")
-        fpar.addRow("Mode:", self.cmb_par_mode)
+            "Defined — aesthetics models."))
+        fpar.addRow(self.tr("Mode:"), self.cmb_par_mode)
 
-        self.chk_par_correct = QCheckBox("Aberration correction", self)
+        self.chk_par_correct = QCheckBox(self.tr("Aberration correction"), self)
         self.chk_par_correct.setChecked(bool(init.get("parallax_correct", True)))
         fpar.addRow("", self.chk_par_correct)
  
@@ -4162,7 +4175,7 @@ class _SyQonToolsPresetDialog(QDialog):
         star_row = QWidget(self)
         star_lay = QHBoxLayout(star_row)
         star_lay.setContentsMargins(0, 0, 0, 0); star_lay.setSpacing(12)
-        star_lbl = QLabel("Star reduction (0=off, 1–10):", self)
+        star_lbl = QLabel(self.tr("Star reduction (0=off, 1–10):"), self)
         self.spin_par_star = QSpinBox(self)
         self.spin_par_star.setRange(0, 10)
         self.spin_par_star.setValue(int(init.get("parallax_star_level", 3)))
@@ -4176,23 +4189,23 @@ class _SyQonToolsPresetDialog(QDialog):
         self.spin_par_sharpen.setRange(0.0, 1.0); self.spin_par_sharpen.setDecimals(2)
         self.spin_par_sharpen.setSingleStep(0.05)
         self.spin_par_sharpen.setValue(float(init.get("parallax_sharpen_alpha", 0.7)))
-        self.spin_par_sharpen.setToolTip("0.0 = off, 1.0 = full sharpen")
-        fpar.addRow("Sharpen strength:", self.spin_par_sharpen)
+        self.spin_par_sharpen.setToolTip(self.tr("0.0 = off, 1.0 = full sharpen"))
+        fpar.addRow(self.tr("Sharpen strength:"), self.spin_par_sharpen)
  
         self.spin_par_tile = QSpinBox(self)
         self.spin_par_tile.setRange(128, 2048)
         self.spin_par_tile.setValue(int(init.get("parallax_tile_size", 512)))
-        fpar.addRow("Tile size:", self.spin_par_tile)
+        fpar.addRow(self.tr("Tile size:"), self.spin_par_tile)
  
         self.spin_par_overlap = QSpinBox(self)
         self.spin_par_overlap.setRange(8, 512)
         self.spin_par_overlap.setValue(int(init.get("parallax_overlap", 64)))
-        fpar.addRow("Overlap:", self.spin_par_overlap)
+        fpar.addRow(self.tr("Overlap:"), self.spin_par_overlap)
  
         self.spin_par_pad = QSpinBox(self)
         self.spin_par_pad.setRange(0, 2048)
         self.spin_par_pad.setValue(int(init.get("parallax_pad", 96)))
-        fpar.addRow("Edge pad:", self.spin_par_pad)
+        fpar.addRow(self.tr("Edge pad:"), self.spin_par_pad)
 
         self.cmb_par_batch = QComboBox(self)
         for _l in ("Auto", "1", "2", "4", "8"):
@@ -4200,9 +4213,9 @@ class _SyQonToolsPresetDialog(QDialog):
         _b = str(init.get("parallax_batch_size", "Auto") or "Auto")
         _bi = self.cmb_par_batch.findData(_b)
         self.cmb_par_batch.setCurrentIndex(max(0, _bi))
-        fpar.addRow("Batch size:", self.cmb_par_batch)
+        fpar.addRow(self.tr("Batch size:"), self.cmb_par_batch)
  
-        self.chk_par_mtf = QCheckBox("Apply temporary stretch (recommended for linear data)", self)
+        self.chk_par_mtf = QCheckBox(self.tr("Apply temporary stretch (recommended for linear data)"), self)
         self.chk_par_mtf.setChecked(bool(init.get("parallax_use_mtf", True)))
         fpar.addRow("", self.chk_par_mtf)
  
@@ -4211,9 +4224,9 @@ class _SyQonToolsPresetDialog(QDialog):
         self.spin_par_mtf.setSingleStep(0.01)
         self.spin_par_mtf.setValue(float(init.get("parallax_mtf_target", 0.15)))
         self.spin_par_mtf.setEnabled(self.chk_par_mtf.isChecked())
-        fpar.addRow("MTF target median:", self.spin_par_mtf)
+        fpar.addRow(self.tr("MTF target median:"), self.spin_par_mtf)
 
-        self.chk_par_mtf_linked = QCheckBox("Linked stretch (preserves star colors)", self)
+        self.chk_par_mtf_linked = QCheckBox(self.tr("Linked stretch (preserves star colors)"), self)
         self.chk_par_mtf_linked.setChecked(bool(init.get("parallax_mtf_linked", False)))
         self.chk_par_mtf_linked.setEnabled(self.chk_par_mtf.isChecked())
         fpar.addRow("", self.chk_par_mtf_linked)
@@ -4348,7 +4361,7 @@ class _SRGCPresetDialog(QDialog):
 
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Survey Gradient — Preset")
+        self.setWindowTitle(self.tr("Survey Gradient — Preset"))
         init = dict(initial or {})
 
         self.combo_survey = QComboBox()
@@ -4366,7 +4379,8 @@ class _SRGCPresetDialog(QDialog):
                     # built on a survey that cannot currently fetch.
                     self.combo_survey.setItemData(
                         self.combo_survey.count() - 1,
-                        _AVAILABILITY.get(tag, ""), Qt.ItemDataRole.ToolTipRole)
+                        _tr_ctx("SurveyGradient", _AVAILABILITY.get(tag, "")),
+                        Qt.ItemDataRole.ToolTipRole)
         except Exception:
             pass
         _want = str(init.get("survey", _default) or _default)
@@ -4380,19 +4394,19 @@ class _SRGCPresetDialog(QDialog):
         self.spin_work.setRange(256, 4096); self.spin_work.setSingleStep(256)
         self.spin_work.setValue(int(init.get("work_long_side", 1024)))
         self.spin_work.setToolTip(
-            "Long side of the grid the reference is fetched on and both\n"
+            self.tr("Long side of the grid the reference is fetched on and both\n"
             "backgrounds are modelled at. A gradient is low-frequency by\n"
-            "definition, so larger is slower without being better.")
+            "definition, so larger is slower without being better."))
 
         self.spin_degree = QSpinBox()
         self.spin_degree.setRange(0, 4)
         self.spin_degree.setValue(int(init.get("degree", 1)))
         self.spin_degree.setToolTip(
-            "Polynomial degree for BOTH background models. Keep it low: a\n"
+            self.tr("Polynomial degree for BOTH background models. Keep it low: a\n"
             "high-degree model on the target absorbs real structure before\n"
-            "the reference gets a chance to explain it.")
+            "the reference gets a chance to explain it."))
 
-        self.cb_rbf = QCheckBox("RBF refinement on both backgrounds")
+        self.cb_rbf = QCheckBox(self.tr("RBF refinement on both backgrounds"))
         self.cb_rbf.setChecked(bool(init.get("rbf", True)))
 
         self.spin_samples = QSpinBox()
@@ -4408,18 +4422,18 @@ class _SRGCPresetDialog(QDialog):
         self.spin_exclude.setSuffix(" %")
         self.spin_exclude.setValue(int(init.get("exclude", 50)))
         self.spin_exclude.setToolTip(
-            "Fraction of the SURVEY's brightest pixels that are off-limits\n"
+            self.tr("Fraction of the SURVEY's brightest pixels that are off-limits\n"
             "to sampling. The survey decides, not your frame — your gradient\n"
             "must not disqualify a location or the fit starves on the bright\n"
-            "side.")
+            "side."))
 
         self.spin_protect = QDoubleSpinBox()
         self.spin_protect.setRange(0.5, 20.0); self.spin_protect.setSingleStep(0.5)
         self.spin_protect.setDecimals(1)
         self.spin_protect.setValue(float(init.get("protect_k", 3.0)))
         self.spin_protect.setToolTip(
-            "Signal protection on the reference, in MAD-sigma units.\n"
-            "LOWER protects more.")
+            self.tr("Signal protection on the reference, in MAD-sigma units.\n"
+            "LOWER protects more."))
 
         self.spin_strength = QSpinBox()
         # Matches the live dialog: >100% is deliberate over-correction.
@@ -4427,20 +4441,20 @@ class _SRGCPresetDialog(QDialog):
         self.spin_strength.setValue(int(init.get("strength", 100)))
 
         form = QFormLayout(self)
-        form.addRow("Reference survey:", self.combo_survey)
-        form.addRow("Work resolution:",  self.spin_work)
-        form.addRow("Background degree:", self.spin_degree)
-        form.addRow("Sample points:",    self.spin_samples)
-        form.addRow("Patch size (px):",  self.spin_patch)
-        form.addRow("Exclude brightest:", self.spin_exclude)
-        form.addRow("Protect k (MAD):",  self.spin_protect)
+        form.addRow(self.tr("Reference survey:"), self.combo_survey)
+        form.addRow(self.tr("Work resolution:"),  self.spin_work)
+        form.addRow(self.tr("Background degree:"), self.spin_degree)
+        form.addRow(self.tr("Sample points:"),    self.spin_samples)
+        form.addRow(self.tr("Patch size (px):"),  self.spin_patch)
+        form.addRow(self.tr("Exclude brightest:"), self.spin_exclude)
+        form.addRow(self.tr("Protect k (MAD):"),  self.spin_protect)
         form.addRow("", self.cb_rbf)
-        form.addRow("Strength:",         self.spin_strength)
+        form.addRow(self.tr("Strength:"),         self.spin_strength)
 
         _note = QLabel(
-            "Needs a plate solution and a network connection. A preset always "
+            self.tr("Needs a plate solution and a network connection. A preset always "
             "uses a SURVEY: the dual-scope option in the live tool points at "
-            "one array in one session, which a replay could not resolve.")
+            "one array in one session, which a replay could not resolve."))
         _note.setWordWrap(True)
         _note.setStyleSheet("font-size: 10px; color: palette(placeholderText);")
         form.addRow(_note)
@@ -4467,13 +4481,13 @@ class _SRGCPresetDialog(QDialog):
 class _RemovePedestalPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Remove Pedestal — Preset")
+        self.setWindowTitle(self.tr("Remove Pedestal — Preset"))
         init = dict(initial or {})
 
         self.combo_mode = QComboBox()
-        self.combo_mode.addItem("Image minimum",        userData="min")
-        self.combo_mode.addItem("Low percentile",       userData="percentile")
-        self.combo_mode.addItem("First non-zero value", userData="first_nonzero")
+        self.combo_mode.addItem(self.tr("Image minimum"),        userData="min")
+        self.combo_mode.addItem(self.tr("Low percentile"),       userData="percentile")
+        self.combo_mode.addItem(self.tr("First non-zero value"), userData="first_nonzero")
         i = self.combo_mode.findData(str(init.get("mode", "min")).lower())
         self.combo_mode.setCurrentIndex(i if i >= 0 else 0)
 
@@ -4482,12 +4496,12 @@ class _RemovePedestalPresetDialog(QDialog):
         self.spin_pct.setSingleStep(0.05); self.spin_pct.setSuffix(" %")
         self.spin_pct.setValue(float(init.get("percentile", init.get("pct", 0.1))))
 
-        self.cb_per_channel = QCheckBox("Per-channel (RGB)")
+        self.cb_per_channel = QCheckBox(self.tr("Per-channel (RGB)"))
         self.cb_per_channel.setChecked(bool(init.get("per_channel", True)))
 
         form = QFormLayout(self)
-        form.addRow("Subtract:", self.combo_mode)
-        form.addRow("Percentile:", self.spin_pct)
+        form.addRow(self.tr("Subtract:"), self.combo_mode)
+        form.addRow(self.tr("Percentile:"), self.spin_pct)
         form.addRow("", self.cb_per_channel)
 
         def _sync(*_):
@@ -4508,14 +4522,14 @@ class _RemovePedestalPresetDialog(QDialog):
 class _RemoveGreenPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Remove Green — Preset")
+        self.setWindowTitle(self.tr("Remove Green — Preset"))
         init = dict(initial or {})
 
         # Local labels so there’s no external dependency.
         MODE_LABELS = {
-            "avg": "Average of other two channels",
-            "max": "Max of other two channels",
-            "min": "Min of other two channels",
+            "avg": self.tr("Average of other two channels"),
+            "max": self.tr("Max of other two channels"),
+            "min": self.tr("Min of other two channels"),
         }
         MODE_INDEX = {"avg": 0, "max": 1, "min": 2}
 
@@ -4529,12 +4543,12 @@ class _RemoveGreenPresetDialog(QDialog):
         # Target channel
         CHANNEL_INDEX = {"G": 0, "R": 1, "B": 2, "M": 3, "C": 4, "Y": 5}
         self.combo_channel = QComboBox()
-        self.combo_channel.addItem("Green",   userData="G")
-        self.combo_channel.addItem("Red",     userData="R")
-        self.combo_channel.addItem("Blue",    userData="B")
-        self.combo_channel.addItem("Magenta", userData="M")
-        self.combo_channel.addItem("Cyan",    userData="C")
-        self.combo_channel.addItem("Yellow",  userData="Y")
+        self.combo_channel.addItem(self.tr("Green"),   userData="G")
+        self.combo_channel.addItem(self.tr("Red"),     userData="R")
+        self.combo_channel.addItem(self.tr("Blue"),    userData="B")
+        self.combo_channel.addItem(self.tr("Magenta"), userData="M")
+        self.combo_channel.addItem(self.tr("Cyan"),    userData="C")
+        self.combo_channel.addItem(self.tr("Yellow"),  userData="Y")
         init_ch = str(init.get("channel", init.get("target_channel", "G"))).upper()
         self.combo_channel.setCurrentIndex(CHANNEL_INDEX.get(init_ch, 0))
 
@@ -4547,14 +4561,14 @@ class _RemoveGreenPresetDialog(QDialog):
         self.combo_mode.setCurrentIndex(MODE_INDEX.get(init_mode, 0))
 
         # Preserve lightness
-        self.cb_preserve = QCheckBox("Preserve lightness")
+        self.cb_preserve = QCheckBox(self.tr("Preserve lightness"))
         self.cb_preserve.setChecked(bool(init.get("preserve_lightness", init.get("preserve", True))))
 
         # Layout
         form = QFormLayout(self)
-        form.addRow("Target channel:", self.combo_channel)
-        form.addRow("Amount (0–1):", self.spin_amount)
-        form.addRow("Neutral mode:", self.combo_mode)
+        form.addRow(self.tr("Target channel:"), self.combo_channel)
+        form.addRow(self.tr("Amount (0–1):"), self.spin_amount)
+        form.addRow(self.tr("Neutral mode:"), self.combo_mode)
         form.addRow("", self.cb_preserve)
 
         btns = QDialogButtonBox(
@@ -4582,12 +4596,12 @@ class _BackgroundNeutralPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Background Neutralization — Preset")
+        self.setWindowTitle(self.tr("Background Neutralization — Preset"))
         init = dict(initial or {})
 
         # Mode radios
-        self.radio_auto = QRadioButton("Auto (50×50 finder)")
-        self.radio_rect = QRadioButton("Rectangle (normalized coords)")
+        self.radio_auto = QRadioButton(self.tr("Auto (50×50 finder)"))
+        self.radio_rect = QRadioButton(self.tr("Rectangle (normalized coords)"))
         mode = (init.get("mode") or "auto").lower()
         if mode == "rect":
             self.radio_rect.setChecked(True)
@@ -4652,12 +4666,12 @@ class _BackgroundNeutralPresetDialog(QDialog):
 class _WhiteBalancePresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("White Balance — Preset")
+        self.setWindowTitle(self.tr("White Balance — Preset"))
         init = dict(initial or {})
         v = QVBoxLayout(self)
         # Mode
         row = QHBoxLayout()
-        row.addWidget(QLabel("Mode:"))
+        row.addWidget(QLabel(self.tr("Mode:")))
         self.mode = QComboBox()
         self.mode.addItems(["Star-Based", "Manual", "Auto"])
         m = (init.get("mode") or "star").lower()
@@ -4667,37 +4681,57 @@ class _WhiteBalancePresetDialog(QDialog):
         row.addWidget(self.mode); row.addStretch()
         v.addLayout(row)
         # Star options
-        self.grp_star = QGroupBox("Star-Based")
+        self.grp_star = QGroupBox(self.tr("Star-Based"))
         sv = QGridLayout(self.grp_star)
         self.spin_thr = QDoubleSpinBox(); self.spin_thr.setRange(0.5, 200.0); self.spin_thr.setDecimals(1)
         self.spin_thr.setSingleStep(0.5); self.spin_thr.setValue(float(init.get("threshold", 50.0)))
-        self.chk_reuse = QCheckBox("Reuse cached detections")
-        self.chk_reuse.setChecked(bool(init.get("reuse_cached_sources", True)))
+        # The White Balance dialog's settings, with its defaults. Headless White
+        # Balance always detects stars afresh, so there is no "reuse cached
+        # detections" here: it never did anything.
+        self.chk_auto_sigma = QCheckBox(self.tr("Auto σ (waterfall)"))
+        self.chk_auto_sigma.setToolTip(self.tr(
+            "Picks the detection threshold itself, as in the White Balance dialog. "
+            "Uncheck to use the threshold above."))
+        self.chk_auto_sigma.setChecked(bool(init.get("auto_sigma", True)))
         self.chk_color_matrix = QCheckBox(
-            "Advanced Color Matrix WB  "
-            "(cross-channel matrix aligned to blackbody locus)"
+            self.tr("Advanced Color Matrix WB  "
+            "(cross-channel matrix aligned to blackbody locus)")
         )
 
         self.chk_color_matrix.setToolTip(
-            "Applies a 3×3 color matrix solved from the detected stellar population.\n"
-            "NOT recommended for narrowband or duoband data."
+            self.tr("Applies a 3×3 color matrix solved from the detected stellar population.\n"
+            "NOT recommended for narrowband or duoband data.")
         )
 
         self.chk_color_matrix.setChecked(bool(init.get("use_color_matrix", False)))
         self.chk_color_matrix.setStyleSheet("color: #f0a000;")
-        sv.addWidget(QLabel("Threshold (σ):"), 0, 0); sv.addWidget(self.spin_thr, 0, 1)
-        sv.addWidget(self.chk_reuse, 1, 0, 1, 2)
+        self.lbl_strength = QLabel(self.tr("Rotation strength:"))
+        self.spin_strength = QSpinBox(); self.spin_strength.setRange(0, 100); self.spin_strength.setSuffix("%")
+        self.spin_strength.setValue(int(round(float(init.get("matrix_strength", 0.70)) * 100.0)))
+        self.lbl_thr = QLabel(self.tr("Detection threshold (σ):"))
+        sv.addWidget(self.lbl_thr, 0, 0); sv.addWidget(self.spin_thr, 0, 1)
+        sv.addWidget(self.chk_auto_sigma, 1, 0, 1, 2)
         sv.addWidget(self.chk_color_matrix, 2, 0, 1, 2)
+        sv.addWidget(self.lbl_strength, 3, 0); sv.addWidget(self.spin_strength, 3, 1)
+
+        def _sync_star_controls(*_):
+            manual = not self.chk_auto_sigma.isChecked()
+            self.lbl_thr.setEnabled(manual); self.spin_thr.setEnabled(manual)
+            cm = self.chk_color_matrix.isChecked()
+            self.lbl_strength.setEnabled(cm); self.spin_strength.setEnabled(cm)
+        self.chk_auto_sigma.toggled.connect(_sync_star_controls)
+        self.chk_color_matrix.toggled.connect(_sync_star_controls)
+        _sync_star_controls()
         v.addWidget(self.grp_star)
         # Manual options
-        self.grp_manual = QGroupBox("Manual")
+        self.grp_manual = QGroupBox(self.tr("Manual"))
         gv = QGridLayout(self.grp_manual)
         self.r = QDoubleSpinBox(); self._cfg_gain(self.r, float(init.get("r_gain", 1.0)))
         self.g = QDoubleSpinBox(); self._cfg_gain(self.g, float(init.get("g_gain", 1.0)))
         self.b = QDoubleSpinBox(); self._cfg_gain(self.b, float(init.get("b_gain", 1.0)))
-        gv.addWidget(QLabel("Red gain:"), 0, 0); gv.addWidget(self.r, 0, 1)
-        gv.addWidget(QLabel("Green gain:"), 1, 0); gv.addWidget(self.g, 1, 1)
-        gv.addWidget(QLabel("Blue gain:"), 2, 0); gv.addWidget(self.b, 2, 1)
+        gv.addWidget(QLabel(self.tr("Red gain:")), 0, 0); gv.addWidget(self.r, 0, 1)
+        gv.addWidget(QLabel(self.tr("Green gain:")), 1, 0); gv.addWidget(self.g, 1, 1)
+        gv.addWidget(QLabel(self.tr("Blue gain:")), 2, 0); gv.addWidget(self.b, 2, 1)
         v.addWidget(self.grp_manual)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
@@ -4722,8 +4756,9 @@ class _WhiteBalancePresetDialog(QDialog):
         return {
             "mode": "star",
             "threshold": float(self.spin_thr.value()),
-            "reuse_cached_sources": bool(self.chk_reuse.isChecked()),
+            "auto_sigma": bool(self.chk_auto_sigma.isChecked()),
             "use_color_matrix": bool(self.chk_color_matrix.isChecked()),
+            "matrix_strength": float(self.spin_strength.value()) / 100.0,
         }
 
 
@@ -4738,7 +4773,7 @@ class _WaveScaleHDRPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("WaveScale HDR — Preset")
+        self.setWindowTitle(self.tr("WaveScale HDR — Preset"))
         init = dict(initial or {})
 
         form = QFormLayout(self)
@@ -4768,7 +4803,7 @@ class _WaveScaleHDRPresetDialog(QDialog):
 
         # Optional dim gamma
         row_dim = QHBoxLayout()
-        self.chk_dim = QCheckBox("Use custom dim γ")
+        self.chk_dim = QCheckBox(self.tr("Use custom dim γ"))
         self.dp_dim = QDoubleSpinBox()
         self.dp_dim.setRange(0.10, 6.00)
         self.dp_dim.setDecimals(2)
@@ -4781,11 +4816,11 @@ class _WaveScaleHDRPresetDialog(QDialog):
         row_dim.addWidget(self.chk_dim)
         row_dim.addWidget(self.dp_dim, 1)
 
-        form.addRow("Number of scales:", self.sp_scales)
-        form.addRow("Coarse compression:", self.dp_comp)
-        form.addRow("Mask gamma:", self.dp_gamma)
-        form.addRow("Decay rate:", self.dp_decay)
-        form.addRow("Dimming:", row_dim)
+        form.addRow(self.tr("Number of scales:"), self.sp_scales)
+        form.addRow(self.tr("Coarse compression:"), self.dp_comp)
+        form.addRow(self.tr("Mask gamma:"), self.dp_gamma)
+        form.addRow(self.tr("Decay rate:"), self.dp_decay)
+        form.addRow(self.tr("Dimming:"), row_dim)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                 QDialogButtonBox.StandardButton.Cancel, parent=self)
@@ -4814,7 +4849,7 @@ class _WaveScaleDarkEnhancerPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("WaveScale Dark Enhancer — Preset")
+        self.setWindowTitle(self.tr("WaveScale Dark Enhancer — Preset"))
         init = dict(initial or {})
 
         form = QFormLayout(self)
@@ -4826,10 +4861,10 @@ class _WaveScaleDarkEnhancerPresetDialog(QDialog):
         self.dp_gamma.setValue(float(init.get("mask_gamma", 1.00)))
         self.sp_iters  = QSpinBox(); self.sp_iters.setRange(1, 10); self.sp_iters.setValue(int(init.get("iterations", 2)))
 
-        form.addRow("Number of scales:", self.sp_scales)
-        form.addRow("Boost factor:", self.dp_boost)
-        form.addRow("Mask gamma:", self.dp_gamma)
-        form.addRow("Iterations:", self.sp_iters)
+        form.addRow(self.tr("Number of scales:"), self.sp_scales)
+        form.addRow(self.tr("Boost factor:"), self.dp_boost)
+        form.addRow(self.tr("Mask gamma:"), self.dp_gamma)
+        form.addRow(self.tr("Iterations:"), self.sp_iters)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                 QDialogButtonBox.StandardButton.Cancel,
@@ -4860,7 +4895,7 @@ class _CLAHEPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("CLAHE — Preset")
+        self.setWindowTitle(self.tr("CLAHE — Preset"))
         init = dict(initial or {})
 
         # Keep the default in step with the tool, so flipping the module
@@ -4911,22 +4946,22 @@ class _CLAHEPresetDialog(QDialog):
             _b = _b / 100.0
         self.dp_blend.setValue(max(0.0, min(1.0, _b)))
 
-        self.cb_16bit = QCheckBox("16-bit CLAHE plane")
+        self.cb_16bit = QCheckBox(self.tr("16-bit CLAHE plane"))
         try:
             _prec = int(init.get("precision", _DEF_PREC))
         except Exception:
             _prec = _DEF_PREC
         self.cb_16bit.setChecked(_prec >= 16)
         self.cb_16bit.setToolTip(
-            "Run CLAHE on a 16-bit plane instead of 8-bit.\n"
+            self.tr("Run CLAHE on a 16-bit plane instead of 8-bit.\n"
             "Avoids posterisation on 32-bit float data. Uncheck to reproduce\n"
-            "results from SASpro builds before the CLAHE rework."
+            "results from SASpro builds before the CLAHE rework.")
         )
 
-        form.addRow("Clip limit:", self.dp_clip)
-        form.addRow("Tile size (px):", self.sp_tile_px)
-        form.addRow("Blend amount:", self.dp_blend)
-        form.addRow("Precision:", self.cb_16bit)
+        form.addRow(self.tr("Clip limit:"), self.dp_clip)
+        form.addRow(self.tr("Tile size (px):"), self.sp_tile_px)
+        form.addRow(self.tr("Blend amount:"), self.dp_blend)
+        form.addRow(self.tr("Precision:"), self.cb_16bit)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
@@ -4948,13 +4983,13 @@ class _CLAHEPresetDialog(QDialog):
 class _MorphologyPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Morphology — Preset")
+        self.setWindowTitle(self.tr("Morphology — Preset"))
         init = dict(initial or {})
 
         form = QFormLayout(self)
 
         self.op = QComboBox()
-        self.op.addItems(["Erosion", "Dilation", "Opening", "Closing"])
+        self.op.addItems([self.tr("Erosion"), self.tr("Dilation"), self.tr("Opening"), self.tr("Closing")])
         op = (init.get("operation","erosion") or "erosion").lower()
         idx = {"erosion":0,"dilation":1,"opening":2,"closing":3}.get(op,0)
         self.op.setCurrentIndex(idx)
@@ -4964,9 +4999,9 @@ class _MorphologyPresetDialog(QDialog):
 
         self.it = QSpinBox(); self.it.setRange(1,10); self.it.setValue(int(init.get("iterations",1)))
 
-        form.addRow("Operation:", self.op)
-        form.addRow("Kernel size (odd):", self.k)
-        form.addRow("Iterations:", self.it)
+        form.addRow(self.tr("Operation:"), self.op)
+        form.addRow(self.tr("Kernel size (odd):"), self.k)
+        form.addRow(self.tr("Iterations:"), self.it)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
@@ -4981,18 +5016,18 @@ class _MorphologyPresetDialog(QDialog):
 class _PixelMathPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Pixel Math — Preset")
+        self.setWindowTitle(self.tr("Pixel Math — Preset"))
         init = dict(initial or {})
         v = QVBoxLayout(self)
-        self.rb_single = QRadioButton("Single"); self.rb_single.setChecked(init.get("mode","single")=="single")
-        self.rb_rgb    = QRadioButton("Per-channel"); self.rb_rgb.setChecked(init.get("mode","single")=="rgb")
+        self.rb_single = QRadioButton(self.tr("Single")); self.rb_single.setChecked(init.get("mode","single")=="single")
+        self.rb_rgb    = QRadioButton(self.tr("Per-channel")); self.rb_rgb.setChecked(init.get("mode","single")=="rgb")
         row = QHBoxLayout(); row.addWidget(self.rb_single); row.addWidget(self.rb_rgb); row.addStretch(1)
         v.addLayout(row)
         self.ed_single = QPlainTextEdit(); self.ed_single.setPlaceholderText("expr"); self.ed_single.setPlainText(init.get("expr",""))
         v.addWidget(self.ed_single)
         self.tabs = QTabWidget(); 
         self.ed_r, self.ed_g, self.ed_b = QPlainTextEdit(), QPlainTextEdit(), QPlainTextEdit()
-        for ed, name, key in ((self.ed_r,"Red","expr_r"),(self.ed_g,"Green","expr_g"),(self.ed_b,"Blue","expr_b")):
+        for ed, name, key in ((self.ed_r,self.tr("Red"),"expr_r"),(self.ed_g,self.tr("Green"),"expr_g"),(self.ed_b,self.tr("Blue"),"expr_b")):
             w = QWidget(); lay = QVBoxLayout(w); ed.setPlainText(init.get(key,"")); lay.addWidget(ed); self.tabs.addTab(w, name)
         v.addWidget(self.tabs)
         self.rb_single.toggled.connect(lambda on: (self.ed_single.setVisible(on), self.tabs.setVisible(not on)))
@@ -5012,27 +5047,27 @@ class _SignatureInsertPresetDialog(QDialog):
     Keeps the PNG path + placement so users can drag a shortcut and re-apply.
     """
     POS_KEYS = [
-        ("Top-Left", "top_left"),
-        ("Top-Center", "top_center"),
-        ("Top-Right", "top_right"),
-        ("Middle-Left", "middle_left"),
-        ("Center", "center"),
-        ("Middle-Right", "middle_right"),
-        ("Bottom-Left", "bottom_left"),
-        ("Bottom-Center", "bottom_center"),
-        ("Bottom-Right", "bottom_right"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Top-Left"), "top_left"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Top-Center"), "top_center"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Top-Right"), "top_right"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Middle-Left"), "middle_left"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Center"), "center"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Middle-Right"), "middle_right"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Bottom-Left"), "bottom_left"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Bottom-Center"), "bottom_center"),
+        (QT_TRANSLATE_NOOP("Shortcuts", "Bottom-Right"), "bottom_right"),
     ]
 
     def __init__(self, parent, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Signature / Insert – Preset")
+        self.setWindowTitle(self.tr("Signature / Insert – Preset"))
         self.setMinimumWidth(520)
 
         init = dict(initial or {})
         v = QVBoxLayout(self)
 
-        tip = QLabel("Tip: For transparent signatures, use a PNG and “Load from File”. "
-                     "Views are RGB, so alpha is not preserved.")
+        tip = QLabel(self.tr("Tip: For transparent signatures, use a PNG and “Load from File”. "
+                     "Views are RGB, so alpha is not preserved."))
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#e0b000;")
         v.addWidget(tip)
@@ -5040,11 +5075,11 @@ class _SignatureInsertPresetDialog(QDialog):
         grid = QGridLayout()
 
         # File path
-        grid.addWidget(QLabel("Signature file (PNG/JPG/TIF):"), 0, 0)
+        grid.addWidget(QLabel(self.tr("Signature file (PNG/JPG/TIF):")), 0, 0)
         self.ed_path = QLineEdit(init.get("file_path", ""))
-        b_browse = QPushButton("Browse…")
+        b_browse = QPushButton(self.tr("Browse…"))
         def _pick():
-            fp, _ = QFileDialog.getOpenFileName(self, "Select signature image",
+            fp, _ = QFileDialog.getOpenFileName(self, self.tr("Select signature image"),
                                                 "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)")
             if fp: self.ed_path.setText(fp)
         b_browse.clicked.connect(_pick)
@@ -5052,39 +5087,39 @@ class _SignatureInsertPresetDialog(QDialog):
         grid.addWidget(b_browse, 0, 2)
 
         # Position
-        grid.addWidget(QLabel("Position:"), 1, 0)
+        grid.addWidget(QLabel(self.tr("Position:")), 1, 0)
         self.cb_pos = QComboBox()
         for text, key in self.POS_KEYS:
-            self.cb_pos.addItem(text, userData=key)
+            self.cb_pos.addItem(_tr(text), userData=key)
         want = init.get("position", "bottom_right")
         idx = max(0, next((i for i,(_,k) in enumerate(self.POS_KEYS) if k == want), 0))
         self.cb_pos.setCurrentIndex(idx)
         grid.addWidget(self.cb_pos, 1, 1)
 
         # Margins
-        grid.addWidget(QLabel("Margin X (px):"), 2, 0)
+        grid.addWidget(QLabel(self.tr("Margin X (px):")), 2, 0)
         self.sp_mx = QSpinBox(); self.sp_mx.setRange(0, 5000); self.sp_mx.setValue(int(init.get("margin_x", 20)))
         grid.addWidget(self.sp_mx, 2, 1)
 
-        grid.addWidget(QLabel("Margin Y (px):"), 3, 0)
+        grid.addWidget(QLabel(self.tr("Margin Y (px):")), 3, 0)
         self.sp_my = QSpinBox(); self.sp_my.setRange(0, 5000); self.sp_my.setValue(int(init.get("margin_y", 20)))
         grid.addWidget(self.sp_my, 3, 1)
 
         # Scale / Opacity / Rotation
-        grid.addWidget(QLabel("Scale (%)"), 4, 0)
+        grid.addWidget(QLabel(self.tr("Scale (%)")), 4, 0)
         self.sp_scale = QSpinBox(); self.sp_scale.setRange(10, 800); self.sp_scale.setValue(int(init.get("scale", 100)))
         grid.addWidget(self.sp_scale, 4, 1)
 
-        grid.addWidget(QLabel("Opacity (%)"), 5, 0)
+        grid.addWidget(QLabel(self.tr("Opacity (%)")), 5, 0)
         self.sp_op = QSpinBox(); self.sp_op.setRange(0, 100); self.sp_op.setValue(int(init.get("opacity", 100)))
         grid.addWidget(self.sp_op, 5, 1)
 
-        grid.addWidget(QLabel("Rotation (°)"), 6, 0)
+        grid.addWidget(QLabel(self.tr("Rotation (°)")), 6, 0)
         self.sp_rot = QSpinBox(); self.sp_rot.setRange(-180, 180); self.sp_rot.setValue(int(init.get("rotation", 0)))
         grid.addWidget(self.sp_rot, 6, 1)
 
         # Auto affix
-        self.cb_affix = QCheckBox("Auto-affix after placement")
+        self.cb_affix = QCheckBox(self.tr("Auto-affix after placement"))
         self.cb_affix.setChecked(bool(init.get("auto_affix", True)))
         grid.addWidget(self.cb_affix, 7, 0, 1, 2)
 
@@ -5109,22 +5144,22 @@ class _SignatureInsertPresetDialog(QDialog):
 class _HaloBGonPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Halo-B-Gon Preset")
+        self.setWindowTitle(self.tr("Halo-B-Gon Preset"))
         v = QVBoxLayout(self)
         g = QGridLayout(); v.addLayout(g)
 
-        g.addWidget(QLabel("Reduction:"), 0, 0)
+        g.addWidget(QLabel(self.tr("Reduction:")), 0, 0)
         self.sl = QSlider(Qt.Orientation.Horizontal); self.sl.setRange(0,3); self.sl.setValue(int((initial or {}).get("reduction",0)))
-        self.lab = QLabel(["Extra Low","Low","Medium","High"][self.sl.value()])
-        self.sl.valueChanged.connect(lambda v: self.lab.setText(["Extra Low","Low","Medium","High"][int(v)]))
+        self.lab = QLabel([self.tr("Extra Low"),self.tr("Low"),self.tr("Medium"),self.tr("High")][self.sl.value()])
+        self.sl.valueChanged.connect(lambda v: self.lab.setText([self.tr("Extra Low"),self.tr("Low"),self.tr("Medium"),self.tr("High")][int(v)]))
         g.addWidget(self.sl, 0, 1); g.addWidget(self.lab, 0, 2)
 
-        self.cb = QCheckBox("Linear data"); self.cb.setChecked(bool((initial or {}).get("linear",False)))
+        self.cb = QCheckBox(self.tr("Linear data")); self.cb.setChecked(bool((initial or {}).get("linear",False)))
         g.addWidget(self.cb, 1, 1)
 
         row = QHBoxLayout(); v.addLayout(row)
-        ok = QPushButton("OK"); ok.clicked.connect(self.accept)
-        ca = QPushButton("Cancel"); ca.clicked.connect(self.reject)
+        ok = QPushButton(self.tr("OK")); ok.clicked.connect(self.accept)
+        ca = QPushButton(self.tr("Cancel")); ca.clicked.connect(self.reject)
         row.addStretch(1); row.addWidget(ok); row.addWidget(ca)
 
     def result_dict(self) -> dict:
@@ -5137,7 +5172,7 @@ class _RescalePresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial=None):
         super().__init__(parent)
-        self.setWindowTitle("Rescale Preset")
+        self.setWindowTitle(self.tr("Rescale Preset"))
         self._initial = initial or {}
 
         from PyQt6.QtWidgets import QFormLayout, QDoubleSpinBox, QDialogButtonBox
@@ -5150,7 +5185,7 @@ class _RescalePresetDialog(QDialog):
         self.spn_factor.setRange(0.10, 10.00)
         self.spn_factor.setSingleStep(0.05)
         self.spn_factor.setValue(float(self._initial.get("factor", 1.0)))
-        form.addRow("Scaling factor:", self.spn_factor)
+        form.addRow(self.tr("Scaling factor:"), self.spn_factor)
 
         lay.addLayout(form)
 
@@ -5166,24 +5201,24 @@ class _RescalePresetDialog(QDialog):
 
 class _ImageCombinePresetDialog(QDialog):
     def __init__(self, parent, initial: dict):
-        super().__init__(parent); self.setWindowTitle("Image Combine Preset")
+        super().__init__(parent); self.setWindowTitle(self.tr("Image Combine Preset"))
         mode = QComboBox(); mode.addItems(["Average","Add","Subtract","Blend","Multiply","Divide","Screen","Overlay","Difference"])
         mode.setCurrentText(initial.get("mode", "Blend"))
         alpha = QSlider(Qt.Orientation.Horizontal); alpha.setRange(0,100); alpha.setValue(int(100*float(initial.get("opacity",1.0))))
-        luma = QCheckBox("Luminance only"); luma.setChecked(bool(initial.get("luma_only", False)))
-        out_rep = QRadioButton("Replace A"); out_new = QRadioButton("Create new"); (out_new if initial.get("output")=="new" else out_rep).setChecked(True)
+        luma = QCheckBox(self.tr("Luminance only")); luma.setChecked(bool(initial.get("luma_only", False)))
+        out_rep = QRadioButton(self.tr("Replace A")); out_new = QRadioButton(self.tr("Create new")); (out_new if initial.get("output")=="new" else out_rep).setChecked(True)
         from PyQt6.QtWidgets import QLineEdit
-        other = QLineEdit(initial.get("docB_title","")); other.setPlaceholderText("Optional: exact title of B")
+        other = QLineEdit(initial.get("docB_title","")); other.setPlaceholderText(self.tr("Optional: exact title of B"))
 
         form = QFormLayout()
-        form.addRow("Mode:", mode)
-        form.addRow("Opacity:", alpha)
+        form.addRow(self.tr("Mode:"), mode)
+        form.addRow(self.tr("Opacity:"), alpha)
         form.addRow("", luma)
-        form.addRow("Output:", None)
+        form.addRow(self.tr("Output:"), None)
         h = QHBoxLayout(); h.addWidget(out_rep); h.addWidget(out_new); h.addStretch(1)
         form.addRow("", QLabel(""))
         root = QVBoxLayout(self); root.addLayout(form); root.addLayout(h)
-        form.addRow("Other source (title):", other)
+        form.addRow(self.tr("Other source (title):"), other)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
         root.addWidget(btns)
@@ -5201,7 +5236,7 @@ class _ImageCombinePresetDialog(QDialog):
 class _StarSpikesPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Diffraction Spikes Preset")
+        self.setWindowTitle(self.tr("Diffraction Spikes Preset"))
         v = QVBoxLayout(self)
         g = QGridLayout(); v.addLayout(g)
         ini = dict(initial or {})
@@ -5215,26 +5250,26 @@ class _StarSpikesPresetDialog(QDialog):
             sp = QSpinBox(); sp.setRange(mini, maxi); sp.setSingleStep(step); sp.setValue(int(ini.get(key, default)))
             return sp
 
-        self.flux_min  = dspin(0.0, 999999.0, 10.0, "flux_min", 30.0);   g.addWidget(QLabel("Flux Min:"), row,0); g.addWidget(self.flux_min, row,1); row+=1
-        self.flux_max  = dspin(1.0, 999999.0, 50.0, "flux_max", 300.0);  g.addWidget(QLabel("Flux Max:"), row,0); g.addWidget(self.flux_max, row,1); row+=1
-        self.bmin      = dspin(0.1, 999.0,   0.5,  "bscale_min", 10.0);  g.addWidget(QLabel("Boost Min:"), row,0); g.addWidget(self.bmin, row,1); row+=1
-        self.bmax      = dspin(0.1, 999.0,   0.5,  "bscale_max", 30.0);  g.addWidget(QLabel("Boost Max:"), row,0); g.addWidget(self.bmax, row,1); row+=1
-        self.smin      = dspin(0.1, 999.0,   0.1,  "shrink_min", 1.0);   g.addWidget(QLabel("Shrink Min:"), row,0); g.addWidget(self.smin, row,1); row+=1
-        self.smax      = dspin(0.1, 999.0,   0.1,  "shrink_max", 5.0);   g.addWidget(QLabel("Shrink Max:"), row,0); g.addWidget(self.smax, row,1); row+=1
-        self.dth       = dspin(0.0, 100.0,   0.1,  "detect_thresh", 5.0);g.addWidget(QLabel("Detect Threshold:"), row,0); g.addWidget(self.dth, row,1); row+=1
-        self.radius    = dspin(1.0, 512.0,   1.0,  "radius", 128.0);     g.addWidget(QLabel("Pupil Radius:"), row,0); g.addWidget(self.radius, row,1); row+=1
-        self.obstr     = dspin(0.0, 0.99,    0.01, "obstruction", 0.2);  g.addWidget(QLabel("Obstruction:"), row,0); g.addWidget(self.obstr, row,1); row+=1
-        self.vanes     = ispin(2,   8,       1,    "num_vanes", 4);      g.addWidget(QLabel("Num Vanes:"), row,0); g.addWidget(self.vanes, row,1); row+=1
-        self.vwidth    = dspin(0.0, 50.0,    0.5,  "vane_width", 4.0);   g.addWidget(QLabel("Vane Width:"), row,0); g.addWidget(self.vwidth, row,1); row+=1
-        self.rotdeg    = dspin(0.0, 360.0,   1.0,  "rotation", 0.0);     g.addWidget(QLabel("Rotation (°):"), row,0); g.addWidget(self.rotdeg, row,1); row+=1
-        self.boost     = dspin(0.1, 10.0,    0.1,  "color_boost", 1.5);  g.addWidget(QLabel("Spike Boost:"), row,0); g.addWidget(self.boost, row,1); row+=1
-        self.blur      = dspin(0.1, 10.0,    0.1,  "blur_sigma", 2.0);   g.addWidget(QLabel("PSF Blur Sigma:"), row,0); g.addWidget(self.blur, row,1); row+=1
+        self.flux_min  = dspin(0.0, 999999.0, 10.0, "flux_min", 30.0);   g.addWidget(QLabel(self.tr("Flux Min:")), row,0); g.addWidget(self.flux_min, row,1); row+=1
+        self.flux_max  = dspin(1.0, 999999.0, 50.0, "flux_max", 300.0);  g.addWidget(QLabel(self.tr("Flux Max:")), row,0); g.addWidget(self.flux_max, row,1); row+=1
+        self.bmin      = dspin(0.1, 999.0,   0.5,  "bscale_min", 10.0);  g.addWidget(QLabel(self.tr("Boost Min:")), row,0); g.addWidget(self.bmin, row,1); row+=1
+        self.bmax      = dspin(0.1, 999.0,   0.5,  "bscale_max", 30.0);  g.addWidget(QLabel(self.tr("Boost Max:")), row,0); g.addWidget(self.bmax, row,1); row+=1
+        self.smin      = dspin(0.1, 999.0,   0.1,  "shrink_min", 1.0);   g.addWidget(QLabel(self.tr("Shrink Min:")), row,0); g.addWidget(self.smin, row,1); row+=1
+        self.smax      = dspin(0.1, 999.0,   0.1,  "shrink_max", 5.0);   g.addWidget(QLabel(self.tr("Shrink Max:")), row,0); g.addWidget(self.smax, row,1); row+=1
+        self.dth       = dspin(0.0, 100.0,   0.1,  "detect_thresh", 5.0);g.addWidget(QLabel(self.tr("Detect Threshold:")), row,0); g.addWidget(self.dth, row,1); row+=1
+        self.radius    = dspin(1.0, 512.0,   1.0,  "radius", 128.0);     g.addWidget(QLabel(self.tr("Pupil Radius:")), row,0); g.addWidget(self.radius, row,1); row+=1
+        self.obstr     = dspin(0.0, 0.99,    0.01, "obstruction", 0.2);  g.addWidget(QLabel(self.tr("Obstruction:")), row,0); g.addWidget(self.obstr, row,1); row+=1
+        self.vanes     = ispin(2,   8,       1,    "num_vanes", 4);      g.addWidget(QLabel(self.tr("Num Vanes:")), row,0); g.addWidget(self.vanes, row,1); row+=1
+        self.vwidth    = dspin(0.0, 50.0,    0.5,  "vane_width", 4.0);   g.addWidget(QLabel(self.tr("Vane Width:")), row,0); g.addWidget(self.vwidth, row,1); row+=1
+        self.rotdeg    = dspin(0.0, 360.0,   1.0,  "rotation", 0.0);     g.addWidget(QLabel(self.tr("Rotation (°):")), row,0); g.addWidget(self.rotdeg, row,1); row+=1
+        self.boost     = dspin(0.1, 10.0,    0.1,  "color_boost", 1.5);  g.addWidget(QLabel(self.tr("Spike Boost:")), row,0); g.addWidget(self.boost, row,1); row+=1
+        self.blur      = dspin(0.1, 10.0,    0.1,  "blur_sigma", 2.0);   g.addWidget(QLabel(self.tr("PSF Blur Sigma:")), row,0); g.addWidget(self.blur, row,1); row+=1
 
-        self.jwst = QCheckBox("JWST Pupil"); self.jwst.setChecked(bool(ini.get("jwst", False)))
+        self.jwst = QCheckBox(self.tr("JWST Pupil")); self.jwst.setChecked(bool(ini.get("jwst", False)))
         g.addWidget(self.jwst, row, 0, 1, 2); row += 1
 
         rowbox = QHBoxLayout(); v.addLayout(rowbox)
-        ok = QPushButton("OK"); ca = QPushButton("Cancel")
+        ok = QPushButton(self.tr("OK")); ca = QPushButton(self.tr("Cancel"))
         ok.clicked.connect(self.accept); ca.clicked.connect(self.reject)
         rowbox.addStretch(1); rowbox.addWidget(ok); rowbox.addWidget(ca)
 
@@ -5260,7 +5295,7 @@ class _StarSpikesPresetDialog(QDialog):
 class _DebayerPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Debayer — Preset")
+        self.setWindowTitle(self.tr("Debayer — Preset"))
         init = dict(initial or {})
         self.combo = QComboBox(self)
         self.combo.addItems(["auto", "RGGB", "BGGR", "GRBG", "GBRG"])
@@ -5269,7 +5304,7 @@ class _DebayerPresetDialog(QDialog):
         self.combo.setCurrentIndex(idx)
 
         lay = QVBoxLayout(self)
-        row = QHBoxLayout(); row.addWidget(QLabel("Bayer pattern:")); row.addWidget(self.combo, 1)
+        row = QHBoxLayout(); row.addWidget(QLabel(self.tr("Bayer pattern:"))); row.addWidget(self.combo, 1)
         lay.addLayout(row)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
@@ -5289,7 +5324,7 @@ from setiastro.saspro.curves_preset import (
 class _CurvesPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Curves — Preset")
+        self.setWindowTitle(self.tr("Curves — Preset"))
         init = dict(initial or {})
         init = _unwrap_preset_dict(init)          # peel {"preset": {...}} etc.
         self._original = dict(init)
@@ -5319,16 +5354,16 @@ class _CurvesPresetDialog(QDialog):
 
         # --- Shape --------------------------------------------------------
         self.shape = QComboBox()
-        self.shape.addItem("Linear", "linear")
-        self.shape.addItem("S-curve (mild)", "s_mild")
-        self.shape.addItem("S-curve (medium)", "s_med")
-        self.shape.addItem("S-curve (strong)", "s_strong")
-        self.shape.addItem("Lift shadows", "lift_shadows")
-        self.shape.addItem("Crush shadows", "crush_shadows")
-        self.shape.addItem("Fade blacks", "fade_blacks")
-        self.shape.addItem("Highlight roll-off", "rolloff_highlights")
-        self.shape.addItem("Flatten contrast", "flatten")
-        self.shape.addItem("Custom points", "custom")
+        self.shape.addItem(self.tr("Linear"), "linear")
+        self.shape.addItem(self.tr("S-curve (mild)"), "s_mild")
+        self.shape.addItem(self.tr("S-curve (medium)"), "s_med")
+        self.shape.addItem(self.tr("S-curve (strong)"), "s_strong")
+        self.shape.addItem(self.tr("Lift shadows"), "lift_shadows")
+        self.shape.addItem(self.tr("Crush shadows"), "crush_shadows")
+        self.shape.addItem(self.tr("Fade blacks"), "fade_blacks")
+        self.shape.addItem(self.tr("Highlight roll-off"), "rolloff_highlights")
+        self.shape.addItem(self.tr("Flatten contrast"), "flatten")
+        self.shape.addItem(self.tr("Custom points"), "custom")
         self.shape.setCurrentIndex(max(0, self.shape.findData((init.get("shape") or "linear").lower())))
 
         # --- Amount (ignored if custom) -----------------------------------
@@ -5339,14 +5374,14 @@ class _CurvesPresetDialog(QDialog):
 
         # --- Custom points (normalized "x,y; x,y; ...") -------------------
         self.points = QLineEdit()
-        self.points.setPlaceholderText("points_norm: x,y; x,y; ...  (0..1)  e.g. 0,0; 0.25,0.15; 0.75,0.85; 1,1")
+        self.points.setPlaceholderText(self.tr("points_norm: x,y; x,y; ...  (0..1)  e.g. 0,0; 0.25,0.15; 0.75,0.85; 1,1"))
         if isinstance(init.get("points_norm"), (list, tuple)) and init["points_norm"]:
             s = "; ".join(f"{float(x):.6g},{float(y):.6g}" for x, y in init["points_norm"])
             self.points.setText(s)
 
         # ===================== Custom Presets picker ======================
         self.preset_picker = QComboBox()
-        self.btn_load = QPushButton("Load custom → fields")
+        self.btn_load = QPushButton(self.tr("Load custom → fields"))
 
         # populate & enable/disable based on availability
         self._rebuild_customs()
@@ -5361,12 +5396,12 @@ class _CurvesPresetDialog(QDialog):
 
         # layout (use explicit labels so they can be hidden with the row)
         form = QFormLayout(self)
-        form.addRow(QLabel("Mode:", self), self.mode)
-        form.addRow(QLabel("Shape:", self), self.shape)
-        form.addRow(QLabel("Amount (0–1):", self), self.amount)
-        form.addRow(QLabel("Custom points:", self), self.points)
+        form.addRow(QLabel(self.tr("Mode:"), self), self.mode)
+        form.addRow(QLabel(self.tr("Shape:"), self), self.shape)
+        form.addRow(QLabel(self.tr("Amount (0–1):"), self), self.amount)
+        form.addRow(QLabel(self.tr("Custom points:"), self), self.points)
 
-        self._lbl_custom_picker = QLabel("Custom presets:", self)
+        self._lbl_custom_picker = QLabel(self.tr("Custom presets:"), self)
         form.addRow(self._lbl_custom_picker, self.preset_picker)
         form.addRow(QLabel("", self), self._row_custom_controls)
 
@@ -5397,14 +5432,14 @@ class _CurvesPresetDialog(QDialog):
         self.preset_picker.clear()
         customs = list_custom_presets()
         if not customs:
-            self.preset_picker.addItem("(No custom presets saved)", userData=None)
+            self.preset_picker.addItem(self.tr("(No custom presets saved)"), userData=None)
             self.preset_picker.setEnabled(False)
             self.btn_load.setEnabled(False)
             return
         self.preset_picker.setEnabled(True)
         self.btn_load.setEnabled(True)
         for p in sorted(customs, key=lambda d: d.get("name", "").lower()):
-            self.preset_picker.addItem(p.get("name", "(unnamed)"), userData=p)
+            self.preset_picker.addItem(p.get("name", self.tr("(unnamed)")), userData=p)
 
     def _load_selected_preset_into_fields(self):
         p = self.preset_picker.currentData()
@@ -5485,7 +5520,7 @@ class _CurvesPresetDialog(QDialog):
 class _GHSPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Universal Hyperbolic Stretch — Preset")
+        self.setWindowTitle(self.tr("Universal Hyperbolic Stretch — Preset"))
         init = dict(initial or {})
 
         def _mk_spin(minv, maxv, step, val, dec=2):
@@ -5524,17 +5559,17 @@ class _GHSPresetDialog(QDialog):
         self.hp    = _mk_spin(0.00,  1.0, 0.01, float(init.get("hp",    0.00)))
 
         form = QFormLayout(self)
-        form.addRow("Function:", self.function)
-        form.addRow("Channel:", self.mode)
+        form.addRow(self.tr("Function:"), self.function)
+        form.addRow(self.tr("Channel:"), self.mode)
 
         self._lbl_alpha    = QLabel("α (0.02–10):")
         self._lbl_beta     = QLabel("β (0.02–10):")
-        self._lbl_strength = QLabel("Strength:")
+        self._lbl_strength = QLabel(self.tr("Strength:"))
         form.addRow(self._lbl_alpha,    self.alpha)
         form.addRow(self._lbl_beta,     self.beta)
         form.addRow(self._lbl_strength, self.strength)
         form.addRow("γ (0.01–5):",  self.gamma)
-        form.addRow("Pivot (0–1):", self.pivot)
+        form.addRow(self.tr("Pivot (0–1):"), self.pivot)
         form.addRow("LP (0–1):",    self.lp)
         form.addRow("HP (0–1):",    self.hp)
 
@@ -5596,31 +5631,31 @@ class _GHSPresetDialog(QDialog):
 class _ABEPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("ABE — Preset")
+        self.setWindowTitle(self.tr("ABE — Preset"))
         p = dict(initial or {})
 
         form = QFormLayout(self)
 
         # ---- core background model ----
         self.degree  = QSpinBox(); self.degree.setRange(0, 6);  self.degree.setValue(int(p.get("degree", 2)))
-        self.degree.setToolTip("0 = skip polynomial (RBF-only).")
+        self.degree.setToolTip(self.tr("0 = skip polynomial (RBF-only)."))
         self.samples = QSpinBox(); self.samples.setRange(20, 100000); self.samples.setSingleStep(20); self.samples.setValue(int(p.get("samples", 120)))
         self.down    = QSpinBox(); self.down.setRange(1, 64); self.down.setValue(int(p.get("downsample", 6)))
         self.patch   = QSpinBox(); self.patch.setRange(5, 151); self.patch.setSingleStep(2); self.patch.setValue(int(p.get("patch", 15)))
-        self.rbf     = QCheckBox("Enable RBF"); self.rbf.setChecked(bool(p.get("rbf", True)))
+        self.rbf     = QCheckBox(self.tr("Enable RBF")); self.rbf.setChecked(bool(p.get("rbf", True)))
         self.smooth  = QDoubleSpinBox(); self.smooth.setRange(0.0, 10.0); self.smooth.setDecimals(3); self.smooth.setSingleStep(0.01); self.smooth.setValue(float(p.get("rbf_smooth", 1.0)))
         self.seed    = QSpinBox(); self.seed.setRange(-1, 99999); self.seed.setValue(int(p.get("seed", 42)))
-        self.seed.setSpecialValueText("Random (no seed)")
-        self.seed.setToolTip("-1 = non-deterministic (different each run).\nAny other value = fully reproducible results.")
-        self.mk_bg   = QCheckBox("Also create background document"); self.mk_bg.setChecked(bool(p.get("make_background_doc", False)))
+        self.seed.setSpecialValueText(self.tr("Random (no seed)"))
+        self.seed.setToolTip(self.tr("-1 = non-deterministic (different each run).\nAny other value = fully reproducible results."))
+        self.mk_bg   = QCheckBox(self.tr("Also create background document")); self.mk_bg.setChecked(bool(p.get("make_background_doc", False)))
 
-        form.addRow("Polynomial degree:", self.degree)
-        form.addRow("# samples:",         self.samples)
-        form.addRow("Downsample:",        self.down)
-        form.addRow("Patch size (px):",   self.patch)
+        form.addRow(self.tr("Polynomial degree:"), self.degree)
+        form.addRow(self.tr("# samples:"),         self.samples)
+        form.addRow(self.tr("Downsample:"),        self.down)
+        form.addRow(self.tr("Patch size (px):"),   self.patch)
         form.addRow(self.rbf)
-        form.addRow("RBF smooth:",        self.smooth)
-        form.addRow("Random seed:",       self.seed)
+        form.addRow(self.tr("RBF smooth:"),        self.smooth)
+        form.addRow(self.tr("Random seed:"),       self.seed)
         form.addRow(self.mk_bg)
 
         # ---- correction mode ----
@@ -5629,72 +5664,72 @@ class _ABEPresetDialog(QDialog):
         self.cmb_correction.addItems(["Subtract", "Divide"])
         self.cmb_correction.setCurrentText("Divide" if _mode == "divide" else "Subtract")
         self.cmb_correction.setToolTip(
-            "Subtract: standard additive background removal.\n"
-            "Divide: for vignetting / multiplicative gradients."
+            self.tr("Subtract: standard additive background removal.\n"
+            "Divide: for vignetting / multiplicative gradients.")
         )
-        form.addRow("Correction mode:", self.cmb_correction)
+        form.addRow(self.tr("Correction mode:"), self.cmb_correction)
 
         # ---- multiscale multiplicative-gradient refinement ----
         _ms = p.get("multiscale", None) or {}
-        self.ms_enable = QCheckBox("Enable multiscale refinement")
+        self.ms_enable = QCheckBox(self.tr("Enable multiscale refinement"))
         self.ms_enable.setChecked(bool(_ms.get("enabled", False)))
         self.ms_enable.setToolTip(
-            "Second pass that removes sharp multiplicative defects (dust motes,\n"
+            self.tr("Second pass that removes sharp multiplicative defects (dust motes,\n"
             "reflections, filter-edge shadows) that poly/RBF can't model.\n"
             "NOTE: headless (dropped-on-image) runs have no exclusion polygon,\n"
-            "so this flattens the whole frame with no galaxy protection."
+            "so this flattens the whole frame with no galaxy protection.")
         )
         form.addRow(self.ms_enable)
 
-        self.ms_darkstar = QCheckBox("Remove stars first (DarkStar)")
+        self.ms_darkstar = QCheckBox(self.tr("Remove stars first (DarkStar)"))
         self.ms_darkstar.setChecked(bool(_ms.get("darkstar", True)))
         self.ms_darkstar.setToolTip(
-            "Estimate the gradient on a starless copy so stars don't pollute it.\n"
-            "Stars are kept in the final output. Strongly recommended."
+            self.tr("Estimate the gradient on a starless copy so stars don't pollute it.\n"
+            "Stars are kept in the final output. Strongly recommended.")
         )
         form.addRow(self.ms_darkstar)
 
         self.ms_band_lo = QSpinBox(); self.ms_band_lo.setRange(0, 11); self.ms_band_lo.setValue(int(_ms.get("band_lo", 6)))
         self.ms_band_hi = QSpinBox(); self.ms_band_hi.setRange(0, 11); self.ms_band_hi.setValue(int(_ms.get("band_hi", 8)))
         self.ms_band_lo.setMaximumWidth(56); self.ms_band_hi.setMaximumWidth(56)
-        self.ms_band_lo.setToolTip("First detail layer treated as gradient (lower = finer).")
-        self.ms_band_hi.setToolTip("Last detail layer (inclusive); higher = coarser.")
+        self.ms_band_lo.setToolTip(self.tr("First detail layer treated as gradient (lower = finer)."))
+        self.ms_band_hi.setToolTip(self.tr("Last detail layer (inclusive); higher = coarser."))
         _band_row = QHBoxLayout(); _band_row.setContentsMargins(0, 0, 0, 0)
         _band_row.addWidget(self.ms_band_lo)
-        _band_row.addWidget(QLabel("to"))
+        _band_row.addWidget(QLabel(self.tr("to")))
         _band_row.addWidget(self.ms_band_hi)
         _band_row.addStretch(1)
         _band_wrap = QWidget(); _band_wrap.setLayout(_band_row)
-        form.addRow("Scale band:", _band_wrap)
+        form.addRow(self.tr("Scale band:"), _band_wrap)
 
-        self.ms_residual = QCheckBox("Include coarsest residual")
+        self.ms_residual = QCheckBox(self.tr("Include coarsest residual"))
         self.ms_residual.setChecked(bool(_ms.get("include_residual", False)))
         self.ms_residual.setToolTip(
-            "Usually OFF — the smooth background is already handled by poly/RBF;\n"
-            "including it here risks double-correcting."
+            self.tr("Usually OFF — the smooth background is already handled by poly/RBF;\n"
+            "including it here risks double-correcting.")
         )
         form.addRow(self.ms_residual)
 
         self.ms_strength = QSpinBox(); self.ms_strength.setRange(0, 100); self.ms_strength.setSuffix(" %")
         self.ms_strength.setValue(int(round(float(_ms.get("strength", 1.0)) * 100)))
-        self.ms_strength.setToolTip("Blend strength of the correction (100% = full).")
-        form.addRow("Strength:", self.ms_strength)
+        self.ms_strength.setToolTip(self.tr("Blend strength of the correction (100% = full)."))
+        form.addRow(self.tr("Strength:"), self.ms_strength)
 
         self.ms_protect = QDoubleSpinBox(); self.ms_protect.setRange(1.0, 5.0); self.ms_protect.setSingleStep(0.5); self.ms_protect.setDecimals(1)
         self.ms_protect.setValue(float(_ms.get("protect_k", 3.0)))
         self.ms_protect.setToolTip(
-            "Signal-protection threshold (median + k·MAD).\n"
-            "k=1-2 protects aggressively, k=3 balanced, k=4-5 protects only bright cores."
+            self.tr("Signal-protection threshold (median + k·MAD).\n"
+            "k=1-2 protects aggressively, k=3 balanced, k=4-5 protects only bright cores.")
         )
-        form.addRow("Protect k (MAD):", self.ms_protect)
+        form.addRow(self.tr("Protect k (MAD):"), self.ms_protect)
 
         self.ms_smooth = QSpinBox(); self.ms_smooth.setRange(0, 10); self.ms_smooth.setSuffix(" px")
         self.ms_smooth.setValue(int(_ms.get("smooth_px", 2)))
         self.ms_smooth.setToolTip(
-            "Blur the gradient MAP before dividing, to strip per-pixel noise the\n"
-            "band picked up (worst at low band numbers). 0 = off; 2-3 px typical."
+            self.tr("Blur the gradient MAP before dividing, to strip per-pixel noise the\n"
+            "band picked up (worst at low band numbers). 0 = off; 2-3 px typical.")
         )
-        form.addRow("Smooth gradient map:", self.ms_smooth)
+        form.addRow(self.tr("Smooth gradient map:"), self.ms_smooth)
 
         # keep the multiscale sub-controls disabled until the feature is on
         def _sync_ms(on: bool):
@@ -5751,7 +5786,7 @@ class _ABEPresetDialog(QDialog):
 class _CropPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Crop Preset")
+        self.setWindowTitle(self.tr("Crop Preset"))
         init = dict(initial or {})
         mode = str(init.get("mode", "margins")).lower()
         margins = dict(init.get("margins", {}))
@@ -5764,14 +5799,14 @@ class _CropPresetDialog(QDialog):
         self.cmb_mode.addItems(["margins", "rect_norm", "quad_norm"])
         self.cmb_mode.setCurrentText(mode)
         # Per-item tooltips
-        self.cmb_mode.setItemData(0, "Crop by pixel margins from each edge.", Qt.ItemDataRole.ToolTipRole)
-        self.cmb_mode.setItemData(1, "Axis-aligned rectangle in 0..1 normalized coords (optional rotation).", Qt.ItemDataRole.ToolTipRole)
-        self.cmb_mode.setItemData(2, "Four corners (TL,TR,BR,BL) in 0..1 normalized coords for perspective/keystone.", Qt.ItemDataRole.ToolTipRole)
+        self.cmb_mode.setItemData(0, self.tr("Crop by pixel margins from each edge."), Qt.ItemDataRole.ToolTipRole)
+        self.cmb_mode.setItemData(1, self.tr("Axis-aligned rectangle in 0..1 normalized coords (optional rotation)."), Qt.ItemDataRole.ToolTipRole)
+        self.cmb_mode.setItemData(2, self.tr("Four corners (TL,TR,BR,BL) in 0..1 normalized coords for perspective/keystone."), Qt.ItemDataRole.ToolTipRole)
 
         # Tiny "?" button
         self.btn_mode_help = QToolButton()
         self.btn_mode_help.setText("?")
-        self.btn_mode_help.setToolTip("What do these modes mean?")
+        self.btn_mode_help.setToolTip(self.tr("What do these modes mean?"))
         self.btn_mode_help.setFixedWidth(24)
         self.btn_mode_help.clicked.connect(self._show_mode_help)
 
@@ -5781,7 +5816,7 @@ class _CropPresetDialog(QDialog):
         mode_row_lay.setContentsMargins(0, 0, 0, 0)
         mode_row_lay.addWidget(self.cmb_mode, 1)
         mode_row_lay.addWidget(self.btn_mode_help, 0)
-        form.addRow("Mode:", mode_row)
+        form.addRow(self.tr("Mode:"), mode_row)
         # -----------------------------------------------------------------
 
         # Margins UI
@@ -5793,16 +5828,16 @@ class _CropPresetDialog(QDialog):
         self.bottom.setValue(int(margins.get("bottom", 0)))
         self.left.setValue(int(margins.get("left", 0)))
 
-        self.cb_new = QCheckBox("Create new view")
+        self.cb_new = QCheckBox(self.tr("Create new view"))
         self.cb_new.setChecked(bool(init.get("create_new_view", False)))
         self.le_title = QLineEdit(init.get("title", "Crop"))
 
-        form.addRow("Top (px):", self.top)
-        form.addRow("Right (px):", self.right)
-        form.addRow("Bottom (px):", self.bottom)
-        form.addRow("Left (px):", self.left)
+        form.addRow(self.tr("Top (px):"), self.top)
+        form.addRow(self.tr("Right (px):"), self.right)
+        form.addRow(self.tr("Bottom (px):"), self.bottom)
+        form.addRow(self.tr("Left (px):"), self.left)
         form.addRow("", self.cb_new)
-        form.addRow("New view title:", self.le_title)
+        form.addRow(self.tr("New view title:"), self.le_title)
         lay.addLayout(form)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
@@ -5812,7 +5847,7 @@ class _CropPresetDialog(QDialog):
     def _show_mode_help(self):
         current = self.cmb_mode.currentText()
         txt = (
-            "<b>Crop modes</b><br><br>"
+            self.tr("<b>Crop modes</b><br><br>"
             "<b>margins</b> — Crop by pixel offsets from each image edge.<br>"
             "• <i>top/right/bottom/left</i> are in pixels.<br><br>"
             "<b>rect_norm</b> — Axis-aligned rectangle (optionally rotated) expressed in normalized 0..1 units.<br>"
@@ -5820,15 +5855,15 @@ class _CropPresetDialog(QDialog):
             "• x,y: top-left; w,h: size; angle_deg: CCW rotation around center (optional).<br><br>"
             "<b>quad_norm</b> — Arbitrary 4-corner crop in normalized 0..1 units (perspective/keystone).<br>"
             "• Schema: { mode:'quad_norm', quad:[[xTL,yTL],[xTR,yTR],[xBR,yBR],[xBL,yBL]] }<br>"
-            "• Order: TL, TR, BR, BL. (0,0)=top-left, (1,1)=bottom-right."
+            "• Order: TL, TR, BR, BL. (0,0)=top-left, (1,1)=bottom-right.")
         )
         # Small extra hint for the selected item
         if current == "rect_norm":
-            txt += "<br><br><i>Tip:</i> Use rect_norm for regular boxes; add a small angle when needed."
+            txt += self.tr("<br><br><i>Tip:</i> Use rect_norm for regular boxes; add a small angle when needed.")
         elif current == "quad_norm":
-            txt += "<br><br><i>Tip:</i> Use quad_norm when the box edges aren’t parallel (keystone or tilt)."
+            txt += self.tr("<br><br><i>Tip:</i> Use quad_norm when the box edges aren’t parallel (keystone or tilt).")
 
-        QMessageBox.information(self, "Crop modes help", txt)
+        QMessageBox.information(self, self.tr("Crop modes help"), txt)
 
     def result_dict(self) -> dict:
         return {
@@ -5846,13 +5881,13 @@ class _CropPresetDialog(QDialog):
 class _RGBAlignPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("RGB Align — Preset")
+        self.setWindowTitle(self.tr("RGB Align — Preset"))
         init = dict(initial or {})
         v = QVBoxLayout(self)
 
         # ── model row ───────────────────────────────────────
         row = QHBoxLayout()
-        row.addWidget(QLabel("Alignment model:"))
+        row.addWidget(QLabel(self.tr("Alignment model:")))
         self.cb_model = QComboBox()
         # include EDGE first
         self.cb_model.addItems(["edge", "homography", "affine", "poly3", "poly4"])
@@ -5864,17 +5899,17 @@ class _RGBAlignPresetDialog(QDialog):
 
         # ── SEP sigma ───────────────────────────────────────
         sep_row = QHBoxLayout()
-        sep_row.addWidget(QLabel("SEP sigma:"))
+        sep_row.addWidget(QLabel(self.tr("SEP sigma:")))
         self.sb_sigma = QSpinBox()
         self.sb_sigma.setRange(1, 10)
         self.sb_sigma.setValue(int(init.get("sep_sigma", 3)))
-        self.sb_sigma.setToolTip("Detection threshold (σ) for EDGE mode.\n"
-                                 "Higher = fewer stars. Only used when model = EDGE.")
+        self.sb_sigma.setToolTip(self.tr("Detection threshold (σ) for EDGE mode.\n"
+                                 "Higher = fewer stars. Only used when model = EDGE."))
         sep_row.addWidget(self.sb_sigma)
         v.addLayout(sep_row)
 
         # ── create new ──────────────────────────────────────
-        self.chk_new = QCheckBox("Create new document")
+        self.chk_new = QCheckBox(self.tr("Create new document"))
         self.chk_new.setChecked(bool(init.get("new_doc", True)))
         v.addWidget(self.chk_new)
 
@@ -5898,7 +5933,7 @@ class _RGBAlignPresetDialog(QDialog):
 class _GeomRotateAnyPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Arbitrary Rotation — Preset")
+        self.setWindowTitle(self.tr("Arbitrary Rotation — Preset"))
         init = dict(initial or {})
 
         self.spin_angle = QDoubleSpinBox()
@@ -5908,7 +5943,7 @@ class _GeomRotateAnyPresetDialog(QDialog):
         self.spin_angle.setValue(float(init.get("angle_deg", init.get("angle", 0.0))))
 
         form = QFormLayout(self)
-        form.addRow("Angle (degrees):", self.spin_angle)
+        form.addRow(self.tr("Angle (degrees):"), self.spin_angle)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,

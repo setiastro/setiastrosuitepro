@@ -1034,7 +1034,7 @@ class HDRCompositionDialog(QDialog):
 
     def __init__(self, main_window):
         super().__init__(main_window)
-        self.setWindowTitle("HDR Composition")
+        self.setWindowTitle(self.tr("HDR Composition"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
@@ -1047,19 +1047,19 @@ class HDRCompositionDialog(QDialog):
         self._settings = QSettings()
 
         root = QVBoxLayout(self)
-        root.addWidget(QLabel(
+        root.addWidget(QLabel(self.tr(
             "Add the views to combine, in any order \u2014 the longest exposure is "
             "worked out from the frames themselves. "
             "They must already be registered and still linear. "
             "A frame a pixel or two larger is kept where the pixels still line up."
-        ))
+        )))
 
         pick = QHBoxLayout()
         self.cb_available = QComboBox()
         self.cb_available.setMinimumWidth(220)
-        self.btn_add = QPushButton("Add")
-        self.btn_remove = QPushButton("Remove")
-        self.btn_refresh = QPushButton("Refresh")
+        self.btn_add = QPushButton(self.tr("Add"))
+        self.btn_remove = QPushButton(self.tr("Remove"))
+        self.btn_refresh = QPushButton(self.tr("Refresh"))
         pick.addWidget(self.cb_available, 1)
         pick.addWidget(self.btn_add)
         pick.addWidget(self.btn_remove)
@@ -1072,9 +1072,9 @@ class HDRCompositionDialog(QDialog):
         root.addWidget(self.list, 1)
 
         row = QHBoxLayout()
-        self.btn_sort = QPushButton("Sort by exposure")
-        self.btn_up = QPushButton("Up")
-        self.btn_down = QPushButton("Down")
+        self.btn_sort = QPushButton(self.tr("Sort by exposure"))
+        self.btn_up = QPushButton(self.tr("Up"))
+        self.btn_down = QPushButton(self.tr("Down"))
         for button in (self.btn_sort, self.btn_up, self.btn_down):
             row.addWidget(button)
         row.addStretch(1)
@@ -1086,45 +1086,45 @@ class HDRCompositionDialog(QDialog):
         self.sp_threshold.setDecimals(3)
         self.sp_threshold.setSingleStep(0.01)
         self.sp_threshold.setValue(0.800)
-        self.sp_threshold.setToolTip(
+        self.sp_threshold.setToolTip(self.tr(
             "Pixels at or above this value in the long exposure are treated as saturated "
             "and replaced. Lower it when cores clip below 0.8."
-        )
-        form.addRow("Binarizing threshold:", self.sp_threshold)
+        ))
+        form.addRow(self.tr("Binarizing threshold:"), self.sp_threshold)
 
         self.sp_growth = QSpinBox()
         self.sp_growth.setRange(0, 64)
         self.sp_growth.setValue(1)
-        self.sp_growth.setToolTip(
+        self.sp_growth.setToolTip(self.tr(
             "Dilate the saturated mask by this many pixels so blooming just outside "
             "the clip is replaced too."
-        )
-        form.addRow("Mask growth (px):", self.sp_growth)
+        ))
+        form.addRow(self.tr("Mask growth (px):"), self.sp_growth)
 
         self.sp_smooth = QDoubleSpinBox()
         self.sp_smooth.setRange(0.0, 64.0)
         self.sp_smooth.setDecimals(1)
         self.sp_smooth.setSingleStep(0.5)
         self.sp_smooth.setValue(7.0)
-        self.sp_smooth.setToolTip(
+        self.sp_smooth.setToolTip(self.tr(
             "Width, in pixels, of the blend between the long exposure and the "
             "scaled short exposure. The core of the mask stays fully replaced."
-        )
-        form.addRow("Mask smoothness (px):", self.sp_smooth)
+        ))
+        form.addRow(self.tr("Mask smoothness (px):"), self.sp_smooth)
 
-        self.chk_mask = QCheckBox("Also open the replacement mask")
+        self.chk_mask = QCheckBox(self.tr("Also open the replacement mask"))
         form.addRow(self.chk_mask)
         root.addLayout(form)
 
-        self.lbl_status = QLabel(
+        self.lbl_status = QLabel(self.tr(
             "The result stays linear and in the 0\u20131 range. Autostretch shows the recovered cores."
-        )
+        ))
         self.lbl_status.setWordWrap(True)
         root.addWidget(self.lbl_status)
 
         buttons = QDialogButtonBox()
-        self.btn_apply = buttons.addButton("Apply", QDialogButtonBox.ButtonRole.AcceptRole)
-        self.btn_close = buttons.addButton("Close", QDialogButtonBox.ButtonRole.RejectRole)
+        self.btn_apply = buttons.addButton(self.tr("Apply"), QDialogButtonBox.ButtonRole.AcceptRole)
+        self.btn_close = buttons.addButton(self.tr("Close"), QDialogButtonBox.ButtonRole.RejectRole)
         self.btn_help = make_help_button("hdr_composition", self)
         buttons.addButton(self.btn_help, QDialogButtonBox.ButtonRole.ActionRole)
         self.btn_close.clicked.connect(self.reject)
@@ -1138,8 +1138,8 @@ class HDRCompositionDialog(QDialog):
             self.preset_drag_handle = PresetDragHandle(
                 "hdr_composition", self.get_preset,
                 icon=QIcon(hdrcomposition_path),
-                tooltip="Drag onto a view to run HDR Composition headlessly, "
-                        "or onto the shortcut canvas to save these settings.",
+                tooltip=self.tr("Drag onto a view to run HDR Composition headlessly, "
+                        "or onto the shortcut canvas to save these settings."),
                 parent=self,
             )
             drag_row.addWidget(self.preset_drag_handle)
@@ -1221,7 +1221,7 @@ class HDRCompositionDialog(QDialog):
             if id(doc) in chosen:
                 continue
             exp = exposure_seconds(doc)
-            suffix = f"{exp:.1f} s" if exp is not None else "exposure unknown"
+            suffix = f"{exp:.1f} s" if exp is not None else self.tr("exposure unknown")
             self.cb_available.addItem(f"{_doc_name(doc)}  —  {suffix}", userData=doc)
         if current is not None:
             for index in range(self.cb_available.count()):
@@ -1248,7 +1248,7 @@ class HDRCompositionDialog(QDialog):
         if id(doc) in self._chosen_ids():
             return
         exp = exposure_seconds(doc)
-        suffix = f"{exp:.1f} s" if exp is not None else "exposure unknown"
+        suffix = f"{exp:.1f} s" if exp is not None else self.tr("exposure unknown")
         item = QListWidgetItem(f"{_doc_name(doc)}  —  {suffix}")
         item.setData(_ROLE_DOC, doc)
         item.setData(_ROLE_EXP, exp)
@@ -1288,10 +1288,10 @@ class HDRCompositionDialog(QDialog):
         ]
         if unknown:
             listed = ", ".join(unknown)
-            self.lbl_status.setText(
-                f"No exposure time was found for {listed}. "
+            self.lbl_status.setText(self.tr(
+                "No exposure time was found for {0}. "
                 "Those views were left at the bottom. Move the longest exposure to the top."
-            )
+            ).format(listed))
 
     def _show_detected_order(self, order: list[int]) -> None:
         """Put the list in the order the frames were actually composed.
@@ -1331,7 +1331,7 @@ class HDRCompositionDialog(QDialog):
     def _apply(self):
         docs = self._chosen_docs()
         if len(docs) < 2:
-            QMessageBox.information(self, "HDR Composition", "Add at least two views.")
+            QMessageBox.information(self, self.tr("HDR Composition"), self.tr("Add at least two views."))
             return
         images = []
         for doc in docs:
@@ -1349,10 +1349,10 @@ class HDRCompositionDialog(QDialog):
                 exposures=[exposure_seconds(doc) for doc in docs],
             )
         except HDRCompositionError as exc:
-            QMessageBox.warning(self, "HDR Composition", str(exc))
+            QMessageBox.warning(self, self.tr("HDR Composition"), str(exc))
             return
         except Exception as exc:
-            QMessageBox.critical(self, "HDR Composition", f"Failed:\n{exc}")
+            QMessageBox.critical(self, self.tr("HDR Composition"), self.tr("Failed:\n{0}").format(exc))
             return
         finally:
             QApplication.restoreOverrideCursor()
@@ -1368,9 +1368,9 @@ class HDRCompositionDialog(QDialog):
             open_mask=bool(self.chk_mask.isChecked()),
         )
         if summary is None:
-            QMessageBox.warning(self, "HDR Composition", "No document manager.")
+            QMessageBox.warning(self, self.tr("HDR Composition"), self.tr("No document manager."))
             return
-        self.lbl_status.setText(summary or "Nothing to replace at this threshold.")
+        self.lbl_status.setText(summary or self.tr("Nothing to replace at this threshold."))
         try:
             remember = getattr(self.mw, "remember_last_headless_command", None)
             if remember is None:

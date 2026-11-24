@@ -377,7 +377,9 @@ _SUPPRESS = re.compile(
     r"|rejection_map="
     r"|seed_image="
     r"|🧪 Rejection prepass: \d+ group"
-    r"|🔹 \[\d+/\d+\] Rejection prepass",
+    r"|🔹 \[\d+/\d+\] Rejection prepass"
+    # the end-of-run Acquisition Summary block: a report, not a step
+    r"|📋 Stacking Summary",
     re.IGNORECASE
 )
 
@@ -439,7 +441,7 @@ class StackingMonitorDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Stacking Execution Monitor")
+        self.setWindowTitle(self.tr("Stacking Execution Monitor"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -551,7 +553,7 @@ class StackingMonitorDialog(QDialog):
 
         # header row
         hdr_row = QHBoxLayout()
-        title = QLabel("Stacking Execution Monitor")
+        title = QLabel(self.tr("Stacking Execution Monitor"))
         title.setObjectName("monitor_title")
         hdr_row.addWidget(title)
         hdr_row.addStretch(1)
@@ -562,10 +564,10 @@ class StackingMonitorDialog(QDialog):
         self._disk_label = QLabel("")
         self._disk_label.setObjectName("disk_label")
         self._disk_label.setTextFormat(Qt.TextFormat.RichText)
-        self._disk_label.setToolTip(
+        self._disk_label.setToolTip(self.tr(
             "Free space on the stacking volume vs. the estimated output size "
             "for the current step. Updates as files are written."
-        )
+        ))
         self._disk_label.setVisible(False)
         hdr_row.addWidget(self._disk_label)
         root.addLayout(hdr_row)
@@ -573,7 +575,8 @@ class StackingMonitorDialog(QDialog):
         # table
         self._table = QTableWidget(0, _NCOLS)
         self._table.setHorizontalHeaderLabels(
-            ["Operation", "Group", "Elapsed", "Status", "Note"]
+            [self.tr("Operation"), self.tr("Group"), self.tr("Elapsed"),
+             self.tr("Status"), self.tr("Note")]
         )
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -599,23 +602,23 @@ class StackingMonitorDialog(QDialog):
 
         # bottom bar
         bot = QHBoxLayout()
-        self._lbl_total = QLabel("Ready.")
+        self._lbl_total = QLabel(self.tr("Ready."))
         self._lbl_total.setObjectName("elapsed_label")
         bot.addWidget(self._lbl_total, stretch=1)
 
-        self.btn_stop = QPushButton("■ Stop")
+        self.btn_stop = QPushButton(self.tr("■ Stop"))
         self.btn_stop.setFixedHeight(26)
-        self.btn_stop.setToolTip("Request a graceful stop after the current tile/frame")
+        self.btn_stop.setToolTip(self.tr("Request a graceful stop after the current tile/frame"))
         self.btn_stop.clicked.connect(self._on_stop_clicked)
         self.btn_stop.setEnabled(False)
         bot.addWidget(self.btn_stop)
 
-        btn_clear = QPushButton("Clear")
+        btn_clear = QPushButton(self.tr("Clear"))
         btn_clear.setFixedHeight(26)
         btn_clear.clicked.connect(self.clear)
         bot.addWidget(btn_clear)
 
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("Close"))
         btn_close.setFixedHeight(26)
         btn_close.clicked.connect(self.hide)
         bot.addWidget(btn_close)
@@ -692,10 +695,10 @@ class StackingMonitorDialog(QDialog):
             step = f"{self._disk_step} · " if self._disk_step else ""
 
             if free is None:
-                self._disk_label.setText(
-                    f"<span style='color:{_DIM};'>💽 {step}"
-                    f"est. {_human_bytes(est)} · free space unknown</span>"
-                )
+                self._disk_label.setText(self.tr(
+                    "<span style='color:{0};'>💽 {1}"
+                    "est. {2} · free space unknown</span>"
+                ).format(_DIM, step, _human_bytes(est)))
                 self._disk_label.setVisible(True)
                 return
 
@@ -710,14 +713,15 @@ class StackingMonitorDialog(QDialog):
                 colour = _GREEN
 
             pct = f"{ratio * 100:.0f}%" if free > 0 else "—"
-            self._disk_label.setText(
-                f"💽 {step}"
-                f"<span style='color:{_FG};'>free </span>"
-                f"<span style='color:{colour};font-weight:bold;'>{_human_bytes(free)}</span>"
-                f"<span style='color:{_DIM};'>  /  est. </span>"
-                f"<span style='color:{_FG};'>{_human_bytes(est)}</span>"
-                f"<span style='color:{colour};'> ({pct})</span>"
-            )
+            self._disk_label.setText(self.tr(
+                "💽 {0}"
+                "<span style='color:{1};'>free </span>"
+                "<span style='color:{2};font-weight:bold;'>{3}</span>"
+                "<span style='color:{4};'>  /  est. </span>"
+                "<span style='color:{1};'>{5}</span>"
+                "<span style='color:{2};'> ({6})</span>"
+            ).format(step, _FG, colour, _human_bytes(free), _DIM,
+                     _human_bytes(est), pct))
             self._disk_label.setVisible(True)
         except Exception:
             pass
@@ -761,7 +765,7 @@ class StackingMonitorDialog(QDialog):
                 self.btn_stop.setText("Stopping…")
                 self.btn_stop.setEnabled(False)
             else:
-                self.btn_stop.setText("■ Stop")
+                self.btn_stop.setText(self.tr("■ Stop"))
                 self.btn_stop.setEnabled(bool(enabled))
         except Exception:
             pass
@@ -789,7 +793,7 @@ class StackingMonitorDialog(QDialog):
         self._set_stop_available(True)
         self._tick_timer.start()
         # Replace the "Ready." placeholder with a simple in-progress state.
-        self._set_running_label("In Progress")
+        self._set_running_label(self.tr("In Progress"))
         self.show()
         self.raise_()
         self.activateWindow()
@@ -818,7 +822,7 @@ class StackingMonitorDialog(QDialog):
         summed row times."""
         self._running_caption = caption
         self._running_active = True
-        self._lbl_total.setText(f"⟳ {caption}…")
+        self._lbl_total.setText(self.tr("⟳ {0}…").format(caption))
         self._lbl_total.setStyleSheet(
             "color:#f0c040; font-size:11px; font-weight:bold;"
         )
@@ -830,12 +834,12 @@ class StackingMonitorDialog(QDialog):
         # win when several are present (a full run ends on Integration).
         ops = {(r.operation or "").lower() for r in self._rows}
         if any("integration" in o for o in ops):
-            return "Integration phase done"
+            return self.tr("Integration phase done")
         if any("registration" in o for o in ops):
-            return "Registration phase done"
+            return self.tr("Registration phase done")
         if any("calibration" in o for o in ops):
-            return "Calibration phase complete"
-        return "Phase complete"
+            return self.tr("Calibration phase complete")
+        return self.tr("Phase complete")
 
     def finish_run(self, ok: bool, summary: str = ""):
         # Close any rows that are still marked running
@@ -871,7 +875,7 @@ class StackingMonitorDialog(QDialog):
                 "color:#f0c040; font-size:11px; font-weight:bold;"
             )
         else:
-            self._lbl_total.setText(f"Executed in {total_s}   ✗ Failed")
+            self._lbl_total.setText(self.tr("Executed in {0}   ✗ Failed").format(total_s))
             self._lbl_total.setStyleSheet(
                 "color:#ff4d4f; font-size:12px; font-weight:bold;"
             )
@@ -892,12 +896,12 @@ class StackingMonitorDialog(QDialog):
         total_s = self._mmss(self._process_seconds())
 
         if ok:
-            self._lbl_total.setText(f"Executed in {total_s}   ✓ Complete")
+            self._lbl_total.setText(self.tr("Executed in {0}   ✓ Complete").format(total_s))
             self._lbl_total.setStyleSheet(
                 "color:#52c41a; font-size:12px; font-weight:bold;"
             )
         else:
-            self._lbl_total.setText(f"Executed in {total_s}   ✗ Failed")
+            self._lbl_total.setText(self.tr("Executed in {0}   ✗ Failed").format(total_s))
             self._lbl_total.setStyleSheet(
                 "color:#ff4d4f; font-size:12px; font-weight:bold;"
             )
@@ -913,14 +917,14 @@ class StackingMonitorDialog(QDialog):
         """Terminal 'stopped by user' state — amber, not failure-red."""
         for op, idx in list(self._open.items()):
             row = self._rows[idx]
-            row.finish(_ST_WARN, "stopped")
+            row.finish(_ST_WARN, self.tr("stopped"))
             self._refresh_row(idx)
         self._open.clear()
         self._tick_timer.stop()
         self._running_active = False
         self._run_live = False
         total_s = self._mmss(self._process_seconds())
-        self._lbl_total.setText(f"⏹ Stopped by user ({total_s})")
+        self._lbl_total.setText(self.tr("⏹ Stopped by user ({0})").format(total_s))
         self._lbl_total.setStyleSheet("color:#ffa726; font-size:12px; font-weight:bold;")
         self._set_stop_available(False)
 
@@ -931,7 +935,7 @@ class StackingMonitorDialog(QDialog):
         self._run_start = None
         self._running_active = False
         self._run_live = False
-        self._lbl_total.setText("Ready.")
+        self._lbl_total.setText(self.tr("Ready."))
         self._lbl_total.setStyleSheet(f"color:{_DIM};font-size:10px;")
         self.clear_disk_budget()
         self._set_stop_available(False)
@@ -964,7 +968,7 @@ class StackingMonitorDialog(QDialog):
             # MFDeconv, a fresh mosaic set) has begun — flip the summary line
             # back to a live running caption so a stale "…done" doesn't linger.
             if not self._running_active:
-                self._set_running_label("In Progress (post-integration phase)")
+                self._set_running_label(self.tr("In Progress (post-integration phase)"))
 
         # ── finishing transitions ─────────────────────────────────────────
         if status in (_ST_OK, _ST_FAIL, _ST_WARN) and op in self._open:
@@ -1079,11 +1083,11 @@ class StackingMonitorDialog(QDialog):
             return it
 
         status_map = {
-            _ST_RUNNING: ("⟳ running", "#f0c040"),
-            _ST_OK:      ("✓ success", "#52c41a"),
-            _ST_WARN:    ("⚠ warning", "#ff9800"),
-            _ST_FAIL:    ("✗ failed",  "#ff4d4f"),
-            _ST_INFO:    ("ℹ info",    "#888888"),
+            _ST_RUNNING: (self.tr("⟳ running"), "#f0c040"),
+            _ST_OK:      (self.tr("✓ success"), "#52c41a"),
+            _ST_WARN:    (self.tr("⚠ warning"), "#ff9800"),
+            _ST_FAIL:    (self.tr("✗ failed"),  "#ff4d4f"),
+            _ST_INFO:    (self.tr("ℹ info"),    "#888888"),
         }
         st_text, st_color = status_map.get(row.status, ("?", "#888888"))
 

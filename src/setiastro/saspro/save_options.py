@@ -597,7 +597,7 @@ class ExportDialog(QDialog):
         lay = QVBoxLayout(self)
 
         # Format summary
-        fmt_lbl = QLabel(self.tr(f"Export format: {self._ext.upper()}"))
+        fmt_lbl = QLabel(self.tr("Export format: {0}").format(self._ext.upper()))
         fmt_lbl.setWordWrap(True)
         lay.addWidget(fmt_lbl)
 

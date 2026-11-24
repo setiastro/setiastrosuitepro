@@ -20,7 +20,7 @@ import html
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QEvent, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QCoreApplication, QEvent, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -37,19 +37,13 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication,
-    QFrame,
     QGraphicsItem,
     QGraphicsPathItem,
     QGraphicsScene,
     QGraphicsView,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMenu,
-    QPushButton,
-    QScrollArea,
-    QSplitter,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -61,23 +55,31 @@ from setiastro.saspro.workflows import (
     WorkflowDefinition,
     WorkflowLink,
     WorkflowStep,
-    WorkflowToolTree,
     _summarize_preset,
     format_workflow_step_label,
     normalize_workflow_links,
 )
 
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("WorkflowGraph", text)
+
+
 # -----------------------------------------------------------------------------
 # Geometry (scene units = pixels at 100% zoom)
 # -----------------------------------------------------------------------------
 
-MARGIN = 18
+MARGIN = 14
 HEADER_H = 30
 HEADER_GAP = 14
 ROW_GAP = 24          # between rows joined only by lane order
-LINK_GAP = 58         # between rows a link crosses, so its curve and label have room
-COL_GAP = 44
-LANE_PAD = 14
+LINK_GAP = 58         # between rows a link crosses, so its track and label have room
+LINK_SPREAD = 18      # extra gap for each further link that crosses there (up to 6): one track
+TRACK_TOP = 22        # from the bottom of a row to the first link track below it
+TRACK_BOTTOM = 30     # from the last track to the top of the next row: corner, drop, arrow
+TRACK_R = 8.0         # corner radius of a link's track
+COL_GAP = 26
+LANE_PAD = 10
 NODE_MIN_W = 160
 NODE_MAX_W = 240
 ACTION_H = 32
@@ -87,7 +89,7 @@ CHOICE_HEAD_H = 26
 CHOICE_ROW_H = 22
 SLOT_H = 42
 PORT_R = 5.0
-NEW_LANE_W = 150
+NEW_LANE_W = 84
 
 ZOOM_MIN = 0.25
 ZOOM_MAX = 2.5
@@ -129,7 +131,7 @@ class GraphEdge:
     src: str
     dst: str
     link: Optional[WorkflowLink] = None   # None: the lane's own order
-    label: str = ""                       # I/O tags shared by both ends
+    label: str = ""                       # the link's name, else I/O tags shared by both ends
 
 
 @dataclass
@@ -257,7 +259,7 @@ def build_workflow_graph(wf: WorkflowDefinition, rows: Optional[Dict[str, int]] 
             continue
         edges.append(GraphEdge(
             src=link.src, dst=dst, link=link,
-            label=_link_label(nodes, order, link.src, dst, to_lane=not link.dst),
+            label=link.label or _link_label(nodes, order, link.src, dst, to_lane=not link.dst),
         ))
 
     pins: Dict[str, int] = {}
@@ -308,8 +310,8 @@ def place_workflow_graph(g: WorkflowGraph, sizes: Dict[str, Tuple[float, float]]
 
     A lane column fits its widest node, and every box in it takes that width
     (split/merge pills and empty-lane slots keep their own). A row fits its
-    tallest node. The gap under a row widens when a link drops into the very
-    next row, so the curve is not squashed flat.
+    tallest node. The gap under a row widens when links drop into the very next
+    row, so the curves are not squashed flat or on top of each other.
     """
     for key, n in g.nodes.items():
         if key in sizes:
@@ -335,10 +337,11 @@ def place_workflow_graph(g: WorkflowGraph, sizes: Dict[str, Tuple[float, float]]
         row_h[n.rank] = max(row_h[n.rank], n.h)
     # A row left empty by a pin keeps a step's height, so the grid stays even.
     row_h = [h if h > 0 else float(ACTION_H) for h in row_h]
-    gap = [float(ROW_GAP)] * (top_rank + 1)
+    crossing = [0] * (top_rank + 1)
     for e in g.edges:
         if e.link is not None and g.nodes[e.dst].rank == g.nodes[e.src].rank + 1:
-            gap[g.nodes[e.src].rank] = float(LINK_GAP)
+            crossing[g.nodes[e.src].rank] += 1
+    gap = [float(LINK_GAP + LINK_SPREAD * min(n - 1, 6)) if n else float(ROW_GAP) for n in crossing]
     row_y = []
     y = float(MARGIN + HEADER_H + HEADER_GAP)
     for r, h in enumerate(row_h):
@@ -352,6 +355,74 @@ def place_workflow_graph(g: WorkflowGraph, sizes: Dict[str, Tuple[float, float]]
         n.x = cx + (cw - n.w) / 2
         n.y = row_y[n.rank] + (row_h[n.rank] - n.h) / 2
     return g
+
+
+def side_curve(a: QPointF, b: QPointF) -> QPainterPath:
+    """Out of one step's side and into the other's, in one S."""
+    path = QPainterPath(a)
+    sign = 1.0 if b.x() >= a.x() else -1.0
+    dx = max(30.0, abs(b.x() - a.x()) * 0.5)
+    path.cubicTo(QPointF(a.x() + sign * dx, a.y()), QPointF(b.x() - sign * dx, b.y()), b)
+    return path
+
+
+def gap_curve(a: QPointF, b: QPointF, gx: float) -> QPainterPath:
+    """Across at a's height to the gap between two lanes at gx, along the gap,
+    then across into b, with rounded corners."""
+    path = QPainterPath(a)
+    dy = b.y() - a.y()
+    k = min(40.0, abs(dy) / 2)
+    sy = 1.0 if dy >= 0 else -1.0
+    corner = QPointF(gx, a.y())
+    path.cubicTo(corner, corner, QPointF(gx, a.y() + sy * k))
+    path.lineTo(QPointF(gx, b.y() - sy * k))
+    corner = QPointF(gx, b.y())
+    path.cubicTo(corner, corner, b)
+    return path
+
+
+def track_curve(a: QPointF, b: QPointF, ty: float, r: float = TRACK_R) -> QPainterPath:
+    """Down from a to the track at ty, along it, then down into b, with rounded
+    corners. The track is in the gap between two rows, so it never runs through
+    a step."""
+    path = QPainterPath(a)
+    sx = 1.0 if b.x() >= a.x() else -1.0
+    rc = max(0.0, min(r, abs(b.x() - a.x()) / 2, ty - a.y(), b.y() - ty))
+    path.lineTo(QPointF(a.x(), ty - rc))
+    path.quadTo(QPointF(a.x(), ty), QPointF(a.x() + sx * rc, ty))
+    path.lineTo(QPointF(b.x() - sx * rc, ty))
+    path.quadTo(QPointF(b.x(), ty), QPointF(b.x(), ty + rc))
+    path.lineTo(b)
+    return path
+
+
+def stack_tracks(links: List[Tuple[object, QPointF, QPointF]]) -> List[object]:
+    """Top-to-bottom order of the tracks for links that share one gap.
+
+    (key, start, end) for each. Going right, the source nearest the targets runs
+    highest, and of its links the one to the farthest target first; going left,
+    mirrored. With _arrival_offsets putting the farthest source on the outside
+    of a target, three sources into two targets cross three times, the fewest
+    any drawing of them can."""
+    right = sorted((l for l in links if l[2].x() >= l[1].x()), key=lambda l: (-l[1].x(), -l[2].x()))
+    left = sorted((l for l in links if l[2].x() < l[1].x()), key=lambda l: (l[1].x(), l[2].x()))
+    return [l[0] for l in right + left]
+
+
+def boxes_crossed(path: QPainterPath, boxes: List[QRectF]) -> int:
+    """How many of boxes the path runs through."""
+    pts = [path.pointAtPercent(i / 120) for i in range(121)]
+    return sum(1 for r in boxes if any(r.contains(p) for p in pts))
+
+
+def lane_gaps(g: WorkflowGraph, src_lane: str, dst_lane: str) -> List[float]:
+    """x of each gap between the two lanes' columns, the one beside dst_lane first."""
+    i, j = g.lanes.index(src_lane), g.lanes.index(dst_lane)
+    gaps = []
+    for k in range(min(i, j), max(i, j)):
+        x1, w1 = g.columns[g.lanes[k]]
+        gaps.append((x1 + w1 + g.columns[g.lanes[k + 1]][0]) / 2)
+    return gaps[::-1] if j > i else gaps
 
 
 # -----------------------------------------------------------------------------
@@ -489,7 +560,8 @@ def _icon_for(step: Optional[WorkflowStep], catalog) -> QIcon:
 def _node_tooltip(node: GraphNode, catalog, editable: bool) -> str:
     s = node.step
     if s is None:
-        return f"Lane <b>{html.escape(node.lane)}</b> is empty." + (" Drag tools here." if editable else "")
+        return (_tr("Lane <b>{0}</b> is empty. Drag tools here.") if editable
+                else _tr("Lane <b>{0}</b> is empty.")).format(html.escape(node.lane))
     parts = [f"<b>{html.escape(format_workflow_step_label(s, catalog))}</b>"]
     if s.kind == "action":
         info = catalog.get(s.command_id) if catalog else None
@@ -501,13 +573,14 @@ def _node_tooltip(node: GraphNode, catalog, editable: bool) -> str:
     elif s.kind == "note":
         parts.append(html.escape(s.note or ""))
     if s.inputs:
-        parts.append("<i>Inputs:</i> " + html.escape(", ".join(s.inputs)))
+        parts.append(_tr("<i>Inputs:</i> {0}").format(html.escape(", ".join(s.inputs))))
     if s.outputs:
-        parts.append("<i>Outputs:</i> " + html.escape(", ".join(s.outputs)))
+        parts.append(_tr("<i>Outputs:</i> {0}").format(html.escape(", ".join(s.outputs))))
     if s.preset:
-        parts.append("<i>Preset:</i> " + _summarize_preset(s.preset))
+        parts.append(_tr("<i>Preset:</i> {0}").format(_summarize_preset(s.preset)))
     if node.pinned:
-        parts.append("<i>Placed by hand.</i>" + (" Right-click › Auto Position to undo." if editable else ""))
+        parts.append(_tr("<i>Placed by hand.</i> Right-click › Auto Position to undo.") if editable
+                     else _tr("<i>Placed by hand.</i>"))
     return "<br>".join(p for p in parts if p)
 
 
@@ -538,7 +611,7 @@ class _NodeItem(QGraphicsItem):
         kind = node.kind
         step = node.step
         if kind == "slot":
-            self.label = "Drop tools here" if view.editable else "Empty lane"
+            self.label = _tr("Drop tools here") if view.editable else _tr("Empty lane")
             w, h = NODE_MIN_W, SLOT_H
         elif kind == "choice":
             self.label = format_workflow_step_label(step, catalog)
@@ -550,7 +623,7 @@ class _NodeItem(QGraphicsItem):
             w = _clamp(widest, NODE_MIN_W, NODE_MAX_W)
             h = CHOICE_HEAD_H + max(1, len(self.rows)) * CHOICE_ROW_H + 6
         elif kind == "note":
-            self.label = (step.note or "").strip() or "Note"
+            self.label = (step.note or "").strip() or _tr("Note")
             w = _clamp(fm.horizontalAdvance(self.label) / 2 + 52, NODE_MIN_W, NODE_MAX_W)
             h = NOTE_H
         elif kind in ("split", "merge"):
@@ -732,7 +805,7 @@ class _NodeItem(QGraphicsItem):
                 p.setPen(th.dim)
                 p.drawText(QRectF(10, CHOICE_HEAD_H + 3, r.width() - 20, CHOICE_ROW_H),
                            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                           "Drop tools here as options" if self.view.editable else "No options yet")
+                           _tr("Drop tools here as options") if self.view.editable else _tr("No options yet"))
             for i, (_cid, text, icon) in enumerate(self.rows):
                 top = CHOICE_HEAD_H + 3 + i * CHOICE_ROW_H
                 x = 14.0
@@ -776,7 +849,8 @@ class _EdgeItem(QGraphicsPathItem):
 
     def __init__(self, edge: GraphEdge, a: QPointF, b: QPointF, color: QColor,
                  view: "WorkflowGraphView", tip: str = "", avoid: Optional[List[QRectF]] = None,
-                 sideways: bool = False):
+                 labels: Optional[List[QRectF]] = None, route: Optional[QPainterPath] = None,
+                 track_y: Optional[float] = None):
         super().__init__()
         self.edge = edge
         self.view = view
@@ -786,12 +860,10 @@ class _EdgeItem(QGraphicsPathItem):
         self.hover = False
         self.end = b
         path = QPainterPath(a)
-        if sideways:
+        if route is not None:
             # Side to side: a link into a step that was dragged up level with,
             # or above, the step that feeds it.
-            sign = 1.0 if b.x() >= a.x() else -1.0
-            dx = max(30.0, abs(b.x() - a.x()) * 0.5)
-            path.cubicTo(QPointF(a.x() + sign * dx, a.y()), QPointF(b.x() - sign * dx, b.y()), b)
+            path = route
         elif abs(a.x() - b.x()) < 0.5:
             path.lineTo(b)
         else:
@@ -803,21 +875,37 @@ class _EdgeItem(QGraphicsPathItem):
         if tip:
             self.setToolTip(tip)
 
-        self._label_rect = QRectF()
+        self.label_item: Optional[_EdgeLabel] = None
         if edge.label:
             small = QFont(view.font())
             small.setPointSizeF(max(6.0, small.pointSizeF() - 1.0))
-            self._label_font = small
             fm = QFontMetricsF(small)
             w = fm.horizontalAdvance(edge.label) + 12
             h = fm.height() + 4
-            # Middle of the curve unless a step box sits there; then slide along it.
-            for t in (0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.5):
+            # Middle of the curve unless a step box or another label sits there;
+            # then slide along it. Covering a label is better than covering a step.
+            def spot(t):
                 mid = path.pointAtPercent(t)
-                rect = QRectF(mid.x() - w / 2, mid.y() - h / 2, w, h)
-                if not any(rect.intersects(r) for r in (avoid or [])):
-                    break
-            self._label_rect = rect
+                return QRectF(mid.x() - w / 2, mid.y() - h / 2, w, h)
+
+            if track_y is not None:
+                # On its own track, beside the step it feeds: that is where the
+                # name says what arrives. Tracks are a label's height apart.
+                lo, hi = sorted((a.x(), b.x()))
+                x1 = b.x() - 2 * TRACK_R - w if b.x() >= a.x() else b.x() + 2 * TRACK_R
+                if hi - lo - 2 * TRACK_R >= w:
+                    x1 = _clamp(x1, lo + TRACK_R, hi - TRACK_R - w)
+                else:
+                    x1 = (lo + hi - w) / 2
+                rect = QRectF(x1, track_y - h / 2, w, h)
+            else:
+                spots = [spot(0.5)] + [spot(0.5 + side * k * 0.05) for k in range(1, 9) for side in (-1, 1)]
+                off_steps = [r for r in spots if not any(r.intersects(b) for b in (avoid or []))]
+                clear = [r for r in off_steps if not any(r.intersects(b) for b in (labels or []))]
+                rect = (clear or off_steps or spots)[0]
+            if labels is not None:
+                labels.append(rect)
+            self.label_item = _EdgeLabel(self, rect, small, tip)
 
     def shape(self) -> QPainterPath:
         stroker = QPainterPathStroker()
@@ -825,13 +913,22 @@ class _EdgeItem(QGraphicsPathItem):
         return stroker.createStroke(self.path())
 
     def boundingRect(self) -> QRectF:
-        r = self.path().boundingRect().adjusted(-10, -10, 10, 10)
-        return r.united(self._label_rect.adjusted(-2, -2, 2, 2)) if not self._label_rect.isNull() else r
+        return self.path().boundingRect().adjusted(-10, -10, 10, 10)
+
+    def setVisible(self, on: bool):
+        super().setVisible(on)
+        if self.label_item is not None:
+            self.label_item.setVisible(on)
+
+    def hide(self):
+        self.setVisible(False)
 
     def set_selected(self, on: bool):
         if on != self.selected:
             self.selected = on
             self.update()
+            if self.label_item is not None:
+                self.label_item.update()
 
     def hoverEnterEvent(self, ev):
         self.hover = True
@@ -841,12 +938,15 @@ class _EdgeItem(QGraphicsPathItem):
         self.hover = False
         self.update()
 
-    def paint(self, p: QPainter, option, widget=None):
-        th = self.view.theme
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        col = QColor(th.hl if self.selected else self.color)
+    def line_color(self) -> QColor:
+        col = QColor(self.view.theme.hl if self.selected else self.color)
         if not self.is_link:
             col.setAlpha(170)
+        return col
+
+    def paint(self, p: QPainter, option, widget=None):
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        col = self.line_color()
         width = 2.8 if (self.selected or self.hover) else (2.0 if self.is_link else 1.5)
         p.setPen(QPen(col, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -854,7 +954,7 @@ class _EdgeItem(QGraphicsPathItem):
         p.drawPath(path)
 
         tip = self.end
-        prev = path.pointAtPercent(0.96)
+        prev = path.pointAtPercent(path.percentAtLength(max(0.0, path.length() - 10.0)))
         dx, dy = tip.x() - prev.x(), tip.y() - prev.y()
         norm = (dx * dx + dy * dy) ** 0.5 or 1.0
         ux, uy = dx / norm, dy / norm
@@ -865,14 +965,32 @@ class _EdgeItem(QGraphicsPathItem):
         p.setBrush(QBrush(col))
         p.drawPolygon(QPolygonF([tip, back + perp, back - perp]))
 
-        if not self._label_rect.isNull():
-            p.setFont(self._label_font)
-            p.setPen(QPen(col, 1.0))
-            p.setBrush(QBrush(th.base))
-            r = self._label_rect
-            p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
-            p.setPen(th.text)
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.edge.label)
+
+class _EdgeLabel(QGraphicsItem):
+    """A link's tag. Its own item, above every link and below the steps."""
+
+    def __init__(self, edge_item: _EdgeItem, rect: QRectF, font: QFont, tip: str = ""):
+        super().__init__()
+        self.edge_item = edge_item
+        self.rect = rect
+        self.font = font
+        self.setZValue(0.5)
+        if tip:
+            self.setToolTip(tip)
+
+    def boundingRect(self) -> QRectF:
+        return self.rect.adjusted(-2, -2, 2, 2)
+
+    def paint(self, p: QPainter, option, widget=None):
+        th = self.edge_item.view.theme
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setFont(self.font)
+        p.setPen(QPen(self.edge_item.line_color(), 1.0))
+        p.setBrush(QBrush(th.base))
+        r = self.rect
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.setPen(th.text)
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.edge_item.edge.label)
 
 
 class _LaneItem(QGraphicsItem):
@@ -888,9 +1006,9 @@ class _LaneItem(QGraphicsItem):
         self.rect = QRectF(x, MARGIN, w, height - 2 * MARGIN)
         self.header = QRectF(x + 8, MARGIN + 6, w - 16, HEADER_H - 6)
         self.setZValue(-5)
-        tip = f"Lane <b>{html.escape(lane)}</b>"
+        tip = _tr("Lane <b>{0}</b>").format(html.escape(lane))
         if view.editable:
-            tip += "<br>Double-click the name to rename. Right-click for lane commands."
+            tip += _tr("<br>Double-click the name to rename. Right-click for lane commands.")
         self.setToolTip(tip)
 
     def boundingRect(self) -> QRectF:
@@ -931,8 +1049,8 @@ class _NewLaneItem(QGraphicsItem):
         self.target = False
         self.rect = QRectF(x, MARGIN, NEW_LANE_W, height - 2 * MARGIN)
         self.setZValue(-5)
-        self.setToolTip("Drop a tool here, or drag a step's handle here, to start a new lane.<br>"
-                        "Double-click to add an empty lane.")
+        self.setToolTip(_tr("Drop a tool here, or drag a step's handle here, to start a new lane.<br>"
+                        "Double-click to add an empty lane."))
 
     def boundingRect(self) -> QRectF:
         return self.rect.adjusted(-2, -2, 2, 2)
@@ -1005,6 +1123,13 @@ class WorkflowGraphView(QGraphicsView):
         self._fit_pending = True
         self._auto_fit = False
 
+        self._empty = QLabel(self.tr("Drag tools onto a lane to build a workflow,\n"
+                             "or start from one of the Canned Workflows above."), self.viewport())
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        self._empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._empty.hide()
+
         self._hint = QLabel(self.viewport())
         self._hint.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._hint.hide()
@@ -1064,15 +1189,27 @@ class WorkflowGraphView(QGraphicsView):
         scene.setSceneRect(QRectF(0, 0, g.width, g.height))
         self._last_current = ""
         self.restyle()
+        self._empty.setVisible(self.editable and not wf.steps)
+        self._place_empty()
         if self._fit_pending and self.isVisible():
             self.fit()
+
+    def _place_empty(self):
+        if not self._empty.isHidden():
+            self._empty.adjustSize()
+            vp = self.viewport()
+            self._empty.move((vp.width() - self._empty.width()) // 2, int(vp.height() * 0.42))
 
     def _add_edges(self, g: WorkflowGraph, catalog):
         incoming: Dict[str, List[GraphEdge]] = {}
         for e in g.edges:
             incoming.setdefault(e.dst, []).append(e)
         lane_index = {lane: i for i, lane in enumerate(g.lanes)}
-        boxes = [QRectF(n.x - 4, n.y - 4, n.w + 8, n.h + 8) for n in g.nodes.values()]
+        box_of = {k: QRectF(n.x - 4, n.y - 4, n.w + 8, n.h + 8) for k, n in g.nodes.items()}
+        boxes = list(box_of.values())
+        labels: List[QRectF] = []
+        gaps_used: Dict[float, int] = {}
+        placed_all = []
         for dst, edges in incoming.items():
             d = g.nodes[dst]
             side = [e for e in edges if self._enters_side(g, e)]
@@ -1081,26 +1218,65 @@ class WorkflowGraphView(QGraphicsView):
             for e, spread in self._arrival_offsets(g, d, top):
                 s = g.nodes[e.src]
                 placed.append((e, QPointF(s.x + s.w / 2, s.y + s.h),
-                               QPointF(d.x + d.w / 2 + spread, d.y), False))
-            placed += [(e, a, b, True) for e, a, b in self._side_points(g, d, side)]
-            for e, a, b, sideways in placed:
-                s = g.nodes[e.src]
-                color = self.theme.lane(lane_index[s.lane])
-                tip = ""
-                if e.link is not None:
-                    src_t = format_workflow_step_label(s.step, catalog) if s.step else s.key
-                    if e.link.dst:
-                        dst_t = format_workflow_step_label(d.step, catalog) if d.step else d.key
-                        tip = f"Join: {html.escape(src_t)} → {html.escape(dst_t)} ({html.escape(d.lane)})"
-                    else:
-                        tip = f"Branch: {html.escape(src_t)} → lane {html.escape(d.lane)}"
-                    if e.label:
-                        tip += f"<br><i>Carries:</i> {html.escape(e.label)}"
-                    if self.editable:
-                        tip += "<br>Click to select, Delete to remove."
-                item = _EdgeItem(e, a, b, color, self, tip, avoid=boxes, sideways=sideways)
-                self.scene().addItem(item)
-                self._edges.append(item)
+                               QPointF(d.x + d.w / 2 + spread, d.y), None))
+            placed += [(e, a, b, self._side_route(g, e, a, b, box_of, gaps_used))
+                       for e, a, b in self._side_points(g, d, side)]
+            placed_all += placed
+        tracks = self._assign_tracks(g, placed_all)
+        # Tracked labels have fixed spots; the curved ones then find room around them.
+        placed_all.sort(key=lambda p: id(p[0]) not in tracks)
+        for e, a, b, route in placed_all:
+            s, d = g.nodes[e.src], g.nodes[e.dst]
+            track_y = tracks.get(id(e))
+            if track_y is not None:
+                route = track_curve(a, b, track_y)
+            color = self.theme.lane(lane_index[s.lane])
+            tip = ""
+            if e.link is not None:
+                src_t = format_workflow_step_label(s.step, catalog) if s.step else s.key
+                if e.link.dst:
+                    dst_t = format_workflow_step_label(d.step, catalog) if d.step else d.key
+                    tip = self.tr("Join: {0} → {1} ({2})").format(
+                        html.escape(src_t), html.escape(dst_t), html.escape(d.lane))
+                else:
+                    tip = self.tr("Branch: {0} → lane {1}").format(html.escape(src_t), html.escape(d.lane))
+                if e.label:
+                    tip += self.tr("<br><i>Carries:</i> {0}").format(html.escape(e.label))
+                if self.editable:
+                    tip += self.tr("<br>Click to select, double-click to name it, Delete to remove.")
+            item = _EdgeItem(e, a, b, color, self, tip, avoid=boxes, labels=labels, route=route,
+                             track_y=track_y)
+            self.scene().addItem(item)
+            if item.label_item is not None:
+                self.scene().addItem(item.label_item)
+            self._edges.append(item)
+
+    @staticmethod
+    def _assign_tracks(g: WorkflowGraph, placed) -> Dict[int, float]:
+        """{id(edge): track y} for each link into the very next row that enters
+        from the top. Those are drawn square, each on a track of its own in the
+        gap between the two rows (place_workflow_graph widened it for them), so a
+        fan of links never piles up into one band of curves and labels. Longer
+        links keep their curve."""
+        by_gap: Dict[int, list] = {}
+        for e, a, b, route in placed:
+            if route is not None or e.link is None:
+                continue
+            s, d = g.nodes[e.src], g.nodes[e.dst]
+            if d.rank != s.rank + 1 or abs(b.x() - a.x()) < 0.5:
+                continue
+            by_gap.setdefault(s.rank, []).append((id(e), a, b))
+        out: Dict[int, float] = {}
+        for r, links in by_gap.items():
+            if r + 1 >= len(g.row_top):
+                continue
+            top = g.row_top[r] + g.row_h[r] + TRACK_TOP
+            room = max(0.0, g.row_top[r + 1] - TRACK_BOTTOM - top)
+            n = len(links)
+            step = LINK_SPREAD if n < 2 else min(float(LINK_SPREAD), room / (n - 1))
+            for i, key in enumerate(stack_tracks(links)):
+                out[key] = top + i * step
+        return out
 
     @staticmethod
     def _enters_side(g: WorkflowGraph, e: GraphEdge) -> bool:
@@ -1109,6 +1285,29 @@ class WorkflowGraphView(QGraphicsView):
             return False
         s, d = g.nodes[e.src], g.nodes[e.dst]
         return d.y < s.y + s.h + 4
+
+    @staticmethod
+    def _side_route(g: WorkflowGraph, e: GraphEdge, a: QPointF, b: QPointF,
+                    box_of: Dict[str, QRectF], gaps_used: Dict[float, int]) -> QPainterPath:
+        """One S when it clears every other step. When it cannot (a link out of a
+        split pill, or past another lane), along the gap between two lanes that
+        is clear, the one beside the target first. Links that share a gap are
+        set a little apart."""
+        others = [r for k, r in box_of.items() if k not in (e.src, e.dst)]
+        best, best_gx = side_curve(a, b), None
+        best_n = boxes_crossed(best, others)
+        if best_n:
+            for gx in lane_gaps(g, g.nodes[e.src].lane, g.nodes[e.dst].lane):
+                n = gaps_used.get(gx, 0)
+                path = gap_curve(a, b, gx + 6.0 * ((n + 1) // 2) * (1 if n % 2 else -1))
+                crossed = boxes_crossed(path, others)
+                if crossed < best_n:
+                    best, best_n, best_gx = path, crossed, gx
+                    if not crossed:
+                        break
+        if best_gx is not None:
+            gaps_used[best_gx] = gaps_used.get(best_gx, 0) + 1
+        return best
 
     @staticmethod
     def _side_points(g: WorkflowGraph, d: GraphNode, edges: List[GraphEdge]):
@@ -1169,9 +1368,9 @@ class WorkflowGraphView(QGraphicsView):
     # ---- zoom -----------------------------------------------------------
 
     def request_fit(self):
+        """Fit at the next rebuild. Callers refresh right after asking; fitting any
+        sooner would fit the graph that is about to be replaced."""
         self._fit_pending = True
-        if self.isVisible() and self._graph is not None:
-            QTimer.singleShot(0, self._fit_if_pending)
 
     def _fit_if_pending(self):
         if self._fit_pending and self._graph is not None:
@@ -1269,6 +1468,8 @@ class WorkflowGraphView(QGraphicsView):
                 if it.port_hit(local):
                     return "port", it, ""
                 return "node", it, it.row_at(local)
+            if isinstance(it, _EdgeLabel):
+                return "link", it.edge_item, ""
             if isinstance(it, _EdgeItem):
                 if it.is_link:
                     return "link", it, ""
@@ -1400,11 +1601,11 @@ class WorkflowGraphView(QGraphicsView):
         if choice:
             self._set_targets([self._nodes[choice]])
             self._hide_marker()
-            self.show_hint("Add as an option of this choice", sticky=True)
+            self.show_hint(self.tr("Add as an option of this choice"), sticky=True)
         elif lane == "":
             self._set_targets([self._new_lane] if self._new_lane is not None else [])
             self._hide_marker()
-            self.show_hint("Start a new lane", sticky=True)
+            self.show_hint(self.tr("Start a new lane"), sticky=True)
         else:
             self._set_targets([])
             _i, y = self._insert_slot(lane, sp.y())
@@ -1457,19 +1658,19 @@ class WorkflowGraphView(QGraphicsView):
             if n.key == src.key:
                 return "", None, ""
             if n.lane == src.lane:
-                return "bad", None, "Same lane: the lane order already connects these steps."
+                return "bad", None, self.tr("Same lane: the lane order already connects these steps.")
             if n.is_slot:
-                kind, value, text = "lane", n.lane, f"Branch into lane '{n.lane}'"
+                kind, value, text = "lane", n.lane, self.tr("Branch into lane '{0}'").format(n.lane)
             else:
-                kind, value, text = "step", n.key, f"Join into '{item.label}' in lane '{n.lane}'"
+                kind, value, text = "step", n.key, self.tr("Join into '{0}' in lane '{1}'").format(item.label, n.lane)
         elif kind in ("lane", "header"):
             if item.lane == src.lane:
-                return "bad", None, "Same lane: the lane order already connects these steps."
-            kind, value, text = "lane", item.lane, f"Branch into the start of lane '{item.lane}'"
+                return "bad", None, self.tr("Same lane: the lane order already connects these steps.")
+            kind, value, text = "lane", item.lane, self.tr("Branch into the start of lane '{0}'").format(item.lane)
         elif kind == "newlane":
-            return "new", None, "Branch into a new lane"
+            return "new", None, self.tr("Branch into a new lane")
         else:
-            return "", None, "Drop on a step or a lane in another column"
+            return "", None, self.tr("Drop on a step or a lane in another column")
 
         wf = self._wf
         if wf is not None:
@@ -1479,7 +1680,9 @@ class WorkflowGraphView(QGraphicsView):
             normalize_workflow_links(list(wf.links or []) + [new], wf.steps, wf.lanes, dropped)
             for link, reason in dropped:
                 if link is new:
-                    return "bad", None, LINK_DROP_REASONS.get(reason, "That link is not allowed.")
+                    msg = LINK_DROP_REASONS.get(reason)
+                    return "bad", None, (QCoreApplication.translate("Workflows", msg) if msg
+                                         else self.tr("That link is not allowed."))
         return kind, value, text
 
     def _begin_link(self, item: _NodeItem):
@@ -1617,16 +1820,16 @@ class WorkflowGraphView(QGraphicsView):
             self._hide_marker()
             if self._ghost is not None:
                 self._ghost.hide()
-            self.show_hint("Move into a new lane", sticky=True)
+            self.show_hint(self.tr("Move into a new lane"), sticky=True)
         elif target[0] == "row":
             self._set_targets([])
             self._hide_marker()
             _kind, lane, row = target
             self._show_ghost(lane, row)
             if row == self._move_natural:
-                self.show_hint("Back to its automatic height", sticky=True)
+                self.show_hint(self.tr("Back to its automatic height"), sticky=True)
             else:
-                self.show_hint("Keep it at this height · right-click › Auto Position undoes it", sticky=True)
+                self.show_hint(self.tr("Keep it at this height · right-click › Auto Position undoes it"), sticky=True)
         else:
             self._set_targets([])
             if self._ghost is not None:
@@ -1756,6 +1959,10 @@ class WorkflowGraphView(QGraphicsView):
             QTimer.singleShot(0, lambda: self.host.graph_rename_lane(lane))
         elif self.editable and kind == "newlane":
             QTimer.singleShot(0, self.host.graph_add_lane)
+        elif self.editable and kind == "link":
+            self._select_link(item)
+            link, shown = item.edge.link, item.edge.label
+            QTimer.singleShot(0, lambda: self.host.graph_name_link(link, shown))
 
     def contextMenuEvent(self, ev):
         if self._mode:
@@ -1770,18 +1977,21 @@ class WorkflowGraphView(QGraphicsView):
             self.host.graph_lane_menu(menu, item.node.lane if kind == "node" else item.lane)
         elif kind == "link":
             self._select_link(item)
-            self.host.graph_link_menu(menu, item.edge.link)
+            self.host.graph_link_menu(menu, item.edge.link, item.edge.label)
         else:
             self.host.graph_canvas_menu(menu)
         if not menu.isEmpty():
             menu.addSeparator()
-        menu.addAction("Fit to Window", self.fit)
+        menu.addAction(self.tr("Fit to Window"), self.fit)
         menu.exec(ev.globalPos())
 
     def keyPressEvent(self, ev):
         key = ev.key()
-        if key == Qt.Key.Key_Escape and self._mode:
-            self._cancel_interaction()
+        if key == Qt.Key.Key_Escape and (self._mode or self.editable):
+            # The editor keeps Esc for cancelling: passed on, it would close the dialog.
+            if self._mode:
+                self._cancel_interaction()
+            self._select_link(None)
             return
         if self.editable and key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             if self._selected_link is not None:
@@ -1827,6 +2037,7 @@ class WorkflowGraphView(QGraphicsView):
                 self.fit()
             elif self._auto_fit:
                 self._fit_zoom()
+        self._place_empty()
         if self._hint.isVisible():
             self._hint.move(10, max(4, self.viewport().height() - self._hint.height() - 10))
 
@@ -1836,156 +2047,58 @@ class WorkflowGraphView(QGraphicsView):
             self.host.graph_refresh()
 
 
-class WorkflowGraphWindow(QWidget):
-    """The graph in its own resizable window.
-
-    Tool palette (editor only) | graph | step details and the step buttons.
-    There is one per workflow dialog. It is made on first open, hidden rather
-    than destroyed on close, and owned by the dialog, so it goes away with it.
-    The palette and buttons let it work on its own when it is maximized over
-    the dialog or moved to another monitor.
-    """
+class WorkflowGraphPanel(QWidget):
+    """The graph page of a workflow dialog: the graph, a how-to line and the zoom buttons."""
 
     def __init__(self, host, editable: bool, parent=None):
-        super().__init__(parent, Qt.WindowType.Window)
+        super().__init__(parent)
         self.host = host
-        self.editable = bool(editable)
-        self._prefix = str(getattr(host, "_GRAPH_SETTINGS_PREFIX", "") or "workflow_graph")
-        self._placed = False
-        self.setWindowTitle("Workflow Graph")
-        self.resize(1400, 900)
-
         self.view = WorkflowGraphView(host, editable, self)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 6, 8, 8)
-        root.setSpacing(6)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(4)
+        root.addWidget(self.view, 1)
 
-        # ---- top bar: workflow name, how-to line, lane button, zoom ----
         bar = QHBoxLayout()
-        self.lbl_title = QLabel(self)
-        font = self.lbl_title.font()
-        font.setBold(True)
-        if font.pointSizeF() > 0:
-            font.setPointSizeF(font.pointSizeF() * 1.15)
-        self.lbl_title.setFont(font)
-        bar.addWidget(self.lbl_title)
-        bar.addSpacing(14)
         if editable:
-            tip = ("Drag a step to reorder it or change lane · drag its ● onto another lane "
-                   "to branch, or onto a step to join · right-click for more · Ctrl+wheel zooms")
+            tip = (self.tr("Drag a step to reorder it or change lane · drag its ● onto another lane "
+                   "to branch, or onto a step to join · right-click for more · Ctrl+wheel zooms"))
         else:
-            tip = "Click to select · double-click to open · right-click for options · Ctrl+wheel zooms"
+            tip = self.tr("Click to select · double-click to open · right-click for options · Ctrl+wheel zooms")
         how = QLabel(tip, self)
         how.setForegroundRole(QPalette.ColorRole.PlaceholderText)
         how.setMinimumWidth(40)
         bar.addWidget(how, 1)
-        if editable:
-            self.btn_add_lane = QPushButton("Add Lane…", self)
-            self.btn_add_lane.clicked.connect(lambda _c=False: self.host.graph_add_lane())
-            bar.addWidget(self.btn_add_lane)
-            bar.addSpacing(8)
 
         self.btn_out = QToolButton(self)
         self.btn_out.setText("−")
-        self.btn_out.setToolTip("Zoom out (−)")
+        self.btn_out.setToolTip(self.tr("Zoom out (−)"))
         self.btn_out.setAutoRaise(True)
         self.lbl_zoom = QLabel("100%", self)
         self.lbl_zoom.setMinimumWidth(40)
         self.lbl_zoom.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.btn_in = QToolButton(self)
         self.btn_in.setText("+")
-        self.btn_in.setToolTip("Zoom in (+)")
+        self.btn_in.setToolTip(self.tr("Zoom in (+)"))
         self.btn_in.setAutoRaise(True)
         self.btn_fit = QToolButton(self)
-        self.btn_fit.setText("Fit")
-        self.btn_fit.setToolTip("Fit the workflow to the window (F)")
+        self.btn_fit.setText(self.tr("Fit"))
+        self.btn_fit.setToolTip(self.tr("Fit the workflow to the window (F)"))
         self.btn_fit.setAutoRaise(True)
         for w in (self.btn_out, self.lbl_zoom, self.btn_in, self.btn_fit):
             bar.addWidget(w)
         root.addLayout(bar)
 
-        self.split = QSplitter(Qt.Orientation.Horizontal, self)
-        root.addWidget(self.split, 1)
-
-        # ---- left: tool palette (editor only) ----
-        self.edt_search: Optional[QLineEdit] = None
-        self.tool_tree = None
-        if editable:
-            pal = QWidget(self.split)
-            pl = QVBoxLayout(pal)
-            pl.setContentsMargins(0, 0, 0, 0)
-            pl.setSpacing(4)
-            self.edt_search = QLineEdit(pal)
-            self.edt_search.setPlaceholderText("Search tools...")
-            self.edt_search.setClearButtonEnabled(True)
-            self.edt_search.textChanged.connect(self._refilter)
-            self.tool_tree = WorkflowToolTree(pal)
-            self.tool_tree.itemDoubleClicked.connect(self._on_tool_double_clicked)
-            pal_tip = QLabel("Drag a tool onto a lane. Double-click adds it after the selected step.", pal)
-            pal_tip.setWordWrap(True)
-            pal_tip.setForegroundRole(QPalette.ColorRole.PlaceholderText)
-            pl.addWidget(self.edt_search)
-            pl.addWidget(self.tool_tree, 1)
-            pl.addWidget(pal_tip)
-            self.split.addWidget(pal)
-
-        # ---- centre: the graph ----
-        self.split.addWidget(self.view)
-
-        # ---- right: what the selected step is, and the step buttons ----
-        side = QWidget(self.split)
-        sl = QVBoxLayout(side)
-        sl.setContentsMargins(0, 0, 0, 0)
-        sl.setSpacing(6)
-        self.lbl_details = QLabel("Select a step to view details.", side)
-        self.lbl_details.setWordWrap(True)
-        self.lbl_details.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self.lbl_details.setContentsMargins(8, 6, 8, 6)
-        self.lbl_details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        details = QScrollArea(side)
-        details.setWidgetResizable(True)
-        details.setFrameShape(QFrame.Shape.StyledPanel)
-        details.setWidget(self.lbl_details)
-        sl.addWidget(details, 1)
-
-        steps = QGridLayout()
-        steps.setSpacing(6)
-        self.btn_prev = QPushButton("◀  Previous", side)
-        self.btn_next = QPushButton("Next  ▶", side)
-        self.btn_open = QPushButton("Open Step", side)
-        self.btn_done = QPushButton("✓  Mark Complete", side)
-        steps.addWidget(self.btn_prev, 0, 0)
-        steps.addWidget(self.btn_next, 0, 1)
-        steps.addWidget(self.btn_open, 1, 0)
-        steps.addWidget(self.btn_done, 1, 1)
-        sl.addLayout(steps)
-        self.split.addWidget(side)
-
-        view_index = self.split.indexOf(self.view)
-        for i in range(self.split.count()):
-            self.split.setStretchFactor(i, 1 if i == view_index else 0)
-        self.split.setCollapsible(view_index, False)
-        self.split.setSizes([250, 850, 300] if editable else [1000, 300])
-
         self.btn_out.clicked.connect(lambda: self.view.zoom_by(1 / 1.15))
         self.btn_in.clicked.connect(lambda: self.view.zoom_by(1.15))
         self.btn_fit.clicked.connect(self.view.fit)
         self.view.zoomChanged.connect(lambda s: self.lbl_zoom.setText(f"{round(s * 100)}%"))
-        self.btn_prev.clicked.connect(lambda _c=False: self.host.graph_prev())
-        self.btn_next.clicked.connect(lambda _c=False: self.host.graph_next())
-        self.btn_open.clicked.connect(lambda _c=False: self.host.graph_open_current())
-        self.btn_done.clicked.connect(lambda _c=False: self.host.graph_complete_current())
-
-        self._restore_layout()
 
     # ---- what the host calls ---------------------------------------------
 
     def rebuild(self):
         self.view.rebuild()
-        name = (self.view._wf.name if self.view._wf is not None else "") or "Untitled Workflow"
-        self.lbl_title.setText(name)
-        self.setWindowTitle(f"Workflow Graph — {name}")
 
     def restyle(self):
         self.view.restyle()
@@ -1996,103 +2109,9 @@ class WorkflowGraphWindow(QWidget):
     def show_hint(self, text: str):
         self.view.show_hint(text)
 
-    def set_details(self, text: str):
-        if text != self.lbl_details.text():
-            self.lbl_details.setText(text)
-
-    def sync_palette(self, source):
-        """Copy the dialog's tool tree (categories, icons, tips) into the palette."""
-        if self.tool_tree is None or source is None:
-            return
-        self.tool_tree.clear()
-        for i in range(source.topLevelItemCount()):
-            item = source.topLevelItem(i).clone()
-            self.tool_tree.addTopLevelItem(item)
-            item.setFirstColumnSpanned(True)
-            item.setExpanded(True)
-        self._refilter()
-
-    # ---- palette ----------------------------------------------------------
-
-    def _refilter(self):
-        if self.tool_tree is None:
-            return
-        needle = self.edt_search.text().strip().lower() if self.edt_search is not None else ""
-        for i in range(self.tool_tree.topLevelItemCount()):
-            parent = self.tool_tree.topLevelItem(i)
-            shown = 0
-            for j in range(parent.childCount()):
-                child = parent.child(j)
-                show = (not needle) or needle in child.text(0).lower() or needle in child.toolTip(0).lower()
-                child.setHidden(not show)
-                shown += int(show)
-            parent.setHidden(shown == 0)
-
-    def _on_tool_double_clicked(self, item, _column=0):
-        cid = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
-        if cid:
-            self.host.graph_add_tool(str(cid))
-
-    # ---- placement --------------------------------------------------------
-
-    def _settings(self):
-        return getattr(self.host, "settings", None)
-
-    def _restore_layout(self):
-        s = self._settings()
-        if s is None:
-            return
-        try:
-            geo = s.value(f"{self._prefix}/graph_geometry")
-            if geo:
-                self._placed = bool(self.restoreGeometry(geo))
-            state = s.value(f"{self._prefix}/graph_split")
-            if state:
-                self.split.restoreState(state)
-        except Exception:
-            pass
-
-    def _save_layout(self):
-        s = self._settings()
-        if s is None:
-            return
-        try:
-            s.setValue(f"{self._prefix}/graph_geometry", self.saveGeometry())
-            s.setValue(f"{self._prefix}/graph_split", self.split.saveState())
-        except Exception:
-            pass
-
-    def _place_first_time(self):
-        """Nothing saved yet: as large as fits, centred over the dialog's screen."""
-        self._placed = True
-        owner = self.parentWidget()
-        screen = (owner.screen() if owner is not None else None) or self.screen()
-        if screen is None:
-            return
-        avail = screen.availableGeometry()
-        w = min(1400, int(avail.width() * 0.9))
-        h = min(900, int(avail.height() * 0.9))
-        self.resize(w, h)
-        center = owner.frameGeometry().center() if owner is not None and owner.isVisible() else avail.center()
-        x = min(max(avail.left(), center.x() - w // 2), avail.right() - w)
-        y = min(max(avail.top(), center.y() - h // 2), avail.bottom() - h)
-        self.move(x, y)
-
     # ---- widget events ----------------------------------------------------
 
     def showEvent(self, ev):
-        if not self._placed:
-            self._place_first_time()
         super().showEvent(ev)
         self.host._graph_flush()
         self.view.setFocus()
-
-    def hideEvent(self, ev):
-        if not ev.spontaneous():      # closed or hidden by us, not minimized
-            self._save_layout()
-        super().hideEvent(ev)
-
-    def changeEvent(self, ev):
-        super().changeEvent(ev)
-        if ev.type() == QEvent.Type.WindowStateChange and not self.isMinimized() and self.isVisible():
-            self.host._graph_flush()

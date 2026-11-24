@@ -1082,10 +1082,10 @@ class AberrationAIDialog(QDialog):
         except Exception:
             pass
 
-        info = QLabel(
+        info = QLabel(self.tr(
             "Model and weights © Riccardo Alberghi — "
             "<a href='https://github.com/riccardoalberghi'>more information</a>."
-        )
+        ))
         info.setTextFormat(Qt.TextFormat.RichText)
         info.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         info.setOpenExternalLinks(True)
@@ -1141,7 +1141,7 @@ class AberrationAIDialog(QDialog):
         if start_dir is None:
             start_dir = app_dir
 
-        p, _ = QFileDialog.getOpenFileName(self, "Select ONNX model", start_dir, "ONNX (*.onnx)")
+        p, _ = QFileDialog.getOpenFileName(self, self.tr("Select ONNX model"), start_dir, "ONNX (*.onnx)")
         if not p:
             return
 
@@ -1178,10 +1178,10 @@ class AberrationAIDialog(QDialog):
         use_custom = QSettings().value("AberrationAI/use_custom_model", False, type=bool)
 
         if use_custom and custom:
-            self.model_label.setText(f"Custom: {os.path.basename(custom)}")
+            self.model_label.setText(self.tr("Custom: {0}").format(os.path.basename(custom)))
             self.model_label.setToolTip(custom)
         elif downloaded:
-            self.model_label.setText(f"Downloaded: {os.path.basename(downloaded)}")
+            self.model_label.setText(self.tr("Downloaded: {0}").format(os.path.basename(downloaded)))
             self.model_label.setToolTip(downloaded)
         else:
             self.model_label.setText("—")
@@ -1218,7 +1218,7 @@ class AberrationAIDialog(QDialog):
             else:
                 # Keep the broken path visible in tooltip for debugging
                 if hasattr(self, "le_custom_model"):
-                    self.le_custom_model.setText(os.path.basename(p) + "  (missing)")
+                    self.le_custom_model.setText(self.tr("{0}  (missing)").format(os.path.basename(p)))
                     self.le_custom_model.setToolTip(p)
 
         # After both loads, sync labels/visibility
@@ -1243,17 +1243,17 @@ class AberrationAIDialog(QDialog):
         # Prefer custom only if enabled AND the file exists
         if use_custom and custom:
             if os.path.isfile(custom):
-                self.model_label.setText(f"Custom: {os.path.basename(custom)}")
+                self.model_label.setText(self.tr("Custom: {0}").format(os.path.basename(custom)))
                 self.model_label.setToolTip(custom)
                 return
             else:
-                self.model_label.setText(f"Custom: {os.path.basename(custom)}  (missing)")
+                self.model_label.setText(self.tr("Custom: {0}  (missing)").format(os.path.basename(custom)))
                 self.model_label.setToolTip(custom)
                 return
 
         # Otherwise show downloaded if valid
         if downloaded and os.path.isfile(downloaded):
-            self.model_label.setText(f"Downloaded: {os.path.basename(downloaded)}")
+            self.model_label.setText(self.tr("Downloaded: {0}").format(os.path.basename(downloaded)))
             self.model_label.setToolTip(downloaded)
         else:
             self.model_label.setText("—")
@@ -1264,7 +1264,7 @@ class AberrationAIDialog(QDialog):
         # Start at last dir if possible, else app model dir
         last = QSettings().value("AberrationAI/custom_model_path", type=str) or ""
         start_dir = os.path.dirname(last) if last and os.path.isdir(os.path.dirname(last)) else _app_model_dir()
-        p, _ = QFileDialog.getOpenFileName(self, "Select custom ONNX model", start_dir, "ONNX (*.onnx)")
+        p, _ = QFileDialog.getOpenFileName(self, self.tr("Select custom ONNX model"), start_dir, "ONNX (*.onnx)")
         if p:
             self._set_custom_model_path(p)
             QSettings().setValue("AberrationAI/use_custom_model", True)
@@ -1349,7 +1349,7 @@ class AberrationAIDialog(QDialog):
     # ----- download -----
     def _download_latest_model(self):
         if requests is None:
-            QMessageBox.warning(self, "Network", "The 'requests' package is required."); return
+            QMessageBox.warning(self, self.tr("Network"), self.tr("The 'requests' package is required.")); return
         dst = _app_model_dir()
         self.progress.setRange(0, 0)  # busy
         self.btn_run.setEnabled(False)
@@ -1361,7 +1361,7 @@ class AberrationAIDialog(QDialog):
         self._dl.start()
 
     def _on_download_failed(self, msg: str):
-        QMessageBox.critical(self, "Download", msg)
+        QMessageBox.critical(self, self.tr("Download"), msg)
 
     def _on_download_ok(self, path: str):
         self.progress.setValue(100)
@@ -1371,7 +1371,7 @@ class AberrationAIDialog(QDialog):
         if not QSettings().value("AberrationAI/use_custom_model", False, type=bool):
             self._set_custom_model_path(None)
 
-        QMessageBox.information(self, "Model", f"Downloaded: {os.path.basename(path)}")
+        QMessageBox.information(self, self.tr("Model"), self.tr("Downloaded: {0}").format(os.path.basename(path)))
 
         self._refresh_model_label()
         self._refresh_custom_row_visibility()
@@ -1381,9 +1381,9 @@ class AberrationAIDialog(QDialog):
         if ort is None:
             QMessageBox.critical(
                 self,
-                "Unsupported ONNX Runtime",
-                "The currently installed onnxruntime is not supported on this machine.\n"
-                "Please try installing an earlier version (for example 1.19.x) and try again."
+                self.tr("Unsupported ONNX Runtime"),
+                self.tr("The currently installed onnxruntime is not supported on this machine.\n"
+                "Please try installing an earlier version (for example 1.19.x) and try again.")
             )
             return
         
@@ -1413,7 +1413,7 @@ class AberrationAIDialog(QDialog):
 
         doc = self.get_active_doc()
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "Image", "No active image.")
+            QMessageBox.warning(self, self.tr("Image"), self.tr("No active image."))
             return
 
         img = np.asarray(doc.image)
@@ -1476,7 +1476,7 @@ class AberrationAIDialog(QDialog):
     def _on_failed(self, msg: str):
         model_path = getattr(self, "_effective_model_path", self._model_path)
         self._log(f"❌ Aberration AI failed: {msg}")
-        QMessageBox.critical(self, "ONNX Error", msg)
+        QMessageBox.critical(self, self.tr("ONNX Error"), msg)
         self.reject()   # closes the dialog
 
     def _active_mask_id(self, doc) -> str | None:
@@ -1534,7 +1534,7 @@ class AberrationAIDialog(QDialog):
             model_path = resolve_aberration_model_path()
         doc = self.get_active_doc()
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "Image", "No active image.")
+            QMessageBox.warning(self, self.tr("Image"), self.tr("No active image."))
             return
 
         # 1) Preserve a thin border from the original image (prevents “eaten” edges)
@@ -1586,7 +1586,7 @@ class AberrationAIDialog(QDialog):
                     pass
         except Exception as e:
             self._log(f"❌ Aberration AI apply failed: {e}")
-            QMessageBox.critical(self, "Apply Error", f"Failed to apply result:\n{e}")
+            QMessageBox.critical(self, self.tr("Apply Error"), self.tr("Failed to apply result:\n{0}").format(e))
             return
 
         # 3.5) Register this as last_headless_command for Replay Last Action  ← NEW

@@ -19,7 +19,8 @@ import math
 from contextlib import contextmanager
 
 import numpy as np
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QSize
+from PyQt6.QtCore import (Qt, pyqtSignal, QPointF, QRectF, QSize,
+                          QCoreApplication, QT_TRANSLATE_NOOP)
 from PyQt6.QtGui import (QPainter, QPen, QColor, QBrush, QPolygonF, QFont,
                          QImage, QFontMetrics, QPixmap, QPalette, QPainterPath)
 from PyQt6.QtWidgets import (QTableWidget, QWidget, QAbstractItemView,
@@ -252,12 +253,16 @@ class ModeCardButton(QAbstractButton):
 class PanelTable(QTableWidget):
     """Panel list. Accepts files dropped from the desktop (filesDropped)."""
     filesDropped = pyqtSignal(list)
-    COLS = ("#", "Panel", "Plate solve", "Scale", "Ref")
+    COLS = ("#", QT_TRANSLATE_NOOP("PanelTable", "Panel"),
+            QT_TRANSLATE_NOOP("PanelTable", "Plate solve"),
+            QT_TRANSLATE_NOOP("PanelTable", "Scale"),
+            QT_TRANSLATE_NOOP("PanelTable", "Ref"))
     COL_IDX, COL_NAME, COL_SOLVE, COL_SCALE, COL_REF = range(5)
 
     def __init__(self, parent=None):
         super().__init__(0, len(self.COLS), parent)
-        self.setHorizontalHeaderLabels(list(self.COLS))
+        self.setHorizontalHeaderLabels(
+            [QCoreApplication.translate("PanelTable", c) for c in self.COLS])
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -272,8 +277,8 @@ class PanelTable(QTableWidget):
         self.viewport().setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
         self.setAlternatingRowColors(True)
-        self.placeholder = ("Drop panel files here\nor use + Files / + Views\n\n"
-                            "Linear, plate-solved panels work best.")
+        self.placeholder = self.tr("Drop panel files here\nor use + Files / + Views\n\n"
+                                   "Linear, plate-solved panels work best.")
 
     @contextmanager
     def bulk_update(self):
@@ -441,7 +446,7 @@ class MosaicMapWidget(QWidget):
             p.setPen(QColor(140, 140, 150))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
                        getattr(self, "empty_text", None)
-                       or "Plate-solved panels appear here\nas footprints on the sky.")
+                       or self.tr("Plate-solved panels appear here\nas footprints on the sky."))
         p.end()
 
     def _paint_plan(self, p):
@@ -449,8 +454,8 @@ class MosaicMapWidget(QWidget):
         if not polys:
             p.setPen(QColor(140, 140, 150))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                       "No panel is plate-solved yet.\n"
-                       "Panels are solved when you build the mosaic.")
+                       self.tr("No panel is plate-solved yet.\n"
+                               "Panels are solved when you build the mosaic."))
             self._paint_note(p, self._plan_note)
             return
         allp = np.concatenate([np.asarray(d["poly"], float) for d in polys], axis=0)
@@ -475,7 +480,7 @@ class MosaicMapWidget(QWidget):
             img = heat_qimage(acc, vmax, alpha=170)
             tl = to_px(hx0, hy0)
             p.drawImage(QRectF(tl.x(), tl.y(), acc.shape[1] * cell * s, acc.shape[0] * cell * s), img)
-            self._heat_legend(p, vmax, "frames per spot")
+            self._heat_legend(p, vmax, self.tr("frames per spot"))
 
         # fills first, so every outline stays visible on top; overlaps show
         # as the darker/brighter blend of the two fills
@@ -517,12 +522,17 @@ class MosaicMapWidget(QWidget):
         self._scale_bar(p, s / dpu, ox)
         n_solved = sum(1 for d in polys if not d.get("approx") and not d.get("failed"))
         approx = [d for d in polys if d.get("approx")]
-        what = "frame" if dense else "panel"
+        what = self.tr("frame") if dense else self.tr("panel")
         size = f"{w_deg * dpu:.2f}° × {h_deg * dpu:.2f}°"
         if approx and n_solved == 0:
-            info = f"estimated {size}"
+            info = self.tr("estimated {0}").format(size)
         else:
-            info = f"{n_solved} solved {what}{'s' if n_solved != 1 else ''} · {size}"
+            if dense:
+                info = (self.tr("{0} solved frame · {1}") if n_solved == 1
+                        else self.tr("{0} solved frames · {1}")).format(n_solved, size)
+            else:
+                info = (self.tr("{0} solved panel · {1}") if n_solved == 1
+                        else self.tr("{0} solved panels · {1}")).format(n_solved, size)
         self._paint_note(p, (info + ("   ·   " + self._plan_note if self._plan_note else "")))
         if approx:
             self._estimate_banner(p, approx, n_solved, what, top=46 if (dense and heat is not None) else 12)
@@ -553,7 +563,7 @@ class MosaicMapWidget(QWidget):
             for poly in cov.get("frames") or []:
                 if poly is not None and len(poly) >= 3:
                     p.drawPolygon(QPolygonF([to_px(x, y) for x, y in np.asarray(poly, float)]))
-            self._heat_legend(p, max(float(cov.get("max") or 1), 1.0), "frames per pixel",
+            self._heat_legend(p, max(float(cov.get("max") or 1), 1.0), self.tr("frames per pixel"),
                               exptime=cov.get("exptime"))
 
         n_ok = n_warn = n_bad = 0
@@ -602,10 +612,11 @@ class MosaicMapWidget(QWidget):
         # legend / summary
         parts = []
         if r["seams"]:
-            parts.append(f"seams: {n_ok} matched, {n_warn} small step, {n_bad} visible step")
+            parts.append(self.tr("seams: {0} matched, {1} small step, {2} visible step").format(
+                n_ok, n_warn, n_bad))
         if r.get("coverage") is not None:
-            parts.append("hover for the depth at a spot")
-        parts.append("double-click for a full-size preview")
+            parts.append(self.tr("hover for the depth at a spot"))
+        parts.append(self.tr("double-click for a full-size preview"))
         self._paint_note(p, "   ·   ".join(parts), legend=bool(r["seams"]) and self._overlay)
 
     # ── small drawing helpers ────────────────────────────────────────────
@@ -627,7 +638,8 @@ class MosaicMapWidget(QWidget):
         y = self.height() - 8
         x = 10
         if legend:
-            for key, lab in (("ok", "matched"), ("warn", "small step"), ("bad", "visible step")):
+            for key, lab in (("ok", self.tr("matched")), ("warn", self.tr("small step")),
+                             ("bad", self.tr("visible step"))):
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(_qcolor(SEAM_COLORS[key]))
                 p.drawRoundedRect(QRectF(x, y - 10, 10, 10), 2, 2)
@@ -653,15 +665,25 @@ class MosaicMapWidget(QWidget):
         side = float(min(np.ptp(ext[:, 0]), np.ptp(ext[:, 1]))) or 1.0
         one_spot = len(approx) > 1 and float(np.ptp(cs, axis=0).max()) < 0.05 * side
         if n_solved == 0:
-            head = "Estimated layout from the header pointing, not plate-solved yet"
+            head = self.tr("Estimated layout from the header pointing, not plate-solved yet")
         else:
-            head = f"Partly estimated: {len(approx)} {what}{'s' if len(approx) != 1 else ''} " \
-                   f"drawn from the header pointing (dashed) until solved"
+            # `what` is the already-translated "frame"/"panel"; pick a whole
+            # sentence per noun and number instead of gluing on an English 's'.
+            k = len(approx)
+            if what == self.tr("frame"):
+                head = (self.tr("Partly estimated: {0} frame drawn from the header pointing (dashed) until solved")
+                        if k == 1 else
+                        self.tr("Partly estimated: {0} frames drawn from the header pointing (dashed) until solved"))
+            else:
+                head = (self.tr("Partly estimated: {0} panel drawn from the header pointing (dashed) until solved")
+                        if k == 1 else
+                        self.tr("Partly estimated: {0} panels drawn from the header pointing (dashed) until solved"))
+            head = head.format(k)
         if one_spot:
-            tail = ("Every header gives the same pointing, so they stack in one spot; "
-                    "the real layout appears as they are solved.")
+            tail = self.tr("Every header gives the same pointing, so they stack in one spot; "
+                           "the real layout appears as they are solved.")
         else:
-            tail = "Positions are approximate and drawn north-up; rotation is known once solved."
+            tail = self.tr("Positions are approximate and drawn north-up; rotation is known once solved.")
         f1 = QFont(self.font()); f1.setBold(True)
         f2 = QFont(self.font())
         fm1, fm2 = QFontMetrics(f1), QFontMetrics(f2)
@@ -762,7 +784,7 @@ class MosaicMapWidget(QWidget):
                 v = float(heat[min(hy, heat.shape[0] - 1), min(hx, heat.shape[1] - 1)])
                 if v > 0:
                     ex = r["coverage"].get("exptime")
-                    tip = f"≈{v:.0f} frames here" + (f" (≈{v * ex / 60:.1f} min)" if ex else "")
+                    tip = self.tr("≈{0:.0f} frames here").format(v) + (f" (≈{v * ex / 60:.1f} min)" if ex else "")
                     QToolTip.showText(e.globalPosition().toPoint(), tip, self)
                     super().mouseMoveEvent(e)
                     return

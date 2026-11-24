@@ -6,7 +6,7 @@ from typing import Callable, List, Optional
 
 import numpy as np
 
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, QTimer, QPointF, QEvent, QSettings
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, QTimer, QPointF, QEvent, QSettings, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QLabel, QSlider, QHBoxLayout, QComboBox,
     QPushButton, QMessageBox, QScrollArea, QWidget, QGroupBox
@@ -23,6 +23,10 @@ from setiastro.saspro.widgets.image_utils import (
     extract_mask_from_document as _active_mask_array_from_doc
 )
 from setiastro.saspro.help_support import make_help_button
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("FXModule", text)
 
 # ─── image helpers ────────────────────────────────────────────────────────────
 
@@ -271,114 +275,114 @@ class ParamSpec:
 EFFECTS: List[dict] = [
     {
         "key": "orton_glow",
-        "name": "Orton Glow",
-        "description": "Classic film glow — blur + brighten a duplicate, blend back at "
-                       "partial opacity. Dreamy, hazy look.",
+        "name": QT_TRANSLATE_NOOP("FXModule", "Orton Glow"),
+        "description": QT_TRANSLATE_NOOP("FXModule", "Classic film glow — blur + brighten a duplicate, blend back at "
+                       "partial opacity. Dreamy, hazy look."),
         "process": _fx_orton_glow,
         "params": [
-            ParamSpec("blur_radius", "Blur radius", "slider", 10, 1000, 150, 10.0,
-                      lambda v: f"{v:.1f} px", "Size of the soft glow halo."),
-            ParamSpec("glow_brightness", "Glow brightness", "slider", 50, 300, 140, 100.0,
+            ParamSpec("blur_radius", QT_TRANSLATE_NOOP("FXModule", "Blur radius"), "slider", 10, 1000, 150, 10.0,
+                      lambda v: f"{v:.1f} px", QT_TRANSLATE_NOOP("FXModule", "Size of the soft glow halo.")),
+            ParamSpec("glow_brightness", QT_TRANSLATE_NOOP("FXModule", "Glow brightness"), "slider", 50, 300, 140, 100.0,
                       lambda v: f"{v:.2f}×",
-                      "Brightness boost of the blurred duplicate before blending — mirrors "
-                      "the film technique of overexposing the soft exposure."),
-            ParamSpec("opacity", "Opacity", "slider", 0, 100, 50, 100.0,
-                      lambda v: f"{v:.2f}", "Overall blend strength."),
-            ParamSpec("blend_mode", "Blend mode", "combo", choices=_BLEND_MODES,
+                      QT_TRANSLATE_NOOP("FXModule", "Brightness boost of the blurred duplicate before blending — mirrors "
+                      "the film technique of overexposing the soft exposure.")),
+            ParamSpec("opacity", QT_TRANSLATE_NOOP("FXModule", "Opacity"), "slider", 0, 100, 50, 100.0,
+                      lambda v: f"{v:.2f}", QT_TRANSLATE_NOOP("FXModule", "Overall blend strength.")),
+            ParamSpec("blend_mode", QT_TRANSLATE_NOOP("FXModule", "Blend mode"), "combo", choices=_BLEND_MODES,
                       default_choice="Screen",
-                      tooltip="Screen: brightest/hazy. Soft Light: gentler, protects shadows. "
-                             "Lighten: least colour shift."),
-            ParamSpec("highlight_protect", "Highlight protection", "slider", 0, 100, 50, 100.0,
+                      tooltip=QT_TRANSLATE_NOOP("FXModule", "Screen: brightest/hazy. Soft Light: gentler, protects shadows. "
+                             "Lighten: least colour shift.")),
+            ParamSpec("highlight_protect", QT_TRANSLATE_NOOP("FXModule", "Highlight protection"), "slider", 0, 100, 50, 100.0,
                       lambda v: f"{v:.2f}",
-                      "Fades the glow out near already-clipped highlights (e.g. a bright "
-                      "solar disc) so it doesn't blow out further."),
-            ParamSpec("luma_recovery", "Luma recovery", "slider", 0, 100, 70, 100.0,
+                      QT_TRANSLATE_NOOP("FXModule", "Fades the glow out near already-clipped highlights (e.g. a bright "
+                      "solar disc) so it doesn't blow out further.")),
+            ParamSpec("luma_recovery", QT_TRANSLATE_NOOP("FXModule", "Luma recovery"), "slider", 0, 100, 70, 100.0,
                       lambda v: f"{v:.2f}",
-                      "Screening two similar images always overshoots in brightness. This "
+                      QT_TRANSLATE_NOOP("FXModule", "Screening two similar images always overshoots in brightness. This "
                       "rescales the blend back toward the average luma of the two source "
-                      "layers — higher = closer to the original exposure level."),
+                      "layers — higher = closer to the original exposure level.")),
         ],
     },
     {
         "key": "soft_focus",
-        "name": "Soft Focus",
-        "description": "Gentle diffusion blend — softens micro-contrast without brightening. "
-                       "Classic portrait/glamour look.",
+        "name": QT_TRANSLATE_NOOP("FXModule", "Soft Focus"),
+        "description": QT_TRANSLATE_NOOP("FXModule", "Gentle diffusion blend — softens micro-contrast without brightening. "
+                       "Classic portrait/glamour look."),
         "process": _fx_soft_focus,
         "params": [
-            ParamSpec("blur_radius", "Blur radius", "slider", 10, 1000, 100, 10.0,
-                      lambda v: f"{v:.1f} px", "Softness radius."),
-            ParamSpec("opacity", "Opacity", "slider", 0, 100, 40, 100.0,
-                      lambda v: f"{v:.2f}", "Blend strength."),
+            ParamSpec("blur_radius", QT_TRANSLATE_NOOP("FXModule", "Blur radius"), "slider", 10, 1000, 100, 10.0,
+                      lambda v: f"{v:.1f} px", QT_TRANSLATE_NOOP("FXModule", "Softness radius.")),
+            ParamSpec("opacity", QT_TRANSLATE_NOOP("FXModule", "Opacity"), "slider", 0, 100, 40, 100.0,
+                      lambda v: f"{v:.2f}", QT_TRANSLATE_NOOP("FXModule", "Blend strength.")),
         ],
     },
     {
         "key": "bloom",
-        "name": "Bloom / Star Glow",
-        "description": "Isolates bright highlights, blurs just those, and screens them back — "
-                       "halo around stars or bright disc edges.",
+        "name": QT_TRANSLATE_NOOP("FXModule", "Bloom / Star Glow"),
+        "description": QT_TRANSLATE_NOOP("FXModule", "Isolates bright highlights, blurs just those, and screens them back — "
+                       "halo around stars or bright disc edges."),
         "process": _fx_bloom,
         "params": [
-            ParamSpec("threshold", "Highlight threshold", "slider", 0, 100, 70, 100.0,
+            ParamSpec("threshold", QT_TRANSLATE_NOOP("FXModule", "Highlight threshold"), "slider", 0, 100, 70, 100.0,
                       lambda v: f"{v:.2f}",
-                      "Luminance above which pixels are treated as highlights."),
-            ParamSpec("blur_radius", "Blur radius", "slider", 10, 1000, 200, 10.0,
-                      lambda v: f"{v:.1f} px", "Halo size."),
-            ParamSpec("brightness", "Highlight brightness", "slider", 50, 400, 150, 100.0,
+                      QT_TRANSLATE_NOOP("FXModule", "Luminance above which pixels are treated as highlights.")),
+            ParamSpec("blur_radius", QT_TRANSLATE_NOOP("FXModule", "Blur radius"), "slider", 10, 1000, 200, 10.0,
+                      lambda v: f"{v:.1f} px", QT_TRANSLATE_NOOP("FXModule", "Halo size.")),
+            ParamSpec("brightness", QT_TRANSLATE_NOOP("FXModule", "Highlight brightness"), "slider", 50, 400, 150, 100.0,
                       lambda v: f"{v:.2f}×",
-                      "Boost applied to isolated highlights before blending."),
-            ParamSpec("opacity", "Opacity", "slider", 0, 100, 60, 100.0,
-                      lambda v: f"{v:.2f}", "Overall blend strength."),
-            ParamSpec("luma_recovery", "Luma recovery", "slider", 0, 100, 70, 100.0,
+                      QT_TRANSLATE_NOOP("FXModule", "Boost applied to isolated highlights before blending.")),
+            ParamSpec("opacity", QT_TRANSLATE_NOOP("FXModule", "Opacity"), "slider", 0, 100, 60, 100.0,
+                      lambda v: f"{v:.2f}", QT_TRANSLATE_NOOP("FXModule", "Overall blend strength.")),
+            ParamSpec("luma_recovery", QT_TRANSLATE_NOOP("FXModule", "Luma recovery"), "slider", 0, 100, 70, 100.0,
                       lambda v: f"{v:.2f}",
-                      "Screening two similar highlight layers overshoots in brightness. "
-                      "This rescales back toward the average luma of the two layers."),
+                      QT_TRANSLATE_NOOP("FXModule", "Screening two similar highlight layers overshoots in brightness. "
+                      "This rescales back toward the average luma of the two layers.")),
         ],
     },
     {
         "key": "vignette",
-        "name": "Vignette",
-        "description": "Radial darkening toward the frame edges.",
+        "name": QT_TRANSLATE_NOOP("FXModule", "Vignette"),
+        "description": QT_TRANSLATE_NOOP("FXModule", "Radial darkening toward the frame edges."),
         "process": _fx_vignette,
         "params": [
-            ParamSpec("amount", "Amount", "slider", 0, 100, 50, 100.0,
-                      lambda v: f"{v:.2f}", "Darkening strength at the edges."),
-            ParamSpec("radius", "Radius", "slider", 10, 200, 100, 100.0,
+            ParamSpec("amount", QT_TRANSLATE_NOOP("FXModule", "Amount"), "slider", 0, 100, 50, 100.0,
+                      lambda v: f"{v:.2f}", QT_TRANSLATE_NOOP("FXModule", "Darkening strength at the edges.")),
+            ParamSpec("radius", QT_TRANSLATE_NOOP("FXModule", "Radius"), "slider", 10, 200, 100, 100.0,
                       lambda v: f"{v:.2f}",
-                      "Distance from centre where falloff begins (1.0 ≈ edge)."),
-            ParamSpec("softness", "Softness", "slider", 1, 150, 40, 100.0,
-                      lambda v: f"{v:.2f}", "Falloff softness."),
+                      QT_TRANSLATE_NOOP("FXModule", "Distance from centre where falloff begins (1.0 ≈ edge).")),
+            ParamSpec("softness", QT_TRANSLATE_NOOP("FXModule", "Softness"), "slider", 1, 150, 40, 100.0,
+                      lambda v: f"{v:.2f}", QT_TRANSLATE_NOOP("FXModule", "Falloff softness.")),
         ],
     },
     {
         "key": "film_grain",
-        "name": "Film Grain",
-        "description": "Adds organic monochrome or colour grain.",
+        "name": QT_TRANSLATE_NOOP("FXModule", "Film Grain"),
+        "description": QT_TRANSLATE_NOOP("FXModule", "Adds organic monochrome or colour grain."),
         "process": _fx_film_grain,
         "params": [
-            ParamSpec("intensity", "Intensity", "slider", 0, 100, 30, 100.0,
-                      lambda v: f"{v:.2f}", "Grain strength."),
-            ParamSpec("size", "Grain size", "slider", 0, 50, 10, 10.0,
+            ParamSpec("intensity", QT_TRANSLATE_NOOP("FXModule", "Intensity"), "slider", 0, 100, 30, 100.0,
+                      lambda v: f"{v:.2f}", QT_TRANSLATE_NOOP("FXModule", "Grain strength.")),
+            ParamSpec("size", QT_TRANSLATE_NOOP("FXModule", "Grain size"), "slider", 0, 50, 10, 10.0,
                       lambda v: f"{v:.1f}",
-                      "Grain clump size (0 = fine, higher = coarser)."),
-            ParamSpec("mono", "Colour", "combo", choices=["Yes", "No"], default_choice="Yes",
-                      tooltip="Yes = monochrome grain, No = independent colour grain."),
+                      QT_TRANSLATE_NOOP("FXModule", "Grain clump size (0 = fine, higher = coarser).")),
+            ParamSpec("mono", QT_TRANSLATE_NOOP("FXModule", "Colour"), "combo", choices=["Yes", "No"], default_choice="Yes",
+                      tooltip=QT_TRANSLATE_NOOP("FXModule", "Yes = monochrome grain, No = independent colour grain.")),
         ],
     },
     {
         "key": "split_tone",
-        "name": "Split Tone",
-        "description": "Tints shadows and highlights with independent hues.",
+        "name": QT_TRANSLATE_NOOP("FXModule", "Split Tone"),
+        "description": QT_TRANSLATE_NOOP("FXModule", "Tints shadows and highlights with independent hues."),
         "process": _fx_split_tone,
         "params": [
-            ParamSpec("shadow_hue", "Shadow hue", "slider", 0, 360, 220, 1.0,
-                      lambda v: f"{v:.0f}°", "Hue applied to shadows."),
-            ParamSpec("highlight_hue", "Highlight hue", "slider", 0, 360, 40, 1.0,
-                      lambda v: f"{v:.0f}°", "Hue applied to highlights."),
-            ParamSpec("balance", "Balance", "slider", -100, 100, 0, 100.0,
-                      lambda v: f"{v:.2f}", "Shifts the shadow/highlight split point."),
-            ParamSpec("strength", "Strength", "slider", 0, 100, 30, 100.0,
-                      lambda v: f"{v:.2f}", "Overall tint strength."),
+            ParamSpec("shadow_hue", QT_TRANSLATE_NOOP("FXModule", "Shadow hue"), "slider", 0, 360, 220, 1.0,
+                      lambda v: f"{v:.0f}°", QT_TRANSLATE_NOOP("FXModule", "Hue applied to shadows.")),
+            ParamSpec("highlight_hue", QT_TRANSLATE_NOOP("FXModule", "Highlight hue"), "slider", 0, 360, 40, 1.0,
+                      lambda v: f"{v:.0f}°", QT_TRANSLATE_NOOP("FXModule", "Hue applied to highlights.")),
+            ParamSpec("balance", QT_TRANSLATE_NOOP("FXModule", "Balance"), "slider", -100, 100, 0, 100.0,
+                      lambda v: f"{v:.2f}", QT_TRANSLATE_NOOP("FXModule", "Shifts the shadow/highlight split point.")),
+            ParamSpec("strength", QT_TRANSLATE_NOOP("FXModule", "Strength"), "slider", 0, 100, 30, 100.0,
+                      lambda v: f"{v:.2f}", QT_TRANSLATE_NOOP("FXModule", "Overall tint strength.")),
         ],
     },
 ]
@@ -550,6 +554,29 @@ def replay_fx(main_window, target_sw=None) -> bool:
 
 # ─── worker ───────────────────────────────────────────────────────────────────
 
+# Preview workers are parentless QThreads, restarted on every parameter change.
+# Dropping the last reference to one that was started but has not yet entered
+# run() is a Qt fatal error ("Destroyed while thread is still running"); the old
+# code avoided that by blocking the GUI in wait(300) on every restart. Instead,
+# hold each one here until the real QThread.finished, after run() returns.
+_LIVE_FX_WORKERS: set = set()
+
+
+def _release_fx_worker(wid: int):
+    for w in list(_LIVE_FX_WORKERS):
+        if id(w) == wid:
+            _LIVE_FX_WORKERS.discard(w)
+
+
+def _start_fx_worker(w):
+    _LIVE_FX_WORKERS.add(w)
+    # Capture the id, not the thread: a slot holding the thread itself would
+    # form a cycle through PyQt's slot proxy and leak every preview's image.
+    wid = id(w)
+    w.finished.connect(lambda: _release_fx_worker(wid))
+    w.start()
+
+
 class FXWorker(QThread):
     preview_ready = pyqtSignal(object)   # np.ndarray
 
@@ -700,9 +727,9 @@ class FXDialog(QDialog):
         left.setSpacing(6)
 
         effect_row = QHBoxLayout()
-        effect_row.addWidget(QLabel("Effect:"))
+        effect_row.addWidget(QLabel(self.tr("Effect:")))
         self.combo_effect = QComboBox()
-        self.combo_effect.addItems([e["name"] for e in EFFECTS])
+        self.combo_effect.addItems([_tr(e["name"]) for e in EFFECTS])
         self.combo_effect.currentIndexChanged.connect(self._on_effect_index_changed)
         effect_row.addWidget(self.combo_effect, 1)
         left.addLayout(effect_row)
@@ -712,7 +739,7 @@ class FXDialog(QDialog):
         self._lbl_desc.setStyleSheet("font-size: 10px; color: #999; margin-bottom: 2px;")
         left.addWidget(self._lbl_desc)
 
-        self._params_grp = QGroupBox("Parameters")
+        self._params_grp = QGroupBox(self.tr("Parameters"))
         self._controls_lay = QVBoxLayout(self._params_grp)
         self._controls_lay.setSpacing(4)
         left.addWidget(self._params_grp)
@@ -720,16 +747,16 @@ class FXDialog(QDialog):
         left.addSpacing(4)
 
         # ── before/after toggle ───────────────────────────────────────────────
-        self.btn_toggle = QPushButton("⇄  Toggle Before / After")
+        self.btn_toggle = QPushButton(self.tr("⇄  Toggle Before / After"))
         self.btn_toggle.setCheckable(True)
         self.btn_toggle.setToolTip(
-            "Instantly switch between original and processed preview.\n"
-            "No recalculation — uses cached images."
+            self.tr("Instantly switch between original and processed preview.\n"
+            "No recalculation — uses cached images.")
         )
         self.btn_toggle.toggled.connect(self._on_toggle)
         left.addWidget(self.btn_toggle)
 
-        self.lbl_status = QLabel("Ready.", self)
+        self.lbl_status = QLabel(self.tr("Ready."), self)
         self.lbl_status.setStyleSheet("color: #777; font-size: 10px;")
         left.addWidget(self.lbl_status)
 
@@ -737,9 +764,9 @@ class FXDialog(QDialog):
 
         # action buttons
         btn_row = QHBoxLayout()
-        self.btn_apply  = QPushButton("Apply")
-        self.btn_reset  = QPushButton("Reset")
-        self.btn_cancel = QPushButton("Cancel")
+        self.btn_apply  = QPushButton(self.tr("Apply"))
+        self.btn_reset  = QPushButton(self.tr("Reset"))
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
         self.btn_apply.clicked.connect(self._apply)
         self.btn_reset.clicked.connect(self._reset)
         self.btn_cancel.clicked.connect(self.close)
@@ -818,7 +845,7 @@ class FXDialog(QDialog):
                 self.combo_effect.setCurrentIndex(idx)
                 self.combo_effect.blockSignals(False)
 
-        self._lbl_desc.setText(eff["description"])
+        self._lbl_desc.setText(_tr(eff["description"]))
         self._rebuild_controls(eff)
         self._did_initial_fit = False
         self._unsync_toggle()
@@ -841,11 +868,11 @@ class FXDialog(QDialog):
         for spec in eff["params"]:
             if spec.kind == "slider":
                 real_default = spec.slider_default / spec.scale
-                lbl = QLabel(f"{spec.label}: {spec.fmt(real_default)}")
+                lbl = QLabel(f"{_tr(spec.label)}: {spec.fmt(real_default)}")
                 sld = QSlider(Qt.Orientation.Horizontal)
                 sld.setRange(spec.slider_lo, spec.slider_hi)
                 sld.setValue(spec.slider_default)
-                sld.setToolTip(spec.tooltip)
+                sld.setToolTip(_tr(spec.tooltip))
                 sld.valueChanged.connect(
                     lambda v, s=spec, l=lbl: self._on_slider_changed(s, l, v))
                 self._controls_lay.addWidget(lbl)
@@ -853,12 +880,12 @@ class FXDialog(QDialog):
                 self._param_widgets[spec.key] = ("slider", sld, spec)
             else:
                 row = QHBoxLayout()
-                row.addWidget(QLabel(f"{spec.label}:"))
+                row.addWidget(QLabel(f"{_tr(spec.label)}:"))
                 combo = QComboBox()
                 combo.addItems(spec.choices or [])
                 if spec.default_choice:
                     combo.setCurrentText(spec.default_choice)
-                combo.setToolTip(spec.tooltip)
+                combo.setToolTip(_tr(spec.tooltip))
                 combo.currentTextChanged.connect(lambda _t: self._on_combo_changed())
                 row.addWidget(combo, 1)
                 self._controls_lay.addLayout(row)
@@ -866,7 +893,7 @@ class FXDialog(QDialog):
 
     def _on_slider_changed(self, spec: ParamSpec, lbl: QLabel, raw: int):
         real = raw / spec.scale
-        lbl.setText(f"{spec.label}: {spec.fmt(real)}")
+        lbl.setText(f"{_tr(spec.label)}: {spec.fmt(real)}")
         self._unsync_toggle()
         self._preview_timer.start()
 
@@ -957,14 +984,13 @@ class FXDialog(QDialog):
         if self._preview_src is None:
             return
         if self._worker is not None and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(300)
+            self._worker.cancel()   # it stops at its next check; see _start_fx_worker
 
         params = self._get_params()
         mask01 = _active_mask_array_from_doc(self.doc)
         self._worker = FXWorker(self._preview_src, self._current_effect["key"], params, mask01)
         self._worker.preview_ready.connect(self._on_preview_ready)
-        self._worker.start()
+        _start_fx_worker(self._worker)
 
     def _on_preview_ready(self, out: np.ndarray):
         self._pix_processed = QPixmap.fromImage(_as_qimage_rgb8(out))
@@ -1012,12 +1038,12 @@ class FXDialog(QDialog):
         try:
             src = _to_float01(np.asarray(self.doc.image))
             if src is None:
-                QMessageBox.information(self, "FX", "No image to process.")
+                QMessageBox.information(self, "FX", self.tr("No image to process."))
                 return
             mask01 = _active_mask_array_from_doc(self.doc)
 
             self.lbl_status.setText(
-                f"Applying {effect_name} — processing full-resolution image…")
+                self.tr("Applying {0} — processing full-resolution image…").format(_tr(effect_name)))
             self._set_controls_enabled(False)
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
@@ -1055,7 +1081,7 @@ class FXDialog(QDialog):
         QApplication.restoreOverrideCursor()
 
         if not ok:
-            self.lbl_status.setText("Apply failed.")
+            self.lbl_status.setText(self.tr("Apply failed."))
             QMessageBox.critical(self, "FX", message)
             return
 
@@ -1078,12 +1104,12 @@ class FXDialog(QDialog):
             except Exception:
                 pass
 
-            self.lbl_status.setText("Applied.")
+            self.lbl_status.setText(self.tr("Applied."))
             self._save_geometry()
             QTimer.singleShot(400, self.close)
         except Exception:
             import traceback
-            self.lbl_status.setText("Apply failed.")
+            self.lbl_status.setText(self.tr("Apply failed."))
             QMessageBox.critical(self, "FX", traceback.format_exc())
 
     # ── active doc change ─────────────────────────────────────────────────────
@@ -1094,8 +1120,8 @@ class FXDialog(QDialog):
         if doc is self.doc:
             return
         self.doc = doc
-        title = doc.display_name() if hasattr(doc, "display_name") else "Image"
-        self.setWindowTitle(f"FX — {title}")
+        title = doc.display_name() if hasattr(doc, "display_name") else self.tr("Image")
+        self.setWindowTitle(self.tr("FX — {0}").format(title))
         self._pix_processed = None
         self._showing_original = False
         self.btn_toggle.blockSignals(True)
@@ -1210,20 +1236,35 @@ class FXDialog(QDialog):
             QTimer.singleShot(0, lambda: (self._restore_geometry(),
                                           self._fit() if self._pix_processed else None))
 
-    def closeEvent(self, ev):
-        if self._apply_thread is not None and self._apply_thread.isRunning():
-            ev.ignore()
-            return
+    def _apply_running(self) -> bool:
+        return self._apply_thread is not None and self._apply_thread.isRunning()
+
+    def _cleanup_on_close(self):
         if self._worker is not None and self._worker.isRunning():
+            # No wait needed: _LIVE_FX_WORKERS keeps it alive until it stops.
             self._worker.cancel()
-            self._worker.wait(500)
         if self._connected_doc_change and hasattr(self.main, "currentDocumentChanged"):
             try:
                 self.main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
             except Exception:
                 pass
+            self._connected_doc_change = False
         self._save_geometry()
+
+    def closeEvent(self, ev):
+        if self._apply_running():
+            ev.ignore()
+            return
+        self._cleanup_on_close()
         super().closeEvent(ev)
+
+    def reject(self):
+        # Esc deletes a WA_DeleteOnClose dialog without a closeEvent, which
+        # would skip both the apply guard and the active-view disconnect.
+        if self._apply_running():
+            return
+        self._cleanup_on_close()
+        super().reject()
 
 
 # ─── public entry point ───────────────────────────────────────────────────────
@@ -1234,7 +1275,7 @@ def open_fx_dialog(main, doc=None, initial_effect: str = "orton_glow", preset: d
         if callable(doc):
             doc = doc()
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.information(main, "FX", "Open an image first.")
+        QMessageBox.information(main, "FX", _tr("Open an image first."))
         return
     dlg = FXDialog(main, doc, parent=main, initial_effect=initial_effect)
     dlg.show()

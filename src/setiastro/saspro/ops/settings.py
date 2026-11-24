@@ -191,7 +191,7 @@ class SettingsDialog(QDialog):
         self.chk_updates_startup = QCheckBox(self.tr("Check for updates on startup"))
 
         self.le_updates_url = QLineEdit()
-        self.le_updates_url.setPlaceholderText("Raw JSON URL (advanced)")
+        self.le_updates_url.setPlaceholderText(self.tr("Raw JSON URL (advanced)"))
         self.le_updates_url.setMinimumWidth(240)
 
         btn_reset_updates_url = QPushButton(self.tr("Reset"))
@@ -207,6 +207,12 @@ class SettingsDialog(QDialog):
         self.btn_check_now.setToolTip(self.tr("Run an update check immediately"))
         self.btn_check_now.setVisible(hasattr(parent, "_check_for_updates_async"))
         self.btn_check_now.clicked.connect(self._check_updates_now_clicked)
+
+        self.chk_start_panel = QCheckBox(self.tr("Show start panel on startup"))
+        self.chk_start_panel.setToolTip(self.tr(
+            "The panel of things to do that an empty workspace shows.\n"
+            "Unchecked, it only comes up from View > Start Panel."
+        ))
 
         self.chk_save_shortcuts = QCheckBox(self.tr("Save desktop shortcuts on exit"))
         self.chk_open_all_hdus = QCheckBox(self.tr("Open All detected HDUs"))
@@ -228,8 +234,12 @@ class SettingsDialog(QDialog):
         ))
 
         self.cb_theme = QComboBox()
-        # Order: Dark, Gray, Light, System, Custom
-        self.cb_theme.addItems(["Dark", "Gray", "Light", "System", "Custom"])
+        # Order: Dark, Gray, Light, System, Custom (save/load go by index).
+        # The ui/theme key is the item data; only the shown text is translated.
+        for _disp, _key in ((self.tr("Dark"), "dark"), (self.tr("Gray"), "gray"),
+                            (self.tr("Light"), "light"), (self.tr("System"), "system"),
+                            (self.tr("Custom"), "custom")):
+            self.cb_theme.addItem(_disp, _key)
 
         # "Customize…" button for custom theme
         self.btn_theme_custom = QPushButton(self.tr("Customize…"))
@@ -299,6 +309,12 @@ class SettingsDialog(QDialog):
 
         self.chk_autostretch_24bit = QCheckBox(self.tr("High-quality autostretch (24-bit; slower)"))
         self.chk_autostretch_24bit.setToolTip(self.tr("Compute autostretch on a 24-bit histogram (smoother gradients)."))
+
+        self.chk_follow_linear = QCheckBox(self.tr("Brighten the view of linear images when they open"))
+        self.chk_follow_linear.setToolTip(self.tr(
+            "A newly opened image or finished stack that is still linear (unstretched) opens with\n"
+            "Display-Stretch on, so it isn't near-black. Only the view is brightened, never the pixels,\n"
+            "and Display-Stretch turns itself off once the image is stretched."))
 
         self.chk_smooth_zoom_settle = QCheckBox(self.tr("Smooth zoom final redraw (higher quality when zoom stops)"))
         self.chk_smooth_zoom_settle.setToolTip(self.tr(
@@ -457,8 +473,10 @@ class SettingsDialog(QDialog):
             "",
             QLabel(self.tr("• ON  = 24-bit (best gradient smoothness, slower)\n"
                         "• OFF = 12-bit (faster, still high quality)"))
-        )        
+        )
+        left_col.addRow(self.chk_follow_linear)
         left_col.addRow(self.chk_smooth_zoom_settle)
+        left_col.addRow(self.chk_start_panel)
         left_col.addRow(self.tr("Background Opacity:"), w_bg_opacity)
         left_col.addRow(self.tr("Built-in Background:"), self.cb_builtin_bg)
         left_col.addRow(self.tr("Background Image:"), w_bg_image)
@@ -466,7 +484,7 @@ class SettingsDialog(QDialog):
         self.sp_icon_size.setRange(16, 64)
         self.sp_icon_size.setSingleStep(4)
         self.sp_icon_size.setSuffix(" px")
-        self.sp_icon_size.setToolTip(self.tr("Toolbar icon size in pixels (default: 24)"))
+        self.sp_icon_size.setToolTip(self.tr("Toolbar icon size in pixels (default: 20)"))
         left_col.addRow(self.tr("Toolbar Icon Size:"), self.sp_icon_size)
 
         self.cb_icon_pack = QComboBox()
@@ -749,7 +767,7 @@ class SettingsDialog(QDialog):
         self.chk_wcs_enabled = QCheckBox(self.tr("Show RA/Dec grid"))
         right_col.addRow(self.chk_wcs_enabled)
 
-        self.cb_wcs_mode = QComboBox(); self.cb_wcs_mode.addItems(["Auto", "Fixed spacing"])
+        self.cb_wcs_mode = QComboBox(); self.cb_wcs_mode.addItems([self.tr("Auto"), self.tr("Fixed spacing")])
         self.cb_wcs_unit = QComboBox(); self.cb_wcs_unit.addItems(["deg", "arcmin"])
 
         self.sp_wcs_step = QDoubleSpinBox()
@@ -946,8 +964,8 @@ class SettingsDialog(QDialog):
                 ast = fresh.get("asteroids", {})
                 med = ast.get("median_days")
                 if med is not None:
-                    age_txt = (f"{med/365.25:.1f} yr" if med >= 400
-                               else f"{med:.0f} days")
+                    age_txt = (self.tr("{0:.1f} yr").format(med / 365.25) if med >= 400
+                               else self.tr("{0:.0f} days").format(med))
                     note = ""
                     if med > 180:
                         note = self.tr("  — consider updating")
@@ -1329,6 +1347,8 @@ class SettingsDialog(QDialog):
         self._models_update_clicked()
 
     def _models_install_from_zip_clicked(self):
+        if self._setup_is_installing("models"):
+            return
         from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
         from PyQt6.QtCore import Qt, QThread
         import os
@@ -1396,11 +1416,8 @@ class SettingsDialog(QDialog):
         from PyQt6.QtWidgets import QMessageBox, QProgressDialog
         from PyQt6.QtCore import Qt, QThread
 
-        # NOTE: these must be FILE links or file IDs, not folder links.
-        PRIMARY  = "https://drive.google.com/file/d/1d0wQr8Oau9UH3IalMW5anC0_oddxBjh3/view?usp=drive_link"
-        BACKUP   = "https://drive.google.com/file/d/1XgqKNd8iBgV3LW8CfzGyS4jigxsxIf86/view?usp=drive_link"
-        TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4.zip"
-
+        if self._setup_is_installing("models"):
+            return
         self.btn_models_update.setEnabled(False)
         self.btn_models_install_zip.setEnabled(False)  # optional but nice consistency
 
@@ -1411,7 +1428,7 @@ class SettingsDialog(QDialog):
         pd.setMinimumDuration(0)
         pd.show()
 
-        from setiastro.saspro.model_workers import ModelsDownloadWorker
+        from setiastro.saspro.model_workers import make_models_download_worker
 
         self._models_thread = QThread(self)
 
@@ -1423,32 +1440,7 @@ class SettingsDialog(QDialog):
             if self._models_thread.isRunning():
                 self._models_thread.requestInterruption()
 
-        WALKING_PRIMARY  = "https://drive.google.com/file/d/1yAn5gc6KVmkADvhKn-QKNNuDXSgAz1pY/view?usp=sharing"
-        WALKING_BACKUP   = "https://drive.google.com/file/d/1IEB9xosEA0JPGc-L5gDfueJoFYYXN_67/view?usp=sharing"
-        WALKING_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_Walking.zip"
-
-        CORRECT_PRIMARY  = "https://drive.google.com/file/d/11Qb6C46OlJG7rmKM-zOPCkzN4xbRsvIc/view?usp=sharing"
-        CORRECT_BACKUP   = "https://drive.google.com/file/d/1XgqKNd8iBgV3LW8CfzGyS4jigxsxIf86/view?usp=sharing"
-        CORRECT_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_Correct.zip"
-
-        CORRECT_V2_PRIMARY  = "https://drive.google.com/file/d/1HJYiYoH3r5EbFMgE6v1mRkz1_LnXuHOR/view?usp=sharing"
-        CORRECT_V2_BACKUP   = "https://drive.google.com/file/d/1kquTombkmjxLPycbyYhDtap4U4IUt7Pl/view?usp=sharing"
-        CORRECT_V2_TERTIARY = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_CorrectV2.zip"
-
-        self._models_worker = ModelsDownloadWorker(
-            PRIMARY, BACKUP, TERTIARY,
-            expected_sha256=None,
-            should_cancel=should_cancel,
-            walking_zip_url=WALKING_PRIMARY,
-            walking_zip_backup=WALKING_BACKUP,
-            walking_zip_tertiary=WALKING_TERTIARY,
-            correct_zip_url=CORRECT_PRIMARY,
-            correct_zip_backup=CORRECT_BACKUP,
-            correct_zip_tertiary=CORRECT_TERTIARY,
-            correct_v2_zip_url=CORRECT_V2_PRIMARY,
-            correct_v2_zip_backup=CORRECT_V2_BACKUP,
-            correct_v2_zip_tertiary=CORRECT_V2_TERTIARY,
-        )
+        self._models_worker = make_models_download_worker(should_cancel)
         self._models_worker.moveToThread(self._models_thread)
 
         self._models_thread.started.connect(self._models_worker.run, Qt.ConnectionType.QueuedConnection)
@@ -1864,7 +1856,22 @@ class SettingsDialog(QDialog):
         return False
 
 
+    def _setup_is_installing(self, what: str) -> bool:
+        """The setup window is already running this install ("accel" or
+        "models"): say so instead of starting a second one over it."""
+        from PyQt6.QtWidgets import QMessageBox
+        mgr = getattr(self.parent(), "_setup_manager", None)
+        if mgr is None or not mgr.is_running(what):
+            return False
+        QMessageBox.information(
+            self, self.tr("Already Installing"),
+            self.tr("This is already being installed by the setup window. "
+                    "About > Welcome and Setup shows its progress."))
+        return True
+
     def _install_or_update_accel(self):
+        if self._setup_is_installing("accel"):
+            return
         # Single hard-stop gate
         if not self._gate_python_for_accel_install():
             self.backend_label.setText(self.tr("Backend: CPU (Python 3.12/3.13/3.14 required)"))
@@ -2053,11 +2060,16 @@ class SettingsDialog(QDialog):
         self._initial_swap_workdir = self.le_swap_workdir.text().strip()
 
         # Display
+        self._initial_start_panel = self.settings.value("ui/start_panel", True, type=bool)
+        self.chk_start_panel.setChecked(self._initial_start_panel)
         self.chk_autostretch_24bit.setChecked(
             self.settings.value("display/autostretch_24bit", True, type=bool)
         )
         self.chk_smooth_zoom_settle.setChecked(
-            self.settings.value("display/smooth_zoom_settle", True, type=bool)
+            self.settings.value("display/smooth_zoom_settle", False, type=bool)
+        )
+        self.chk_follow_linear.setChecked(
+            self.settings.value("display/follow_linear", True, type=bool)
         )
         current_opacity = self.settings.value("display/bg_opacity", 50, type=int)
         self.slider_bg_opacity.blockSignals(True)
@@ -2066,7 +2078,7 @@ class SettingsDialog(QDialog):
         self.lbl_bg_opacity_val.setText(f"{current_opacity}%")
         self._initial_bg_opacity = int(current_opacity) # For cancel/revert
 
-        self.sp_icon_size.setValue(self.settings.value("toolbar/icon_size", 24, type=int))
+        self.sp_icon_size.setValue(self.settings.value("toolbar/icon_size", 20, type=int))
         self._refresh_icon_packs()
 
         current_color_space = get_working_color_space_from_settings(self.settings)
@@ -2197,12 +2209,12 @@ class SettingsDialog(QDialog):
 
     # ----------------- helpers -----------------
     def _browse_into(self, lineedit: QLineEdit):
-        path, _ = QFileDialog.getOpenFileName(self, "Select Executable", "", "Executables (*)")
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select Executable"), "", "Executables (*)")
         if path:
             lineedit.setText(path)
 
     def _browse_dir(self, lineedit: QLineEdit):
-        path = QFileDialog.getExistingDirectory(self, "Select Folder", "")
+        path = QFileDialog.getExistingDirectory(self, self.tr("Select Folder"), "")
         if path:
             lineedit.setText(path)
 
@@ -2221,7 +2233,7 @@ class SettingsDialog(QDialog):
 
     def _choose_background_clicked(self):
         """Open a file picker and apply a custom background image for the app."""
-        path, _ = QFileDialog.getOpenFileName(self, "Select background image", "", "Images (*.png *.jpg *.jpeg)")
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select background image"), "", "Images (*.png *.jpg *.jpeg)")
         if not path:
             return
         try:
@@ -2256,8 +2268,7 @@ class SettingsDialog(QDialog):
 
     def _on_theme_changed(self, idx: int):
         # Enable the "Customize…" button only when Custom is selected
-        text = self.cb_theme.currentText().lower()
-        self.btn_theme_custom.setEnabled(text == "custom")
+        self.btn_theme_custom.setEnabled(self.cb_theme.currentData() == "custom")
 
     def _open_theme_editor(self):
         from PyQt6.QtWidgets import QDialog
@@ -2330,6 +2341,7 @@ class SettingsDialog(QDialog):
         self.settings.setValue("updates/url", self.le_updates_url.text().strip())
         self.settings.setValue("display/autostretch_24bit", self.chk_autostretch_24bit.isChecked())
         self.settings.setValue("display/smooth_zoom_settle", self.chk_smooth_zoom_settle.isChecked())
+        self.settings.setValue("display/follow_linear", self.chk_follow_linear.isChecked())
 
         # Pixel readout (loupe) — force odd size/patch for a symmetric crosshair
         self.settings.setValue("loupe/show_info", self.chk_loupe_info.isChecked())
@@ -2442,6 +2454,13 @@ class SettingsDialog(QDialog):
 
         # Apply live
         p = self.parent()
+        # Only when changed here: the panel has the same box.
+        start_panel = self.chk_start_panel.isChecked()
+        if start_panel != self._initial_start_panel:
+            if hasattr(p, "_set_start_panel_on_startup"):
+                p._set_start_panel_on_startup(start_panel)
+            else:
+                self.settings.setValue("ui/start_panel", start_panel)
         if p and hasattr(p, "_apply_toolbar_icon_size"):
             try:
                 p._apply_toolbar_icon_size()
@@ -2461,7 +2480,7 @@ class ThemeEditorDialog(QDialog):
     def __init__(self, parent, settings: QSettings):
         super().__init__(parent)
         self.settings = settings
-        self.setWindowTitle("Custom Theme")
+        self.setWindowTitle(self.tr("Custom Theme"))
         self.colors: dict[str, QColor] = {}
         self.font_str: str = self.settings.value("ui/custom/font", "", type=str) or ""
 
@@ -2478,9 +2497,9 @@ class ThemeEditorDialog(QDialog):
         self._add_color_picker(form, "Visited Link",      "ui/custom/link_visited", QColor(180, 150, 255))
 
         # Font picker
-        self.btn_font = QPushButton("Choose…")
+        self.btn_font = QPushButton(self.tr("Choose…"))
         self.btn_font.clicked.connect(self._pick_font)
-        form.addRow("UI Font:", self.btn_font)
+        form.addRow(self.tr("UI Font:"), self.btn_font)
 
         # Buttons
         btns = QDialogButtonBox(

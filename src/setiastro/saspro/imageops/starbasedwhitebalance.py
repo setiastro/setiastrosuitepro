@@ -1163,7 +1163,9 @@ class StarDetectionWorker(QThread):
     #   because on big RGB frames the overlay autostretch + full-image WB
     #   math dominate the open-time cost and the preview label itself is
     #   too small for the ellipses to be useful anyway.
-    finished = _pyqtSignal(object, int, float)
+    # Not "finished": that would shadow QThread.finished, which is the only
+    # signal that fires on every exit (a cancelled run returns silently).
+    detected = _pyqtSignal(object, int, float)
     failed   = _pyqtSignal(str)
 
     def __init__(
@@ -1220,7 +1222,7 @@ class StarDetectionWorker(QThread):
             else:
                 overlay = None
 
-            self.finished.emit(overlay, int(count), float(used_sigma))
+            self.detected.emit(overlay, int(count), float(used_sigma))
         except Exception as e:
             if not self._cancelled:
                 self.failed.emit(str(e))

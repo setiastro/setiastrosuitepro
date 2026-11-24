@@ -192,6 +192,51 @@ _IS_FROZEN = bool(getattr(sys, "frozen", False))
 # catches the children instead of launching extra SASpro windows.
 _ALIGN_USE_PROCS_FROZEN = True   # frozen spawn children are caught by freeze_support() at the top of gui_entry.main() (no splash, no GUI)
 
+
+def _settings_identity():
+    """(organization, domain, application, ini_dir) of this process's
+    default-constructed QSettings store, for _align_worker_init. ini_dir is
+    set only when that store is an INI file (the --firstrun / --upgraderun
+    sandbox, test harnesses); the registry/plist needs only the names."""
+    try:
+        from PyQt6.QtCore import QCoreApplication, QSettings
+        ini_dir = ""
+        if QSettings.defaultFormat() == QSettings.Format.IniFormat:
+            # User-scope INI files live at <dir>/<organization>/<application>.ini
+            ini_dir = (os.environ.get("SASPRO_SETTINGS_SANDBOX", "")
+                       or os.path.dirname(os.path.dirname(QSettings().fileName())))
+        return (QCoreApplication.organizationName(),
+                QCoreApplication.organizationDomain(),
+                QCoreApplication.applicationName(), ini_dir)
+    except Exception:
+        return ("", "", "", "")
+
+
+def _align_worker_init(org, domain, app, ini_dir):
+    """Process-pool initializer: open the GUI's settings store in the worker.
+
+    A spawned worker has no application identity, so a default-constructed
+    QSettings() there read an EMPTY store and every switch came back as its
+    default: turning GPU star detection or hardware acceleration off had no
+    effect inside registration and finalize workers, and the detection slot
+    count ignored the tuned value. Same idea as live_stack_worker.init_worker.
+    """
+    try:
+        from PyQt6.QtCore import QCoreApplication, QSettings
+        if ini_dir:
+            QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+            QSettings.setPath(QSettings.Format.IniFormat,
+                              QSettings.Scope.UserScope, ini_dir)
+        if org:
+            QCoreApplication.setOrganizationName(org)
+        if domain:
+            QCoreApplication.setOrganizationDomain(domain)
+        if app:
+            QCoreApplication.setApplicationName(app)
+    except Exception:
+        pass
+
+
 def _make_executor(max_workers: int):
     """
     Return an appropriate executor.
@@ -219,7 +264,9 @@ def _make_executor(max_workers: int):
     if use_procs:
         try:
             _ctx = multiprocessing.get_context("spawn")   # matches frozen + Qt-safe
-            return ProcessPoolExecutor(max_workers=max_workers, mp_context=_ctx)
+            return ProcessPoolExecutor(max_workers=max_workers, mp_context=_ctx,
+                                       initializer=_align_worker_init,
+                                       initargs=_settings_identity())
         except Exception:
             pass
     return ThreadPoolExecutor(max_workers=max_workers)
@@ -275,7 +322,7 @@ from astropy.wcs import WCS
 from astropy.wcs.utils import skycoord_to_pixel
 from setiastro.saspro.widgets.spinboxes import CustomDoubleSpinBox, CustomSpinBox
 import numpy.ma as ma
-from PyQt6.QtCore import Qt, QThread, QRunnable, QThreadPool, pyqtSignal, QObject, QTimer, QProcess, QPoint, QEvent, QSettings
+from PyQt6.QtCore import Qt, QThread, QRunnable, QThreadPool, pyqtSignal, QObject, QTimer, QProcess, QPoint, QEvent, QSettings, QCoreApplication
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QMovie
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGroupBox, QAbstractItemView, QListWidget, QInputDialog, QApplication, QProgressBar, QProgressDialog, 
@@ -299,6 +346,10 @@ except Exception:
 
 
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("StarAlignment", text)
 
 # ---------------------------------------------------------------------
 # Small helpers to work with the *active view/document* (no slots)
@@ -635,12 +686,126 @@ def _wcs_align_footprint_bbox(tgt_shape, tgt_wcs, ref_wcs, out_shape, pad=16, n=
     return (x0, y0, x1, y1)
 
 
+def _wcs_pix_chain(ref_pix2world, tgt_wcs, xp, yp, tol_deg):
+    """Exact reference-pixel -> target-pixel map for flat float64 arrays.
+
+    Reference pixel -> world via `ref_pix2world` (a bound method such as
+    ref_wcs.all_pix2world, or wcs_pix2world for a linear canvas) -> target
+    pixel (astropy's iterative SIP inverse), then a forward round trip on the
+    target WCS to catch diverged inverse solves. Returns (sx, sy, bad); bad
+    marks non-finite results and round-trip errors above tol_deg.
+    """
+    ra, dec = ref_pix2world(xp, yp, 0)
+    sx, sy = tgt_wcs.all_world2pix(ra, dec, 0)
+    fin = np.isfinite(sx) & np.isfinite(sy)
+    ra2, dec2 = tgt_wcs.all_pix2world(np.where(fin, sx, 0.0),
+                                      np.where(fin, sy, 0.0), 0)
+    dra = ((ra2 - ra + 180.0) % 360.0 - 180.0) * np.cos(np.radians(dec))
+    err = np.hypot(dra, dec2 - dec)
+    bad = ~fin | ~np.isfinite(err) | (err > tol_deg)
+    return sx, sy, bad
+
+
+# The ref->target pixel map is TAN + low-order SIP composed twice: smooth over
+# hundreds of pixels. Solving it exactly at every pixel (three astropy
+# transforms, one of them iterative) was ~30 s of a 31 MP frame. Solving it on
+# a node grid and interpolating reproduces it to ~1e-10 px on a real solve
+# (LBN_531 TAN-SIP vs a shifted/rotated/re-distorted target), well inside
+# cv2.remap's own 1/32 px coordinate quantisation, in ~0.05 s.
+_WCS_GRID_STEP = 32        # px between exactly-solved map nodes
+_WCS_GRID_TOL_PX = 1e-3    # max interpolation error accepted at a cell centre
+
+
+def _catmull_rom_matrix(coords, origin, step):
+    """Catmull-Rom weights for evaluating a node grid at `coords`.
+
+    Node j sits at origin + (j - 1) * step, so the pixel at pos = (x -
+    origin) / step lies in cell i = floor(pos) and reads nodes i .. i+3.
+    Returns (M, cell, lo): M is (len(coords), n) with column c standing for
+    node lo + c, and cell is each coordinate's cell index.
+    """
+    pos = (np.asarray(coords, np.float64) - origin) / step
+    cell = np.floor(pos).astype(np.intp)
+    t = pos - cell
+    t2 = t * t
+    t3 = t2 * t
+    w = ((-t3 + 2.0 * t2 - t) * 0.5,
+         (3.0 * t3 - 5.0 * t2 + 2.0) * 0.5,
+         (-3.0 * t3 + 4.0 * t2 + t) * 0.5,
+         (t3 - t2) * 0.5)
+    lo = int(cell.min())
+    M = np.zeros((cell.size, int(cell.max()) - lo + 4), np.float64)
+    rows = np.arange(cell.size)
+    for k in range(4):
+        M[rows, cell - lo + k] = w[k]
+    return M, cell, lo
+
+
+def _wcs_grid_map(ref_pix2world, tgt_wcs, box, tol_deg, step=_WCS_GRID_STEP):
+    """Solve the exact pixel chain (_wcs_pix_chain) on a node grid covering
+    `box` = (x0, y0, x1, y1) in reference pixels.
+
+    A cell is flagged for exact per-pixel solving when any of the 4x4 nodes
+    it interpolates from failed the chain (non-finite / round trip), or when
+    the interpolated map misses the exact chain by more than _WCS_GRID_TOL_PX
+    at the cell centre. Everything else is interpolated.
+    """
+    bx0, by0, bx1, by1 = box
+    ncx = (bx1 - 1 - bx0) // step + 1
+    ncy = (by1 - 1 - by0) // step + 1
+    gx = bx0 + step * np.arange(-1, ncx + 2, dtype=np.float64)
+    gy = by0 + step * np.arange(-1, ncy + 2, dtype=np.float64)
+    GX, GY = np.meshgrid(gx, gy)
+    sx, sy, nbad = _wcs_pix_chain(ref_pix2world, tgt_wcs, GX.ravel(), GY.ravel(), tol_deg)
+    # Bad nodes are zeroed so they cannot spread NaN through the matrix
+    # products; every cell that reads one is solved exactly anyway.
+    NX = np.where(nbad, 0.0, sx).reshape(GX.shape)
+    NY = np.where(nbad, 0.0, sy).reshape(GX.shape)
+    nbad = nbad.reshape(GX.shape)
+
+    cell_bad = np.zeros((ncy, ncx), bool)
+    for a in range(4):
+        for b in range(4):
+            cell_bad |= nbad[a:a + ncy, b:b + ncx]
+
+    cx = bx0 + step * (np.arange(ncx) + 0.5)
+    cy = by0 + step * (np.arange(ncy) + 0.5)
+    CX, CY = np.meshgrid(cx, cy)
+    ex, ey, cbad = _wcs_pix_chain(ref_pix2world, tgt_wcs, CX.ravel(), CY.ravel(), tol_deg)
+    Wx, _, lox = _catmull_rom_matrix(cx, bx0, step)
+    Wy, _, loy = _catmull_rom_matrix(cy, by0, step)
+    blk = (slice(loy, loy + Wy.shape[1]), slice(lox, lox + Wx.shape[1]))
+    err = np.hypot(Wy @ NX[blk] @ Wx.T - ex.reshape(CX.shape),
+                   Wy @ NY[blk] @ Wx.T - ey.reshape(CX.shape))
+    ok_err = np.isfinite(err) & ~cell_bad & ~cbad.reshape(CX.shape)
+    max_err = float(err[ok_err].max()) if ok_err.any() else 0.0
+    cell_bad |= cbad.reshape(CX.shape) | ~np.isfinite(err) | (err > _WCS_GRID_TOL_PX)
+    return {"NX": NX, "NY": NY, "cell_bad": cell_bad, "step": step,
+            "origin": (bx0, by0), "n_nodes": int(GX.size), "max_err": max_err}
+
+
+def _wcs_grid_tile(grid, x0, x1, y0, y1):
+    """Interpolated float64 maps for output tile [y0:y1, x0:x1], plus the
+    mask of pixels whose cell must be solved exactly instead."""
+    step = grid["step"]
+    ox, oy = grid["origin"]
+    Wx, cellx, lox = _catmull_rom_matrix(np.arange(x0, x1), ox, step)
+    Wy, celly, loy = _catmull_rom_matrix(np.arange(y0, y1), oy, step)
+    blk = (slice(loy, loy + Wy.shape[1]), slice(lox, lox + Wx.shape[1]))
+    mx = Wy @ grid["NX"][blk] @ Wx.T
+    my = Wy @ grid["NY"][blk] @ Wx.T
+    exact = grid["cell_bad"][celly[:, None], cellx[None, :]]
+    return mx, my, exact
+
+
 def wcs_reproject_align(tgt_img, tgt_wcs, ref_wcs, out_shape,
                         tile=512, progress_cb=None, log=None):
     """
     Resample tgt_img onto the reference pixel grid so output pixel (x,y) sees
     the same sky as reference pixel (x,y). Inverse mapping, tiled, footprint-
     limited, with a forward round-trip check to drop diverged SIP solves.
+    The map is solved exactly on a node grid and interpolated in between
+    (see _wcs_grid_map); cells that fail its self-check are solved per pixel.
 
     tgt_img   : HxW or HxWxC float
     tgt_wcs   : WCS of tgt_img (SIP kept)
@@ -655,6 +820,15 @@ def wcs_reproject_align(tgt_img, tgt_wcs, ref_wcs, out_shape,
     nch = tgt_img.shape[2] if is_color else 1
     sh, sw = tgt_img.shape[:2]
     src = np.ascontiguousarray(tgt_img.astype(np.float32, copy=False))
+    # Colour (<=4 channels) is remapped as ONE HWC call per tile, so
+    # _warp_antiring builds its star mask from the brightest channel. The old
+    # per-channel loop masked each channel on its own -- a star bright only in
+    # Ha went unmasked in G/B (see _warp_antiring's PER-CHANNEL CALL BUG) --
+    # and passed cv2 src[..., c], a strided view that cv2 copied WHOLE on every
+    # call: 720 full-channel copies on a 31 MP RGB frame, ~52 s of 92 s.
+    # >4 channels need the per-channel path; give it contiguous planes.
+    planes = ([np.ascontiguousarray(src[..., c]) for c in range(nch)]
+              if is_color and nch > 4 else None)
 
     dst = (np.zeros((H, W, nch), np.float32) if is_color
            else np.zeros((H, W), np.float32))
@@ -684,52 +858,75 @@ def wcs_reproject_align(tgt_img, tgt_wcs, ref_wcs, out_shape,
         warnings.filterwarnings("ignore", message=".*all_world2pix.*")
         warnings.filterwarnings("ignore", message=".*failed to converge.*")
 
+        try:
+            grid = _wcs_grid_map(ref_wcs.all_pix2world, tgt_wcs, box, tol_deg)
+            _log(f"[WCS-align] map grid {grid['step']}px: {grid['n_nodes']} nodes, "
+                 f"max cell-centre error {grid['max_err']:.1e} px, "
+                 f"{int(grid['cell_bad'].sum())}/{grid['cell_bad'].size} cells "
+                 f"solved per pixel")
+        except Exception as e:
+            # Same per-pixel solve as before the grid existed.
+            _log(f"[WCS-align] map grid unavailable ({e}); solving every pixel.")
+            grid = None
+
         for y0 in range(by0, by1, tile):
             y1 = min(y0 + tile, by1); hh = y1 - y0
             ys = np.arange(y0, y1, dtype=np.float64)[:, None]
             for x0 in range(bx0, bx1, tile):
                 x1 = min(x0 + tile, bx1); ww = x1 - x0
                 xs = np.arange(x0, x1, dtype=np.float64)[None, :]
-                Xd = np.broadcast_to(xs, (hh, ww))
-                Yd = np.broadcast_to(ys, (hh, ww))
 
-                # reference pixel -> world (forward SIP, exact)
-                ra, dec = ref_wcs.all_pix2world(Xd.ravel(), Yd.ravel(), 0)
-                # world -> target pixel (iterative SIP inverse)
-                sx, sy = tgt_wcs.all_world2pix(ra, dec, 0)
+                rt_bad = np.zeros((hh, ww), bool)
+                if grid is not None:
+                    mx64, my64, exact = _wcs_grid_tile(grid, x0, x1, y0, y1)
+                else:
+                    mx64 = np.empty((hh, ww), np.float64)
+                    my64 = np.empty((hh, ww), np.float64)
+                    exact = np.ones((hh, ww), bool)
+                if exact.any():
+                    sx, sy, rtb = _wcs_pix_chain(
+                        ref_wcs.all_pix2world, tgt_wcs,
+                        np.broadcast_to(xs, (hh, ww))[exact],
+                        np.broadcast_to(ys, (hh, ww))[exact], tol_deg)
+                    mx64[exact] = sx
+                    my64[exact] = sy
+                    rt_bad[exact] = rtb
 
-                mapx = sx.reshape(hh, ww).astype(np.float32)
-                mapy = sy.reshape(hh, ww).astype(np.float32)
+                mapx = mx64.astype(np.float32)
+                mapy = my64.astype(np.float32)
 
                 bad = ~(np.isfinite(mapx) & np.isfinite(mapy))
                 bad |= (mapx < -1.0) | (mapx > sw) | (mapy < -1.0) | (mapy > sh)
-
-                ok = ~bad
-                if ok.any():
-                    rx = np.where(ok, mapx, 0.0).astype(np.float64).ravel()
-                    ry = np.where(ok, mapy, 0.0).astype(np.float64).ravel()
-                    ra2, dec2 = tgt_wcs.all_pix2world(rx, ry, 0)
-                    dra = ((ra2 - ra + 180.0) % 360.0 - 180.0) * np.cos(np.radians(dec))
-                    err = np.hypot(dra, dec2 - dec).reshape(hh, ww)
-                    bad |= ~np.isfinite(err)
-                    bad |= (err > tol_deg)
+                bad |= rt_bad
 
                 if bad.any():
                     rejected += int(bad.sum())
                     mapx = np.where(bad, np.float32(-1.0), mapx)
                     mapy = np.where(bad, np.float32(-1.0), mapy)
 
-                if is_color:
-                    for c in range(nch):
-                        dst[y0:y1, x0:x1, c] = _warp_antiring(
-                            lambda c=c: cv2.remap(
-                                src[..., c], mapx, mapy,
-                                interpolation=cv2.INTER_LANCZOS4,
-                                borderMode=cv2.BORDER_CONSTANT, borderValue=0.0),
-                            lambda c=c: cv2.remap(
-                                src[..., c], mapx, mapy,
-                                interpolation=cv2.INTER_LINEAR,
-                                borderMode=cv2.BORDER_CONSTANT, borderValue=0.0))
+                if is_color and nch <= 4:
+                    # cv2 drops a single channel's axis; reshape puts it back.
+                    dst[y0:y1, x0:x1] = _warp_antiring(
+                        lambda: cv2.remap(
+                            src, mapx, mapy,
+                            interpolation=cv2.INTER_LANCZOS4,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0),
+                        lambda: cv2.remap(
+                            src, mapx, mapy,
+                            interpolation=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0),
+                    ).reshape(hh, ww, nch)
+                elif is_color:
+                    dst[y0:y1, x0:x1] = _warp_hwc_antiring(
+                        nch,
+                        lambda c: cv2.remap(
+                            planes[c], mapx, mapy,
+                            interpolation=cv2.INTER_LANCZOS4,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0),
+                        lambda c: cv2.remap(
+                            planes[c], mapx, mapy,
+                            interpolation=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0))
                 else:
                     dst[y0:y1, x0:x1] = _warp_antiring(
                         lambda: cv2.remap(
@@ -1303,7 +1500,7 @@ class StellarAlignmentDialog(QDialog):
     def __init__(self, parent, settings, doc_manager=None, list_open_docs_fn=None):
 
         super().__init__(parent)
-        self.setWindowTitle("Stellar Alignment")
+        self.setWindowTitle(self.tr("Stellar Alignment"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -1351,20 +1548,20 @@ class StellarAlignmentDialog(QDialog):
         controls = QVBoxLayout()
 
         # SOURCE
-        src_box = QGroupBox("Source Image (Reference)")
+        src_box = QGroupBox(self.tr("Source Image (Reference)"))
         src_l = QVBoxLayout(src_box)
 
         src_radios = QHBoxLayout()
-        self.source_from_file_radio = QRadioButton("From File")
-        self.source_from_view_radio = QRadioButton("From View")
+        self.source_from_file_radio = QRadioButton(self.tr("From File"))
+        self.source_from_view_radio = QRadioButton(self.tr("From View"))
         self.source_from_view_radio.setChecked(True)
         src_radios.addWidget(self.source_from_file_radio)
         src_radios.addWidget(self.source_from_view_radio)
         src_l.addLayout(src_radios)
 
         src_file_row = QHBoxLayout()
-        self.btn_source_file = QPushButton("Select File")
-        self.lbl_source_file = QLabel("No file selected")
+        self.btn_source_file = QPushButton(self.tr("Select File"))
+        self.lbl_source_file = QLabel(self.tr("No file selected"))
         self.btn_source_file.clicked.connect(self.select_source_file)
         src_file_row.addWidget(self.btn_source_file)
         src_file_row.addWidget(self.lbl_source_file)
@@ -1374,7 +1571,7 @@ class StellarAlignmentDialog(QDialog):
         self.source_view_combo = QComboBox()
         src_view_row = QHBoxLayout()
         src_view_row.addWidget(self.source_view_combo, 1)
-        btn_src_refresh = QPushButton("Refresh")
+        btn_src_refresh = QPushButton(self.tr("Refresh"))
         btn_src_refresh.clicked.connect(self._populate_view_combos)
         src_view_row.addWidget(btn_src_refresh)
         src_l.addLayout(src_view_row)
@@ -1382,20 +1579,20 @@ class StellarAlignmentDialog(QDialog):
         controls.addWidget(src_box)
 
         # TARGET
-        tgt_box = QGroupBox("Target Image (To be Aligned)")
+        tgt_box = QGroupBox(self.tr("Target Image (To be Aligned)"))
         tgt_l = QVBoxLayout(tgt_box)
 
         tgt_radios = QHBoxLayout()
-        self.target_from_file_radio = QRadioButton("From File")
-        self.target_from_view_radio = QRadioButton("From View")
+        self.target_from_file_radio = QRadioButton(self.tr("From File"))
+        self.target_from_view_radio = QRadioButton(self.tr("From View"))
         self.target_from_view_radio.setChecked(True)
         tgt_radios.addWidget(self.target_from_file_radio)
         tgt_radios.addWidget(self.target_from_view_radio)
         tgt_l.addLayout(tgt_radios)
 
         tgt_file_row = QHBoxLayout()
-        self.btn_target_file = QPushButton("Select File")
-        self.lbl_target_file = QLabel("No file selected")
+        self.btn_target_file = QPushButton(self.tr("Select File"))
+        self.lbl_target_file = QLabel(self.tr("No file selected"))
         self.btn_target_file.clicked.connect(self.select_target_file)
         tgt_file_row.addWidget(self.btn_target_file)
         tgt_file_row.addWidget(self.lbl_target_file)
@@ -1404,41 +1601,41 @@ class StellarAlignmentDialog(QDialog):
         self.target_view_combo = QComboBox()
         tgt_view_row = QHBoxLayout()
         tgt_view_row.addWidget(self.target_view_combo, 1)
-        btn_tgt_refresh = QPushButton("Refresh")
+        btn_tgt_refresh = QPushButton(self.tr("Refresh"))
         btn_tgt_refresh.clicked.connect(self._populate_view_combos)
         tgt_view_row.addWidget(btn_tgt_refresh)
         tgt_l.addLayout(tgt_view_row)
 
         controls.addWidget(tgt_box)
 
-        xform_box = QGroupBox("Transform / Distortion")
+        xform_box = QGroupBox(self.tr("Transform / Distortion"))
         xf = QFormLayout(xform_box)
         # Alignment method
         self.xf_method = QComboBox()
         self.xf_method.addItems([
-            "Stellar (star matching)",
-            "WCS / SIP (plate solve, no stars)",
-            "WCS → Stellar refinement",
+            self.tr("Stellar (star matching)"),
+            self.tr("WCS / SIP (plate solve, no stars)"),
+            self.tr("WCS → Stellar refinement"),
         ])
-        self.xf_method.setToolTip(
+        self.xf_method.setToolTip(self.tr(
             "Stellar: astroalign star matching (best when both frames are the same scope).\n"
             "WCS/SIP: reproject via each image's plate solve — handles arbitrary scale,\n"
             "  rotation, flip/mirror, FOV. Needs both images plate-solved.\n"
             "WCS → Stellar: WCS gets cross-instrument frames onto the same grid, then a\n"
             "  star pass refines the residual for sub-pixel accuracy. Best of both."
-        )
+        ))
         _saved_method = self.settings.value("stacking/align/method", "stellar", type=str)
         self.xf_method.setCurrentIndex(
             {"stellar": 0, "wcs": 1, "wcs_stellar": 2}.get(str(_saved_method).lower(), 0))
-        xf.addRow("Method:", self.xf_method)
+        xf.addRow(self.tr("Method:"), self.xf_method)
 
         # WCS plate-solve status row (used by the WCS / WCS→Stellar methods)
         wcs_status_row = QHBoxLayout()
-        self.btn_check_wcs = QPushButton("Check WCS")
+        self.btn_check_wcs = QPushButton(self.tr("Check WCS"))
         self.btn_check_wcs.setFixedHeight(26)
-        self.btn_check_wcs.setToolTip(
+        self.btn_check_wcs.setToolTip(self.tr(
             "Report whether the current source and target carry a usable plate solve."
-        )
+        ))
         self.btn_check_wcs.clicked.connect(self._refresh_wcs_status)
         self._lbl_wcs_status = QLabel("")
         self._lbl_wcs_status.setStyleSheet("color:#888;font-size:10px;")
@@ -1449,48 +1646,48 @@ class StellarAlignmentDialog(QDialog):
 
         self.xf_model = QComboBox()
         self.xf_model.addItems([
-            "Affine (fast)",
-            "Homography (projective)",
-            "Polynomial (order 3)",
-            "Polynomial (order 4)",
+            self.tr("Affine (fast)"),
+            self.tr("Homography (projective)"),
+            self.tr("Polynomial (order 3)"),
+            self.tr("Polynomial (order 4)"),
         ])
         # map saved value to index
         prefs = _align_prefs(self.settings)
         _model = prefs["model"]
         idx = 0 if _model=="affine" else 1 if _model=="homography" else 2 if _model=="poly3" else 3
         self.xf_model.setCurrentIndex(idx)
-        xf.addRow("Model:", self.xf_model)
+        xf.addRow(self.tr("Model:"), self.xf_model)
 
         self.xf_maxcp = QSpinBox(); self.xf_maxcp.setRange(20, 2000); self.xf_maxcp.setValue(prefs["max_cp"])
-        xf.addRow("Max control points:", self.xf_maxcp)
+        xf.addRow(self.tr("Max control points:"), self.xf_maxcp)
 
         self.xf_downsample = QSpinBox(); self.xf_downsample.setRange(1, 8); self.xf_downsample.setValue(prefs["downsample"])
-        xf.addRow("Solve downsample:", self.xf_downsample)
+        xf.addRow(self.tr("Solve downsample:"), self.xf_downsample)
 
         self.xf_h_reproj = QDoubleSpinBox(); self.xf_h_reproj.setRange(0.1, 10.0); self.xf_h_reproj.setDecimals(2)
         self.xf_h_reproj.setValue(prefs["h_reproj"])
-        xf.addRow("Homog. RANSAC reproj (px):", self.xf_h_reproj)
+        xf.addRow(self.tr("Homog. RANSAC reproj (px):"), self.xf_h_reproj)
         self.xf_det_sigma = QDoubleSpinBox()
         self.xf_det_sigma.setRange(1.0, 200.0)
         self.xf_det_sigma.setDecimals(1)
         self.xf_det_sigma.setSingleStep(1.0)
         self.xf_det_sigma.setValue(prefs["det_sigma"])
-        self.xf_det_sigma.setToolTip(
+        self.xf_det_sigma.setToolTip(self.tr(
             "Detection threshold in sigma above background.\n"
             "Lower = more stars detected (may include noise).\n"
             "Higher = only bright stars (more robust on crowded fields).\n"
             "Use Trial Detect to test before aligning."
-        )
-        xf.addRow("Detection threshold (σ):", self.xf_det_sigma)
+        ))
+        xf.addRow(self.tr("Detection threshold (σ):"), self.xf_det_sigma)
 
         # Trial detect row
         trial_row = QHBoxLayout()
-        self.btn_trial_detect = QPushButton("🔍 Trial Detect")
+        self.btn_trial_detect = QPushButton(self.tr("🔍 Trial Detect"))
         self.btn_trial_detect.setFixedHeight(26)
-        self.btn_trial_detect.setToolTip(
+        self.btn_trial_detect.setToolTip(self.tr(
             "Run star detection on both source and target with the current\n"
             "threshold and report how many stars were found in each."
-        )
+        ))
         self.btn_trial_detect.clicked.connect(self._run_trial_detect)
         self._lbl_trial_result = QLabel("")
         self._lbl_trial_result.setStyleSheet("color:#888;font-size:10px;")
@@ -1498,7 +1695,7 @@ class StellarAlignmentDialog(QDialog):
         trial_row.addWidget(self.btn_trial_detect)
         trial_row.addWidget(self._lbl_trial_result, 1)
         xf.addRow("", trial_row)
-        sync_note = QLabel("ℹ  Detection settings are shared with Stacking Suite.")
+        sync_note = QLabel(self.tr("ℹ  Detection settings are shared with Stacking Suite."))
         sync_note.setStyleSheet("color:#888;font-size:10px;font-style:italic;")
         xf.addRow("", sync_note)
 
@@ -1538,7 +1735,7 @@ class StellarAlignmentDialog(QDialog):
 
         # run + status
         run_row = QHBoxLayout()
-        self.btn_run = QPushButton("Run Alignment")
+        self.btn_run = QPushButton(self.tr("Run Alignment"))
         self.btn_run.clicked.connect(self.run_alignment)
         run_row.addWidget(self.btn_run, 1)
         run_row.addWidget(make_help_button("star_alignment", self))
@@ -1589,7 +1786,7 @@ class StellarAlignmentDialog(QDialog):
             # still works.
             pass
 
-        self.status_label = QLabel("Status: Ready")
+        self.status_label = QLabel(self.tr("Status: Ready"))
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         controls.addWidget(self.status_label)
 
@@ -1597,7 +1794,7 @@ class StellarAlignmentDialog(QDialog):
 
         # right: preview + actions
         right = QVBoxLayout()
-        grp = QGroupBox("Aligned Image")
+        grp = QGroupBox(self.tr("Aligned Image"))
         rg = QVBoxLayout(grp)
 
         self.result_preview_label = QLabel()
@@ -1605,14 +1802,14 @@ class StellarAlignmentDialog(QDialog):
         self.result_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         rg.addWidget(self.result_preview_label)
 
-        self.btn_autostretch = QPushButton("AutoStretch: OFF")
+        self.btn_autostretch = QPushButton(self.tr("AutoStretch: OFF"))
         self.btn_autostretch.clicked.connect(self.toggle_autostretch)
         rg.addWidget(self.btn_autostretch)
 
         # actions
         actions_row = QHBoxLayout()
-        self.btn_apply_active = QPushButton("Apply to Active View")
-        self.btn_create_view = QPushButton("Create New View")
+        self.btn_apply_active = QPushButton(self.tr("Apply to Active View"))
+        self.btn_create_view = QPushButton(self.tr("Create New View"))
         self.btn_apply_active.clicked.connect(self.apply_to_active_view)
         self.btn_create_view.clicked.connect(self.create_new_view)
         actions_row.addWidget(self.btn_apply_active)
@@ -1764,15 +1961,15 @@ class StellarAlignmentDialog(QDialog):
             elif self.stellar_target is not None:
                 tgt_img = self.stellar_target
         except Exception as e:
-            self._lbl_trial_result.setText(f"⚠  Could not load images: {e}")
+            self._lbl_trial_result.setText(self.tr("⚠  Could not load images: {0}").format(e))
             return
 
         if src_img is None and tgt_img is None:
-            self._lbl_trial_result.setText("⚠  Select source and/or target first.")
+            self._lbl_trial_result.setText(self.tr("⚠  Select source and/or target first."))
             return
 
         self.btn_trial_detect.setEnabled(False)
-        self._lbl_trial_result.setText("Detecting…")
+        self._lbl_trial_result.setText(self.tr("Detecting…"))
         QApplication.processEvents()
 
         def _count_stars(img):
@@ -1788,7 +1985,7 @@ class StellarAlignmentDialog(QDialog):
             except Exception as e:
                 err = str(e)
                 if "pixel buffer full" in err or "pixstack" in err.lower():
-                    return None, f"too many pixels at σ={thresh:.1f} — raise threshold"
+                    return None, self.tr("too many pixels at σ={0:.1f} — raise threshold").format(thresh)
                 return None, err
 
         parts = []
@@ -1801,16 +1998,16 @@ class StellarAlignmentDialog(QDialog):
             if n is None:
                 return f"{label}: —"
             if n == 0:
-                return f"⚠ {label}: 0 stars — lower threshold"
+                return self.tr("⚠ {0}: 0 stars — lower threshold").format(label)
             if n > 50000:
-                return f"⚠ {label}: {n:,} (very high — raise threshold)"
+                return self.tr("⚠ {0}: {1:,} (very high — raise threshold)").format(label, n)
             if n > 10000:
-                return f"⚠ {label}: {n:,} (high — consider raising threshold)"
-            return f"✓ {label}: {n:,} stars"
+                return self.tr("⚠ {0}: {1:,} (high — consider raising threshold)").format(label, n)
+            return self.tr("✓ {0}: {1:,} stars").format(label, n)
 
         msg = "  |  ".join(filter(None, [
-            _fmt("Source", src_n, src_err) if src_img is not None else None,
-            _fmt("Target", tgt_n, tgt_err) if tgt_img is not None else None,
+            _fmt(self.tr("Source"), src_n, src_err) if src_img is not None else None,
+            _fmt(self.tr("Target"), tgt_n, tgt_err) if tgt_img is not None else None,
         ]))
 
         has_warning = "⚠" in msg
@@ -1862,7 +2059,7 @@ class StellarAlignmentDialog(QDialog):
         doc = self.source_view_combo.currentData()
         img = _doc_image(doc)
         if img is None:
-            QMessageBox.warning(self, "Error", "Selected source view has no image.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Selected source view has no image."))
             return
         self.source_was_mono = (img.ndim == 2)
         if self.source_was_mono:
@@ -1876,7 +2073,7 @@ class StellarAlignmentDialog(QDialog):
         doc = self.target_view_combo.currentData()
         img = _doc_image(doc)
         if img is None:
-            QMessageBox.warning(self, "Error", "Selected target view has no image.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Selected target view has no image."))
             return
         self.target_was_mono = (img.ndim == 2)
         if self.target_was_mono:
@@ -1888,13 +2085,13 @@ class StellarAlignmentDialog(QDialog):
 
     def select_source_file(self):
         default_dir = self.settings.value("working_directory", "")
-        path, _ = QFileDialog.getOpenFileName(self, "Select Source Image", default_dir,
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select Source Image"), default_dir,
                     "Images (*.fits *.fit *.xisf *.tif *.tiff *.png *.jpg);;All Files (*)")
         if not path:
             return
         image, header, bit_depth, is_mono = load_image(path)
         if image is None:
-            QMessageBox.warning(self, "Error", "Failed to load source image.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Failed to load source image."))
             return
         self.source_was_mono = bool(is_mono or image.ndim == 2)
         if image.ndim == 2:
@@ -1907,13 +2104,13 @@ class StellarAlignmentDialog(QDialog):
 
     def select_target_file(self):
         default_dir = self.settings.value("working_directory", "")
-        path, _ = QFileDialog.getOpenFileName(self, "Select Target Image", default_dir,
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select Target Image"), default_dir,
                     "Images (*.fits *.fit *.xisf *.tif *.tiff *.png *.jpg);;All Files (*)")
         if not path:
             return
         image, header, bit_depth, is_mono = load_image(path)
         if image is None:
-            QMessageBox.warning(self, "Error", "Failed to load target image.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Failed to load target image."))
             return
         self.target_was_mono = bool(is_mono or image.ndim == 2)
         if image.ndim == 2:
@@ -1945,7 +2142,8 @@ class StellarAlignmentDialog(QDialog):
         self._lbl_wcs_status.setStyleSheet(
             f"color:{'#4caf50' if both else '#ffc107'};font-size:10px;")
         self._lbl_wcs_status.setText(
-            f"{'✓' if s_ok else '⚠'} Source WCS   |   {'✓' if t_ok else '⚠'} Target WCS")
+            self.tr("{0} Source WCS   |   {1} Target WCS").format(
+                '✓' if s_ok else '⚠', '✓' if t_ok else '⚠'))
         return both
     
     def _resolve_both_wcs(self) -> bool:
@@ -1971,42 +2169,106 @@ class StellarAlignmentDialog(QDialog):
         # populates the WCS objects, not the pixel buffers, so the buffers can
         # still be None here even when both plate solves are good.
         if not self._resolve_both_wcs():
-            missing = [n for n, w in (("source", self.source_wcs),
-                                      ("target", self.target_wcs)) if w is None]
+            missing = [n for n, w in ((self.tr("source"), self.source_wcs),
+                                      (self.tr("target"), self.target_wcs)) if w is None]
             QMessageBox.warning(
-                self, "WCS Alignment",
-                "No usable plate solve for the "
-                f"{' and '.join(missing)} image — skipping the WCS stage.")
+                self, self.tr("WCS Alignment"),
+                self.tr("No usable plate solve for the "
+                        "{0} image — skipping the WCS stage.").format(
+                    self.tr(" and ").join(missing)))
             return None
 
         if self.stellar_source is None or self.stellar_target is None:
             QMessageBox.warning(
-                self, "WCS Alignment",
-                "Source or target image could not be loaded.")
+                self, self.tr("WCS Alignment"),
+                self.tr("Source or target image could not be loaded."))
             return None
 
         H, W = self.stellar_source.shape[:2]
-        self.status_label.setText("WCS stage: reprojecting target onto source…")
+        self.status_label.setText(self.tr("WCS stage: reprojecting target onto source…"))
         QApplication.processEvents()
+        tgt, tgt_wcs, src_wcs = self.stellar_target, self.target_wcs, self.source_wcs
         try:
-            return wcs_reproject_align(
-                self.stellar_target, self.target_wcs, self.source_wcs, (H, W),
-                tile=512,
-                progress_cb=lambda f: (self.status_label.setText(f"WCS stage… {f*100:.0f}%"),
-                                       QApplication.processEvents()),
-                log=print,
+            return self._run_off_gui_thread(
+                lambda progress: wcs_reproject_align(
+                    tgt, tgt_wcs, src_wcs, (H, W),
+                    tile=512, progress_cb=progress, log=print),
+                self.tr("WCS stage"),
             ).astype(np.float32, copy=False)
         except Exception as e:
-            QMessageBox.warning(self, "WCS Alignment", f"WCS reprojection failed: {e}")
+            QMessageBox.warning(self, self.tr("WCS Alignment"), self.tr("WCS reprojection failed: {0}").format(e))
             return None
-        
+
+    def _run_off_gui_thread(self, fn, label):
+        """Run fn(progress_cb) on a plain worker thread while the dialog keeps
+        painting; return its result here, or re-raise its exception here.
+
+        The worker never touches a widget: progress_cb only stores a fraction
+        that a GUI-thread timer shows. Run is disabled and closing is refused
+        until it finishes (see closeEvent/reject), because the caller resumes
+        on this dialog afterwards.
+        """
+        from PyQt6.QtCore import QEventLoop
+
+        state = {"frac": None, "result": None, "error": None}
+
+        def _progress(f):
+            state["frac"] = f
+
+        def _work():
+            try:
+                state["result"] = fn(_progress)
+            except BaseException as e:   # re-raised on the GUI thread below
+                state["error"] = e
+
+        worker = _threading.Thread(target=_work, name="StellarAlignWCS", daemon=True)
+        loop = QEventLoop()
+        timer = QTimer()
+        timer.setInterval(100)
+
+        def _tick():
+            if state["frac"] is not None:
+                self.status_label.setText(f"{label}… {state['frac'] * 100:.0f}%")
+            if not worker.is_alive():
+                timer.stop()
+                loop.quit()
+
+        timer.timeout.connect(_tick)
+        run_was_enabled = self.btn_run.isEnabled()
+        self.btn_run.setEnabled(False)
+        self._busy_off_gui = True
+        try:
+            worker.start()
+            timer.start()
+            loop.exec()
+        finally:
+            timer.stop()
+            self._busy_off_gui = False
+            self.btn_run.setEnabled(run_was_enabled)
+        if state["error"] is not None:
+            raise state["error"]
+        return state["result"]
+
+    def closeEvent(self, event):
+        if getattr(self, "_busy_off_gui", False):
+            self.status_label.setText(self.tr("Please wait — WCS stage still running…"))
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def reject(self):
+        if getattr(self, "_busy_off_gui", False):
+            self.status_label.setText(self.tr("Please wait — WCS stage still running…"))
+            return
+        super().reject()
+
     def run_alignment_wcs(self):
         aligned = self._wcs_prealign_target()
         if aligned is None:
             # hard fail for WCS-only mode → offer stellar
             if QMessageBox.question(
-                self, "WCS Alignment",
-                "WCS alignment unavailable. Run stellar alignment instead?",
+                self, self.tr("WCS Alignment"),
+                self.tr("WCS alignment unavailable. Run stellar alignment instead?"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             ) == QMessageBox.StandardButton.Yes:
                 self.xf_method.setCurrentIndex(0)
@@ -2019,19 +2281,19 @@ class StellarAlignmentDialog(QDialog):
             self.apply_autostretch()
         disp = self.stretched_image if (self.autostretch_enabled and self.stretched_image is not None) else self.aligned_image
         self.update_preview(self.result_preview_label, disp)
-        self.status_label.setText("WCS alignment complete.")
+        self.status_label.setText(self.tr("WCS alignment complete."))
         QApplication.processEvents()
-        QMessageBox.information(self, "Alignment Complete", "Alignment completed using full WCS (SIP).")
+        QMessageBox.information(self, self.tr("Alignment Complete"), self.tr("Alignment completed using full WCS (SIP)."))
 
     # ------------------------
     # Preview + stretch
     # ------------------------
     def toggle_autostretch(self):
         if self.aligned_image is None:
-            QMessageBox.warning(self, "Stellar Alignment", "No aligned image available.")
+            QMessageBox.warning(self, self.tr("Stellar Alignment"), self.tr("No aligned image available."))
             return
         self.autostretch_enabled = not self.autostretch_enabled
-        self.btn_autostretch.setText(f"AutoStretch: {'ON' if self.autostretch_enabled else 'OFF'}")
+        self.btn_autostretch.setText(self.tr("AutoStretch: ON") if self.autostretch_enabled else self.tr("AutoStretch: OFF"))
         # recompute stretched version when turning on
         if self.autostretch_enabled:
             self.apply_autostretch()
@@ -2162,21 +2424,21 @@ class StellarAlignmentDialog(QDialog):
 
             if update_callback is not None and (i % 10 == 0 or i == total - 1):
                 progress = int(100 * i / total)
-                update_callback(f"RANSAC progress: {progress}% (Best inliers: {best_inliers})")
+                update_callback(_tr("RANSAC progress: {0}% (Best inliers: {1})").format(progress, best_inliers))
         return best_transform, best_inliers
 
     def estimate_transform_ransac(self, source_stars, target_stars):
         src_coords = np.array([[s[0], s[1]] for s in source_stars])
         tgt_coords = np.array([[s[0], s[1]] for s in target_stars])
-        self.status_label.setText("Computing Delaunay triangulation...")
+        self.status_label.setText(self.tr("Computing Delaunay triangulation..."))
         src_tri_dict = self.build_triangle_dict(src_coords)
         tgt_tri_dict = self.build_triangle_dict(tgt_coords)
-        self.status_label.setText("Matching triangles...")
+        self.status_label.setText(self.tr("Matching triangles..."))
         matches = self.match_triangles(src_tri_dict, tgt_tri_dict, tol=0.1)
         if len(matches) == 0:
-            self.status_label.setText("No triangle matches found!")
+            self.status_label.setText(self.tr("No triangle matches found!"))
             return None, 0
-        self.status_label.setText(f"Found {len(matches)} candidate triangle matches. Running RANSAC...")
+        self.status_label.setText(self.tr("Found {0} candidate triangle matches. Running RANSAC...").format(len(matches)))
         update_callback = lambda msg: self.status_label.setText(msg)
         best_transform, best_inliers = self.ransac_affine(
             src_coords, tgt_coords, matches, ransac_iter=1000, inlier_thresh=3.0, update_callback=update_callback
@@ -2234,14 +2496,14 @@ class StellarAlignmentDialog(QDialog):
         disp = (self.stretched_image if (self.autostretch_enabled and self.stretched_image is not None)
                 else self.aligned_image)
         self.update_preview(self.result_preview_label, disp)
-        self.status_label.setText("Star refinement failed — kept WCS alignment.")
+        self.status_label.setText(self.tr("Star refinement failed — kept WCS alignment."))
         QApplication.processEvents()
         QMessageBox.information(
-            self, "Alignment Complete",
-            f"Star refinement failed ({reason}); kept the WCS (SIP) alignment.")
+            self, self.tr("Alignment Complete"),
+            self.tr("Star refinement failed ({0}); kept the WCS (SIP) alignment.").format(reason))
 
     def run_alignment(self):
-        self.status_label.setText("Starting Alignment…")
+        self.status_label.setText(self.tr("Starting Alignment…"))
         QApplication.processEvents()
 
         method = self._method_key()
@@ -2261,7 +2523,7 @@ class StellarAlignmentDialog(QDialog):
             if wcs_prealigned is None:
                 # couldn't WCS-prealign; _wcs_prealign_target already messaged.
                 # fall through to plain stellar on the original target.
-                self.status_label.setText("WCS prealign unavailable — running stellar only…")
+                self.status_label.setText(self.tr("WCS prealign unavailable — running stellar only…"))
                 QApplication.processEvents()
 
         # Ensure sources are loaded
@@ -2271,10 +2533,10 @@ class StellarAlignmentDialog(QDialog):
             self.load_target_from_view()
 
         if self.stellar_source is None:
-            QMessageBox.warning(self, "Error", "Please choose a Source (file or view).")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Please choose a Source (file or view)."))
             return
         if self.stellar_target is None:
-            QMessageBox.warning(self, "Error", "Please choose a Target (file or view).")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Please choose a Target (file or view)."))
             return
 
         # Local helpers (self-contained)
@@ -2453,7 +2715,7 @@ class StellarAlignmentDialog(QDialog):
         if pairs is not None:
             src_xy, tgt_xy = pairs
             self.status_label.setText(
-                f"Matched {len(src_xy)} stars by proximity (WCS pre-aligned).")
+                self.tr("Matched {0} stars by proximity (WCS pre-aligned).").format(len(src_xy)))
         else:
             try:
                 transform_obj, (src_pts_s, tgt_pts_s) = \
@@ -2461,7 +2723,7 @@ class StellarAlignmentDialog(QDialog):
             except Exception as e:
                 if wcs_prealigned is not None:
                     return self._accept_wcs_fallback(wcs_prealigned, f"astroalign: {e}")
-                QMessageBox.warning(self, "Alignment Error", f"Astroalign failed: {e}")
+                QMessageBox.warning(self, self.tr("Alignment Error"), self.tr("Astroalign failed: {0}").format(e))
                 return
             src_xy = np.asarray(src_pts_s, dtype=np.float32)
             tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
@@ -2487,8 +2749,8 @@ class StellarAlignmentDialog(QDialog):
             # back to a translation-dominated solution and the rotation
             # reading alone would miss it.
             if _A is not None and _is_near_180(_A, src_shape=tgt_gray.shape[:2]):
-                self.status_label.setText(
-                    "Meridian flip detected — pre-rotating target 180° and re-solving…")
+                self.status_label.setText(self.tr(
+                    "Meridian flip detected — pre-rotating target 180° and re-solving…"))
                 QApplication.processEvents()
                 tgt = np.ascontiguousarray(tgt[::-1, ::-1]) if tgt.ndim == 2 \
                         else np.ascontiguousarray(tgt[::-1, ::-1, :])
@@ -2499,8 +2761,8 @@ class StellarAlignmentDialog(QDialog):
                         self.aa_find_transform_with_backoff(tgt_small, src_small)
                 except Exception as e:
                     QMessageBox.warning(
-                        self, "Alignment Error",
-                        f"Re-solve after meridian pre-rotation failed: {e}")
+                        self, self.tr("Alignment Error"),
+                        self.tr("Re-solve after meridian pre-rotation failed: {0}").format(e))
                     return
                 src_xy = np.asarray(src_pts_s, dtype=np.float32)
                 tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
@@ -2517,11 +2779,11 @@ class StellarAlignmentDialog(QDialog):
             kind, X = _estimate_transform_from_pairs(model, src_xy, tgt_xy, h_reproj)
         except Exception as e:
             if wcs_prealigned is not None:
-                return self._accept_wcs_fallback(wcs_prealigned, f"transform estimation: {e}")
-            QMessageBox.warning(self, "Alignment Error", f"Transform estimation failed: {e}")
+                return self._accept_wcs_fallback(wcs_prealigned, self.tr("transform estimation: {0}").format(e))
+            QMessageBox.warning(self, self.tr("Alignment Error"), self.tr("Transform estimation failed: {0}").format(e))
             return
 
-        self.status_label.setText("Warping target image…")
+        self.status_label.setText(self.tr("Warping target image…"))
         QApplication.processEvents()
         H, W = src.shape[:2]
 
@@ -2546,8 +2808,8 @@ class StellarAlignmentDialog(QDialog):
                     lambda i: _wa(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LINEAR),
                 )
             transform_3x3 = np.eye(3, dtype=np.float32); transform_3x3[:2] = X
-            _note = ("NOTE: WCS/SIP reprojection was applied first; this matrix is\n"
-                     "only the residual star-refinement on top of that alignment."
+            _note = (self.tr("NOTE: WCS/SIP reprojection was applied first; this matrix is\n"
+                             "only the residual star-refinement on top of that alignment.")
                      if wcs_prealigned is not None else None)
             self.show_transform_info(transform_3x3, stage_note=_note)
 
@@ -2570,8 +2832,8 @@ class StellarAlignmentDialog(QDialog):
                 )
             # Optional: show homography info as well
             try:
-                _note = ("NOTE: WCS/SIP reprojection was applied first; this matrix is\n"
-                         "only the residual star-refinement on top of that alignment."
+                _note = (self.tr("NOTE: WCS/SIP reprojection was applied first; this matrix is\n"
+                                 "only the residual star-refinement on top of that alignment.")
                          if wcs_prealigned is not None else None)
                 self.show_transform_info(np.array(X, dtype=np.float64, copy=False), stage_note=_note)
             except Exception:
@@ -2581,7 +2843,7 @@ class StellarAlignmentDialog(QDialog):
             try:
                 warped_target = X(tgt, (H, W))
             except Exception as e:
-                QMessageBox.warning(self, "Alignment Error", f"Polynomial warp failed ({e}); falling back to affine.")
+                QMessageBox.warning(self, self.tr("Alignment Error"), self.tr("Polynomial warp failed ({0}); falling back to affine.").format(e))
 
 
         # Store + preview (with optional AutoStretch)
@@ -2594,28 +2856,30 @@ class StellarAlignmentDialog(QDialog):
         self.update_preview(self.result_preview_label, disp)
 
         if wcs_prealigned is not None:
-            _resid_txt = "a residual correction"   # poly: no single scalar
+            _resid_txt = self.tr("a residual correction")   # poly: no single scalar
             try:
                 if kind == "affine":
                     A = np.asarray(X, np.float64).reshape(2, 3)
-                    _resid_txt = f"a {float(np.hypot(A[0, 2], A[1, 2])):.1f}px residual correction"
+                    _resid_txt = self.tr("a {0:.1f}px residual correction").format(
+                        float(np.hypot(A[0, 2], A[1, 2])))
                 elif kind == "homography":
                     Hm = np.asarray(X, np.float64).reshape(3, 3)
                     w = Hm[2, 2] if abs(Hm[2, 2]) > 1e-12 else 1.0
-                    _resid_txt = f"a {float(np.hypot(Hm[0, 2] / w, Hm[1, 2] / w)):.1f}px residual correction"
+                    _resid_txt = self.tr("a {0:.1f}px residual correction").format(
+                        float(np.hypot(Hm[0, 2] / w, Hm[1, 2] / w)))
             except Exception:
                 pass
-            _label = f"WCS/SIP reprojection + {model} refinement"
-            _detail = (f"WCS/SIP reprojection did the primary alignment "
-                       f"(scale, rotation, orientation, field of view); the {model} "
-                       f"star pass then applied {_resid_txt}.")
+            _label = self.tr("WCS/SIP reprojection + {0} refinement").format(model)
+            _detail = self.tr("WCS/SIP reprojection did the primary alignment "
+                              "(scale, rotation, orientation, field of view); the {0} "
+                              "star pass then applied {1}.").format(model, _resid_txt)
         else:
             _label = model
-            _detail = f"Aligned using {model} star matching."
+            _detail = self.tr("Aligned using {0} star matching.").format(model)
 
-        self.status_label.setText(f"Alignment complete ({_label}).")
+        self.status_label.setText(self.tr("Alignment complete ({0}).").format(_label))
         QApplication.processEvents()
-        QMessageBox.information(self, "Alignment Complete", _detail)
+        QMessageBox.information(self, self.tr("Alignment Complete"), _detail)
 
 
 
@@ -2630,21 +2894,21 @@ class StellarAlignmentDialog(QDialog):
         det = a * d - b * c
         scale_y = det / scale_x if scale_x != 0 else 0.0
 
-        info_text = (
-            f"Transformation Matrix:\n\n"
-            f"[{a:.3f}  {b:.3f}  {tx:.3f}]\n"
-            f"[{c:.3f}  {d:.3f}  {ty:.3f}]\n"
-            f"[0.000  0.000  1.000]\n\n"
-            f"Translation: (tx, ty) = ({tx:.3f}, {ty:.3f})\n"
-            f"Scaling: scale_x = {scale_x:.3f}, scale_y = {scale_y:.3f}\n"
-            f"Rotation: {rotation_deg:.2f}°\n"
-            f"Skew (shear): {shear:.3f}\n"
-        )
+        info_text = self.tr(
+            "Transformation Matrix:\n\n"
+            "[{0:.3f}  {1:.3f}  {2:.3f}]\n"
+            "[{3:.3f}  {4:.3f}  {5:.3f}]\n"
+            "[0.000  0.000  1.000]\n\n"
+            "Translation: (tx, ty) = ({2:.3f}, {5:.3f})\n"
+            "Scaling: scale_x = {6:.3f}, scale_y = {7:.3f}\n"
+            "Rotation: {8:.2f}°\n"
+            "Skew (shear): {9:.3f}\n"
+        ).format(a, b, tx, c, d, ty, scale_x, scale_y, rotation_deg, shear)
         if stage_note:
             info_text += f"\n{stage_note}\n"
 
         info_dialog = QDialog(self)
-        info_dialog.setWindowTitle("Transformation Matrix Details")
+        info_dialog.setWindowTitle(self.tr("Transformation Matrix Details"))
         layout = QVBoxLayout(info_dialog)
 
         text_edit = QTextEdit(info_dialog)
@@ -2660,7 +2924,7 @@ class StellarAlignmentDialog(QDialog):
 
     def _output_image(self) -> np.ndarray | None:
         if self.aligned_image is None:
-            QMessageBox.warning(self, "Stellar Alignment", "No aligned image. Run alignment first.")
+            QMessageBox.warning(self, self.tr("Stellar Alignment"), self.tr("No aligned image. Run alignment first."))
             return None
         img = self.aligned_image
         # if original target was mono and we produced a 3-channel array, collapse back
@@ -2675,13 +2939,13 @@ class StellarAlignmentDialog(QDialog):
         if img is None:
             return
         if not self._docman:
-            QMessageBox.warning(self, "Stellar Alignment", "No document manager available.")
+            QMessageBox.warning(self, self.tr("Stellar Alignment"), self.tr("No document manager available."))
             return
         self._docman.update_active_document(
             img, metadata={"description": "Stellar aligned image"},
             step_name="Stellar Alignment"
         )
-        QMessageBox.information(self, "Stellar Alignment", "Applied to active view.")
+        QMessageBox.information(self, self.tr("Stellar Alignment"), self.tr("Applied to active view."))
         self.accept()
 
     def _proposed_title(self) -> str:
@@ -2727,14 +2991,14 @@ class StellarAlignmentDialog(QDialog):
         if img is None:
             return
         if not self._docman:
-            QMessageBox.warning(self, "Stellar Alignment", "No document manager available.")
+            QMessageBox.warning(self, self.tr("Stellar Alignment"), self.tr("No document manager available."))
             return
         meta = {"step_name": "Stellar Alignment", "description": "Stellar aligned image",
                 "is_mono": bool(self.target_was_mono)}
         newdoc = self._docman.open_array(img, metadata=meta, title=self._proposed_title())
         if hasattr(self.parent_window, "_spawn_subwindow_for"):
             self.parent_window._spawn_subwindow_for(newdoc)
-        QMessageBox.information(self, "Stellar Alignment", "Created a new view.")
+        QMessageBox.information(self, self.tr("Stellar Alignment"), self.tr("Created a new view."))
         self.accept()
 
 
@@ -3147,6 +3411,40 @@ def _ref_file_key(path):
         return None
 
 
+# ── SASPRO_SEP_SEED_V1 ───────────────────────────────────────────────────────
+# SEP's deblender draws from the C runtime's rand(), so the same frame could
+# come back with a slightly different star list depending on what the process
+# detected before it -- and which frames a worker gets differs every run. On
+# one array, 8 sep.extract calls gave 2 distinct results; reseeding before
+# each gave 1. Reseeding before every detection on the registration path
+# makes a frame's star list, and so its transform, the same on every run.
+# Quick Stack does the same (quick_stack_worker._seed_detection).
+#
+# The CRT's rand() state is per thread on Windows, so this must run on the
+# thread that calls SEP -- every caller below seeds immediately before its
+# own detection.
+_SEP_SRAND: list = []        # [] untried, [None] unavailable, [fn] srand
+
+
+def _seed_sep_rng():
+    """srand(1) in the C runtime SEP links against; silently a no-op if not found."""
+    if not _SEP_SRAND:
+        fn = None
+        try:
+            import ctypes
+            lib = ctypes.cdll.ucrtbase if _os.name == "nt" else ctypes.CDLL(None)
+            fn = lib.srand
+        except Exception:
+            fn = None
+        _SEP_SRAND.append(fn)
+    fn = _SEP_SRAND[0]
+    if fn is not None:
+        try:
+            fn(1)
+        except Exception:
+            pass
+
+
 def _ref_pts_cached(ref_crop, ref_key, box, det_sigma, minarea, max_total,
                     min_fwhm, max_ellipticity):
     """`_detect_stars_uniform(ref_crop, ...)`, memoized on the reference file.
@@ -3165,6 +3463,7 @@ def _ref_pts_cached(ref_crop, ref_key, box, det_sigma, minarea, max_total,
     import numpy as np
 
     def _detect():
+        _seed_sep_rng()      # SASPRO_SEP_SEED_V1
         return _detect_stars_uniform(ref_crop, det_sigma, minarea,
                                      grid=(4, 4), max_per_cell=25,
                                      max_total=max_total,
@@ -3235,6 +3534,7 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
     with _lock:
         try:
             # ---- NEW: uniform control points ----
+            _seed_sep_rng()      # SASPRO_SEP_SEED_V1
             src_pts = _detect_stars_uniform(source_img, det_sigma, minarea,
                                             grid=(4,4), max_per_cell=25,
                                             max_total=(limit_stars or 500),
@@ -3270,6 +3570,7 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
         except Exception:
             # ---- fallback: original image-based AA ----
             try:
+                _seed_sep_rng()      # SASPRO_SEP_SEED_V1
                 tform, _ = astroalign.find_transform(
                     np.ascontiguousarray(source_img.astype(np.float32)),
                     np.ascontiguousarray(ref_crop.astype(np.float32)),
@@ -3279,6 +3580,7 @@ def compute_affine_transform_astroalign_cropped(source_img, reference_img,
                 legacy_kwargs = {}
                 if "max_control_points" in kwargs:
                     legacy_kwargs["max_control_points"] = kwargs["max_control_points"]
+                _seed_sep_rng()      # SASPRO_SEP_SEED_V1
                 tform, _ = astroalign.find_transform(
                     np.ascontiguousarray(source_img.astype(np.float32)),
                     np.ascontiguousarray(ref_crop.astype(np.float32)),
@@ -3527,6 +3829,7 @@ def _aa_find_pairs_multitile(src_gray: np.ndarray,
 
         try:
             with _lock:
+                _seed_sep_rng()      # SASPRO_SEP_SEED_V1
                 tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src, ref_crop, **kwargs)
         except TypeError:
             # legacy AA without det_sigma/min_area
@@ -3534,6 +3837,7 @@ def _aa_find_pairs_multitile(src_gray: np.ndarray,
             if "max_control_points" in kwargs:
                 legacy["max_control_points"] = kwargs["max_control_points"]
             with _lock:
+                _seed_sep_rng()      # SASPRO_SEP_SEED_V1
                 tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(src, ref_crop, **legacy)
         except Exception as e:
             dbg(f"[AA tile {tile_idx}] fail x0={x0} y0={y0}: {e}")
@@ -3605,6 +3909,7 @@ def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
 
     with _lock:
         try:
+            _seed_sep_rng()      # SASPRO_SEP_SEED_V1
             src_pts = _detect_stars_uniform(source_img, det_sigma, minarea,
                                             grid=(4,4), max_per_cell=25,
                                             max_total=(limit_stars or 500),
@@ -3633,6 +3938,7 @@ def compute_similarity_transform_astroalign_cropped(source_img, reference_img,
             else:
                 raise RuntimeError("Too few uniform points, falling back to images.")
         except Exception:
+            _seed_sep_rng()      # SASPRO_SEP_SEED_V1
             tform, (src_pts_s, tgt_pts_s) = astroalign.find_transform(
                 np.ascontiguousarray(source_img.astype(np.float32)),
                 np.ascontiguousarray(ref_crop.astype(np.float32)),
@@ -3838,6 +4144,164 @@ def _scrub_detect_and_warp(img):
     return src, g
 
 
+# ── SASPRO_DS_PROXY_V1 ───────────────────────────────────────────────────────
+# The solve passes need only a frame's solve-grid gray image and its full
+# size, but every pass read the whole frame to get them: 187 MB for a 46.8 MP
+# mono _n.fit (3x for colour), averaged over channels, scrubbed and
+# INTER_AREA-shrunk by `ds` -- once per pass, so 2-3 full reads a frame.
+#
+# Normalization has the frame in memory when it writes the _n.fit, so it also
+# writes that solve-grid image beside it ("<frame>.sasds.npz"), computed by
+# the same function from the same big-endian array astropy writes. A solve
+# job uses it only when it was made for the job's `ds` and the frame's size
+# and mtime still match what was recorded. Anything else -- no proxy (the
+# standalone Stellar Alignment window, dither analysis, frames from
+# elsewhere), a rerun that rewrote the frame, a changed downsample -- reads
+# the frame exactly as before.
+_SOLVE_PROXY_SUFFIX = ".sasds.npz"
+_SOLVE_PROXY_VERSION = 1
+
+
+def _solve_gray_ds(arr, ds):
+    """`(gray_ds, (H, W))`: the solve-grid detection frame from raw FITS pixels.
+
+    The one definition of what a solve pass works on, applied to the frame as
+    read from disk (_solve_delta_job) and to the array normalization writes
+    (write_solve_proxy), so the two cannot drift apart.
+    """
+    import numpy as np
+    import cv2
+    # Channels-first inputs (save_image / PixInsight / Siril / a TIFF->FITS
+    # conversion) would otherwise reduce over width.
+    arr = _hwc_from_fits_data(arr)
+    gray = arr if arr.ndim == 2 else np.mean(arr, axis=2)
+    # Was an unconditional nan_to_num: 0.74 s/frame, 38.7% of the pass,
+    # repeated for every pass. Now one reduction decides it.
+    gray = _scrub_for_detect(gray)
+    H, W = int(gray.shape[0]), int(gray.shape[1])
+    ds = max(1, int(ds))
+    if ds > 1:
+        gray_ds = cv2.resize(gray, (max(1, W // ds), max(1, H // ds)),
+                             interpolation=cv2.INTER_AREA)
+    else:
+        gray_ds = gray
+    return gray_ds, (H, W)
+
+
+def _solve_proxy_path(frame_path):
+    return os.path.splitext(frame_path)[0] + _SOLVE_PROXY_SUFFIX
+
+
+def _proxy_anchor(frame_path):
+    """The file a proxy's size/mtime stamp refers to: the frame itself or, for
+    a virtual normalized frame (SASPRO_VIRTUAL_NORM_V1), its recipe."""
+    if os.path.exists(frame_path):
+        return frame_path
+    try:
+        from setiastro.saspro.normalized_recipe import recipe_path
+        rp = recipe_path(frame_path)
+        if os.path.exists(rp):
+            return rp
+    except Exception:
+        pass
+    return frame_path
+
+
+# ── SASPRO_VIRTUAL_NORM_V1 ───────────────────────────────────────────────────
+# Stacking normalization may leave a MONO frame virtual: no _n.fit, just a
+# recipe beside where it would be (normalized_recipe.py). Every read of a
+# normalized frame in here goes through _open_normalized, which reads the file
+# when it exists -- exactly as before -- and otherwise rebuilds the identical
+# big-endian pixels and header from the recipe, raising StaleRecipeError if it
+# cannot. Callers with no recipes (the Stellar Alignment window, dither
+# analysis) never reach the second branch.
+import contextlib as _contextlib
+
+
+@_contextlib.contextmanager
+def _open_normalized(path):
+    """`(data, header)` of a normalized frame, from the file or its recipe."""
+    if not os.path.exists(path):
+        from setiastro.saspro import normalized_recipe as _nr
+        if _nr.has_recipe(path):
+            data, header = _nr.regenerate(path)
+            yield data, header
+            return
+    with _open_frame_fits(path) as hdul:
+        yield hdul[0].data, hdul[0].header
+
+
+def write_solve_proxy(frame_path, data, ds) -> bool:
+    """Store beside `frame_path` the solve-grid image its solve jobs would compute.
+
+    `data` must be the array just written to `frame_path` -- the big-endian
+    one handed to astropy -- so the channel mean runs through the same dtype
+    path as a read of the file. Call it AFTER the write: the frame's size and
+    mtime are recorded, and a proxy whose frame has changed since is ignored.
+
+    Never raises. False means there is no usable proxy for the frame, and any
+    stale one from an earlier run has been removed.
+    """
+    proxy = _solve_proxy_path(frame_path)
+    tmp = proxy + ".part"
+    try:
+        ds = max(1, int(ds))
+        if ds > 1:
+            import numpy as np
+            a = np.asarray(data)
+            if not a.flags.c_contiguous:
+                a = np.ascontiguousarray(a)      # a read of the file is C-ordered
+            gray_ds, (H, W) = _solve_gray_ds(a, ds)
+            st = os.stat(_proxy_anchor(frame_path))
+            meta = np.array([_SOLVE_PROXY_VERSION, H, W, ds,
+                             int(st.st_size), int(st.st_mtime_ns)], dtype=np.int64)
+            with open(tmp, "wb") as f:
+                np.savez(f, gray_ds=np.ascontiguousarray(gray_ds, dtype=np.float32),
+                         meta=meta)
+            os.replace(tmp, proxy)
+            return True
+    except Exception:
+        pass
+    for p in (tmp, proxy):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    return False
+
+
+def _read_solve_proxy(frame_path, ds):
+    """`(gray_ds, (H, W))` from a proxy made for this frame as it is now, at `ds`; else None."""
+    proxy = _solve_proxy_path(frame_path)
+    try:
+        import numpy as np
+        if not os.path.isfile(proxy):
+            return None
+        anchor = _proxy_anchor(frame_path)
+        if anchor != frame_path:
+            # Virtual frame: the proxy is only as good as the recipe's source.
+            # A changed or missing calibrated frame raises here, the proxy is
+            # not used, and the full path's regeneration reports it loudly.
+            from setiastro.saspro import normalized_recipe as _nr
+            _nr.check_source(_nr.read_recipe(frame_path), frame_path)
+        st = os.stat(anchor)
+        with np.load(proxy, allow_pickle=False) as z:
+            meta = np.asarray(z["meta"])
+            if meta.dtype != np.int64 or meta.shape != (6,):
+                return None
+            ver, H, W, pds, size, mtime = (int(v) for v in meta)
+            if (ver != _SOLVE_PROXY_VERSION or pds != int(ds)
+                    or size != int(st.st_size) or mtime != int(st.st_mtime_ns)):
+                return None
+            g = z["gray_ds"]
+        if (g.dtype != np.float32 or g.ndim != 2
+                or g.shape != (max(1, H // pds), max(1, W // pds))):
+            return None
+        return np.ascontiguousarray(g), (H, W)
+    except Exception:
+        return None
+
+
 def _solve_delta_job(args):
     """
     Worker: compute incremental affine/similarity delta for one frame against the ref preview.
@@ -3870,19 +4334,6 @@ def _solve_delta_job(args):
         except Exception:
             pass
 
-        # 1) read → gray float32 (full)
-        with _open_frame_fits(orig_path) as hdul:
-            arr = hdul[0].data
-            if arr is None:
-                return (orig_path, None, f"Could not load {os.path.basename(orig_path)}")
-            # Channels-first inputs (save_image / PixInsight / Siril / a
-            # TIFF->FITS conversion) would otherwise reduce over width.
-            arr = _hwc_from_fits_data(arr)
-            gray = arr if arr.ndim == 2 else np.mean(arr, axis=2)
-            # Was an unconditional nan_to_num: 0.74 s/frame, 38.7% of the
-            # pass, repeated for every pass. Now one reduction decides it.
-            gray = _scrub_for_detect(gray)
-
         # NOTE: `ds` is already provided in args (matches self.solve_downsample,
         # which was also used to build ref_small_ds/Wref_ds/Href_ds). Previously
         # this was hardcoded/recomputed here, ignoring the passed-in value and
@@ -3890,18 +4341,25 @@ def _solve_delta_job(args):
         # `ds` from args is used as-is below.
         ds = max(1, int(ds))
 
-        # 2) downsample source to DS space
-        if ds > 1:
-            Wds = max(1, int(gray.shape[1] // ds))
-            Hds = max(1, int(gray.shape[0] // ds))
-            gray_ds = cv2.resize(gray, (Wds, Hds), interpolation=cv2.INTER_AREA)
+        # 1-2) gray float32 on the DS solve grid, plus the full-res size.
+        # From the solve-grid proxy normalization wrote beside the frame when
+        # there is a valid one for this ds, else from a read of the full
+        # frame -- the same array either way. See SASPRO_DS_PROXY_V1.
+        _proxy = _read_solve_proxy(orig_path, ds) if ds > 1 else None
+        if _proxy is not None:
+            gray_ds, (H_full, W_full) = _proxy
         else:
-            gray_ds = gray
+            # The file, or a virtual frame rebuilt from its recipe
+            # (SASPRO_VIRTUAL_NORM_V1) -- the same array either way.
+            with _open_normalized(orig_path) as (arr, _hdr):
+                if arr is None:
+                    return (orig_path, None, f"Could not load {os.path.basename(orig_path)}")
+                gray_ds, (H_full, W_full) = _solve_gray_ds(arr, ds)
 
         # 3) pre-warp in DS space using downscaled transform
         T_prev_full = np.asarray(current_transform_2x3, np.float64).reshape(2, 3)
         if ds > 1:
-            S_src = _S(ds, (gray.shape[1], gray.shape[0]), (gray_ds.shape[1], gray_ds.shape[0]))
+            S_src = _S(ds, (W_full, H_full), (gray_ds.shape[1], gray_ds.shape[0]))
             S_ref = _S(ds, ref_full_wh, (int(Wref_ds), int(Href_ds))) if ref_full_wh else _S(ds)
         else:
             S_src = S_ref = np.eye(3)
@@ -3988,13 +4446,19 @@ def _solve_delta_job(args):
         # V1 marked these phases and never wrote them, so three passes a
         # frame produced no rows at all and every published percentage was
         # finalize alone.
-        return (orig_path, np.asarray(T_new_full, np.float64).reshape(2, 3), None)
+        # 4th element: True when the solve grid came from the proxy (counted
+        # for the pass summary). Error returns stay 3-tuples.
+        return (orig_path, np.asarray(T_new_full, np.float64).reshape(2, 3), None,
+                _proxy is not None)
 
     except Exception as e:
         try:
             base = os.path.basename(args[0]) if args else "<unknown>"
         except Exception:
             base = "<unknown>"
+        if type(e).__name__ == "StaleRecipeError":
+            return (args[0] if args else "<unknown>", None,
+                    f"Normalized frame {base} cannot be rebuilt: {e}")
         return (args[0] if args else "<unknown>", None,
                 f"Astroalign failed for {base}: {e}")
 
@@ -4373,6 +4837,45 @@ def _gpu_antiring(img, M, out_wh, perspective, hi_flag):
         return None
 
 
+# ── SASPRO_FINALIZE_REFDS_V1 ─────────────────────────────────────────────────
+# A non-affine finalize solves on the solve grid against the reference shrunk
+# by `ds`, and that was an INTER_AREA resize of the full-res reference -- a
+# read of the whole 187 MB ref2d.npy -- for every frame, always giving the
+# same answer. Now each worker process computes it once, with the same call
+# on the same file, and hands out copies.
+#
+# Not the ref_ds.npy the solve passes memmap: that one is the same resize,
+# but done in the parent under different cv2 threading, and "provably the
+# same array" is a stronger claim than this needs to make.
+_FINALIZE_REF_DS: dict = {}
+
+
+def _finalize_ref_ds(ref_npy_path, ref2d, ds, Wref, Href):
+    """`cv2.resize(ref2d, (Wref//ds, Href//ds), INTER_AREA)`, memoized per process.
+
+    Keyed on the reference file's path + size + mtime (_ref_file_key), so a
+    later run -- or a rewritten file -- never gets a stale answer; a key of
+    None just computes. Returns a fresh copy each call, so nothing downstream
+    can reach the cached array.
+    """
+    import cv2
+
+    def _compute():
+        return cv2.resize(ref2d, (max(1, Wref // ds), max(1, Href // ds)),
+                          interpolation=cv2.INTER_AREA)
+
+    fk = _ref_file_key(ref_npy_path)
+    if fk is None:
+        return _compute()
+    key = (fk, int(ds), int(Wref), int(Href))
+    hit = _FINALIZE_REF_DS.get(key)
+    if hit is None:
+        hit = _compute()
+        _FINALIZE_REF_DS.clear()        # one reference per run; keep only it
+        _FINALIZE_REF_DS[key] = hit
+    return hit.copy()
+
+
 def _finalize_write_job(args):
     """
     Process-safe worker: read full-res, choose model, warp, save.
@@ -4432,10 +4935,11 @@ def _finalize_write_job(args):
         return np.vstack([A, [0, 0, 1]])
 
     try:
-        # 1) load source (full-res)
-        with _open_frame_fits(orig_path) as hdul:
-            img = hdul[0].data
-            hdr = hdul[0].header
+        # 1) load source (full-res): the file, or a virtual normalized frame
+        # rebuilt from its recipe (SASPRO_VIRTUAL_NORM_V1) -- same pixels,
+        # same header cards.
+        with _open_normalized(orig_path) as (img, hdr):
+            pass
         if img is None:
             return (orig_path, "", f"⚠️ Failed to read {os.path.basename(orig_path)}", False, None)
 
@@ -4499,7 +5003,9 @@ def _finalize_write_job(args):
             ds = max(1, int(solve_downsample))
 
             if ds > 1:
-                ref_ds = cv2.resize(ref2d, (max(1, Wref // ds), max(1, Href // ds)), interpolation=cv2.INTER_AREA)
+                # Same reference for every frame: shrunk once per worker
+                # process, not once per frame. See SASPRO_FINALIZE_REFDS_V1.
+                ref_ds = _finalize_ref_ds(ref_npy_path, ref2d, ds, Wref, Href)
             else:
                 ref_ds = np.ascontiguousarray(ref2d)
 
@@ -5347,6 +5853,17 @@ def _detect_stars_uniform(img32: np.ndarray,
     if _gpu_pts is not None:
         return _gpu_pts
 
+    # SEP rejects read-only buffers ("buffer source array is read-only"), and
+    # the delta pass hands this its reference as a read-only memmap. Without
+    # the copy every worker that did not hold a GPU slot raised here, and the
+    # solvers' `except` quietly fell back to whole-image astroalign. The
+    # reference is detected once per worker (_ref_pts_cached), so this is one
+    # small copy per run, not one per frame.
+    if not img32.flags.writeable:
+        img32 = img32.copy()
+    if mask is not None and not np.asarray(mask).flags.writeable:
+        mask = np.array(mask)
+
     bkg = sep.Background(img32, bw=64, bh=64, mask=mask)                    # <- mask
     thresh = float(det_sigma) * float(bkg.globalrms)
     objs = sep.extract(img32 - bkg.back(), thresh, minarea=int(minarea),
@@ -5834,7 +6351,15 @@ class StarRegistrationThread(QThread):
                     return
                 ref2d = np.mean(ref_img, axis=2) if ref_img.ndim == 3 else ref_img
             else:
-                ref_img, _, _, _ = load_image(self.reference)
+                # Stacking always writes its reference in full; a virtual one
+                # (SASPRO_VIRTUAL_NORM_V1) is read from a byte-exact temporary
+                # copy so load_image sees exactly the file it would have.
+                from setiastro.saspro import normalized_recipe as _nr
+                if _nr.is_virtual(self.reference):
+                    with _nr.materialized(self.reference) as _ref_file:
+                        ref_img, _, _, _ = load_image(_ref_file)
+                else:
+                    ref_img, _, _, _ = load_image(self.reference)
                 if ref_img is None:
                     self.registration_complete.emit(False, "Reference image failed to load!")
                     return
@@ -5915,6 +6440,10 @@ class StarRegistrationThread(QThread):
                     self.progress_update.emit("✅ Convergence reached! Stopping refinement.")
                     break
 
+            # The passes' pool has done its work; free its cores and RAM before
+            # finalize starts its own (SASPRO_SOLVE_POOL_REUSE_V1).
+            self._drop_solve_pool()
+
             # Finalize: single full-res read → warp → write per frame
             self._finalize_writes()
 
@@ -5935,6 +6464,8 @@ class StarRegistrationThread(QThread):
         except Exception as e:
             self.registration_complete.emit(False, f"Error: {e}")
         finally:
+            # Cancel, abort and error returns leave the passes' pool open.
+            self._drop_solve_pool()
             try:
                 import shutil
                 _d = getattr(self, "_refds_dir", None)
@@ -6061,7 +6592,12 @@ class StarRegistrationThread(QThread):
                 (int(self.ref_small_full.shape[1]), int(self.ref_small_full.shape[0])),  # full-res ref (W, H)
             ))
 
-        executor = _make_executor(procs)
+        # One pool for all the passes (SASPRO_SOLVE_POOL_REUSE_V1): kept only
+        # when this pass ends cleanly; a stall or a crashed worker drops it.
+        executor = self._solve_pool(procs)
+        _pool_clean = False
+        _pool_suspect = False
+        _n_from_proxy = 0
         try:
             fut_info, pending = {}, set()
             for j in jobs:
@@ -6089,6 +6625,7 @@ class StarRegistrationThread(QThread):
                             f"⏱️ Alignment stalled: nothing completed in {timeout_sec}s. "
                             f"Abandoning {len(pending)} frame(s): {', '.join(stuck)}{more}"
                         )
+                        _pool_suspect = True      # a wedged worker must not serve the next pass
                         for f in pending:
                             f.cancel()
                             k_stuck = rev_current_to_orig.get(
@@ -6106,8 +6643,15 @@ class StarRegistrationThread(QThread):
                 for fut in done:
                     returned_path = fut_info.pop(fut, "<unknown>")
                     try:
-                        curr_path_r, T_new, err = fut.result()
+                        _res = fut.result()
+                        curr_path_r, T_new, err = _res[:3]
+                        # SASPRO_DS_PROXY_V1: solved from the proxy, no full read
+                        if len(_res) > 3 and _res[3] and not err:
+                            _n_from_proxy += 1
                     except Exception as e:
+                        # _solve_delta_job returns its own errors, so a raise
+                        # here is a dead or broken worker: drop the pool.
+                        _pool_suspect = True
                         curr_path_r, T_new, err = (returned_path or "<unknown>", None, f"Worker crashed: {e}")
 
                     curr_norm = os.path.normpath(curr_path_r)
@@ -6161,10 +6705,45 @@ class StarRegistrationThread(QThread):
             self.progress_update.emit(f"Pass {pass_index + 1} delta shifts: [{preview}]")
             if aligned_count:
                 self.progress_update.emit(f"Within tolerance (≤ {self.shift_tolerance:.2f}px): {aligned_count} frame(s)")
+            if _n_from_proxy:
+                self.progress_update.emit(
+                    f"Solve grid read from normalization's proxy for {_n_from_proxy}/{len(jobs)} "
+                    f"frame(s); the rest read the full frame.")
+            _pool_clean = not _pool_suspect
             return True, "Pass complete."
         finally:
+            if not _pool_clean:
+                self._drop_solve_pool()
+
+    # SASPRO_SOLVE_POOL_REUSE_V1 ------------------------------------------------
+    # Each refinement pass used to spawn a fresh process pool and shut it down
+    # at the end, so every pass paid worker start-up again: ~3-4 s importing
+    # this module (scipy.spatial, astropy, cv2, sep) in every worker, plus
+    # ~3.5 s of torch import in each GPU-detection worker, plus -- on DirectML
+    # machines -- a 4.5 s probe subprocess per GPU worker. The passes run the
+    # same job with the same worker count, so one pool now serves them all and
+    # run() closes it before finalize (which needs its own pool: a different,
+    # RAM-capped worker count and SASPRO_FINALIZE_CV2_THREADS in its env).
+    def _solve_pool(self, procs):
+        """The refinement passes' pool: the previous pass's if it is still
+        usable and the same size, else a new one."""
+        ex = getattr(self, "_solve_executor", None)
+        if (ex is not None and getattr(self, "_solve_executor_n", None) == int(procs)
+                and not getattr(ex, "_broken", False)):
+            return ex
+        self._drop_solve_pool()
+        ex = _make_executor(procs)
+        self._solve_executor, self._solve_executor_n = ex, int(procs)
+        return ex
+
+    def _drop_solve_pool(self):
+        """Shut the refinement passes' pool down without waiting (a wedged
+        worker must not block the thread). Safe to call any number of times."""
+        ex = getattr(self, "_solve_executor", None)
+        self._solve_executor = None
+        if ex is not None:
             try:
-                executor.shutdown(wait=False, cancel_futures=True)
+                ex.shutdown(wait=False, cancel_futures=True)
             except Exception:
                 pass
 
@@ -6306,6 +6885,28 @@ class StarRegistrationThread(QThread):
         finalize_workers = int(self.align_prefs.get("finalize_workers", min(os.cpu_count() or 8, 8)))
         finalize_workers = max(2, finalize_workers)
 
+        # SASPRO_VIRTUAL_NORM_V1: a worker rebuilding a virtual normalized
+        # frame holds it in private memory (calibrated read, turned copy,
+        # big-endian result -- ~3 frames for a moment, 1 while it is scrubbed)
+        # where it used to hold a page-cache memmap, on top of ~9 frames of
+        # anti-ring warp buffers. Budget 12 mono frames per worker and use at
+        # most 60% of the RAM available now. Only when some input is virtual,
+        # so every other run keeps its worker count.
+        try:
+            from setiastro.saspro import normalized_recipe as _nr
+            _n_virtual = sum(1 for _f in self.original_files if _nr.is_virtual(_f))
+            if _n_virtual:
+                import psutil as _ps
+                _per_worker = 12 * int(Href) * int(Wref) * 4
+                _cap = max(1, int((_ps.virtual_memory().available * 0.6) // max(1, _per_worker)))
+                if _cap < finalize_workers:
+                    self.progress_update.emit(
+                        f"📝 Finalize: {finalize_workers} -> {_cap} worker(s) "
+                        f"({_n_virtual} frame(s) rebuilt from recipes; RAM-bound)")
+                    finalize_workers = _cap
+        except Exception:
+            pass
+
         # Finalize is capped on worker COUNT (each job holds a full-res frame +
         # anti-ring warp buffers). To fill the remaining cores we instead let each
         # worker's OpenCV use cores/workers threads on the compute-heavy warp — no
@@ -6313,7 +6914,7 @@ class StarRegistrationThread(QThread):
         _fin_cv2_threads = max(1, (os.cpu_count() or 8) // finalize_workers)
         os.environ["SASPRO_FINALIZE_CV2_THREADS"] = str(_fin_cv2_threads)
         self.progress_update.emit(
-            self.tr(f"📝 Finalize: {finalize_workers} workers x {_fin_cv2_threads} cv2 threads")
+            f"📝 Finalize: {finalize_workers} workers x {_fin_cv2_threads} cv2 threads"
         )
 
         jobs = []
@@ -6937,26 +7538,26 @@ class StarRegistrationWindow(QWidget):
         self._in_progress_slot = False
 
     def initUI(self):
-        self.setWindowTitle("Star Registration")
+        self.setWindowTitle(self.tr("Star Registration"))
         self.setGeometry(200, 200, 600, 450)
         main_layout = QVBoxLayout(self)
 
         # Reference selection
         ref_layout = QHBoxLayout()
-        self.ref_label = QLabel("Reference Image:")
-        self.ref_path_label = QLabel("No reference selected")
+        self.ref_label = QLabel(self.tr("Reference Image:"))
+        self.ref_path_label = QLabel(self.tr("No reference selected"))
         self.ref_path_label.setWordWrap(True)
 
-        self.select_ref_view_button = QPushButton("From View…")
-        self.select_ref_view_button.setToolTip(
+        self.select_ref_view_button = QPushButton(self.tr("From View…"))
+        self.select_ref_view_button.setToolTip(self.tr(
             "Pick any open view as the reference image. Replaced the former\n"
             "'From Active View' shortcut so you can choose a specific view "
             "without having to activate it first — matches the target-side\n"
             "'From Views…' chooser."
-        )
+        ))
         self.select_ref_view_button.clicked.connect(self.select_reference_from_view)
 
-        self.select_ref_file_button = QPushButton("From File")
+        self.select_ref_file_button = QPushButton(self.tr("From File"))
         self.select_ref_file_button.clicked.connect(self.select_reference_from_file)
 
         ref_layout.addWidget(self.ref_label)
@@ -6971,19 +7572,19 @@ class StarRegistrationWindow(QWidget):
         # downstream multiprocess workers can read them exactly like any
         # file-path target.
         file_selection_layout = QHBoxLayout()
-        self.add_files_button = QPushButton("Select Files")
+        self.add_files_button = QPushButton(self.tr("Select Files"))
         self.add_files_button.clicked.connect(self.select_files_to_align)
-        self.add_directory_button = QPushButton("Select Directory")
+        self.add_directory_button = QPushButton(self.tr("Select Directory"))
         self.add_directory_button.clicked.connect(self.select_directory_to_align)
-        self.add_views_button = QPushButton("From Views…")
-        self.add_views_button.setToolTip(
+        self.add_views_button = QPushButton(self.tr("From Views…"))
+        self.add_views_button.setToolTip(self.tr(
             "Add one or more open views as alignment targets.\n"
             "The view's current pixels are used (not whatever is on disk).\n"
             "Each selected view is spilled to a temp FITS at run time and "
             "aligned like any other target. The aligned result is routed "
             "back into SASpro (overwrite the source view OR open as a new "
             "view, see 'View output' below) — nothing is left behind on disk."
-        )
+        ))
         self.add_views_button.clicked.connect(self.select_views_to_align)
         file_selection_layout.addWidget(self.add_files_button)
         file_selection_layout.addWidget(self.add_directory_button)
@@ -6994,7 +7595,7 @@ class StarRegistrationWindow(QWidget):
         # can tell at a glance which entries are open-doc targets.
         self.tree_widget = QTreeWidget()
         self.tree_widget.setColumnCount(2)
-        self.tree_widget.setHeaderLabels(["Targets to Align", "Source"])
+        self.tree_widget.setHeaderLabels([self.tr("Targets to Align"), self.tr("Source")])
         self.tree_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         try:
             self.tree_widget.setColumnWidth(1, 60)
@@ -7002,9 +7603,9 @@ class StarRegistrationWindow(QWidget):
             pass
 
         tree_buttons_layout = QHBoxLayout()
-        self.remove_selected_button = QPushButton("Remove Selected")
+        self.remove_selected_button = QPushButton(self.tr("Remove Selected"))
         self.remove_selected_button.clicked.connect(self.remove_selected_files)
-        self.clear_tree_button = QPushButton("Clear All")
+        self.clear_tree_button = QPushButton(self.tr("Clear All"))
         self.clear_tree_button.clicked.connect(self.clear_tree)
         tree_buttons_layout.addWidget(self.remove_selected_button)
         tree_buttons_layout.addWidget(self.clear_tree_button)
@@ -7014,10 +7615,10 @@ class StarRegistrationWindow(QWidget):
         # optional — a per-run scratch dir takes its place and nothing is
         # written to a user folder.
         output_layout = QHBoxLayout()
-        self.output_label = QLabel("Output Directory:")
-        self.output_path_label = QLabel("No directory selected")
+        self.output_label = QLabel(self.tr("Output Directory:"))
+        self.output_path_label = QLabel(self.tr("No directory selected"))
         self.output_path_label.setWordWrap(True)
-        self.select_output_button = QPushButton("Select Output Folder")
+        self.select_output_button = QPushButton(self.tr("Select Output Folder"))
         self.select_output_button.clicked.connect(self.select_output_directory)
         output_layout.addWidget(self.output_label)
         output_layout.addWidget(self.output_path_label)
@@ -7035,7 +7636,7 @@ class StarRegistrationWindow(QWidget):
         # local.
         _prefs = _align_prefs(QSettings())
 
-        self.advanced_group = QGroupBox("Advanced — Alignment Settings")
+        self.advanced_group = QGroupBox(self.tr("Advanced — Alignment Settings"))
         self.advanced_group.setCheckable(True)
         self.advanced_group.setChecked(False)   # collapsed by default
         _adv = QFormLayout(self.advanced_group)
@@ -7053,15 +7654,15 @@ class StarRegistrationWindow(QWidget):
         # completion message.
         self.cmb_adv_method = QComboBox()
         self.cmb_adv_method.addItems([
-            "Stellar (astroalign)",
-            "WCS (plate-solve reproject)",
-            "WCS → Stellar refine",
+            self.tr("Stellar (astroalign)"),
+            self.tr("WCS (plate-solve reproject)"),
+            self.tr("WCS → Stellar refine"),
         ])
         _saved_method = str(QSettings().value("stacking/align/method", "stellar")).lower()
         self.cmb_adv_method.setCurrentIndex(
             {"stellar": 0, "wcs": 1, "wcs_stellar": 2}.get(_saved_method, 0)
         )
-        self.cmb_adv_method.setToolTip(
+        self.cmb_adv_method.setToolTip(self.tr(
             "How frames get aligned to the reference:\n"
             "  • Stellar: fast, uses detected stars (astroalign). No WCS needed.\n"
             "  • WCS: reprojects each frame via its own plate solve (SIP\n"
@@ -7070,114 +7671,114 @@ class StarRegistrationWindow(QWidget):
             "  • WCS → Stellar: WCS first for the coarse alignment, then one\n"
             "    astroalign correction pass on top. Best accuracy when WCS\n"
             "    is available but imperfect."
-        )
-        _adv.addRow("Method:", self.cmb_adv_method)
+        ))
+        _adv.addRow(self.tr("Method:"), self.cmb_adv_method)
 
         # Transform model — same wording and index order as Stellar
         # Alignment so a user who learned the names there isn't surprised.
         self.cmb_adv_model = QComboBox()
         self.cmb_adv_model.addItems([
-            "Affine (fast)",
-            "Homography (projective)",
-            "Polynomial (order 3)",
-            "Polynomial (order 4)",
+            self.tr("Affine (fast)"),
+            self.tr("Homography (projective)"),
+            self.tr("Polynomial (order 3)"),
+            self.tr("Polynomial (order 4)"),
         ])
         _MODEL_TO_IDX = {"affine": 0, "homography": 1, "poly3": 2, "poly4": 3}
         self.cmb_adv_model.setCurrentIndex(_MODEL_TO_IDX.get(_prefs["model"], 0))
-        self.cmb_adv_model.setToolTip(
+        self.cmb_adv_model.setToolTip(self.tr(
             "Transform model used for final warp.\n"
             " • Affine: fast; good for well-matched optics.\n"
             " • Homography: handles perspective shear (e.g. meridian flips)\n"
             " • Polynomial 3/4: fits radial / mild field distortion."
-        )
-        _adv.addRow("Model:", self.cmb_adv_model)
+        ))
+        _adv.addRow(self.tr("Model:"), self.cmb_adv_model)
 
         self.sp_adv_downsample = QSpinBox()
         self.sp_adv_downsample.setRange(1, 8)
         self.sp_adv_downsample.setValue(int(_prefs["downsample"]))
-        self.sp_adv_downsample.setToolTip(
+        self.sp_adv_downsample.setToolTip(self.tr(
             "Downsample factor used ONLY for the solve step. Lower = finer\n"
             "grid, slower; higher = faster but less precise."
-        )
-        _adv.addRow("Solve downsample:", self.sp_adv_downsample)
+        ))
+        _adv.addRow(self.tr("Solve downsample:"), self.sp_adv_downsample)
 
         self.sp_adv_detsigma = QDoubleSpinBox()
         self.sp_adv_detsigma.setRange(1.0, 200.0)
         self.sp_adv_detsigma.setDecimals(1)
         self.sp_adv_detsigma.setSingleStep(1.0)
         self.sp_adv_detsigma.setValue(float(_prefs["det_sigma"]))
-        self.sp_adv_detsigma.setToolTip(
+        self.sp_adv_detsigma.setToolTip(self.tr(
             "Star detection threshold (σ above background). Lower = more\n"
             "stars (may include noise). Higher = only bright stars."
-        )
-        _adv.addRow("Detection threshold (σ):", self.sp_adv_detsigma)
+        ))
+        _adv.addRow(self.tr("Detection threshold (σ):"), self.sp_adv_detsigma)
 
         self.sp_adv_limitstars = QSpinBox()
         self.sp_adv_limitstars.setRange(50, 5000)
         self.sp_adv_limitstars.setSingleStep(50)
         self.sp_adv_limitstars.setValue(int(_prefs["limit_stars"]))
-        self.sp_adv_limitstars.setToolTip(
+        self.sp_adv_limitstars.setToolTip(self.tr(
             "Hard cap on stars used for matching per frame. 500 is enough\n"
             "for most fields; crowded fields may benefit from more."
-        )
-        _adv.addRow("Max stars (limit):", self.sp_adv_limitstars)
+        ))
+        _adv.addRow(self.tr("Max stars (limit):"), self.sp_adv_limitstars)
 
         self.sp_adv_minarea = QSpinBox()
         self.sp_adv_minarea.setRange(1, 100)
         self.sp_adv_minarea.setValue(int(_prefs["minarea"]))
-        self.sp_adv_minarea.setToolTip(
+        self.sp_adv_minarea.setToolTip(self.tr(
             "Minimum connected-pixel area for a star detection. Smaller\n"
             "numbers include faint/undersampled stars; larger numbers\n"
             "reject noise and hot pixels."
-        )
-        _adv.addRow("Min area (px):", self.sp_adv_minarea)
+        ))
+        _adv.addRow(self.tr("Min area (px):"), self.sp_adv_minarea)
 
         self.sp_adv_minfwhm = QDoubleSpinBox()
         self.sp_adv_minfwhm.setRange(0.1, 10.0)
         self.sp_adv_minfwhm.setDecimals(2)
         self.sp_adv_minfwhm.setSingleStep(0.1)
         self.sp_adv_minfwhm.setValue(float(_prefs["min_fwhm"]))
-        self.sp_adv_minfwhm.setToolTip(
+        self.sp_adv_minfwhm.setToolTip(self.tr(
             "Reject detections narrower than this FWHM — filters out\n"
             "hot pixels and cosmic ray hits that imitate point sources."
-        )
-        _adv.addRow("Min FWHM (px):", self.sp_adv_minfwhm)
+        ))
+        _adv.addRow(self.tr("Min FWHM (px):"), self.sp_adv_minfwhm)
 
         self.sp_adv_maxellip = QDoubleSpinBox()
         self.sp_adv_maxellip.setRange(0.0, 1.0)
         self.sp_adv_maxellip.setDecimals(2)
         self.sp_adv_maxellip.setSingleStep(0.05)
         self.sp_adv_maxellip.setValue(float(_prefs["max_ellipticity"]))
-        self.sp_adv_maxellip.setToolTip(
+        self.sp_adv_maxellip.setToolTip(self.tr(
             "Reject detections more elliptical than this (1 - b/a).\n"
             "Lower = strict (rejects slightly trailed stars); 0.6 is a\n"
             "forgiving default that keeps most real stars."
-        )
-        _adv.addRow("Max ellipticity:", self.sp_adv_maxellip)
+        ))
+        _adv.addRow(self.tr("Max ellipticity:"), self.sp_adv_maxellip)
 
         self.sp_adv_hreproj = QDoubleSpinBox()
         self.sp_adv_hreproj.setRange(0.1, 10.0)
         self.sp_adv_hreproj.setDecimals(2)
         self.sp_adv_hreproj.setSingleStep(0.1)
         self.sp_adv_hreproj.setValue(float(_prefs["h_reproj"]))
-        self.sp_adv_hreproj.setToolTip(
+        self.sp_adv_hreproj.setToolTip(self.tr(
             "RANSAC inlier threshold (px) used ONLY when Model = Homography."
-        )
-        _adv.addRow("Homog. RANSAC reproj (px):", self.sp_adv_hreproj)
+        ))
+        _adv.addRow(self.tr("Homog. RANSAC reproj (px):"), self.sp_adv_hreproj)
 
         self.sp_adv_timeout = QSpinBox()
         self.sp_adv_timeout.setRange(30, 3600)
         self.sp_adv_timeout.setSingleStep(30)
         self.sp_adv_timeout.setValue(int(_prefs["timeout_per_job_sec"]))
         self.sp_adv_timeout.setSuffix(" s")
-        self.sp_adv_timeout.setToolTip(
+        self.sp_adv_timeout.setToolTip(self.tr(
             "Stall watchdog. If no frame finishes within this time, the\n"
             "remaining frames are abandoned and marked as alignment\n"
             "failures so the run can finish. This is not a per-frame limit:\n"
             "a slow frame is fine as long as others keep completing. Raise\n"
             "for very large frames (6000+ px wide) or crowded fields."
-        )
-        _adv.addRow("Per-frame timeout:", self.sp_adv_timeout)
+        ))
+        _adv.addRow(self.tr("Per-frame timeout:"), self.sp_adv_timeout)
 
         # Warp interpolation kernel — the final full-res resample pass.
         # Shared QSettings key `stacking/align/kernel` is read/written by
@@ -7186,15 +7787,15 @@ class StarRegistrationWindow(QWidget):
         # the resolution order (QSettings → env var → "lanczos").
         self.cmb_adv_kernel = QComboBox()
         self.cmb_adv_kernel.addItems([
-            "Lanczos4 (sharpest; rings on bright stars)",
-            "Bicubic / Mitchell (less ringy; recommended)",
-            "Bilinear (softest; no ringing)",
+            self.tr("Lanczos4 (sharpest; rings on bright stars)"),
+            self.tr("Bicubic / Mitchell (less ringy; recommended)"),
+            self.tr("Bilinear (softest; no ringing)"),
         ])
         _KERNEL_TO_IDX = {"lanczos": 0, "cubic": 1, "linear": 2}
         self.cmb_adv_kernel.setCurrentIndex(
             _KERNEL_TO_IDX.get(str(_prefs.get("kernel", "lanczos")).lower(), 0)
         )
-        self.cmb_adv_kernel.setToolTip(
+        self.cmb_adv_kernel.setToolTip(self.tr(
             "Resampling kernel used for the final full-resolution warp.\n"
             " • Lanczos4: sharpest; its negative lobes cause dark halos\n"
             "   around bright narrowband stars (what the anti-ring guard\n"
@@ -7205,8 +7806,8 @@ class StarRegistrationWindow(QWidget):
             "   guard (OSC narrowband data in particular).\n"
             " • Bilinear: no sharpening and no ringing at all; the softest\n"
             "   result. Keep for ring-sensitive diagnostics only."
-        )
-        _adv.addRow("Warp interpolation:", self.cmb_adv_kernel)
+        ))
+        _adv.addRow(self.tr("Warp interpolation:"), self.cmb_adv_kernel)
 
         # Alignment workers — shared with the Stacking Suite settings page via
         # `stacking/align/workers`, the same way the kernel dropdown above is
@@ -7230,7 +7831,7 @@ class StarRegistrationWindow(QWidget):
             _w_row, self.sp_adv_workers = _mk_workers_row(
                 self, frame_shape_provider=_reg_frame_shape)
             if _w_row is not None:
-                _adv.addRow("Alignment workers:", _w_row)
+                _adv.addRow(self.tr("Alignment workers:"), _w_row)
         except Exception:
             self.sp_adv_workers = None
 
@@ -7242,14 +7843,14 @@ class StarRegistrationWindow(QWidget):
         # thousands), the colour-coded label makes it obvious — same taxonomy
         # of warnings Stellar Alignment uses so the UX is consistent.
         _trial_row = QHBoxLayout()
-        self.btn_trial_detect = QPushButton("🔍 Trial Detect")
+        self.btn_trial_detect = QPushButton(self.tr("🔍 Trial Detect"))
         self.btn_trial_detect.setFixedHeight(26)
-        self.btn_trial_detect.setToolTip(
+        self.btn_trial_detect.setToolTip(self.tr(
             "Run star detection on both the reference and the FIRST target "
             "with the current Detection σ, and report how many stars were "
             "found in each. A quick way to sanity-check σ before starting "
             "a long batch run."
-        )
+        ))
         self.btn_trial_detect.clicked.connect(self._run_trial_detect)
         self._lbl_trial_result = QLabel("")
         self._lbl_trial_result.setStyleSheet("color:#888;font-size:10px;")
@@ -7260,21 +7861,21 @@ class StarRegistrationWindow(QWidget):
 
         # Reset-to-defaults + stacking-suite share note
         _adv_btn_row = QHBoxLayout()
-        self.btn_adv_reset = QPushButton("Reset to Stacking Suite Defaults")
-        self.btn_adv_reset.setToolTip(
+        self.btn_adv_reset = QPushButton(self.tr("Reset to Stacking Suite Defaults"))
+        self.btn_adv_reset.setToolTip(self.tr(
             "Re-read the Stacking Suite's current alignment settings and\n"
             "load them into these fields. Does NOT save — Start Registration\n"
             "is what persists any further edits back to Stacking Suite."
-        )
+        ))
         self.btn_adv_reset.clicked.connect(self._adv_reload_defaults)
         _adv_btn_row.addWidget(self.btn_adv_reset)
         _adv_btn_row.addStretch(1)
         _adv.addRow("", _adv_btn_row)
 
-        _adv_note = QLabel(
+        _adv_note = QLabel(self.tr(
             "ℹ  These settings are shared with Stacking Suite and the Stellar "
             "Alignment dialog. Starting Registration also saves changes back."
-        )
+        ))
         _adv_note.setStyleSheet("color:#888;font-size:10px;font-style:italic;")
         _adv_note.setWordWrap(True)
         _adv.addRow("", _adv_note)
@@ -7363,21 +7964,21 @@ class StarRegistrationWindow(QWidget):
         # as a fresh document (keeps the original intact for comparison). The
         # group is shown or hidden by _refresh_view_output_group as the user
         # adds/removes view targets, so it never appears for pure file runs.
-        self.view_output_group = QGroupBox("View output (how aligned views are returned to SASpro)")
+        self.view_output_group = QGroupBox(self.tr("View output (how aligned views are returned to SASpro)"))
         _vo_lay = QHBoxLayout(self.view_output_group)
-        self.radio_view_overwrite = QRadioButton("Overwrite source view")
-        self.radio_view_newdoc    = QRadioButton("Open as new view")
+        self.radio_view_overwrite = QRadioButton(self.tr("Overwrite source view"))
+        self.radio_view_newdoc    = QRadioButton(self.tr("Open as new view"))
         self.radio_view_overwrite.setChecked(True)
-        self.radio_view_overwrite.setToolTip(
+        self.radio_view_overwrite.setToolTip(self.tr(
             "Replace the source view's pixels with the aligned result.\n"
             "Fast and in-place — the original view is modified. Use when\n"
             "you don't need the pre-aligned pixels any more."
-        )
-        self.radio_view_newdoc.setToolTip(
+        ))
+        self.radio_view_newdoc.setToolTip(self.tr(
             "Open the aligned result as a new view, leaving the original\n"
             "untouched. Use when you want to compare before/after or keep\n"
             "the pre-aligned version around."
-        )
+        ))
         _vo_lay.addWidget(self.radio_view_overwrite)
         _vo_lay.addWidget(self.radio_view_newdoc)
         _vo_lay.addStretch(1)
@@ -7385,10 +7986,10 @@ class StarRegistrationWindow(QWidget):
         self.view_output_group.setVisible(False)
 
         #sasprogress + start
-        self.progress_label = QLabel("Status: Waiting…")
+        self.progress_label = QLabel(self.tr("Status: Waiting…"))
         self.progress_label.setStyleSheet("color: blue; font-weight: bold;")
 
-        self.start_button = QPushButton("Start Registration")
+        self.start_button = QPushButton(self.tr("Start Registration"))
         self.start_button.setStyleSheet("font-weight: bold; font-size: 14px;")
         self.start_button.clicked.connect(self.start_registration)
 
@@ -7420,7 +8021,7 @@ class StarRegistrationWindow(QWidget):
             return
         self._in_progress_slot = True
         try:
-            self.progress_label.setText(f"Status: {self._pending_prog}")
+            self.progress_label.setText(self.tr("Status: {0}").format(self._pending_prog))
         finally:
             self._in_progress_slot = False
             self._pending_prog = None
@@ -7443,17 +8044,17 @@ class StarRegistrationWindow(QWidget):
         docs = [(t, d) for (t, d) in docs if _doc_image(d) is not None]
         if not docs:
             QMessageBox.information(
-                self, "No Views",
-                "No open views have image data available to use as a reference.\n\n"
-                "Open one or more images first, then try again."
+                self, self.tr("No Views"),
+                self.tr("No open views have image data available to use as a reference.\n\n"
+                        "Open one or more images first, then try again.")
             )
             return
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("Pick Reference View")
+        dlg.setWindowTitle(self.tr("Pick Reference View"))
         dlg.setMinimumWidth(360)
         lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel("Select the reference view (every target is aligned to this one):"))
+        lay.addWidget(QLabel(self.tr("Select the reference view (every target is aligned to this one):")))
         lst = QListWidget(dlg)
         lst.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         # Pre-select the currently-active view when possible so a quick OK
@@ -7461,7 +8062,7 @@ class StarRegistrationWindow(QWidget):
         active = _active_doc_from_parent(self.parent_window)
         pre_row = 0
         for i, (title, doc) in enumerate(docs):
-            item = QListWidgetItem(title + ("  (active)" if doc is active else ""))
+            item = QListWidgetItem(title + (self.tr("  (active)") if doc is active else ""))
             item.setData(Qt.ItemDataRole.UserRole, doc)
             lst.addItem(item)
             if doc is active:
@@ -7492,11 +8093,11 @@ class StarRegistrationWindow(QWidget):
         title = _fmt_doc_title(doc)
         self.reference_image_path = "__VIEW__"
         self._reference_doc = doc
-        self.ref_path_label.setText(f"View: {title}")
+        self.ref_path_label.setText(self.tr("View: {0}").format(title))
 
     def select_reference_from_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Reference Image", "",
+            self, self.tr("Select Reference Image"), "",
             "Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.xisf);;All Files (*)"
         )
         if file_path:
@@ -7514,7 +8115,7 @@ class StarRegistrationWindow(QWidget):
             if isinstance(existing, str) and existing == file_path:
                 return False
         self.files_to_align.append(file_path)
-        item = QTreeWidgetItem([os.path.basename(file_path), "File"])
+        item = QTreeWidgetItem([os.path.basename(file_path), self.tr("File")])
         item.setToolTip(0, file_path)
         self.tree_widget.addTopLevelItem(item)
         self._refresh_view_output_group()
@@ -7655,17 +8256,17 @@ class StarRegistrationWindow(QWidget):
         if rp == "__VIEW__" and self._reference_doc is not None:
             img = _doc_image(self._reference_doc)
             title = _fmt_doc_title(self._reference_doc)
-            return img, f"Reference view ({title})"
+            return img, self.tr("Reference view ({0})").format(title)
         if rp == "__ACTIVE_VIEW__":
             img, _, _ = _get_image_from_active_view(self.parent_window)
-            return img, "Reference (active view)"
+            return img, self.tr("Reference (active view)")
         if isinstance(rp, str) and rp:
             try:
                 img, _, _, _ = load_image(rp)
-                return img, f"Reference ({os.path.basename(rp)})"
+                return img, self.tr("Reference ({0})").format(os.path.basename(rp))
             except Exception:
-                return None, "Reference"
-        return None, "Reference"
+                return None, self.tr("Reference")
+        return None, self.tr("Reference")
 
     def _load_trial_image_from_first_target(self) -> tuple[np.ndarray | None, str]:
         """
@@ -7675,23 +8276,23 @@ class StarRegistrationWindow(QWidget):
         load_image, same as the thread would.
         """
         if not self.files_to_align:
-            return None, "First target"
+            return None, self.tr("First target")
 
         first = self.files_to_align[0]
         if isinstance(first, dict) and first.get("kind") == "view":
             doc = first.get("doc")
             img = _doc_image(doc)
             title = first.get("title") or "view"
-            return img, f"First target ({title})"
+            return img, self.tr("First target ({0})").format(title)
 
         if isinstance(first, str):
             try:
                 img, _, _, _ = load_image(first)
-                return img, f"First target ({os.path.basename(first)})"
+                return img, self.tr("First target ({0})").format(os.path.basename(first))
             except Exception:
-                return None, f"First target ({os.path.basename(first)})"
+                return None, self.tr("First target ({0})").format(os.path.basename(first))
 
-        return None, "First target"
+        return None, self.tr("First target")
 
     def _run_trial_detect(self):
         """
@@ -7706,31 +8307,31 @@ class StarRegistrationWindow(QWidget):
         """
         if self._current_method() == "wcs":
             self._lbl_trial_result.setStyleSheet("color:#888;font-size:10px;")
-            self._lbl_trial_result.setText(
+            self._lbl_trial_result.setText(self.tr(
                 "Trial detect doesn't apply to pure WCS alignment "
                 "(no stars are detected — reprojection uses the plate solve)."
-            )
+            ))
             return
 
         import sep
         thresh = float(self.sp_adv_detsigma.value())
 
         self.btn_trial_detect.setEnabled(False)
-        self._lbl_trial_result.setText("Detecting…")
+        self._lbl_trial_result.setText(self.tr("Detecting…"))
         QApplication.processEvents()
 
         try:
             ref_img, ref_label = self._load_trial_image_from_reference()
             tgt_img, tgt_label = self._load_trial_image_from_first_target()
         except Exception as e:
-            self._lbl_trial_result.setText(f"⚠ Could not load images: {e}")
+            self._lbl_trial_result.setText(self.tr("⚠ Could not load images: {0}").format(e))
             self.btn_trial_detect.setEnabled(True)
             return
 
         if ref_img is None and tgt_img is None:
-            self._lbl_trial_result.setText(
+            self._lbl_trial_result.setText(self.tr(
                 "⚠ Select a reference and at least one target first."
-            )
+            ))
             self.btn_trial_detect.setEnabled(True)
             return
 
@@ -7749,7 +8350,7 @@ class StarRegistrationWindow(QWidget):
             except Exception as e:
                 err = str(e)
                 if "pixel buffer full" in err or "pixstack" in err.lower():
-                    return None, f"too many pixels at σ={thresh:.1f} — raise threshold"
+                    return None, self.tr("too many pixels at σ={0:.1f} — raise threshold").format(thresh)
                 return None, err
 
         def _fmt(label, n, err):
@@ -7758,12 +8359,12 @@ class StarRegistrationWindow(QWidget):
             if n is None:
                 return f"{label}: —"
             if n == 0:
-                return f"⚠ {label}: 0 stars — lower threshold"
+                return self.tr("⚠ {0}: 0 stars — lower threshold").format(label)
             if n > 50000:
-                return f"⚠ {label}: {n:,} (very high — raise threshold)"
+                return self.tr("⚠ {0}: {1:,} (very high — raise threshold)").format(label, n)
             if n > 10000:
-                return f"⚠ {label}: {n:,} (high — consider raising threshold)"
-            return f"✓ {label}: {n:,} stars"
+                return self.tr("⚠ {0}: {1:,} (high — consider raising threshold)").format(label, n)
+            return self.tr("✓ {0}: {1:,} stars").format(label, n)
 
         ref_n, ref_err = _count_stars(ref_img)
         tgt_n, tgt_err = _count_stars(tgt_img)
@@ -7774,7 +8375,7 @@ class StarRegistrationWindow(QWidget):
         if tgt_img is not None:
             parts.append(_fmt(tgt_label, tgt_n, tgt_err))
 
-        msg = "  |  ".join(parts) if parts else "(no images to test)"
+        msg = "  |  ".join(parts) if parts else self.tr("(no images to test)")
         has_warning = "⚠" in msg
         self._lbl_trial_result.setStyleSheet(
             f"color:{'#ffc107' if has_warning else '#4caf50'};font-size:10px;"
@@ -7784,7 +8385,7 @@ class StarRegistrationWindow(QWidget):
 
     def select_files_to_align(self):
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Select Files to Align", "",
+            self, self.tr("Select Files to Align"), "",
             "Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.xisf);;All Files (*)"
         )
         if files:
@@ -7792,7 +8393,7 @@ class StarRegistrationWindow(QWidget):
                 self._add_file_entry(file)
 
     def select_directory_to_align(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select Directory", "")
+        directory = QFileDialog.getExistingDirectory(self, self.tr("Select Directory"), "")
         if directory:
             exts = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.fits', '.fit', '.xisf')
             new_files = [os.path.join(directory, f) for f in os.listdir(directory) if f.lower().endswith(exts)]
@@ -7819,9 +8420,9 @@ class StarRegistrationWindow(QWidget):
         docs = [(t, d) for (t, d) in docs if _doc_image(d) is not None]
         if not docs:
             QMessageBox.information(
-                self, "No Views",
-                "No open views have image data available to align.\n\n"
-                "Open one or more images first, then use 'From Views…' again."
+                self, self.tr("No Views"),
+                self.tr("No open views have image data available to align.\n\n"
+                        "Open one or more images first, then use 'From Views…' again.")
             )
             return
 
@@ -7834,14 +8435,14 @@ class StarRegistrationWindow(QWidget):
         # Build the chooser dialog. QListWidget with multi-select is enough
         # here; a tree would be overkill for a flat list of docs.
         dlg = QDialog(self)
-        dlg.setWindowTitle("Add Views as Alignment Targets")
+        dlg.setWindowTitle(self.tr("Add Views as Alignment Targets"))
         dlg.setMinimumWidth(360)
         lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel("Select one or more open views to add as targets:"))
+        lay.addWidget(QLabel(self.tr("Select one or more open views to add as targets:")))
         lst = QListWidget(dlg)
         lst.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         for title, doc in docs:
-            item = QListWidgetItem(title + (" (already added)" if id(doc) in already else ""))
+            item = QListWidgetItem(title + (self.tr(" (already added)") if id(doc) in already else ""))
             # Stash the doc on the item so we don't have to re-match by title.
             item.setData(Qt.ItemDataRole.UserRole, doc)
             if id(doc) in already:
@@ -7872,9 +8473,9 @@ class StarRegistrationWindow(QWidget):
             })
             # Row label shows the view name, column 1 is a "View" badge so
             # mixed lists (files + views) stay unambiguous at a glance.
-            tree_item = QTreeWidgetItem([title, "View"])
-            tree_item.setToolTip(0, f"Open view: {title} "
-                                    f"(pixels taken from the live doc at run time)")
+            tree_item = QTreeWidgetItem([title, self.tr("View")])
+            tree_item.setToolTip(0, self.tr("Open view: {0} "
+                                            "(pixels taken from the live doc at run time)").format(title))
             self.tree_widget.addTopLevelItem(tree_item)
         self._refresh_view_output_group()
 
@@ -7923,7 +8524,7 @@ class StarRegistrationWindow(QWidget):
         self._refresh_view_output_group()
 
     def select_output_directory(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select Output Directory", "")
+        directory = QFileDialog.getExistingDirectory(self, self.tr("Select Output Directory"), "")
         if directory:
             self.output_directory = directory
             self.output_path_label.setText(directory)
@@ -7931,10 +8532,10 @@ class StarRegistrationWindow(QWidget):
     # Start/finish
     def start_registration(self):
         if not self.reference_image_path:
-            QMessageBox.warning(self, "Missing Reference", "Please select a reference image (file or active view).")
+            QMessageBox.warning(self, self.tr("Missing Reference"), self.tr("Please select a reference image (file or active view)."))
             return
         if not self.files_to_align:
-            QMessageBox.warning(self, "No Targets", "Please add files or views to align before starting.")
+            QMessageBox.warning(self, self.tr("No Targets"), self.tr("Please add files or views to align before starting."))
             return
 
         # Output directory is only REQUIRED when there are file targets —
@@ -7942,8 +8543,8 @@ class StarRegistrationWindow(QWidget):
         # run routes everything back into SASpro documents, so the user
         # shouldn't have to pick a folder just to see nothing land in it.
         if self._has_file_targets() and not self.output_directory:
-            QMessageBox.warning(self, "No Output Directory",
-                                "Please select an output directory for the file targets.")
+            QMessageBox.warning(self, self.tr("No Output Directory"),
+                                self.tr("Please select an output directory for the file targets."))
             return
 
         # Resolve mixed file + view targets into a flat list of file paths
@@ -7954,16 +8555,16 @@ class StarRegistrationWindow(QWidget):
             resolved_paths = self._spill_views_and_resolve_paths()
         except Exception as e:
             QMessageBox.critical(
-                self, "View Spill Failed",
-                f"Could not prepare open views for registration:\n{e}"
+                self, self.tr("View Spill Failed"),
+                self.tr("Could not prepare open views for registration:\n{0}").format(e)
             )
             self._cleanup_view_spill()
             return
 
         if not resolved_paths:
             QMessageBox.warning(
-                self, "No Targets",
-                "After resolving views, no targets remained to align."
+                self, self.tr("No Targets"),
+                self.tr("After resolving views, no targets remained to align.")
             )
             self._cleanup_view_spill()
             return
@@ -7977,9 +8578,9 @@ class StarRegistrationWindow(QWidget):
         if effective_reference == "__VIEW__":
             if self._reference_doc is None:
                 QMessageBox.warning(
-                    self, "Missing Reference",
-                    "Please pick a reference view again — the previous "
-                    "selection is no longer available."
+                    self, self.tr("Missing Reference"),
+                    self.tr("Please pick a reference view again — the previous "
+                            "selection is no longer available.")
                 )
                 self._cleanup_view_spill()
                 return
@@ -7987,8 +8588,8 @@ class StarRegistrationWindow(QWidget):
                 effective_reference = self._spill_reference_view()
             except Exception as e:
                 QMessageBox.critical(
-                    self, "Reference Spill Failed",
-                    f"Could not prepare the reference view for registration:\n{e}"
+                    self, self.tr("Reference Spill Failed"),
+                    self.tr("Could not prepare the reference view for registration:\n{0}").format(e)
                 )
                 self._cleanup_view_spill()
                 return
@@ -8015,9 +8616,9 @@ class StarRegistrationWindow(QWidget):
             self._save_align_prefs(active_prefs)
         except Exception as e:
             # Non-fatal — the run still has active_prefs in hand.
-            self._enqueue_progress(f"Note: couldn't persist alignment settings: {e}")
+            self._enqueue_progress(self.tr("Note: couldn't persist alignment settings: {0}").format(e))
 
-        self.progress_label.setText("Status: Running…")
+        self.progress_label.setText(self.tr("Status: Running…"))
         self.progress_label.setStyleSheet("color: green; font-weight: bold;")
 
         # Dispatch to the right thread for the chosen Method. Both threads
@@ -8049,7 +8650,7 @@ class StarRegistrationWindow(QWidget):
         self.thread.start()
 
     def update_progress(self, message):
-        self.progress_label.setText(f"Status: {message}")
+        self.progress_label.setText(self.tr("Status: {0}").format(message))
 
     def registration_finished(self, success, message):
         # On success, route any view-sourced aligned outputs back into
@@ -8063,11 +8664,11 @@ class StarRegistrationWindow(QWidget):
             except Exception as e:
                 # Don't swallow — tell the user something went wrong,
                 # but still clean up spills so disk isn't leaked.
-                view_report = (
-                    f"\n\nAligned view routing FAILED: {e}\n"
-                    f"The aligned files remain in the output directory "
-                    f"you can import them manually."
-                )
+                view_report = self.tr(
+                    "\n\nAligned view routing FAILED: {0}\n"
+                    "The aligned files remain in the output directory; "
+                    "you can import them manually."
+                ).format(e)
 
         # Same for non-FITS file targets: convert each aligned FITS back to
         # the format the user picked before the scratch dir goes away.
@@ -8076,11 +8677,11 @@ class StarRegistrationWindow(QWidget):
             try:
                 file_report = self._route_file_outputs_to_source_format()
             except Exception as e:
-                file_report = (
-                    f"\n\nWriting aligned results back in their source format "
-                    f"FAILED: {e}\nThe aligned FITS remain in the output "
-                    f"directory."
-                )
+                file_report = self.tr(
+                    "\n\nWriting aligned results back in their source format "
+                    "FAILED: {0}\nThe aligned FITS remain in the output "
+                    "directory."
+                ).format(e)
 
         # Clean up spill scratch + output-dir-is-scratch. If output_directory
         # was the scratch dir (view-only run) the aligned files live there
@@ -8090,12 +8691,12 @@ class StarRegistrationWindow(QWidget):
 
         full_msg = message + view_report + file_report
         color = "green" if success else "red"
-        self.progress_label.setText(f"Status: {message}")
+        self.progress_label.setText(self.tr("Status: {0}").format(message))
         self.progress_label.setStyleSheet(f"color: {color}; font-weight: bold;")
         if success:
-            QMessageBox.information(self, "Registration Complete", full_msg)
+            QMessageBox.information(self, self.tr("Registration Complete"), full_msg)
         else:
-            QMessageBox.warning(self, "Registration Error", full_msg)
+            QMessageBox.warning(self, self.tr("Registration Error"), full_msg)
 
     # ------------------------------------------------------------------
     # View-target spill helpers
@@ -8146,14 +8747,14 @@ class StarRegistrationWindow(QWidget):
                 continue
             if not (isinstance(entry, dict) and entry.get("kind") == "view"):
                 # Unknown shape — skip and warn instead of crashing the run.
-                self._enqueue_progress(f"Skipping unknown target entry: {entry!r}")
+                self._enqueue_progress(self.tr("Skipping unknown target entry: {0!r}").format(entry))
                 continue
 
             doc = entry.get("doc")
             img = _doc_image(doc)
             if img is None:
                 self._enqueue_progress(
-                    f"View '{entry.get('title', '?')}' has no image data; skipping."
+                    self.tr("View '{0}' has no image data; skipping.").format(entry.get('title', '?'))
                 )
                 continue
 
@@ -8175,7 +8776,7 @@ class StarRegistrationWindow(QWidget):
                 _write_view_to_fits(doc, img, candidate)
             except Exception as e:
                 self._enqueue_progress(
-                    f"Failed to spill view '{entry.get('title', '?')}' to temp FITS: {e}; skipping."
+                    self.tr("Failed to spill view '{0}' to temp FITS: {1}; skipping.").format(entry.get('title', '?'), e)
                 )
                 continue
 
@@ -8212,13 +8813,13 @@ class StarRegistrationWindow(QWidget):
         try:
             loaded = load_image(src_path, return_metadata=True)
         except Exception as e:
-            self._enqueue_progress(f"Could not read '{base}': {e}; skipping.")
+            self._enqueue_progress(self.tr("Could not read '{0}': {1}; skipping.").format(base, e))
             return None
 
         img, hdr, bit_depth, is_mono = loaded[0], loaded[1], loaded[2], loaded[3]
         meta = loaded[4] if len(loaded) > 4 else {}
         if img is None:
-            self._enqueue_progress(f"Could not read '{base}'; skipping.")
+            self._enqueue_progress(self.tr("Could not read '{0}'; skipping.").format(base))
             return None
 
         # Multiple inputs can share a stem across folders — suffix on collision,
@@ -8245,7 +8846,7 @@ class StarRegistrationWindow(QWidget):
             )
         except Exception as e:
             self._enqueue_progress(
-                f"Could not prepare '{base}' for registration: {e}; skipping."
+                self.tr("Could not prepare '{0}' for registration: {1}; skipping.").format(base, e)
             )
             return None
 
@@ -8262,7 +8863,7 @@ class StarRegistrationWindow(QWidget):
             "spill_path": candidate,
         }
         self._enqueue_progress(
-            f"Prepared '{base}' for registration (converted to temp FITS)."
+            self.tr("Prepared '{0}' for registration (converted to temp FITS).").format(base)
         )
         return candidate
 
@@ -8301,13 +8902,13 @@ class StarRegistrationWindow(QWidget):
             # Still pointing at its own input means alignment failed for it.
             if (not out_path) or os.path.normcase(os.path.normpath(out_path)) == norm_input:
                 self._enqueue_progress(
-                    f"'{base}': alignment produced no output; nothing written."
+                    self.tr("'{0}': alignment produced no output; nothing written.").format(base)
                 )
                 skipped += 1
                 continue
             if not os.path.exists(out_path):
                 self._enqueue_progress(
-                    f"'{base}': aligned output missing at {out_path}; skipping."
+                    self.tr("'{0}': aligned output missing at {1}; skipping.").format(base, out_path)
                 )
                 skipped += 1
                 continue
@@ -8332,8 +8933,8 @@ class StarRegistrationWindow(QWidget):
                 )
             except Exception as e:
                 self._enqueue_progress(
-                    f"'{base}': aligned, but writing it back as .{fmt} failed: {e}. "
-                    f"The aligned FITS was left at {out_path}."
+                    self.tr("'{0}': aligned, but writing it back as .{1} failed: {2}. "
+                            "The aligned FITS was left at {3}.").format(base, fmt, e, out_path)
                 )
                 failed += 1
                 continue
@@ -8350,11 +8951,11 @@ class StarRegistrationWindow(QWidget):
 
         bits = []
         if converted:
-            bits.append(f"{converted} target(s) written in their source format")
+            bits.append(self.tr("{0} target(s) written in their source format").format(converted))
         if failed:
-            bits.append(f"{failed} left as aligned FITS (conversion failed)")
+            bits.append(self.tr("{0} left as aligned FITS (conversion failed)").format(failed))
         if skipped:
-            bits.append(f"{skipped} non-FITS target(s) skipped (no aligned output)")
+            bits.append(self.tr("{0} non-FITS target(s) skipped (no aligned output)").format(skipped))
         if not bits:
             return ""
         return "\n\n" + " · ".join(bits) + "."
@@ -8376,10 +8977,10 @@ class StarRegistrationWindow(QWidget):
 
         if not overwrite and dm is None:
             # Can't open a new doc — fall back to overwrite with a notice.
-            self._enqueue_progress(
+            self._enqueue_progress(self.tr(
                 "Document manager unavailable — overwriting source views instead "
                 "of opening new ones."
-            )
+            ))
             overwrite = True
 
         # Build reverse lookup from the thread's file_key_to_current_path.
@@ -8415,14 +9016,14 @@ class StarRegistrationWindow(QWidget):
             # Skip those — the source doc stays untouched.
             if (not out_path) or os.path.normcase(os.path.normpath(out_path)) == norm_input:
                 self._enqueue_progress(
-                    f"View '{title}': alignment produced no output, source view unchanged."
+                    self.tr("View '{0}': alignment produced no output, source view unchanged.").format(title)
                 )
                 skipped += 1
                 continue
 
             if not os.path.exists(out_path):
                 self._enqueue_progress(
-                    f"View '{title}': aligned output missing at {out_path}; skipping."
+                    self.tr("View '{0}': aligned output missing at {1}; skipping.").format(title, out_path)
                 )
                 skipped += 1
                 continue
@@ -8431,7 +9032,7 @@ class StarRegistrationWindow(QWidget):
                 aligned_img, aligned_hdr = _read_aligned_fits(out_path)
             except Exception as e:
                 self._enqueue_progress(
-                    f"View '{title}': failed to read aligned output: {e}"
+                    self.tr("View '{0}': failed to read aligned output: {1}").format(title, e)
                 )
                 failed += 1
                 continue
@@ -8445,7 +9046,7 @@ class StarRegistrationWindow(QWidget):
                 pushed += 1
             except Exception as e:
                 self._enqueue_progress(
-                    f"View '{title}': failed to route aligned result into SASpro: {e}"
+                    self.tr("View '{0}': failed to route aligned result into SASpro: {1}").format(title, e)
                 )
                 failed += 1
                 continue
@@ -8462,11 +9063,12 @@ class StarRegistrationWindow(QWidget):
 
         bits = []
         if pushed:
-            bits.append(f"{pushed} view(s) {'overwritten' if overwrite else 'opened as new doc'}")
+            bits.append(self.tr("{0} view(s) overwritten").format(pushed) if overwrite
+                        else self.tr("{0} view(s) opened as new doc").format(pushed))
         if failed:
-            bits.append(f"{failed} view routing failure(s)")
+            bits.append(self.tr("{0} view routing failure(s)").format(failed))
         if skipped:
-            bits.append(f"{skipped} view(s) skipped (no aligned output)")
+            bits.append(self.tr("{0} view(s) skipped (no aligned output)").format(skipped))
         if not bits:
             return ""
         return "\n\n" + " · ".join(bits) + "."

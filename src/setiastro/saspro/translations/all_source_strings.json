@@ -3715,7 +3715,7 @@
     "Weight Radius:",
     "Weight:",
     "Weighted Average",
-    "Weighted Windsorized Sigma Clipping",
+    "Weighted Winsorized Sigma Clipping",
     "Weighting",
     "When checked, once calibration finishes the app will switch to Image Registration and run 'Register and Integrate Images' automatically.",
     "Width",

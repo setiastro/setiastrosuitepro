@@ -51,6 +51,10 @@ try:
 except Exception:
     _cc_denoise = None
 
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("ContinuumSubtract", text)
+
 # Star detection for the WB fit is automatic: sep.extract runs at each sigma
 # in turn, strictest first, and the first rung that finds at least
 # AUTO_STARS_DEFAULT stars wins. One fixed sigma cannot serve both a dense
@@ -124,7 +128,7 @@ class QPreviewDialog(QDialog):
             }
         """
         super().__init__(parent)
-        self.setWindowTitle("Interactive Q Preview")
+        self.setWindowTitle(self.tr("Interactive Q Preview"))
         self.setWindowFlags(
             self.windowFlags() |
             Qt.WindowType.Window |
@@ -161,7 +165,7 @@ class QPreviewDialog(QDialog):
         filter_header = QHBoxLayout()
         filter_header.addStretch(1)
 
-        filter_title = QLabel("Filter:")
+        filter_title = QLabel(self.tr("Filter:"))
         filter_title.setStyleSheet("font-size:13px; font-weight:600;")
         filter_header.addWidget(filter_title)
 
@@ -201,7 +205,7 @@ class QPreviewDialog(QDialog):
         toolbar.addWidget(self._q_label)
 
         toolbar.addSpacing(20)
-        self._stretch_check = QCheckBox("Autostretch")
+        self._stretch_check = QCheckBox(self.tr("Autostretch"))
         self._stretch_check.setChecked(True)
         self._stretch_check.toggled.connect(self._on_stretch_toggled)
         toolbar.addWidget(self._stretch_check)
@@ -212,10 +216,10 @@ class QPreviewDialog(QDialog):
         # ── zoom toolbar row ──────────────────────────────────────────────────
         zoom_row = QHBoxLayout()
 
-        btn_zoom_out  = themed_toolbtn("zoom-out",      "Zoom Out")
-        btn_zoom_in   = themed_toolbtn("zoom-in",       "Zoom In")
+        btn_zoom_out  = themed_toolbtn("zoom-out",      self.tr("Zoom Out"))
+        btn_zoom_in   = themed_toolbtn("zoom-in",       self.tr("Zoom In"))
         btn_zoom_1to1 = themed_toolbtn("zoom-original", "1:1 (100%)")
-        btn_zoom_fit  = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        btn_zoom_fit  = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         zoom_row.addWidget(btn_zoom_out)
         zoom_row.addWidget(btn_zoom_in)
@@ -242,18 +246,18 @@ class QPreviewDialog(QDialog):
         btn_zoom_fit.clicked.connect(lambda: self._view.fit_to_item(self._pix_item))
 
         # ── status + buttons ──────────────────────────────────────────────────
-        self._status = QLabel("Adjust Q and click Accept to run final subtraction.")
+        self._status = QLabel(self.tr("Adjust Q and click Accept to run final subtraction."))
         self._status.setStyleSheet("font-size:11px; color: palette(placeholderText);")
         outer.addWidget(self._status)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        self._btn_accept = QPushButton("Accept — Run Final")
+        self._btn_accept = QPushButton(self.tr("Accept — Run Final"))
         self._btn_accept.setDefault(True)
         self._btn_accept.clicked.connect(self._on_accept)
         btn_row.addWidget(self._btn_accept)
 
-        btn_cancel = QPushButton("Cancel")
+        btn_cancel = QPushButton(self.tr("Cancel"))
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
         outer.addLayout(btn_row)
@@ -317,8 +321,8 @@ class QPreviewDialog(QDialog):
 
         stars = entry.get("star_count", 0)
         self._status.setText(
-            f"Filter: {self._current}   Q: {q:.2f}   "
-            f"Stars used for WB: {stars}   (preview is downsampled)"
+            self.tr("Filter: {0}   Q: {1:.2f}   "
+                    "Stars used for WB: {2}   (preview is downsampled)").format(self._current, q, stars)
         )
 
 
@@ -574,59 +578,59 @@ def wb_fit_verdict(stats: dict) -> tuple[str, str]:
     ordinary, and was being called "Marginal" by an earlier cut of this.
     """
     if not stats or not stats.get("ok") or stats.get("n_fit", 0) < 10:
-        return ("Not enough stars",
-                "Fewer than 10 stars survived clipping; the fit is not "
-                "worth reading.")
+        return (_tr("Not enough stars"),
+                _tr("Fewer than 10 stars survived clipping; the fit is not "
+                    "worth reading."))
 
     sct = float(stats.get("scatter", float("nan")))
     m = float(stats.get("slope", float("nan")))
     if not np.isfinite(sct) or not np.isfinite(m):
-        return ("Unknown", "The fit did not converge to usable numbers.")
+        return (_tr("Unknown"), _tr("The fit did not converge to usable numbers."))
 
     res = abs(m - 1.0)
 
     if m < 0.5 or m > 1.6:
-        return ("Check the pairing",
-                f"The balanced stars sit on a slope of {m:.2f}. At that "
-                "distance from 1.0 the white balance has not landed at "
-                "all -- usually a narrowband frame matched to the wrong "
-                "continuum channel, or a heavy uncorrected gradient.")
+        return (_tr("Check the pairing"),
+                _tr("The balanced stars sit on a slope of {0:.2f}. At that "
+                    "distance from 1.0 the white balance has not landed at "
+                    "all -- usually a narrowband frame matched to the wrong "
+                    "continuum channel, or a heavy uncorrected gradient.").format(m))
 
     cov = stats.get("coverage") or {}
     notes = []
     if stats["n_fit"] < 50:
-        notes.append(f"only {stats['n_fit']} stars")
+        notes.append(_tr("only {0} stars").format(stats['n_fit']))
     share = cov.get("max_share", float("nan"))
     cells, used = cov.get("cells", 0), cov.get("cells_used", 0)
     if cells and used and used <= max(1, cells // 3):
-        notes.append(f"all from {used} of {cells} regions")
+        notes.append(_tr("all from {0} of {1} regions").format(used, cells))
     elif np.isfinite(share) and share > 0.35:
-        notes.append(f"{share * 100:.0f}% from one region")
+        notes.append(_tr("{0:.0f}% from one region").format(share * 100))
     qual = ("" if not notes
-            else " Treat it with care: " + ", ".join(notes) + ".")
+            else " " + _tr("Treat it with care: {0}.").format(", ".join(notes)))
 
     if res <= 0.03 and sct <= 0.05:
-        grade, why = ("Excellent",
-                      "The white balance landed: stars sit on one tight "
-                      "line through y = x, and cancel at Q = 1.")
+        grade, why = (_tr("Excellent"),
+                      _tr("The white balance landed: stars sit on one tight "
+                          "line through y = x, and cancel at Q = 1."))
     elif res <= 0.08 and sct <= 0.12:
-        grade, why = ("Good",
-                      "The white balance landed close enough that stars "
-                      "very nearly cancel at Q = 1.")
+        grade, why = (_tr("Good"),
+                      _tr("The white balance landed close enough that stars "
+                          "very nearly cancel at Q = 1."))
     elif res <= 0.15 and sct <= 0.25:
-        grade, why = ("Fair",
-                      "Stars will leave a visible residual at Q = 1, and "
-                      "the spread means no single Q removes all of them.")
+        grade, why = (_tr("Fair"),
+                      _tr("Stars will leave a visible residual at Q = 1, and "
+                          "the spread means no single Q removes all of them."))
     else:
-        grade, why = ("Loose",
-                      "The balanced stars neither sit on y = x nor follow "
-                      "one line. Check for a gradient, a mismatched "
-                      "continuum, or heavy emission-line contamination in "
-                      "the star sample.")
+        grade, why = (_tr("Loose"),
+                      _tr("The balanced stars neither sit on y = x nor follow "
+                          "one line. Check for a gradient, a mismatched "
+                          "continuum, or heavy emission-line contamination in "
+                          "the star sample."))
     _r = star_residual_at_unit_q(stats)
     if np.isfinite(_r) and abs(_r) >= 0.01:
-        why += (f" At Q = 1 an average star keeps {_r * 100:+.1f}% of "
-                "itself.")
+        why += " " + _tr("At Q = 1 an average star keeps {0:+.1f}% of "
+                         "itself.").format(_r * 100)
     return (grade, why + qual)
 
 
@@ -651,7 +655,7 @@ class _FitPixmapLabel(QLabel):
         self.setStyleSheet(
             "background: palette(base); border: 1px solid palette(mid);")
         if pix is None or pix.isNull():
-            self.setText("n/a")
+            self.setText(self.tr("n/a"))
         else:
             self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._rescale()
@@ -698,7 +702,7 @@ class _WBDiagnosticsDialog(QDialog):
     def __init__(self, entries, tab):
         super().__init__(tab)
         self._tab = tab
-        self.setWindowTitle("WB Diagnostics")
+        self.setWindowTitle(self.tr("WB Diagnostics"))
         self.setSizeGripEnabled(True)
 
         outer = QVBoxLayout(self)
@@ -712,11 +716,11 @@ class _WBDiagnosticsDialog(QDialog):
         outer.addWidget(self._tabs, 1)
 
         foot = QHBoxLayout()
-        hint = QLabel("Click the plot to open it in the detail viewer.")
+        hint = QLabel(self.tr("Click the plot to open it in the detail viewer."))
         hint.setStyleSheet("font-size:10px; color: palette(placeholderText);")
         foot.addWidget(hint)
         foot.addStretch(1)
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.accept)
         foot.addWidget(btn_close)
         outer.addLayout(foot)
@@ -801,18 +805,18 @@ class _WBDiagnosticsDialog(QDialog):
         col_l = QVBoxLayout(col)
         col_l.setContentsMargins(0, 0, 0, 0)
         col_l.setSpacing(4)
-        head = QLabel("Star flux fit")
+        head = QLabel(self.tr("Star flux fit"))
         head.setStyleSheet("font-size:11px; font-weight:500;")
         col_l.addWidget(head)
         img = _FitPixmapLabel(self._display_copy(full), col)
         if full is not None and not full.isNull():
             img.clicked.connect(lambda _=False, p=full: self._enlarge(p))
         col_l.addWidget(img, 1)
-        cap = QLabel(
+        cap = QLabel(self.tr(
             "Measured NB flux against broadband flux, one point per star, "
             "before white balance. The red line is the fit; the pale wedge "
             "is the ±σ boundary it converged on; grey rings sit outside "
-            "it, or were clipped high or at the noise floor.")
+            "it, or were clipped high or at the noise floor."))
         cap.setWordWrap(True)
         cap.setStyleSheet("font-size:10px; color: palette(placeholderText);")
         col_l.addWidget(cap)
@@ -846,12 +850,12 @@ class _WBDiagnosticsDialog(QDialog):
         outer.setContentsMargins(4, 0, 0, 0)
         outer.setSpacing(6)
 
-        head = QLabel("Fit quality")
+        head = QLabel(self.tr("Fit quality"))
         head.setStyleSheet("font-size:11px; font-weight:500;")
         outer.addWidget(head)
 
         verdict, why = (wb_fit_verdict(wb) if wb
-                        else ("No balanced samples", ""))
+                        else (self.tr("No balanced samples"), ""))
         vb = QLabel(verdict)
         vb.setWordWrap(True)
         vb.setStyleSheet(
@@ -893,114 +897,115 @@ class _WBDiagnosticsDialog(QDialog):
             grid.addWidget(v, row[0], 1, Qt.AlignmentFlag.AlignRight)
             row[0] += 1
 
-        section("AFTER WHITE BALANCE")
-        item("Slope", self._num(wb.get("slope", float("nan")), 4),
-             "Balanced NB flux against balanced broadband flux. 1.0000 "
-             "means the white balance landed exactly, and stars then "
-             "cancel at Q = 1 by construction.")
+        section(self.tr("AFTER WHITE BALANCE"))
+        item(self.tr("Slope"), self._num(wb.get("slope", float("nan")), 4),
+             self.tr("Balanced NB flux against balanced broadband flux. 1.0000 "
+                     "means the white balance landed exactly, and stars then "
+                     "cancel at Q = 1 by construction."))
         _r = star_residual_at_unit_q(wb) if wb else float("nan")
-        item("Star residual at Q = 1",
+        item(self.tr("Star residual at Q = 1"),
              "\u2014" if not np.isfinite(_r) else f"{_r * 100:+.1f}%",
-             "What an average star keeps of itself after subtraction at "
-             "Q = 1 \u2014 positive means stars are left bright, negative "
-             "means they are dug dark.\n\n"
-             "This is a consequence, not an instruction to move Q. Q "
-             "scales the continuum across the WHOLE image, so buying a "
-             "cleaner star by raising it costs the same fraction of "
-             "continuum everywhere else, line emission included. A "
-             "residual here means the white balance did not fully land, "
-             "and that is where to look.")
-        item("Offset", self._num(wb.get("intercept", float("nan")), 5),
-             "Intercept of the balanced fit. Should be ~0; a real offset "
-             "means the two backgrounds did not neutralise to the same "
-             "level.")
-        item("Scatter", self._pct(wb.get("scatter", float("nan")), 2),
-             "Robust (MAD) spread of the balanced stars about the line, "
-             "as a fraction of flux. This is the floor on how cleanly "
-             "stars can cancel: at 3% scatter, no single Q cancels every "
-             "star.")
+             self.tr("What an average star keeps of itself after subtraction at "
+                     "Q = 1 \u2014 positive means stars are left bright, negative "
+                     "means they are dug dark.\n\n"
+                     "This is a consequence, not an instruction to move Q. Q "
+                     "scales the continuum across the WHOLE image, so buying a "
+                     "cleaner star by raising it costs the same fraction of "
+                     "continuum everywhere else, line emission included. A "
+                     "residual here means the white balance did not fully land, "
+                     "and that is where to look."))
+        item(self.tr("Offset"), self._num(wb.get("intercept", float("nan")), 5),
+             self.tr("Intercept of the balanced fit. Should be ~0; a real offset "
+                     "means the two backgrounds did not neutralise to the same "
+                     "level."))
+        item(self.tr("Scatter"), self._pct(wb.get("scatter", float("nan")), 2),
+             self.tr("Robust (MAD) spread of the balanced stars about the line, "
+                     "as a fraction of flux. This is the floor on how cleanly "
+                     "stars can cancel: at 3% scatter, no single Q cancels every "
+                     "star."))
         item("R²", self._num(wb.get("r2", float("nan")), 4),
-             "Coefficient of determination on the surviving stars. Reads "
-             "high on any tight line -- use it to catch a fit that has "
-             "gone loose, not as proof that it is right.")
+             self.tr("Coefficient of determination on the surviving stars. Reads "
+                     "high on any tight line -- use it to catch a fit that has "
+                     "gone loose, not as proof that it is right."))
 
-        section("AS MEASURED (BEFORE WB)")
-        item("Slope", self._num(raw.get("slope", float("nan")), 4),
-             "The field's raw NB/BB star flux ratio -- how much dimmer "
-             "your narrowband frame is than the continuum for an ordinary "
-             "star. This is what the plot shows, and it is NOT expected "
-             "to be 1.")
-        item("Scatter", self._pct(raw.get("scatter", float("nan")), 2),
-             "Robust spread about the raw line. Much larger than the "
-             "balanced scatter usually means a colour term the WB has "
-             "since taken out.")
+        section(self.tr("AS MEASURED (BEFORE WB)"))
+        item(self.tr("Slope"), self._num(raw.get("slope", float("nan")), 4),
+             self.tr("The field's raw NB/BB star flux ratio -- how much dimmer "
+                     "your narrowband frame is than the continuum for an ordinary "
+                     "star. This is what the plot shows, and it is NOT expected "
+                     "to be 1."))
+        item(self.tr("Scatter"), self._pct(raw.get("scatter", float("nan")), 2),
+             self.tr("Robust spread about the raw line. Much larger than the "
+                     "balanced scatter usually means a colour term the WB has "
+                     "since taken out."))
         _lo = raw.get("x_lo", float("nan"))
         _hi = raw.get("x_hi", float("nan"))
-        item("Flux span",
+        item(self.tr("Flux span"),
              "—" if not (np.isfinite(_lo) and np.isfinite(_hi))
              else f"{_lo:.3f} – {_hi:.3f}",
-             "Broadband flux range the surviving stars cover. A fit "
-             "anchored over a decade of flux is worth far more than one "
-             "anchored over the faintest 5%.")
+             self.tr("Broadband flux range the surviving stars cover. A fit "
+                     "anchored over a decade of flux is worth far more than one "
+                     "anchored over the faintest 5%."))
 
-        section("STAR SAMPLE")
+        section(self.tr("STAR SAMPLE"))
         n_tot = int(raw.get("n_total", entry.get("detected", 0)) or 0)
         n_fit = int(raw.get("n_fit", 0) or 0)
-        item("Detected", f"{entry.get('detected', n_tot)}",
-             "Stars SEP found and that survived the shape and spatial "
-             "sampling filters.")
+        item(self.tr("Detected"), f"{entry.get('detected', n_tot)}",
+             self.tr("Stars SEP found and that survived the shape and spatial "
+                     "sampling filters."))
         sig = entry.get("sigma")
-        item("Detection σ", "—" if not sig else f"{float(sig):g}",
-             "The rung of the auto-σ ladder that produced them. A low "
-             "value means the field was sparse enough to need a sensitive "
-             "threshold.")
-        item("Saturated", f"{int(raw.get('n_saturated', 0) or 0)}",
-             f"Clipped at or above {FIT_CLIP_HI:g} in either axis -- no "
-             "colour information left.")
+        item(self.tr("Detection σ"), "—" if not sig else f"{float(sig):g}",
+             self.tr("The rung of the auto-σ ladder that produced them. A low "
+                     "value means the field was sparse enough to need a sensitive "
+                     "threshold."))
+        item(self.tr("Saturated"), f"{int(raw.get('n_saturated', 0) or 0)}",
+             self.tr("Clipped at or above {0:g} in either axis -- no "
+                     "colour information left.").format(FIT_CLIP_HI))
         _fl = raw.get("floor")
-        item("At noise floor", f"{int(raw.get('n_floor', 0) or 0)}",
-             "Below this frame's own measured floor in either axis -- "
-             f"background + {FIT_FLOOR_SNR:g}-sigma on the sampled "
-             "aperture, which works out at "
-             + ("not measured" if not _fl else
-                f"{_fl[0]:.5f} (NB) and {_fl[1]:.5f} (broadband)")
-             + ". Below it the flux ratio is noise. The floor is measured "
-             "rather than fixed: a constant threshold in [0,1] units "
-             "cuts almost every star on linear narrowband data and "
-             "almost none on stretched data.")
+        item(self.tr("At noise floor"), f"{int(raw.get('n_floor', 0) or 0)}",
+             self.tr("Below this frame's own measured floor in either axis -- "
+                     "background + {0:g}-sigma on the sampled "
+                     "aperture, which works out at {1}"
+                     ". Below it the flux ratio is noise. The floor is measured "
+                     "rather than fixed: a constant threshold in [0,1] units "
+                     "cuts almost every star on linear narrowband data and "
+                     "almost none on stretched data.").format(
+                 FIT_FLOOR_SNR,
+                 self.tr("not measured") if not _fl else
+                 self.tr("{0:.5f} (NB) and {1:.5f} (broadband)").format(_fl[0], _fl[1])))
         _rej = max(0, int(raw.get("n_hard", 0) or 0) - n_fit)
-        item("σ-clipped outliers", f"{_rej}",
-             "Stars with usable photometry that still fell outside the "
-             "wedge: non-linear bright stars, blends, or genuine "
-             "emission-line objects. A large number here is the "
-             "interesting case.")
-        item("In the fit",
-             f"{n_fit}" + (f"  ({n_fit / n_tot * 100:.0f}% of detected)"
+        item(self.tr("σ-clipped outliers"), f"{_rej}",
+             self.tr("Stars with usable photometry that still fell outside the "
+                     "wedge: non-linear bright stars, blends, or genuine "
+                     "emission-line objects. A large number here is the "
+                     "interesting case."))
+        item(self.tr("In the fit"),
+             f"{n_fit}" + ("  " + self.tr("({0:.0f}% of detected)").format(n_fit / n_tot * 100)
                            if n_tot else ""),
-             "What the line was actually fitted to.")
+             self.tr("What the line was actually fitted to."))
 
         cov = raw.get("coverage") or {}
         _cells = int(cov.get("cells", 0) or 0)
         _used = int(cov.get("cells_used", 0) or 0)
-        item("Regions covered",
-             "not recorded" if not _cells else f"{_used} of {_cells}",
-             f"The frame is divided into a {cov.get('grid', FIT_GRID)}x"
-             f"{cov.get('grid', FIT_GRID)} grid. This is how many of those "
-             "cells the fitted stars actually came from. A fit drawn from "
-             "a corner of the frame can be perfectly tight and still not "
-             "describe the rest of it.")
+        item(self.tr("Regions covered"),
+             self.tr("not recorded") if not _cells else self.tr("{0} of {1}").format(_used, _cells),
+             self.tr("The frame is divided into a {0}x"
+                     "{0} grid. This is how many of those "
+                     "cells the fitted stars actually came from. A fit drawn from "
+                     "a corner of the frame can be perfectly tight and still not "
+                     "describe the rest of it.").format(cov.get('grid', FIT_GRID)))
         _share = cov.get("max_share", float("nan"))
-        item("Busiest region", self._pct(_share, 0),
-             "Share of the fitted stars contributed by the single most "
-             "crowded cell. Even coverage of a "
-             f"{cov.get('grid', FIT_GRID)}x{cov.get('grid', FIT_GRID)} "
-             f"grid would be about {100.0 / max(_cells, 1):.0f}%.")
+        item(self.tr("Busiest region"), self._pct(_share, 0),
+             self.tr("Share of the fitted stars contributed by the single most "
+                     "crowded cell. Even coverage of a "
+                     "{0}x{0} "
+                     "grid would be about {1:.0f}%.").format(cov.get('grid', FIT_GRID), 100.0 / max(_cells, 1)))
         _thin = int(cov.get("thinned", 0) or 0)
         if _thin:
-            item("Thinned for balance", f"{_thin}",
-                 "Stars dropped from over-represented cells before "
-                 "fitting, so no one region could decide the line. Within "
-                 "a cell the ones kept are spread across the flux range.")
+            item(self.tr("Thinned for balance"), f"{_thin}",
+                 self.tr("Stars dropped from over-represented cells before "
+                         "fitting, so no one region could decide the line. Within "
+                         "a cell the ones kept are spread across the flux range."))
 
         outer.addLayout(grid)
         outer.addStretch(1)
@@ -1095,7 +1100,7 @@ class ContinuumSubtractTab(QWidget):
                 row.setSpacing(4)
                 row.setContentsMargins(0, 0, 0, 0)
 
-                tag_lbl = QLabel("+starless" if starless else tag)
+                tag_lbl = QLabel(self.tr("+starless") if starless else tag)
                 tag_lbl.setFixedWidth(56)
                 tag_lbl.setStyleSheet(
                     "font-size:10px; color: palette(placeholderText);" if starless
@@ -1103,7 +1108,7 @@ class ContinuumSubtractTab(QWidget):
                 )
                 row.addWidget(tag_lbl)
 
-                fname_lbl = QLabel("no file")
+                fname_lbl = QLabel(self.tr("no file"))
                 fname_lbl.setStyleSheet("font-size:11px; font-style:italic; color: palette(placeholderText);")
                 fname_lbl.setSizePolicy(
                     QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
@@ -1114,8 +1119,8 @@ class ContinuumSubtractTab(QWidget):
                 suffix = " (Starless)" if starless else ""
                 channel = f"{tag}{suffix}"
 
-                btn_view = QPushButton("View")
-                btn_file = QPushButton("File")
+                btn_view = QPushButton(self.tr("View"))
+                btn_file = QPushButton(self.tr("File"))
                 for b in (btn_view, btn_file):
                     b.setFixedWidth(36)
                     b.setStyleSheet("font-size:10px; padding: 1px 4px;")
@@ -1133,7 +1138,7 @@ class ContinuumSubtractTab(QWidget):
             # thin divider after each block (caller adds it)
 
         # ── Narrowband group ─────────────────────────────────────────────────
-        nb_group = QGroupBox("Narrowband Filters")
+        nb_group = QGroupBox(self.tr("Narrowband Filters"))
         nb_l = QVBoxLayout()
         nb_l.setSpacing(3)
         nb_l.setContentsMargins(8, 8, 8, 8)
@@ -1151,7 +1156,7 @@ class ContinuumSubtractTab(QWidget):
         mid_col = QVBoxLayout()
         mid_col.setSpacing(8)
 
-        cont_group = QGroupBox("Continuum Sources")
+        cont_group = QGroupBox(self.tr("Continuum Sources"))
         cont_l = QVBoxLayout()
         cont_l.setSpacing(3)
         cont_l.setContentsMargins(8, 8, 8, 8)
@@ -1167,27 +1172,27 @@ class ContinuumSubtractTab(QWidget):
         mid_col.addWidget(cont_group)
 
         # ── Processing Options ────────────────────────────────────────────────
-        opts_group = QGroupBox("Processing Options")
+        opts_group = QGroupBox(self.tr("Processing Options"))
         opts_l = QVBoxLayout()
         opts_l.setSpacing(2)
         opts_l.setContentsMargins(8, 8, 8, 8)
 
-        self.linear_output_checkbox = QCheckBox("Output linear only")
+        self.linear_output_checkbox = QCheckBox(self.tr("Output linear only"))
         opts_l.addWidget(self.linear_output_checkbox)
 
-        self.denoise_checkbox = QCheckBox("Denoise with Cosmic Clarity")
+        self.denoise_checkbox = QCheckBox(self.tr("Denoise with Cosmic Clarity"))
         self.denoise_checkbox.setChecked(True)
-        self.denoise_checkbox.setToolTip(
+        self.denoise_checkbox.setToolTip(self.tr(
             "Runs Cosmic Clarity denoise on the linear continuum-subtracted image "
             "before any non-linear stretch."
-        )
+        ))
         opts_l.addWidget(self.denoise_checkbox)
 
         # strength row (indented)
         str_row = QHBoxLayout()
         str_row.setContentsMargins(19, 0, 0, 0)
         str_row.setSpacing(6)
-        self.denoise_strength_label = QLabel("Strength")
+        self.denoise_strength_label = QLabel(self.tr("Strength"))
         self.denoise_strength_label.setStyleSheet("font-size:11px;")
         self.denoise_strength_btn = QPushButton("0.90")
         self.denoise_strength_btn.setFixedWidth(46)
@@ -1201,10 +1206,10 @@ class ContinuumSubtractTab(QWidget):
 
         gpu_row = QHBoxLayout()
         gpu_row.setContentsMargins(19, 0, 0, 0)
-        self.denoise_gpu_checkbox = QCheckBox("Use GPU")
+        self.denoise_gpu_checkbox = QCheckBox(self.tr("Use GPU"))
         self.denoise_gpu_checkbox.setChecked(True)
         self.denoise_gpu_checkbox.setStyleSheet("font-size:11px;")
-        self.denoise_gpu_checkbox.setToolTip("Uncheck to force CPU denoising (slower but avoids GPU memory issues)")
+        self.denoise_gpu_checkbox.setToolTip(self.tr("Uncheck to force CPU denoising (slower but avoids GPU memory issues)"))
         gpu_row.addWidget(self.denoise_gpu_checkbox)
         gpu_row.addStretch(1)
         opts_l.addLayout(gpu_row)
@@ -1223,12 +1228,12 @@ class ContinuumSubtractTab(QWidget):
         opts_l.addWidget(sep2)
         opts_l.addSpacing(2)
 
-        self.stretch_checkbox = QCheckBox("Auto-stretch")
+        self.stretch_checkbox = QCheckBox(self.tr("Auto-stretch"))
         self.stretch_checkbox.setChecked(True)
-        self.stretch_checkbox.setToolTip(
+        self.stretch_checkbox.setToolTip(self.tr(
             "Stretch the linear result to non-linear. "
             "When unchecked, always outputs linear regardless of the output linear checkbox."
-        )
+        ))
         opts_l.addWidget(self.stretch_checkbox)
 
         # stretch sub-options widget (indented, disabled when stretch off)
@@ -1237,25 +1242,25 @@ class ContinuumSubtractTab(QWidget):
         sub_l.setContentsMargins(19, 0, 0, 0)
         sub_l.setSpacing(2)
 
-        self.median_sub_checkbox = QCheckBox("Median background subtract")
+        self.median_sub_checkbox = QCheckBox(self.tr("Median background subtract"))
         self.median_sub_checkbox.setChecked(True)
-        self.median_sub_checkbox.setToolTip(
+        self.median_sub_checkbox.setToolTip(self.tr(
             "Subtracts 0.7× median after stretch. "
             "Uncheck to keep a cleaner background."
-        )
+        ))
         sub_l.addWidget(self.median_sub_checkbox)
 
-        self.curves_checkbox = QCheckBox("Curves boost")
+        self.curves_checkbox = QCheckBox(self.tr("Curves boost"))
         self.curves_checkbox.setChecked(False)
-        self.curves_checkbox.setToolTip("Applies a gentle S-curve boost after stretching.")
+        self.curves_checkbox.setToolTip(self.tr("Applies a gentle S-curve boost after stretching."))
         sub_l.addWidget(self.curves_checkbox)
 
-        self.no_black_clip_checkbox = QCheckBox("No black clip")
+        self.no_black_clip_checkbox = QCheckBox(self.tr("No black clip"))
         self.no_black_clip_checkbox.setChecked(True)
-        self.no_black_clip_checkbox.setToolTip(
+        self.no_black_clip_checkbox.setToolTip(self.tr(
             "Uses image minimum as black point instead of median − σ. "
             "Preserves faint background signal."
-        )
+        ))
         sub_l.addWidget(self.no_black_clip_checkbox)
         sub_l.addStretch(1)
 
@@ -1280,22 +1285,22 @@ class ContinuumSubtractTab(QWidget):
         thr_row = QHBoxLayout()
         thr_row.setContentsMargins(0, 0, 0, 0)
         thr_row.setSpacing(6)
-        self.threshold_label = QLabel("WB star target")
+        self.threshold_label = QLabel(self.tr("WB star target"))
         self.threshold_label.setStyleSheet("font-size:11px;")
         self.threshold_btn = QPushButton(str(self.target_stars))
         self.threshold_btn.setFixedWidth(52)
         self.threshold_btn.setStyleSheet("font-size:11px; padding:1px 4px;")
         self.threshold_btn.clicked.connect(self._change_target_stars)
         _ladder = " → ".join(f"{v:g}" for v in AUTO_SIGMA_LADDER)
-        _tip = (
+        _tip = self.tr(
             "How many stars the white-balance fit aims to work from.\n\n"
             "Detection sigma is not fixed: SEP is run down the ladder\n"
-            f"σ = {_ladder} and the first rung that finds at least this\n"
+            "σ = {0} and the first rung that finds at least this\n"
             "many stars is the one used. If no rung reaches it, the most\n"
             "sensitive one is used.\n\n"
             "Raise it for a tighter fit on rich fields; lower it if a\n"
             "sparse field is driving detection down into the noise."
-        )
+        ).format(_ladder)
         self.threshold_label.setToolTip(_tip)
         self.threshold_btn.setToolTip(_tip)
         thr_row.addWidget(self.threshold_label)
@@ -1319,9 +1324,9 @@ class ContinuumSubtractTab(QWidget):
 
         # ── Bottom row ────────────────────────────────────────────────────────
         bottom_row = QHBoxLayout()
-        self.execute_button = QPushButton("Execute")
+        self.execute_button = QPushButton(self.tr("Execute"))
         self.execute_button.clicked.connect(self.startContinuumSubtraction)
-        self.clear_button = QPushButton("Clear Images")
+        self.clear_button = QPushButton(self.tr("Clear Images"))
         self.clear_button.clicked.connect(self.clear_loaded_images)
 
         bottom_row.addWidget(self.execute_button)
@@ -1329,7 +1334,7 @@ class ContinuumSubtractTab(QWidget):
         bottom_row.addWidget(self.spinnerLabel)
         bottom_row.addWidget(self.statusLabel, 1)
         # In bottom_row, after clear_button:
-        self.wb_diag_button = QPushButton("WB Diagnostics…")
+        self.wb_diag_button = QPushButton(self.tr("WB Diagnostics…"))
         self.wb_diag_button.clicked.connect(self._show_wb_diagnostics)
         self.wb_diag_button.setEnabled(False)  # enabled after first result
         bottom_row.addWidget(self.wb_diag_button)
@@ -1414,7 +1419,7 @@ class ContinuumSubtractTab(QWidget):
 
     def _apply_loaded_image(self, channel: str, image, header, bit_depth, is_mono, name_or_path):
         """Common handler after loading from either View or File."""
-        label_text = str(name_or_path) if name_or_path else "From View"
+        label_text = str(name_or_path) if name_or_path else self.tr("From View")
         try:
             if isinstance(name_or_path, str) and os.path.isabs(name_or_path):
                 label_text = os.path.basename(name_or_path)
@@ -1481,9 +1486,9 @@ class ContinuumSubtractTab(QWidget):
                 self.hao3Label.setText(label_text)
 
             if not (isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] >= 2):
-                QMessageBox.warning(self, "HaO3 Load",
-                    "HaO3 expects a 3-channel color image (R=Ha, G=OIII). "
-                    "Loaded image is not 3-channel; cannot extract Ha/OIII.")
+                QMessageBox.warning(self, self.tr("HaO3 Load"),
+                    self.tr("HaO3 expects a 3-channel color image (R=Ha, G=OIII). "
+                            "Loaded image is not 3-channel; cannot extract Ha/OIII."))
                 return
 
             img32 = image.astype(np.float32, copy=False)
@@ -1492,12 +1497,12 @@ class ContinuumSubtractTab(QWidget):
 
             if is_starless:
                 self.ha_starless_image = ha_from_r
-                self.haStarlessLabel.setText(label_text + " [R → Ha (starless)]")
+                self.haStarlessLabel.setText(self.tr("{0} [R → Ha (starless)]").format(label_text))
                 self._o3_from_hao3_starless = o3_from_g
                 self._update_oiii_from_composites(starless=True)
             else:
                 self.ha_image = ha_from_r
-                self.haLabel.setText(label_text + " [R → Ha]")
+                self.haLabel.setText(self.tr("{0} [R → Ha]").format(label_text))
                 self._o3_from_hao3 = o3_from_g
                 self._update_oiii_from_composites(starless=False)
 
@@ -1510,9 +1515,9 @@ class ContinuumSubtractTab(QWidget):
                 self.s2o3Label.setText(label_text)
 
             if not (isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] >= 2):
-                QMessageBox.warning(self, "S2O3 Load",
-                    "S2O3 expects a 3-channel color image (R=SII, G=OIII). "
-                    "Loaded image is not 3-channel; cannot extract SII/OIII.")
+                QMessageBox.warning(self, self.tr("S2O3 Load"),
+                    self.tr("S2O3 expects a 3-channel color image (R=SII, G=OIII). "
+                            "Loaded image is not 3-channel; cannot extract SII/OIII."))
                 return
 
             img32 = image.astype(np.float32, copy=False)
@@ -1521,17 +1526,17 @@ class ContinuumSubtractTab(QWidget):
 
             if is_starless:
                 self.sii_starless_image = s2_from_r
-                self.siiStarlessLabel.setText(label_text + " [R → SII (starless)]")
+                self.siiStarlessLabel.setText(self.tr("{0} [R → SII (starless)]").format(label_text))
                 self._o3_from_s2o3_starless = o3_from_g
                 self._update_oiii_from_composites(starless=True)
             else:
                 self.sii_image = s2_from_r
-                self.siiLabel.setText(label_text + " [R → SII]")
+                self.siiLabel.setText(self.tr("{0} [R → SII]").format(label_text))
                 self._o3_from_s2o3 = o3_from_g
                 self._update_oiii_from_composites(starless=False)
 
         else:
-            QMessageBox.critical(self, "Error", f"Unknown channel '{channel}'.")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Unknown channel '{0}'.").format(channel))
             return
 
         self.original_header = header
@@ -1550,8 +1555,8 @@ class ContinuumSubtractTab(QWidget):
     def _change_denoise_strength(self):
         val, ok = QInputDialog.getDouble(
             self,
-            "Denoise Strength",
-            "Cosmic Clarity denoise strength (0.0–1.0):",
+            self.tr("Denoise Strength"),
+            self.tr("Cosmic Clarity denoise strength (0.0–1.0):"),
             self.denoise_strength,
             0.0, 1.0, 2
         )
@@ -1563,8 +1568,8 @@ class ContinuumSubtractTab(QWidget):
     def _change_target_stars(self):
         val, ok = QInputDialog.getInt(
             self,
-            "WB Star Detection",
-            "Stop lowering the detection σ once this many stars are found:",
+            self.tr("WB Star Detection"),
+            self.tr("Stop lowering the detection σ once this many stars are found:"),
             self.target_stars,
             20, 20000, 50
         )
@@ -1605,15 +1610,6 @@ class ContinuumSubtractTab(QWidget):
         return out
 
 
-    def refresh(self):
-        if self.image_manager:
-            # You might have a way to retrieve the current image and metadata.
-            # For example, if your image_manager stores the current image,
-            # you could do something like:
-            return
-
-
-
     def clear_loaded_images(self):
         for attr in (
             "ha_image","sii_image","oiii_image","red_image","green_image","osc_image",
@@ -1626,27 +1622,27 @@ class ContinuumSubtractTab(QWidget):
             setattr(self, attr, None)
 
         # Reset NB labels
-        self.haLabel.setText("No Ha")
-        self.siiLabel.setText("No SII")
-        self.oiiiLabel.setText("No OIII")
+        self.haLabel.setText(self.tr("No Ha"))
+        self.siiLabel.setText(self.tr("No SII"))
+        self.oiiiLabel.setText(self.tr("No OIII"))
         # NEW composite labels
-        self.hao3Label.setText("No HaO3")
-        self.s2o3Label.setText("No S2O3")
+        self.hao3Label.setText(self.tr("No HaO3"))
+        self.s2o3Label.setText(self.tr("No S2O3"))
         self._wb_diag_entries = []
         if hasattr(self, "wb_diag_button"):
             self.wb_diag_button.setEnabled(False)
         self._close_wb_diag()
         # Reset continuum labels
-        self.redLabel.setText("No Red")
-        self.greenLabel.setText("No Green")
-        self.oscLabel.setText("No OSC")
+        self.redLabel.setText(self.tr("No Red"))
+        self.greenLabel.setText(self.tr("No Green"))
+        self.oscLabel.setText(self.tr("No OSC"))
 
-        self.haStarlessLabel.setText("No Ha (starless)")
-        self.siiStarlessLabel.setText("No SII (starless)")
-        self.oiiiStarlessLabel.setText("No OIII (starless)")
-        self.redStarlessLabel.setText("No Red (starless)")
-        self.greenStarlessLabel.setText("No Green (starless)")
-        self.oscStarlessLabel.setText("No OSC (starless)")
+        self.haStarlessLabel.setText(self.tr("No Ha (starless)"))
+        self.siiStarlessLabel.setText(self.tr("No SII (starless)"))
+        self.oiiiStarlessLabel.setText(self.tr("No OIII (starless)"))
+        self.redStarlessLabel.setText(self.tr("No Red (starless)"))
+        self.greenStarlessLabel.setText(self.tr("No Green (starless)"))
+        self.oscStarlessLabel.setText(self.tr("No OSC (starless)"))
 
         # NEW: clear OIII-from-composite caches
         self._o3_from_hao3 = None
@@ -1655,7 +1651,7 @@ class ContinuumSubtractTab(QWidget):
         self._o3_from_s2o3_starless = None
 
         self.combined_image = None
-        self.statusLabel.setText("All loaded images cleared.")
+        self.statusLabel.setText(self.tr("All loaded images cleared."))
 
 
     # --- NEW: helper to combine OIII from HaO3 and S2O3 ---
@@ -1693,11 +1689,11 @@ class ContinuumSubtractTab(QWidget):
 
         if starless:
             self.oiii_starless_image = combo
-            base_label = "OIII from " + "+".join(labels) + " (starless)"
+            base_label = self.tr("OIII from {0} (starless)").format("+".join(labels))
             self.oiiiStarlessLabel.setText(base_label)
         else:
             self.oiii_image = combo
-            base_label = "OIII from " + "+".join(labels)
+            base_label = self.tr("OIII from {0}").format("+".join(labels))
             self.oiiiLabel.setText(base_label)
 
 
@@ -1708,7 +1704,7 @@ class ContinuumSubtractTab(QWidget):
     def _select_document_via_dropdown(self, title: str):
         items = self._iter_open_docs()
         if not items:
-            QMessageBox.information(self, f"Select View — {title}", "No open views/documents found.")
+            QMessageBox.information(self, self.tr("Select View — {0}").format(title), self.tr("No open views/documents found."))
             return None
 
         # default to active view if present
@@ -1724,7 +1720,7 @@ class ContinuumSubtractTab(QWidget):
         default_index = next((i for i, (d, _) in enumerate(items) if d is active_doc), 0)
 
         choice, ok = QInputDialog.getItem(
-            self, f"Select View — {title}", "Choose:", names, default_index, False
+            self, self.tr("Select View — {0}").format(title), self.tr("Choose:"), names, default_index, False
         )
         if not ok:
             return None
@@ -1734,7 +1730,7 @@ class ContinuumSubtractTab(QWidget):
         """(np.ndarray, header, bit_depth, is_mono, file_path) from an ImageDocument."""
         arr = getattr(doc, "image", None)
         if arr is None:
-            QMessageBox.warning(self, "No image", "Selected view has no image.")
+            QMessageBox.warning(self, self.tr("No image"), self.tr("Selected view has no image."))
             return None
         meta = getattr(doc, "metadata", {}) or {}
         header = meta.get("original_header") or meta.get("fits_header") or meta.get("header")
@@ -1772,13 +1768,13 @@ class ContinuumSubtractTab(QWidget):
 
     def loadImageFromFile(self, channel: str):
         file_filter = "Images (*.png *.tif *.tiff *.fits *.fit *.xisf)"
-        path, _ = QFileDialog.getOpenFileName(self, f"Select {channel} Image", "", file_filter)
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select {0} Image").format(channel), "", file_filter)
         if not path:
             return None
         try:
             image, header, bit_depth, is_mono = legacy_load_image(path)  # ← use the alias
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load {channel} image:\n{e}")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to load {0} image:\n{1}").format(channel, e))
             return None
         return image, header, bit_depth, is_mono, path
 
@@ -1805,7 +1801,7 @@ class ContinuumSubtractTab(QWidget):
         add_pair("OIII", self.oiii_image, cont_green_starry, self.oiii_starless_image, cont_green_starless)
 
         if not pairs:
-            self.statusLabel.setText("Load at least one NB + matching continuum channel (or OSC).")
+            self.statusLabel.setText(self.tr("Load at least one NB + matching continuum channel (or OSC)."))
             return
 
         self.showSpinner()
@@ -1956,7 +1952,7 @@ class ContinuumSubtractTab(QWidget):
                               _rec.get("fit_raw"), _rec.get("fit_after"))
 
         self._calib_pending -= 1
-        self.update_status_label(f"Calibration done for {name}.")
+        self.update_status_label(self.tr("Calibration done for {0}.").format(name))
         if self._calib_pending == 0:
             self._onAllCalibrationsReady()
 
@@ -2128,15 +2124,16 @@ class ContinuumSubtractTab(QWidget):
             base = filt.replace(" (starless)", "")
             sig = (getattr(self, "_calib_sigma", {}) or {}).get(base)
             if wb_stats is not None and wb_stats["ok"]:
-                sub = (f"{wb_stats['n_fit']} of {wb_stats['n_total']} stars "
-                       f"in the fit  ·  balanced slope "
-                       f"{wb_stats['slope']:.3f}  ·  "
-                       f"{wb_fit_verdict(wb_stats)[0]}")
+                sub = self.tr("{0} of {1} stars "
+                              "in the fit  ·  balanced slope "
+                              "{2:.3f}  ·  "
+                              "{3}").format(wb_stats['n_fit'], wb_stats['n_total'],
+                                            wb_stats['slope'], wb_fit_verdict(wb_stats)[0])
             elif fit_info and fit_info.get("ok"):
-                sub = (f"{fit_info['n_fit']} of {fit_info['n_total']} stars "
-                       f"in the fit")
+                sub = self.tr("{0} of {1} stars "
+                              "in the fit").format(fit_info['n_fit'], fit_info['n_total'])
             else:
-                sub = f"{star_count} stars detected"
+                sub = self.tr("{0} stars detected").format(star_count)
             if sig:
                 sub += f"  ·  σ = {float(sig):g}"
             self._wb_diag_entries.append({
@@ -2168,10 +2165,10 @@ class ContinuumSubtractTab(QWidget):
     def _show_wb_diagnostics(self):
         if not self._wb_diag_entries:
             QMessageBox.information(
-                self, "WB Diagnostics",
-                "Nothing to show yet — run a subtraction on a starry frame "
-                "first. Starless-only runs never fit stars, so they have no "
-                "white balance to diagnose."
+                self, self.tr("WB Diagnostics"),
+                self.tr("Nothing to show yet — run a subtraction on a starry frame "
+                        "first. Starless-only runs never fit stars, so they have no "
+                        "white balance to diagnose.")
             )
             return
         dlg = getattr(self, "_wb_diag_dlg", None)
@@ -2292,7 +2289,7 @@ class ContinuumSubtractTab(QWidget):
 
         # ---------- dialog ----------
         dlg = QDialog(self)
-        dlg.setWindowTitle("Detail View")
+        dlg.setWindowTitle(self.tr("Detail View"))
         dlg.resize(980, 820)
 
         outer = QVBoxLayout(dlg)
@@ -2333,10 +2330,10 @@ class ContinuumSubtractTab(QWidget):
         # Toolbar row (themed zoom helper)
         row = QHBoxLayout()
 
-        btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        btn_zoom_in = themed_toolbtn("zoom-in", "Zoom In")
+        btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        btn_zoom_in = themed_toolbtn("zoom-in", self.tr("Zoom In"))
         btn_zoom_1to1 = themed_toolbtn("zoom-original", "1:1 (100%)")
-        btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         btn_zoom_out.clicked.connect(view.zoom_out)
         btn_zoom_in.clicked.connect(view.zoom_in)
@@ -2350,13 +2347,13 @@ class ContinuumSubtractTab(QWidget):
 
         row.addStretch(1)
 
-        btn_autostretch = QPushButton("Autostretch")
+        btn_autostretch = QPushButton(self.tr("Autostretch"))
         row.addWidget(btn_autostretch)
 
-        btn_push = QPushButton("Push to New Document")
+        btn_push = QPushButton(self.tr("Push to New Document"))
         row.addWidget(btn_push)
 
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("Close"))
         row.addWidget(btn_close)
 
         outer.addLayout(row)
@@ -2382,14 +2379,14 @@ class ContinuumSubtractTab(QWidget):
                     current_arr = np.clip(stretched, 0.0, 1.0).astype(np.float32, copy=False)
                 _set_scene_from_arr(current_arr)
             except Exception as e:
-                QMessageBox.warning(dlg, "Detail View", f"Autostretch failed:\n{e}")
+                QMessageBox.warning(dlg, self.tr("Detail View"), self.tr("Autostretch failed:\n{0}").format(e))
 
         def _do_push_to_doc():
             dm = getattr(self, "doc_manager", None)
             mw = self._main_window() if hasattr(self, "_main_window") else None
 
             if dm is None or mw is None or not hasattr(mw, "_spawn_subwindow_for"):
-                QMessageBox.critical(dlg, "Detail View", "Cannot create document: missing DocManager or MainWindow.")
+                QMessageBox.critical(dlg, self.tr("Detail View"), self.tr("Cannot create document: missing DocManager or MainWindow."))
                 return
 
             try:
@@ -2416,12 +2413,12 @@ class ContinuumSubtractTab(QWidget):
 
                 try:
                     if hasattr(self, "statusLabel") and self.statusLabel is not None:
-                        self.statusLabel.setText(f"Pushed detail view → '{name}'.")
+                        self.statusLabel.setText(self.tr("Pushed detail view → '{0}'.").format(name))
                 except Exception:
                     pass
 
             except Exception as e:
-                QMessageBox.critical(dlg, "Detail View", f"Failed to create document:\n{e}")
+                QMessageBox.critical(dlg, self.tr("Detail View"), self.tr("Failed to create document:\n{0}").format(e))
 
         btn_autostretch.clicked.connect(_do_autostretch)
         btn_push.clicked.connect(_do_push_to_doc)
@@ -2436,18 +2433,12 @@ class ContinuumSubtractTab(QWidget):
         dlg.exec()
 
 
-    def _onThreadFinished(self):
-        self._pending -= 1
-        if self._pending == 0:
-            self.hideSpinner()
-            self._pushResultsToDocs(self._results) 
-
     def _pushResultsToDocs(self, results):
         dm = getattr(self, "doc_manager", None)
         mw = self._main_window()
         if dm is None or mw is None or not hasattr(mw, "_spawn_subwindow_for"):
-            QMessageBox.critical(self, "Continuum Subtract",
-                                "Cannot create documents: missing DocManager or MainWindow.")
+            QMessageBox.critical(self, self.tr("Continuum Subtract"),
+                                self.tr("Cannot create documents: missing DocManager or MainWindow."))
             return
 
         created = 0
@@ -2472,21 +2463,17 @@ class ContinuumSubtractTab(QWidget):
                 mw._spawn_subwindow_for(doc)
                 created += 1
             except Exception as e:
-                QMessageBox.critical(self, "Continuum Subtract",
-                                    f"Failed to create document '{name}':\n{e}")
+                QMessageBox.critical(self, self.tr("Continuum Subtract"),
+                                    self.tr("Failed to create document '{0}':\n{1}").format(name, e))
 
-        self.statusLabel.setText(f"Created {created} document(s).")
+        self.statusLabel.setText(self.tr("Created {0} document(s).").format(created))
 
-
-    def _onThreadFinished(self):
-        self._pending -= 1
-        # do NOT push here if you already push in _onOneResult
 
     def update_status_label(self, message):
         self.statusLabel.setText(message)
 
     def showSpinner(self):
-        self.spinnerLabel.setText("Processing…")
+        self.spinnerLabel.setText(self.tr("Processing…"))
         self.spinnerLabel.show()
         if hasattr(self, "execute_button"):
             self.execute_button.setEnabled(False)
@@ -2794,7 +2781,7 @@ class ContinuumProcessingThread(QThread):
             result = _cc_denoise(arr, preset)
             return np.clip(np.asarray(result, dtype=np.float32), 0.0, 1.0)
         except Exception as e:
-            try: self.status_update.emit(f"Cosmic Clarity denoise failed: {e}")
+            try: self.status_update.emit(self.tr("Cosmic Clarity denoise failed: {0}").format(e))
             except Exception: pass
             return img
 
@@ -2828,20 +2815,20 @@ class ContinuumProcessingThread(QThread):
         try:
             rgb = self._as_rgb(nb, cont)
 
-            self.status_update.emit(f"[{name}] Background neutralization…")
+            self.status_update.emit(self.tr("[{0}] Background neutralization…").format(name))
             ped = self._compute_bg_pedestal(rgb)
             rgb = self._apply_pedestal(rgb, ped)
 
-            self.status_update.emit(f"[{name}] Normalizing red to green…")
+            self.status_update.emit(self.tr("[{0}] Normalizing red to green…").format(name))
             rgb, g_gain, g_offs = self._normalize_red_to_green(rgb)
 
             self.status_update.emit(
-                f"[{name}] Star-based white balance (auto σ)…")
+                self.tr("[{0}] Star-based white balance (auto σ)…").format(name))
 
             def _resolved(sig, _n=name):
                 self.used_sigma = float(sig)
                 self.status_update.emit(
-                    f"[{_n}] star detection settled at σ={float(sig):g}")
+                    self.tr("[{0}] star detection settled at σ={1:g}").format(_n, float(sig)))
 
             # reuse_cached_sources is deliberately OFF here. The cache in
             # starbasedwhitebalance is module-global and, in auto-σ mode, its
@@ -2908,7 +2895,7 @@ class ContinuumProcessingThread(QThread):
             }
 
         except Exception as e:
-            self.status_update.emit(f"[{name}] Calibration failed: {e}")
+            self.status_update.emit(self.tr("[{0}] Calibration failed: {1}").format(name, e))
             return None
 
     def run_calibration_only(self, name: str):
@@ -2925,10 +2912,10 @@ class ContinuumProcessingThread(QThread):
         """Starless-only path: no WB, just BG+norm, then emit calibration_ready."""
         try:
             rgb = self._as_rgb(self.starless_nb, self.starless_cont)
-            self.status_update.emit(f"[{name}] Background neutralization…")
+            self.status_update.emit(self.tr("[{0}] Background neutralization…").format(name))
             ped = self._compute_bg_pedestal(rgb)
             rgb = self._apply_pedestal(rgb, ped)
-            self.status_update.emit(f"[{name}] Normalizing…")
+            self.status_update.emit(self.tr("[{0}] Normalizing…").format(name))
             rgb, _, _ = self._normalize_red_to_green(rgb)
             green_med = float(np.median(rgb[..., 1]))
             preview   = self._downsample(rgb, self.PREVIEW_MAX)
@@ -2958,7 +2945,7 @@ class ContinuumProcessingThread(QThread):
             }
             self.calibration_ready.emit(entry)
         except Exception as e:
-            self.status_update.emit(f"[{name}] Starless calibration failed: {e}")
+            self.status_update.emit(self.tr("[{0}] Starless calibration failed: {1}").format(name, e))
 
     def run_final_subtract(self, name: str, entry: dict, q: float):
         """
@@ -2971,11 +2958,11 @@ class ContinuumProcessingThread(QThread):
             recipe    = entry["recipe"]
             is_sl     = recipe.get("starless_only", False)
 
-            self.status_update.emit(f"[{name}] Applying Q={q:.2f} subtraction…")
+            self.status_update.emit(self.tr("[{0}] Applying Q={1:.2f} subtraction…").format(name, q))
             linear = self._linear_subtract(balanced, q, green_med)
 
             if self.denoise_linear:
-                self.status_update.emit(f"[{name}] Denoising…")
+                self.status_update.emit(self.tr("[{0}] Denoising…").format(name))
                 linear = self._denoise_linear_image(linear)
 
             star_count = recipe["fit_star_count"]
@@ -2985,7 +2972,7 @@ class ContinuumProcessingThread(QThread):
             if self.output_linear:
                 result = np.clip(linear, 0, 1)
             else:
-                self.status_update.emit(f"[{name}] Stretching…")
+                self.status_update.emit(self.tr("[{0}] Stretching…").format(name))
                 result = self._nonlinear_finalize_with_opts(linear)
 
             sig = self.processing_complete_starless if is_sl else self.processing_complete
@@ -2996,7 +2983,7 @@ class ContinuumProcessingThread(QThread):
             if (not is_sl and
                     self.starless_nb is not None and
                     self.starless_cont is not None):
-                self.status_update.emit(f"[{name}] Applying recipe to starless…")
+                self.status_update.emit(self.tr("[{0}] Applying recipe to starless…").format(name))
                 rgb_sl = self._as_rgb(self.starless_nb, self.starless_cont)
                 rgb_sl = self._apply_pedestal(rgb_sl, recipe["pedestal"])
                 rgb_sl[..., 0] = np.clip(
@@ -3022,7 +3009,7 @@ class ContinuumProcessingThread(QThread):
                 )
 
         except Exception as e:
-            self.status_update.emit(f"[{name}] Final subtract failed: {e}")
+            self.status_update.emit(self.tr("[{0}] Final subtract failed: {1}").format(name, e))
 
     def run(self):
         # This run() is only used for the calibration phase now.

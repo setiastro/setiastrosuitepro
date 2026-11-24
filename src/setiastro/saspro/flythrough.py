@@ -23,7 +23,7 @@ import os
 import numpy as np
 
 from PyQt6.QtCore import (
-    Qt, QThread, pyqtSignal, QSettings, QTimer,
+    Qt, QThread, pyqtSignal, QSettings, QTimer, QCoreApplication,
 )
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
@@ -38,6 +38,10 @@ try:
     HAS_CV2 = True
 except ImportError:
     HAS_CV2 = False
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("Flythrough", text)
 
 
 # ── SetiAstro copyright header ────────────────────────────────────────────────
@@ -1023,7 +1027,7 @@ class _FlythroughWorker(QThread):
             st_opacity     = float(p.get("st_opacity", 1.0))
 
             if not HAS_CV2:
-                self.finished.emit(False, "OpenCV (cv2) is required for video export.")
+                self.finished.emit(False, self.tr("OpenCV (cv2) is required for video export."))
                 return
 
             # Pre-compute depth maps
@@ -1068,7 +1072,7 @@ class _FlythroughWorker(QThread):
                     if mid_depth_map is not None:
                         mid_depth_t = _np_depth_to_tensor(mid_depth_map, device)
                     self.progress.emit(0, n_frames,
-                                       f"GPU render on {device} — {n_frames} frames")
+                                       self.tr("GPU render on {0} — {1} frames").format(device, n_frames))
                 except Exception as e:
                     print(f"[Flythrough] GPU init failed, falling back to CPU: {e}")
                     use_gpu = False
@@ -1077,7 +1081,7 @@ class _FlythroughWorker(QThread):
             writer = cv2.VideoWriter(out_path, fourcc, fps, (out_w, out_h))
             if not writer.isOpened():
                 self.finished.emit(False,
-                    f"Could not open video file for writing:\n{out_path}")
+                    self.tr("Could not open video file for writing:\n{0}").format(out_path))
                 return
 
             for i in range(n_frames):
@@ -1161,7 +1165,7 @@ class _FlythroughWorker(QThread):
                 writer.write(frame_bgr)
                 backend = "GPU" if use_gpu else "CPU"
                 self.progress.emit(i + 1, n_frames,
-                                   f"[{backend}] Frame {i+1}/{n_frames}")
+                                   self.tr("[{0}] Frame {1}/{2}").format(backend, i + 1, n_frames))
 
             writer.release()
             self.finished.emit(True, out_path)
@@ -1312,7 +1316,7 @@ class _LayerPanel(QGroupBox):
         self.cmb_source.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.cmb_source.setMinimumContentsLength(22)
-        self._src_label = QLabel("Source image:")
+        self._src_label = QLabel(self.tr("Source image:"))
         if has_source:
             form.addRow(self._src_label, self.cmb_source)
         else:
@@ -1327,10 +1331,10 @@ class _LayerPanel(QGroupBox):
         self.sp_zoom_end.setRange(1.0, 50.0); self.sp_zoom_end.setSingleStep(0.5)
         self.sp_zoom_end.setValue(6.0);        self.sp_zoom_end.setDecimals(2)
         zoom_row = QHBoxLayout()
-        zoom_row.addWidget(QLabel("Start:")); zoom_row.addWidget(self.sp_zoom_start)
+        zoom_row.addWidget(QLabel(self.tr("Start:"))); zoom_row.addWidget(self.sp_zoom_start)
         zoom_row.addSpacing(12)
-        zoom_row.addWidget(QLabel("End:"));   zoom_row.addWidget(self.sp_zoom_end)
-        form.addRow("Zoom x:", zoom_row)
+        zoom_row.addWidget(QLabel(self.tr("End:")));   zoom_row.addWidget(self.sp_zoom_end)
+        form.addRow(self.tr("Zoom x:"), zoom_row)
 
         def _dsb(v=0.5):
             s = QDoubleSpinBox()
@@ -1341,22 +1345,22 @@ class _LayerPanel(QGroupBox):
         self.sp_cx_start = _dsb(); self.sp_cy_start = _dsb()
         cx_s.addWidget(QLabel("X:")); cx_s.addWidget(self.sp_cx_start)
         cx_s.addWidget(QLabel("Y:")); cx_s.addWidget(self.sp_cy_start)
-        form.addRow("center start:", cx_s)
+        form.addRow(self.tr("center start:"), cx_s)
 
         cx_e = QHBoxLayout()
         self.sp_cx_end = _dsb(); self.sp_cy_end = _dsb()
         cx_e.addWidget(QLabel("X:")); cx_e.addWidget(self.sp_cx_end)
         cx_e.addWidget(QLabel("Y:")); cx_e.addWidget(self.sp_cy_end)
-        form.addRow("center end:", cx_e)
+        form.addRow(self.tr("center end:"), cx_e)
 
         self.cmb_ease = QComboBox()
         self.cmb_ease.addItems(list(EASE_FUNCTIONS.keys()))
         self.cmb_ease.setCurrentText("Ease In-Out")
-        form.addRow("Easing:", self.cmb_ease)
+        form.addRow(self.tr("Easing:"), self.cmb_ease)
 
         pick_row = QHBoxLayout()
-        self.btn_pick_start = QPushButton("Pick Start center")
-        self.btn_pick_end   = QPushButton("Pick End center")
+        self.btn_pick_start = QPushButton(self.tr("Pick Start center"))
+        self.btn_pick_end   = QPushButton(self.tr("Pick End center"))
         self.btn_pick_start.setCheckable(True); self.btn_pick_end.setCheckable(True)
         pick_row.addWidget(self.btn_pick_start); pick_row.addWidget(self.btn_pick_end)
         form.addRow("", pick_row)
@@ -1364,7 +1368,7 @@ class _LayerPanel(QGroupBox):
         self.btn_pick_end.clicked.connect(self._on_pick_end)
 
         # Effects group
-        fx_box = QGroupBox("Lens Effects")
+        fx_box = QGroupBox(self.tr("Lens Effects"))
         fx_box.setStyleSheet(f"""
             QGroupBox {{
                 border: 1px solid {accent_colour}88;
@@ -1380,55 +1384,55 @@ class _LayerPanel(QGroupBox):
         """)
         fx_v = QVBoxLayout(fx_box); fx_v.setSpacing(4)
 
-        self.chk_animate_fx = QCheckBox("Ramp effects with zoom (0 -> full at end)")
+        self.chk_animate_fx = QCheckBox(self.tr("Ramp effects with zoom (0 -> full at end)"))
         self.chk_animate_fx.setChecked(True)
         fx_v.addWidget(self.chk_animate_fx)
 
-        self.chk_depth_warp = QCheckBox("Nebula depth warp  (bright = closer)")
-        self.chk_depth_warp.setToolTip(
-            "Treats luminance as a height field and moves the camera toward it.")
+        self.chk_depth_warp = QCheckBox(self.tr("Nebula depth warp  (bright = closer)"))
+        self.chk_depth_warp.setToolTip(self.tr(
+            "Treats luminance as a height field and moves the camera toward it."))
         fx_v.addWidget(self.chk_depth_warp)
         dw_row, self.sld_depth_warp, self.lbl_depth_warp = _slider_row(
-            "  Strength:", 0.0, 2.0, 0.3, decimals=2, scale=100)
+            self.tr("  Strength:"), 0.0, 2.0, 0.3, decimals=2, scale=100)
         dw_row.setEnabled(False)
         self.chk_depth_warp.toggled.connect(dw_row.setEnabled)
         fx_v.addWidget(dw_row)
         self._dw_row = dw_row
 
         dblur_row, self.sld_depth_blur, self.lbl_depth_blur = _slider_row(
-            "  Depth blur:", 1.0, 40.0, 8.0, decimals=1, scale=10)
+            self.tr("  Depth blur:"), 1.0, 40.0, 8.0, decimals=1, scale=10)
         dblur_row.setEnabled(False)
         self.chk_depth_warp.toggled.connect(dblur_row.setEnabled)
         fx_v.addWidget(dblur_row)
         self._dblur_row = dblur_row
 
-        self.chk_depth_invert = QCheckBox("  Invert depth  (dark = closer)")
+        self.chk_depth_invert = QCheckBox(self.tr("  Invert depth  (dark = closer)"))
         self.chk_depth_invert.setEnabled(False)
         self.chk_depth_warp.toggled.connect(self.chk_depth_invert.setEnabled)
         fx_v.addWidget(self.chk_depth_invert)
 
-        self.chk_barrel = QCheckBox("Radial edge stretch")
+        self.chk_barrel = QCheckBox(self.tr("Radial edge stretch"))
         fx_v.addWidget(self.chk_barrel)
         barrel_row, self.sld_barrel, self.lbl_barrel = _slider_row(
-            "  Strength:", -0.5, 0.5, 0.25, decimals=3, scale=1000)
+            self.tr("  Strength:"), -0.5, 0.5, 0.25, decimals=3, scale=1000)
         barrel_row.setEnabled(False)
         self.chk_barrel.toggled.connect(barrel_row.setEnabled)
         fx_v.addWidget(barrel_row)
         self._barrel_row = barrel_row
 
-        self.chk_zoom_blur = QCheckBox("Zoom blur  (warp-speed streaks)")
+        self.chk_zoom_blur = QCheckBox(self.tr("Zoom blur  (warp-speed streaks)"))
         fx_v.addWidget(self.chk_zoom_blur)
         zb_row, self.sld_zoom_blur, self.lbl_zoom_blur = _slider_row(
-            "  Strength:", 0.0, 1.0, 0.4, decimals=2, scale=100)
+            self.tr("  Strength:"), 0.0, 1.0, 0.4, decimals=2, scale=100)
         zb_row.setEnabled(False)
         self.chk_zoom_blur.toggled.connect(zb_row.setEnabled)
         fx_v.addWidget(zb_row)
         self._zb_row = zb_row
 
-        self.chk_chroma = QCheckBox("Chromatic aberration")
+        self.chk_chroma = QCheckBox(self.tr("Chromatic aberration"))
         fx_v.addWidget(self.chk_chroma)
         ca_row, self.sld_chroma, self.lbl_chroma = _slider_row(
-            "  Strength:", 0.0, 1.0, 0.5, decimals=2, scale=100)
+            self.tr("  Strength:"), 0.0, 1.0, 0.5, decimals=2, scale=100)
         ca_row.setEnabled(False)
         self.chk_chroma.toggled.connect(ca_row.setEnabled)
         fx_v.addWidget(ca_row)
@@ -1452,14 +1456,14 @@ class _LayerPanel(QGroupBox):
         self.sld_opacity.valueChanged.connect(
             lambda v: self.lbl_opacity.setText(f"{v/100:.2f}"))
 
-        self.lbl_threshold = QLabel("Threshold:")
+        self.lbl_threshold = QLabel(self.tr("Threshold:"))
         self.sld_threshold = QSlider(Qt.Orientation.Horizontal)
         self.sld_threshold.setRange(0, 100); self.sld_threshold.setValue(20)
         self.lbl_thr_val = QLabel("0.20"); self.lbl_thr_val.setFixedWidth(36)
         self.sld_threshold.valueChanged.connect(
             lambda v: self.lbl_thr_val.setText(f"{v/100:.2f}"))
 
-        self.lbl_feather = QLabel("Feather:")
+        self.lbl_feather = QLabel(self.tr("Feather:"))
         self.sld_feather = QSlider(Qt.Orientation.Horizontal)
         self.sld_feather.setRange(1, 50); self.sld_feather.setValue(10)
         self.lbl_fth_val = QLabel("0.10"); self.lbl_fth_val.setFixedWidth(36)
@@ -1467,13 +1471,13 @@ class _LayerPanel(QGroupBox):
             lambda v: self.lbl_fth_val.setText(f"{v/100:.2f}"))
 
         if has_blend:
-            blend_sep = QLabel("─── Layer Blend ───")
+            blend_sep = QLabel(self.tr("─── Layer Blend ───"))
             blend_sep.setStyleSheet("color:#888; font-size:10px;")
             form.addRow(blend_sep)
-            form.addRow("Blend mode:", self.cmb_blend)
+            form.addRow(self.tr("Blend mode:"), self.cmb_blend)
             op_row = QHBoxLayout()
             op_row.addWidget(self.sld_opacity, 1); op_row.addWidget(self.lbl_opacity)
-            form.addRow("Opacity:", op_row)
+            form.addRow(self.tr("Opacity:"), op_row)
             thr_row = QHBoxLayout()
             thr_row.addWidget(self.sld_threshold, 1); thr_row.addWidget(self.lbl_thr_val)
             fth_row = QHBoxLayout()
@@ -1629,7 +1633,7 @@ class _MidLayerPanel(QGroupBox):
       • All the same zoom/center/ease/effects controls as the other layers
     """
     def __init__(self, accent_colour: str = "#88cc88", parent=None):
-        super().__init__("Mid Layer", parent)
+        super().__init__(_tr("Mid Layer"), parent)
         self._accent = accent_colour
         self.setStyleSheet(f"""
             QGroupBox {{
@@ -1740,7 +1744,7 @@ class _MidLayerPanel(QGroupBox):
 class FlythroughDialog(QDialog):
     def __init__(self, parent, list_open_docs_fn=None, doc_manager=None):
         super().__init__(parent)
-        self.setWindowTitle("Nebula Flythrough")
+        self.setWindowTitle(self.tr("Nebula Flythrough"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -1788,9 +1792,9 @@ class FlythroughDialog(QDialog):
 
         # Three layer panels side by side — each has its own source combo
         layers_row = QHBoxLayout()
-        self.panel_sl  = _LayerPanel("Starless Layer", "#88aaff", has_source=True, has_blend=False)
+        self.panel_sl  = _LayerPanel(self.tr("Starless Layer"), "#88aaff", has_source=True, has_blend=False)
         self.panel_mid = _MidLayerPanel("#88cc88")   # mid already embeds has_source=True
-        self.panel_st  = _LayerPanel("Stars Layer",    "#ffcc66", has_source=True, has_blend=True)
+        self.panel_st  = _LayerPanel(self.tr("Stars Layer"),    "#ffcc66", has_source=True, has_blend=True)
         # Expose top-level source combos for _populate_combos / _on_source_changed
         self.cmb_starless = self.panel_sl.cmb_source
         self.cmb_stars    = self.panel_st.cmb_source
@@ -1812,7 +1816,7 @@ class FlythroughDialog(QDialog):
             panel._on_pick_activated = _on_any_pick_activated
 
         # Picker
-        picker_box = QGroupBox("Click image to set zoom center points")
+        picker_box = QGroupBox(self.tr("Click image to set zoom center points"))
         picker_v   = QVBoxLayout(picker_box)
         self.picker = _centerPickerLabel()
         self.picker.setMinimumHeight(180)
@@ -1824,7 +1828,7 @@ class FlythroughDialog(QDialog):
         # ── right column ───────────────────────────────────────────────
         right = QVBoxLayout()
 
-        prev_box = QGroupBox("Frame Preview")
+        prev_box = QGroupBox(self.tr("Frame Preview"))
         prev_v   = QVBoxLayout(prev_box)
         self.preview_lbl = QLabel()
         self.preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1843,13 +1847,13 @@ class FlythroughDialog(QDialog):
         scrub_row.addWidget(self.lbl_scrub_t)
         prev_v.addLayout(scrub_row)
 
-        self.btn_play = QPushButton("▶  Play Preview")
+        self.btn_play = QPushButton(self.tr("▶  Play Preview"))
         self.btn_play.setCheckable(True)
         self.btn_play.clicked.connect(self._toggle_play)
         prev_v.addWidget(self.btn_play)
         right.addWidget(prev_box, 1)
 
-        out_box  = QGroupBox("Output")
+        out_box  = QGroupBox(self.tr("Output"))
         out_form = QFormLayout(out_box)
         out_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
 
@@ -1858,7 +1862,7 @@ class FlythroughDialog(QDialog):
         self.cmb_working_res.addItems(list(WORKING_RES_PRESETS.keys()))
         self.cmb_working_res.setCurrentText("HD  (1920x1080)")
         self.cmb_working_res.currentIndexChanged.connect(self._on_source_changed)
-        out_form.addRow("Working res:", self.cmb_working_res)
+        out_form.addRow(self.tr("Working res:"), self.cmb_working_res)
         out_form.addRow("", self.lbl_working_size)
 
         res_out = QHBoxLayout()
@@ -1867,16 +1871,16 @@ class FlythroughDialog(QDialog):
         self.sp_out_h = QSpinBox(); self.sp_out_h.setRange(64, 4320)
         self.sp_out_h.setValue(1080); self.sp_out_h.setSuffix(" px")
         res_out.addWidget(self.sp_out_w); res_out.addWidget(QLabel("x")); res_out.addWidget(self.sp_out_h)
-        out_form.addRow("Export res:", res_out)
+        out_form.addRow(self.tr("Export res:"), res_out)
 
         fps_row = QHBoxLayout()
         self.sp_fps = QSpinBox(); self.sp_fps.setRange(1, 120); self.sp_fps.setValue(30); self.sp_fps.setSuffix(" fps")
         self.sp_duration = QDoubleSpinBox(); self.sp_duration.setRange(0.5, 300.0)
         self.sp_duration.setValue(10.0); self.sp_duration.setSuffix(" s"); self.sp_duration.setSingleStep(0.5)
-        fps_row.addWidget(self.sp_fps); fps_row.addWidget(QLabel("Dur:")); fps_row.addWidget(self.sp_duration)
+        fps_row.addWidget(self.sp_fps); fps_row.addWidget(QLabel(self.tr("Dur:"))); fps_row.addWidget(self.sp_duration)
         out_form.addRow("FPS:", fps_row)
 
-        self.lbl_frame_count = QLabel("300 frames")
+        self.lbl_frame_count = QLabel(self.tr("{0} frames").format(300))
         self.lbl_frame_count.setStyleSheet("color:#888; font-size:11px;")
         out_form.addRow("", self.lbl_frame_count)
         self.sp_fps.valueChanged.connect(self._update_frame_count)
@@ -1887,23 +1891,23 @@ class FlythroughDialog(QDialog):
         self.pbar.setRange(0, 100); self.pbar.setValue(0); self.pbar.setVisible(False)
         right.addWidget(self.pbar)
 
-        self.lbl_status = QLabel("Ready")
+        self.lbl_status = QLabel(self.tr("Ready"))
         self.lbl_status.setStyleSheet("color:#aaa; font-size:11px;")
         self.lbl_status.setWordWrap(True)
         right.addWidget(self.lbl_status)
 
-        self.btn_export = QPushButton("Export Video...")
+        self.btn_export = QPushButton(self.tr("Export Video..."))
         self.btn_export.setStyleSheet("font-weight:bold; padding:6px 18px;")
         self.btn_export.clicked.connect(self._export)
         right.addWidget(self.btn_export)
 
-        self.btn_cancel_export = QPushButton("Cancel Export")
+        self.btn_cancel_export = QPushButton(self.tr("Cancel Export"))
         self.btn_cancel_export.setVisible(False)
         self.btn_cancel_export.clicked.connect(self._cancel_export)
         right.addWidget(self.btn_cancel_export)
 
         close_row = QHBoxLayout()
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.close)
         close_row.addWidget(btn_close)
         close_row.addStretch(1)
@@ -1988,12 +1992,12 @@ class FlythroughDialog(QDialog):
     def _toggle_play(self, checked: bool):
         self._playing = checked
         if checked:
-            self.btn_play.setText("⏸  Pause")
+            self.btn_play.setText(self.tr("⏸  Pause"))
             if self.sld_scrub.value() >= self.sld_scrub.maximum():
                 self.sld_scrub.setValue(0)
             self._play_timer.start()
         else:
-            self.btn_play.setText("▶  Play Preview")
+            self.btn_play.setText(self.tr("▶  Play Preview"))
             self._play_timer.stop()
 
     def _on_play_tick(self):
@@ -2002,7 +2006,7 @@ class FlythroughDialog(QDialog):
             self._play_timer.stop()
             self._playing = False
             self.btn_play.setChecked(False)
-            self.btn_play.setText("▶  Play Preview")
+            self.btn_play.setText(self.tr("▶  Play Preview"))
             self.sld_scrub.setValue(0)
         else:
             self.sld_scrub.blockSignals(True)
@@ -2015,7 +2019,7 @@ class FlythroughDialog(QDialog):
         docs = self._list_open_docs()
         for cmb in (self.cmb_starless, self.cmb_stars):
             cmb.blockSignals(True); cmb.clear()
-            cmb.addItem("-- select --", None)
+            cmb.addItem(self.tr("-- select --"), None)
             for title, doc in docs:
                 cmb.addItem(title, doc)
             cmb.blockSignals(False)
@@ -2024,7 +2028,7 @@ class FlythroughDialog(QDialog):
         # Mid source combo gets the same list plus a "-- none --" entry
         self.panel_mid.cmb_source.blockSignals(True)
         self.panel_mid.cmb_source.clear()
-        self.panel_mid.cmb_source.addItem("-- none --", None)
+        self.panel_mid.cmb_source.addItem(self.tr("-- none --"), None)
         for title, doc in docs:
             self.panel_mid.cmb_source.addItem(title, doc)
         self.panel_mid.cmb_source.blockSignals(False)
@@ -2047,7 +2051,7 @@ class FlythroughDialog(QDialog):
                                   if preset else sl_raw)
             h, w = self._starless_arr.shape[:2]
             self.lbl_working_size.setText(
-                f"{w}x{h} px  ({w*h/1e6:.1f} MP)  --  export uses full res")
+                self.tr("{0}x{1} px  ({2:.1f} MP)  --  export uses full res").format(w, h, w*h/1e6))
             self.picker.set_image(self._starless_arr)
             self.sp_out_w.setValue(w); self.sp_out_h.setValue(h)
         else:
@@ -2070,7 +2074,7 @@ class FlythroughDialog(QDialog):
 
     def _update_frame_count(self):
         n = max(1, int(round(self.sp_fps.value() * self.sp_duration.value())))
-        self.lbl_frame_count.setText(f"{n} frames")
+        self.lbl_frame_count.setText(self.tr("{0} frames").format(n))
 
     def _update_markers(self):
         markers = self.panel_sl.markers() + self.panel_mid.markers() + self.panel_st.markers()
@@ -2089,7 +2093,7 @@ class FlythroughDialog(QDialog):
 
     def _refresh_preview(self):
         if self._starless_arr is None:
-            self.preview_lbl.setText("Select a starless image to preview.")
+            self.preview_lbl.setText(self.tr("Select a starless image to preview."))
             return
 
         t_raw = self.sld_scrub.value() / 100.0
@@ -2166,7 +2170,7 @@ class FlythroughDialog(QDialog):
                 Qt.TransformationMode.SmoothTransformation)
             self.preview_lbl.setPixmap(pm)
         except Exception as e:
-            self.preview_lbl.setText(f"Preview error: {e}")
+            self.preview_lbl.setText(self.tr("Preview error: {0}").format(e))
 
     def _load_settings(self):
         s = QSettings()
@@ -2194,10 +2198,10 @@ class FlythroughDialog(QDialog):
 
     def _export(self):
         if self._starless_full is None:
-            QMessageBox.warning(self, "Flythrough", "Please select a starless image first.")
+            QMessageBox.warning(self, self.tr("Flythrough"), self.tr("Please select a starless image first."))
             return
         if not HAS_CV2:
-            QMessageBox.critical(self, "Flythrough", "OpenCV (cv2) is required for video export.")
+            QMessageBox.critical(self, self.tr("Flythrough"), self.tr("OpenCV (cv2) is required for video export."))
             return
 
         s        = QSettings()
@@ -2206,7 +2210,7 @@ class FlythroughDialog(QDialog):
                     if last_dir else "nebula_flythrough.mp4")
 
         out_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Flythrough Video", default,
+            self, self.tr("Save Flythrough Video"), default,
             "MP4 Video (*.mp4);;All Files (*)")
         if not out_path:
             return
@@ -2254,10 +2258,11 @@ class FlythroughDialog(QDialog):
         self.btn_export.setEnabled(False); self.btn_cancel_export.setVisible(True)
 
         full_h, full_w = self._starless_full.shape[:2]
-        mid_note = f" + mid ({self.panel_mid.blend_mode()})" if self._mid_full is not None else ""
+        mid_note = self.tr(" + mid ({0})").format(self.panel_mid.blend_mode()) if self._mid_full is not None else ""
         self.lbl_status.setText(
-            f"Rendering {params['out_w']}x{params['out_h']}{mid_note} -- "
-            f"cropping from {full_w}x{full_h} originals...")
+            self.tr("Rendering {0}x{1}{2} -- "
+                    "cropping from {3}x{4} originals...").format(
+                params['out_w'], params['out_h'], mid_note, full_w, full_h))
 
         self._worker = _FlythroughWorker(params, parent=None)
         self._worker.progress.connect(self._on_progress)
@@ -2276,19 +2281,32 @@ class FlythroughDialog(QDialog):
         self.pbar.setVisible(False)
         self.btn_export.setEnabled(True); self.btn_cancel_export.setVisible(False)
         if ok:
-            self.lbl_status.setText(f"Done -> {os.path.basename(msg)}")
-            QMessageBox.information(self, "Flythrough", f"Video exported successfully:\n{msg}")
+            self.lbl_status.setText(self.tr("Done -> {0}").format(os.path.basename(msg)))
+            QMessageBox.information(self, self.tr("Flythrough"), self.tr("Video exported successfully:\n{0}").format(msg))
         else:
-            self.lbl_status.setText(f"Failed: {msg}")
+            self.lbl_status.setText(self.tr("Failed: {0}").format(
+                self.tr("Cancelled.") if msg == "Cancelled." else msg))
             if msg != "Cancelled.":
-                QMessageBox.critical(self, "Flythrough", f"Export failed:\n{msg}")
+                QMessageBox.critical(self, self.tr("Flythrough"), self.tr("Export failed:\n{0}").format(msg))
+
+    def _stop_worker(self):
+        if self._worker and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(2000)
 
     def closeEvent(self, ev):
         self._play_timer.stop()
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel(); self._worker.wait(2000)
+        self._stop_worker()
         self._save_settings()
         super().closeEvent(ev)
+
+    def reject(self):
+        # Esc deletes this WA_DeleteOnClose dialog without a closeEvent; cancel
+        # an export the same way the close button does instead of leaving it
+        # rendering in the background for a window that is gone.
+        self._play_timer.stop()
+        self._stop_worker()
+        super().reject()
 
 
 # ---------------------------------------------------------------------------

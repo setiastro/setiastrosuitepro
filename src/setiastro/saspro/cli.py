@@ -95,6 +95,7 @@ USAGE
   setiastrosuitepro <command> [options]      run a command headlessly
   setiastrosuitepro <command> --help         full options for that command
   setiastrosuitepro help <command|tool>      the same, e.g. "help solve", "help abe"
+  setiastrosuitepro --run-script SCRIPT.py   run a script in the SASpro that is open
 
 COMMANDS
   solve        Plate-solve images. In-house Gaia DR3 solver (blind or seeded),
@@ -119,6 +120,14 @@ COMMANDS
 
   report       Write a diagnostics report (versions, paths, GPU, libraries).
                Attach its output to bug reports.
+
+  --run-script SCRIPT.py
+               Run a Python script in the SASpro that is already open, on the
+               image you are looking at, as the Scripts menu does: run(ctx)
+               on the GUI thread, dialogs allowed. Read from disk each time.
+               The command stays until the script is done; print() and
+               ctx.log() come back on stdout a line at a time, a traceback on
+               stderr. "--run-script --help" lists its exit codes.
 
 EXAMPLES
   Solve one image, writing a new FITS:
