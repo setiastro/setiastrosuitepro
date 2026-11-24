@@ -16775,6 +16775,9 @@ class StackingSuiteDialog(QDialog):
             QPushButton:pressed{ background-color: #222; border: 2px solid #FFA500; }
         """)
         layout.addWidget(self.integrate_registered_btn)
+        blot_btn = QPushButton(self.tr("Drizzle → Blot → SPCC → ImageMM…"))
+        blot_btn.clicked.connect(self._open_blot_stack)
+        layout.addWidget(blot_btn)
         cleanup_btn = QPushButton(self.tr("🗑️ Clean Up Temp Files"))
         cleanup_btn.setToolTip(self.tr(
             "Delete Normalized_Images, Aligned_Images folders and loose .dat/.npy/.tmp files "
@@ -17043,6 +17046,12 @@ class StackingSuiteDialog(QDialog):
             self.rejection_algorithm = _canon_rejection_algo(
                 self.settings.value("stacking/rejection_algorithm",
                                     self.rejection_algorithm, type=str))
+
+    def _open_blot_stack(self):
+        from .blot_stack_dialog import BlotStackDialog
+        groups = self.extract_light_files_from_tree()
+        dialog = BlotStackDialog(groups, getattr(self, "reference_frame", None), self)
+        dialog.exec()
 
     def select_reference_frame(self):
         """ Opens a file dialog to select the reference frame. """

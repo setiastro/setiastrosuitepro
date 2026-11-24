@@ -86,6 +86,7 @@
   <li><a href="#tech-gpu">&nbsp;&nbsp;9.11 GPU backends</a></li>
   <li><a href="#tech-tuning">&nbsp;&nbsp;9.12 Hardware tuning &mdash; how the optimizer decides</a></li>
   <li><a href="#tech-cleanup">&nbsp;&nbsp;9.13 File layout &amp; cleanup</a></li>
+  <li><a href="#blot-stack">Drizzle → Blot → SPCC → ImageMM</a></li>
   <li><a href="#credits">Credits</a></li>
 </ul>
 </div>
@@ -777,6 +778,14 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
 <p><code>torch_rejection</code> and <code>torch_calibration</code> have no worker count &mdash; they run in the parent process and the former already serialises GPU access through its own lock. Their tunable is the number of full-width rows handed to one rejection call. Measured on a 3070&nbsp;Ti at 12&nbsp;MP, 24 deep, time is almost perfectly <i>linear</i> in rows and throughput varies only 1.2&times; across a 64&times; range of band sizes, so integration is bound by the rejection arithmetic itself &mdash; three iterations of <code>nanmedian</code>/<code>nanstd</code>, each sorting N values per pixel &mdash; not by per-band overhead. The shipped default of 16 is a sound starting point; the optimizer's job here is confirming that on your hardware rather than finding a large win.</p>
 
 <p>Band timings move around 18% between runs, which is why the band tie-break is 10% where the worker one is 3%. Tightening it does not help: on one measured curve a 3% threshold picks 128 rows &mdash; eight times the band RAM &mdash; to chase a difference smaller than the run-to-run noise.</p>
+
+<a id="blot-stack"></a>
+<h3>Drizzle → Blot → SPCC → ImageMM</h3>
+<p>Open this stacking option in <b>Image Integration</b>. Choose a group of calibrated, unregistered lights or select detector FITS or XISF files directly. Choose a reference from that group. For SPCC, use a plate-solved reference and select your passbands, sensor, white reference, and SAS Gaia XP library folder. For monochrome data, turn SPCC off.</p>
+<p>Registration aligns each exposure to the reference. Independent color alignment also measures an affine transform for each color, including on the reference. CFA interpolation is used only to locate stars. Drizzle deposits the original detector samples with per-color droplet widths. Automatic scale uses the aperture and input sampling at H-alpha. Automatic pixel fraction targets 20 droplet overlaps in the least frequently sampled channel.</p>
+<p>The first drizzle builds a sky-subtracted median from well-covered samples. Blot projects this median and the estimated noise back onto each detector, matches the local exposure's sky level, and tests residuals against the noise and the four-neighbor gradient. The adjacent threshold applies within one pixel of a primary outlier. The second drizzle excludes these samples and recomputes coverage. It reuses the first pass's disk space.</p>
+<p>ImageMM starts from the clean, coverage-weighted mean. With SPCC enabled, it refines the calibrated seed using per-channel PSFs and residuals in the original channel units. The run log and FITS history report the change in Gaia stars' aperture colors. Zero iterations saves the seed. Optional iteration planes are saved beside the master.</p>
+<p>Allow approximately eight bytes of scratch disk space per registered frame, output pixel, and channel, plus space for the master and any requested iteration planes. Scratch files are removed after success, failure, or cancellation. The detector rejection masks are released after the second drizzle of each exposure.</p>
 
 <a id="tech-cleanup"></a>
 <h3>9.13 File layout &amp; cleanup</h3>
