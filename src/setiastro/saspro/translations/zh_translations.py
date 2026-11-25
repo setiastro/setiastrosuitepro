@@ -17455,3 +17455,103 @@ _ADDITIONS_2026_11_24_QS = {
 for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
     TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+# 2026-11-25: the eraser in Clone Stamp and Blemish Blaster (EraserFillPicker = its fill row).
+_ADDITIONS_2026_11_25_ERASER = {
+    'CloneStampDialogPro': {
+        'Mode:': '模式：',
+        'Clone': '仿制',
+        'Eraser': '橡皮擦',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': '用画笔涂上黑色、图像中值或所选颜色，例如去除纯星点图像中残留的星云。',
+        'Fill:': '填充：',
+        'Left-drag to paint with the fill.\nUse [ and ] to decrease/increase brush size.': '按住左键拖动，用填充值涂抹。\n使用 [ 和 ] 减小/增大画笔大小。',
+    },
+    'BlemishBlasterDialogPro': {
+        'Eraser': '橡皮擦',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': '用画笔涂上黑色、图像中值或所选颜色，例如去除纯星点图像中残留的星云。',
+        'Fill:': '填充：',
+    },
+    'EraserFillPicker': {
+        'Black': '黑色',
+        'Image median': '图像中值',
+        'Color': '颜色',
+        'Paints 0.0 in every channel.': '在每个通道中涂上 0.0。',
+        "Paints the image's median, measured when you choose this.": '涂上图像的中值，在您选择此项时测量。',
+        "Paints each channel's own median (R, G and B separately), measured when you choose this.": '涂上每个通道各自的中值（R、G、B 分别计算），在您选择此项时测量。',
+        "Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.": '将所选颜色的数值直接写入图像。开启自动拉伸预览时，它会比色块显得更亮。',
+        'Choose the fill color': '选择填充颜色',
+        'Eraser color': '橡皮擦颜色',
+        'Fills with {0}': '填充值 {0}',
+        'Fills with R {0}  G {1}  B {2}': '填充值 R {0}  G {1}  B {2}',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_ERASER.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-25: Banding Blaster as its own tool, and making Essentials your own
+# (Add to / Remove from Essentials, Put Back, Reset Essentials).
+_ADDITIONS_2026_11_25_BANDING = {
+    'BandingBlasterDialog': {
+        'Fit': '适应',
+        'Direction:': '方向：',
+        'Horizontal': '水平',
+        'Vertical': '垂直',
+        'Amount:': '强度：',
+        'Strength of the correction. 1.0 fully equalises the per-row median to the global median. <1.0 = partial correction, >1.0 = over-correction (rarely useful).': '校正强度。1.0 将逐行中位数完全均衡到全局中位数。<1.0 = 部分校正，>1.0 = 过度校正（很少有用）。',
+        'Protect highlights': '保护高光',
+        "Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.": '从逐行中位数中排除明亮像素（恒星、深空天体核心），以免其使校正产生偏差。天文图像建议开启。',
+        'Sigma:': 'Sigma：',
+        "Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.": '高于全局中位数的剔除阈值，以稳健 sigma 为单位。越低 = 越积极地剔除明亮像素。仅在启用“保护高光”时使用。',
+        'Computing preview…': '正在计算预览…',
+        'Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)': '算法：CanonBandingReduction，作者 Georg Viehoever（GPLv3，2009-2013）',
+        'Apply': '应用',
+        'Close': '关闭',
+        'Preview failed: {0}': '预览失败：{0}',
+        'Open an image first.': '请先打开一张图像。',
+        'Apply failed:\n{0}': '应用失败：\n{0}',
+        'Fit the whole image in the preview': '将整幅图像适应到预览中',
+        'Row banding, as on Canon DSLRs': '行条纹，如佳能单反相机',
+        'Column banding, as on some CMOS cameras': '列条纹，如部分 CMOS 相机',
+        'Drag to the canvas to create a Banding Blaster shortcut with these exact settings.\nDrop directly on an image to apply them headlessly.': '拖到画布上以使用这些完全相同的设置创建 Banding Blaster 快捷方式。\n直接拖放到图像上即可无头应用。',
+        'Measuring the bands…': '正在测量条纹…',
+        'Largest column shift: {0:.5f}': '最大列偏移：{0:.5f}',
+        'Largest row shift: {0:.5f}': '最大行偏移：{0:.5f}',
+        'Amount is 0, so there is nothing to apply.': '强度为 0，没有可应用的内容。',
+    },
+    '_BandingBlasterPresetDialog': {
+        'Horizontal': '水平',
+        'Vertical': '垂直',
+        'Protect highlights': '保护高光',
+        'Direction:': '方向：',
+        'Amount:': '强度：',
+        'Sigma:': 'Sigma：',
+        'Banding Blaster — Preset': 'Banding Blaster — 预设',
+    },
+    'BandingBlaster': {
+        'Open an image first.': '请先打开一张图像。',
+    },
+    'CheatSheet': {
+        "Drag a tool window's grip, a desktop shortcut or a History step onto Essentials": '将工具窗口的拖动柄、桌面快捷方式或历史步骤拖到基本工具上',
+        'Add that tool to Essentials': '将该工具添加到基本工具',
+    },
+    'DraggableToolBar': {
+        'Add to Essentials': '添加到基本工具',
+    },
+    'EssentialsToolBar': {
+        'Remove from Essentials': '从基本工具中移除',
+        'Put Back': '放回',
+        'Reset Essentials...': '重置基本工具...',
+        "Tip: drag a tool window's grip here to add the tool": '提示：将工具窗口的拖动柄拖到这里即可添加该工具',
+    },
+    'AstroSuiteProMainWindow': {
+        'Reset Essentials': '重置基本工具',
+        'Put the default tools back on Essentials?\n\nTools you added are taken off, the ones you removed come back, and the order is the default one.': '将默认工具放回基本工具？\n\n您添加的工具会被移除，您移除的工具会恢复，顺序也恢复为默认顺序。',
+        'Reduce row or column banding across the whole image': '减少整幅图像中的行条纹或列条纹',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

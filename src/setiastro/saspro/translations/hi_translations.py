@@ -17381,3 +17381,103 @@ _ADDITIONS_2026_11_24_QS = {
 for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
     TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+# 2026-11-25: the eraser in Clone Stamp and Blemish Blaster (EraserFillPicker = its fill row).
+_ADDITIONS_2026_11_25_ERASER = {
+    'CloneStampDialogPro': {
+        'Mode:': 'मोड:',
+        'Clone': 'क्लोन',
+        'Eraser': 'इरेज़र',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': 'ब्रश से काला, छवि माध्यिका या चुना हुआ रंग पेंट करें, जैसे केवल तारों वाली छवि में बची नीहारिका हटाने के लिए।',
+        'Fill:': 'भराव:',
+        'Left-drag to paint with the fill.\nUse [ and ] to decrease/increase brush size.': 'भराव से पेंट करने के लिए बायाँ बटन दबाकर खींचें।\nब्रश आकार घटाने/बढ़ाने के लिए [ और ] का उपयोग करें।',
+    },
+    'BlemishBlasterDialogPro': {
+        'Eraser': 'इरेज़र',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': 'ब्रश से काला, छवि माध्यिका या चुना हुआ रंग पेंट करें, जैसे केवल तारों वाली छवि में बची नीहारिका हटाने के लिए।',
+        'Fill:': 'भराव:',
+    },
+    'EraserFillPicker': {
+        'Black': 'काला',
+        'Image median': 'छवि माध्यिका',
+        'Color': 'रंग',
+        'Paints 0.0 in every channel.': 'हर चैनल में 0.0 पेंट करता है।',
+        "Paints the image's median, measured when you choose this.": 'छवि की माध्यिका पेंट करता है, जो आपके इसे चुनते समय मापी जाती है।',
+        "Paints each channel's own median (R, G and B separately), measured when you choose this.": 'हर चैनल की अपनी माध्यिका (R, G और B अलग-अलग) पेंट करता है, जो आपके इसे चुनते समय मापी जाती है।',
+        "Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.": 'चुने गए रंग के मान सीधे छवि में लिखता है। ऑटो-स्ट्रेच पूर्वावलोकन चालू होने पर यह नमूने से अधिक चमकीला दिखता है।',
+        'Choose the fill color': 'भराव रंग चुनें',
+        'Eraser color': 'इरेज़र का रंग',
+        'Fills with {0}': '{0} से भरता है',
+        'Fills with R {0}  G {1}  B {2}': 'R {0}  G {1}  B {2} से भरता है',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_ERASER.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-25: Banding Blaster as its own tool, and making Essentials your own
+# (Add to / Remove from Essentials, Put Back, Reset Essentials).
+_ADDITIONS_2026_11_25_BANDING = {
+    'BandingBlasterDialog': {
+        'Fit': 'फिट',
+        'Direction:': 'दिशा:',
+        'Horizontal': 'क्षैतिज',
+        'Vertical': 'लंबवत',
+        'Amount:': 'मात्रा:',
+        'Strength of the correction. 1.0 fully equalises the per-row median to the global median. <1.0 = partial correction, >1.0 = over-correction (rarely useful).': 'सुधार की शक्ति। 1.0 प्रति-पंक्ति माध्यिका को पूरी तरह वैश्विक माध्यिका के बराबर कर देता है। <1.0 = आंशिक सुधार, >1.0 = अति-सुधार (शायद ही उपयोगी)।',
+        'Protect highlights': 'हाइलाइट्स सुरक्षित करें',
+        "Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.": 'चमकीले पिक्सेल (तारे, DSO कोर) को प्रति-पंक्ति माध्यिका से बाहर रखें ताकि वे सुधार को प्रभावित न करें। खगोलीय छवियों के लिए चालू रखना अनुशंसित।',
+        'Sigma:': 'सिग्मा:',
+        "Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.": "वैश्विक माध्यिका से ऊपर robust-sigma इकाइयों में अस्वीकृति थ्रेशोल्ड। कम = चमकीले पिक्सेल की अधिक आक्रामक अस्वीकृति। केवल तभी उपयोग होता है जब 'हाइलाइट्स सुरक्षित करें' चालू हो।",
+        'Computing preview…': 'पूर्वावलोकन की गणना की जा रही है…',
+        'Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)': 'एल्गोरिदम: Georg Viehoever द्वारा CanonBandingReduction (GPLv3, 2009-2013)',
+        'Apply': 'लागू करें',
+        'Close': 'बंद करें',
+        'Preview failed: {0}': 'पूर्वावलोकन विफल: {0}',
+        'Open an image first.': 'पहले एक छवि खोलें।',
+        'Apply failed:\n{0}': 'लागू करना विफल:\n{0}',
+        'Fit the whole image in the preview': 'पूरी छवि को प्रीव्यू में फ़िट करें',
+        'Row banding, as on Canon DSLRs': 'पंक्ति बैंडिंग, जैसे Canon DSLR में',
+        'Column banding, as on some CMOS cameras': 'स्तंभ बैंडिंग, जैसे कुछ CMOS कैमरों में',
+        'Drag to the canvas to create a Banding Blaster shortcut with these exact settings.\nDrop directly on an image to apply them headlessly.': 'इन्हीं सटीक सेटिंग्स के साथ Banding Blaster शॉर्टकट बनाने के लिए कैनवास पर खींचें।\nइन्हें हेडलेस रूप से लागू करने के लिए सीधे किसी छवि पर छोड़ें।',
+        'Measuring the bands…': 'बैंडिंग मापी जा रही है…',
+        'Largest column shift: {0:.5f}': 'सबसे बड़ा स्तंभ खिसकाव: {0:.5f}',
+        'Largest row shift: {0:.5f}': 'सबसे बड़ा पंक्ति खिसकाव: {0:.5f}',
+        'Amount is 0, so there is nothing to apply.': 'मात्रा 0 है, इसलिए लागू करने के लिए कुछ नहीं है।',
+    },
+    '_BandingBlasterPresetDialog': {
+        'Horizontal': 'क्षैतिज',
+        'Vertical': 'लंबवत',
+        'Protect highlights': 'हाइलाइट्स सुरक्षित करें',
+        'Direction:': 'दिशा:',
+        'Amount:': 'मात्रा:',
+        'Sigma:': 'सिग्मा:',
+        'Banding Blaster — Preset': 'Banding Blaster — प्रीसेट',
+    },
+    'BandingBlaster': {
+        'Open an image first.': 'पहले एक छवि खोलें।',
+    },
+    'CheatSheet': {
+        "Drag a tool window's grip, a desktop shortcut or a History step onto Essentials": 'किसी टूल विंडो का ग्रिप, डेस्कटॉप शॉर्टकट या इतिहास का कोई चरण आवश्यक उपकरण पर खींचें',
+        'Add that tool to Essentials': 'उस टूल को आवश्यक उपकरण में जोड़ें',
+    },
+    'DraggableToolBar': {
+        'Add to Essentials': 'आवश्यक उपकरण में जोड़ें',
+    },
+    'EssentialsToolBar': {
+        'Remove from Essentials': 'आवश्यक उपकरण से हटाएँ',
+        'Put Back': 'वापस रखें',
+        'Reset Essentials...': 'आवश्यक उपकरण रीसेट करें...',
+        "Tip: drag a tool window's grip here to add the tool": 'सुझाव: टूल जोड़ने के लिए किसी टूल विंडो का ग्रिप यहाँ खींचें',
+    },
+    'AstroSuiteProMainWindow': {
+        'Reset Essentials': 'आवश्यक उपकरण रीसेट करें',
+        'Put the default tools back on Essentials?\n\nTools you added are taken off, the ones you removed come back, and the order is the default one.': 'डिफ़ॉल्ट टूल वापस आवश्यक उपकरण में रखें?\n\nआपके जोड़े गए टूल हटा दिए जाएँगे, हटाए गए टूल वापस आ जाएँगे, और क्रम डिफ़ॉल्ट हो जाएगा।',
+        'Reduce row or column banding across the whole image': 'पूरी छवि में पंक्ति या स्तंभ बैंडिंग कम करें',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

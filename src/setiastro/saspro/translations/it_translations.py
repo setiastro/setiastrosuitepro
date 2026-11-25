@@ -18273,3 +18273,103 @@ _ADDITIONS_2026_11_24_QS = {
 for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
     TRANSLATIONS_IT.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+# 2026-11-25: the eraser in Clone Stamp and Blemish Blaster (EraserFillPicker = its fill row).
+_ADDITIONS_2026_11_25_ERASER = {
+    'CloneStampDialogPro': {
+        'Mode:': 'Modalità:',
+        'Clone': 'Clona',
+        'Eraser': 'Gomma',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': "Dipinge con il pennello nero, la mediana dell'immagine o un colore scelto, ad es. per rimuovere la nebulosa rimasta in un'immagine di sole stelle.",
+        'Fill:': 'Riempimento:',
+        'Left-drag to paint with the fill.\nUse [ and ] to decrease/increase brush size.': 'Trascina con il tasto sinistro per dipingere con il riempimento.\nUsa [ e ] per ridurre/aumentare la dimensione del pennello.',
+    },
+    'BlemishBlasterDialogPro': {
+        'Eraser': 'Gomma',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': "Dipinge con il pennello nero, la mediana dell'immagine o un colore scelto, ad es. per rimuovere la nebulosa rimasta in un'immagine di sole stelle.",
+        'Fill:': 'Riempimento:',
+    },
+    'EraserFillPicker': {
+        'Black': 'Nero',
+        'Image median': "Mediana dell'immagine",
+        'Color': 'Colore',
+        'Paints 0.0 in every channel.': 'Dipinge 0.0 in ogni canale.',
+        "Paints the image's median, measured when you choose this.": "Dipinge la mediana dell'immagine, misurata quando scegli questa opzione.",
+        "Paints each channel's own median (R, G and B separately), measured when you choose this.": 'Dipinge la mediana propria di ogni canale (R, G e B separatamente), misurata quando scegli questa opzione.',
+        "Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.": "Scrive i valori del colore scelto direttamente nell'immagine. Con Anteprima auto-stretch attiva appare più chiaro del campione.",
+        'Choose the fill color': 'Scegli il colore di riempimento',
+        'Eraser color': 'Colore della gomma',
+        'Fills with {0}': 'Riempie con {0}',
+        'Fills with R {0}  G {1}  B {2}': 'Riempie con R {0}  G {1}  B {2}',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_ERASER.items():
+    TRANSLATIONS_IT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-25: Banding Blaster as its own tool, and making Essentials your own
+# (Add to / Remove from Essentials, Put Back, Reset Essentials).
+_ADDITIONS_2026_11_25_BANDING = {
+    'BandingBlasterDialog': {
+        'Fit': 'Adatta',
+        'Direction:': 'Direzione:',
+        'Horizontal': 'Orizzontale',
+        'Vertical': 'Verticale',
+        'Amount:': 'Quantità:',
+        'Strength of the correction. 1.0 fully equalises the per-row median to the global median. <1.0 = partial correction, >1.0 = over-correction (rarely useful).': 'Intensità della correzione. 1.0 equalizza completamente la mediana per riga alla mediana globale. <1.0 = correzione parziale, >1.0 = sovracorrezione (raramente utile).',
+        'Protect highlights': 'Proteggi alte luci',
+        "Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.": 'Esclude i pixel luminosi (stelle, nuclei DSO) dalla mediana per riga in modo che non falsino la correzione. Consigliato ON per immagini astronomiche.',
+        'Sigma:': 'Sigma:',
+        "Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.": "Soglia di reiezione in unità sigma robuste sopra la mediana globale. Più bassa = reiezione più aggressiva dei pixel luminosi. Usata solo quando 'Proteggi alte luci' è attivo.",
+        'Computing preview…': 'Calcolo anteprima…',
+        'Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)': 'Algoritmo: CanonBandingReduction di Georg Viehoever (GPLv3, 2009-2013)',
+        'Apply': 'Applica',
+        'Close': 'Chiudi',
+        'Preview failed: {0}': 'Anteprima fallita: {0}',
+        'Open an image first.': "Apri prima un'immagine.",
+        'Apply failed:\n{0}': 'Applicazione fallita:\n{0}',
+        'Fit the whole image in the preview': "Adatta l'intera immagine nell'anteprima",
+        'Row banding, as on Canon DSLRs': 'Banding per righe, come sulle reflex Canon',
+        'Column banding, as on some CMOS cameras': 'Banding per colonne, come su alcune camere CMOS',
+        'Drag to the canvas to create a Banding Blaster shortcut with these exact settings.\nDrop directly on an image to apply them headlessly.': "Trascina sull'area di lavoro per creare una scorciatoia Banding Blaster con queste impostazioni esatte.\nRilascia direttamente su un'immagine per applicarle senza GUI.",
+        'Measuring the bands…': 'Misurazione del banding…',
+        'Largest column shift: {0:.5f}': 'Spostamento massimo di colonna: {0:.5f}',
+        'Largest row shift: {0:.5f}': 'Spostamento massimo di riga: {0:.5f}',
+        'Amount is 0, so there is nothing to apply.': "La quantità è 0, quindi non c'è nulla da applicare.",
+    },
+    '_BandingBlasterPresetDialog': {
+        'Horizontal': 'Orizzontale',
+        'Vertical': 'Verticale',
+        'Protect highlights': 'Proteggi alte luci',
+        'Direction:': 'Direzione:',
+        'Amount:': 'Quantità:',
+        'Sigma:': 'Sigma:',
+        'Banding Blaster — Preset': 'Banding Blaster — Preset',
+    },
+    'BandingBlaster': {
+        'Open an image first.': "Apri prima un'immagine.",
+    },
+    'CheatSheet': {
+        "Drag a tool window's grip, a desktop shortcut or a History step onto Essentials": 'Trascina la maniglia di una finestra strumento, una scorciatoia sul desktop o un passo della Cronologia su Essenziali',
+        'Add that tool to Essentials': 'Aggiungi quello strumento a Essenziali',
+    },
+    'DraggableToolBar': {
+        'Add to Essentials': 'Aggiungi a Essenziali',
+    },
+    'EssentialsToolBar': {
+        'Remove from Essentials': 'Rimuovi da Essenziali',
+        'Put Back': 'Rimetti',
+        'Reset Essentials...': 'Ripristina Essenziali...',
+        "Tip: drag a tool window's grip here to add the tool": 'Suggerimento: trascina qui la maniglia di una finestra strumento per aggiungere lo strumento',
+    },
+    'AstroSuiteProMainWindow': {
+        'Reset Essentials': 'Ripristina Essenziali',
+        'Put the default tools back on Essentials?\n\nTools you added are taken off, the ones you removed come back, and the order is the default one.': "Rimettere gli strumenti predefiniti in Essenziali?\n\nGli strumenti aggiunti vengono tolti, quelli rimossi tornano e l'ordine torna quello predefinito.",
+        'Reduce row or column banding across the whole image': "Riduci il banding di righe o colonne su tutta l'immagine",
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
+    TRANSLATIONS_IT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

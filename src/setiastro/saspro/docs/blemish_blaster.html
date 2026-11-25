@@ -39,22 +39,24 @@
 <body>
 
 <h1>Blemish Blaster</h1>
-<p class="sub">Three healing tools in one interactive dialog. The
+<p class="sub">Three healing tools and an eraser in one interactive dialog. The
 <b>Blemish Blaster</b> fixes round defects (dust motes, bad pixels,
 satellite flashes, residual stars after StarNet) with a one-click
 median-of-median heal. <b>Linear Blaster</b> paints out straight or
 bent line defects (satellite trails, cosmic rays, airplane trails)
 with a draggable path. <b>Banding Blaster</b> suppresses horizontal
-or vertical row/column banding across the entire frame.</p>
+or vertical row/column banding across the entire frame.
+<b>Eraser</b> paints black, the image median or a chosen color with the
+brush.</p>
 
 <h2>1. Mode selector</h2>
-<p>Three radio buttons at the top of the controls panel choose the
+<p>Four radio buttons in the controls panel choose the
 active mode. Switching modes resets any in-progress linear path and
 hides the controls that don't apply, so the panel stays uncluttered.
 The preview on the right responds differently in each mode &mdash;
 hover-and-click in Blemish, click-and-drag path building in Linear,
 pan-only in Banding (because banding operates on the whole frame at
-once).</p>
+once), press-and-drag painting in Eraser.</p>
 
 <h2>2. Shared controls</h2>
 
@@ -68,12 +70,12 @@ dialog opens the preview is auto-fit to its viewport; after that your
 zoom and pan state is preserved across mode switches.</p>
 
 <h3>Radius / Feather / Opacity</h3>
-<p>These three sliders are shared by Blemish and Linear modes (Banding
+<p>These three sliders are shared by Blemish, Linear and Eraser modes (Banding
 uses its own set). Each has a live numeric spinbox alongside the
 slider that stays in sync.</p>
 <ul>
-  <li><b>Radius</b> &mdash; 1&ndash;900&nbsp;px. In Blemish mode this
-      is the healing brush radius (and the preview circle size). In
+  <li><b>Radius</b> &mdash; 1&ndash;900&nbsp;px. In Blemish and Eraser
+      modes this is the brush radius (and the preview circle size). In
       Linear mode it has no effect; use Thickness instead.</li>
   <li><b>Feather</b> &mdash; 0&ndash;100&nbsp;%. The soft edge of the
       heal, as a fraction of the radius. 0 is a hard edge; 100 ramps
@@ -102,7 +104,8 @@ on linear data where a dust mote would otherwise be invisible.</p>
 
 <h3>Undo / Redo / Apply</h3>
 <p>The in-dialog undo/redo ring holds the last 20 operations. Each
-blemish heal snapshots only its affected patch; linear and banding
+blemish heal snapshots only its affected patch, and each eraser stroke
+the 64&times;64 tiles it touched (one stroke, one entry); linear and banding
 operations snapshot the whole image (since a line can span the frame
 and banding touches every pixel). <kbd>Ctrl</kbd>+<kbd>Z</kbd> and
 <kbd>Ctrl</kbd>+<kbd>Y</kbd> are intercepted inside the dialog so
@@ -144,7 +147,7 @@ around 50% hides the transition on most backgrounds. Click once;
 if the result looks off, undo and try at a different radius or
 offset the click a few pixels to pick a different hex arrangement
 of sampling patches. The algorithm itself is described in
-&sect;&nbsp;6.1.</p>
+&sect;&nbsp;7.1.</p>
 
 <div class="tip"><b>Tip:</b> for a tiny defect against complex
 background (nebula filaments, galaxy spiral arms), reduce opacity to
@@ -204,7 +207,7 @@ and can optionally extend all the way to the image borders.</p>
 <h3>Blast Line button</h3>
 <p>The <b>&#9889; Blast Line</b> button is enabled once both endpoints
 are placed. Pressing it dispatches the linear worker (algorithm in
-&sect;&nbsp;6.2) and clears the path once the heal completes. The
+&sect;&nbsp;7.2) and clears the path once the heal completes. The
 undo ring records the entire pre-blast image so a full undo always
 works.</p>
 
@@ -215,6 +218,10 @@ use the preview-click interface &mdash; the correction runs on the
 entire frame at once with a single button press. The preview switches
 to scroll-hand drag so you can pan to inspect the result, but
 clicking does nothing until you switch back to Blemish or Linear.</p>
+<div class="tip">Banding Blaster is also its own tool: <b>Functions &rsaquo;
+Repair &amp; Retouch &rsaquo; Banding Blaster</b>, next to this one on the
+toolbar. It gives the same result and adds a before/after preview, a preset
+grip, Replay, Function Bundles, scripting and the command line.</div>
 
 <h3>Direction</h3>
 <p>Horizontal (default) or Vertical. Horizontal targets rows &mdash;
@@ -245,7 +252,7 @@ this tool works at all on a Milky Way frame or a nebula field.
 When off, the sigma control is disabled.</p>
 <p><b>Sigma</b> (0.01&ndash;5.00, default 1.00) is the rejection
 threshold above the global median, in robust-sigma units
-(&sect;&nbsp;6.3). Lower is more aggressive. 1.0 keeps roughly 80%
+(&sect;&nbsp;7.3). Lower is more aggressive. 1.0 keeps roughly 80%
 of a smooth background in the row-median estimate; drop to 0.3&ndash;0.5
 on very star-dense fields.</p>
 
@@ -254,13 +261,54 @@ on very star-dense fields.</p>
 pushes the result into the preview and the dialog's undo stack as a
 whole-image patch. Undoable like any other operation.</p>
 
-<h2>6. Technical details</h2>
+<h2>6. Eraser mode</h2>
+<p>Paints a flat fill with the brush instead of healing &mdash; for
+things that should simply be gone, such as nebula remnants and other
+artifacts left in a stars-only image after star removal.</p>
+
+<h3>Interactions</h3>
+<ul>
+  <li><b>Hover</b> &mdash; the same red dashed brush circle as Blemish
+      mode.</li>
+  <li><b>Left-click and drag</b> &mdash; paints. Dabs are placed every
+      &frac14; radius along the drag and painted on the spot (no worker
+      thread), so the preview follows as you drag. Each dab blends
+      <code>(1&nbsp;&minus;&nbsp;&alpha;)&middot;image&nbsp;+&nbsp;&alpha;&middot;fill</code>
+      with <code>&alpha;</code> = mask &times; opacity, using the shared
+      Radius, Feather and Opacity. One stroke is one undo entry.</li>
+  <li><b>Space + drag</b> &mdash; pans, as in the other modes.</li>
+</ul>
+
+<h3>Fill</h3>
+<ul>
+  <li><b>Black</b> &mdash; 0.0 in every channel. Where the brush is at
+      full strength (inside the feather ring, opacity 100&nbsp;%) the
+      result is exactly 0.0.</li>
+  <li><b>Image median</b> &mdash; each channel's own median (R, G and B
+      separately; one value on a mono image), measured when you choose
+      it and shown under the choices. Paints the background level back
+      in.</li>
+  <li><b>Color</b> &mdash; click the swatch to pick any color. Its
+      values (0&ndash;1 per channel) go straight into the image, so on
+      linear data even a dark gray is far brighter than the sky, and with
+      Auto-stretch preview on the paint shows brighter than the swatch.
+      On a mono image the color's gray level (the mean of R, G and B) is
+      painted, since that is what Apply keeps.</li>
+</ul>
+<p>The fill choice and the color are remembered, and shared with
+Clone Stamp's Eraser.</p>
+
+<div class="tip"><b>Tip:</b> the fill is flat &mdash; it carries no
+noise. On a noisy background an erased patch reads as smooth; where the
+texture has to continue, heal or clone instead.</div>
+
+<h2>7. Technical details</h2>
 <p class="tech-lead">All processing on float32 [0, 1]. The dialog
 displays a 3-channel copy of the working image regardless of source
 depth; on Apply, mono originals are collapsed back to a single
 plane.</p>
 
-<h3>6.1 Blemish healing algorithm</h3>
+<h3>7.1 Blemish healing algorithm</h3>
 <p>For a click at pixel <code>p&nbsp;=&nbsp;(x,&nbsp;y)</code> and
 brush radius <code>r</code>, six candidate neighbour centres are
 placed on a hexagon at 1.5&times; the radius:</p>
@@ -300,7 +348,7 @@ gets corrected, using the border rather than being skipped.</p>
 and runs on a background thread so the GUI stays responsive during
 larger brushes.</p>
 
-<h3>6.2 Linear healing algorithm</h3>
+<h3>7.2 Linear healing algorithm</h3>
 <p>The user's path (two endpoints and an optional bend handle) is
 converted into a sequence of straight sub-segments. When bent, the
 path is a quadratic B&eacute;zier through endpoints
@@ -335,7 +383,7 @@ source &mdash; the same two-level median idea as the blemish mode,
 but applied column-wise along the segment so a curved path can heal
 differently at each t.</p>
 <div class="matheq">\mathrm{offsets} \;=\; \{\pm T,\;\pm 2T,\;\pm 3T\}</div>
-<p>The feather/opacity blend is identical to &sect;&nbsp;6.1 using
+<p>The feather/opacity blend is identical to &sect;&nbsp;7.1 using
 <code>|s|/T</code> as the distance variable instead of radial
 <code>d</code>. When sub-segments overlap at joints, a
 &ldquo;keep-strongest&rdquo; rule writes to the output only where
@@ -343,7 +391,7 @@ the current sub-segment's &alpha; exceeds whatever a previous
 sub-segment already wrote &mdash; so the heal doesn't double-blend
 along the join line.</p>
 
-<h3>6.3 Banding reduction algorithm</h3>
+<h3>7.3 Banding reduction algorithm</h3>
 <p>Vertical banding is handled by transposing the array, running the
 horizontal algorithm, then transposing back. The horizontal algorithm
 operates per channel and per row.</p>
@@ -378,7 +426,7 @@ sort every row ascending (so survivors occupy positions
 <code>[0,&nbsp;n<sub>r</sub>)</code>), and index out the median
 positionally with an odd/even case split.</p>
 
-<h3>6.4 Auto-stretch preview</h3>
+<h3>7.4 Auto-stretch preview</h3>
 <p>Purely display-side. On every image refresh, if the checkbox is on,
 the working image is passed through
 <code>stretch_mono_image</code> (for original mono source) or
@@ -386,7 +434,7 @@ the working image is passed through
 Linked settings. The result goes into a separate display buffer; the
 working image used by the healers is never touched.</p>
 
-<h3>6.5 Undo/redo patch system</h3>
+<h3>7.5 Undo/redo patch system</h3>
 <p>Each operation records a tuple
 <code>(y<sub>0</sub>, x<sub>0</sub>, prev)</code> where
 <code>prev</code> is a copy of the pre-op image bytes in the affected
@@ -396,6 +444,9 @@ whole image. Undo swaps the current pixels in that rectangle with
 the saved copy and pushes the forward-direction patch into the redo
 ring; redo is the mirror operation. The ring is bounded at 20 entries
 to cap peak memory.</p>
+<p>An eraser stroke records a list of such patches instead: one per
+64&times;64 tile the stroke touched, copied before its first dab
+there (the tiles never overlap). Undo and redo walk the list.</p>
 
 <div class="credit">
 <b>Credits.</b> The <b>Banding Blaster</b> algorithm is a port of

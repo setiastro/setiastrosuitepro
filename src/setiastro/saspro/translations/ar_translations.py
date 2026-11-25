@@ -17690,3 +17690,103 @@ _ADDITIONS_2026_11_24_QS = {
 for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
     TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+# 2026-11-25: the eraser in Clone Stamp and Blemish Blaster (EraserFillPicker = its fill row).
+_ADDITIONS_2026_11_25_ERASER = {
+    'CloneStampDialogPro': {
+        'Mode:': 'الوضع:',
+        'Clone': 'استنساخ',
+        'Eraser': 'ممحاة',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': 'يرسم بالفرشاة اللون الأسود أو وسيط الصورة أو لونًا تختاره، مثلًا لإزالة السديم المتبقي في صورة النجوم فقط.',
+        'Fill:': 'التعبئة:',
+        'Left-drag to paint with the fill.\nUse [ and ] to decrease/increase brush size.': 'اسحب بالزر الأيسر للرسم بالتعبئة.\nاستخدم [ و ] لتصغير/تكبير حجم الفرشاة.',
+    },
+    'BlemishBlasterDialogPro': {
+        'Eraser': 'ممحاة',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': 'يرسم بالفرشاة اللون الأسود أو وسيط الصورة أو لونًا تختاره، مثلًا لإزالة السديم المتبقي في صورة النجوم فقط.',
+        'Fill:': 'التعبئة:',
+    },
+    'EraserFillPicker': {
+        'Black': 'أسود',
+        'Image median': 'وسيط الصورة',
+        'Color': 'لون',
+        'Paints 0.0 in every channel.': 'يرسم 0.0 في كل قناة.',
+        "Paints the image's median, measured when you choose this.": 'يرسم وسيط الصورة، ويُقاس عند اختيارك لهذا الخيار.',
+        "Paints each channel's own median (R, G and B separately), measured when you choose this.": 'يرسم الوسيط الخاص بكل قناة (R وG وB كلٌّ على حدة)، ويُقاس عند اختيارك لهذا الخيار.',
+        "Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.": 'يكتب قيم اللون المختار مباشرة في الصورة. عند تشغيل معاينة تمدد تلقائي يبدو أفتح من العيّنة.',
+        'Choose the fill color': 'اختر لون التعبئة',
+        'Eraser color': 'لون الممحاة',
+        'Fills with {0}': 'يملأ بـ {0}',
+        'Fills with R {0}  G {1}  B {2}': 'يملأ بـ R {0}  G {1}  B {2}',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_ERASER.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-25: Banding Blaster as its own tool, and making Essentials your own
+# (Add to / Remove from Essentials, Put Back, Reset Essentials).
+_ADDITIONS_2026_11_25_BANDING = {
+    'BandingBlasterDialog': {
+        'Fit': 'ملائمة',
+        'Direction:': 'الاتجاه:',
+        'Horizontal': 'أفقي',
+        'Vertical': 'عمودي',
+        'Amount:': 'المقدار:',
+        'Strength of the correction. 1.0 fully equalises the per-row median to the global median. <1.0 = partial correction, >1.0 = over-correction (rarely useful).': 'قوة التصحيح. 1.0 تساوي الوسيط لكل صف بالوسيط العام بالكامل. <1.0 = تصحيح جزئي، >1.0 = تصحيح مفرط (نادرًا ما يفيد).',
+        'Protect highlights': 'حماية الإضاءات العالية',
+        "Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.": 'استبعاد البكسلات الساطعة (النجوم، نوى أجرام السماء العميقة) من الوسيط لكل صف حتى لا تنحاز بالتصحيح. يوصى بتفعيله للصور الفلكية.',
+        'Sigma:': 'سيجما:',
+        "Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.": "عتبة الرفض بوحدات سيجما المتينة فوق الوسيط العام. أقل = رفض أقوى للبكسلات الساطعة. تُستخدم فقط عند تفعيل 'حماية الإضاءات العالية'.",
+        'Computing preview…': 'جارٍ حساب المعاينة…',
+        'Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)': 'الخوارزمية: CanonBandingReduction من Georg Viehoever (GPLv3، 2009-2013)',
+        'Apply': 'تطبيق',
+        'Close': 'إغلاق',
+        'Preview failed: {0}': 'فشلت المعاينة: {0}',
+        'Open an image first.': 'افتح صورة أولا.',
+        'Apply failed:\n{0}': 'فشل التطبيق:\n{0}',
+        'Fit the whole image in the preview': 'ملاءمة الصورة كاملة في المعاينة',
+        'Row banding, as on Canon DSLRs': 'أشرطة الصفوف، كما في كاميرات Canon DSLR',
+        'Column banding, as on some CMOS cameras': 'أشرطة الأعمدة، كما في بعض كاميرات CMOS',
+        'Drag to the canvas to create a Banding Blaster shortcut with these exact settings.\nDrop directly on an image to apply them headlessly.': 'اسحب إلى مساحة العمل لإنشاء اختصار لـ Banding Blaster بهذه الإعدادات بالضبط.\nأفلت مباشرة على صورة لتطبيقها دون واجهة.',
+        'Measuring the bands…': 'جارٍ قياس الأشرطة…',
+        'Largest column shift: {0:.5f}': 'أكبر إزاحة لعمود: {0:.5f}',
+        'Largest row shift: {0:.5f}': 'أكبر إزاحة لصف: {0:.5f}',
+        'Amount is 0, so there is nothing to apply.': 'المقدار 0، لذا لا يوجد ما يُطبَّق.',
+    },
+    '_BandingBlasterPresetDialog': {
+        'Horizontal': 'أفقي',
+        'Vertical': 'عمودي',
+        'Protect highlights': 'حماية الإضاءات العالية',
+        'Direction:': 'الاتجاه:',
+        'Amount:': 'المقدار:',
+        'Sigma:': 'سيجما:',
+        'Banding Blaster — Preset': 'Banding Blaster — إعداد مسبق',
+    },
+    'BandingBlaster': {
+        'Open an image first.': 'افتح صورة أولا.',
+    },
+    'CheatSheet': {
+        "Drag a tool window's grip, a desktop shortcut or a History step onto Essentials": 'اسحب مقبض نافذة أداة أو اختصارًا على سطح المكتب أو خطوة من السجل إلى الأساسيات',
+        'Add that tool to Essentials': 'إضافة تلك الأداة إلى الأساسيات',
+    },
+    'DraggableToolBar': {
+        'Add to Essentials': 'إضافة إلى الأساسيات',
+    },
+    'EssentialsToolBar': {
+        'Remove from Essentials': 'إزالة من الأساسيات',
+        'Put Back': 'إرجاع',
+        'Reset Essentials...': 'إعادة تعيين الأساسيات...',
+        "Tip: drag a tool window's grip here to add the tool": 'تلميح: اسحب مقبض نافذة أداة إلى هنا لإضافة الأداة',
+    },
+    'AstroSuiteProMainWindow': {
+        'Reset Essentials': 'إعادة تعيين الأساسيات',
+        'Put the default tools back on Essentials?\n\nTools you added are taken off, the ones you removed come back, and the order is the default one.': 'إعادة الأدوات الافتراضية إلى الأساسيات؟\n\nتُزال الأدوات التي أضفتها، وتعود الأدوات التي أزلتها، ويعود الترتيب إلى الترتيب الافتراضي.',
+        'Reduce row or column banding across the whole image': 'تقليل أشرطة الصفوف أو الأعمدة في الصورة بأكملها',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

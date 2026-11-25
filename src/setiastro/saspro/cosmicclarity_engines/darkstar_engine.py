@@ -10,6 +10,7 @@ from setiastro.saspro.cosmicclarity_engines._backend_guard import (
     DeviceLostError,
     EngineCancelled,
     safe_exception_str,
+    forward_finite as _forward_finite,
     is_device_lost_error as _is_device_lost_error,
     is_backend_unusable_error as _is_backend_unusable_error,
     is_recoverable_batch_error as _is_recoverable_batch_error,
@@ -720,8 +721,9 @@ def _infer_tiles_rgb_batched(
                 else:
                     x = x.to(device=device, dtype=torch.float32)
 
-                with torch.no_grad(), _autocast_context(torch, device):
-                    y = torch_to_np(model(x)[:n_real].detach().float())  # NCHW, not the fill
+                y = _forward_finite(torch, model, x, _autocast_context(torch, device),
+                                    label="Dark Star")
+                y = torch_to_np(y[:n_real].detach())                    # NCHW, not the fill
 
                 y = np.transpose(y, (0, 2, 3, 1))                       # NHWC
 

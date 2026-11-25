@@ -4907,6 +4907,22 @@ Ogni strumento resta nei menu e in Cerca comandi (Ctrl+/).</translation>
       <source>Start Panel: open images, process step by step, stacking and more</source>
       <translation>Pannello iniziale: apri immagini, elabora passo dopo passo, stacking e altro</translation>
     </message>
+    <message>
+      <source>Reset Essentials</source>
+      <translation>Ripristina Essenziali</translation>
+    </message>
+    <message>
+      <source>Put the default tools back on Essentials?
+
+Tools you added are taken off, the ones you removed come back, and the order is the default one.</source>
+      <translation>Rimettere gli strumenti predefiniti in Essenziali?
+
+Gli strumenti aggiunti vengono tolti, quelli rimossi tornano e l'ordine torna quello predefinito.</translation>
+    </message>
+    <message>
+      <source>Reduce row or column banding across the whole image</source>
+      <translation>Riduci il banding di righe o colonne su tutta l'immagine</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -6670,6 +6686,18 @@ Rilascia direttamente su un'immagine per applicarle senza interfaccia.</translat
     <message>
       <source>⚡ Blast Line</source>
       <translation>⚡ Elimina linea</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>Gomma</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>Dipinge con il pennello nero, la mediana dell'immagine o un colore scelto, ad es. per rimuovere la nebulosa rimasta in un'immagine di sole stelle.</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>Riempimento:</translation>
     </message>
   </context>
   <context>
@@ -9951,6 +9979,14 @@ ridotta, quindi ciò che vedi è ciò che Applica salverà.</translation>
       <source>Zoom at the cursor</source>
       <translation>Zoom sul cursore</translation>
     </message>
+    <message>
+      <source>Drag a tool window's grip, a desktop shortcut or a History step onto Essentials</source>
+      <translation>Trascina la maniglia di una finestra strumento, una scorciatoia sul desktop o un passo della Cronologia su Essenziali</translation>
+    </message>
+    <message>
+      <source>Add that tool to Essentials</source>
+      <translation>Aggiungi quello strumento a Essenziali</translation>
+    </message>
   </context>
   <context>
     <name>CheatSheetDialog</name>
@@ -12343,6 +12379,10 @@ Apri direttamente il file RAF, oppure inserisci RAW_PATH nell'intestazione, oppu
     <message>
       <source>Toolbars, panels, theme and background go back to how a new install starts</source>
       <translation>Barre degli strumenti, pannelli, tema e sfondo tornano come in una nuova installazione</translation>
+    </message>
+    <message>
+      <source>Add to Essentials</source>
+      <translation>Aggiungi a Essenziali</translation>
     </message>
   </context>
   <context>
@@ -39808,6 +39848,32 @@ Usa [ e ] per ridurre/aumentare la dimensione del pennello.</translation>
     <message>
       <source>Zoom Out</source>
       <translation>Riduci</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>Modalità:</translation>
+    </message>
+    <message>
+      <source>Clone</source>
+      <translation>Clona</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>Gomma</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>Dipinge con il pennello nero, la mediana dell'immagine o un colore scelto, ad es. per rimuovere la nebulosa rimasta in un'immagine di sole stelle.</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>Riempimento:</translation>
+    </message>
+    <message>
+      <source>Left-drag to paint with the fill.
+Use [ and ] to decrease/increase brush size.</source>
+      <translation>Trascina con il tasto sinistro per dipingere con il riempimento.
+Usa [ e ] per ridurre/aumentare la dimensione del pennello.</translation>
     </message>
   </context>
   <context>
@@ -77454,6 +77520,214 @@ Annullare e chiudere? (Potrebbe richiedere un momento per completare il riquadro
     <message>
       <source>Lock Toolbar Icons</source>
       <translation>Blocca icone della barra strumenti</translation>
+    </message>
+    <message>
+      <source>Remove from Essentials</source>
+      <translation>Rimuovi da Essenziali</translation>
+    </message>
+    <message>
+      <source>Put Back</source>
+      <translation>Rimetti</translation>
+    </message>
+    <message>
+      <source>Reset Essentials...</source>
+      <translation>Ripristina Essenziali...</translation>
+    </message>
+    <message>
+      <source>Tip: drag a tool window's grip here to add the tool</source>
+      <translation>Suggerimento: trascina qui la maniglia di una finestra strumento per aggiungere lo strumento</translation>
+    </message>
+  </context>
+  <context>
+    <name>EraserFillPicker</name>
+    <message>
+      <source>Black</source>
+      <translation>Nero</translation>
+    </message>
+    <message>
+      <source>Image median</source>
+      <translation>Mediana dell'immagine</translation>
+    </message>
+    <message>
+      <source>Color</source>
+      <translation>Colore</translation>
+    </message>
+    <message>
+      <source>Paints 0.0 in every channel.</source>
+      <translation>Dipinge 0.0 in ogni canale.</translation>
+    </message>
+    <message>
+      <source>Paints the image's median, measured when you choose this.</source>
+      <translation>Dipinge la mediana dell'immagine, misurata quando scegli questa opzione.</translation>
+    </message>
+    <message>
+      <source>Paints each channel's own median (R, G and B separately), measured when you choose this.</source>
+      <translation>Dipinge la mediana propria di ogni canale (R, G e B separatamente), misurata quando scegli questa opzione.</translation>
+    </message>
+    <message>
+      <source>Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.</source>
+      <translation>Scrive i valori del colore scelto direttamente nell'immagine. Con Anteprima auto-stretch attiva appare più chiaro del campione.</translation>
+    </message>
+    <message>
+      <source>Choose the fill color</source>
+      <translation>Scegli il colore di riempimento</translation>
+    </message>
+    <message>
+      <source>Eraser color</source>
+      <translation>Colore della gomma</translation>
+    </message>
+    <message>
+      <source>Fills with {0}</source>
+      <translation>Riempie con {0}</translation>
+    </message>
+    <message>
+      <source>Fills with R {0}  G {1}  B {2}</source>
+      <translation>Riempie con R {0}  G {1}  B {2}</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlasterDialog</name>
+    <message>
+      <source>Fit</source>
+      <translation>Adatta</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>Direzione:</translation>
+    </message>
+    <message>
+      <source>Horizontal</source>
+      <translation>Orizzontale</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>Verticale</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>Quantità:</translation>
+    </message>
+    <message>
+      <source>Strength of the correction. 1.0 fully equalises the per-row median to the global median. &lt;1.0 = partial correction, &gt;1.0 = over-correction (rarely useful).</source>
+      <translation>Intensità della correzione. 1.0 equalizza completamente la mediana per riga alla mediana globale. &lt;1.0 = correzione parziale, &gt;1.0 = sovracorrezione (raramente utile).</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>Proteggi alte luci</translation>
+    </message>
+    <message>
+      <source>Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.</source>
+      <translation>Esclude i pixel luminosi (stelle, nuclei DSO) dalla mediana per riga in modo che non falsino la correzione. Consigliato ON per immagini astronomiche.</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>Sigma:</translation>
+    </message>
+    <message>
+      <source>Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.</source>
+      <translation>Soglia di reiezione in unità sigma robuste sopra la mediana globale. Più bassa = reiezione più aggressiva dei pixel luminosi. Usata solo quando 'Proteggi alte luci' è attivo.</translation>
+    </message>
+    <message>
+      <source>Computing preview…</source>
+      <translation>Calcolo anteprima…</translation>
+    </message>
+    <message>
+      <source>Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)</source>
+      <translation>Algoritmo: CanonBandingReduction di Georg Viehoever (GPLv3, 2009-2013)</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Applica</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Chiudi</translation>
+    </message>
+    <message>
+      <source>Preview failed: {0}</source>
+      <translation>Anteprima fallita: {0}</translation>
+    </message>
+    <message>
+      <source>Open an image first.</source>
+      <translation>Apri prima un'immagine.</translation>
+    </message>
+    <message>
+      <source>Apply failed:
+{0}</source>
+      <translation>Applicazione fallita:
+{0}</translation>
+    </message>
+    <message>
+      <source>Fit the whole image in the preview</source>
+      <translation>Adatta l'intera immagine nell'anteprima</translation>
+    </message>
+    <message>
+      <source>Row banding, as on Canon DSLRs</source>
+      <translation>Banding per righe, come sulle reflex Canon</translation>
+    </message>
+    <message>
+      <source>Column banding, as on some CMOS cameras</source>
+      <translation>Banding per colonne, come su alcune camere CMOS</translation>
+    </message>
+    <message>
+      <source>Drag to the canvas to create a Banding Blaster shortcut with these exact settings.
+Drop directly on an image to apply them headlessly.</source>
+      <translation>Trascina sull'area di lavoro per creare una scorciatoia Banding Blaster con queste impostazioni esatte.
+Rilascia direttamente su un'immagine per applicarle senza GUI.</translation>
+    </message>
+    <message>
+      <source>Measuring the bands…</source>
+      <translation>Misurazione del banding…</translation>
+    </message>
+    <message>
+      <source>Largest column shift: {0:.5f}</source>
+      <translation>Spostamento massimo di colonna: {0:.5f}</translation>
+    </message>
+    <message>
+      <source>Largest row shift: {0:.5f}</source>
+      <translation>Spostamento massimo di riga: {0:.5f}</translation>
+    </message>
+    <message>
+      <source>Amount is 0, so there is nothing to apply.</source>
+      <translation>La quantità è 0, quindi non c'è nulla da applicare.</translation>
+    </message>
+  </context>
+  <context>
+    <name>_BandingBlasterPresetDialog</name>
+    <message>
+      <source>Horizontal</source>
+      <translation>Orizzontale</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>Verticale</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>Proteggi alte luci</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>Direzione:</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>Quantità:</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>Sigma:</translation>
+    </message>
+    <message>
+      <source>Banding Blaster — Preset</source>
+      <translation>Banding Blaster — Preset</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlaster</name>
+    <message>
+      <source>Open an image first.</source>
+      <translation>Apri prima un'immagine.</translation>
     </message>
   </context>
 </TS>

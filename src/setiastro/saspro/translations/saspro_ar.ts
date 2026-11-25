@@ -4689,6 +4689,22 @@ Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
       <source>Start Panel: open images, process step by step, stacking and more</source>
       <translation>لوحة البدء: فتح الصور، المعالجة خطوة بخطوة، التكديس والمزيد</translation>
     </message>
+    <message>
+      <source>Reset Essentials</source>
+      <translation>إعادة تعيين الأساسيات</translation>
+    </message>
+    <message>
+      <source>Put the default tools back on Essentials?
+
+Tools you added are taken off, the ones you removed come back, and the order is the default one.</source>
+      <translation>إعادة الأدوات الافتراضية إلى الأساسيات؟
+
+تُزال الأدوات التي أضفتها، وتعود الأدوات التي أزلتها، ويعود الترتيب إلى الترتيب الافتراضي.</translation>
+    </message>
+    <message>
+      <source>Reduce row or column banding across the whole image</source>
+      <translation>تقليل أشرطة الصفوف أو الأعمدة في الصورة بأكملها</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -6552,6 +6568,18 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>⚡ Blast Line</source>
       <translation>⚡ إزالة الخط</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>ممحاة</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>يرسم بالفرشاة اللون الأسود أو وسيط الصورة أو لونًا تختاره، مثلًا لإزالة السديم المتبقي في صورة النجوم فقط.</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>التعبئة:</translation>
     </message>
   </context>
   <context>
@@ -9511,6 +9539,14 @@ approximation, so what you see is what Apply will commit.</source>
       <source>Zoom at the cursor</source>
       <translation>التكبير عند المؤشر</translation>
     </message>
+    <message>
+      <source>Drag a tool window's grip, a desktop shortcut or a History step onto Essentials</source>
+      <translation>اسحب مقبض نافذة أداة أو اختصارًا على سطح المكتب أو خطوة من السجل إلى الأساسيات</translation>
+    </message>
+    <message>
+      <source>Add that tool to Essentials</source>
+      <translation>إضافة تلك الأداة إلى الأساسيات</translation>
+    </message>
   </context>
   <context>
     <name>CheatSheetDialog</name>
@@ -11779,6 +11815,10 @@ Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to
     <message>
       <source>Toolbars, panels, theme and background go back to how a new install starts</source>
       <translation>تعود أشرطة الأدوات واللوحات والسمة والخلفية إلى حالة التثبيت الجديد</translation>
+    </message>
+    <message>
+      <source>Add to Essentials</source>
+      <translation>إضافة إلى الأساسيات</translation>
     </message>
   </context>
   <context>
@@ -37087,6 +37127,32 @@ Use [ and ] to decrease/increase brush size.</source>
     <message>
       <source>Zoom Out</source>
       <translation>تصغير</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>الوضع:</translation>
+    </message>
+    <message>
+      <source>Clone</source>
+      <translation>استنساخ</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>ممحاة</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>يرسم بالفرشاة اللون الأسود أو وسيط الصورة أو لونًا تختاره، مثلًا لإزالة السديم المتبقي في صورة النجوم فقط.</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>التعبئة:</translation>
+    </message>
+    <message>
+      <source>Left-drag to paint with the fill.
+Use [ and ] to decrease/increase brush size.</source>
+      <translation>اسحب بالزر الأيسر للرسم بالتعبئة.
+استخدم [ و ] لتصغير/تكبير حجم الفرشاة.</translation>
     </message>
   </context>
   <context>
@@ -74405,6 +74471,214 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>Lock Toolbar Icons</source>
       <translation>قفل أيقونات شريط الأدوات</translation>
+    </message>
+    <message>
+      <source>Remove from Essentials</source>
+      <translation>إزالة من الأساسيات</translation>
+    </message>
+    <message>
+      <source>Put Back</source>
+      <translation>إرجاع</translation>
+    </message>
+    <message>
+      <source>Reset Essentials...</source>
+      <translation>إعادة تعيين الأساسيات...</translation>
+    </message>
+    <message>
+      <source>Tip: drag a tool window's grip here to add the tool</source>
+      <translation>تلميح: اسحب مقبض نافذة أداة إلى هنا لإضافة الأداة</translation>
+    </message>
+  </context>
+  <context>
+    <name>EraserFillPicker</name>
+    <message>
+      <source>Black</source>
+      <translation>أسود</translation>
+    </message>
+    <message>
+      <source>Image median</source>
+      <translation>وسيط الصورة</translation>
+    </message>
+    <message>
+      <source>Color</source>
+      <translation>لون</translation>
+    </message>
+    <message>
+      <source>Paints 0.0 in every channel.</source>
+      <translation>يرسم 0.0 في كل قناة.</translation>
+    </message>
+    <message>
+      <source>Paints the image's median, measured when you choose this.</source>
+      <translation>يرسم وسيط الصورة، ويُقاس عند اختيارك لهذا الخيار.</translation>
+    </message>
+    <message>
+      <source>Paints each channel's own median (R, G and B separately), measured when you choose this.</source>
+      <translation>يرسم الوسيط الخاص بكل قناة (R وG وB كلٌّ على حدة)، ويُقاس عند اختيارك لهذا الخيار.</translation>
+    </message>
+    <message>
+      <source>Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.</source>
+      <translation>يكتب قيم اللون المختار مباشرة في الصورة. عند تشغيل معاينة تمدد تلقائي يبدو أفتح من العيّنة.</translation>
+    </message>
+    <message>
+      <source>Choose the fill color</source>
+      <translation>اختر لون التعبئة</translation>
+    </message>
+    <message>
+      <source>Eraser color</source>
+      <translation>لون الممحاة</translation>
+    </message>
+    <message>
+      <source>Fills with {0}</source>
+      <translation>يملأ بـ {0}</translation>
+    </message>
+    <message>
+      <source>Fills with R {0}  G {1}  B {2}</source>
+      <translation>يملأ بـ R {0}  G {1}  B {2}</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlasterDialog</name>
+    <message>
+      <source>Fit</source>
+      <translation>ملائمة</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>الاتجاه:</translation>
+    </message>
+    <message>
+      <source>Horizontal</source>
+      <translation>أفقي</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>عمودي</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>المقدار:</translation>
+    </message>
+    <message>
+      <source>Strength of the correction. 1.0 fully equalises the per-row median to the global median. &lt;1.0 = partial correction, &gt;1.0 = over-correction (rarely useful).</source>
+      <translation>قوة التصحيح. 1.0 تساوي الوسيط لكل صف بالوسيط العام بالكامل. &lt;1.0 = تصحيح جزئي، &gt;1.0 = تصحيح مفرط (نادرًا ما يفيد).</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>حماية الإضاءات العالية</translation>
+    </message>
+    <message>
+      <source>Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.</source>
+      <translation>استبعاد البكسلات الساطعة (النجوم، نوى أجرام السماء العميقة) من الوسيط لكل صف حتى لا تنحاز بالتصحيح. يوصى بتفعيله للصور الفلكية.</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>سيجما:</translation>
+    </message>
+    <message>
+      <source>Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.</source>
+      <translation>عتبة الرفض بوحدات سيجما المتينة فوق الوسيط العام. أقل = رفض أقوى للبكسلات الساطعة. تُستخدم فقط عند تفعيل 'حماية الإضاءات العالية'.</translation>
+    </message>
+    <message>
+      <source>Computing preview…</source>
+      <translation>جارٍ حساب المعاينة…</translation>
+    </message>
+    <message>
+      <source>Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)</source>
+      <translation>الخوارزمية: CanonBandingReduction من Georg Viehoever (GPLv3، 2009-2013)</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>تطبيق</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>إغلاق</translation>
+    </message>
+    <message>
+      <source>Preview failed: {0}</source>
+      <translation>فشلت المعاينة: {0}</translation>
+    </message>
+    <message>
+      <source>Open an image first.</source>
+      <translation>افتح صورة أولا.</translation>
+    </message>
+    <message>
+      <source>Apply failed:
+{0}</source>
+      <translation>فشل التطبيق:
+{0}</translation>
+    </message>
+    <message>
+      <source>Fit the whole image in the preview</source>
+      <translation>ملاءمة الصورة كاملة في المعاينة</translation>
+    </message>
+    <message>
+      <source>Row banding, as on Canon DSLRs</source>
+      <translation>أشرطة الصفوف، كما في كاميرات Canon DSLR</translation>
+    </message>
+    <message>
+      <source>Column banding, as on some CMOS cameras</source>
+      <translation>أشرطة الأعمدة، كما في بعض كاميرات CMOS</translation>
+    </message>
+    <message>
+      <source>Drag to the canvas to create a Banding Blaster shortcut with these exact settings.
+Drop directly on an image to apply them headlessly.</source>
+      <translation>اسحب إلى مساحة العمل لإنشاء اختصار لـ Banding Blaster بهذه الإعدادات بالضبط.
+أفلت مباشرة على صورة لتطبيقها دون واجهة.</translation>
+    </message>
+    <message>
+      <source>Measuring the bands…</source>
+      <translation>جارٍ قياس الأشرطة…</translation>
+    </message>
+    <message>
+      <source>Largest column shift: {0:.5f}</source>
+      <translation>أكبر إزاحة لعمود: {0:.5f}</translation>
+    </message>
+    <message>
+      <source>Largest row shift: {0:.5f}</source>
+      <translation>أكبر إزاحة لصف: {0:.5f}</translation>
+    </message>
+    <message>
+      <source>Amount is 0, so there is nothing to apply.</source>
+      <translation>المقدار 0، لذا لا يوجد ما يُطبَّق.</translation>
+    </message>
+  </context>
+  <context>
+    <name>_BandingBlasterPresetDialog</name>
+    <message>
+      <source>Horizontal</source>
+      <translation>أفقي</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>عمودي</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>حماية الإضاءات العالية</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>الاتجاه:</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>المقدار:</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>سيجما:</translation>
+    </message>
+    <message>
+      <source>Banding Blaster — Preset</source>
+      <translation>Banding Blaster — إعداد مسبق</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlaster</name>
+    <message>
+      <source>Open an image first.</source>
+      <translation>افتح صورة أولا.</translation>
     </message>
   </context>
 </TS>

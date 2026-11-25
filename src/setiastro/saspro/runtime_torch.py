@@ -13,6 +13,17 @@ import re
 from pathlib import Path
 from contextlib import contextmanager
 
+# AMD (ROCm): MIOpen's fp16 Winograd convolutions return NaN on RDNA4. On a
+# user's RX 9070 XT (gfx1201, ROCm 7.2, torch 2.15 nightly) every Dark Star and
+# Cosmic Clarity tile came back NaN -- a black image. fp32, and fp16 with
+# Winograd off, both matched the CPU (fp16 within 7e-4, as on NVIDIA). The same
+# solvers overflow to inf on gfx1100/gfx1151/gfx950 (ROCm/rocm-libraries#16595).
+# It must be set before torch loads MIOpen, and the runtime torch is only
+# importable through this module, so here is early enough; spawned workers
+# inherit it. Only MIOpen reads it -- CUDA, MPS, DirectML and CPU ignore it.
+# setdefault: exporting MIOPEN_DEBUG_CONV_WINOGRAD=1 still brings Winograd back.
+os.environ.setdefault("MIOPEN_DEBUG_CONV_WINOGRAD", "0")
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────

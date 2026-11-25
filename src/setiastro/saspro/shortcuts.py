@@ -816,7 +816,7 @@ _PRESET_UI_IDS = {
     "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine","geom_resize_canvas",
     "resize_canvas","canvas_resize","texture_clarity","aberrationai",
     "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools","rcastro",
-    "satchroma","fx","unwarp","pedestal","cosmetic_correction",
+    "satchroma","fx","unwarp","pedestal","cosmetic_correction","banding_blaster",
     "export_fits","plate_solve","create_mask","srgc","hdr_composition",
 }
 
@@ -927,6 +927,9 @@ def _preset_opener_for_command(command_id: str):
     if command_id == "cosmetic_correction":
         from setiastro.saspro.cosmetic_correction import open_cosmetic_correction_with_preset
         return open_cosmetic_correction_with_preset
+    if command_id == "banding_blaster":
+        from setiastro.saspro.banding_blaster import open_banding_blaster_with_preset
+        return open_banding_blaster_with_preset
     if command_id == "export_fits":
         from setiastro.saspro.export_fits import open_export_fits_with_preset
         return open_export_fits_with_preset
@@ -1151,6 +1154,11 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
 
     if command_id == "cosmetic_correction":
         dlg = _CosmeticCorrectionPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "banding_blaster":
+        from setiastro.saspro.banding_blaster import _BandingBlasterPresetDialog
+        dlg = _BandingBlasterPresetDialog(parent, initial=cur)
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 
     if command_id == "rgb_align":

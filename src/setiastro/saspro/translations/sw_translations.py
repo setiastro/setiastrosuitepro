@@ -17490,3 +17490,103 @@ _ADDITIONS_2026_11_24_QS = {
 for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
     TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+# 2026-11-25: the eraser in Clone Stamp and Blemish Blaster (EraserFillPicker = its fill row).
+_ADDITIONS_2026_11_25_ERASER = {
+    'CloneStampDialogPro': {
+        'Mode:': 'Hali:',
+        'Clone': 'Nakili',
+        'Eraser': 'Kifutio',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': 'Paka nyeusi, median ya picha au rangi uliyochagua kwa brashi, k.m. kuondoa nebula iliyobaki kwenye picha ya nyota pekee.',
+        'Fill:': 'Ujazo:',
+        'Left-drag to paint with the fill.\nUse [ and ] to decrease/increase brush size.': 'Buruta kwa kitufe cha kushoto ili kupaka ujazo.\nTumia [ na ] kupunguza/kuongeza ukubwa wa brashi.',
+    },
+    'BlemishBlasterDialogPro': {
+        'Eraser': 'Kifutio',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': 'Paka nyeusi, median ya picha au rangi uliyochagua kwa brashi, k.m. kuondoa nebula iliyobaki kwenye picha ya nyota pekee.',
+        'Fill:': 'Ujazo:',
+    },
+    'EraserFillPicker': {
+        'Black': 'Nyeusi',
+        'Image median': 'Median ya picha',
+        'Color': 'Rangi',
+        'Paints 0.0 in every channel.': 'Hupaka 0.0 katika kila chaneli.',
+        "Paints the image's median, measured when you choose this.": 'Hupaka median ya picha, inayopimwa unapochagua hili.',
+        "Paints each channel's own median (R, G and B separately), measured when you choose this.": 'Hupaka median ya kila chaneli yenyewe (R, G na B kando kando), inayopimwa unapochagua hili.',
+        "Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.": 'Huandika thamani za rangi uliyochagua moja kwa moja kwenye picha. Onyesho la awali la auto-stretch likiwa limewashwa, huonekana angavu zaidi kuliko sampuli.',
+        'Choose the fill color': 'Chagua rangi ya ujazo',
+        'Eraser color': 'Rangi ya kifutio',
+        'Fills with {0}': 'Hujaza {0}',
+        'Fills with R {0}  G {1}  B {2}': 'Hujaza R {0}  G {1}  B {2}',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_ERASER.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-25: Banding Blaster as its own tool, and making Essentials your own
+# (Add to / Remove from Essentials, Put Back, Reset Essentials).
+_ADDITIONS_2026_11_25_BANDING = {
+    'BandingBlasterDialog': {
+        'Fit': 'Toshea',
+        'Direction:': 'Mwelekeo:',
+        'Horizontal': 'Mlalo',
+        'Vertical': 'Wima',
+        'Amount:': 'Kiasi:',
+        'Strength of the correction. 1.0 fully equalises the per-row median to the global median. <1.0 = partial correction, >1.0 = over-correction (rarely useful).': 'Nguvu ya marekebisho. 1.0 husawazisha kikamilifu median ya kila mstari na median ya jumla. <1.0 = marekebisho ya sehemu, >1.0 = marekebisho kupita kiasi (mara chache yanafaa).',
+        'Protect highlights': 'Linda maeneo angavu',
+        "Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.": 'Tenga pixel angavu (nyota, viini vya DSO) kutoka kwa median ya kila mstari ili zisipotoshe marekebisho. Inapendekezwa IMEWASHWA kwa picha za astronomia.',
+        'Sigma:': 'Sigma:',
+        "Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.": "Kikomo cha rejection katika vipimo vya robust-sigma juu ya median ya jumla. Chini = rejection kali zaidi ya pixel angavu. Hutumika tu 'Protect highlights' ikiwa imewashwa.",
+        'Computing preview…': 'Inakokotoa muhtasari…',
+        'Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)': 'Algorithimu: CanonBandingReduction na Georg Viehoever (GPLv3, 2009-2013)',
+        'Apply': 'Tumia',
+        'Close': 'Funga',
+        'Preview failed: {0}': 'Muhtasari umeshindwa: {0}',
+        'Open an image first.': 'Fungua picha kwanza.',
+        'Apply failed:\n{0}': 'Utumiaji umeshindwa:\n{0}',
+        'Fit the whole image in the preview': 'Weka picha nzima ienee kwenye onyesho la awali',
+        'Row banding, as on Canon DSLRs': 'Banding ya mistari, kama kwenye DSLR za Canon',
+        'Column banding, as on some CMOS cameras': 'Banding ya safu wima, kama kwenye baadhi ya kamera za CMOS',
+        'Drag to the canvas to create a Banding Blaster shortcut with these exact settings.\nDrop directly on an image to apply them headlessly.': 'Vuta hadi kwenye turubai ili kuunda njia ya mkato ya Banding Blaster yenye mipangilio hii hasa.\nIdondoshe moja kwa moja kwenye picha ili kuitumia bila dirisha.',
+        'Measuring the bands…': 'Inapima banding…',
+        'Largest column shift: {0:.5f}': 'Mhamo mkubwa zaidi wa safu wima: {0:.5f}',
+        'Largest row shift: {0:.5f}': 'Mhamo mkubwa zaidi wa mstari: {0:.5f}',
+        'Amount is 0, so there is nothing to apply.': 'Kiasi ni 0, kwa hivyo hakuna cha kutumia.',
+    },
+    '_BandingBlasterPresetDialog': {
+        'Horizontal': 'Mlalo',
+        'Vertical': 'Wima',
+        'Protect highlights': 'Linda maeneo angavu',
+        'Direction:': 'Mwelekeo:',
+        'Amount:': 'Kiasi:',
+        'Sigma:': 'Sigma:',
+        'Banding Blaster — Preset': 'Banding Blaster — Preset',
+    },
+    'BandingBlaster': {
+        'Open an image first.': 'Fungua picha kwanza.',
+    },
+    'CheatSheet': {
+        "Drag a tool window's grip, a desktop shortcut or a History step onto Essentials": 'Vuta kishikio cha dirisha la zana, njia ya mkato ya eneo-kazi au hatua ya Historia hadi Zana Muhimu',
+        'Add that tool to Essentials': 'Ongeza zana hiyo kwenye Zana Muhimu',
+    },
+    'DraggableToolBar': {
+        'Add to Essentials': 'Ongeza kwenye Zana Muhimu',
+    },
+    'EssentialsToolBar': {
+        'Remove from Essentials': 'Ondoa kwenye Zana Muhimu',
+        'Put Back': 'Rudisha',
+        'Reset Essentials...': 'Weka Upya Zana Muhimu...',
+        "Tip: drag a tool window's grip here to add the tool": 'Kidokezo: vuta kishikio cha dirisha la zana hapa ili kuongeza zana',
+    },
+    'AstroSuiteProMainWindow': {
+        'Reset Essentials': 'Weka Upya Zana Muhimu',
+        'Put the default tools back on Essentials?\n\nTools you added are taken off, the ones you removed come back, and the order is the default one.': 'Rudisha zana chaguo-msingi kwenye Zana Muhimu?\n\nZana ulizoongeza zitaondolewa, ulizoondoa zitarudi, na mpangilio utakuwa wa chaguo-msingi.',
+        'Reduce row or column banding across the whole image': 'Punguza banding ya mistari au safu wima kwenye picha nzima',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

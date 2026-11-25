@@ -4691,6 +4691,22 @@ Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
       <source>Start Panel: open images, process step by step, stacking and more</source>
       <translation>スタートパネル：画像を開く、ステップごとに処理、スタッキングなど</translation>
     </message>
+    <message>
+      <source>Reset Essentials</source>
+      <translation>基本ツールをリセット</translation>
+    </message>
+    <message>
+      <source>Put the default tools back on Essentials?
+
+Tools you added are taken off, the ones you removed come back, and the order is the default one.</source>
+      <translation>基本ツールを既定のツールに戻しますか？
+
+追加したツールは外され、削除したツールは戻り、順序も既定に戻ります。</translation>
+    </message>
+    <message>
+      <source>Reduce row or column banding across the whole image</source>
+      <translation>画像全体の行方向または列方向のバンディングを低減</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -6130,6 +6146,18 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>⚡ Blast Line</source>
       <translation>⚡ ラインを Blast</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>消しゴム</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>ブラシで黒、画像の中間値、または選んだ色を塗ります。たとえば星だけの画像に残った星雲を消すときに使います。</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>塗りつぶし:</translation>
     </message>
   </context>
   <context>
@@ -9407,6 +9435,14 @@ approximation, so what you see is what Apply will commit.</source>
       <source>Zoom at the cursor</source>
       <translation>カーソル位置でズーム</translation>
     </message>
+    <message>
+      <source>Drag a tool window's grip, a desktop shortcut or a History step onto Essentials</source>
+      <translation>ツールウィンドウのグリップ、デスクトップショートカット、または履歴のステップを基本ツールにドラッグ</translation>
+    </message>
+    <message>
+      <source>Add that tool to Essentials</source>
+      <translation>そのツールを基本ツールに追加</translation>
+    </message>
   </context>
   <context>
     <name>CheatSheetDialog</name>
@@ -11675,6 +11711,10 @@ RAF を直接開くか、ヘッダーに RAW_PATH を埋め込むか、RAW を�
     <message>
       <source>Toolbars, panels, theme and background go back to how a new install starts</source>
       <translation>ツールバー、パネル、テーマ、背景を新規インストール時の状態に戻します</translation>
+    </message>
+    <message>
+      <source>Add to Essentials</source>
+      <translation>基本ツールに追加</translation>
     </message>
   </context>
   <context>
@@ -35958,6 +35998,32 @@ Use [ and ] to decrease/increase brush size.</source>
     <message>
       <source>Zoom Out</source>
       <translation>ズームアウト</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>モード:</translation>
+    </message>
+    <message>
+      <source>Clone</source>
+      <translation>コピースタンプ</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>消しゴム</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>ブラシで黒、画像の中間値、または選んだ色を塗ります。たとえば星だけの画像に残った星雲を消すときに使います。</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>塗りつぶし:</translation>
+    </message>
+    <message>
+      <source>Left-drag to paint with the fill.
+Use [ and ] to decrease/increase brush size.</source>
+      <translation>左ドラッグで塗りつぶし値を塗ります。
+[ と ] でブラシサイズを縮小/拡大します。</translation>
     </message>
   </context>
   <context>
@@ -73368,6 +73434,214 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>Lock Toolbar Icons</source>
       <translation>ツールバーのアイコンをロック</translation>
+    </message>
+    <message>
+      <source>Remove from Essentials</source>
+      <translation>基本ツールから削除</translation>
+    </message>
+    <message>
+      <source>Put Back</source>
+      <translation>再追加</translation>
+    </message>
+    <message>
+      <source>Reset Essentials...</source>
+      <translation>基本ツールをリセット...</translation>
+    </message>
+    <message>
+      <source>Tip: drag a tool window's grip here to add the tool</source>
+      <translation>ヒント: ツールウィンドウのグリップをここにドラッグするとツールを追加できます</translation>
+    </message>
+  </context>
+  <context>
+    <name>EraserFillPicker</name>
+    <message>
+      <source>Black</source>
+      <translation>黒</translation>
+    </message>
+    <message>
+      <source>Image median</source>
+      <translation>画像の中間値</translation>
+    </message>
+    <message>
+      <source>Color</source>
+      <translation>色</translation>
+    </message>
+    <message>
+      <source>Paints 0.0 in every channel.</source>
+      <translation>すべてのチャンネルに 0.0 を塗ります。</translation>
+    </message>
+    <message>
+      <source>Paints the image's median, measured when you choose this.</source>
+      <translation>画像の中間値を塗ります。これを選んだ時点で測定します。</translation>
+    </message>
+    <message>
+      <source>Paints each channel's own median (R, G and B separately), measured when you choose this.</source>
+      <translation>各チャンネル固有の中間値（R、G、B を個別に）を塗ります。これを選んだ時点で測定します。</translation>
+    </message>
+    <message>
+      <source>Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.</source>
+      <translation>選んだ色の値をそのまま画像に書き込みます。自動ストレッチ プレビューがオンのときは、見本より明るく表示されます。</translation>
+    </message>
+    <message>
+      <source>Choose the fill color</source>
+      <translation>塗りつぶしの色を選択</translation>
+    </message>
+    <message>
+      <source>Eraser color</source>
+      <translation>消しゴムの色</translation>
+    </message>
+    <message>
+      <source>Fills with {0}</source>
+      <translation>塗りつぶし値 {0}</translation>
+    </message>
+    <message>
+      <source>Fills with R {0}  G {1}  B {2}</source>
+      <translation>塗りつぶし値 R {0}  G {1}  B {2}</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlasterDialog</name>
+    <message>
+      <source>Fit</source>
+      <translation>フィット</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>方向:</translation>
+    </message>
+    <message>
+      <source>Horizontal</source>
+      <translation>水平</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>垂直</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>量:</translation>
+    </message>
+    <message>
+      <source>Strength of the correction. 1.0 fully equalises the per-row median to the global median. &lt;1.0 = partial correction, &gt;1.0 = over-correction (rarely useful).</source>
+      <translation>補正の強さ。1.0 で行ごとの中央値を全体の中央値に完全に揃えます。&lt;1.0 = 部分的な補正、&gt;1.0 = 過補正 (ほとんど役に立ちません)。</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>ハイライトを保護</translation>
+    </message>
+    <message>
+      <source>Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.</source>
+      <translation>明るいピクセル (星、DSO のコア) を行ごとの中央値から除外し、補正が偏らないようにします。天体画像ではオンを推奨します。</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>シグマ:</translation>
+    </message>
+    <message>
+      <source>Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.</source>
+      <translation>全体の中央値を超えるロバストシグマ単位の除外しきい値。小さいほど明るいピクセルを積極的に除外します。「ハイライトを保護」がオンのときのみ使用されます。</translation>
+    </message>
+    <message>
+      <source>Computing preview…</source>
+      <translation>プレビューを計算中…</translation>
+    </message>
+    <message>
+      <source>Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)</source>
+      <translation>アルゴリズム: CanonBandingReduction (Georg Viehoever 作、GPLv3、2009-2013)</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>適用</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>閉じる</translation>
+    </message>
+    <message>
+      <source>Preview failed: {0}</source>
+      <translation>プレビューに失敗しました: {0}</translation>
+    </message>
+    <message>
+      <source>Open an image first.</source>
+      <translation>最初に画像を開いてください。</translation>
+    </message>
+    <message>
+      <source>Apply failed:
+{0}</source>
+      <translation>適用に失敗しました:
+{0}</translation>
+    </message>
+    <message>
+      <source>Fit the whole image in the preview</source>
+      <translation>画像全体をプレビューに合わせる</translation>
+    </message>
+    <message>
+      <source>Row banding, as on Canon DSLRs</source>
+      <translation>行方向のバンディング (Canon の一眼レフなど)</translation>
+    </message>
+    <message>
+      <source>Column banding, as on some CMOS cameras</source>
+      <translation>列方向のバンディング (一部の CMOS カメラなど)</translation>
+    </message>
+    <message>
+      <source>Drag to the canvas to create a Banding Blaster shortcut with these exact settings.
+Drop directly on an image to apply them headlessly.</source>
+      <translation>キャンバスにドラッグすると、この設定のままの Banding Blaster ショートカットを作成します。
+画像に直接ドロップするとヘッドレスで適用します。</translation>
+    </message>
+    <message>
+      <source>Measuring the bands…</source>
+      <translation>バンディングを測定中…</translation>
+    </message>
+    <message>
+      <source>Largest column shift: {0:.5f}</source>
+      <translation>最大の列シフト: {0:.5f}</translation>
+    </message>
+    <message>
+      <source>Largest row shift: {0:.5f}</source>
+      <translation>最大の行シフト: {0:.5f}</translation>
+    </message>
+    <message>
+      <source>Amount is 0, so there is nothing to apply.</source>
+      <translation>量が 0 のため、適用するものはありません。</translation>
+    </message>
+  </context>
+  <context>
+    <name>_BandingBlasterPresetDialog</name>
+    <message>
+      <source>Horizontal</source>
+      <translation>水平</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>垂直</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>ハイライトを保護</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>方向:</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>量:</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>シグマ:</translation>
+    </message>
+    <message>
+      <source>Banding Blaster — Preset</source>
+      <translation>Banding Blaster — プリセット</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlaster</name>
+    <message>
+      <source>Open an image first.</source>
+      <translation>最初に画像を開いてください。</translation>
     </message>
   </context>
 </TS>

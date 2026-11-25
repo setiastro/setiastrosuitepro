@@ -39,6 +39,7 @@ from setiastro.saspro.resources import (
     satellite_path, imagecombine_path, hdrcomposition_path, wims_path, wimi_path, linearfit_path, snr_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,rcastro_path,sssc_path,
     selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path, cosmeticcorrection_path,
+    bandingblaster_path,
 )
 
 # Import shortcuts module
@@ -239,6 +240,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_rgb_extract)
         tb_fn.addAction(self.act_rgb_combine)
         tb_fn.addAction(self.act_blemish)
+        tb_fn.addAction(self.act_banding_blaster)
         tb_fn.addAction(self.act_clone_stamp) 
         tb_fn.addAction(self.act_wavescale_hdr)
         tb_fn.addAction(self.act_wavescale_de)
@@ -1753,6 +1755,11 @@ class ToolbarMixin:
         self.act_blemish.setStatusTip(self.tr("Interactive blemish removal on the active view"))
         self.act_blemish.triggered.connect(self._open_blemish_blaster)
 
+        self.act_banding_blaster = QAction(QIcon(bandingblaster_path), self.tr("Banding Blaster..."), self)
+        self.act_banding_blaster.setIconVisibleInMenu(True)
+        self.act_banding_blaster.setStatusTip(self.tr("Reduce row or column banding across the whole image"))
+        self.act_banding_blaster.triggered.connect(self._open_banding_blaster)
+
         self.act_clone_stamp = QAction(QIcon(clonestampicon_path), self.tr("Clone Stamp..."), self)
         self.act_clone_stamp.setIconVisibleInMenu(True)
         self.act_clone_stamp.setStatusTip(self.tr("Interactive clone stamp on the active view"))
@@ -2304,6 +2311,7 @@ class ToolbarMixin:
         reg("rgb_extract", self.act_rgb_extract)
         reg("rgb_combine", self.act_rgb_combine)
         reg("blemish_blaster", self.act_blemish)
+        reg("banding_blaster", self.act_banding_blaster)
         reg("clone_stamp", self.act_clone_stamp)
         reg("wavescale_hdr", self.act_wavescale_hdr)
         reg("wavescale_dark_enhance", self.act_wavescale_de)

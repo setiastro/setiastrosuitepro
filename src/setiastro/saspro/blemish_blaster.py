@@ -14,6 +14,8 @@ from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_
 from dataclasses import dataclass
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.clone_stamp import _circle_mask
+from setiastro.saspro.eraser_brush import EraserFillPicker, StrokeTiles, fill_dab_inplace, display_fill
 
 @dataclass
 class BlemishOp:
@@ -459,99 +461,15 @@ class _BandingWorker(QRunnable):
         self.signals.finished.emit(out)
 
     @staticmethod
-    def _row_medians_masked(chan: np.ndarray, threshold: float,
-                            fallback: float) -> np.ndarray:
-        """Median along axis=1 with pixels > threshold rejected.
-
-        Sort-based implementation (4-7x faster than np.nanmedian on
-        typical astro image sizes; produces bit-identical results).
-        For each row we count how many pixels lie at or below the
-        threshold, sort the row ascending, and take the median of
-        the first `n_below` values in that sort.  Rows with no
-        surviving pixels fall back to `fallback` (correction = 0
-        for that row).
-        """
-        H, W = chan.shape
-        # Count survivors per row
-        n_below = (chan <= threshold).sum(axis=1)
-        # Sort every row ascending; survivors occupy positions [0, n_below)
-        srt = np.sort(chan, axis=1)
-        half = n_below // 2
-        rows = np.arange(H)
-        # Safe indices for the two branches (odd / even count)
-        idx_hi = np.clip(half, 1, W - 1)
-        idx_lo = idx_hi - 1
-        med_odd = srt[rows, np.clip(half, 0, W - 1)]
-        med_even = 0.5 * (srt[rows, idx_lo] + srt[rows, idx_hi])
-        odd = (n_below & 1).astype(bool)
-        zero = n_below == 0
-        med = np.where(zero, fallback,
-                       np.where(odd, med_odd, med_even))
-        return med.astype(np.float32, copy=False)
-
-    def _reduce_banding(self, image: np.ndarray, amount: float,
+    def _reduce_banding(image: np.ndarray, amount: float,
                         protect: bool, sigma: float, direction: str,
                         channels_to_process):
-        # Vertical banding = same algorithm on the transposed image.
-        # Transpose the (H, W) or (H, W, C) array so the offending
-        # bands run along axis=1, then flip back at the end.
-        if direction.startswith("vert"):
-            if image.ndim == 2:
-                work = image.T
-            else:
-                work = image.transpose(1, 0, 2)
-        else:
-            work = image
-
-        # Operate on a float32 copy; the caller already normalized
-        # to [0, 1] but be defensive.
-        buf = work.astype(np.float32, copy=True)
-        buf = np.clip(buf, 0.0, 1.0, out=buf)
-
-        if buf.ndim == 2:
-            channels = [None]  # marker: whole-array is one channel
-        else:
-            ncc = buf.shape[2]
-            if channels_to_process is None:
-                channels = list(range(ncc))
-            else:
-                channels = [c for c in channels_to_process if 0 <= c < ncc]
-
-        for c in channels:
-            chan = buf if c is None else buf[..., c]
-            gmed = float(np.median(chan))
-            # Robust sigma per Georg: 1.4826 * mean(|x - median|).
-            # (Strictly MAD would use median of absolutes, but this
-            # matches the original script's behavior 1:1.)
-            robust_sigma = float(1.4826 * np.mean(np.abs(chan - gmed)))
-
-            if protect and robust_sigma > 0.0:
-                threshold = gmed + sigma * robust_sigma
-                row_med = self._row_medians_masked(chan, threshold, gmed)
-            else:
-                row_med = np.median(chan, axis=1).astype(np.float32,
-                                                          copy=False)
-
-            # Additive correction: bring each row's median back to
-            # the global median, scaled by amount.  fix has shape (H,).
-            fix = ((gmed - row_med) * amount).astype(np.float32,
-                                                     copy=False)
-            if c is None:
-                buf += fix[:, None]
-            else:
-                buf[..., c] += fix[:, None]
-
-        np.clip(buf, 0.0, 1.0, out=buf)
-
-        # Untranspose
-        if direction.startswith("vert"):
-            if buf.ndim == 2:
-                out = buf.T.copy()
-            else:
-                out = buf.transpose(1, 0, 2).copy()
-        else:
-            out = buf
-        return out.astype(np.float32, copy=False)
+        # The math lives in banding_blaster (the standalone Banding Blaster
+        # tool), so this mode and the tool give the same pixels.
+        from setiastro.saspro.banding_blaster import reduce_banding
+        return reduce_banding(image, amount=amount, protect_highlights=protect,
+                              sigma=sigma, direction=direction,
+                              channels=channels_to_process)
 
 
 class BlemishBlasterDialogPro(QDialog):
@@ -687,17 +605,35 @@ class BlemishBlasterDialogPro(QDialog):
         self.rb_blemish = QRadioButton(self.tr("Blemish Blaster"))
         self.rb_linear  = QRadioButton(self.tr("Linear Blaster"))
         self.rb_banding = QRadioButton(self.tr("Banding Blaster"))
+        self.rb_eraser  = QRadioButton(self.tr("Eraser"))
+        self.rb_eraser.setToolTip(self.tr(
+            "Paint black, the image median or a chosen color with the brush, "
+            "e.g. to remove nebula left in a stars-only image."))
         self.rb_blemish.setChecked(True)
         self._mode_group = QButtonGroup(self)
         self._mode_group.addButton(self.rb_blemish, 0)
         self._mode_group.addButton(self.rb_linear, 1)
         self._mode_group.addButton(self.rb_banding, 2)
+        self._mode_group.addButton(self.rb_eraser, 3)
         _mode_row = QHBoxLayout()
         _mode_row.addWidget(self.rb_blemish); _mode_row.addWidget(self.rb_linear)
-        _mode_row.addWidget(self.rb_banding)
+        _mode_row.addWidget(self.rb_banding); _mode_row.addWidget(self.rb_eraser)
         _mode_row.addStretch(1)
         _mode_w = QWidget(self); _mode_w.setLayout(_mode_row)
         form.addRow(self.tr("Mode:"), _mode_w)
+
+        # ── Eraser: paint a fill with the brush ───────────────────
+        self.lbl_fill = QLabel(self.tr("Fill:"))
+        self.eraser_fill = EraserFillPicker(lambda: self._image, self._orig_mono, self)
+        form.addRow(self.lbl_fill, self.eraser_fill)
+        self._erasing = False         # a stroke is in progress
+        self._erase_last = None       # last dab position (scene coords)
+        self._erase_tiles = None      # StrokeTiles: this stroke's undo
+        self._erase_fill = None       # this stroke's fill, image values
+        self._erase_fill_disp = None  # ... and as the preview shows it
+        self._erase_refresh = QTimer(self)
+        self._erase_refresh.setSingleShot(True)
+        self._erase_refresh.timeout.connect(self._erase_show)
 
         self.lbl_thickness = QLabel(self.tr("Thickness:"))
         self.s_thickness = QSlider(Qt.Orientation.Horizontal)
@@ -796,7 +732,8 @@ class BlemishBlasterDialogPro(QDialog):
         form.addRow(self.lbl_band_credit)
 
         # Start hidden (Blemish mode is default)
-        for _w in (self.lbl_thickness, self._thickness_row,
+        for _w in (self.lbl_fill, self.eraser_fill,
+                   self.lbl_thickness, self._thickness_row,
                    self.lbl_extent, self.ext_w, self.btn_blast_line,
                    self.lbl_band_dir, self.band_dir_w,
                    self.lbl_band_amount, self.sb_band_amount,
@@ -808,6 +745,7 @@ class BlemishBlasterDialogPro(QDialog):
         self.btn_blast_banding.clicked.connect(self._blast_banding)
         self.rb_blemish.toggled.connect(self._on_mode_changed)
         self.rb_banding.toggled.connect(self._on_mode_changed)
+        self.rb_eraser.toggled.connect(self._on_mode_changed)
         self.rb_extent_full.toggled.connect(lambda _=None: self._lin_refresh())
         self.btn_blast_line.clicked.connect(self._blast_line)
         self.lbl_bracket_help = QLabel(self.tr(
@@ -1098,6 +1036,29 @@ class BlemishBlasterDialogPro(QDialog):
                     self._wheel_zoom(ev); return True
                 return super().eventFilter(src, ev)
 
+            # ── Eraser mode: press-drag paints the fill ──────────
+            if getattr(self, "_mode", 0) == 3:
+                if et == QEvent.Type.MouseMove:
+                    pos = self.view.mapToScene(ev.position().toPoint())
+                    r = self.s_radius.value()
+                    self.circle.setRect(pos.x()-r, pos.y()-r, 2*r, 2*r)
+                    self.circle.setVisible(True)
+                    if self._erasing:
+                        if ev.buttons() & Qt.MouseButton.LeftButton:
+                            self._erase_to(pos)
+                        else:                   # the release went elsewhere
+                            self._erase_end()
+                    return True
+                if et == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
+                    self._erase_begin(self.view.mapToScene(ev.position().toPoint()))
+                    return True
+                if et == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
+                    self._erase_end()
+                    return True
+                if et == QEvent.Type.Wheel:
+                    self._wheel_zoom(ev); return True
+                return super().eventFilter(src, ev)
+
             # ── Blemish Blaster mode (original behavior) ─────────
             if et == QEvent.Type.MouseMove:
                 pos = self.view.mapToScene(ev.position().toPoint())
@@ -1136,6 +1097,8 @@ class BlemishBlasterDialogPro(QDialog):
     def _begin_space_pan(self):
         if getattr(self, "_space_pan", False):
             return
+        if getattr(self, "_erasing", False):
+            self._erase_end()
         self._space_pan = True
         try:
             self._space_prev_drag = self.view.dragMode()
@@ -1216,8 +1179,12 @@ class BlemishBlasterDialogPro(QDialog):
         return w
 
     def _on_mode_changed(self, *_):
-        # 0 = Blemish, 1 = Linear, 2 = Banding
-        if self.rb_banding.isChecked():
+        # 0 = Blemish, 1 = Linear, 2 = Banding, 3 = Eraser
+        if self._erasing:
+            self._erase_end()
+        if self.rb_eraser.isChecked():
+            self._mode = 3
+        elif self.rb_banding.isChecked():
             self._mode = 2
         elif self.rb_linear.isChecked():
             self._mode = 1
@@ -1225,6 +1192,9 @@ class BlemishBlasterDialogPro(QDialog):
             self._mode = 0
         lin = (self._mode == 1)
         band = (self._mode == 2)
+        erase = (self._mode == 3)
+        self.lbl_fill.setVisible(erase)
+        self.eraser_fill.setVisible(erase)
 
         # Linear controls
         for lbl, fld in ((self.lbl_thickness, self._thickness_row),
@@ -1508,6 +1478,73 @@ class BlemishBlasterDialogPro(QDialog):
         self._on_worker_done(corrected, pre_patch)
         self._lin_reset()
 
+    # ── Eraser ────────────────────────────────────────────────────
+    # Painted in place on the GUI thread (a dab is a small blend, no worker),
+    # into the working image and the preview, like the Clone Stamp's brush.
+    def _erase_begin(self, pos: QPointF):
+        if self._image is None:
+            return
+        x, y = int(round(pos.x())), int(round(pos.y()))
+        if not (0 <= x < self._image.shape[1] and 0 <= y < self._image.shape[0]):
+            return
+        self._erase_fill = self.eraser_fill.fill()
+        self._erase_fill_disp = display_fill(self._image, self._display, self._erase_fill,
+                                             linked=self._orig_mono or self.cb_linked.isChecked())
+        self._erase_tiles = StrokeTiles(self._image)
+        self._erasing = True
+        self._erase_last = (float(pos.x()), float(pos.y()))
+        self._erase_to(pos)
+
+    def _erase_to(self, pos: QPointF):
+        if not self._erasing or self._image is None:
+            return
+        x1, y1 = float(pos.x()), float(pos.y())
+        x0, y0 = self._erase_last
+        dx, dy = x1 - x0, y1 - y0
+        radius  = int(self.s_radius.value())
+        feather = float(self.s_feather.value()) / 100.0
+        opacity = float(self.s_opacity.value()) / 100.0
+        spacing = max(1.0, radius * 0.25)          # the Clone Stamp's dab spacing
+        steps = max(1, int(math.hypot(dx, dy) / spacing))
+        key = (radius, feather)
+        if getattr(self, "_erase_mask_key", None) != key:
+            self._erase_mask_key, self._erase_mask = key, _circle_mask(radius, feather)
+        mask = self._erase_mask
+        h, w = self._image.shape[:2]
+        disp = self._display if self._display is not self._image else None
+        for i in range(1, steps + 1):
+            t = i / steps
+            tx, ty = int(round(x0 + dx * t)), int(round(y0 + dy * t))
+            if not (0 <= tx < w and 0 <= ty < h):
+                continue
+            self._erase_tiles.touch(tx, ty, radius)
+            fill_dab_inplace(self._image, tx, ty, self._erase_fill, mask, radius, opacity)
+            if disp is not None:
+                fill_dab_inplace(disp, tx, ty, self._erase_fill_disp, mask, radius, opacity)
+        self._erase_last = (x1, y1)
+        if not self._erase_refresh.isActive():
+            self._erase_refresh.start(33)
+
+    def _erase_end(self):
+        if not self._erasing:
+            return
+        self._erasing = False
+        self._erase_last = None
+        tiles, self._erase_tiles = self._erase_tiles, None
+        if tiles is not None and tiles.patches:
+            self._undo.append(tiles.patches)       # one stroke = one undo entry
+            if len(self._undo) > 20:
+                self._undo.pop(0)
+            self._redo.clear()
+            self._update_undo_redo_buttons()
+        self._erase_refresh.stop()
+        self._erase_show()
+
+    def _erase_show(self):
+        if self._display is None:                  # closed: buffers released
+            return
+        self._refresh_pix()
+
     def _on_worker_done(self, corrected: np.ndarray, pre_patch: tuple):
         self._undo.append(pre_patch)
         if len(self._undo) > 20:
@@ -1601,26 +1638,30 @@ class BlemishBlasterDialogPro(QDialog):
         self._zoom = t.m11()
 
     # ── Undo/Redo
+    def _swap_patches(self, entry):
+        """Put an undo/redo entry's pixels back; returns the entry that reverses it.
+        An entry is one (y0, x0, pixels) patch, or a list of them (an eraser
+        stroke's tiles)."""
+        patches = entry if isinstance(entry, list) else [entry]
+        back = []
+        for py0, px0, pix in patches:
+            ph, pw = pix.shape[:2]
+            back.append((py0, px0, self._image[py0:py0 + ph, px0:px0 + pw].copy()))
+            self._image[py0:py0 + ph, px0:px0 + pw] = pix
+        return back if isinstance(entry, list) else back[0]
+
     def _undo_step(self):
-        if not self._undo:
+        if not self._undo or self._erasing:
             return
-        py0, px0, pre = self._undo.pop()
-        ph, pw = pre.shape[:2]
-        redo_patch = (py0, px0, self._image[py0:py0 + ph, px0:px0 + pw].copy())
-        self._redo.append(redo_patch)
-        self._image[py0:py0 + ph, px0:px0 + pw] = pre
+        self._redo.append(self._swap_patches(self._undo.pop()))
         self._display = self._image.copy()
         self._update_display_autostretch()
         self._update_undo_redo_buttons()
 
     def _redo_step(self):
-        if not self._redo:
+        if not self._redo or self._erasing:
             return
-        py0, px0, post = self._redo.pop()
-        ph, pw = post.shape[:2]
-        undo_patch = (py0, px0, self._image[py0:py0 + ph, px0:px0 + pw].copy())
-        self._undo.append(undo_patch)
-        self._image[py0:py0 + ph, px0:px0 + pw] = post
+        self._undo.append(self._swap_patches(self._redo.pop()))
         self._display = self._image.copy()
         self._update_display_autostretch()
         self._update_undo_redo_buttons()
@@ -1767,6 +1808,12 @@ class BlemishBlasterDialogPro(QDialog):
             return
         self._memory_released = True
 
+        try:
+            self._erase_refresh.stop()
+        except Exception:
+            pass
+        self._erasing = False
+        self._erase_tiles = None
         self._image = None
         self._display = None
         self._doc = None

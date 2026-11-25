@@ -45,7 +45,8 @@ parallel stretch of similar structure. Useful for anything the
 one-click Blemish Blaster can't handle on its own: large irregular
 defects, star field continuations, satellite trail patches on
 textured background, and any time you want manual control over which
-pixels get used as the heal source.</p>
+pixels get used as the heal source. An <b>Eraser</b> mode paints black,
+the image median or a chosen color with the same brush.</p>
 
 <h2>1. Workflow in a nutshell</h2>
 <ol>
@@ -91,7 +92,42 @@ from the stroke-wide offset &mdash; so if the source approaches the
 image edge mid-stroke, the dabs quietly skip over the out-of-bounds
 part rather than filling it with black.</p>
 
-<h2>4. Visual overlays</h2>
+<h2>4. Eraser mode</h2>
+<p>Switch <b>Mode</b> to <b>Eraser</b> to paint a flat fill with the
+brush instead of cloning &mdash; for things that should simply be gone,
+such as nebula remnants and other artifacts left in a stars-only image
+after star removal. No source is needed: just left-click and drag. In
+Eraser mode Ctrl+click doesn't set a source, and the source you set in
+Clone mode is kept for when you switch back.</p>
+<p>Radius, Feather and Opacity work exactly as for cloning: each dab
+blends <code>(1&nbsp;&minus;&nbsp;&alpha;)&middot;image&nbsp;+&nbsp;&alpha;&middot;fill</code>
+with <code>&alpha;</code> = mask &times; opacity, and one stroke is one
+undo entry.</p>
+
+<h3>Fill</h3>
+<ul>
+  <li><b>Black</b> &mdash; 0.0 in every channel. Where the brush is at
+      full strength (inside the feather ring, opacity 100&nbsp;%) the
+      result is exactly 0.0.</li>
+  <li><b>Image median</b> &mdash; each channel's own median (R, G and B
+      separately; one value on a mono image), measured when you choose
+      it and shown under the choices. Paints the background level back
+      in.</li>
+  <li><b>Color</b> &mdash; click the swatch to pick any color. Its
+      values (0&ndash;1 per channel) go straight into the image, so on
+      linear data even a dark gray is far brighter than the sky, and with
+      Auto-stretch preview on the paint shows brighter than the swatch.
+      On a mono image the color's gray level (the mean of R, G and B) is
+      painted, since that is what Apply keeps.</li>
+</ul>
+<p>The fill choice and the color are remembered, and shared with
+Blemish Blaster's Eraser.</p>
+
+<div class="tip"><b>Tip:</b> the fill is flat &mdash; it carries no
+noise. On a noisy background an erased patch reads as smooth; where the
+texture has to continue, heal or clone instead.</div>
+
+<h2>5. Visual overlays</h2>
 <ul>
   <li><b>Green solid circle</b> &mdash; the brush at the current
       radius, following the cursor. Shows exactly where the next
@@ -104,7 +140,7 @@ part rather than filling it with black.</p>
       the source is still over a safe area as you move around.</li>
 </ul>
 
-<h2>5. Brush controls</h2>
+<h2>6. Brush controls</h2>
 
 <h3>Radius / Feather / Opacity</h3>
 <ul>
@@ -135,7 +171,7 @@ exact mask that will be multiplied into the image.</p>
 before the next stroke. Doesn't affect the painted result &mdash;
 only the source marker.</p>
 
-<h2>6. Auto-stretch preview</h2>
+<h2>7. Auto-stretch preview</h2>
 <p>Off by default. When on, a statistical stretch is applied to the
 preview buffer only; the underlying image data (and the undo/redo
 state) is never modified by this control. Essential for working on
@@ -151,7 +187,7 @@ background.</p>
 during painting so toggling the checkbox is instant &mdash; no need
 to wait for a re-stretch of the whole image.</p>
 
-<h2>7. Zoom and pan</h2>
+<h2>8. Zoom and pan</h2>
 <p>Toolbuttons for Zoom Out, Zoom In, Fit to Preview. Mouse wheel
 and trackpad zoom with the cursor as the anchor &mdash; small
 trackpad swipes fine, click-wheel detents coarse, hold Ctrl to
@@ -159,7 +195,7 @@ zoom faster in either case. Range 0.05&times; to 4&times;. The
 preview auto-fits on first open; after that your zoom and pan state
 is preserved across all operations in the session.</p>
 
-<h2>8. Undo / Redo / Apply</h2>
+<h2>9. Undo / Redo / Apply</h2>
 <p>Each complete stroke (down&ndash;drag&ndash;up) is one undo entry,
 regardless of how many dabs it contained. The ring holds up to 20
 strokes. <kbd>Ctrl</kbd>+<kbd>Z</kbd> and <kbd>Ctrl</kbd>+<kbd>Y</kbd>
@@ -172,7 +208,7 @@ back to a single plane; RGB sources stay RGB. <b>Close</b> discards
 everything. The dialog's window geometry is persisted per-user and
 restored on next open.</p>
 
-<h2>9. Keyboard shortcuts</h2>
+<h2>10. Keyboard shortcuts</h2>
 <ul>
   <li><kbd>[</kbd> and <kbd>]</kbd> &mdash; decrease / increase brush
       radius by 2&nbsp;px. The preview circle updates live at the
@@ -182,13 +218,13 @@ restored on next open.</p>
       &mdash; undo / redo the last stroke.</li>
 </ul>
 
-<h2>10. Technical details</h2>
+<h2>11. Technical details</h2>
 <p class="tech-lead">All processing on float32 [0, 1]. The dialog
 displays a 3-channel copy of the working image regardless of source
 depth; on Apply, mono originals are collapsed back to a single
 plane.</p>
 
-<h3>10.1 Brush mask</h3>
+<h3>11.1 Brush mask</h3>
 <p>The brush is a circular disk with a feathered falloff ring at the
 edge. With radius <code>r</code> and feather fraction
 <code>f &isin; [0, 1]</code>, the inner hard-disk radius is:</p>
@@ -206,7 +242,7 @@ mask is cached by its <code>(r, f)</code> key as a NumPy array, so
 subsequent dabs with the same parameters reuse the same buffer
 without rebuilding it.</p>
 
-<h3>10.2 Dab placement along a stroke</h3>
+<h3>11.2 Dab placement along a stroke</h3>
 <p>During a drag from <code>p<sub>0</sub></code> to
 <code>p<sub>1</sub></code>, dabs are placed at a fixed spacing
 proportional to the brush radius:</p>
@@ -217,7 +253,7 @@ segment. The &frac14;-radius spacing is the standard Photoshop
 default &mdash; dense enough that the overlapping dab masks sum to a
 flat stroke, sparse enough that huge brushes don't thrash the CPU.</p>
 
-<h3>10.3 Source-follow offset</h3>
+<h3>11.3 Source-follow offset</h3>
 <p>When a stroke starts at target position
 <code>(t<sub>x</sub><sup>(0)</sup>,&nbsp;t<sub>y</sub><sup>(0)</sup>)</code>
 with source at <code>(s<sub>x</sub>,&nbsp;s<sub>y</sub>)</code>, the
@@ -232,7 +268,7 @@ Starting a new stroke captures a <i>new</i> offset based on wherever
 the stroke begins, so moving to a new target area doesn't drag the
 source along with you until you click to begin painting.</p>
 
-<h3>10.4 Blend formula</h3>
+<h3>11.4 Blend formula</h3>
 <p>Per dab, the final per-pixel alpha combines mask weight and
 opacity, and the result is a straight linear blend:</p>
 <div class="matheq-hero">\alpha \;=\; w \,\cdot\, \mathrm{opacity}\,,\qquad \mathrm{out} \;=\; (1 - \alpha)\,\mathrm{target} \;+\; \alpha\,\mathrm{source}</div>
@@ -243,7 +279,7 @@ and the invisible part is skipped, so a brush that straddles the
 border still paints its in-bounds half without pulling in bogus
 zeros from off-image.</p>
 
-<h3>10.5 Tile-based stroke undo</h3>
+<h3>11.5 Tile-based stroke undo</h3>
 <p>Snapshotting the entire image on every stroke is expensive and
 wasteful &mdash; most strokes touch a tiny fraction of the frame. The
 dialog partitions the image into 64&times;64 tiles and tracks which
@@ -266,13 +302,21 @@ tiles each stroke has modified:</p>
 A long freehand stroke that traverses several tiles pays only for
 those tiles once each, regardless of how many dabs crossed them.</p>
 
-<h3>10.6 Display buffers and throttled refresh</h3>
-<p>The dialog keeps three identical-shape float32 buffers in sync:
-<code>_image</code> (authoritative), <code>_display_raw</code> (what
-auto-stretch-off shows), and <code>_display_stretched</code> (what
-auto-stretch-on shows). Each dab is applied in place to all three,
-so toggling the auto-stretch checkbox swaps between them with no
+<h3>11.6 Display buffers and throttled refresh</h3>
+<p>The preview shows either the working image itself
+(<code>_image</code>, auto-stretch off) or a stretched copy of it
+(<code>_display_stretched</code>, auto-stretch on). Each dab is applied
+in place once to the working image and once to the stretched copy, so
+toggling the auto-stretch checkbox swaps between them with no
 latency.</p>
+<p>An eraser dab paints the fill's own value into the working image and
+the value it shows as into the stretched copy. The stretch is a
+non-decreasing function of each pixel value with
+<code>f(0)&nbsp;=&nbsp;0</code> and <code>f(1)&nbsp;=&nbsp;1</code>, so
+that value is read off the image's own (value, stretched value) pairs
+&mdash; about 250&nbsp;000 sampled pixels, pooled across channels when
+the stretch is linked &mdash; by linear interpolation between the
+nearest samples below and above the fill, once per stroke.</p>
 <p>During a drag, repainting the whole scene on every mouse-move
 event would starve the paint loop, so refresh is throttled to
 ~30&nbsp;fps via a 33&nbsp;ms single-shot timer: the first dab

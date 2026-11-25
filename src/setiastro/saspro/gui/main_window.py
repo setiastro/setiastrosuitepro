@@ -4628,6 +4628,11 @@ class AstroSuiteProMainWindow(
         dlg.resize(900, 650)
         dlg.show()
 
+    def _open_banding_blaster(self, preset: dict | None = None):
+        # Banding Blaster as its own tool (it is also a mode of Blemish Blaster)
+        from setiastro.saspro.banding_blaster import open_banding_blaster_dialog
+        open_banding_blaster_dialog(self, preset=preset if isinstance(preset, dict) else None)
+
     def _open_clone_stamp(self):
         from setiastro.saspro.clone_stamp import CloneStampDialogPro
         sw = self.mdi.activeSubWindow()
@@ -6878,7 +6883,10 @@ class AstroSuiteProMainWindow(
         if cid == "pedestal":
             try:
                 from setiastro.saspro.pedestal import remove_pedestal
-                remove_pedestal(self, target_doc=base_doc)
+                # The recorded preset (mode, percentile, per-channel): without it
+                # every replay fell back to the per-channel image minimum
+                remove_pedestal(self, target_doc=base_doc,
+                                preset=preset if isinstance(preset, dict) else {})
                 try:
                     self._log(f"[Replay] Applied Pedestal Removal to base of '{target_sw.windowTitle()}'")
                 except Exception:
@@ -7045,6 +7053,31 @@ class AstroSuiteProMainWindow(
                     )
                 except Exception:
                     print("Cosmetic Correction replay-on-base failed:", e)
+            return
+        if cid == "banding_blaster":
+            # Row medians must come from the whole frame, so always the base
+            try:
+                from setiastro.saspro.banding_blaster import (
+                    apply_banding_blaster_preset_to_doc, describe_preset,
+                )
+                preset_dict = preset if isinstance(preset, dict) else {}
+                apply_banding_blaster_preset_to_doc(self, base_doc, preset_dict)
+                try:
+                    self._log(
+                        f"[Replay] Applied Banding Blaster to base of "
+                        f"'{target_sw.windowTitle()}' ({describe_preset(preset_dict)})"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self,
+                        self.tr("Banding Blaster"),
+                        self.tr("Replay-on-base failed:\n{0}").format(e),
+                    )
+                except Exception:
+                    print("Banding Blaster replay-on-base failed:", e)
             return
         if cid == "satchroma":
             try:
@@ -8128,6 +8161,9 @@ class AstroSuiteProMainWindow(
             if cid == "remove_green":
                 from setiastro.saspro.remove_green import open_remove_green_dialog
                 open_remove_green_dialog(self, preset); return
+            if cid == "banding_blaster":
+                from setiastro.saspro.banding_blaster import open_banding_blaster_with_preset
+                open_banding_blaster_with_preset(self, preset); return
             if cid == "pedestal":
                 from setiastro.saspro.pedestal import open_remove_pedestal_with_preset
                 open_remove_pedestal_with_preset(self, preset); return            
@@ -8773,6 +8809,19 @@ class AstroSuiteProMainWindow(
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
             dlg.resize(900, 650)
             dlg.show()
+            return
+
+        if cid == "banding_blaster":
+            try:
+                from setiastro.saspro.banding_blaster import apply_banding_blaster_preset_to_doc
+                apply_banding_blaster_preset_to_doc(self, doc, preset or {})
+                try:
+                    self._remember_last_headless_command(
+                        "banding_blaster", dict(preset or {}), description="Banding Blaster")
+                except Exception:
+                    pass
+            except Exception as e:
+                QMessageBox.warning(self, self.tr("Preset apply failed"), str(e))
             return
 
         if cid == "cosmetic_correction":

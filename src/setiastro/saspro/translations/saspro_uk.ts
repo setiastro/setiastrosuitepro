@@ -4982,6 +4982,22 @@ Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
       <source>Start Panel: open images, process step by step, stacking and more</source>
       <translation>Стартова панель: відкрити зображення, обробка крок за кроком, складання та багато іншого</translation>
     </message>
+    <message>
+      <source>Reset Essentials</source>
+      <translation>Скидання основних інструментів</translation>
+    </message>
+    <message>
+      <source>Put the default tools back on Essentials?
+
+Tools you added are taken off, the ones you removed come back, and the order is the default one.</source>
+      <translation>Повернути стандартні інструменти на панель основних інструментів?
+
+Додані вами інструменти буде прибрано, прибрані повернуться, а порядок стане стандартним.</translation>
+    </message>
+    <message>
+      <source>Reduce row or column banding across the whole image</source>
+      <translation>Зменшити смуги по рядках або стовпцях на всьому зображенні</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -6667,6 +6683,18 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>⚡ Blast Line</source>
       <translation>⚡ Прибрати лінію</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>Гумка</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>Малює пензлем чорний, медіану зображення або вибраний колір, напр. щоб прибрати туманність, що лишилася на зображенні лише із зірками.</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>Заповнення:</translation>
     </message>
   </context>
   <context>
@@ -9918,6 +9946,14 @@ approximation, so what you see is what Apply will commit.</source>
       <source>Zoom at the cursor</source>
       <translation>Масштабування в точці курсора</translation>
     </message>
+    <message>
+      <source>Drag a tool window's grip, a desktop shortcut or a History step onto Essentials</source>
+      <translation>Перетягніть ручку вікна інструмента, ярлик на робочому столі або крок історії на панель основних інструментів</translation>
+    </message>
+    <message>
+      <source>Add that tool to Essentials</source>
+      <translation>Додати цей інструмент на панель основних інструментів</translation>
+    </message>
   </context>
   <context>
     <name>CheatSheetDialog</name>
@@ -12783,6 +12819,10 @@ Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to
     <message>
       <source>Toolbars, panels, theme and background go back to how a new install starts</source>
       <translation>Панелі інструментів, панелі, тема і фон повертаються до стану нової інсталяції</translation>
+    </message>
+    <message>
+      <source>Add to Essentials</source>
+      <translation>Додати на панель основних інструментів</translation>
     </message>
   </context>
   <context>
@@ -36908,6 +36948,32 @@ Use [ and ] to decrease/increase brush size.</source>
     <message>
       <source>Zoom Out</source>
       <translation>Зменшити</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>Режим:</translation>
+    </message>
+    <message>
+      <source>Clone</source>
+      <translation>Клонування</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>Гумка</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>Малює пензлем чорний, медіану зображення або вибраний колір, напр. щоб прибрати туманність, що лишилася на зображенні лише із зірками.</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>Заповнення:</translation>
+    </message>
+    <message>
+      <source>Left-drag to paint with the fill.
+Use [ and ] to decrease/increase brush size.</source>
+      <translation>Тягніть лівою кнопкою, щоб малювати заповненням.
+[ і ] зменшують/збільшують розмір пензля.</translation>
     </message>
   </context>
   <context>
@@ -74600,6 +74666,214 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>Lock Toolbar Icons</source>
       <translation>Заблокувати значки панелі інструментів</translation>
+    </message>
+    <message>
+      <source>Remove from Essentials</source>
+      <translation>Прибрати з панелі основних інструментів</translation>
+    </message>
+    <message>
+      <source>Put Back</source>
+      <translation>Повернути</translation>
+    </message>
+    <message>
+      <source>Reset Essentials...</source>
+      <translation>Скинути основні інструменти...</translation>
+    </message>
+    <message>
+      <source>Tip: drag a tool window's grip here to add the tool</source>
+      <translation>Порада: перетягніть сюди ручку вікна інструмента, щоб додати інструмент</translation>
+    </message>
+  </context>
+  <context>
+    <name>EraserFillPicker</name>
+    <message>
+      <source>Black</source>
+      <translation>Чорний</translation>
+    </message>
+    <message>
+      <source>Image median</source>
+      <translation>Медіана зображення</translation>
+    </message>
+    <message>
+      <source>Color</source>
+      <translation>Колір</translation>
+    </message>
+    <message>
+      <source>Paints 0.0 in every channel.</source>
+      <translation>Малює 0.0 у кожному каналі.</translation>
+    </message>
+    <message>
+      <source>Paints the image's median, measured when you choose this.</source>
+      <translation>Малює медіану зображення, виміряну в момент вибору.</translation>
+    </message>
+    <message>
+      <source>Paints each channel's own median (R, G and B separately), measured when you choose this.</source>
+      <translation>Малює власну медіану кожного каналу (R, G і B окремо), виміряну в момент вибору.</translation>
+    </message>
+    <message>
+      <source>Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.</source>
+      <translation>Записує значення вибраного кольору прямо в зображення. Коли ввімкнено «Авто-стретч перегляду», він виглядає світлішим за зразок.</translation>
+    </message>
+    <message>
+      <source>Choose the fill color</source>
+      <translation>Вибрати колір заповнення</translation>
+    </message>
+    <message>
+      <source>Eraser color</source>
+      <translation>Колір гумки</translation>
+    </message>
+    <message>
+      <source>Fills with {0}</source>
+      <translation>Заповнює значенням {0}</translation>
+    </message>
+    <message>
+      <source>Fills with R {0}  G {1}  B {2}</source>
+      <translation>Заповнює значеннями R {0}  G {1}  B {2}</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlasterDialog</name>
+    <message>
+      <source>Fit</source>
+      <translation>Вписати</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>Напрямок:</translation>
+    </message>
+    <message>
+      <source>Horizontal</source>
+      <translation>Горизонтально</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>Вертикально</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>Сила:</translation>
+    </message>
+    <message>
+      <source>Strength of the correction. 1.0 fully equalises the per-row median to the global median. &lt;1.0 = partial correction, &gt;1.0 = over-correction (rarely useful).</source>
+      <translation>Сила корекції. 1.0 повністю вирівнює медіану рядка з глобальною медіаною. &lt;1.0 = часткова корекція, &gt;1.0 = надмірна корекція (рідко корисно).</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>Захищати світлі ділянки</translation>
+    </message>
+    <message>
+      <source>Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.</source>
+      <translation>Виключати яскраві пікселі (зірки, ядра DSO) з медіани рядка, щоб вони не спотворювали корекцію. Рекомендовано УВІМКНУТИ для астрономічних зображень.</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>Сигма:</translation>
+    </message>
+    <message>
+      <source>Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.</source>
+      <translation>Поріг відхилення в одиницях робастної сигми над глобальною медіаною. Менше = агресивніше відхилення яскравих пікселів. Використовується лише при увімкненому «Захищати світлі ділянки».</translation>
+    </message>
+    <message>
+      <source>Computing preview…</source>
+      <translation>Обчислення перегляду…</translation>
+    </message>
+    <message>
+      <source>Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)</source>
+      <translation>Алгоритм: CanonBandingReduction від Georg Viehoever (GPLv3, 2009-2013)</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>Застосувати</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Закрити</translation>
+    </message>
+    <message>
+      <source>Preview failed: {0}</source>
+      <translation>Помилка перегляду: {0}</translation>
+    </message>
+    <message>
+      <source>Open an image first.</source>
+      <translation>Спочатку відкрийте зображення.</translation>
+    </message>
+    <message>
+      <source>Apply failed:
+{0}</source>
+      <translation>Помилка застосування:
+{0}</translation>
+    </message>
+    <message>
+      <source>Fit the whole image in the preview</source>
+      <translation>Вписати все зображення в попередній перегляд</translation>
+    </message>
+    <message>
+      <source>Row banding, as on Canon DSLRs</source>
+      <translation>Смуги по рядках, як у дзеркальних камер Canon</translation>
+    </message>
+    <message>
+      <source>Column banding, as on some CMOS cameras</source>
+      <translation>Смуги по стовпцях, як у деяких CMOS-камер</translation>
+    </message>
+    <message>
+      <source>Drag to the canvas to create a Banding Blaster shortcut with these exact settings.
+Drop directly on an image to apply them headlessly.</source>
+      <translation>Перетягніть на робочий стіл, щоб створити ярлик Banding Blaster з саме цими налаштуваннями.
+Перетягніть прямо на зображення, щоб застосувати їх без інтерфейсу.</translation>
+    </message>
+    <message>
+      <source>Measuring the bands…</source>
+      <translation>Вимірювання смуг…</translation>
+    </message>
+    <message>
+      <source>Largest column shift: {0:.5f}</source>
+      <translation>Найбільший зсув стовпця: {0:.5f}</translation>
+    </message>
+    <message>
+      <source>Largest row shift: {0:.5f}</source>
+      <translation>Найбільший зсув рядка: {0:.5f}</translation>
+    </message>
+    <message>
+      <source>Amount is 0, so there is nothing to apply.</source>
+      <translation>Сила дорівнює 0, тож застосовувати нічого.</translation>
+    </message>
+  </context>
+  <context>
+    <name>_BandingBlasterPresetDialog</name>
+    <message>
+      <source>Horizontal</source>
+      <translation>Горизонтально</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>Вертикально</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>Захищати світлі ділянки</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>Напрямок:</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>Сила:</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>Сигма:</translation>
+    </message>
+    <message>
+      <source>Banding Blaster — Preset</source>
+      <translation>Banding Blaster — пресет</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlaster</name>
+    <message>
+      <source>Open an image first.</source>
+      <translation>Спочатку відкрийте зображення.</translation>
     </message>
   </context>
 </TS>

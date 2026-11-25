@@ -52,7 +52,8 @@ MENU_CONTENTS: dict[str, List[str]] = {
         "act_auto_fit_resize",
     ],
     "functions": [
-        "act_abe", "act_add_stars", "act_background_neutral", "act_blemish",
+        "act_abe", "act_add_stars", "act_background_neutral",
+        "act_banding_blaster", "act_blemish",
         "act_clahe", "act_clone_stamp", "act_convo", "act_cosmetic_correction",
         "act_crop", "act_curves", "act_extract_luma", "act_fx", "act_graxpert",
         "act_ghs", "act_halobgon", "act_histogram", "act_hist_transform",
@@ -168,8 +169,8 @@ SUBMENUS: dict[str, List[Tuple[str, List[str]]]] = {
             "act_rgb_combine", "act_nbextract",
         ]),
         (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Repair && Retouch"), [
-            "act_blemish", "act_clone_stamp", "act_cosmetic_correction",
-            "act_crop",
+            "act_blemish", "act_banding_blaster", "act_clone_stamp",
+            "act_cosmetic_correction", "act_crop",
         ]),
         (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Creative && Overlays"), [
             "act_fx", "act_signature", "act_pixelmath",

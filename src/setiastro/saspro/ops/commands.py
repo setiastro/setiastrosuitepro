@@ -203,6 +203,10 @@ ALIASES: Dict[str, str] = {
     "plate_solve": "plate_solve",
     "plate solve": "plate_solve",
     "platesolve": "plate_solve",
+
+    "banding": "banding_blaster",
+    "banding blaster": "banding_blaster",
+    "banding_reduction": "banding_blaster",
 }
 
 
@@ -2056,6 +2060,53 @@ register(CommandSpec(
         "ctx.run_command('nbextract', {'preset': 'Ha / OIII', 'allow_fallback': True})",
     ],
     supports_mono=False,
+    supports_rgb=True,
+    supports_linear=True,
+    supports_nonlinear=True,
+))
+
+
+# ---------------- Repair ----------------
+
+register(CommandSpec(
+    id="banding_blaster",
+    name="Banding Blaster",
+    group="Repair",
+    import_path="setiastro.saspro.banding_blaster",
+    callable_name="apply_banding_blaster_preset_to_doc",
+    ui_method="_open_banding_blaster",
+    summary=(
+        "Reduces row (horizontal) or column (vertical) banding across the whole "
+        "image: each row is shifted so its median sits at the channel's global "
+        "median. Port of CanonBandingReduction by Georg Viehoever. Blends with "
+        "the active destination mask."
+    ),
+    presets=[
+        PresetSpec(
+            key="direction", type="enum", default="horizontal",
+            enum=["horizontal", "vertical"],
+            desc="horizontal = row banding (Canon DSLRs), vertical = column banding.",
+        ),
+        PresetSpec(
+            key="amount", type="float", default=1.0, min=0.0, max=4.0,
+            desc="Strength. 1.0 brings each row's median to the global median.",
+        ),
+        PresetSpec(
+            key="protect_highlights", type="bool", default=True,
+            desc="Leave bright pixels (stars, cores) out of the row medians.",
+        ),
+        PresetSpec(
+            key="sigma", type="float", default=1.0, min=0.01, max=5.0,
+            desc="With protect_highlights: pixels above median + sigma x robust "
+                 "sigma are left out. Lower = more rejected.",
+        ),
+    ],
+    aliases=["banding", "banding_reduction"],
+    examples=[
+        "ctx.run_command('banding_blaster', {'direction': 'horizontal'})",
+        "ctx.run_command('banding_blaster', {'direction': 'vertical', 'amount': 0.8, 'sigma': 0.5})",
+    ],
+    supports_mono=True,
     supports_rgb=True,
     supports_linear=True,
     supports_nonlinear=True,

@@ -17380,3 +17380,103 @@ _ADDITIONS_2026_11_24_QS = {
 for _ctx, _msgs in _ADDITIONS_2026_11_24_QS.items():
     TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+# 2026-11-25: the eraser in Clone Stamp and Blemish Blaster (EraserFillPicker = its fill row).
+_ADDITIONS_2026_11_25_ERASER = {
+    'CloneStampDialogPro': {
+        'Mode:': 'モード:',
+        'Clone': 'コピースタンプ',
+        'Eraser': '消しゴム',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': 'ブラシで黒、画像の中間値、または選んだ色を塗ります。たとえば星だけの画像に残った星雲を消すときに使います。',
+        'Fill:': '塗りつぶし:',
+        'Left-drag to paint with the fill.\nUse [ and ] to decrease/increase brush size.': '左ドラッグで塗りつぶし値を塗ります。\n[ と ] でブラシサイズを縮小/拡大します。',
+    },
+    'BlemishBlasterDialogPro': {
+        'Eraser': '消しゴム',
+        'Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.': 'ブラシで黒、画像の中間値、または選んだ色を塗ります。たとえば星だけの画像に残った星雲を消すときに使います。',
+        'Fill:': '塗りつぶし:',
+    },
+    'EraserFillPicker': {
+        'Black': '黒',
+        'Image median': '画像の中間値',
+        'Color': '色',
+        'Paints 0.0 in every channel.': 'すべてのチャンネルに 0.0 を塗ります。',
+        "Paints the image's median, measured when you choose this.": '画像の中間値を塗ります。これを選んだ時点で測定します。',
+        "Paints each channel's own median (R, G and B separately), measured when you choose this.": '各チャンネル固有の中間値（R、G、B を個別に）を塗ります。これを選んだ時点で測定します。',
+        "Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.": '選んだ色の値をそのまま画像に書き込みます。自動ストレッチ プレビューがオンのときは、見本より明るく表示されます。',
+        'Choose the fill color': '塗りつぶしの色を選択',
+        'Eraser color': '消しゴムの色',
+        'Fills with {0}': '塗りつぶし値 {0}',
+        'Fills with R {0}  G {1}  B {2}': '塗りつぶし値 R {0}  G {1}  B {2}',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_ERASER.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-25: Banding Blaster as its own tool, and making Essentials your own
+# (Add to / Remove from Essentials, Put Back, Reset Essentials).
+_ADDITIONS_2026_11_25_BANDING = {
+    'BandingBlasterDialog': {
+        'Fit': 'フィット',
+        'Direction:': '方向:',
+        'Horizontal': '水平',
+        'Vertical': '垂直',
+        'Amount:': '量:',
+        'Strength of the correction. 1.0 fully equalises the per-row median to the global median. <1.0 = partial correction, >1.0 = over-correction (rarely useful).': '補正の強さ。1.0 で行ごとの中央値を全体の中央値に完全に揃えます。<1.0 = 部分的な補正、>1.0 = 過補正 (ほとんど役に立ちません)。',
+        'Protect highlights': 'ハイライトを保護',
+        "Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.": '明るいピクセル (星、DSO のコア) を行ごとの中央値から除外し、補正が偏らないようにします。天体画像ではオンを推奨します。',
+        'Sigma:': 'シグマ:',
+        "Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.": '全体の中央値を超えるロバストシグマ単位の除外しきい値。小さいほど明るいピクセルを積極的に除外します。「ハイライトを保護」がオンのときのみ使用されます。',
+        'Computing preview…': 'プレビューを計算中…',
+        'Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)': 'アルゴリズム: CanonBandingReduction (Georg Viehoever 作、GPLv3、2009-2013)',
+        'Apply': '適用',
+        'Close': '閉じる',
+        'Preview failed: {0}': 'プレビューに失敗しました: {0}',
+        'Open an image first.': '最初に画像を開いてください。',
+        'Apply failed:\n{0}': '適用に失敗しました:\n{0}',
+        'Fit the whole image in the preview': '画像全体をプレビューに合わせる',
+        'Row banding, as on Canon DSLRs': '行方向のバンディング (Canon の一眼レフなど)',
+        'Column banding, as on some CMOS cameras': '列方向のバンディング (一部の CMOS カメラなど)',
+        'Drag to the canvas to create a Banding Blaster shortcut with these exact settings.\nDrop directly on an image to apply them headlessly.': 'キャンバスにドラッグすると、この設定のままの Banding Blaster ショートカットを作成します。\n画像に直接ドロップするとヘッドレスで適用します。',
+        'Measuring the bands…': 'バンディングを測定中…',
+        'Largest column shift: {0:.5f}': '最大の列シフト: {0:.5f}',
+        'Largest row shift: {0:.5f}': '最大の行シフト: {0:.5f}',
+        'Amount is 0, so there is nothing to apply.': '量が 0 のため、適用するものはありません。',
+    },
+    '_BandingBlasterPresetDialog': {
+        'Horizontal': '水平',
+        'Vertical': '垂直',
+        'Protect highlights': 'ハイライトを保護',
+        'Direction:': '方向:',
+        'Amount:': '量:',
+        'Sigma:': 'シグマ:',
+        'Banding Blaster — Preset': 'Banding Blaster — プリセット',
+    },
+    'BandingBlaster': {
+        'Open an image first.': '最初に画像を開いてください。',
+    },
+    'CheatSheet': {
+        "Drag a tool window's grip, a desktop shortcut or a History step onto Essentials": 'ツールウィンドウのグリップ、デスクトップショートカット、または履歴のステップを基本ツールにドラッグ',
+        'Add that tool to Essentials': 'そのツールを基本ツールに追加',
+    },
+    'DraggableToolBar': {
+        'Add to Essentials': '基本ツールに追加',
+    },
+    'EssentialsToolBar': {
+        'Remove from Essentials': '基本ツールから削除',
+        'Put Back': '再追加',
+        'Reset Essentials...': '基本ツールをリセット...',
+        "Tip: drag a tool window's grip here to add the tool": 'ヒント: ツールウィンドウのグリップをここにドラッグするとツールを追加できます',
+    },
+    'AstroSuiteProMainWindow': {
+        'Reset Essentials': '基本ツールをリセット',
+        'Put the default tools back on Essentials?\n\nTools you added are taken off, the ones you removed come back, and the order is the default one.': '基本ツールを既定のツールに戻しますか？\n\n追加したツールは外され、削除したツールは戻り、順序も既定に戻ります。',
+        'Reduce row or column banding across the whole image': '画像全体の行方向または列方向のバンディングを低減',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

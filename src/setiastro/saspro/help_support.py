@@ -62,6 +62,7 @@ _DOC_TITLES: dict[str, str] = {
     "luminance_recombine": QT_TRANSLATE_NOOP("HelpSupport", "Recombine Luminance"),
     "rgb_combination": QT_TRANSLATE_NOOP("HelpSupport", "RGB Combination"),
     "blemish_blaster": QT_TRANSLATE_NOOP("HelpSupport", "Blemish Blaster"),
+    "banding_blaster": QT_TRANSLATE_NOOP("HelpSupport", "Banding Blaster"),
     "clone_stamp": QT_TRANSLATE_NOOP("HelpSupport", "Clone Stamp"),
     "wavescale_hdr": QT_TRANSLATE_NOOP("HelpSupport", "WaveScale HDR"),
     "wavescale_dark_enhance": QT_TRANSLATE_NOOP("HelpSupport", "WaveScale Dark Enhancer"),

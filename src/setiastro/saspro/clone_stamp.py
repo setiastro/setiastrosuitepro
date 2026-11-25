@@ -9,10 +9,12 @@ from PyQt6.QtGui import QImage, QPixmap, QPen, QBrush, QAction, QKeySequence, QC
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel, QPushButton, QSlider,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsEllipseItem, QMessageBox,
-    QScrollArea, QCheckBox, QDoubleSpinBox, QGraphicsLineItem, QWidget, QFrame, QSizePolicy
+    QScrollArea, QCheckBox, QDoubleSpinBox, QGraphicsLineItem, QWidget, QFrame, QSizePolicy,
+    QRadioButton, QButtonGroup
 )
 
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
+from setiastro.saspro.eraser_brush import EraserFillPicker, fill_dab_inplace, display_fill
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
 
@@ -173,6 +175,9 @@ class CloneStampDialogPro(QDialog):
         self._painting = False
         self._stroke_last_pos: Optional[Tuple[float, float]] = None
         self._stroke_spacing_frac = 0.25
+        self._eraser = False          # Eraser mode: paint the fill instead of a source
+        self._fill = None             # this stroke's fill, image values
+        self._fill_st = None          # ... and as the stretched preview shows it
 
         self.scene = QGraphicsScene(self)
         self.view = QGraphicsView(self.scene)
@@ -215,6 +220,30 @@ class CloneStampDialogPro(QDialog):
         ctrls = QGroupBox(self.tr("Controls"))
         form = QFormLayout(ctrls)
 
+        self.rb_clone = QRadioButton(self.tr("Clone"))
+        self.rb_eraser = QRadioButton(self.tr("Eraser"))
+        self.rb_clone.setChecked(True)
+        self.rb_eraser.setToolTip(self.tr(
+            "Paint black, the image median or a chosen color with the brush, "
+            "e.g. to remove nebula left in a stars-only image."))
+        self._tool_group = QButtonGroup(self)
+        self._tool_group.addButton(self.rb_clone, 0)
+        self._tool_group.addButton(self.rb_eraser, 1)
+        _tool_row = QHBoxLayout()
+        _tool_row.setContentsMargins(0, 0, 0, 0)
+        _tool_row.addWidget(self.rb_clone)
+        _tool_row.addWidget(self.rb_eraser)
+        _tool_row.addStretch(1)
+        _tool_w = QWidget(self)
+        _tool_w.setLayout(_tool_row)
+        form.addRow(self.tr("Mode:"), _tool_w)
+
+        self.lbl_fill = QLabel(self.tr("Fill:"))
+        self.eraser_fill = EraserFillPicker(lambda: self._image, self._orig_mono, self)
+        form.addRow(self.lbl_fill, self.eraser_fill)
+        self.lbl_fill.setVisible(False)
+        self.eraser_fill.setVisible(False)
+
         self.s_radius = QSlider(Qt.Orientation.Horizontal)
         self.s_radius.setRange(1, 900)
         self.s_radius.setValue(24)
@@ -236,11 +265,7 @@ class CloneStampDialogPro(QDialog):
         self.brush_preview.setStyleSheet("background:#000; border:1px solid #333;")
         form.addRow(self.tr("Brush preview:"), self.brush_preview)
 
-        self.lbl_help = QLabel(self.tr(
-            "Ctrl+Click to set source. Then Left-drag to paint.\n"
-            "Source follows the cursor (classic clone stamp).\n"
-            "Use [ and ] to decrease/increase brush size."
-        ))
+        self.lbl_help = QLabel(self._help_text())
         self.lbl_help.setStyleSheet("color:#888;")
         self.lbl_help.setWordWrap(True)
         form.addRow(self.lbl_help)
@@ -351,6 +376,7 @@ class CloneStampDialogPro(QDialog):
         self.s_radius.valueChanged.connect(self._update_brush_preview)
         self.s_feather.valueChanged.connect(self._update_brush_preview)
         self.s_opacity.valueChanged.connect(self._update_brush_preview)
+        self.rb_eraser.toggled.connect(self._on_tool_changed)
 
         self._undo, self._redo = [], []
         self._update_undo_redo_buttons()
@@ -417,6 +443,8 @@ class CloneStampDialogPro(QDialog):
 
     def _do_paint_refresh(self):
         self._paint_refresh_pending = False
+        if self._image is None:       # fired after close released the buffers
+            return
         self._display = self._display_stretched if self.cb_autostretch.isChecked() else self._display_raw
         self._refresh_pix()
 
@@ -433,6 +461,35 @@ class CloneStampDialogPro(QDialog):
         self.src_x1.setVisible(False)
         self.src_x2.setVisible(False)
         self.link.setVisible(False)
+
+    def _help_text(self) -> str:
+        if self._eraser:
+            return self.tr(
+                "Left-drag to paint with the fill.\n"
+                "Use [ and ] to decrease/increase brush size."
+            )
+        return self.tr(
+            "Ctrl+Click to set source. Then Left-drag to paint.\n"
+            "Source follows the cursor (classic clone stamp).\n"
+            "Use [ and ] to decrease/increase brush size."
+        )
+
+    def _on_tool_changed(self, *_):
+        """Clone <-> Eraser. The clone source is kept for when Clone comes back."""
+        self._eraser = self.rb_eraser.isChecked()
+        self.lbl_fill.setVisible(self._eraser)
+        self.eraser_fill.setVisible(self._eraser)
+        self.btn_clear_src.setVisible(not self._eraser)
+        self.lbl_help.setText(self._help_text())
+        if self._eraser:
+            self.src_x1.setVisible(False)
+            self.src_x2.setVisible(False)
+            self.link.setVisible(False)
+        elif self._has_source:
+            sx, sy = self._src_point
+            self._draw_source_x(float(sx), float(sy), size=8)
+            self.src_x1.setVisible(True)
+            self.src_x2.setVisible(True)
 
     def _update_undo_redo_buttons(self):
         self.btn_undo.setEnabled(len(self._undo) > 0)
@@ -533,7 +590,7 @@ class CloneStampDialogPro(QDialog):
                 pos = self.view.mapToScene(ev.position().toPoint())
                 if ev.button() == Qt.MouseButton.LeftButton:
                     mods = ev.modifiers()
-                    if mods & Qt.KeyboardModifier.ControlModifier:
+                    if (mods & Qt.KeyboardModifier.ControlModifier) and not self._eraser:
                         self._set_source_at(pos)
                     else:
                         self._start_paint_at(pos)
@@ -556,7 +613,7 @@ class CloneStampDialogPro(QDialog):
         self.circle.setRect(x - r, y - r, 2 * r, 2 * r)
         self.circle.setVisible(True)
 
-        if self._painting and self._has_source:
+        if self._painting and (self._has_source or self._eraser):
             self._paint_segment(scene_pos)
 
         self._update_source_overlay(scene_pos)
@@ -577,14 +634,19 @@ class CloneStampDialogPro(QDialog):
         self.link.setVisible(False)
 
     def _start_paint_at(self, scene_pos: QPointF) -> None:
-        if not self._has_source:
+        if not self._has_source and not self._eraser:
             QMessageBox.information(self, self.tr("Clone Stamp"), self.tr("Ctrl+Click to set a source point first."))
             return
         tx, ty = int(round(scene_pos.x())), int(round(scene_pos.y()))
         if not (0 <= tx < self._image.shape[1] and 0 <= ty < self._image.shape[0]):
             return
-        sx, sy = self._src_point
-        self._offset = (sx - tx, sy - ty)
+        if self._eraser:
+            self._fill = self.eraser_fill.fill()
+            self._fill_st = display_fill(self._image, self._display_stretched, self._fill,
+                                         linked=self._orig_mono or self.cb_linked.isChecked())
+        else:
+            sx, sy = self._src_point
+            self._offset = (sx - tx, sy - ty)
         self._redo.clear()
         self._stroke_dirty_patches = []
         self._stroke_dirty_mask = set()
@@ -631,7 +693,7 @@ class CloneStampDialogPro(QDialog):
         self._refresh_pix()
 
     def _paint_segment(self, scene_pos: QPointF) -> None:
-        if not (self._painting and self._has_source):
+        if not (self._painting and (self._has_source or self._eraser)):
             return
         x1, y1 = float(scene_pos.x()), float(scene_pos.y())
         if self._stroke_last_pos is None:
@@ -648,6 +710,9 @@ class CloneStampDialogPro(QDialog):
         mask = self._get_mask(radius, feather)
         ox, oy = self._offset
         h, w = self._image.shape[:2]
+        # _display_raw is normally the very array _image is; blending into it
+        # as well would apply every dab twice (50 % opacity came out as 75 %).
+        raw_separate = self._display_raw is not self._image
         for i in range(1, steps + 1):
             t = i / steps
             xt = x0 + dx * t
@@ -655,16 +720,23 @@ class CloneStampDialogPro(QDialog):
             tx, ty = int(round(xt)), int(round(yt))
             if not (0 <= tx < w and 0 <= ty < h):
                 continue
-            sx, sy = tx + ox, ty + oy
             self._snapshot_tiles_for_dab(tx, ty, radius)
+            if self._eraser:
+                fill_dab_inplace(self._image, tx, ty, self._fill, mask, radius, opacity)
+                if raw_separate:
+                    fill_dab_inplace(self._display_raw, tx, ty, self._fill, mask, radius, opacity)
+                fill_dab_inplace(self._display_stretched, tx, ty, self._fill_st, mask, radius, opacity)
+                continue
+            sx, sy = tx + ox, ty + oy
             _blend_clone_inplace(self._image, tx, ty, sx, sy, mask, radius, opacity)
-            _blend_clone_inplace(self._display_raw, tx, ty, sx, sy, mask, radius, opacity)
+            if raw_separate:
+                _blend_clone_inplace(self._display_raw, tx, ty, sx, sy, mask, radius, opacity)
             _blend_clone_inplace(self._display_stretched, tx, ty, sx, sy, mask, radius, opacity)
         self._stroke_last_pos = (x1, y1)
         self._schedule_paint_refresh()
 
     def _update_source_overlay(self, tgt_scene_pos: QPointF):
-        if not self._has_source:
+        if not self._has_source or self._eraser:
             self.src_x1.setVisible(False)
             self.src_x2.setVisible(False)
             self.link.setVisible(False)

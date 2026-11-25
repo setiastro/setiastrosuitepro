@@ -4691,6 +4691,22 @@ Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
       <source>Start Panel: open images, process step by step, stacking and more</source>
       <translation>开始面板：打开图像、逐步处理、叠加等</translation>
     </message>
+    <message>
+      <source>Reset Essentials</source>
+      <translation>重置基本工具</translation>
+    </message>
+    <message>
+      <source>Put the default tools back on Essentials?
+
+Tools you added are taken off, the ones you removed come back, and the order is the default one.</source>
+      <translation>将默认工具放回基本工具？
+
+您添加的工具会被移除，您移除的工具会恢复，顺序也恢复为默认顺序。</translation>
+    </message>
+    <message>
+      <source>Reduce row or column banding across the whole image</source>
+      <translation>减少整幅图像中的行条纹或列条纹</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -6306,6 +6322,18 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>⚡ Blast Line</source>
       <translation>⚡ 清除线条</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>橡皮擦</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>用画笔涂上黑色、图像中值或所选颜色，例如去除纯星点图像中残留的星云。</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>填充：</translation>
     </message>
   </context>
   <context>
@@ -9587,6 +9615,14 @@ approximation, so what you see is what Apply will commit.</source>
       <source>Zoom at the cursor</source>
       <translation>在光标处缩放</translation>
     </message>
+    <message>
+      <source>Drag a tool window's grip, a desktop shortcut or a History step onto Essentials</source>
+      <translation>将工具窗口的拖动柄、桌面快捷方式或历史步骤拖到基本工具上</translation>
+    </message>
+    <message>
+      <source>Add that tool to Essentials</source>
+      <translation>将该工具添加到基本工具</translation>
+    </message>
   </context>
   <context>
     <name>CheatSheetDialog</name>
@@ -11855,6 +11891,10 @@ Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to
     <message>
       <source>Toolbars, panels, theme and background go back to how a new install starts</source>
       <translation>工具栏、面板、主题和背景将恢复为全新安装时的状态</translation>
+    </message>
+    <message>
+      <source>Add to Essentials</source>
+      <translation>添加到基本工具</translation>
     </message>
   </context>
   <context>
@@ -36143,6 +36183,32 @@ Use [ and ] to decrease/increase brush size.</source>
     <message>
       <source>Zoom Out</source>
       <translation>缩小</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>模式：</translation>
+    </message>
+    <message>
+      <source>Clone</source>
+      <translation>仿制</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>橡皮擦</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>用画笔涂上黑色、图像中值或所选颜色，例如去除纯星点图像中残留的星云。</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>填充：</translation>
+    </message>
+    <message>
+      <source>Left-drag to paint with the fill.
+Use [ and ] to decrease/increase brush size.</source>
+      <translation>按住左键拖动，用填充值涂抹。
+使用 [ 和 ] 减小/增大画笔大小。</translation>
     </message>
   </context>
   <context>
@@ -73553,6 +73619,214 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>Lock Toolbar Icons</source>
       <translation>锁定工具栏图标</translation>
+    </message>
+    <message>
+      <source>Remove from Essentials</source>
+      <translation>从基本工具中移除</translation>
+    </message>
+    <message>
+      <source>Put Back</source>
+      <translation>放回</translation>
+    </message>
+    <message>
+      <source>Reset Essentials...</source>
+      <translation>重置基本工具...</translation>
+    </message>
+    <message>
+      <source>Tip: drag a tool window's grip here to add the tool</source>
+      <translation>提示：将工具窗口的拖动柄拖到这里即可添加该工具</translation>
+    </message>
+  </context>
+  <context>
+    <name>EraserFillPicker</name>
+    <message>
+      <source>Black</source>
+      <translation>黑色</translation>
+    </message>
+    <message>
+      <source>Image median</source>
+      <translation>图像中值</translation>
+    </message>
+    <message>
+      <source>Color</source>
+      <translation>颜色</translation>
+    </message>
+    <message>
+      <source>Paints 0.0 in every channel.</source>
+      <translation>在每个通道中涂上 0.0。</translation>
+    </message>
+    <message>
+      <source>Paints the image's median, measured when you choose this.</source>
+      <translation>涂上图像的中值，在您选择此项时测量。</translation>
+    </message>
+    <message>
+      <source>Paints each channel's own median (R, G and B separately), measured when you choose this.</source>
+      <translation>涂上每个通道各自的中值（R、G、B 分别计算），在您选择此项时测量。</translation>
+    </message>
+    <message>
+      <source>Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.</source>
+      <translation>将所选颜色的数值直接写入图像。开启自动拉伸预览时，它会比色块显得更亮。</translation>
+    </message>
+    <message>
+      <source>Choose the fill color</source>
+      <translation>选择填充颜色</translation>
+    </message>
+    <message>
+      <source>Eraser color</source>
+      <translation>橡皮擦颜色</translation>
+    </message>
+    <message>
+      <source>Fills with {0}</source>
+      <translation>填充值 {0}</translation>
+    </message>
+    <message>
+      <source>Fills with R {0}  G {1}  B {2}</source>
+      <translation>填充值 R {0}  G {1}  B {2}</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlasterDialog</name>
+    <message>
+      <source>Fit</source>
+      <translation>适应</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>方向：</translation>
+    </message>
+    <message>
+      <source>Horizontal</source>
+      <translation>水平</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>垂直</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>强度：</translation>
+    </message>
+    <message>
+      <source>Strength of the correction. 1.0 fully equalises the per-row median to the global median. &lt;1.0 = partial correction, &gt;1.0 = over-correction (rarely useful).</source>
+      <translation>校正强度。1.0 将逐行中位数完全均衡到全局中位数。&lt;1.0 = 部分校正，&gt;1.0 = 过度校正（很少有用）。</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>保护高光</translation>
+    </message>
+    <message>
+      <source>Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.</source>
+      <translation>从逐行中位数中排除明亮像素（恒星、深空天体核心），以免其使校正产生偏差。天文图像建议开启。</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>Sigma：</translation>
+    </message>
+    <message>
+      <source>Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.</source>
+      <translation>高于全局中位数的剔除阈值，以稳健 sigma 为单位。越低 = 越积极地剔除明亮像素。仅在启用“保护高光”时使用。</translation>
+    </message>
+    <message>
+      <source>Computing preview…</source>
+      <translation>正在计算预览…</translation>
+    </message>
+    <message>
+      <source>Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)</source>
+      <translation>算法：CanonBandingReduction，作者 Georg Viehoever（GPLv3，2009-2013）</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>应用</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>Preview failed: {0}</source>
+      <translation>预览失败：{0}</translation>
+    </message>
+    <message>
+      <source>Open an image first.</source>
+      <translation>请先打开一张图像。</translation>
+    </message>
+    <message>
+      <source>Apply failed:
+{0}</source>
+      <translation>应用失败：
+{0}</translation>
+    </message>
+    <message>
+      <source>Fit the whole image in the preview</source>
+      <translation>将整幅图像适应到预览中</translation>
+    </message>
+    <message>
+      <source>Row banding, as on Canon DSLRs</source>
+      <translation>行条纹，如佳能单反相机</translation>
+    </message>
+    <message>
+      <source>Column banding, as on some CMOS cameras</source>
+      <translation>列条纹，如部分 CMOS 相机</translation>
+    </message>
+    <message>
+      <source>Drag to the canvas to create a Banding Blaster shortcut with these exact settings.
+Drop directly on an image to apply them headlessly.</source>
+      <translation>拖到画布上以使用这些完全相同的设置创建 Banding Blaster 快捷方式。
+直接拖放到图像上即可无头应用。</translation>
+    </message>
+    <message>
+      <source>Measuring the bands…</source>
+      <translation>正在测量条纹…</translation>
+    </message>
+    <message>
+      <source>Largest column shift: {0:.5f}</source>
+      <translation>最大列偏移：{0:.5f}</translation>
+    </message>
+    <message>
+      <source>Largest row shift: {0:.5f}</source>
+      <translation>最大行偏移：{0:.5f}</translation>
+    </message>
+    <message>
+      <source>Amount is 0, so there is nothing to apply.</source>
+      <translation>强度为 0，没有可应用的内容。</translation>
+    </message>
+  </context>
+  <context>
+    <name>_BandingBlasterPresetDialog</name>
+    <message>
+      <source>Horizontal</source>
+      <translation>水平</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>垂直</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>保护高光</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>方向：</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>强度：</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>Sigma：</translation>
+    </message>
+    <message>
+      <source>Banding Blaster — Preset</source>
+      <translation>Banding Blaster — 预设</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlaster</name>
+    <message>
+      <source>Open an image first.</source>
+      <translation>请先打开一张图像。</translation>
     </message>
   </context>
 </TS>

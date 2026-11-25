@@ -26,7 +26,9 @@ ProgressCB = Callable[[int, int], bool]  # True=continue, False=cancel
 from setiastro.saspro.cosmicclarity_engines._backend_guard import (
     DeviceLostError,
     EngineCancelled as DenoiseCancelled,
+    NonFiniteOutputError,
     safe_exception_str,
+    forward_finite as _forward_finite,
     is_device_lost_error as _is_device_lost_error,
     is_backend_unusable_error as _is_backend_unusable_error,
     is_recoverable_batch_error as _is_recoverable_batch_error,
@@ -523,8 +525,8 @@ def _infer_chunk_rgb(models: DenoiseModels, model: Any, chunk_rgb: np.ndarray) -
     inp = np.ascontiguousarray(np.transpose(chunk_p, (2, 0, 1))[None, ...])  # (1,3,H,W)
     t = np_to_torch(inp, device=dev, torch=torch)
 
-    with torch.no_grad(), _autocast_context(torch, dev):
-        y = torch_to_np(model(t)[0].detach().float())
+    y = _forward_finite(torch, model, t, _autocast_context(torch, dev), label="CC Denoise")
+    y = torch_to_np(y[0].detach())
 
     y = np.transpose(y, (1, 2, 0))
     return y[:h0, :w0].astype(np.float32, copy=False)
@@ -559,9 +561,8 @@ def _infer_chunk_2d(models: DenoiseModels, model: Any, chunk2d: np.ndarray) -> n
     t = np_to_torch(chunk_p, device=dev, torch=torch).unsqueeze(0).unsqueeze(0)
     t3 = t.expand(-1, 3, -1, -1).contiguous()
 
-    with torch.no_grad(), _autocast_context(torch, dev):
-        y = model(t3)
-        y = torch_to_np(y[0, 0].detach().float())
+    y = _forward_finite(torch, model, t3, _autocast_context(torch, dev), label="CC Denoise")
+    y = torch_to_np(y[0, 0].detach())
 
     return y[:h0, :w0].astype(np.float32, copy=False)
 
@@ -870,9 +871,9 @@ def denoise_rgb_with_color_model(
                     inp = np.ascontiguousarray(np.transpose(batch_np, (0, 3, 1, 2)))  # (B,3,H,W)
                     t = np_to_torch(inp, device=dev, torch=torch)
 
-                    with torch.no_grad(), _autocast_context(torch, dev):
-                        out = models.color(t)  # (B,3,H,W)
-                        pred = torch_to_np(out[:len(batch_coords)].detach().float())
+                    out = _forward_finite(torch, models.color, t,              # (B,3,H,W)
+                                          _autocast_context(torch, dev), label="CC Denoise")
+                    pred = torch_to_np(out[:len(batch_coords)].detach())
 
                     pred = np.transpose(pred, (0, 2, 3, 1)).astype(np.float32, copy=False)
 
@@ -900,6 +901,8 @@ def denoise_rgb_with_color_model(
 
     if last_err is not None and _is_device_lost_error(last_err):
         raise DeviceLostError(safe_exception_str(last_err)) from last_err
+    if isinstance(last_err, NonFiniteOutputError):
+        raise last_err          # the legacy path runs the same net: go to the CPU retry
     print(f"[CC Denoise] RGB batched path failed, falling back to legacy single-tile path. {safe_exception_str(last_err)}")
     return _legacy_denoise_rgb_with_color_model(
         img_rgb,
@@ -1215,9 +1218,9 @@ def denoise_channel(
                     t = np_to_torch(batch_np, device=dev, torch=torch).unsqueeze(1)
                     t3 = t.expand(-1, 3, -1, -1).contiguous()
 
-                    with torch.no_grad(), _autocast_context(torch, dev):
-                        out = model(t3)  # (B,3,H,W)
-                        pred = torch_to_np(out[:len(batch_coords), 0, :, :].detach().float())
+                    out = _forward_finite(torch, model, t3,                    # (B,3,H,W)
+                                          _autocast_context(torch, dev), label="CC Denoise")
+                    pred = torch_to_np(out[:len(batch_coords), 0, :, :].detach())
 
                     for k, (y, x) in enumerate(batch_coords):
                         acc[y:y + chunk_size, x:x + chunk_size] += pred[k] * weight
@@ -1240,6 +1243,8 @@ def denoise_channel(
 
     if last_err is not None and _is_device_lost_error(last_err):
         raise DeviceLostError(safe_exception_str(last_err)) from last_err
+    if isinstance(last_err, NonFiniteOutputError):
+        raise last_err          # the legacy path runs the same net: go to the CPU retry
     print(f"[CC Denoise] mono batched path failed, falling back to legacy single-tile path. {safe_exception_str(last_err)}")
     return _legacy_denoise_channel(
         channel,

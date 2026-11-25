@@ -162,6 +162,7 @@ class Icons:
     ABE = property(lambda self: _resource_path('abeicon.png'))
     SRGC = property(lambda self: _resource_path('srgc.png'))
     BLASTER = property(lambda self: _resource_path('blaster.png'))
+    BANDING_BLASTER = property(lambda self: _resource_path('bandingblaster.png'))
     CLONESTAMP = property(lambda self: _resource_path('clonestamp.png'))
     
     # Undo/Redo
@@ -476,6 +477,7 @@ _LEGACY_ICON_MAP = {
     'mosaic_panels_path': 'mosaic_panels.png',
     'mosaic_robotic_path': 'mosaic_robotic.png',
     'cosmeticcorrection_path': 'cosmeticcorrection.png',
+    'bandingblaster_path': 'bandingblaster.png',
     'starspike_path': 'starspike.png',
     'astrospike_path': 'Astro_Spikes.png',
     'aperture_path': 'aperture.png',

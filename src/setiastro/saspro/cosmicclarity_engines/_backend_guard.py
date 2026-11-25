@@ -13,8 +13,8 @@ from __future__ import annotations
 import os
 
 __all__ = [
-    "DeviceLostError", "EngineCancelled",
-    "safe_exception_str",
+    "DeviceLostError", "EngineCancelled", "NonFiniteOutputError",
+    "safe_exception_str", "forward_finite",
     "is_device_lost_error", "is_backend_unusable_error", "is_recoverable_batch_error",
     "device_type", "dml_disabled", "disable_dml", "reset_dml_disabled",
     "prefer_ort_dml", "tick", "evict_models", "iter_batch_sizes",
@@ -35,6 +35,45 @@ class DeviceLostError(RuntimeError):
 
 class EngineCancelled(RuntimeError):
     """User cancelled via a progress callback. Must never be swallowed."""
+
+
+class NonFiniteOutputError(RuntimeError):
+    """The net returned NaN/inf for a finite input, in fp32 too. The backend
+    computes wrong answers; the engines fall back to CPU on it."""
+
+
+# Set once fp16 autocast has given NaN/inf where fp32 did not. Every later
+# batch then goes straight to fp32 instead of paying for both.
+_AMP_UNRELIABLE = False
+
+
+def forward_finite(torch, model, x, amp_ctx, *, label: str):
+    """
+    model(x) under amp_ctx (the engine's autocast context, or a null one), as
+    float32. A NaN batch must never be stitched into a result -- it shows as a
+    black image. Under ROCm an RX 9070 XT returned all-NaN fp16 output while
+    fp32 was right (see MIOPEN_DEBUG_CONV_WINOGRAD in runtime_torch). So on
+    NaN/inf: re-run in fp32, and if that is bad too, raise NonFiniteOutputError.
+    NaN already in the input is passed through as before: not the backend's fault.
+    """
+    global _AMP_UNRELIABLE
+    if not _AMP_UNRELIABLE:
+        with torch.no_grad(), amp_ctx:
+            y = model(x).float()
+        if bool(torch.isfinite(y).all()) or not bool(torch.isfinite(x).all()):
+            return y
+    with torch.no_grad():
+        y = model(x).float()
+    if bool(torch.isfinite(y).all()):
+        if not _AMP_UNRELIABLE:
+            _AMP_UNRELIABLE = True
+            print(f"[{label}] fp16 output had NaN/inf on {x.device}; "
+                  f"running in fp32 for the rest of this session.", flush=True)
+        return y
+    if not bool(torch.isfinite(x).all()):
+        return y
+    raise NonFiniteOutputError(
+        f"{label}: the model returned NaN/inf on {x.device} in fp16 and in fp32")
 
 
 def safe_exception_str(err: BaseException) -> str:
@@ -101,6 +140,8 @@ def is_backend_unusable_error(err: BaseException) -> bool:
     probably still alive. Fall back to CPU without poisoning DirectML."""
     if isinstance(err, (DeviceLostError, EngineCancelled)):
         return False
+    if isinstance(err, NonFiniteOutputError):
+        return True
     s = safe_exception_str(err).lower()
     if any(n in s for n in _MEMORY_PRESSURE):
         return False          # that's a batch-size problem, let the retry loop own it
@@ -109,7 +150,7 @@ def is_backend_unusable_error(err: BaseException) -> bool:
 
 def is_recoverable_batch_error(err: BaseException) -> bool:
     """True only if shrinking the batch could plausibly help."""
-    if isinstance(err, (DeviceLostError, EngineCancelled)):
+    if isinstance(err, (DeviceLostError, EngineCancelled, NonFiniteOutputError)):
         return False
     if is_device_lost_error(err):
         return False          # a smaller batch cannot resurrect a removed device

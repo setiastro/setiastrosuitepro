@@ -4691,6 +4691,22 @@ Every tool is still in the menus and in Search Commands (Ctrl+/).</source>
       <source>Start Panel: open images, process step by step, stacking and more</source>
       <translation>प्रारंभ पैनल: छवियाँ खोलें, चरण-दर-चरण प्रोसेस करें, स्टैकिंग और बहुत कुछ</translation>
     </message>
+    <message>
+      <source>Reset Essentials</source>
+      <translation>आवश्यक उपकरण रीसेट करें</translation>
+    </message>
+    <message>
+      <source>Put the default tools back on Essentials?
+
+Tools you added are taken off, the ones you removed come back, and the order is the default one.</source>
+      <translation>डिफ़ॉल्ट टूल वापस आवश्यक उपकरण में रखें?
+
+आपके जोड़े गए टूल हटा दिए जाएँगे, हटाए गए टूल वापस आ जाएँगे, और क्रम डिफ़ॉल्ट हो जाएगा।</translation>
+    </message>
+    <message>
+      <source>Reduce row or column banding across the whole image</source>
+      <translation>पूरी छवि में पंक्ति या स्तंभ बैंडिंग कम करें</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -6294,6 +6310,18 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>⚡ Blast Line</source>
       <translation>⚡ रेखा ब्लास्ट करें</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>इरेज़र</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>ब्रश से काला, छवि माध्यिका या चुना हुआ रंग पेंट करें, जैसे केवल तारों वाली छवि में बची नीहारिका हटाने के लिए।</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>भराव:</translation>
     </message>
   </context>
   <context>
@@ -9575,6 +9603,14 @@ approximation, so what you see is what Apply will commit.</source>
       <source>Zoom at the cursor</source>
       <translation>कर्सर पर ज़ूम करें</translation>
     </message>
+    <message>
+      <source>Drag a tool window's grip, a desktop shortcut or a History step onto Essentials</source>
+      <translation>किसी टूल विंडो का ग्रिप, डेस्कटॉप शॉर्टकट या इतिहास का कोई चरण आवश्यक उपकरण पर खींचें</translation>
+    </message>
+    <message>
+      <source>Add that tool to Essentials</source>
+      <translation>उस टूल को आवश्यक उपकरण में जोड़ें</translation>
+    </message>
   </context>
   <context>
     <name>CheatSheetDialog</name>
@@ -11843,6 +11879,10 @@ RAF सीधे खोलें, या हेडर में RAW_PATH जो�
     <message>
       <source>Toolbars, panels, theme and background go back to how a new install starts</source>
       <translation>टूलबार, पैनल, थीम और पृष्ठभूमि वैसे हो जाते हैं जैसे नया इंस्टॉल शुरू होता है</translation>
+    </message>
+    <message>
+      <source>Add to Essentials</source>
+      <translation>आवश्यक उपकरण में जोड़ें</translation>
     </message>
   </context>
   <context>
@@ -35873,6 +35913,32 @@ Use [ and ] to decrease/increase brush size.</source>
     <message>
       <source>Zoom Out</source>
       <translation>ज़ूम आउट</translation>
+    </message>
+    <message>
+      <source>Mode:</source>
+      <translation>मोड:</translation>
+    </message>
+    <message>
+      <source>Clone</source>
+      <translation>क्लोन</translation>
+    </message>
+    <message>
+      <source>Eraser</source>
+      <translation>इरेज़र</translation>
+    </message>
+    <message>
+      <source>Paint black, the image median or a chosen color with the brush, e.g. to remove nebula left in a stars-only image.</source>
+      <translation>ब्रश से काला, छवि माध्यिका या चुना हुआ रंग पेंट करें, जैसे केवल तारों वाली छवि में बची नीहारिका हटाने के लिए।</translation>
+    </message>
+    <message>
+      <source>Fill:</source>
+      <translation>भराव:</translation>
+    </message>
+    <message>
+      <source>Left-drag to paint with the fill.
+Use [ and ] to decrease/increase brush size.</source>
+      <translation>भराव से पेंट करने के लिए बायाँ बटन दबाकर खींचें।
+ब्रश आकार घटाने/बढ़ाने के लिए [ और ] का उपयोग करें।</translation>
     </message>
   </context>
   <context>
@@ -73283,6 +73349,214 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>Lock Toolbar Icons</source>
       <translation>टूलबार आइकन लॉक करें</translation>
+    </message>
+    <message>
+      <source>Remove from Essentials</source>
+      <translation>आवश्यक उपकरण से हटाएँ</translation>
+    </message>
+    <message>
+      <source>Put Back</source>
+      <translation>वापस रखें</translation>
+    </message>
+    <message>
+      <source>Reset Essentials...</source>
+      <translation>आवश्यक उपकरण रीसेट करें...</translation>
+    </message>
+    <message>
+      <source>Tip: drag a tool window's grip here to add the tool</source>
+      <translation>सुझाव: टूल जोड़ने के लिए किसी टूल विंडो का ग्रिप यहाँ खींचें</translation>
+    </message>
+  </context>
+  <context>
+    <name>EraserFillPicker</name>
+    <message>
+      <source>Black</source>
+      <translation>काला</translation>
+    </message>
+    <message>
+      <source>Image median</source>
+      <translation>छवि माध्यिका</translation>
+    </message>
+    <message>
+      <source>Color</source>
+      <translation>रंग</translation>
+    </message>
+    <message>
+      <source>Paints 0.0 in every channel.</source>
+      <translation>हर चैनल में 0.0 पेंट करता है।</translation>
+    </message>
+    <message>
+      <source>Paints the image's median, measured when you choose this.</source>
+      <translation>छवि की माध्यिका पेंट करता है, जो आपके इसे चुनते समय मापी जाती है।</translation>
+    </message>
+    <message>
+      <source>Paints each channel's own median (R, G and B separately), measured when you choose this.</source>
+      <translation>हर चैनल की अपनी माध्यिका (R, G और B अलग-अलग) पेंट करता है, जो आपके इसे चुनते समय मापी जाती है।</translation>
+    </message>
+    <message>
+      <source>Paints the chosen color's values straight into the image. With Auto-stretch preview on, it shows brighter than the swatch.</source>
+      <translation>चुने गए रंग के मान सीधे छवि में लिखता है। ऑटो-स्ट्रेच पूर्वावलोकन चालू होने पर यह नमूने से अधिक चमकीला दिखता है।</translation>
+    </message>
+    <message>
+      <source>Choose the fill color</source>
+      <translation>भराव रंग चुनें</translation>
+    </message>
+    <message>
+      <source>Eraser color</source>
+      <translation>इरेज़र का रंग</translation>
+    </message>
+    <message>
+      <source>Fills with {0}</source>
+      <translation>{0} से भरता है</translation>
+    </message>
+    <message>
+      <source>Fills with R {0}  G {1}  B {2}</source>
+      <translation>R {0}  G {1}  B {2} से भरता है</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlasterDialog</name>
+    <message>
+      <source>Fit</source>
+      <translation>फिट</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>दिशा:</translation>
+    </message>
+    <message>
+      <source>Horizontal</source>
+      <translation>क्षैतिज</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>लंबवत</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>मात्रा:</translation>
+    </message>
+    <message>
+      <source>Strength of the correction. 1.0 fully equalises the per-row median to the global median. &lt;1.0 = partial correction, &gt;1.0 = over-correction (rarely useful).</source>
+      <translation>सुधार की शक्ति। 1.0 प्रति-पंक्ति माध्यिका को पूरी तरह वैश्विक माध्यिका के बराबर कर देता है। &lt;1.0 = आंशिक सुधार, &gt;1.0 = अति-सुधार (शायद ही उपयोगी)।</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>हाइलाइट्स सुरक्षित करें</translation>
+    </message>
+    <message>
+      <source>Exclude bright pixels (stars, DSO cores) from the per-row median so they don't bias the correction. Recommended ON for astronomical images.</source>
+      <translation>चमकीले पिक्सेल (तारे, DSO कोर) को प्रति-पंक्ति माध्यिका से बाहर रखें ताकि वे सुधार को प्रभावित न करें। खगोलीय छवियों के लिए चालू रखना अनुशंसित।</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>सिग्मा:</translation>
+    </message>
+    <message>
+      <source>Rejection threshold in robust-sigma units above the global median. Lower = more aggressive rejection of bright pixels. Only used when 'Protect highlights' is on.</source>
+      <translation>वैश्विक माध्यिका से ऊपर robust-sigma इकाइयों में अस्वीकृति थ्रेशोल्ड। कम = चमकीले पिक्सेल की अधिक आक्रामक अस्वीकृति। केवल तभी उपयोग होता है जब 'हाइलाइट्स सुरक्षित करें' चालू हो।</translation>
+    </message>
+    <message>
+      <source>Computing preview…</source>
+      <translation>पूर्वावलोकन की गणना की जा रही है…</translation>
+    </message>
+    <message>
+      <source>Algorithm: CanonBandingReduction by Georg Viehoever (GPLv3, 2009-2013)</source>
+      <translation>एल्गोरिदम: Georg Viehoever द्वारा CanonBandingReduction (GPLv3, 2009-2013)</translation>
+    </message>
+    <message>
+      <source>Apply</source>
+      <translation>लागू करें</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>बंद करें</translation>
+    </message>
+    <message>
+      <source>Preview failed: {0}</source>
+      <translation>पूर्वावलोकन विफल: {0}</translation>
+    </message>
+    <message>
+      <source>Open an image first.</source>
+      <translation>पहले एक छवि खोलें।</translation>
+    </message>
+    <message>
+      <source>Apply failed:
+{0}</source>
+      <translation>लागू करना विफल:
+{0}</translation>
+    </message>
+    <message>
+      <source>Fit the whole image in the preview</source>
+      <translation>पूरी छवि को प्रीव्यू में फ़िट करें</translation>
+    </message>
+    <message>
+      <source>Row banding, as on Canon DSLRs</source>
+      <translation>पंक्ति बैंडिंग, जैसे Canon DSLR में</translation>
+    </message>
+    <message>
+      <source>Column banding, as on some CMOS cameras</source>
+      <translation>स्तंभ बैंडिंग, जैसे कुछ CMOS कैमरों में</translation>
+    </message>
+    <message>
+      <source>Drag to the canvas to create a Banding Blaster shortcut with these exact settings.
+Drop directly on an image to apply them headlessly.</source>
+      <translation>इन्हीं सटीक सेटिंग्स के साथ Banding Blaster शॉर्टकट बनाने के लिए कैनवास पर खींचें।
+इन्हें हेडलेस रूप से लागू करने के लिए सीधे किसी छवि पर छोड़ें।</translation>
+    </message>
+    <message>
+      <source>Measuring the bands…</source>
+      <translation>बैंडिंग मापी जा रही है…</translation>
+    </message>
+    <message>
+      <source>Largest column shift: {0:.5f}</source>
+      <translation>सबसे बड़ा स्तंभ खिसकाव: {0:.5f}</translation>
+    </message>
+    <message>
+      <source>Largest row shift: {0:.5f}</source>
+      <translation>सबसे बड़ा पंक्ति खिसकाव: {0:.5f}</translation>
+    </message>
+    <message>
+      <source>Amount is 0, so there is nothing to apply.</source>
+      <translation>मात्रा 0 है, इसलिए लागू करने के लिए कुछ नहीं है।</translation>
+    </message>
+  </context>
+  <context>
+    <name>_BandingBlasterPresetDialog</name>
+    <message>
+      <source>Horizontal</source>
+      <translation>क्षैतिज</translation>
+    </message>
+    <message>
+      <source>Vertical</source>
+      <translation>लंबवत</translation>
+    </message>
+    <message>
+      <source>Protect highlights</source>
+      <translation>हाइलाइट्स सुरक्षित करें</translation>
+    </message>
+    <message>
+      <source>Direction:</source>
+      <translation>दिशा:</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>मात्रा:</translation>
+    </message>
+    <message>
+      <source>Sigma:</source>
+      <translation>सिग्मा:</translation>
+    </message>
+    <message>
+      <source>Banding Blaster — Preset</source>
+      <translation>Banding Blaster — प्रीसेट</translation>
+    </message>
+  </context>
+  <context>
+    <name>BandingBlaster</name>
+    <message>
+      <source>Open an image first.</source>
+      <translation>पहले एक छवि खोलें।</translation>
     </message>
   </context>
 </TS>
