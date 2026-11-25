@@ -57,6 +57,7 @@ declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Drag a desktop shortcut onto a 
 declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Drag desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Move them; a selection moves together"))
 declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Ctrl/Shift+click a desktop shortcut"), QT_TRANSLATE_NOOP("CheatSheet", "Desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Add it to or remove it from the selection"))
 declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Drag on empty canvas"), QT_TRANSLATE_NOOP("CheatSheet", "Desktop shortcuts"), QT_TRANSLATE_NOOP("CheatSheet", "Rubber-band select; hold Ctrl/Shift to add"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Drag a tool window's grip, a desktop shortcut or a History step onto Essentials"), QT_TRANSLATE_NOOP("CheatSheet", "Toolbar"), QT_TRANSLATE_NOOP("CheatSheet", "Add that tool to Essentials"))
 
 SASS_KIND   = "sas.shortcuts"
 SASS_VER    = 1
@@ -128,6 +129,24 @@ def _pack_cmd_payload(command_id: str, preset: dict | None = None,
 
 def _unpack_cmd_payload(b: bytes) -> dict:
     return json.loads(b.decode("utf-8"))
+
+
+def _dragged_command_id(md: QMimeData) -> str | None:
+    """The command a drag carries: a tool window's grip, a desktop shortcut or
+    a History step (MIME_CMD), or a toolbar button (MIME_ACTION)."""
+    if md.hasFormat(MIME_CMD):
+        try:
+            payload = _unpack_cmd_payload(bytes(md.data(MIME_CMD)))
+            cid = payload.get("command_id") if isinstance(payload, dict) else None
+            if cid:
+                return str(cid)
+        except Exception:
+            pass
+    if md.hasFormat(MIME_ACTION):
+        cid = bytes(md.data(MIME_ACTION)).decode("utf-8", "replace").strip()
+        if cid:
+            return cid
+    return None
 
 
 @dataclass
@@ -564,6 +583,7 @@ class DraggableToolBar(QToolBar):
         m = QMenu(btn)
 
         m.addAction(self.tr("Create Desktop Shortcut"), lambda: self._add_shortcut_for_action(act))
+        self._add_to_essentials_menu(m, act)
 
         # Hide this icon
         cid = self._action_id(act)
@@ -578,6 +598,21 @@ class DraggableToolBar(QToolBar):
         tip.setEnabled(False)
 
         m.exec(gpos)
+
+    def _add_to_essentials_menu(self, m: QMenu, act: QAction):
+        """Add to Essentials > one entry per Essentials toolbar: how a tool
+        with no grip gets there, from All Tools. Not for the View toolbar's
+        buttons, which show in both modes."""
+        mw = self.window()
+        if getattr(mw, "_essentials_candidate", lambda c: None)(self._action_id(act)) is None:
+            return
+        bars = mw.findChildren(EssentialsToolBar)
+        if not bars:
+            return
+        sub = m.addMenu(self.tr("Add to Essentials"))
+        for tb in bars:
+            a = sub.addAction(tb.windowTitle(), lambda t=tb: mw._add_to_essentials(act, t))
+            a.setEnabled(act not in tb.actions())
 
     def contextMenuEvent(self, ev):
         # Right-click on empty toolbar area
@@ -654,20 +689,86 @@ class EssentialsToolBar(DraggableToolBar):
     Its actions are the same QActions the full toolbars hold, so a tool is
     one action wherever it shows. That means this bar must keep out of what
     moves actions between the full toolbars: its buttons can be dragged onto
-    a view, onto the workspace (desktop shortcut) and along this bar, but not
-    onto another toolbar, and it takes none from one; right-click has no
+    a view, onto the workspace (desktop shortcut), along this bar and to the
+    other Essentials bar, but not onto a full toolbar; right-click has no
     Hide, which moves a tool to the Hidden toolbar of the full set. The main
     window leaves it out of memberships and Hidden (_full_toolbars).
+
+    What it holds is the user's: a tool dropped on it (a tool window's grip,
+    a desktop shortcut, a History step) is added, without its preset, and
+    right-click takes one off. The main window keeps the list
+    (_add_to_essentials, _save_essentials).
     """
     is_essentials = True
 
     def _accepts_reorder_from(self, src_tb) -> bool:
         return src_tb is self
 
+    # ── adding a tool by dropping it here ──
+    def _dropped_tool(self, e) -> QAction | None:
+        """The tool this drag would add to this bar, or None (then it may be
+        a move along the bar, which DraggableToolBar handles)."""
+        src = e.source()
+        if isinstance(src, QToolButton):
+            src_tb = src.parent()
+            if src_tb is self:
+                return None
+            if isinstance(src_tb, EssentialsToolBar) and self._is_locked():
+                return None                      # from the other row: a move
+        cid = _dragged_command_id(e.mimeData())
+        act = getattr(self.window(), "_essentials_candidate", lambda c: None)(cid)
+        if act is None or act in self.actions():
+            return None
+        return act
+
+    def _drop_before(self, pos: QPoint) -> QAction | None:
+        """Where a tool dropped at pos goes: before the button under it, or
+        after it past its middle. Never after the search box and Start Panel,
+        which have no command id and stay last."""
+        acts = self.actions()
+        target = self.actionAt(pos)
+        if target is not None and self._action_id(target):
+            w = self.widgetForAction(target)
+            if w is not None:
+                g = w.geometry()
+                past = (pos.y() > g.center().y() if self.orientation() == Qt.Orientation.Vertical
+                        else pos.x() > g.center().x())
+                if past:
+                    i = acts.index(target) + 1
+                    return acts[i] if i < len(acts) else None
+            return target
+        return next((a for a in acts if not self._action_id(a)), None)
+
+    def dragEnterEvent(self, e):
+        if self._dropped_tool(e) is not None:
+            e.setDropAction(Qt.DropAction.CopyAction)
+            e.accept()
+            return
+        super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):
+        if self._dropped_tool(e) is not None:
+            e.setDropAction(Qt.DropAction.CopyAction)
+            e.accept()
+            return
+        super().dragMoveEvent(e)
+
+    def dropEvent(self, e):
+        act = self._dropped_tool(e)
+        if act is None:
+            super().dropEvent(e)
+            return
+        self.window()._add_to_essentials(act, self, self._drop_before(e.position().toPoint()))
+        e.setDropAction(Qt.DropAction.CopyAction)
+        e.accept()
+
+    # ── menus ──
     def _show_toolbutton_context_menu(self, btn: QToolButton, act: QAction, gpos: QPoint):
         m = QMenu(btn)
         if self._action_id(act):                 # the Start Panel button has none
             m.addAction(self.tr("Create Desktop Shortcut"), lambda: self._add_shortcut_for_action(act))
+            m.addAction(self.tr("Remove from Essentials"),
+                        lambda: self.window()._remove_from_essentials(act))
         self._add_essentials_items(m)
         m.exec(gpos)
 
@@ -682,6 +783,17 @@ class EssentialsToolBar(DraggableToolBar):
 
     def _add_essentials_items(self, m: QMenu):
         mw = self.window()
+        m.addSeparator()
+        removed = getattr(mw, "_essentials_removed_defaults", lambda: [])()
+        if removed:
+            sub = m.addMenu(self.tr("Put Back"))
+            for act, tb in removed:
+                sub.addAction(act.iconText() or act.text(),
+                              lambda a=act, t=tb: mw._put_back_on_essentials(a, t))
+        if hasattr(mw, "_reset_essentials"):
+            m.addAction(self.tr("Reset Essentials..."), mw._reset_essentials)
+        tip = m.addAction(self.tr("Tip: drag a tool window's grip here to add the tool"))
+        tip.setEnabled(False)
         labels = getattr(mw, "_act_essentials_labels", None)
         mode_acts = getattr(mw, "_toolbar_mode_actions", None)
         if labels is not None:

@@ -544,24 +544,180 @@ class ToolbarMixin:
         return self._toolbar_mode_actions
 
     def _build_essentials_toolbars(self):
+        placed = set()
         for name, key, title, items in self._ESSENTIALS:
             tb = EssentialsToolBar(QCoreApplication.translate("Essentials", title), self)
             tb.setObjectName(name)
             tb.setSettingsKey(key)
             self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
-            for attr, label in items:
-                act = getattr(self, attr, None)
-                if act is None:
-                    continue
-                # Shown only by a toolbar that shows text, and the full ones
-                # are icon-only; menus and the tooltip use text().
-                act.setIconText(QCoreApplication.translate("Essentials", label))
+            for act in self._essentials_content(key, items, placed):
                 tb.addAction(act)
             self._restore_toolbar_order(tb, key)
             if name == "EssentialsFinish":
                 self._add_essentials_search(tb)
                 tb.addAction(self._ensure_start_panel_button())
         self._apply_essentials_labels()
+
+    # ── Essentials, made your own ────────────────────────────────────────────
+    # Each Essentials bar starts as its _ESSENTIALS list. A tool dropped on it
+    # (a tool window's grip, a desktop shortcut, a History step) or added from
+    # a full toolbar's right-click menu is kept under <key>/Added, and a
+    # default taken off under <key>/Removed, both JSON lists of command ids.
+    # They are changes to the defaults, so a tool a later version adds to
+    # Essentials still shows up. Under the bar's own key, so Reset to Factory
+    # Layout (which removes that key) clears them too.
+
+    def _essentials_bars(self):
+        """(toolbar, settings key, default items) for each Essentials bar."""
+        out = []
+        for _name, key, _title, items in self._ESSENTIALS:
+            tb = self._toolbar_by_settings_key(key)
+            if tb is not None:
+                out.append((tb, key, items))
+        return out
+
+    def _essentials_list(self, key: str) -> list:
+        try:
+            raw = self.settings.value(key, "", type=str) or ""
+            val = json.loads(raw) if raw else []
+        except Exception:
+            val = []
+        return [str(x) for x in val if x] if isinstance(val, list) else []
+
+    def _essentials_candidate(self, cid):
+        """The tool for a command id, when it can go on Essentials: anything
+        with a desktop-shortcut id but the View toolbar's buttons, which show
+        in both modes."""
+        reg = getattr(getattr(self, "shortcuts", None), "registry", None) or {}
+        act = reg.get(str(cid)) if cid else None
+        if act is None:
+            return None
+        view = self._toolbar_by_settings_key("Toolbar/View")
+        if view is not None and act in view.actions():
+            return None
+        return act
+
+    @staticmethod
+    def _essentials_label(act):
+        """A tool added to Essentials shows its menu name under the icon.
+        Qt drops a trailing "..." from it by itself; not a trailing "…"."""
+        t = act.iconText()
+        if t.endswith("…"):
+            act.setIconText(t[:-1].rstrip())
+
+    def _essentials_content(self, key, items, placed, *, defaults_only=False):
+        """The tools one bar holds, in default order: its defaults less the
+        ones taken off, then the ones added. placed: command ids already on
+        a bar, so no tool is on both."""
+        removed = set() if defaults_only else set(self._essentials_list(f"{key}/Removed"))
+        added = [] if defaults_only else self._essentials_list(f"{key}/Added")
+        out = []
+        for attr, label in items:
+            act = getattr(self, attr, None)
+            if act is None:
+                continue
+            # Shown only by a toolbar that shows text, and the full ones
+            # are icon-only; menus and the tooltip use text().
+            act.setIconText(QCoreApplication.translate("Essentials", label))
+            cid = self._action_cid(act)
+            if cid in removed or cid in placed:
+                continue
+            placed.add(cid)
+            out.append(act)
+        for cid in added:
+            act = self._essentials_candidate(cid)
+            if act is None or cid in placed:
+                continue
+            placed.add(cid)
+            self._essentials_label(act)
+            out.append(act)
+        return out
+
+    def _save_essentials(self):
+        for tb, key, items in self._essentials_bars():
+            defaults = [self._action_cid(getattr(self, attr)) for attr, _ in items
+                        if getattr(self, attr, None) is not None]
+            ids = [c for c in (self._action_cid(a) for a in tb.actions()) if c]
+            self.settings.setValue(f"{key}/Added", json.dumps([c for c in ids if c not in defaults]))
+            self.settings.setValue(f"{key}/Removed", json.dumps([c for c in defaults if c not in ids]))
+            tb._persist_order()
+
+    @staticmethod
+    def _essentials_tail(tb):
+        """The search box and Start Panel at the end of a bar: no command id."""
+        return next((a for a in tb.actions()
+                     if not (a.property("command_id") or a.objectName())), None)
+
+    def _add_to_essentials(self, act, tb, before=None):
+        """Put a tool on Essentials bar tb, before `before` (else at the end,
+        ahead of the search box). Taken off the other bar if it is there."""
+        if before is act:
+            return
+        for other, _key, _items in self._essentials_bars():
+            if other is not tb and act in other.actions():
+                other.removeAction(act)
+        if act in tb.actions():
+            tb.removeAction(act)
+        if before is None or before not in tb.actions():
+            before = self._essentials_tail(tb)
+        if before is None:
+            tb.addAction(act)
+        else:
+            tb.insertAction(before, act)
+        self._essentials_label(act)
+        self._save_essentials()
+
+    def _remove_from_essentials(self, act):
+        for tb, _key, _items in self._essentials_bars():
+            if act in tb.actions():
+                tb.removeAction(act)
+        self._save_essentials()
+
+    def _essentials_removed_defaults(self):
+        """(tool, its bar) for each default tool that is on no Essentials bar."""
+        bars = self._essentials_bars()
+        on = {a for tb, _k, _i in bars for a in tb.actions()}
+        out = []
+        for tb, _key, items in bars:
+            for attr, _label in items:
+                act = getattr(self, attr, None)
+                if act is not None and act not in on:
+                    out.append((act, tb))
+        return out
+
+    def _put_back_on_essentials(self, act, tb):
+        """A default taken off goes back where it was: before the next of
+        that bar's defaults still on it."""
+        items = next((i for t, _k, i in self._essentials_bars() if t is tb), ())
+        acts = [getattr(self, attr, None) for attr, _ in items]
+        i = acts.index(act) + 1 if act in acts else len(acts)
+        before = next((a for a in acts[i:] if a is not None and a in tb.actions()), None)
+        self._add_to_essentials(act, tb, before)
+
+    def _reset_essentials(self):
+        """Reset Essentials... (Essentials right-click): the default tools in
+        the default order. Nothing else about the toolbars changes."""
+        from PyQt6.QtWidgets import QMessageBox
+        ok = QMessageBox.question(
+            self, self.tr("Reset Essentials"),
+            self.tr("Put the default tools back on Essentials?\n\n"
+                    "Tools you added are taken off, the ones you removed come back, "
+                    "and the order is the default one."),
+            QMessageBox.StandardButton.Reset | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if ok != QMessageBox.StandardButton.Reset:
+            return
+        placed = set()
+        for tb, key, items in self._essentials_bars():
+            self.settings.remove(key)            # the order, Added and Removed
+            for a in [a for a in tb.actions() if self._action_cid(a)]:
+                tb.removeAction(a)
+            tail = self._essentials_tail(tb)
+            for act in self._essentials_content(key, items, placed, defaults_only=True):
+                if tail is None:
+                    tb.addAction(act)
+                else:
+                    tb.insertAction(tail, act)
 
     def _ensure_start_panel_button(self):
         """Start Panel on Essentials, after the search box: the start panel,

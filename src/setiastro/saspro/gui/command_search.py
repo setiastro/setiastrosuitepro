@@ -16,6 +16,7 @@ MAX_QUERY_LENGTH = 256
 # show, not hidden keywords. Not translated: acronyms read the same everywhere.
 SEARCH_ALIASES = {
     "act_srgc": ("SRGC",),
+    "act_ghs": ("GHS", "UHS"),
 }
 
 
