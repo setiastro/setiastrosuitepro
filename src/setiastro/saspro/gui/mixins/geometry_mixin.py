@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 class RescaleDialog(QDialog):
     def __init__(self, parent=None, *, cur_w=0, cur_h=0, icon=None):
         super().__init__(parent)
-        self.setWindowTitle("Rescale Image")
+        self.setWindowTitle(self.tr("Rescale Image"))
         self.setModal(True)
         self.setWindowFlag(Qt.WindowType.Window, True)
         if icon:
@@ -59,7 +59,7 @@ class RescaleDialog(QDialog):
 
         # ── Method selector ──────────────────────────────────────────────
         method_row = QHBoxLayout()
-        method_row.addWidget(QLabel("Method:"))
+        method_row.addWidget(QLabel(self.tr("Method:")))
         self.cmb_method = QComboBox(self)
         self.cmb_method.addItem("Bilinear (smooth, any factor)",  userData="bilinear")
         self.cmb_method.addItem("Integer Bin 2×2 (avg, ÷2)",     userData="bin2x2")
@@ -83,7 +83,7 @@ class RescaleDialog(QDialog):
         self.spn_factor.setDecimals(3)
         self.spn_factor.setSingleStep(0.05)
         self.spn_factor.setValue(1.0)
-        bilinear_lay.addRow("Scale factor:", self.spn_factor)
+        bilinear_lay.addRow(self.tr("Scale factor:"), self.spn_factor)
         self.stk.addWidget(bilinear_widget)
 
         # Page 1 — integer methods: just show a description label
@@ -119,12 +119,12 @@ class RescaleDialog(QDialog):
         else:
             self.stk.setCurrentIndex(1)
             descriptions = {
-                "bin2x2": "Averages every 2×2 block of pixels into one.\nOutput will be exactly half the width and height.\nIdeal for reducing noise while preserving signal (like CCD 2×2 binning).",
-                "bin3x3": "Averages every 3×3 block of pixels into one.\nOutput will be exactly one-third the width and height.\nStrong noise reduction, significant resolution loss.",
-                "bin4x4": "Averages every 4×4 block of pixels into one.\nOutput will be exactly one-quarter the width and height.\nMaximum noise reduction, use for very noisy data.",
-                "up2x":   "Repeats each pixel into a 2×2 block.\nOutput will be exactly double the width and height.\nPixel-perfect integer upscale — no interpolation artifacts.",
-                "up3x":   "Repeats each pixel into a 3×3 block.\nOutput will be exactly triple the width and height.",
-                "up4x":   "Repeats each pixel into a 4×4 block.\nOutput will be exactly 4× the width and height.",
+                "bin2x2": self.tr("Averages every 2×2 block of pixels into one.\nOutput will be exactly half the width and height.\nIdeal for reducing noise while preserving signal (like CCD 2×2 binning)."),
+                "bin3x3": self.tr("Averages every 3×3 block of pixels into one.\nOutput will be exactly one-third the width and height.\nStrong noise reduction, significant resolution loss."),
+                "bin4x4": self.tr("Averages every 4×4 block of pixels into one.\nOutput will be exactly one-quarter the width and height.\nMaximum noise reduction, use for very noisy data."),
+                "up2x":   self.tr("Repeats each pixel into a 2×2 block.\nOutput will be exactly double the width and height.\nPixel-perfect integer upscale — no interpolation artifacts."),
+                "up3x":   self.tr("Repeats each pixel into a 3×3 block.\nOutput will be exactly triple the width and height."),
+                "up4x":   self.tr("Repeats each pixel into a 4×4 block.\nOutput will be exactly 4× the width and height."),
             }
             self.lbl_int_desc.setText(descriptions.get(method, ""))
         self._update_summary()
@@ -145,9 +145,7 @@ class RescaleDialog(QDialog):
         method = self.cmb_method.currentData()
         method_label = self.cmb_method.currentText().split("(")[0].strip()
         self.lbl_summary.setText(
-            f"Current: <b>{self._cur_w} × {self._cur_h}</b> px<br>"
-            f"Result:  <b>{new_w} × {new_h}</b> px  ({f:.4g}×)<br>"
-            f"Method:  <b>{method_label}</b>"
+            self.tr("Current: <b>{0} × {1}</b> px<br>Result:  <b>{2} × {3}</b> px  ({4:.4g}×)<br>Method:  <b>{5}</b>").format(self._cur_w, self._cur_h, new_w, new_h, f, method_label)
         )
 
     def values(self):
@@ -159,7 +157,7 @@ class RescaleDialog(QDialog):
 class ResizeCanvasDialog(QDialog):
     def __init__(self, parent=None, *, cur_w=0, cur_h=0, icon: QIcon | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Resize Canvas")
+        self.setWindowTitle(self.tr("Resize Canvas"))
         self.setModal(True)
         self.setWindowFlag(Qt.WindowType.Window, True)
         if icon is not None:
@@ -176,11 +174,11 @@ class ResizeCanvasDialog(QDialog):
         # Units row
         # -----------------------------
         units_row = QHBoxLayout()
-        units_row.addWidget(QLabel("Units:"))
+        units_row.addWidget(QLabel(self.tr("Units:")))
 
         self.cmb_units = QComboBox(self)
-        self.cmb_units.addItem("Pixels", userData="px")
-        self.cmb_units.addItem("Percent", userData="percent")
+        self.cmb_units.addItem(self.tr("Pixels"), userData="px")
+        self.cmb_units.addItem(self.tr("Percent"), userData="percent")
         units_row.addWidget(self.cmb_units, 1)
 
         lay.addLayout(units_row)
@@ -236,9 +234,9 @@ class ResizeCanvasDialog(QDialog):
         height_host = QWidget(self)
         height_host.setLayout(self.height_stack)
 
-        form.addRow("New width:", width_host)
-        form.addRow("New height:", height_host)
-        form.addRow("Fill value:", self.spn_fill)
+        form.addRow(self.tr("New width:"), width_host)
+        form.addRow(self.tr("New height:"), height_host)
+        form.addRow(self.tr("Fill value:"), self.spn_fill)
         lay.addLayout(form)
         self._form = form
         # -----------------------------
@@ -251,7 +249,7 @@ class ResizeCanvasDialog(QDialog):
         # -----------------------------
         # Anchor / pin controls
         # -----------------------------
-        lay.addWidget(QLabel("Keep image pinned to:"))
+        lay.addWidget(QLabel(self.tr("Keep image pinned to:")))
 
         grid = QGridLayout()
         self._anchor_buttons = {}
@@ -272,7 +270,7 @@ class ResizeCanvasDialog(QDialog):
             b = QPushButton(txt, self)
             b.setCheckable(True)
             b.setFixedSize(48, 36)
-            b.setToolTip(f"Pin to {self._anchor_pretty_name(key)}")
+            b.setToolTip(self.tr("Pin to {0}").format(self._anchor_pretty_name(key)))
             b.clicked.connect(lambda checked, k=key: self._set_anchor(k))
             self._anchor_buttons[key] = b
             grid.addWidget(b, r, c)
@@ -283,7 +281,7 @@ class ResizeCanvasDialog(QDialog):
         self.lbl_anchor_help.setWordWrap(True)
         lay.addWidget(self.lbl_anchor_help)
 
-        self.chk_update_wcs = QCheckBox("Update WCS if present", self)
+        self.chk_update_wcs = QCheckBox(self.tr("Update WCS if present"), self)
         self.chk_update_wcs.setChecked(True)
         lay.addWidget(self.chk_update_wcs)
 
@@ -354,15 +352,15 @@ class ResizeCanvasDialog(QDialog):
 
     def _anchor_pretty_name(self, key: str) -> str:
         names = {
-            "top-left": "Top Left",
-            "top": "Top",
-            "top-right": "Top Right",
-            "left": "Left",
-            "center": "Center",
-            "right": "Right",
-            "bottom-left": "Bottom Left",
-            "bottom": "Bottom",
-            "bottom-right": "Bottom Right",
+            "top-left": self.tr("Top Left"),
+            "top": self.tr("Top"),
+            "top-right": self.tr("Top Right"),
+            "left": self.tr("Left"),
+            "center": self.tr("Center"),
+            "right": self.tr("Right"),
+            "bottom-left": self.tr("Bottom Left"),
+            "bottom": self.tr("Bottom"),
+            "bottom-right": self.tr("Bottom Right"),
         }
         return names.get(key, key)
 
@@ -417,7 +415,7 @@ class ResizeCanvasDialog(QDialog):
             btn.setText(self._growth_glyph_for_cell(self._anchor, cell_key))
 
             # Tooltip
-            btn.setToolTip(f"Pin to {self._anchor_pretty_name(cell_key)}")
+            btn.setToolTip(self.tr("Pin to {0}").format(self._anchor_pretty_name(cell_key)))
 
             checked = (cell_key == self._anchor)
             btn.setChecked(checked)
@@ -462,9 +460,7 @@ class ResizeCanvasDialog(QDialog):
 
         pretty = self._anchor_pretty_name(key)
         self.lbl_anchor_help.setText(
-            f"Pinned to: <b>{pretty}</b><br>"
-            f"Extra canvas is added away from the pinned side. "
-            f"If the canvas is made smaller, cropping also happens away from the pinned side."
+            self.tr("Pinned to: <b>{0}</b><br>Extra canvas is added away from the pinned side. If the canvas is made smaller, cropping also happens away from the pinned side.").format(pretty)
         )
         self._update_summary()
 
@@ -481,10 +477,14 @@ class ResizeCanvasDialog(QDialog):
             size_text = f"{new_w} × {new_h} px"
 
         self.lbl_summary.setText(
-            f"Current: <b>{self._cur_w} × {self._cur_h}</b> px<br>"
-            f"Result: <b>{new_w} × {new_h}</b> px ({pw:.2f}% × {ph:.2f}%)<br>"
-            f"Pinned to: <b>{self._anchor_pretty_name(self._anchor)}</b><br>"
-            f"Editing in: <b>{'Percent' if mode == 'percent' else 'Pixels'}</b> ({size_text})"
+            self.tr("Current: <b>{0} × {1}</b> px<br>"
+                    "Result: <b>{2} × {3}</b> px ({4:.2f}% × {5:.2f}%)<br>"
+                    "Pinned to: <b>{6}</b><br>"
+                    "Editing in: <b>{7}</b> ({8})").format(
+                self._cur_w, self._cur_h, new_w, new_h, pw, ph,
+                self._anchor_pretty_name(self._anchor),
+                self.tr("Percent") if mode == 'percent' else self.tr("Pixels"),
+                size_text)
         )
 
     def values(self):
@@ -633,7 +633,7 @@ class _RotateCanvas(QWidget):
 
         if self._base is None or self._base.isNull():
             p.setPen(QColor(160, 160, 170))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No preview")
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.tr("No preview"))
             return
 
         bw, bh = self._base.width(), self._base.height()
@@ -717,7 +717,7 @@ class RotateDialog(QDialog):
     def __init__(self, parent=None, *, image=None, icon: QIcon | None = None,
                  initial: float = 0.0):
         super().__init__(parent)
-        self.setWindowTitle("Rotate")
+        self.setWindowTitle(self.tr("Rotate"))
         self.setModal(True)
         self.setWindowFlag(Qt.WindowType.Window, True)
         if icon:
@@ -735,7 +735,7 @@ class RotateDialog(QDialog):
         lay.addWidget(self.canvas, 1)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Angle"))
+        row.addWidget(QLabel(self.tr("Angle")))
         self.slider = QSlider(Qt.Orientation.Horizontal, self)
         self.slider.setRange(-1800, 1800)          # tenths of a degree
         self.slider.setSingleStep(10)
@@ -750,14 +750,14 @@ class RotateDialog(QDialog):
         self.spin.setSuffix(" °")
         self.spin.setKeyboardTracking(False)
         row.addWidget(self.spin)
-        self.btn_reset = QPushButton("Reset", self)
+        self.btn_reset = QPushButton(self.tr("Reset"), self)
         row.addWidget(self.btn_reset)
         lay.addLayout(row)
 
         hint = QLabel(
-            "Drag the image to rotate · whole degrees by default · "
+            self.tr("Drag the image to rotate · whole degrees by default · "
             "Shift = 0.1° · Ctrl = snap to 15° · "
-            "wheel or arrows nudge · double-click resets", self)
+            "wheel or arrows nudge · double-click resets"), self)
         hint.setWordWrap(True)
         try:
             pal = hint.palette()
@@ -770,10 +770,10 @@ class RotateDialog(QDialog):
         lay.addWidget(hint)
 
         bottom = QHBoxLayout()
-        self.chk_stretch = QCheckBox("Autostretch preview", self)
+        self.chk_stretch = QCheckBox(self.tr("Autostretch preview"), self)
         self.chk_stretch.setChecked(True)
         self.chk_stretch.setToolTip(
-            "Display only — the rotation is applied to the linear data.")
+            self.tr("Display only — the rotation is applied to the linear data."))
         bottom.addWidget(self.chk_stretch)
         bottom.addStretch(1)
         self.lbl_size = QLabel("", self)
@@ -1017,7 +1017,7 @@ class GeometryMixin:
             self._apply_geom_invert_to_doc(doc)
             self._log("Invert applied to active view")
         except Exception as e:
-            QMessageBox.critical(self, "Invert", str(e))
+            QMessageBox.critical(self, self.tr("Invert"), str(e))
 
     def _exec_geom_flip_h(self):
         """Execute horizontal flip on active view."""
@@ -1031,7 +1031,7 @@ class GeometryMixin:
             self._apply_geom_flip_h_to_doc(doc)
             self._log("Flip Horizontal applied to active view")
         except Exception as e:
-            QMessageBox.critical(self, "Flip Horizontal", str(e))
+            QMessageBox.critical(self, self.tr("Flip Horizontal"), str(e))
 
     def _exec_geom_flip_v(self):
         """Execute vertical flip on active view."""
@@ -1045,7 +1045,7 @@ class GeometryMixin:
             self._apply_geom_flip_v_to_doc(doc)
             self._log("Flip Vertical applied to active view")
         except Exception as e:
-            QMessageBox.critical(self, "Flip Vertical", str(e))
+            QMessageBox.critical(self, self.tr("Flip Vertical"), str(e))
 
     def _exec_geom_rot_cw(self):
         """Execute 90 degree clockwise rotation on active view."""
@@ -1059,7 +1059,7 @@ class GeometryMixin:
             self._apply_geom_rot_cw_to_doc(doc)
             self._log("Rotate 90° CW applied to active view")
         except Exception as e:
-            QMessageBox.critical(self, "Rotate 90° CW", str(e))
+            QMessageBox.critical(self, self.tr("Rotate 90° CW"), str(e))
 
     def _exec_geom_rot_ccw(self):
         """Execute 90 degree counterclockwise rotation on active view."""
@@ -1073,7 +1073,7 @@ class GeometryMixin:
             self._apply_geom_rot_ccw_to_doc(doc)
             self._log("Rotate 90° CCW applied to active view")
         except Exception as e:
-            QMessageBox.critical(self, "Rotate 90° CCW", str(e))
+            QMessageBox.critical(self, self.tr("Rotate 90° CCW"), str(e))
 
     def _exec_geom_rot_180(self):
         """Execute 180 degree rotation on active view."""
@@ -1087,7 +1087,7 @@ class GeometryMixin:
             self._apply_geom_rot_180_to_doc(doc)
             self._log("Rotate 180° applied to active view")
         except Exception as e:
-            QMessageBox.critical(self, "Rotate 180°", str(e))
+            QMessageBox.critical(self, self.tr("Rotate 180°"), str(e))
 
     def _exec_geom_rot_any(self):
         sw = self.mdi.activeSubWindow() if hasattr(self, "mdi") else None

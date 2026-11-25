@@ -1018,6 +1018,20 @@ class WaveScaleHDRDialogPro(QDialog):
             self._update_mask_from_gamma()
 
     def closeEvent(self, ev):
+        self._close_teardown()
+        super().closeEvent(ev)
+
+    def done(self, r):
+        # Close / Esc and the headless accept()/reject() end a QDialog through
+        # done(), which never delivers closeEvent: without this they skipped
+        # the teardown and the dialog kept its full-size buffers. Runs once.
+        self._close_teardown()
+        super().done(r)
+
+    def _close_teardown(self):
+        if getattr(self, "_close_torn_down", False):
+            return
+        self._close_torn_down = True
         # Running jobs are held by thread_keeper and finish on their own; their
         # results are dropped once the dialog has released its buffers.
         try:
@@ -1030,7 +1044,6 @@ class WaveScaleHDRDialogPro(QDialog):
             self._release_memory()
         except Exception:
             pass
-        super().closeEvent(ev)
 
     def _release_memory(self):
         """Drop full-frame RGB/LAB buffers and preview pixmap on close."""

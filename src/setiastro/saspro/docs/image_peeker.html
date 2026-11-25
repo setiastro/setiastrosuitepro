@@ -77,9 +77,33 @@
 
 <p>The AutoStretch button operates on the stored high-bit-depth source (not on the 8-bit display buffer), so when you toggle it on you see a correctly-stretched preview of the full linear data range, not a stretch of an already-quantized version. The underlying measurement path for the analyses runs on the linear float32 image regardless of the stretch state.</p>
 
+<h3>Star statistics on each panel</h3>
+
+<p>With <b>Show star statistics</b> ticked (the default), every panel carries three numbers measured from the stars inside it:</p>
+
+<ul>
+  <li><b>FWHM</b>, large: the median star size, in arcseconds (in pixels if the image scale is unknown).</li>
+  <li><b>Stars</b>: how many stars were found in the panel, saturated ones included. Hot pixels and cosmic rays are not counted.</li>
+  <li><b>ecc</b>: the eccentricity of the panel's typical star, 0 for round. It appears once a panel has at least three stars resolved enough to have a shape.</li>
+</ul>
+
+<p>On a 3&times;3 grid the panels are tagged TL, T, TR, L, C, R, BL, B, BR. On larger grids only the corners, edge midpoints and centre get tags. When the grid has a centre panel it is outlined. The line under the mosaic compares centre and corners, for example <i>FWHM: centre 3.36&Prime; &middot; corners 4.27&Prime;&ndash;4.65&Prime;, worst TL (+38% vs centre)</i>. Field curvature lifts all four corners together; tilt lifts one side more than the other.</p>
+
+<p>A panel with fewer than three measurable stars shows &mdash; instead of an FWHM. At long focal lengths in narrowband a 256&nbsp;px panel can hold only a handful of stars; raise the <b>Panel size</b>.</p>
+
+<div class="tip">
+<b>Why these numbers can differ from other tools.</b> The FWHM is the size of the best-fitting Gaussian, so it does not depend on how bright a star is. Most star-moment tools read faint stars small and bright stars large. Here that spread would make a panel that happened to catch a bright star look worse, for no optical reason. The eccentricity is the shape of the panel's <i>average</i> star, not the median of each star's own eccentricity. Noise alone makes a faint round star read 0.2&ndash;0.35. That noise points every which way and cancels in the average shape, while a real elongation survives. So round stars read lower here than in per-star tools, and a high value means a real elongation.
+</div>
+
+<p>Measuring runs in the background after you change the grid, panel size or image. Separation, zoom and AutoStretch only redraw. Statistics are measured on the image's own pixels, never on the stretched display.</p>
+
 <h2>3. Setting your physical constants</h2>
 
-<p>Three values let the analyses report real-world units. Each lives in the parameters panel and is remembered across sessions.</p>
+<p>Three values let the analyses report real-world units. When the image header records them, Image Peeker fills them in from the image: pixel size from <code>XPIXSZ</code>, focal length from <code>FOCALLEN</code>, and aperture from <code>APTDIA</code> (or <code>FOCALLEN</code> &divide; <code>FOCRATIO</code>, which N.I.N.A. writes). A line under the fields says which came from the image. Hover a field for its header keyword. Anything the header does not have keeps the value you entered last time. Values that came from an image are not remembered as yours; only values you type are.</p>
+
+<p><code>XPIXSZ</code> is used exactly as written. Capture software writes it already binned: SGP writes 4.63&nbsp;&micro;m with <code>XBINNING=2</code> on the 2.315&nbsp;&micro;m ASI294MM. PixInsight and SASpro also scale it when they drizzle or resample, so it is the size of one pixel of the image in front of you.</p>
+
+<p><b>Image scale</b> shows the arcseconds per pixel used for the FWHM labels. A plate solve (WCS) is used when the image has one, because it is measured, not assumed. Otherwise it is 206.265 &times; pixel size &divide; focal length. If the image is solved and the two disagree by more than 5%, a warning appears under the scale. The usual cause is a drizzled or resampled image whose header still describes the camera, and then the &micro;m figures in Tilt and Focal Plane Analysis would be off by the same factor.</p>
 
 <ul>
   <li><b>Pixel size (µm)</b> — your sensor's pixel pitch. Needed for FWHM in µm, tilt magnitudes in µm, and distortion in arcseconds when WCS is absent.</li>
@@ -284,7 +308,22 @@
 
 <p>A WCS without A_i_j / B_i_j terms describes only the linear astrometric transformation (position, scale, rotation) and says nothing about optical distortion. The tool detects this case and tells you to re-solve with distortion fitting enabled in ASTAP rather than silently returning a flat grid.</p>
 
-<h3>8.9 Threaded execution</h3>
+<h3>8.9 Panel statistics: adaptive moments and the stellar locus</h3>
+
+<p>Each panel is read with a 48&nbsp;px margin, converted to luminance, and gets its own SEP background. Pixels at exactly 0.0 are treated as no-data, so registration borders are ignored. Stars are detected at 5&sigma;. All panels share a single SEP call, stacked into one strip with masked gutters and each panel's own noise as the error map. SEP allocates its whole pixel stack on every call (about 250&nbsp;ms in SASpro), so one call per panel made a 3&times;3 grid take 2.3&nbsp;s; sharing it takes about 0.4&nbsp;s.</p>
+
+<p>Star size comes from <b>adaptive moments</b> (Bernstein &amp; Jarvis 2002), not from SEP's <i>a</i> and <i>b</i>. The weight is an elliptical Gaussian that is resized each pass to match the moments it measures, until it settles on the best-fitting Gaussian for that star. SEP's moments use only the pixels above the detection threshold. That cuts a faint star short and lets a bright star's wings in: on synthetic Gaussian stars 2.3548&radic;(ab) read 0.69&times; the true FWHM at peak SNR 15 and 1.12&times; at SNR 600. Adaptive moments read 1.00&times; at both, and a steady 1.13&times; at every SNR on Moffat &beta;=3 stars, whose wings a Gaussian under-weights. Each pixel is given to its nearest detection, so a bright neighbour cannot pull a star's moments. A star that outgrows its stamp is measured again on a bigger one (up to 81&nbsp;px), so 10&nbsp;px stars at long focal lengths are measured, not dropped. The pixel's own variance (1/12&nbsp;px&sup2;) is removed.</p>
+
+<p>Three kinds of detection are set aside:</p>
+<ul>
+  <li><b>Hot pixels and cosmic rays</b> collapse onto one pixel. They are dropped from the count too; on a raw sub most "stars" in a panel were these.</li>
+  <li><b>Clipped stars</b> have a plateau of six or more pixels within 2% of the peak, while an unclipped star has one or two even when bright. They are counted but not measured, because a clipped core's size is the clip's. The test looks at the star itself because calibrated and processed frames carry no saturation level.</li>
+  <li><b>Non-stellar objects.</b> A panel's stars share one PSF, so they cluster tightly in size, while nebula knots, galaxies and blends only add on the large side. The panel's FWHM is the median of the objects within 35% of the most common size (the half-sample mode). A plain median failed on a real drizzled master: stars at 7.7&ndash;8.5&nbsp;px, knots at 15&ndash;24&nbsp;px, and the median fell between them at 12.3&nbsp;px.</li>
+</ul>
+
+<p>Eccentricity is computed from the median of the polarisation components e1 and e2 of the stars resolved at 2&nbsp;px FWHM or more: |e| = (a&sup2;&minus;b&sup2;)/(a&sup2;+b&sup2;), ecc = &radic;(2|e| / (1+|e|)).</p>
+
+<h3>8.10 Threaded execution</h3>
 
 <p>Focal Plane and Tilt analyses both run in a background QThread (<code>_AnalysisWorker</code>) that posts progress updates and results back to the GUI thread via signals. SEP's extract call plus the paraboloid or polynomial fit takes a few seconds on a typical multi-megapixel frame; running it on the GUI thread would freeze the whole app during that time. The background worker emits the "Detecting stars..." status, then the result dictionary (or None on failure, with a specific message in the error signal). The GUI thread picks up the result and opens the result dialogs.</p>
 

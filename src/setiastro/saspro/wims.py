@@ -20,7 +20,7 @@ from astropy.coordinates import SkyCoord, EarthLocation, AltAz, get_sun, get_bod
 from astropy.time import Time
 
 # --- Qt / PyQt6 ---
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QTimer, QCoreApplication
 from PyQt6.QtGui import QIcon, QPixmap, QAction
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QLineEdit, QComboBox, QCheckBox, QRadioButton, QButtonGroup,
@@ -47,6 +47,11 @@ def imgs_path(*parts) -> str:
     return os.path.join(_app_root(), "imgs", *parts)
 
 from setiastro.saspro.resources import get_icon_path
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("Wims", text)
+
 
 getcontext().prec = 24
 warnings.filterwarnings("ignore")
@@ -162,8 +167,8 @@ class ScoreChartDialog(QDialog):
         super().__init__(parent)
         self.item_data = item_data
         self.observer  = observer
-        name = item_data.get("name", "Object")
-        self.setWindowTitle(f"Weekly Score — {name}")
+        name = item_data.get("name", self.tr("Object"))
+        self.setWindowTitle(self.tr("Weekly Score — {0}").format(name))
         self.resize(820, 420)
         self._thread = None
         self._build_ui()
@@ -173,14 +178,14 @@ class ScoreChartDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
 
-        self.status_lbl = QLabel("Computing scores…")
+        self.status_lbl = QLabel(self.tr("Computing scores…"))
         self.status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer.addWidget(self.status_lbl)
 
         if _HAS_PG:
             self.plot = pg.PlotWidget()
-            self.plot.setLabel("bottom", "Date")
-            self.plot.setLabel("left", "Score (0–100)")
+            self.plot.setLabel("bottom", self.tr("Date"))
+            self.plot.setLabel("left", self.tr("Score (0–100)"))
             self.plot.showGrid(x=True, y=True, alpha=0.3)
             self.plot.setYRange(0, 100, padding=0.05)
             outer.addWidget(self.plot, 1)
@@ -189,7 +194,7 @@ class ScoreChartDialog(QDialog):
             self.text.setReadOnly(True)
             outer.addWidget(self.text, 1)
 
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton(self.tr("Close"))
         close_btn.clicked.connect(self.close)
         row = QHBoxLayout()
         row.addStretch()
@@ -208,12 +213,12 @@ class ScoreChartDialog(QDialog):
 
     def _on_results(self, results):
         self.status_lbl.setText(
-            f"{self.item_data.get('name','')} — observability score over ±7 days  "
-            f"(40% altitude quality · 35% moon avoidance · 25% imaging window)")
+            self.tr("{0} — observability score over ±7 days  "
+            "(40% altitude quality · 35% moon avoidance · 25% imaging window)").format(self.item_data.get('name','')))
 
         if not results:
             if not _HAS_PG:
-                self.text.setPlainText("No results.")
+                self.text.setPlainText(self.tr("No results."))
             return
 
         dates  = [r[0] for r in results]
@@ -271,7 +276,7 @@ class ScoreChartDialog(QDialog):
                 pw.addItem(text)
 
         else:
-            lines = ["Date         Score  Moon%"]
+            lines = [self.tr("Date         Score  Moon%")]
             for d, s, p in results:
                 marker = " ◀" if d == center else ""
                 lines.append(f"{d}   {s:5.1f}  {p:3d}%{marker}")
@@ -347,8 +352,8 @@ class ObjectSearchResultDialog(QDialog):
         self.obj_data       = obj_data
         self.observer       = observer
         self.yearly_results = yearly_results  # [(date_str, score, phase_pct), ...]
-        name = obj_data.get("name", "Object")
-        self.setWindowTitle(f"Object Search — {name}")
+        name = obj_data.get("name", self.tr("Object"))
+        self.setWindowTitle(self.tr("Object Search — {0}").format(name))
         self.resize(1000, 700)
         self._build_ui()
 
@@ -365,6 +370,7 @@ class ObjectSearchResultDialog(QDialog):
         dec  = self.obj_data.get("dec", 0.0)
 
         # ── Summary header ────────────────────────────────────────────────
+        best_date = ""
         if self.yearly_results:
             best       = max(self.yearly_results, key=lambda r: r[1])
             best_date  = best[0]
@@ -382,16 +388,17 @@ class ObjectSearchResultDialog(QDialog):
             best_month_name = bm_dt.strftime("%B %Y")
             badge = _score_badge(best_score)
             month_badge = _score_badge(best_month_avg)
-            summary = QLabel(
-                f"<b>{name}</b>   RA {ra:.3f}°  Dec {dec:+.3f}°  |  "
-                f"Best night: <b>{best_date}</b> (score {best_score:.0f}/100 {badge})  |  "
-                f"Best month: <b>{best_month_name}</b> (avg {best_month_avg:.0f}/100 {month_badge})"
-            )
+            summary = QLabel(self.tr(
+                "<b>{0}</b>   RA {1:.3f}°  Dec {2:+.3f}°  |  "
+                "Best night: <b>{3}</b> (score {4:.0f}/100 {5})  |  "
+                "Best month: <b>{6}</b> (avg {7:.0f}/100 {8})"
+            ).format(name, ra, dec, best_date, best_score, badge,
+                     best_month_name, best_month_avg, month_badge))
         else:
-            summary = QLabel(
-                f"<b>{name}</b>   RA {ra:.3f}°  Dec {dec:+.3f}°  |  "
-                f"No observability data available."
-            )
+            summary = QLabel(self.tr(
+                "<b>{0}</b>   RA {1:.3f}°  Dec {2:+.3f}°  |  "
+                "No observability data available."
+            ).format(name, ra, dec))
         summary.setWordWrap(True)
         summary.setStyleSheet("font-size: 12px; padding: 4px;")
         outer.addWidget(summary)
@@ -407,8 +414,8 @@ class ObjectSearchResultDialog(QDialog):
             mt_lay.setContentsMargins(4, 4, 4, 4)
 
             pw = pg.PlotWidget()
-            pw.setLabel("bottom", "Month")
-            pw.setLabel("left", "Avg Score (0–100)")
+            pw.setLabel("bottom", self.tr("Month"))
+            pw.setLabel("left", self.tr("Avg Score (0–100)"))
             pw.showGrid(x=False, y=True, alpha=0.3)
             pw.setYRange(0, 100, padding=0.05)
 
@@ -467,10 +474,10 @@ class ObjectSearchResultDialog(QDialog):
 
             pw.plot(day_xs, day_ys,
                     pen=pg.mkPen((255, 255, 100, 80), width=1),
-                    name="Daily score")
+                    name=self.tr("Daily score"))
 
             mt_lay.addWidget(pw)
-            tabs.addTab(month_tab, "Monthly Overview")
+            tabs.addTab(month_tab, self.tr("Monthly Overview"))
 
         # Tab 2: Best night altitude curve
         alt_best_tab = QWidget()
@@ -482,13 +489,14 @@ class ObjectSearchResultDialog(QDialog):
                 obs_best["date"] = best_date
                 obs_best["time"] = "22:00"
                 self._add_alt_plot(ab_lay, ra, dec, obs_best,
-                                   f"Altitude on best night ({best_date})")
+                                   self.tr("Altitude on best night ({0})").format(best_date))
             except Exception as e:
-                ab_lay.addWidget(QLabel(f"Could not plot: {e}"))
+                ab_lay.addWidget(QLabel(self.tr("Could not plot: {0}").format(e)))
         else:
-            ab_lay.addWidget(QLabel("pyqtgraph not installed." if not _HAS_PG
-                                    else "No results available."))
-        tabs.addTab(alt_best_tab, f"Best Night ({best_date})")
+            ab_lay.addWidget(QLabel(self.tr("pyqtgraph not installed.") if not _HAS_PG
+                                    else self.tr("No results available.")))
+        tabs.addTab(alt_best_tab, self.tr("Best Night ({0})").format(best_date) if best_date
+                    else self.tr("Best Night"))
 
         # Tab 3: Tonight altitude curve
         alt_now_tab = QWidget()
@@ -498,46 +506,46 @@ class ObjectSearchResultDialog(QDialog):
         if _HAS_PG:
             try:
                 self._add_alt_plot(an_lay, ra, dec, self.observer,
-                                   f"Altitude tonight ({tonight})")
+                                   self.tr("Altitude tonight ({0})").format(tonight))
             except Exception as e:
-                an_lay.addWidget(QLabel(f"Could not plot: {e}"))
+                an_lay.addWidget(QLabel(self.tr("Could not plot: {0}").format(e)))
         else:
-            an_lay.addWidget(QLabel("pyqtgraph not installed."))
-        tabs.addTab(alt_now_tab, f"Tonight ({tonight})")
+            an_lay.addWidget(QLabel(self.tr("pyqtgraph not installed.")))
+        tabs.addTab(alt_now_tab, self.tr("Tonight ({0})").format(tonight))
 
         # Tab 4: SIMBAD (reuse existing thread)
         simbad_tab = QWidget()
         sb_lay = QVBoxLayout(simbad_tab)
         self._simbad_text = QTextEdit()
         self._simbad_text.setReadOnly(True)
-        self._simbad_text.setPlainText("Querying SIMBAD…")
+        self._simbad_text.setPlainText(self.tr("Querying SIMBAD…"))
         sb_lay.addWidget(self._simbad_text)
-        tabs.addTab(simbad_tab, "SIMBAD Details")
+        tabs.addTab(simbad_tab, self.tr("SIMBAD Details"))
         self._start_simbad(name, ra, dec)
 
         # Bottom row
         btn_row = QHBoxLayout()
         btn_row.addStretch()
  
-        btn_vis = QPushButton("Full Visibility Dialog…")
+        btn_vis = QPushButton(self.tr("Full Visibility Dialog…"))
         btn_vis.clicked.connect(self._open_full_visibility)
         btn_row.addWidget(btn_vis)
  
-        btn_aladin = QPushButton("Open in Aladin")
+        btn_aladin = QPushButton(self.tr("Open in Aladin"))
         btn_aladin.clicked.connect(lambda: webbrowser.open(
             f"https://aladin.cds.unistra.fr/AladinLite/"
             f"?target={ra:.5f}+{dec:+.5f}&fov=0.5&survey=P/DSS2/color"))
         btn_row.addWidget(btn_aladin)
  
-        btn_finder = QPushButton("Finder Chart…")
+        btn_finder = QPushButton(self.tr("Finder Chart…"))
         btn_finder.clicked.connect(self._open_finder_chart)
         btn_row.addWidget(btn_finder)
  
-        btn_fieldrot = QPushButton("🔄 Field Rotation…")
+        btn_fieldrot = QPushButton(self.tr("🔄 Field Rotation…"))
         btn_fieldrot.clicked.connect(self._open_field_rotation)
         btn_row.addWidget(btn_fieldrot)
  
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.accept)
         btn_row.addWidget(btn_close)
         outer.addLayout(btn_row)
@@ -548,8 +556,8 @@ class ObjectSearchResultDialog(QDialog):
             from setiastro.saspro.finder_chart import FinderChartFromCoordDialog
             from PyQt6.QtCore import QSettings
         except ImportError as e:
-            QMessageBox.warning(self, "Finder Chart",
-                f"Finder chart module not available:\n{e}")
+            QMessageBox.warning(self, self.tr("Finder Chart"),
+                self.tr("Finder chart module not available:\n{0}").format(e))
             return
 
         dlg = FinderChartFromCoordDialog(
@@ -573,8 +581,8 @@ class ObjectSearchResultDialog(QDialog):
         obj_az       = obj_coord_az.transform_to(frame_az).az.deg
 
         pw = pg.PlotWidget(title=title)
-        pw.setLabel("bottom", "Local Time (h)")
-        pw.setLabel("left", "Altitude (°)")
+        pw.setLabel("bottom", self.tr("Local Time (h)"))
+        pw.setLabel("left", self.tr("Altitude (°)"))
         pw.showGrid(x=True, y=True, alpha=0.3)
         pw.setYRange(-10, 90)
         pw.setXRange(12, 36, padding=0)
@@ -604,7 +612,7 @@ class ObjectSearchResultDialog(QDialog):
         pw.plot(hrs, moon_alts,
                 pen=pg.mkPen((180, 180, 180), width=1.2,
                             style=Qt.PenStyle.DashLine),
-                name="Moon")
+                name=self.tr("Moon"))
         pw.addLine(y=0,  pen=pg.mkPen("w", width=1, style=Qt.PenStyle.DashLine))
         pw.addLine(y=30, pen=pg.mkPen("g", width=1, style=Qt.PenStyle.DotLine))
 
@@ -631,7 +639,7 @@ class ObjectSearchResultDialog(QDialog):
                 pw.plot(hrs, h_lim,
                         pen=pg.mkPen((255, 140, 0), width=1.5,
                                     style=Qt.PenStyle.DashLine),
-                        name="Horizon limit")
+                        name=self.tr("Horizon limit"))
             except Exception:
                 pass
 
@@ -675,7 +683,7 @@ class ObjectSearchResultDialog(QDialog):
         peak_hr  = float(hrs[peak_idx])
         pw.addLine(x=peak_hr, pen=pg.mkPen("r", width=1,
                 style=Qt.PenStyle.DashLine))
-        txt = pg.TextItem(f"Peak {peak_alt:.0f}°", color="r", anchor=(0, 1))
+        txt = pg.TextItem(self.tr("Peak {0:.0f}°").format(peak_alt), color="r", anchor=(0, 1))
         txt.setPos(peak_hr, peak_alt)
         pw.addItem(txt)
 
@@ -688,21 +696,21 @@ class ObjectSearchResultDialog(QDialog):
             try:
                 effective_mask = (obj_alts >= np.maximum(h_lim, 20.0)) & (sun_alts < -18)
                 effective_hrs  = float(np.sum(effective_mask)) * (24.0 / len(times))
-                stats = QLabel(
-                    f"Peak altitude: {peak_alt:.1f}°  |  "
-                    f"Imaging window (>20°, astro night): {imaging_hrs:.1f} h  |  "
-                    f"Effective above horizon: {effective_hrs:.1f} h"
-                )
+                stats = QLabel(self.tr(
+                    "Peak altitude: {0:.1f}°  |  "
+                    "Imaging window (>20°, astro night): {1:.1f} h  |  "
+                    "Effective above horizon: {2:.1f} h"
+                ).format(peak_alt, imaging_hrs, effective_hrs))
             except Exception:
-                stats = QLabel(
-                    f"Peak altitude: {peak_alt:.1f}°  |  "
-                    f"Imaging window (>20°, astro night): {imaging_hrs:.1f} h"
-                )
+                stats = QLabel(self.tr(
+                    "Peak altitude: {0:.1f}°  |  "
+                    "Imaging window (>20°, astro night): {1:.1f} h"
+                ).format(peak_alt, imaging_hrs))
         else:
-            stats = QLabel(
-                f"Peak altitude: {peak_alt:.1f}°  |  "
-                f"Imaging window (>20°, astro night): {imaging_hrs:.1f} h"
-            )
+            stats = QLabel(self.tr(
+                "Peak altitude: {0:.1f}°  |  "
+                "Imaging window (>20°, astro night): {1:.1f} h"
+            ).format(peak_alt, imaging_hrs))
         stats.setStyleSheet("font-size: 11px; padding: 2px 4px;")
         layout.addWidget(stats)
 
@@ -781,22 +789,22 @@ class ObjectSearchResultDialog(QDialog):
         s = info.get("simbad", {})
         if not s:
             self._simbad_text.setPlainText(
-                f"No SIMBAD match found for '{info.get('name', '')}'.")
+                self.tr("No SIMBAD match found for '{0}'.").format(info.get('name', '')))
             return
         maj = s.get("maj_axis", "—")
         mn  = s.get("min_axis", "—")
         size_str = f"{maj}′ × {mn}′" if maj != "—" else "—"
         lines = [
-            f"Main ID:       {s.get('main_id','—')}",
-            f"Object type:   {s.get('otype','—')}",
+            self.tr("Main ID:       {0}").format(s.get('main_id','—')),
+            self.tr("Object type:   {0}").format(s.get('otype','—')),
             f"",
-            f"V magnitude:   {s.get('vmag','—')}",
-            f"B magnitude:   {s.get('bmag','—')}",
-            f"Spectral type: {s.get('sp_type','—')}",
-            f"Angular size:  {size_str}",
+            self.tr("V magnitude:   {0}").format(s.get('vmag','—')),
+            self.tr("B magnitude:   {0}").format(s.get('bmag','—')),
+            self.tr("Spectral type: {0}").format(s.get('sp_type','—')),
+            self.tr("Angular size:  {0}").format(size_str),
             f"",
-            f"Radial vel.:   {s.get('rv','—')} km/s",
-            f"Redshift z:    {s.get('redshift','—')}",
+            self.tr("Radial vel.:   {0} km/s").format(s.get('rv','—')),
+            self.tr("Redshift z:    {0}").format(s.get('redshift','—')),
             f"",
             f"RA:            {info.get('ra', 0):.5f}°",
             f"Dec:           {info.get('dec', 0):.5f}°",
@@ -917,7 +925,7 @@ class ObjectSearchDialog(QDialog):
         self.observer     = observer
         self._df          = None
         self._search_thread = None
-        self.setWindowTitle("Object Search")
+        self.setWindowTitle(self.tr("Object Search"))
         self.resize(560, 420)
         self._build_ui()
         self._load_catalog()
@@ -926,7 +934,7 @@ class ObjectSearchDialog(QDialog):
         try:
             self._df = _load_full_catalog(self.catalog_file)
         except Exception as e:
-            self._status.setText(f"Could not load catalog: {e}")
+            self._status.setText(self.tr("Could not load catalog: {0}").format(e))
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -936,20 +944,20 @@ class ObjectSearchDialog(QDialog):
         # Search row
         search_row = QHBoxLayout()
         self._search_box = QLineEdit()
-        self._search_box.setPlaceholderText("Type object name, e.g. M42, NGC 891, Abell 1242…")
+        self._search_box.setPlaceholderText(self.tr("Type object name, e.g. M42, NGC 891, Abell 1242…"))
         self._search_box.returnPressed.connect(self._do_search)
         search_row.addWidget(self._search_box, 1)
-        btn_search = QPushButton("Search")
+        btn_search = QPushButton(self.tr("Search"))
         btn_search.clicked.connect(self._do_search)
         search_row.addWidget(btn_search)
         search_row.addSpacing(20)
-        btn_manual = QPushButton("Manual RA/Dec…")
+        btn_manual = QPushButton(self.tr("Manual RA/Dec…"))
         btn_manual.clicked.connect(self._on_manual_radec)
         search_row.addWidget(btn_manual)
 
         outer.addLayout(search_row)
 
-        self._status = QLabel("Enter an object name to search the catalog.")
+        self._status = QLabel(self.tr("Enter an object name to search the catalog."))
         self._status.setStyleSheet("font-size:11px; color: palette(placeholderText);")
         outer.addWidget(self._status)
 
@@ -969,11 +977,11 @@ class ObjectSearchDialog(QDialog):
         # Bottom buttons
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        self._btn_analyse = QPushButton("Analyse Selected Object…")
+        self._btn_analyse = QPushButton(self.tr("Analyse Selected Object…"))
         self._btn_analyse.setEnabled(False)
         self._btn_analyse.clicked.connect(self._on_analyse)
         btn_row.addWidget(self._btn_analyse)
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.reject)
         btn_row.addWidget(btn_close)
         outer.addLayout(btn_row)
@@ -988,27 +996,27 @@ class ObjectSearchDialog(QDialog):
         from PyQt6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("Manual RA / Dec Entry")
+        dlg.setWindowTitle(self.tr("Manual RA / Dec Entry"))
         dlg.setMinimumWidth(380)
         form = QFormLayout(dlg)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         name_edit = QLineEdit()
-        name_edit.setPlaceholderText("e.g. OU4, Squid Nebula…")
+        name_edit.setPlaceholderText(self.tr("e.g. OU4, Squid Nebula…"))
 
         ra_edit = QLineEdit()
-        ra_edit.setPlaceholderText("81.629  or  5h26m31.2s  or  5:26:31.2")
+        ra_edit.setPlaceholderText(self.tr("81.629  or  5h26m31.2s  or  5:26:31.2"))
 
         dec_edit = QLineEdit()
-        dec_edit.setPlaceholderText("60.05  or  60d03m00s  or  60:03:00")
+        dec_edit.setPlaceholderText(self.tr("60.05  or  60d03m00s  or  60:03:00"))
 
-        hint = QLabel(
+        hint = QLabel(self.tr(
             "<small>RA accepts degrees, h m s, or hh:mm:ss.s<br>"
             "Dec accepts degrees, d m s, or dd:mm:ss.s  (prefix − for south)</small>"
-        )
+        ))
         hint.setWordWrap(True)
 
-        form.addRow("Name / label:", name_edit)
+        form.addRow(self.tr("Name / label:"), name_edit)
         form.addRow("RA:", ra_edit)
         form.addRow("Dec:", dec_edit)
         form.addRow(hint)
@@ -1048,7 +1056,7 @@ class ObjectSearchDialog(QDialog):
         self._btn_analyse.setEnabled(False)
         self._progress.setValue(0)
         self._progress.show()
-        self._status.setText(f"Computing yearly visibility for {name}…")
+        self._status.setText(self.tr("Computing yearly visibility for {0}…").format(name))
 
         start = self.observer.get("date", datetime.now().strftime("%Y-%m-%d"))
         self._search_thread = ObjectSearchThread(
@@ -1068,7 +1076,7 @@ class ObjectSearchDialog(QDialog):
         if not query:
             return
         if self._df is None:
-            self._status.setText("Catalog not loaded.")
+            self._status.setText(self.tr("Catalog not loaded."))
             return
 
         import re as _re
@@ -1126,10 +1134,11 @@ class ObjectSearchDialog(QDialog):
         self._matched_rows = []
 
         if matches.empty:
-            self._status.setText(f"No matches found for '{query}'.")
+            self._status.setText(self.tr("No matches found for '{0}'.").format(query))
             return
 
-        self._status.setText(f"{len(matches)} match{'es' if len(matches)!=1 else ''} found.")
+        self._status.setText((self.tr("{0} matches found.") if len(matches) != 1
+                              else self.tr("{0} match found.")).format(len(matches)))
         for _, row in matches.iterrows():
             alt  = str(row.get("Alt Name", "")) if pd.notna(row.get("Alt Name", "")) else ""
             typ  = str(row.get("Type", ""))     if pd.notna(row.get("Type", ""))     else ""
@@ -1161,15 +1170,15 @@ class ObjectSearchDialog(QDialog):
         }
 
         if not self.observer:
-            QMessageBox.information(self, "Object Search",
-                "Run Calculate in WIMS first so the observer location is known.")
+            QMessageBox.information(self, self.tr("Object Search"),
+                self.tr("Run Calculate in WIMS first so the observer location is known."))
             return
 
         # Show a loading state and kick off the year-long score sweep
         self._btn_analyse.setEnabled(False)
         self._progress.setValue(0)
         self._progress.show()
-        self._status.setText(f"Computing yearly visibility for {obj['name']}…")
+        self._status.setText(self.tr("Computing yearly visibility for {0}…").format(obj['name']))
 
         start = self.observer.get("date", datetime.now().strftime("%Y-%m-%d"))
         self._search_thread = ObjectSearchThread(
@@ -1188,7 +1197,7 @@ class ObjectSearchDialog(QDialog):
     def _on_results_ready(self, obj, results):
         self._progress.hide()
         self._btn_analyse.setEnabled(True)
-        self._status.setText(f"Done. Showing results for {obj['name']}.")
+        self._status.setText(self.tr("Done. Showing results for {0}.").format(obj['name']))
         dlg = ObjectSearchResultDialog(obj, self.observer, results, parent=self)
         dlg.show()
 
@@ -1323,7 +1332,7 @@ class CalculationThread(QThread):
                                 lon=self.longitude * u.deg, height=0 * u.m)
             lst = t.sidereal_time("apparent", self.longitude * u.deg)
             self.lst_calculated.emit(
-                f"Local Sidereal Time: {lst.to_string(unit=u.hour, precision=3)}")
+                self.tr("Local Sidereal Time: {0}").format(lst.to_string(unit=u.hour, precision=3)))
 
             phase_pct, phase_icon, rts = self.calculate_lunar_phase(t, loc, self.timezone)
             self.lunar_phase_calculated.emit(phase_pct, phase_icon, rts)
@@ -1340,7 +1349,7 @@ class CalculationThread(QThread):
                 print(f"[WIMS] {chr(10).join(lines)}")
                 self.calculation_complete.emit(
                     pd.DataFrame(),
-                    "Catalog file not found — check console for details.")
+                    self.tr("Catalog file not found — check console for details."))
                 return
 
             df = _load_full_catalog(catalog_file)
@@ -1430,9 +1439,9 @@ class CalculationThread(QThread):
                     horizon_points=self.horizon_points,
                 )
 
-            self.calculation_complete.emit(df, "Calculation complete.")
+            self.calculation_complete.emit(df, self.tr("Calculation complete."))
         except Exception as e:
-            self.calculation_complete.emit(pd.DataFrame(), f"Error: {e!s}")
+            self.calculation_complete.emit(pd.DataFrame(), self.tr("Error: {0!s}").format(e))
 
     def calculate_lunar_phase(self, t, loc, tz_name):
         moon  = get_body("moon", t, loc)
@@ -1493,9 +1502,10 @@ class CalculationThread(QThread):
 
             rise_str = _to_local(min(rise_cands)[1]) if rise_cands else "—"
             set_str  = _to_local(min(set_cands)[1])  if set_cands  else "—"
-            return f"{phase_emoji} Rise: {rise_str}   Transit: {transit_str}   Set: {set_str}"
+            return self.tr("{0} Rise: {1}   Transit: {2}   Set: {3}").format(
+                phase_emoji, rise_str, transit_str, set_str)
         except Exception as e:
-            return f"Moon times unavailable ({e})"
+            return self.tr("Moon times unavailable ({0})").format(e)
 
 
 # ---------------------------------------------------
@@ -1857,23 +1867,23 @@ def _score_badge(score) -> str:
     except (TypeError, ValueError):
         return ""
     if s < 35:
-        return "❌ Bad"
+        return _tr("❌ Bad")
     elif s < 55:
-        return "🔴 Poor"
+        return _tr("🔴 Poor")
     elif s < 75:
-        return "🟡 Marginal"
+        return _tr("🟡 Marginal")
     elif s < 90:
-        return "🟢 Good"
+        return _tr("🟢 Good")
     else:
-        return "⭐ Excellent"
+        return _tr("⭐ Excellent")
 
 class ObjectVisibilityDialog(QDialog):
     def __init__(self, item_data: dict, observer: dict, parent=None):
         super().__init__(parent)
         self.item_data = item_data
         self.observer  = observer
-        name = item_data.get("name", "Object")
-        self.setWindowTitle(f"Visibility — {name}")
+        name = item_data.get("name", self.tr("Object"))
+        self.setWindowTitle(self.tr("Visibility — {0}").format(name))
         self.resize(980, 640)
         self._detail_thread = None
         self._build_ui()
@@ -1895,22 +1905,22 @@ class ObjectVisibilityDialog(QDialog):
 
         if _HAS_PG:
             self.plot_widget = pg.PlotWidget()
-            self.plot_widget.setLabel("bottom", "Local Time (h)")
-            self.plot_widget.setLabel("left", "Altitude (°)")
+            self.plot_widget.setLabel("bottom", self.tr("Local Time (h)"))
+            self.plot_widget.setLabel("left", self.tr("Altitude (°)"))
             self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
             self.plot_widget.setYRange(-10, 90)
             self.plot_widget.addLine(y=0,  pen=pg.mkPen("w", width=1, style=Qt.PenStyle.DashLine))
             self.plot_widget.addLine(y=30, pen=pg.mkPen("g", width=1, style=Qt.PenStyle.DotLine))
             plot_lay.addWidget(self.plot_widget)
         else:
-            plot_lay.addWidget(QLabel("pyqtgraph not installed — plot unavailable."))
+            plot_lay.addWidget(QLabel(self.tr("pyqtgraph not installed — plot unavailable.")))
 
         self.summary_lbl = QLabel("")
         self.summary_lbl.setWordWrap(True)
         self.summary_lbl.setStyleSheet("font-size: 12px; padding: 4px;")
         plot_lay.addWidget(self.summary_lbl, 0)
 
-        self.tabs.addTab(self.plot_tab, "Altitude & Visibility")
+        self.tabs.addTab(self.plot_tab, self.tr("Altitude && Visibility"))
 
         # ── Tab 2: Rise / Transit / Set ───────────────────────────────────
         self.rts_tab = QWidget()
@@ -1919,7 +1929,7 @@ class ObjectVisibilityDialog(QDialog):
         self.rts_text.setReadOnly(True)
         self.rts_text.setStyleSheet("font-size: 13px;")
         rts_lay.addWidget(self.rts_text)
-        self.tabs.addTab(self.rts_tab, "Rise / Transit / Set")
+        self.tabs.addTab(self.rts_tab, self.tr("Rise / Transit / Set"))
 
         # ── Tab 3: SIMBAD Details ─────────────────────────────────────────
         self.simbad_tab = QWidget()
@@ -1927,9 +1937,9 @@ class ObjectVisibilityDialog(QDialog):
         self.simbad_text = QTextEdit()
         self.simbad_text.setReadOnly(True)
         self.simbad_text.setStyleSheet("font-size: 13px;")
-        self.simbad_text.setPlainText("Querying SIMBAD…")
+        self.simbad_text.setPlainText(self.tr("Querying SIMBAD…"))
         simbad_lay.addWidget(self.simbad_text)
-        self.tabs.addTab(self.simbad_tab, "SIMBAD Details")
+        self.tabs.addTab(self.simbad_tab, self.tr("SIMBAD Details"))
 
         # ── Tab 4: Planet Separations ─────────────────────────────────────
         self.planet_tab = QWidget()
@@ -1938,18 +1948,18 @@ class ObjectVisibilityDialog(QDialog):
         self.planet_text.setReadOnly(True)
         self.planet_text.setStyleSheet("font-size: 13px;")
         planet_lay.addWidget(self.planet_text)
-        self.tabs.addTab(self.planet_tab, "Planet Separations")
+        self.tabs.addTab(self.planet_tab, self.tr("Planet Separations"))
 
         # Bottom buttons
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        open_finder = QPushButton("Finder Chart…")
+        open_finder = QPushButton(self.tr("Finder Chart…"))
         open_finder.clicked.connect(self._open_finder_chart)
-        open_aladin = QPushButton("Open in Aladin")
+        open_aladin = QPushButton(self.tr("Open in Aladin"))
         open_aladin.clicked.connect(self._open_aladin)
-        open_astrobin = QPushButton("Search AstroBin")
+        open_astrobin = QPushButton(self.tr("Search AstroBin"))
         open_astrobin.clicked.connect(self._open_astrobin)
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton(self.tr("Close"))
         close_btn.clicked.connect(self.close)
         for b in (open_finder, open_aladin, open_astrobin, close_btn):
             btn_row.addWidget(b)
@@ -1960,8 +1970,8 @@ class ObjectVisibilityDialog(QDialog):
             from setiastro.saspro.finder_chart import FinderChartFromCoordDialog
             from PyQt6.QtCore import QSettings
         except ImportError as e:
-            QMessageBox.warning(self, "Finder Chart",
-                f"Finder chart module not available:\n{e}")
+            QMessageBox.warning(self, self.tr("Finder Chart"),
+                self.tr("Finder chart module not available:\n{0}").format(e))
             return
 
         dlg = FinderChartFromCoordDialog(
@@ -1980,13 +1990,13 @@ class ObjectVisibilityDialog(QDialog):
         lon = self.observer["lon"]
         tz  = self.observer["tz"]
         date_str = self.observer["date"]
-        name = self.item_data.get("name", "Object")
+        name = self.item_data.get("name", self.tr("Object"))
 
         try:
             times, hrs, obj_alts, sun_alts, moon_alts, loc = \
                 _compute_alt_curve(ra, dec, lat, lon, date_str, tz)
         except Exception as e:
-            self.summary_lbl.setText(f"Could not compute visibility: {e}")
+            self.summary_lbl.setText(self.tr("Could not compute visibility: {0}").format(e))
             return
 
         # ── Plot ──────────────────────────────────────────────────────────
@@ -2053,7 +2063,7 @@ class ObjectVisibilityDialog(QDialog):
             pw.plot(hrs, moon_alts,
                     pen=pg.mkPen((180, 180, 180), width=1.2,
                                  style=Qt.PenStyle.DashLine),
-                    name="Moon")
+                    name=self.tr("Moon"))
 
             # Horizon and 30° guide lines already added in _build_ui
 
@@ -2103,7 +2113,7 @@ class ObjectVisibilityDialog(QDialog):
                     pw.plot(hrs, h_lim,
                             pen=pg.mkPen((220, 80, 80), width=1.5,
                                          style=Qt.PenStyle.DashLine),
-                            name="Horizon limit")
+                            name=self.tr("Horizon limit"))
                 except Exception:
                     pass   # horizon overlay is best-effort
 
@@ -2171,9 +2181,9 @@ class ObjectVisibilityDialog(QDialog):
         # Handle circumpolar / never-rises cases
         if obj_rise == "—" and obj_set == "—":
             if obj_alts.min() > 0:
-                obj_rise = obj_set = "Circumpolar"
+                obj_rise = obj_set = self.tr("Circumpolar")
             else:
-                obj_rise = obj_set = "Below horizon"
+                obj_rise = obj_set = self.tr("Below horizon")
         peak_idx    = int(np.argmax(obj_alts))
         obj_transit = _to_local(times[peak_idx])
         peak_alt    = float(obj_alts[peak_idx])
@@ -2187,15 +2197,15 @@ class ObjectVisibilityDialog(QDialog):
         moon_interference_hrs  = float(np.sum(moon_up_during_imaging)) * (24.0 / len(times))
 
         rts_lines = [
-            f"Object:  {name}",
-            f"Date:    {date_str}",
+            self.tr("Object:  {0}").format(name),
+            self.tr("Date:    {0}").format(date_str),
             f"",
-            f"Rise:          {obj_rise}",
-            f"Transit:       {obj_transit}  (peak alt {peak_alt:.1f}°)",
-            f"Set:           {obj_set}",
+            self.tr("Rise:          {0}").format(obj_rise),
+            self.tr("Transit:       {0}  (peak alt {1:.1f}°)").format(obj_transit, peak_alt),
+            self.tr("Set:           {0}").format(obj_set),
             f"",
-            f"Imaging window (>20°, astro night):  {imaging_hrs:.1f} h",
-            f"Moon above horizon during window:    {moon_interference_hrs:.1f} h",
+            self.tr("Imaging window (>20°, astro night):  {0:.1f} h").format(imaging_hrs),
+            self.tr("Moon above horizon during window:    {0:.1f} h").format(moon_interference_hrs),
             f"",
         ]
 
@@ -2203,24 +2213,24 @@ class ObjectVisibilityDialog(QDialog):
         astro_night = np.where(sun_alts < -18)[0]
         if len(astro_night):
             rts_lines.append(
-                f"Astronomical night: "
-                f"{_to_local(times[astro_night[0]])} → "
-                f"{_to_local(times[astro_night[-1]])}")
+                self.tr("Astronomical night: {0} → {1}").format(
+                _to_local(times[astro_night[0]]),
+                _to_local(times[astro_night[-1]])))
         nautical = np.where(sun_alts < -12)[0]
         if len(nautical):
             rts_lines.append(
-                f"Nautical twilight:  "
-                f"{_to_local(times[nautical[0]])} → "
-                f"{_to_local(times[nautical[-1]])}")
+                self.tr("Nautical twilight:  {0} → {1}").format(
+                _to_local(times[nautical[0]]),
+                _to_local(times[nautical[-1]])))
 
         self.rts_text.setPlainText("\n".join(rts_lines))
 
         # ── Summary label under plot ──────────────────────────────────────
-        self.summary_lbl.setText(
-            f"Rise {obj_rise}  •  Transit {obj_transit} ({peak_alt:.0f}°)  •  "
-            f"Set {obj_set}  •  Imaging window: {imaging_hrs:.1f} h  •  "
-            f"Moon interference: {moon_interference_hrs:.1f} h"
-        )
+        self.summary_lbl.setText(self.tr(
+            "Rise {0}  •  Transit {1} ({2:.0f}°)  •  "
+            "Set {3}  •  Imaging window: {4:.1f} h  •  "
+            "Moon interference: {5:.1f} h"
+        ).format(obj_rise, obj_transit, peak_alt, obj_set, imaging_hrs, moon_interference_hrs))
 
         # ── Planet separations ────────────────────────────────────────────
         self._compute_planet_separations(loc, times, ra, dec)
@@ -2229,13 +2239,13 @@ class ObjectVisibilityDialog(QDialog):
         planets = ["mars", "jupiter", "saturn", "venus", "mercury", "uranus", "neptune"]
         obj_coord = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg)
         t_mid = times[len(times) // 2]
-        lines = [f"Separations at midnight ({t_mid.iso[:10]}):\n"]
+        lines = [self.tr("Separations at midnight ({0}):\n").format(t_mid.iso[:10])]
         for planet in planets:
             try:
                 pb = get_body(planet, t_mid, loc)
                 sep = float(obj_coord.separation(
                     SkyCoord(ra=pb.ra.deg * u.deg, dec=pb.dec.deg * u.deg)).deg)
-                warn = "  ⚠ close!" if sep < 5 else ""
+                warn = self.tr("  ⚠ close!") if sep < 5 else ""
                 lines.append(f"  {planet.capitalize():10s}  {sep:6.2f}°{warn}")
             except Exception:
                 pass
@@ -2251,7 +2261,7 @@ class ObjectVisibilityDialog(QDialog):
 
     def _on_simbad_ready(self, info: dict):
         if info.get("error"):
-            self.simbad_text.setPlainText(f"SIMBAD error: {info['error']}")
+            self.simbad_text.setPlainText(self.tr("SIMBAD error: {0}").format(info['error']))
             return
         s = info.get("simbad", {})
         tried = info.get("_debug_tried", [])
@@ -2259,12 +2269,12 @@ class ObjectVisibilityDialog(QDialog):
         if not s:
             orig = info.get('name', '')
             tried_str = "\n".join(f"  - '{v}'" for v in tried)
-            self.simbad_text.setPlainText(
-                f"No SIMBAD match found.\n\n"
-                f"Original name: '{orig}'\n"
-                f"Cleaned name:  '{clean}'\n"
-                f"Variants tried:\n{tried_str}"
-            )
+            self.simbad_text.setPlainText(self.tr(
+                "No SIMBAD match found.\n\n"
+                "Original name: '{0}'\n"
+                "Cleaned name:  '{1}'\n"
+                "Variants tried:\n{2}"
+            ).format(orig, clean, tried_str))
             return
 
         # Build angular size string if available
@@ -2273,16 +2283,16 @@ class ObjectVisibilityDialog(QDialog):
         size_str = f"{maj}′ × {mn}′" if maj != "—" else "—"
 
         lines = [
-            f"Main ID:       {s.get('main_id','—')}",
-            f"Object type:   {s.get('otype','—')}",
+            self.tr("Main ID:       {0}").format(s.get('main_id','—')),
+            self.tr("Object type:   {0}").format(s.get('otype','—')),
             f"",
-            f"V magnitude:   {s.get('vmag','—')}",
-            f"B magnitude:   {s.get('bmag','—')}",
-            f"Spectral type: {s.get('sp_type','—')}",
-            f"Angular size:  {size_str}",
+            self.tr("V magnitude:   {0}").format(s.get('vmag','—')),
+            self.tr("B magnitude:   {0}").format(s.get('bmag','—')),
+            self.tr("Spectral type: {0}").format(s.get('sp_type','—')),
+            self.tr("Angular size:  {0}").format(size_str),
             f"",
-            f"Radial vel.:   {s.get('rv','—')}  km/s",
-            f"Redshift z:    {s.get('redshift','—')}",
+            self.tr("Radial vel.:   {0}  km/s").format(s.get('rv','—')),
+            self.tr("Redshift z:    {0}").format(s.get('redshift','—')),
             f"",
             f"RA:            {info.get('ra', 0):.5f}°",
             f"Dec:           {info.get('dec', 0):.5f}°",
@@ -2396,9 +2406,11 @@ def _tz_vs_longitude_hint(tz_name, date_str, time_str, lon_deg):
     sign_ok = (abs(off_hours) < 1e-9) or (lon_deg == 0) or ((lon_deg > 0) == (off_hours > 0))
     far     = abs(abs(lon_deg) - abs(central)) > 45.0
     if (not sign_ok) or far:
-        msg = (f"Timezone {tz_name} ({utc_str}) looks inconsistent with longitude "
-               f"{abs(lon_deg):g}{'E' if lon_deg>0 else 'W'} "
-               f"(central meridian ≈ {abs(central):.0f}°{'E' if central>0 else 'W'}).")
+        msg = _tr("Timezone {0} ({1}) looks inconsistent with longitude "
+                  "{2:g}{3} "
+                  "(central meridian ≈ {4:.0f}°{5}).").format(
+            tz_name, utc_str, abs(lon_deg), 'E' if lon_deg>0 else 'W',
+            abs(central), 'E' if central>0 else 'W')
         return (True, msg, utc_str, central)
     return (False, "", utc_str, central)
 
@@ -2446,7 +2458,7 @@ class HorizonEditorDialog(QDialog):
 
     def __init__(self, horizon_points: list, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Custom Horizon Editor")
+        self.setWindowTitle(self.tr("Custom Horizon Editor"))
         self.resize(900, 500)
 
         # Work on a copy; each point is [az, alt] (mutable)
@@ -2463,23 +2475,23 @@ class HorizonEditorDialog(QDialog):
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(6)
 
-        info = QLabel(
+        info = QLabel(self.tr(
             "Left-click empty area to add a point  •  "
             "Drag a point to move it  •  "
             "Right-click a point to delete it  •  "
             "North (0° / 360°) endpoints stay in sync"
-        )
+        ))
         info.setStyleSheet("font-size: 10px; color: palette(window-text);")
         info.setWordWrap(True)
         outer.addWidget(info)
 
         if not _HAS_PG:
-            outer.addWidget(QLabel("pyqtgraph not installed — horizon editor unavailable."))
+            outer.addWidget(QLabel(self.tr("pyqtgraph not installed — horizon editor unavailable.")))
             self._plot = None
         else:
             self._plot = pg.PlotWidget()
-            self._plot.setLabel("bottom", "Azimuth (°)  [0=N  90=E  180=S  270=W]")
-            self._plot.setLabel("left",   "Altitude (°)")
+            self._plot.setLabel("bottom", self.tr("Azimuth (°)  [0=N  90=E  180=S  270=W]"))
+            self._plot.setLabel("left",   self.tr("Altitude (°)"))
             self._plot.setXRange(0, 360, padding=0.01)
             self._plot.setYRange(0, 90,  padding=0.02)
             self._plot.showGrid(x=True, y=True, alpha=0.3)
@@ -2522,30 +2534,30 @@ class HorizonEditorDialog(QDialog):
         # Buttons row
         btn_row = QHBoxLayout()
 
-        flat_btn = QPushButton("Reset to Flat")
+        flat_btn = QPushButton(self.tr("Reset to Flat"))
         flat_btn.clicked.connect(self._reset_flat)
         btn_row.addWidget(flat_btn)
 
-        load_btn = QPushButton("Load from File…")
+        load_btn = QPushButton(self.tr("Load from File…"))
         load_btn.clicked.connect(self._load_file)
         btn_row.addWidget(load_btn)
 
-        save_btn = QPushButton("Save to File…")
+        save_btn = QPushButton(self.tr("Save to File…"))
         save_btn.clicked.connect(self._save_file)
         btn_row.addWidget(save_btn)
 
         btn_row.addStretch()
 
-        clear_btn = QPushButton("Clear All")
+        clear_btn = QPushButton(self.tr("Clear All"))
         clear_btn.clicked.connect(self._clear_all)
         btn_row.addWidget(clear_btn)
 
-        ok_btn = QPushButton("Apply && Close")
+        ok_btn = QPushButton(self.tr("Apply && Close"))
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(self._apply)
         btn_row.addWidget(ok_btn)
 
-        cancel_btn = QPushButton("Cancel")
+        cancel_btn = QPushButton(self.tr("Cancel"))
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
 
@@ -2743,23 +2755,23 @@ class HorizonEditorDialog(QDialog):
 
     def _load_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Horizon File", "",
+            self, self.tr("Load Horizon File"), "",
             "CSV files (*.csv);;Text/Horizon files (*.txt *.hrz);;All Files (*)")
         if not path:
             return
         try:
             pts = self._parse_horizon_file(path)
             if not pts:
-                QMessageBox.warning(self, "Load Horizon",
-                                    "No valid horizon points found in file.")
+                QMessageBox.warning(self, self.tr("Load Horizon"),
+                                    self.tr("No valid horizon points found in file."))
                 return
             self._pts = [[az, alt] for az, alt in pts]
             self._sync_north()
             self._refresh()
             self.horizon_changed.emit(self.get_points())
-            self.update_status_hint(f"Loaded {len(self._pts)} points from {os.path.basename(path)}")
+            self.update_status_hint(self.tr("Loaded {0} points from {1}").format(len(self._pts), os.path.basename(path)))
         except Exception as e:
-            QMessageBox.warning(self, "Load Horizon", f"Could not load file:\n{e}")
+            QMessageBox.warning(self, self.tr("Load Horizon"), self.tr("Could not load file:\n{0}").format(e))
 
     @staticmethod
     def _parse_horizon_file(path: str) -> list:
@@ -2835,7 +2847,7 @@ class HorizonEditorDialog(QDialog):
 
     def _save_file(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Horizon File", "",
+            self, self.tr("Save Horizon File"), "",
             "CSV files (*.csv);;Stellarium horizon (*.txt);;All Files (*)")
         if not path:
             return
@@ -2858,7 +2870,7 @@ class HorizonEditorDialog(QDialog):
                     for az, alt in pts:
                         f.write(f"{az:.2f},{alt:.2f}\n")
         except Exception as e:
-            QMessageBox.warning(self, "Save Horizon", f"Could not save file:\n{e}")
+            QMessageBox.warning(self, self.tr("Save Horizon"), self.tr("Could not save file:\n{0}").format(e))
 
     def _apply(self):
         self.horizon_changed.emit(self.get_points())
@@ -2980,7 +2992,7 @@ class WhatsInMySkyDialog(QDialog):
             col.addWidget(widget)
             return col
 
-        form.addWidget(_section("Location & Time"))
+        form.addWidget(_section(self.tr("Location & Time")))
         fixed_w = 240
         self.latitude_entry     = QLineEdit(); self.latitude_entry.setFixedWidth(fixed_w)
         self.longitude_entry    = QLineEdit(); self.longitude_entry.setFixedWidth(fixed_w)
@@ -2990,15 +3002,15 @@ class WhatsInMySkyDialog(QDialog):
         self.timezone_combo.setFixedWidth(fixed_w)
         self.min_altitude_entry = QLineEdit(); self.min_altitude_entry.setFixedWidth(fixed_w)
 
-        for lbl, w in [("Latitude", self.latitude_entry),
-                        ("Longitude (E+, W−)", self.longitude_entry),
-                        ("Date (YYYY-MM-DD)", self.date_entry),
-                        ("Time (HH:MM)", self.time_entry),
-                        ("Time Zone", self.timezone_combo),
-                        ("Min Altitude (°)", self.min_altitude_entry)]:
+        for lbl, w in [(self.tr("Latitude"), self.latitude_entry),
+                        (self.tr("Longitude (E+, W−)"), self.longitude_entry),
+                        (self.tr("Date (YYYY-MM-DD)"), self.date_entry),
+                        (self.tr("Time (HH:MM)"), self.time_entry),
+                        (self.tr("Time Zone"), self.timezone_combo),
+                        (self.tr("Min Altitude (°)"), self.min_altitude_entry)]:
             form.addLayout(_field(lbl, w))
 
-        form.addWidget(_section("Catalogs"))
+        form.addWidget(_section(self.tr("Catalogs")))
         cat_grid = QWidget()
         cat_lay  = QGridLayout(cat_grid)
         cat_lay.setContentsMargins(0, 0, 0, 0)
@@ -3014,9 +3026,9 @@ class WhatsInMySkyDialog(QDialog):
             ("Sharpless",     "Sharpless"),
             ("LBN",           "LBN"),
             ("LDN",           "LDN"),
-            ("PNG (inc. PK)", "PNG"),
+            (self.tr("PNG (inc. PK)"), "PNG"),
             ("Arp",           "Arp"),
-            ("User",          "User"),
+            (self.tr("User"),          "User"),
         ]
         for i, (label, key) in enumerate(catalogs):
             cb = QCheckBox(label)
@@ -3024,8 +3036,8 @@ class WhatsInMySkyDialog(QDialog):
             self.catalog_vars[key] = cb
         form.addWidget(cat_grid)
 
-        form.addWidget(_section("RA/Dec Format"))
-        self.ra_dec_degrees = QRadioButton("Degrees")
+        form.addWidget(_section(self.tr("RA/Dec Format")))
+        self.ra_dec_degrees = QRadioButton(self.tr("Degrees"))
         self.ra_dec_hms     = QRadioButton("H:M:S / D:M:S")
         self.ra_dec_degrees.setChecked(True)
         g = QButtonGroup(self)
@@ -3039,8 +3051,8 @@ class WhatsInMySkyDialog(QDialog):
         self.ra_dec_degrees.toggled.connect(self.update_ra_dec_format)
         self.ra_dec_hms.toggled.connect(self.update_ra_dec_format)
 
-        form.addWidget(_section("Sidereal Time"))
-        self.lst_label = QLabel("Local Sidereal Time: —")
+        form.addWidget(_section(self.tr("Sidereal Time")))
+        self.lst_label = QLabel(self.tr("Local Sidereal Time: —"))
         self.lst_label.setStyleSheet(
             "font-size: 12px; color: palette(window-text); margin-bottom: 6px;")
         self.lst_label.setWordWrap(True)
@@ -3050,7 +3062,7 @@ class WhatsInMySkyDialog(QDialog):
         scroll.setWidget(form_widget)
         left_vbox.addWidget(scroll, 1)
 
-        calc_btn = QPushButton("Calculate")
+        calc_btn = QPushButton(self.tr("Calculate"))
         calc_btn.setFixedHeight(36)
         calc_btn.clicked.connect(self.start_calculation)
         calc_btn.setStyleSheet("margin: 6px 12px;")
@@ -3068,7 +3080,7 @@ class WhatsInMySkyDialog(QDialog):
         moon_hbox.addWidget(self.lunar_phase_image_label, 0)
         moon_text = QVBoxLayout()
         moon_text.setSpacing(2)
-        self.lunar_phase_label = QLabel("Lunar Phase: N/A")
+        self.lunar_phase_label = QLabel(self.tr("Lunar Phase: N/A"))
         self.lunar_phase_label.setStyleSheet("font-size: 12px; font-weight: 500;")
         self.lunar_rts_label = QLabel("")
         self.lunar_rts_label.setWordWrap(True)
@@ -3088,7 +3100,7 @@ class WhatsInMySkyDialog(QDialog):
         mid_vbox.setContentsMargins(6, 6, 6, 6)
         mid_vbox.setSpacing(4)
 
-        type_hdr = QLabel("OBJECT TYPES")
+        type_hdr = QLabel(self.tr("OBJECT TYPES"))
         type_hdr.setStyleSheet(
             "font-size: 10px; font-weight: 500; color: palette(window-text);"
             "letter-spacing: 0.05em;")
@@ -3097,8 +3109,8 @@ class WhatsInMySkyDialog(QDialog):
         # Toggle buttons row
         tog_row = QHBoxLayout()
         tog_row.setSpacing(4)
-        tog_all_btn = QPushButton("All")
-        tog_none_btn = QPushButton("None")
+        tog_all_btn = QPushButton(self.tr("All"))
+        tog_none_btn = QPushButton(self.tr("None"))
         tog_all_btn.setFixedHeight(22)
         tog_none_btn.setFixedHeight(22)
         tog_all_btn.setStyleSheet("font-size: 10px;")
@@ -3137,7 +3149,7 @@ class WhatsInMySkyDialog(QDialog):
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(10, 6, 10, 6)
         toolbar.setSpacing(8)
-        self.status_label = QLabel("Status: Idle")
+        self.status_label = QLabel(self.tr("Status: Idle"))
         self.status_label.setStyleSheet(
             "font-size: 11px; color: palette(window-text);")
         toolbar.addWidget(self.status_label, 1)
@@ -3175,23 +3187,23 @@ class WhatsInMySkyDialog(QDialog):
             }
         """
 
-        add_btn      = QPushButton("Add Object…"); add_btn.clicked.connect(self.add_custom_object)
-        save_btn     = QPushButton("Save CSV…");   save_btn.clicked.connect(self.save_to_csv)
+        add_btn      = QPushButton(self.tr("Add Object…")); add_btn.clicked.connect(self.add_custom_object)
+        save_btn     = QPushButton(self.tr("Save CSV…"));   save_btn.clicked.connect(self.save_to_csv)
         settings_btn = QPushButton()
         if wrench_path and os.path.exists(wrench_path):
             settings_btn.setIcon(QIcon(wrench_path))
-            settings_btn.setToolTip("Settings")
+            settings_btn.setToolTip(self.tr("Settings"))
         else:
-            settings_btn.setText("⚙ Settings")
+            settings_btn.setText(self.tr("⚙ Settings"))
         settings_btn.clicked.connect(self.open_settings)
 
-        search_btn = QPushButton("Search Object…")
+        search_btn = QPushButton(self.tr("Search Object…"))
         search_btn.clicked.connect(self._open_object_search)
 
-        horizon_btn = QPushButton("🏔 Horizon…")
+        horizon_btn = QPushButton(self.tr("🏔 Horizon…"))
         horizon_btn.clicked.connect(self.open_horizon_editor)
 
-        fieldrot_btn = QPushButton("🔄 Alt/Az Field Rotation…")
+        fieldrot_btn = QPushButton(self.tr("🔄 Alt/Az Field Rotation…"))
         fieldrot_btn.clicked.connect(self._open_field_rotation)
 
         for b in (add_btn, save_btn, search_btn, horizon_btn, fieldrot_btn):
@@ -3214,10 +3226,10 @@ class WhatsInMySkyDialog(QDialog):
         sort_row = QHBoxLayout()
         sort_row.setContentsMargins(10, 2, 10, 2)
         sort_row.setSpacing(8)
-        sort_lbl = QLabel("Generate List By:")
+        sort_lbl = QLabel(self.tr("Generate List By:"))
         sort_lbl.setStyleSheet("font-size: 11px;")
-        self.sort_transit_rb = QRadioButton("Closest to Transit")
-        self.sort_score_rb   = QRadioButton("Best Nightly Score (Tip: Filter catalogs/types recommended — can be slow)")
+        self.sort_transit_rb = QRadioButton(self.tr("Closest to Transit"))
+        self.sort_score_rb   = QRadioButton(self.tr("Best Nightly Score (Tip: Filter catalogs/types recommended — can be slow)"))
         self.sort_transit_rb.setChecked(True)
         self.sort_transit_rb.setStyleSheet("font-size: 11px;")
         self.sort_score_rb.setStyleSheet("font-size: 11px;")
@@ -3230,7 +3242,7 @@ class WhatsInMySkyDialog(QDialog):
         sort_row.addStretch()
         right_vbox.addLayout(sort_row)
 
-        hint_lbl = QLabel("Tip: right-click any object for visibility plot, SIMBAD details, planet separations and more.")
+        hint_lbl = QLabel(self.tr("Tip: right-click any object for visibility plot, SIMBAD details, planet separations and more."))
         hint_lbl.setStyleSheet("font-size: 10px; color: palette(window-text); padding: 2px 10px;")
         hint_lbl.setWordWrap(True)
         right_vbox.addWidget(hint_lbl, 0)
@@ -3288,16 +3300,16 @@ class WhatsInMySkyDialog(QDialog):
             t = CalculationThread.__new__(CalculationThread)
             catalog = t.get_catalog_file_path()
         if not catalog or not os.path.exists(catalog):
-            QMessageBox.warning(self, "Object Search",
-                "Catalog not found. Please run Calculate once first.")
+            QMessageBox.warning(self, self.tr("Object Search"),
+                self.tr("Catalog not found. Please run Calculate once first."))
             return
         # Read observer fields directly from the UI — no Calculate needed
         try:
             lat = _parse_deg_with_suffix(self.latitude_entry.text(), "lat")
             lon = _parse_deg_with_suffix(self.longitude_entry.text(), "lon")
         except ValueError as e:
-            QMessageBox.warning(self, "Object Search",
-                f"Invalid location — please fill in Latitude and Longitude first.\n{e}")
+            QMessageBox.warning(self, self.tr("Object Search"),
+                self.tr("Invalid location — please fill in Latitude and Longitude first.\n{0}").format(e))
             return
 
         date_str = self.date_entry.text().strip()
@@ -3402,8 +3414,8 @@ class WhatsInMySkyDialog(QDialog):
         self._save_horizon_to_settings()
         n = len(pts)
         self.update_status(
-            f"Custom horizon updated ({n} point{'s' if n != 1 else ''}) — "
-            f"recalculate to apply."
+            (self.tr("Custom horizon updated ({0} points) — recalculate to apply.") if n != 1
+             else self.tr("Custom horizon updated ({0} point) — recalculate to apply.")).format(n)
         )
 
     def open_horizon_editor(self):
@@ -3533,14 +3545,14 @@ class WhatsInMySkyDialog(QDialog):
 
         menu = QMenu(self)
 
-        act_visibility = QAction("📈  Altitude / Visibility Plot…", self)
-        act_score      = QAction("⭐  Weekly Observability Score…", self)
-        act_simbad     = QAction("🔭  SIMBAD Details…", self)
-        act_planets    = QAction("🪐  Planet Separations…", self)
-        act_finder     = QAction("🔍  Finder Chart…", self)
-        act_aladin     = QAction("🗺   Open in Aladin…", self)
-        act_astrobin   = QAction("🖼   Search AstroBin…", self)
-        act_yearly     = QAction("📅  Full Year Analysis…", self)
+        act_visibility = QAction(self.tr("📈  Altitude / Visibility Plot…"), self)
+        act_score      = QAction(self.tr("⭐  Weekly Observability Score…"), self)
+        act_simbad     = QAction(self.tr("🔭  SIMBAD Details…"), self)
+        act_planets    = QAction(self.tr("🪐  Planet Separations…"), self)
+        act_finder     = QAction(self.tr("🔍  Finder Chart…"), self)
+        act_aladin     = QAction(self.tr("🗺   Open in Aladin…"), self)
+        act_astrobin   = QAction(self.tr("🖼   Search AstroBin…"), self)
+        act_yearly     = QAction(self.tr("📅  Full Year Analysis…"), self)
 
         menu.addAction(act_visibility)
         menu.addAction(act_score)
@@ -3551,7 +3563,7 @@ class WhatsInMySkyDialog(QDialog):
         menu.addAction(act_planets)
         menu.addAction(act_finder)
 
-        act_fieldrot = QAction("🔄  Field Rotation…", self)
+        act_fieldrot = QAction(self.tr("🔄  Field Rotation…"), self)
         menu.addAction(act_fieldrot)
         act_fieldrot.triggered.connect(lambda: self._open_field_rotation_for(item))
 
@@ -3559,7 +3571,7 @@ class WhatsInMySkyDialog(QDialog):
         menu.addAction(act_aladin)
         menu.addAction(act_astrobin)
         menu.addSeparator()
-        act_atlas = QAction("🌌  View in Seti Astro Community Atlas…", self)
+        act_atlas = QAction(self.tr("🌌  View in Seti Astro Community Atlas…"), self)
         menu.addAction(act_atlas)
         act_atlas.triggered.connect(lambda: self._open_atlas_for(item))
         act_visibility.triggered.connect(lambda: self._open_visibility_dialog(item))
@@ -3593,13 +3605,13 @@ class WhatsInMySkyDialog(QDialog):
     def _open_finder_chart_for(self, item):
             data = self._item_data(item)
             if data is None:
-                QMessageBox.warning(self, "WIMS", "Could not parse RA/Dec for this object.")
+                QMessageBox.warning(self, "WIMS", self.tr("Could not parse RA/Dec for this object."))
                 return
             try:
                 from setiastro.saspro.finder_chart import FinderChartFromCoordDialog
             except ImportError as e:
-                QMessageBox.warning(self, "Finder Chart",
-                    f"Finder chart module not available:\n{e}")
+                QMessageBox.warning(self, self.tr("Finder Chart"),
+                    self.tr("Finder chart module not available:\n{0}").format(e))
                 return
             dlg = FinderChartFromCoordDialog(
                 name=data["name"],
@@ -3613,11 +3625,11 @@ class WhatsInMySkyDialog(QDialog):
     def _open_yearly_analysis(self, item):
         if not self._observer:
             QMessageBox.information(self, "WIMS",
-                "Run Calculate first so the observer location is known.")
+                self.tr("Run Calculate first so the observer location is known."))
             return
         data = self._item_data(item)
         if data is None:
-            QMessageBox.warning(self, "WIMS", "Could not parse RA/Dec for this object.")
+            QMessageBox.warning(self, "WIMS", self.tr("Could not parse RA/Dec for this object."))
             return
 
         # Reuse the same flow as ObjectSearchDialog._on_analyse
@@ -3625,8 +3637,8 @@ class WhatsInMySkyDialog(QDialog):
         from PyQt6.QtWidgets import QProgressDialog
 
         prog = QProgressDialog(
-            f"Computing yearly visibility for {data['name']}…",
-            "Cancel", 0, 100, self)
+            self.tr("Computing yearly visibility for {0}…").format(data['name']),
+            self.tr("Cancel"), 0, 100, self)
         prog.setWindowModality(Qt.WindowModality.WindowModal)
         prog.setMinimumDuration(0)
         prog.setValue(0)
@@ -3657,11 +3669,11 @@ class WhatsInMySkyDialog(QDialog):
     def _open_score_dialog(self, item):
         if not self._observer:
             QMessageBox.information(self, "WIMS",
-                "Run Calculate first so the observer location is known.")
+                self.tr("Run Calculate first so the observer location is known."))
             return
         data = self._item_data(item)
         if data is None:
-            QMessageBox.warning(self, "WIMS", "Could not parse RA/Dec for this object.")
+            QMessageBox.warning(self, "WIMS", self.tr("Could not parse RA/Dec for this object."))
             return
         dlg = ScoreChartDialog(data, self._observer, parent=self)
         dlg.show()
@@ -3683,11 +3695,11 @@ class WhatsInMySkyDialog(QDialog):
     def _open_visibility_dialog(self, item, tab=0):
         if not self._observer:
             QMessageBox.information(self, "WIMS",
-                "Run Calculate first so the observer location is known.")
+                self.tr("Run Calculate first so the observer location is known."))
             return
         data = self._item_data(item)
         if data is None:
-            QMessageBox.warning(self, "WIMS", "Could not parse RA/Dec for this object.")
+            QMessageBox.warning(self, "WIMS", self.tr("Could not parse RA/Dec for this object."))
             return
         data["horizon_points"] = self._horizon_points   # ← inject
         dlg = ObjectVisibilityDialog(data, self._observer, parent=self)
@@ -3737,7 +3749,7 @@ class WhatsInMySkyDialog(QDialog):
             tz_str   = self.timezone_combo.currentText()
             min_alt  = float(self.min_altitude_entry.text())
         except ValueError as e:
-            self.update_status(f"Invalid input: {e}"); return
+            self.update_status(self.tr("Invalid input: {0}").format(e)); return
 
         warn, msg, _, central = _tz_vs_longitude_hint(tz_str, date_str, time_str, longitude)
         if warn:
@@ -3747,11 +3759,11 @@ class WhatsInMySkyDialog(QDialog):
             if bare and sign_mismatch:
                 longitude = -longitude
                 self.longitude_entry.setText(_format_with_suffix(longitude, "lon"))
-                self.update_status(f"{msg} → Auto-corrected to {_format_with_suffix(longitude,'lon')}.")
+                self.update_status(self.tr("{0} → Auto-corrected to {1}.").format(msg, _format_with_suffix(longitude,'lon')))
             else:
-                self.update_status(msg + " Please verify your longitude/timezone.")
+                self.update_status(self.tr("{0} Please verify your longitude/timezone.").format(msg))
         else:
-            self.update_status("Inputs look consistent.")
+            self.update_status(self.tr("Inputs look consistent."))
 
         self.settings.setValue("wims/sort_by_score", self.sort_score_rb.isChecked())
         self._save_settings(latitude, longitude, date_str, time_str, tz_str, min_alt)
@@ -3777,17 +3789,17 @@ class WhatsInMySkyDialog(QDialog):
         self.calc_thread.lunar_phase_calculated.connect(self.update_lunar_phase)
         self.calc_thread.lst_calculated.connect(self.update_lst)
         self.calc_thread.status_update.connect(self.update_status)
-        self.update_status("Calculating…")
+        self.update_status(self.tr("Calculating…"))
         self.calc_thread.start()
         self._fetch_atlas_catalog()
 
     def _fetch_atlas_catalog(self):
         """Kick off a background fetch of the community atlas catalog."""
-        if self._atlas_thread is not None:
-            try:
-                self._atlas_thread.quit()
-            except Exception:
-                pass
+        # A fetch already in flight will deliver; don't start a duplicate on every
+        # Calculate. (quit() never stopped it: it does nothing to a thread that
+        # overrides run().)
+        if self._atlas_thread is not None and self._atlas_thread.isRunning():
+            return
         self._atlas_thread = AtlasCatalogThread()
         self._atlas_thread.finished.connect(self._on_atlas_catalog_ready)
         self._atlas_thread.start()
@@ -3835,7 +3847,7 @@ class WhatsInMySkyDialog(QDialog):
 
     # ── Slots ─────────────────────────────────────────────────────────────
     def update_lunar_phase(self, phase_percentage, phase_image_name, rts):
-        self.lunar_phase_label.setText(f"Lunar Phase: {phase_percentage}% illuminated")
+        self.lunar_phase_label.setText(self.tr("Lunar Phase: {0}% illuminated").format(phase_percentage))
         self.lunar_rts_label.setText(rts)
         pth = get_icon_path(phase_image_name)
         if os.path.exists(pth):
@@ -3897,14 +3909,14 @@ class WhatsInMySkyDialog(QDialog):
 
 
     def update_status(self, msg):
-        self.status_label.setText(f"Status: {msg}")
+        self.status_label.setText(self.tr("Status: {0}").format(msg))
 
     def update_lst(self, msg):
         self.lst_label.setText(msg)
 
     def open_settings(self):
-        n, ok = QInputDialog.getInt(self, "Settings",
-            "Enter number of objects to display:",
+        n, ok = QInputDialog.getInt(self, self.tr("Settings"),
+            self.tr("Enter number of objects to display:"),
             value=self.object_limit, min=1, max=1000)
         if ok:
             self.object_limit = n
@@ -3915,13 +3927,13 @@ class WhatsInMySkyDialog(QDialog):
         webbrowser.open(f"https://www.astrobin.com/search/?q={name}")
 
     def add_custom_object(self):
-        name, ok = QInputDialog.getText(self, "Add Custom Object", "Enter object name:")
+        name, ok = QInputDialog.getText(self, self.tr("Add Custom Object"), self.tr("Enter object name:"))
         if not ok or not name:
             return
-        ra, ok = QInputDialog.getDouble(self, "Add Custom Object", "Enter RA (deg):", decimals=3)
+        ra, ok = QInputDialog.getDouble(self, self.tr("Add Custom Object"), self.tr("Enter RA (deg):"), decimals=3)
         if not ok:
             return
-        dec, ok = QInputDialog.getDouble(self, "Add Custom Object", "Enter Dec (deg):", decimals=3)
+        dec, ok = QInputDialog.getDouble(self, self.tr("Add Custom Object"), self.tr("Enter Dec (deg):"), decimals=3)
         if not ok:
             return
 
@@ -3945,10 +3957,10 @@ class WhatsInMySkyDialog(QDialog):
 
             updated = pd.concat([existing, pd.DataFrame([entry])], ignore_index=True)
             updated.to_csv(USER_OBJECTS_PATH, index=False, encoding="utf-8")
-            self.update_status(f"Added custom object: {name}")
+            self.update_status(self.tr("Added custom object: {0}").format(name))
         except Exception as e:
-            QMessageBox.warning(self, "Add Custom Object",
-                                f"Could not save user object:\n{e}")
+            QMessageBox.warning(self, self.tr("Add Custom Object"),
+                                self.tr("Could not save user object:\n{0}").format(e))
 
     def update_ra_dec_format(self):
         use_deg = self.ra_dec_degrees.isChecked()
@@ -3968,7 +3980,7 @@ class WhatsInMySkyDialog(QDialog):
                 pass
 
     def save_to_csv(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save CSV File", "",
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("Save CSV File"), "",
                                                "CSV files (*.csv);;All Files (*)")
         if not path: return
         cols = [self.tree.headerItem().text(i) for i in range(self.tree.columnCount())]
@@ -3976,7 +3988,7 @@ class WhatsInMySkyDialog(QDialog):
                  for j in range(self.tree.columnCount())]
                 for i in range(self.tree.topLevelItemCount())]
         pd.DataFrame(rows, columns=cols).to_csv(path, index=False)
-        self.update_status(f"Data saved to {path}")
+        self.update_status(self.tr("Data saved to {0}").format(path))
 
     def closeEvent(self, event):
         self.settings.setValue("wims/geometry", self.saveGeometry())

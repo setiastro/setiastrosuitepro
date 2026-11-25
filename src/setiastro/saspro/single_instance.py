@@ -43,6 +43,10 @@ from typing import Callable, Optional
 
 # Bump when the wire format changes in a non-backward-compatible way.
 PROTOCOL_VERSION = 1
+# The newest message this SASpro takes: 2 adds {"kind": "run_script"}
+# (script_bridge.py). argv hand-offs are still sent as version 1, so an older
+# SASpro keeps opening files sent by this one.
+MAX_PROTOCOL_VERSION = 2
 
 # Short probe timeout — we want a snappy "no primary, launch normally".
 PROBE_CONNECT_TIMEOUT_MS = 300
@@ -96,9 +100,11 @@ def parse_instance_flags(argv: list[str] | None) -> ParsedArgv:
     if force_single:
         force_new = False
 
-    # --firstrun runs on a throwaway settings store (settings_sandbox.py), so
-    # it is always its own instance. The flag stays in the argv for main().
-    if any(t.lower() in ("--firstrun", "--first-run") for t in cleaned):
+    # --firstrun / --upgraderun run on a throwaway settings store
+    # (settings_sandbox.py), so they are always their own instance. The flag
+    # stays in the argv for main().
+    if any(t.lower() in ("--firstrun", "--first-run", "--upgraderun", "--upgrade-run")
+           for t in cleaned):
         force_new = True
 
     return ParsedArgv(cleaned, force_new, force_single)
@@ -343,6 +349,7 @@ def install_primary_listener(
     app,
     on_payload: Callable[[dict], None],
     status_cb: Optional[Callable[[str], None]] = None,
+    on_script: Optional[Callable[[dict, object], None]] = None,
 ):
     """
     Start the QLocalServer on the primary. When another SASpro launch
@@ -354,6 +361,11 @@ def install_primary_listener(
 
     Caller is responsible for pulling file paths out of argv (reuse
     _collect_open_paths from gui_entry) and raising the main window.
+
+    on_script(dict, QLocalSocket) gets a --run-script request
+    (script_bridge.py) on the Qt main thread, with the connection still open:
+    it answers on it and closes it. Without on_script such a request gets no
+    answer, which the command reports as a SASpro too old for it.
 
     Returns the QLocalServer instance (keep a reference so it isn't GC'd).
     """
@@ -387,6 +399,7 @@ def install_primary_listener(
         status_cb(f"[single-instance] primary listening on {name!r}")
 
     def _drain_socket(sock: QLocalSocket):
+        kept = False            # handed to on_script, which answers and closes it
         try:
             # Read all available bytes, bounded by a sanity limit.
             sock.waitForReadyRead(500)
@@ -409,10 +422,23 @@ def install_primary_listener(
                 # Version check: unknown future version — be conservative
                 # and ignore rather than acting on fields we don't understand.
                 v = body.get("v")
-                if not isinstance(v, int) or v > PROTOCOL_VERSION:
+                if not isinstance(v, int) or v > MAX_PROTOCOL_VERSION:
                     if status_cb:
                         status_cb(f"[single-instance] unknown protocol v={v!r}, "
                                   "ignoring handoff")
+                    continue
+
+                if body.get("kind") == "run_script":
+                    # The connection stays open while the script runs, for
+                    # its output and exit code.
+                    if on_script is None or kept:
+                        continue
+                    kept = True
+                    try:
+                        sock.readyRead.disconnect()
+                    except Exception:
+                        pass
+                    QTimer.singleShot(0, lambda b=body, s=sock: on_script(b, s))
                     continue
 
                 # Ack so the secondary knows we received it.
@@ -428,10 +454,11 @@ def install_primary_listener(
                 # mid-paint / mid-event state.
                 QTimer.singleShot(0, lambda b=body: on_payload(b))
         finally:
-            try:
-                sock.disconnectFromServer()
-            except Exception:
-                pass
+            if not kept:
+                try:
+                    sock.disconnectFromServer()
+                except Exception:
+                    pass
 
     def _on_new_connection():
         while True:

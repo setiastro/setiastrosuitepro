@@ -548,8 +548,8 @@ if _HAS_QT:
             self._jd = float(jd)
             self._settings = settings
             self._el = self._body.get("elements")
-            self._name = str(self._body.get("designation", "minor body"))
-            self.setWindowTitle(f"Orbit Explorer — {self._name}")
+            self._name = str(self._body.get("designation", self.tr("minor body")))
+            self.setWindowTitle(self.tr("Orbit Explorer — {0}").format(self._name))
             if icon is not None:
                 self.setWindowIcon(icon)
             self.setModal(False)
@@ -604,25 +604,25 @@ if _HAS_QT:
             root.setSpacing(8)
 
             if self._el is None:
-                root.addWidget(self._message(
+                root.addWidget(self._message(self.tr(
                     "<b>No orbital elements for this object.</b><br><br>"
                     "The catalog row for "
-                    f"<code>{self._name}</code> didn't carry the Keplerian "
+                    "<code>{0}</code> didn't carry the Keplerian "
                     "elements (a, e, i, Ω, ω, M), so its orbit can't be "
                     "drawn.<br><br>"
                     "Everything else about the detection still works — this "
-                    "only affects the 3D view."))
+                    "only affects the 3D view.").format(self._name)))
                 self.resize(560, 300)
                 return
 
             if not HAS_GL:
-                root.addWidget(self._message(
+                root.addWidget(self._message(self.tr(
                     "<b>3D view unavailable.</b><br><br>"
                     "The Orbit Explorer needs <code>pyqtgraph.opengl</code> "
                     "and <code>PyOpenGL</code>.<br><br>"
-                    f"<span style='color:#a66;'>Import error: {_GL_IMPORT_ERROR}"
+                    "<span style='color:#a66;'>Import error: {0}"
                     "</span><br><br>Install with:<br><code>pip install PyOpenGL"
-                    "</code>"))
+                    "</code>").format(_GL_IMPORT_ERROR)))
                 self.resize(560, 320)
                 return
 
@@ -648,7 +648,7 @@ if _HAS_QT:
             self._view_container.setMinimumSize(360, 360)
             self._view_slot = QVBoxLayout(self._view_container)
             self._view_slot.setContentsMargins(0, 0, 0, 0)
-            ph = QLabel("Initialising 3D view…")
+            ph = QLabel(self.tr("Initialising 3D view…"))
             ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
             ph.setStyleSheet("color:#667;")
             self._view_slot.addWidget(ph)
@@ -672,46 +672,46 @@ if _HAS_QT:
             line.setStyleSheet("color:#223;")
             sv.addWidget(line)
 
-            self._chk_planet_orbits = QCheckBox("Planet orbits")
+            self._chk_planet_orbits = QCheckBox(self.tr("Planet orbits"))
             self._chk_planet_orbits.setChecked(True)
             self._chk_planet_orbits.toggled.connect(self._apply_visibility)
             sv.addWidget(self._chk_planet_orbits)
 
-            self._chk_labels = QCheckBox("Labels")
+            self._chk_labels = QCheckBox(self.tr("Labels"))
             self._chk_labels.setChecked(True)
             self._chk_labels.toggled.connect(self._apply_visibility)
             sv.addWidget(self._chk_labels)
 
-            self._chk_grid = QCheckBox("Ecliptic grid")
+            self._chk_grid = QCheckBox(self.tr("Ecliptic grid"))
             self._chk_grid.setChecked(True)
             self._chk_grid.toggled.connect(self._apply_visibility)
             sv.addWidget(self._chk_grid)
 
-            self._chk_los = QCheckBox("Earth → asteroid sight line")
+            self._chk_los = QCheckBox(self.tr("Earth → asteroid sight line"))
             self._chk_los.setChecked(True)
             self._chk_los.toggled.connect(self._apply_visibility)
             sv.addWidget(self._chk_los)
 
-            self._chk_drop = QCheckBox("Height drop to ecliptic")
+            self._chk_drop = QCheckBox(self.tr("Height drop to ecliptic"))
             self._chk_drop.setChecked(True)
-            self._chk_drop.setToolTip(
+            self._chk_drop.setToolTip(self.tr(
                 "Vertical line from the asteroid down to the ecliptic plane —\n"
-                "shows how far its orbit tilts out of the plane (inclination).")
+                "shows how far its orbit tilts out of the plane (inclination)."))
             self._chk_drop.toggled.connect(self._apply_visibility)
             sv.addWidget(self._chk_drop)
 
             btn_row = QHBoxLayout()
-            self._btn_reset = QPushButton("Reset view")
+            self._btn_reset = QPushButton(self.tr("Reset view"))
             self._btn_reset.clicked.connect(self._reset_view)
-            self._btn_top = QPushButton("Top-down")
-            self._btn_top.setToolTip("Look straight down the ecliptic north pole.")
+            self._btn_top = QPushButton(self.tr("Top-down"))
+            self._btn_top.setToolTip(self.tr("Look straight down the ecliptic north pole."))
             self._btn_top.clicked.connect(self._top_view)
             btn_row.addWidget(self._btn_reset)
             btn_row.addWidget(self._btn_top)
             sv.addLayout(btn_row)
 
             sv.addStretch(1)
-            hint = QLabel("drag to rotate · wheel to zoom · ⌃-drag to pan")
+            hint = QLabel(self.tr("drag to rotate · wheel to zoom · ⌃-drag to pan"))
             hint.setStyleSheet("color:#667;font-size:10px;")
             sv.addWidget(hint)
 
@@ -898,7 +898,7 @@ if _HAS_QT:
         def _update_info(self):
             el = self._el
             s = self._scene["summary"]
-            kind = str(self._body.get("kind", "minor body"))
+            kind = str(self._body.get("kind", self.tr("minor body")))
             H = self._body.get("H")
             try:
                 hstr = f"{float(H):.1f}" if H is not None and np.isfinite(float(H)) else "—"
@@ -918,11 +918,16 @@ if _HAS_QT:
                      if s.get("a") is not None else "")
             qQ = (f"{_f(s['q'])} / {_f(s['Q'])} AU"
                   if s.get("Q") is not None else f"{_f(s['q'])} AU (q)")
-            period = (f"<tr><td style='color:#89a;'>period</td>"
+            lbl_period = self.tr("period")
+            lbl_orbit = self.tr("orbit")
+            lbl_open = self.tr("open (e ≥ 1)")
+            lbl_r_sun = self.tr("r (Sun)")
+            lbl_d_earth = self.tr("Δ (Earth)")
+            period = (f"<tr><td style='color:#89a;'>{lbl_period}</td>"
                       f"<td>{_f(s['period_yr'], ' yr', 2)}</td></tr>"
                       if s.get("period_yr") is not None else
-                      "<tr><td style='color:#89a;'>orbit</td>"
-                      "<td>open (e ≥ 1)</td></tr>")
+                      f"<tr><td style='color:#89a;'>{lbl_orbit}</td>"
+                      f"<td>{lbl_open}</td></tr>")
             self._info.setText(
                 f"<div style='font-size:14px;font-weight:bold;color:#9ef;'>"
                 f"{self._name}</div>"
@@ -939,9 +944,9 @@ if _HAS_QT:
                 f"<tr><td style='color:#89a;'>q / Q</td><td>{qQ}</td></tr>"
                 f"{period}"
                 "<tr><td colspan='2' style='border-top:1px solid #223;'></td></tr>"
-                f"<tr><td style='color:#9ef;'>r (Sun)</td>"
+                f"<tr><td style='color:#9ef;'>{lbl_r_sun}</td>"
                 f"<td style='color:#9ef;'>{self._scene['r_helio']:.3f} AU</td></tr>"
-                f"<tr><td style='color:#9ef;'>Δ (Earth)</td>"
+                f"<tr><td style='color:#9ef;'>{lbl_d_earth}</td>"
                 f"<td style='color:#9ef;'>{self._scene['earth_delta']:.3f} AU</td></tr>"
                 "</table>")
 

@@ -5,12 +5,16 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Optional, Tuple, List
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QCoreApplication
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDialogButtonBox,
     QPushButton, QGroupBox, QMessageBox, QGridLayout, QWidget, QProgressBar
 )
 from PyQt6.QtGui import QIcon
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("LinearFit", text)
 
 
 # --------------------------------------------------------------------------------------
@@ -27,40 +31,40 @@ class _LinearFitPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Linear Fit — Preset")
+        self.setWindowTitle(self.tr("Linear Fit — Preset"))
         init = dict(initial or {})
         v = QVBoxLayout(self)
 
-        gb = QGroupBox("RGB strategy", self)
+        gb = QGroupBox(self.tr("RGB strategy"), self)
         grid = QGridLayout(gb)
         self.combo_rgb_mode = QComboBox(self)
         self.combo_rgb_mode.addItems([
-            "Match to Highest Median",
-            "Match to Lowest Median",
-            "Match to Red",
-            "Match to Green",
-            "Match to Blue",
+            self.tr("Match to Highest Median"),
+            self.tr("Match to Lowest Median"),
+            self.tr("Match to Red"),
+            self.tr("Match to Green"),
+            self.tr("Match to Blue"),
         ])
         self.combo_rgb_mode.setCurrentIndex(int(init.get("rgb_mode_idx", 0)))
-        grid.addWidget(QLabel("Target channel:"), 0, 0)
+        grid.addWidget(QLabel(self.tr("Target channel:")), 0, 0)
         grid.addWidget(self.combo_rgb_mode, 0, 1)
         v.addWidget(gb)
 
-        gb2 = QGroupBox("Out-of-range handling", self)
+        gb2 = QGroupBox(self.tr("Out-of-range handling"), self)
         h2 = QHBoxLayout(gb2)
         self.combo_rescale = QComboBox(self)
         self.combo_rescale.addItems([
-            "Clip to [0..1]",
-            "Normalize to [0..1] if needed",
-            "Leave values as-is",
+            self.tr("Clip to [0..1]"),
+            self.tr("Normalize to [0..1] if needed"),
+            self.tr("Leave values as-is"),
         ])
         self.combo_rescale.setCurrentIndex(int(init.get("rescale_mode_idx", 1)))
-        h2.addWidget(QLabel("Mode:"))
+        h2.addWidget(QLabel(self.tr("Mode:")))
         h2.addWidget(self.combo_rescale, 1)
         v.addWidget(gb2)
 
-        info = QLabel("Mono images will be matched to a reference view's median.\n"
-                      "If reference isn’t provided in the headless path, you'll be asked.")
+        info = QLabel(self.tr("Mono images will be matched to a reference view's median.\n"
+                      "If reference isn’t provided in the headless path, you'll be asked."))
         info.setWordWrap(True)
         v.addWidget(info)
 
@@ -184,7 +188,7 @@ class _LinearFitWorker(QThread):
             j = self.job
             if j.src is None:
                 raise RuntimeError("No source image")
-            self.progress.emit(5, "Analyzing…")
+            self.progress.emit(5, self.tr("Analyzing…"))
 
             if j.mode == "rgb":
                 out, ref_idx, meds, scales = linear_fit_rgb(j.src, j.rgb_mode_idx, j.rescale_mode_idx)
@@ -194,7 +198,7 @@ class _LinearFitWorker(QThread):
                     2: "Red", 3: "Green", 4: "Blue"
                 }.get(j.rgb_mode_idx, "highest median")
                 step = f"Linear Fit (RGB → {names[ref_idx]} / {target})"
-                self.progress.emit(100, "Done")
+                self.progress.emit(100, self.tr("Done"))
                 self.done.emit(out, step)
                 return
 
@@ -203,7 +207,7 @@ class _LinearFitWorker(QThread):
                     raise RuntimeError("No reference image selected")
                 out, m_src, m_ref = linear_fit_mono_to_ref(j.src, j.ref, j.rescale_mode_idx)
                 step = "Linear Fit (mono → reference median)"
-                self.progress.emit(100, "Done")
+                self.progress.emit(100, self.tr("Done"))
                 self.done.emit(out, step)
                 return
 
@@ -225,7 +229,7 @@ class LinearFitDialog(QDialog):
     """
     def __init__(self, parent, doc_manager, active_doc):
         super().__init__(parent)
-        self.setWindowTitle("Linear Fit")
+        self.setWindowTitle(self.tr("Linear Fit"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -249,22 +253,22 @@ class LinearFitDialog(QDialog):
         self.mode = "rgb" if is_rgb else "mono"
 
         if self.mode == "rgb":
-            gb = QGroupBox("RGB options", self)
+            gb = QGroupBox(self.tr("RGB options"), self)
             g = QGridLayout(gb)
             self.combo_rgb = QComboBox(self)
             self.combo_rgb.addItems([
-                "Match to Highest Median",
-                "Match to Lowest Median",
-                "Match to Red",
-                "Match to Green",
-                "Match to Blue",
+                self.tr("Match to Highest Median"),
+                self.tr("Match to Lowest Median"),
+                self.tr("Match to Red"),
+                self.tr("Match to Green"),
+                self.tr("Match to Blue"),
             ])
             self.combo_rgb.setCurrentIndex(0)
-            g.addWidget(QLabel("Target channel:"), 0, 0)
+            g.addWidget(QLabel(self.tr("Target channel:")), 0, 0)
             g.addWidget(self.combo_rgb, 0, 1)
             v.addWidget(gb)
         else:
-            gb = QGroupBox("Mono reference", self)
+            gb = QGroupBox(self.tr("Mono reference"), self)
             g = QGridLayout(gb)
             self.combo_ref = QComboBox(self)
             self._ref_docs: list = []
@@ -276,25 +280,25 @@ class LinearFitDialog(QDialog):
                 self._ref_docs.append(d)
                 self.combo_ref.addItem(d.display_name())
             if not self._ref_docs:
-                self.combo_ref.addItem("(no other views open)")
-            g.addWidget(QLabel("Reference view:"), 0, 0)
+                self.combo_ref.addItem(self.tr("(no other views open)"))
+            g.addWidget(QLabel(self.tr("Reference view:")), 0, 0)
             g.addWidget(self.combo_ref, 0, 1)
-            note = QLabel("If the reference is RGB, a luminance proxy is used to compute its median.")
+            note = QLabel(self.tr("If the reference is RGB, a luminance proxy is used to compute its median."))
             note.setWordWrap(True)
             g.addWidget(note, 1, 0, 1, 2)
             v.addWidget(gb)
 
         # Common: out-of-range handling
-        gb2 = QGroupBox("Out-of-range handling", self)
+        gb2 = QGroupBox(self.tr("Out-of-range handling"), self)
         h2 = QHBoxLayout(gb2)
         self.combo_rescale = QComboBox(self)
         self.combo_rescale.addItems([
-            "Clip to [0..1]",
-            "Normalize to [0..1] if needed",
-            "Leave values as-is",
+            self.tr("Clip to [0..1]"),
+            self.tr("Normalize to [0..1] if needed"),
+            self.tr("Leave values as-is"),
         ])
         self.combo_rescale.setCurrentIndex(1)
-        h2.addWidget(QLabel("Mode:"))
+        h2.addWidget(QLabel(self.tr("Mode:")))
         h2.addWidget(self.combo_rescale, 1)
         v.addWidget(gb2)
 
@@ -344,9 +348,9 @@ class LinearFitDialog(QDialog):
         try:
             if self.mode == "rgb":
                 meds = [_nanmedian(self._src[...,i]) for i in range(3)]
-                self.status.setText(f"Channel medians R/G/B: {meds[0]:.4g} / {meds[1]:.4g} / {meds[2]:.4g}")
+                self.status.setText(self.tr("Channel medians R/G/B: {0:.4g} / {1:.4g} / {2:.4g}").format(meds[0], meds[1], meds[2]))
             else:
-                self.status.setText("Mono image selected. Choose a reference view.")
+                self.status.setText(self.tr("Mono image selected. Choose a reference view."))
         except Exception:
             pass
 
@@ -431,7 +435,7 @@ class LinearFitDialog(QDialog):
             job.rgb_mode_idx = int(self.combo_rgb.currentIndex())
         else:
             if not self._ref_docs:
-                QMessageBox.warning(self, "Linear Fit", "No reference view available.")
+                QMessageBox.warning(self, self.tr("Linear Fit"), self.tr("No reference view available."))
                 return
             ref_doc = self._ref_docs[self.combo_ref.currentIndex()]
             job.ref = np.asarray(ref_doc.image).astype(np.float32, copy=False)
@@ -440,7 +444,7 @@ class LinearFitDialog(QDialog):
 
     def _run(self, job: _Job):
         self.bar.setValue(0)
-        self.status.setText("Working…")
+        self.status.setText(self.tr("Working…"))
         self.setEnabled(False)
 
         self.worker = _LinearFitWorker(job)
@@ -454,12 +458,12 @@ class LinearFitDialog(QDialog):
 
     def _on_fail(self, err: str):
         self.setEnabled(True)
-        self.status.setText("Failed.")
-        QMessageBox.critical(self, "Linear Fit", err)
+        self.status.setText(self.tr("Failed."))
+        QMessageBox.critical(self, self.tr("Linear Fit"), err)
 
     def _on_done(self, out_img: np.ndarray, step_name: str):
         self.setEnabled(True)
-        self.status.setText("Done.")
+        self.status.setText(self.tr("Done."))
 
         # 1) Apply result via DocManager (ROI/full handled there)
         try:
@@ -472,7 +476,7 @@ class LinearFitDialog(QDialog):
                           "preset": _preset},
             )
         except Exception as e:
-            QMessageBox.warning(self, "Linear Fit", f"Applied, but could not update document:\n{e}")
+            QMessageBox.warning(self, self.tr("Linear Fit"), self.tr("Applied, but could not update document:\n{0}").format(e))
 
         # 2) Remember this as the last headless-style command for Replay
         try:
@@ -522,13 +526,13 @@ def open_linear_fit_dialog(parent, doc_manager) -> None:
     """
     doc = getattr(doc_manager, "get_active_document", lambda: None)()
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.information(parent, "Linear Fit", "No active image.")
+        QMessageBox.information(parent, _tr("Linear Fit"), _tr("No active image."))
         return
     try:
         dlg = LinearFitDialog(parent, doc_manager, doc)
         dlg.exec()
     except Exception as e:
-        QMessageBox.critical(parent, "Linear Fit", str(e))
+        QMessageBox.critical(parent, _tr("Linear Fit"), str(e))
 
 def apply_linear_fit_via_preset(parent, doc_manager, active_doc, preset: dict | None) -> None:
     """
@@ -568,17 +572,17 @@ def apply_linear_fit_via_preset(parent, doc_manager, active_doc, preset: dict | 
         others.append(d)
 
     if not others:
-        QMessageBox.information(parent, "Linear Fit", "Mono image requires a reference view.\nOpen another image and try again.")
+        QMessageBox.information(parent, _tr("Linear Fit"), _tr("Mono image requires a reference view.\nOpen another image and try again."))
         return
 
     # small inline pick
     pick = QDialog(parent)
-    pick.setWindowTitle("Choose Reference View")
+    pick.setWindowTitle(_tr("Choose Reference View"))
     vv = QVBoxLayout(pick)
     cb = QComboBox(pick)
     for d in others:
         cb.addItem(d.display_name())
-    vv.addWidget(QLabel("Reference view (median target):"))
+    vv.addWidget(QLabel(_tr("Reference view (median target):")))
     vv.addWidget(cb)
     bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=pick)
     bb.accepted.connect(pick.accept); bb.rejected.connect(pick.reject)
@@ -604,7 +608,7 @@ def apply_linear_fit_to_doc(parent, target_doc, preset: dict | None) -> None:
     show a friendly message so you don't get a silent no-op.
     """
     if target_doc is None or getattr(target_doc, "image", None) is None:
-        QMessageBox.information(parent, "Linear Fit", "No target image.")
+        QMessageBox.information(parent, _tr("Linear Fit"), _tr("No target image."))
         return
 
     preset = dict(preset or {})
@@ -631,15 +635,15 @@ def apply_linear_fit_to_doc(parent, target_doc, preset: dict | None) -> None:
                                   metadata=meta,
                                   step_name=step)
         except Exception as e:
-            QMessageBox.warning(parent, "Linear Fit", f"Replay apply failed:\n{e}")
+            QMessageBox.warning(parent, _tr("Linear Fit"), _tr("Replay apply failed:\n{0}").format(e))
         return
 
     # Mono replay-on-base: we don't have the reference baked into the preset yet.
     QMessageBox.information(
         parent,
-        "Linear Fit",
-        "Replay-on-base for mono Linear Fit is not implemented yet.\n"
-        "Please re-run Linear Fit on this image via the dialog."
+        _tr("Linear Fit"),
+        _tr("Replay-on-base for mono Linear Fit is not implemented yet.\n"
+        "Please re-run Linear Fit on this image via the dialog.")
     )
 
 # -------- headless command runner (Scripts / Presets / Replay) ---------------
@@ -653,10 +657,10 @@ def run_linear_fit_via_preset(main, preset=None, target_doc=None):
     main, doc, dm = normalize_headless_main(main, target_doc)
 
     if dm is None:
-        QMessageBox.warning(main or None, "Linear Fit", "DocManager not available.")
+        QMessageBox.warning(main or None, _tr("Linear Fit"), _tr("DocManager not available."))
         return
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main or None, "Linear Fit", "Load an image first.")
+        QMessageBox.warning(main or None, _tr("Linear Fit"), _tr("Load an image first."))
         return
 
     apply_linear_fit_via_preset(main, dm, doc, p)

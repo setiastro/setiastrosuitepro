@@ -6,13 +6,18 @@ import tempfile
 import numpy as np
 from PyQt6.QtWidgets import (QMessageBox, QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QCheckBox,
     QRadioButton, QLabel, QComboBox)
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, QCoreApplication
 
 # Reuse your existing implementation
 from .graxpert import (
     _resolve_graxpert_exec,
     _run_graxpert_command, _write_tiff_float32
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("GraXpertPreset", text)
+
 
 def _build_graxpert_cmd(
     exe: str,
@@ -57,7 +62,7 @@ def run_graxpert_via_preset(main_window, preset: dict | None = None, target_doc=
         if callable(doc):
             doc = doc()
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main_window, "GraXpert", "Load an image first.")
+        QMessageBox.warning(main_window, "GraXpert", _tr("Load an image first."))
         return
 
     p = dict(preset or {})
@@ -95,7 +100,7 @@ def run_graxpert_via_preset(main_window, preset: dict | None = None, target_doc=
     try:
         _write_tiff_float32(doc.image, input_path)
     except Exception as e:
-        QMessageBox.critical(main_window, "GraXpert", f"Failed to write temporary input:\n{e}")
+        QMessageBox.critical(main_window, "GraXpert", _tr("Failed to write temporary input:\n{0}").format(e))
         shutil.rmtree(workdir, ignore_errors=True)
         return
 
@@ -194,15 +199,15 @@ class GraXpertPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("GraXpert — Preset")
+        self.setWindowTitle(self.tr("GraXpert — Preset"))
         p = dict(initial or {})
         op = str(p.get("op", "background")).lower()  # "background" or "denoise"
 
         form = QFormLayout(self)
 
         # --- operation radios ---
-        self.rb_background = QRadioButton("Remove gradient")
-        self.rb_denoise    = QRadioButton("Denoise")
+        self.rb_background = QRadioButton(self.tr("Remove gradient"))
+        self.rb_denoise    = QRadioButton(self.tr("Denoise"))
         if op == "denoise":
             self.rb_denoise.setChecked(True)
         else:
@@ -221,21 +226,21 @@ class GraXpertPresetDialog(QDialog):
         strength  = float(p.get("strength", 0.50))
 
         def _set_for_background():
-            self.param_label.setText("Smoothing (0–1):")
+            self.param_label.setText(self.tr("Smoothing (0–1):"))
             self.param.setValue(smoothing)
             self.model_label.setEnabled(False)
             self.model_combo.setEnabled(False)
 
         def _set_for_denoise():
-            self.param_label.setText("Strength (0–1):")
+            self.param_label.setText(self.tr("Strength (0–1):"))
             self.param.setValue(strength)
             self.model_label.setEnabled(True)
             self.model_combo.setEnabled(True)
 
         # --- denoise model picker ---
-        self.model_label = QLabel("Denoise model:")
+        self.model_label = QLabel(self.tr("Denoise model:"))
         self.model_combo = QComboBox()
-        self.model_combo.addItem("Latest (auto)", "")
+        self.model_combo.addItem(self.tr("Latest (auto)"), "")
         for v in ["3.0.2", "3.0.1", "3.0.0", "2.0.0", "1.1.0", "1.0.0"]:
             self.model_combo.addItem(v, v)
         # preselect from preset if provided
@@ -256,7 +261,7 @@ class GraXpertPresetDialog(QDialog):
         form.addRow(self.model_label, self.model_combo)
 
         # --- GPU ---
-        self.gpu = QCheckBox("Use GPU (if available)")
+        self.gpu = QCheckBox(self.tr("Use GPU (if available)"))
         use_gpu_default = True
         try:
             settings = getattr(parent, "settings", None)

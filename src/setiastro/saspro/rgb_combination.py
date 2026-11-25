@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QDoubleSpinBox, QFrame, QToolButton, QWidget, QTextBrowser,
     QDialogButtonBox, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QCoreApplication, QT_TRANSLATE_NOOP
 
 try:
     from setiastro.saspro.legacy.image_manager import load_image
@@ -79,10 +79,10 @@ def _as_is_from_any(arr: np.ndarray) -> np.ndarray:
 # ── Warning copy ──────────────────────────────────────────────────────────
 # Kept at module scope so the short box and the long explanation can't drift
 # apart, and so it's translatable in one place.
-_L_WARNING_SHORT = (
+_L_WARNING_SHORT = QT_TRANSLATE_NOOP("RgbCombination",
     "Do not combine a LINEAR L with LINEAR RGB."
 )
-_L_WARNING_BODY = (
+_L_WARNING_BODY = QT_TRANSLATE_NOOP("RgbCombination",
     "Unless you have already matched the two stacks — total integration, "
     "sub-exposure length, pedestal/offset, filter throughput and camera "
     "response — the scale factor this tool applies is meaningless. You will "
@@ -91,7 +91,7 @@ _L_WARNING_BODY = (
     "separately, then use Recombine Luminance on the stretched pair."
 )
 
-_L_WARNING_HTML = """
+_L_WARNING_HTML = QT_TRANSLATE_NOOP("RgbCombination", """
 <h3 style="margin-top:0;">Why linear LRGB goes wrong</h3>
 
 <p>Recombination computes the RGB image's own luminance</p>
@@ -152,7 +152,7 @@ on "too much L".</p>
 <h3>If your data is already stretched</h3>
 <p>Then none of the above applies and this is a perfectly ordinary LRGB
 combine. The warning is about linear data specifically.</p>
-"""
+""")
 
 
 class _WrapLabel(QLabel):
@@ -202,7 +202,7 @@ class _LWarningDialog(QDialog):
         v = QVBoxLayout(self)
         tb = QTextBrowser(self)
         tb.setOpenExternalLinks(True)
-        tb.setHtml(_L_WARNING_HTML)
+        tb.setHtml(QCoreApplication.translate("RgbCombination", _L_WARNING_HTML))
         v.addWidget(tb, 1)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self)
         bb.rejected.connect(self.reject)
@@ -373,14 +373,14 @@ class RGBCombinationDialogPro(QDialog):
         wv.setContentsMargins(12, 10, 12, 10)
         wv.setSpacing(6)
 
-        head = _WrapLabel("⚠  " + self.tr(_L_WARNING_SHORT), self.warn_box)
+        head = _WrapLabel("⚠  " + QCoreApplication.translate("RgbCombination", _L_WARNING_SHORT), self.warn_box)
         f = head.font()
         f.setBold(True)
         f.setPointSize(max(11, f.pointSize() + 2))
         head.setFont(f)
         wv.addWidget(head)
 
-        body = _WrapLabel(self.tr(_L_WARNING_BODY), self.warn_box)
+        body = _WrapLabel(QCoreApplication.translate("RgbCombination", _L_WARNING_BODY), self.warn_box)
         wv.addWidget(body)
 
         wrow = QHBoxLayout()
@@ -753,21 +753,22 @@ class RGBCombinationDialogPro(QDialog):
         self._refresh_luminance_enabled()
 
     def _pick_file(self, which):
-        titles = {"R": "Red", "G": "Green", "B": "Blue", "L": "Luminance"}
+        titles = {"R": self.tr("Select Red Image"), "G": self.tr("Select Green Image"),
+                  "B": self.tr("Select Blue Image"), "L": self.tr("Select Luminance Image")}
         fp, _ = QFileDialog.getOpenFileName(
-            self, f"Select {titles.get(which, which)} Image", "",
+            self, titles.get(which) or self.tr("Select {0} Image").format(which), "",
             "Images (*.png *.tif *.tiff *.fits *.fit *.xisf *.jpg *.jpeg);;All Files (*)"
         )
         if not fp: return
         base = os.path.basename(fp)
         if which == "R":
-            self.r_path = fp; self.r_label.setText(f"Red: {base}")
+            self.r_path = fp; self.r_label.setText(self.tr("Red: {0}").format(base))
         elif which == "G":
-            self.g_path = fp; self.g_label.setText(f"Green: {base}")
+            self.g_path = fp; self.g_label.setText(self.tr("Green: {0}").format(base))
         elif which == "B":
-            self.b_path = fp; self.b_label.setText(f"Blue: {base}")
+            self.b_path = fp; self.b_label.setText(self.tr("Blue: {0}").format(base))
         else:
-            self.l_path = fp; self.l_label.setText(f"Luminance: {base}")
+            self.l_path = fp; self.l_label.setText(self.tr("Luminance: {0}").format(base))
 
     def _load_file_mono(self, path: str) -> np.ndarray:
         if load_image is None:
@@ -909,12 +910,12 @@ class RGBCombinationDialogPro(QDialog):
                 gdoc = self.cmb_g.currentData()
                 bdoc = self.cmb_b.currentData()
                 if not (rdoc and gdoc and bdoc):
-                    QMessageBox.information(self, "RGB Combination", "Please select three views.")
+                    QMessageBox.information(self, self.tr("RGB Combination"), self.tr("Please select three views."))
                     return
                 ldoc = self.cmb_l.currentData() if use_l else None
                 if use_l and not ldoc:
-                    QMessageBox.information(self, "RGB Combination",
-                                            "Please select a view for the luminance channel.")
+                    QMessageBox.information(self, self.tr("RGB Combination"),
+                                            self.tr("Please select a view for the luminance channel."))
                     return
                 r = _mono_from_any(getattr(rdoc, "image", None))
                 g = _mono_from_any(getattr(gdoc, "image", None))
@@ -925,11 +926,11 @@ class RGBCombinationDialogPro(QDialog):
                     l_src = _as_is_from_any(getattr(ldoc, "image", None))
             else:
                 if not (self.r_path and self.g_path and self.b_path):
-                    QMessageBox.information(self, "RGB Combination", "Please choose three files.")
+                    QMessageBox.information(self, self.tr("RGB Combination"), self.tr("Please choose three files."))
                     return
                 if use_l and not self.l_path:
-                    QMessageBox.information(self, "RGB Combination",
-                                            "Please choose a luminance file.")
+                    QMessageBox.information(self, self.tr("RGB Combination"),
+                                            self.tr("Please choose a luminance file."))
                     return
                 r = self._load_file_mono(self.r_path)
                 g = self._load_file_mono(self.g_path)
@@ -989,4 +990,4 @@ class RGBCombinationDialogPro(QDialog):
             self.accept()
 
         except Exception as e:
-            QMessageBox.critical(self, "RGB Combination", f"Failed to combine:\n{e}")
+            QMessageBox.critical(self, self.tr("RGB Combination"), self.tr("Failed to combine:\n{0}").format(e))

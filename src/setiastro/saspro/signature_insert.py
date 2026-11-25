@@ -764,8 +764,8 @@ class SignatureInsertDialogPro(QDialog):
         load_lay.setSpacing(6)
 
         alpha_hint = QLabel(
-            "Tip: Transparent signatures — use “Load from File” to preserve PNG alpha. "
-            "Loading from View uses RGB (no alpha)."
+            self.tr("Tip: Transparent signatures — use “Load from File” to preserve PNG alpha. "
+            "Loading from View uses RGB (no alpha).")
         )
         alpha_hint.setStyleSheet("color:#e0b000;")
         alpha_hint.setWordWrap(True)
@@ -773,13 +773,13 @@ class SignatureInsertDialogPro(QDialog):
 
         row_load = QGridLayout()
 
-        b_from_view = QPushButton("Load Insert from View…")
+        b_from_view = QPushButton(self.tr("Load Insert from View…"))
         b_from_view.clicked.connect(self._load_from_view)
 
-        b_from_file = QPushButton("Load Insert from File…")
+        b_from_file = QPushButton(self.tr("Load Insert from File…"))
         b_from_file.clicked.connect(self._load_from_file)
 
-        self.btn_create_from_current = QPushButton("Create Insert from Current…")
+        self.btn_create_from_current = QPushButton(self.tr("Create Insert from Current…"))
         self.btn_create_from_current.clicked.connect(self._begin_create_insert_from_current)
 
         row_load.addWidget(b_from_view, 0, 0)
@@ -789,12 +789,12 @@ class SignatureInsertDialogPro(QDialog):
         load_lay.addLayout(row_load)
 
         # ---- Text ----------------------------------------------------------
-        txt_grp = QGroupBox("Text")
+        txt_grp = QGroupBox(self.tr("Text"))
         self.grp_text = txt_grp
         tg = QGridLayout(txt_grp)
 
-        self.btn_add_text = QPushButton("Add Text…")
-        self.btn_edit_text = QPushButton("Edit Selected…")
+        self.btn_add_text = QPushButton(self.tr("Add Text…"))
+        self.btn_edit_text = QPushButton(self.tr("Edit Selected…"))
         self.btn_edit_text.setEnabled(False)
         self.btn_add_text.clicked.connect(self._add_text_dialog)
         self.btn_edit_text.clicked.connect(self._edit_selected_text)
@@ -807,11 +807,11 @@ class SignatureInsertDialogPro(QDialog):
         self.font_size = QSpinBox()
         self.font_size.setRange(4, 512)
         self.font_size.setValue(36)
-        self.chk_bold = QCheckBox("Bold")
-        self.chk_italic = QCheckBox("Italic")
+        self.chk_bold = QCheckBox(self.tr("Bold"))
+        self.chk_italic = QCheckBox(self.tr("Italic"))
 
-        self.btn_fill = QPushButton("Fill Color…")
-        self.btn_outline = QPushButton("Outline Color…")
+        self.btn_fill = QPushButton(self.tr("Fill Color…"))
+        self.btn_outline = QPushButton(self.tr("Outline Color…"))
         self.outline_w = QSpinBox()
         self.outline_w.setRange(0, 30)
         self.outline_w.setValue(0)
@@ -821,9 +821,9 @@ class SignatureInsertDialogPro(QDialog):
         self.line_spacing.setSuffix(" %")
         self.line_spacing.setValue(100)
         self.line_spacing.setToolTip(
-            "Distance between lines, as a percentage of the font's own line spacing.\n"
+            self.tr("Distance between lines, as a percentage of the font's own line spacing.\n"
             "Some fonts build in very tall line spacing (Sans Serif Collection, Javanese Text,\n"
-            "Gabriola), so their lines look double-spaced; lower this to bring them together.")
+            "Gabriola), so their lines look double-spaced; lower this to bring them together."))
 
         self.font_box.currentFontChanged.connect(lambda _: self._apply_text_controls_to_selected())
         self.font_size.valueChanged.connect(lambda _: self._apply_text_controls_to_selected())
@@ -834,31 +834,31 @@ class SignatureInsertDialogPro(QDialog):
         self.outline_w.valueChanged.connect(lambda _: self._apply_text_controls_to_selected())
         self.line_spacing.valueChanged.connect(lambda _: self._apply_text_controls_to_selected())
 
-        tg.addWidget(QLabel("Font"), 1, 0)
+        tg.addWidget(QLabel(self.tr("Font")), 1, 0)
         tg.addWidget(self.font_box, 1, 1)
-        tg.addWidget(QLabel("Size"), 2, 0)
+        tg.addWidget(QLabel(self.tr("Size")), 2, 0)
         tg.addWidget(self.font_size, 2, 1)
         tg.addWidget(self.chk_bold, 3, 0)
         tg.addWidget(self.chk_italic, 3, 1)
         tg.addWidget(self.btn_fill, 4, 0)
         tg.addWidget(self.btn_outline, 4, 1)
-        tg.addWidget(QLabel("Outline (px)"), 5, 0)
+        tg.addWidget(QLabel(self.tr("Outline (px)")), 5, 0)
         tg.addWidget(self.outline_w, 5, 1)
-        tg.addWidget(QLabel("Line spacing"), 6, 0)
+        tg.addWidget(QLabel(self.tr("Line spacing")), 6, 0)
         tg.addWidget(self.line_spacing, 6, 1)
 
         # ---- Tech Card -----------------------------------------------------
-        tech_grp = QGroupBox("Technical Card")
+        tech_grp = QGroupBox(self.tr("Technical Card"))
         self.grp_tech_card = tech_grp
         tc = QGridLayout(tech_grp)
 
-        self.cb_tech = QCheckBox("Enable Tech Card")
+        self.cb_tech = QCheckBox(self.tr("Enable Tech Card"))
         self.cb_tech.stateChanged.connect(self._tech_toggle)
 
-        self.btn_tech_build = QPushButton("Build / Update")
+        self.btn_tech_build = QPushButton(self.tr("Build / Update"))
         self.btn_tech_build.clicked.connect(self._tech_rebuild)
 
-        self.btn_tech_reset = QPushButton("Reset")
+        self.btn_tech_reset = QPushButton(self.tr("Reset"))
         self.btn_tech_reset.clicked.connect(self._tech_reset_defaults)
 
         tc.addWidget(self.cb_tech, 0, 0, 1, 2)
@@ -866,22 +866,22 @@ class SignatureInsertDialogPro(QDialog):
         tc.addWidget(self.btn_tech_reset, 0, 3)
 
         self.cmb_tech_field = QComboBox()
-        self.btn_tech_add_field = QPushButton("Add Field")
-        self.btn_tech_remove_field = QPushButton("Remove Field")
-        self.btn_tech_up = QPushButton("Up")
-        self.btn_tech_down = QPushButton("Down")
+        self.btn_tech_add_field = QPushButton(self.tr("Add Field"))
+        self.btn_tech_remove_field = QPushButton(self.tr("Remove Field"))
+        self.btn_tech_up = QPushButton(self.tr("Up"))
+        self.btn_tech_down = QPushButton(self.tr("Down"))
 
         self.btn_tech_add_field.clicked.connect(self._tech_add_field)
         self.btn_tech_remove_field.clicked.connect(self._tech_remove_field)
         self.btn_tech_up.clicked.connect(lambda: self._tech_move_field(-1))
         self.btn_tech_down.clicked.connect(lambda: self._tech_move_field(+1))
 
-        tc.addWidget(QLabel("Fields"), 1, 0)
+        tc.addWidget(QLabel(self.tr("Fields")), 1, 0)
         tc.addWidget(self.cmb_tech_field, 1, 1, 1, 2)
         tc.addWidget(self.btn_tech_add_field, 1, 3)
 
         self.cmb_tech_order = QComboBox()
-        tc.addWidget(QLabel("Order"), 2, 0)
+        tc.addWidget(QLabel(self.tr("Order")), 2, 0)
         tc.addWidget(self.cmb_tech_order, 2, 1, 1, 2)
 
         btns = QHBoxLayout()
@@ -892,7 +892,7 @@ class SignatureInsertDialogPro(QDialog):
         w_btns.setLayout(btns)
         tc.addWidget(w_btns, 2, 3)
 
-        self.cb_tech_hide_empty = QCheckBox("Hide empty fields")
+        self.cb_tech_hide_empty = QCheckBox(self.tr("Hide empty fields"))
         self.cb_tech_hide_empty.setChecked(True)
         self.cb_tech_hide_empty.stateChanged.connect(lambda: self._tech_rebuild(live=True))
         tc.addWidget(self.cb_tech_hide_empty, 3, 0, 1, 2)
@@ -907,7 +907,7 @@ class SignatureInsertDialogPro(QDialog):
         self.sl_tech_bg_opacity.setValue(55)
         self.sl_tech_bg_opacity.valueChanged.connect(lambda: self._tech_rebuild(live=True))
 
-        self.cb_tech_border = QCheckBox("Border")
+        self.cb_tech_border = QCheckBox(self.tr("Border"))
         self.cb_tech_border.setChecked(True)
         self.cb_tech_border.stateChanged.connect(lambda: self._tech_rebuild(live=True))
 
@@ -920,39 +920,39 @@ class SignatureInsertDialogPro(QDialog):
         self.cmb_tech_border_style.addItems(["Solid", "Dash", "Dot", "DashDot", "DashDotDot"])
         self.cmb_tech_border_style.currentIndexChanged.connect(lambda: self._tech_rebuild(live=True))
 
-        self.btn_tech_bg = QPushButton("BG Color…")
+        self.btn_tech_bg = QPushButton(self.tr("BG Color…"))
         self.btn_tech_bg.clicked.connect(self._tech_pick_bg)
-        self.btn_tech_border_color = QPushButton("Border Color…")
+        self.btn_tech_border_color = QPushButton(self.tr("Border Color…"))
         self.btn_tech_border_color.clicked.connect(self._tech_pick_border)
 
-        tc.addWidget(QLabel("Padding"), 4, 0)
+        tc.addWidget(QLabel(self.tr("Padding")), 4, 0)
         tc.addWidget(self.sp_tech_padding, 4, 1)
-        tc.addWidget(QLabel("BG Opacity"), 5, 0)
+        tc.addWidget(QLabel(self.tr("BG Opacity")), 5, 0)
         tc.addWidget(self.sl_tech_bg_opacity, 5, 1, 1, 3)
         tc.addWidget(self.btn_tech_bg, 4, 2)
         tc.addWidget(self.btn_tech_border_color, 4, 3)
         tc.addWidget(self.cb_tech_border, 6, 0)
-        tc.addWidget(QLabel("Width"), 6, 1)
+        tc.addWidget(QLabel(self.tr("Width")), 6, 1)
         tc.addWidget(self.sp_tech_border_w, 6, 2)
         tc.addWidget(self.cmb_tech_border_style, 6, 3)
 
         # ---- Transform -----------------------------------------------------
-        grp = QGroupBox("Transform")
+        grp = QGroupBox(self.tr("Transform"))
         self.grp_transform = grp
         g = QGridLayout(grp)
 
-        b_rot = QPushButton("Rotate +90°")
+        b_rot = QPushButton(self.tr("Rotate +90°"))
         b_rot.clicked.connect(self._rotate_selected)
         g.addWidget(b_rot, 0, 0, 1, 2)
 
-        g.addWidget(QLabel("Scale (%)"), 1, 0)
+        g.addWidget(QLabel(self.tr("Scale (%)")), 1, 0)
         self.sl_scale = QSlider(Qt.Orientation.Horizontal)
         self.sl_scale.setRange(10, 400)
         self.sl_scale.setValue(100)
         self.sl_scale.valueChanged.connect(self._scale_selected)
         g.addWidget(self.sl_scale, 1, 1)
 
-        g.addWidget(QLabel("Opacity (%)"), 2, 0)
+        g.addWidget(QLabel(self.tr("Opacity (%)")), 2, 0)
         self.sl_opacity = QSlider(Qt.Orientation.Horizontal)
         self.sl_opacity.setRange(0, 100)
         self.sl_opacity.setValue(100)
@@ -960,16 +960,16 @@ class SignatureInsertDialogPro(QDialog):
         g.addWidget(self.sl_opacity, 2, 1)
 
         # ---- Bounding boxes ------------------------------------------------
-        grp_box = QGroupBox("Bounding Box Style")
+        grp_box = QGroupBox(self.tr("Bounding Box Style"))
         self.grp_bbox = grp_box
         gb = QGridLayout(grp_box)
 
-        self.cb_draw = QCheckBox("Draw Bounding Box")
+        self.cb_draw = QCheckBox(self.tr("Draw Bounding Box"))
         self.cb_draw.setChecked(True)
         self.cb_draw.stateChanged.connect(self._toggle_boxes)
         gb.addWidget(self.cb_draw, 0, 0, 1, 2)
 
-        self.b_color = QPushButton("Color…")
+        self.b_color = QPushButton(self.tr("Color…"))
         self.b_color.clicked.connect(self._pick_box_color)
         self.sl_thick = QSlider(Qt.Orientation.Horizontal)
         self.sl_thick.setRange(1, 10)
@@ -980,9 +980,9 @@ class SignatureInsertDialogPro(QDialog):
         self.cmb_style.currentIndexChanged.connect(self._update_box_pen)
 
         gb.addWidget(self.b_color, 1, 0, 1, 2)
-        gb.addWidget(QLabel("Thickness"), 2, 0)
+        gb.addWidget(QLabel(self.tr("Thickness")), 2, 0)
         gb.addWidget(self.sl_thick, 2, 1)
-        gb.addWidget(QLabel("Style"), 3, 0)
+        gb.addWidget(QLabel(self.tr("Style")), 3, 0)
         gb.addWidget(self.cmb_style, 3, 1)
 
         # ---- Callout inset -------------------------------------------------
@@ -993,40 +993,40 @@ class SignatureInsertDialogPro(QDialog):
         self._create_insert_preview_rect_item = None
         self._create_insert_make_callout = False
         # ---- Snap with margins --------------------------------------------
-        snap_grp = QGroupBox("Send to Position")
+        snap_grp = QGroupBox(self.tr("Send to Position"))
         self.grp_position = snap_grp
         sg = QGridLayout(snap_grp)
 
-        sg.addWidget(QLabel("Margin X (px)"), 0, 0)
+        sg.addWidget(QLabel(self.tr("Margin X (px)")), 0, 0)
         self.sp_margin_x = QSpinBox()
         self.sp_margin_x.setRange(0, 5000)
         self.sp_margin_x.setValue(20)
         sg.addWidget(self.sp_margin_x, 0, 1)
 
-        sg.addWidget(QLabel("Margin Y (px)"), 0, 2)
+        sg.addWidget(QLabel(self.tr("Margin Y (px)")), 0, 2)
         self.sp_margin_y = QSpinBox()
         self.sp_margin_y.setRange(0, 5000)
         self.sp_margin_y.setValue(20)
         sg.addWidget(self.sp_margin_y, 0, 3)
 
-        def s(key):
-            btn = QPushButton(key.replace("_", " ").title())
+        def s(key, label):
+            btn = QPushButton(label)
             btn.setMinimumWidth(105)
             btn.clicked.connect(lambda _, k=key: self._send_selected(k))
             return btn
 
-        sg.addWidget(s("top_left"), 1, 0)
-        sg.addWidget(s("top_center"), 1, 1)
-        sg.addWidget(s("top_right"), 1, 2)
-        sg.addWidget(s("middle_left"), 2, 0)
-        sg.addWidget(s("center"), 2, 1)
-        sg.addWidget(s("middle_right"), 2, 2)
-        sg.addWidget(s("bottom_left"), 3, 0)
-        sg.addWidget(s("bottom_center"), 3, 1)
-        sg.addWidget(s("bottom_right"), 3, 2)
+        sg.addWidget(s("top_left", self.tr("Top Left")), 1, 0)
+        sg.addWidget(s("top_center", self.tr("Top Center")), 1, 1)
+        sg.addWidget(s("top_right", self.tr("Top Right")), 1, 2)
+        sg.addWidget(s("middle_left", self.tr("Middle Left")), 2, 0)
+        sg.addWidget(s("center", self.tr("Center")), 2, 1)
+        sg.addWidget(s("middle_right", self.tr("Middle Right")), 2, 2)
+        sg.addWidget(s("bottom_left", self.tr("Bottom Left")), 3, 0)
+        sg.addWidget(s("bottom_center", self.tr("Bottom Center")), 3, 1)
+        sg.addWidget(s("bottom_right", self.tr("Bottom Right")), 3, 2)
 
         # ---- Zoom ----------------------------------------------------------
-        zoom_grp = QGroupBox("Zoom")
+        zoom_grp = QGroupBox(self.tr("Zoom"))
         self.grp_zoom = zoom_grp
         zg = QHBoxLayout(zoom_grp)
 
@@ -1034,10 +1034,10 @@ class SignatureInsertDialogPro(QDialog):
         b_zo.clicked.connect(self.view.zoom_out)
         b_zi = QPushButton("+")
         b_zi.clicked.connect(self.view.zoom_in)
-        b_fit = QPushButton("Fit")
+        b_fit = QPushButton(self.tr("Fit"))
         b_fit.clicked.connect(self.view.fit_to_view)
 
-        zg.addWidget(QLabel("Zoom (Ctrl+Wheel):"))
+        zg.addWidget(QLabel(self.tr("Zoom (Ctrl+Wheel):")))
         zg.addWidget(b_zo)
         zg.addWidget(b_zi)
         zg.addWidget(b_fit)
@@ -1045,15 +1045,15 @@ class SignatureInsertDialogPro(QDialog):
 
 
         # ---- Apply / Clear -------------------------------------------------
-        apply_grp = QGroupBox("Apply / Clear")
+        apply_grp = QGroupBox(self.tr("Apply / Clear"))
         self.grp_apply = apply_grp
         ag = QHBoxLayout(apply_grp)
 
-        b_affix = QPushButton("Affix Inserts")
+        b_affix = QPushButton(self.tr("Affix Inserts"))
         b_affix.clicked.connect(self._affix_inserts)
-        b_clear_sel = QPushButton("Clear Selected")
+        b_clear_sel = QPushButton(self.tr("Clear Selected"))
         b_clear_sel.clicked.connect(self._clear_selected)
-        b_clear = QPushButton("Clear All")
+        b_clear = QPushButton(self.tr("Clear All"))
         b_clear.clicked.connect(self._clear_inserts)
 
         ag.addWidget(b_affix)
@@ -1068,15 +1068,15 @@ class SignatureInsertDialogPro(QDialog):
             col.addWidget(sec)
 
 
-        add_sec("load", "Load / Add", self.grp_load, True)
-        add_sec("text", "Text", self.grp_text, False)
-        add_sec("tech", "Technical Card", self.grp_tech_card, False)
-        add_sec("transform", "Transform", self.grp_transform, True)
-        add_sec("bbox", "Bounding Box Style", self.grp_bbox, False)
-        add_sec("callout", "Inset Callout", self.grp_callout, True)
-        add_sec("position", "Send to Position", self.grp_position, False)
-        add_sec("zoom", "Zoom", self.grp_zoom, False)
-        add_sec("apply", "Apply / Clear", self.grp_apply, True)
+        add_sec("load", self.tr("Load / Add"), self.grp_load, True)
+        add_sec("text", self.tr("Text"), self.grp_text, False)
+        add_sec("tech", self.tr("Technical Card"), self.grp_tech_card, False)
+        add_sec("transform", self.tr("Transform"), self.grp_transform, True)
+        add_sec("bbox", self.tr("Bounding Box Style"), self.grp_bbox, False)
+        add_sec("callout", self.tr("Inset Callout"), self.grp_callout, True)
+        add_sec("position", self.tr("Send to Position"), self.grp_position, False)
+        add_sec("zoom", self.tr("Zoom"), self.grp_zoom, False)
+        add_sec("apply", self.tr("Apply / Clear"), self.grp_apply, True)
         self.btn_doc_help = make_help_button("signature_insert", self)
         col.addWidget(self.btn_doc_help)
         col.addStretch(1)
@@ -1121,14 +1121,14 @@ class SignatureInsertDialogPro(QDialog):
 
     def _begin_create_insert_from_current(self):
         mb = QMessageBox(self)
-        mb.setWindowTitle("Create Insert from Current")
-        mb.setText("Also create this as a callout inset?")
+        mb.setWindowTitle(self.tr("Create Insert from Current"))
+        mb.setText(self.tr("Also create this as a callout inset?"))
         mb.setInformativeText(
-            "If yes, the drawn source region will also become the callout source box "
-            "and connector lines will use the current callout settings."
+            self.tr("If yes, the drawn source region will also become the callout source box "
+            "and connector lines will use the current callout settings.")
         )
-        yes_btn = mb.addButton("Yes, make callout", QMessageBox.ButtonRole.YesRole)
-        no_btn = mb.addButton("No, just create insert", QMessageBox.ButtonRole.NoRole)
+        yes_btn = mb.addButton(self.tr("Yes, make callout"), QMessageBox.ButtonRole.YesRole)
+        no_btn = mb.addButton(self.tr("No, just create insert"), QMessageBox.ButtonRole.NoRole)
         cancel_btn = mb.addButton(QMessageBox.StandardButton.Cancel)
         mb.setDefaultButton(no_btn)
         mb.exec()
@@ -1151,11 +1151,11 @@ class SignatureInsertDialogPro(QDialog):
 
         if self._create_insert_make_callout:
             self.lbl_callout_status.setText(
-                "Drag on the image to define the source region for a new 3× callout insert."
+                self.tr("Drag on the image to define the source region for a new 3× callout insert.")
             )
         else:
             self.lbl_callout_status.setText(
-                "Drag on the image to define a source region for a new 3× insert."
+                self.tr("Drag on the image to define a source region for a new 3× insert.")
             )
 
         self.view.setCursor(Qt.CursorShape.CrossCursor)
@@ -1190,7 +1190,7 @@ class SignatureInsertDialogPro(QDialog):
             self._create_insert_preview_rect_item = None
 
         if rect.width() < 4 or rect.height() < 4:
-            self.lbl_callout_status.setText("Create-from-current region too small.")
+            self.lbl_callout_status.setText(self.tr("Create-from-current region too small."))
             self._create_insert_make_callout = False
             return
 
@@ -1198,12 +1198,12 @@ class SignatureInsertDialogPro(QDialog):
             pm = self._create_insert_pixmap_from_scene_rect(rect, upscale=3)
         except Exception as e:
             self._create_insert_make_callout = False
-            QMessageBox.warning(self, "Create Insert from Current", str(e))
+            QMessageBox.warning(self, self.tr("Create Insert from Current"), str(e))
             return
 
         if pm is None or pm.isNull():
             self._create_insert_make_callout = False
-            QMessageBox.warning(self, "Create Insert from Current", "Could not create insert from selected region.")
+            QMessageBox.warning(self, self.tr("Create Insert from Current"), self.tr("Could not create insert from selected region."))
             return
 
         self._add_insert(pm)
@@ -1215,15 +1215,15 @@ class SignatureInsertDialogPro(QDialog):
             try:
                 self._set_insert_callout_source_rect(insert_item, QRectF(rect))
                 self.lbl_callout_status.setText(
-                    "Created 3× insert and attached the source region as a callout inset."
+                    self.tr("Created 3× insert and attached the source region as a callout inset.")
                 )
             except Exception as e:
                 self.lbl_callout_status.setText(
-                    "Created 3× insert, but failed to attach callout source region."
+                    self.tr("Created 3× insert, but failed to attach callout source region.")
                 )
-                QMessageBox.warning(self, "Create Insert from Current", f"Insert created, but callout setup failed:\n{e}")
+                QMessageBox.warning(self, self.tr("Create Insert from Current"), self.tr("Insert created, but callout setup failed:\n{0}").format(e))
         else:
-            self.lbl_callout_status.setText("Created insert from current image region at 3×.")
+            self.lbl_callout_status.setText(self.tr("Created insert from current image region at 3×."))
 
         self._create_insert_make_callout = False
 
@@ -1274,25 +1274,25 @@ class SignatureInsertDialogPro(QDialog):
         return upscaled
 
     def _build_callout_group(self):
-        self.grp_callout = QGroupBox("Inset Callout")
+        self.grp_callout = QGroupBox(self.tr("Inset Callout"))
         lay = QVBoxLayout(self.grp_callout)
 
         form = QFormLayout()
-        self.chk_callout_enable = QCheckBox("Enable source callout")
+        self.chk_callout_enable = QCheckBox(self.tr("Enable source callout"))
         self.chk_callout_enable.setChecked(True)
 
-        self.chk_callout_show_box = QCheckBox("Show source box")
+        self.chk_callout_show_box = QCheckBox(self.tr("Show source box"))
         self.chk_callout_show_box.setChecked(True)
 
-        self.chk_callout_show_lines = QCheckBox("Show connector lines")
+        self.chk_callout_show_lines = QCheckBox(self.tr("Show connector lines"))
         self.chk_callout_show_lines.setChecked(True)
 
         self.cmb_callout_mode = QComboBox()
-        self.cmb_callout_mode.addItem("Auto", userData="auto")
-        self.cmb_callout_mode.addItem("Left → Right", userData="lr")
-        self.cmb_callout_mode.addItem("Right → Left", userData="rl")
-        self.cmb_callout_mode.addItem("Top → Bottom", userData="tb")
-        self.cmb_callout_mode.addItem("Bottom → Top", userData="bt")
+        self.cmb_callout_mode.addItem(self.tr("Auto"), userData="auto")
+        self.cmb_callout_mode.addItem(self.tr("Left → Right"), userData="lr")
+        self.cmb_callout_mode.addItem(self.tr("Right → Left"), userData="rl")
+        self.cmb_callout_mode.addItem(self.tr("Top → Bottom"), userData="tb")
+        self.cmb_callout_mode.addItem(self.tr("Bottom → Top"), userData="bt")
 
         self.sp_callout_width = QSpinBox()
         self.sp_callout_width.setRange(1, 20)
@@ -1301,20 +1301,20 @@ class SignatureInsertDialogPro(QDialog):
         form.addRow(self.chk_callout_enable)
         form.addRow(self.chk_callout_show_box)
         form.addRow(self.chk_callout_show_lines)
-        form.addRow("Connector mode:", self.cmb_callout_mode)
-        form.addRow("Line width:", self.sp_callout_width)
+        form.addRow(self.tr("Connector mode:"), self.cmb_callout_mode)
+        form.addRow(self.tr("Line width:"), self.sp_callout_width)
         lay.addLayout(form)
 
         row = QHBoxLayout()
-        self.btn_callout_color = QPushButton("Line / Box Color…")
-        self.btn_set_source_region = QPushButton("Set Source Region")
-        self.btn_clear_source_region = QPushButton("Clear Source Region")
+        self.btn_callout_color = QPushButton(self.tr("Line / Box Color…"))
+        self.btn_set_source_region = QPushButton(self.tr("Set Source Region"))
+        self.btn_clear_source_region = QPushButton(self.tr("Clear Source Region"))
         row.addWidget(self.btn_callout_color)
         row.addWidget(self.btn_set_source_region)
         row.addWidget(self.btn_clear_source_region)
         lay.addLayout(row)
 
-        self.lbl_callout_status = QLabel("Select an insert, then click “Set Source Region”.")
+        self.lbl_callout_status = QLabel(self.tr("Select an insert, then click “Set Source Region”."))
         self.lbl_callout_status.setWordWrap(True)
         lay.addWidget(self.lbl_callout_status)
 
@@ -1329,7 +1329,7 @@ class SignatureInsertDialogPro(QDialog):
         self.sp_callout_width.valueChanged.connect(self._refresh_selected_insert_callout)
 
     def _choose_callout_color(self):
-        c = QColorDialog.getColor(self._callout_color, self, "Choose Callout Color")
+        c = QColorDialog.getColor(self._callout_color, self, self.tr("Choose Callout Color"))
         if not c.isValid():
             return
         self._callout_color = c
@@ -1344,12 +1344,12 @@ class SignatureInsertDialogPro(QDialog):
     def _begin_set_source_region_mode(self):
         insert_item = self._selected_insert_for_callout()
         if insert_item is None:
-            self.lbl_callout_status.setText("Select a pixmap insert first, then click Set Source Region.")
+            self.lbl_callout_status.setText(self.tr("Select a pixmap insert first, then click Set Source Region."))
             return
 
         self._callout_draw_mode = True
         self._callout_drag_start_scene = None
-        self.lbl_callout_status.setText("Drag on the image to define the source region.")
+        self.lbl_callout_status.setText(self.tr("Drag on the image to define the source region."))
         self.view.setCursor(Qt.CursorShape.CrossCursor)
 
     def _start_callout_preview_rect(self, scene_pos: QPointF):
@@ -1382,18 +1382,18 @@ class SignatureInsertDialogPro(QDialog):
             self._callout_preview_rect_item = None
 
         if rect.width() < 4 or rect.height() < 4:
-            self.lbl_callout_status.setText("Source region too small.")
+            self.lbl_callout_status.setText(self.tr("Source region too small."))
             return
 
         insert_item = self._selected_insert_for_callout()
         if insert_item is None:
-            self.lbl_callout_status.setText("No insert selected.")
+            self.lbl_callout_status.setText(self.tr("No insert selected."))
             return
 
         self._set_insert_callout_source_rect(insert_item, rect)
         self.lbl_callout_status.setText(
-            f"Source region set: {int(rect.x())}, {int(rect.y())}, "
-            f"{int(rect.width())} × {int(rect.height())}"
+            self.tr("Source region set: {0}, {1}, "
+            "{2} × {3}").format(int(rect.x()), int(rect.y()), int(rect.width()), int(rect.height()))
         )
 
     def _set_insert_callout_source_rect(self, insert_item, source_rect: QRectF):
@@ -1534,11 +1534,11 @@ class SignatureInsertDialogPro(QDialog):
     def _clear_selected_insert_callout(self):
         insert_item = self._selected_insert_for_callout()
         if insert_item is None:
-            self.lbl_callout_status.setText("No insert selected.")
+            self.lbl_callout_status.setText(self.tr("No insert selected."))
             return
 
         self._clear_callout_for_item(insert_item)
-        self.lbl_callout_status.setText("Source region cleared.")
+        self.lbl_callout_status.setText(self.tr("Source region cleared."))
 
     def _k(self, key: str) -> str:
         return f"{self._persist_prefix}/{key}"
@@ -1883,14 +1883,14 @@ class SignatureInsertDialogPro(QDialog):
         self.tech_card_text = None
 
     def _tech_pick_bg(self):
-        c = QColorDialog.getColor(self.tech_bg_color, self, "Tech Card Background")
+        c = QColorDialog.getColor(self.tech_bg_color, self, self.tr("Tech Card Background"))
         if c.isValid():
             self.tech_bg_color = c
             self._tech_rebuild(live=True)
             self._save_persistent_ui()
 
     def _tech_pick_border(self):
-        c = QColorDialog.getColor(self.tech_border_color, self, "Tech Card Border")
+        c = QColorDialog.getColor(self.tech_border_color, self, self.tr("Tech Card Border"))
         if c.isValid():
             self.tech_border_color = c
             self._tech_rebuild(live=True)
@@ -2050,7 +2050,7 @@ class SignatureInsertDialogPro(QDialog):
             return
         ti = items[0]
         existing = ti.toPlainText()
-        txt, ok = QInputDialog.getMultiLineText(self, "Edit Text", "Text:", existing)
+        txt, ok = QInputDialog.getMultiLineText(self, self.tr("Edit Text"), self.tr("Text:"), existing)
         if ok:
             ti.setPlainText(txt)
 
@@ -2070,7 +2070,7 @@ class SignatureInsertDialogPro(QDialog):
                 ti.setFont(f)
 
     def _pick_text_fill(self):
-        c = QColorDialog.getColor(getattr(self, "_text_fill_color", QColor("white")), self, "Text Fill Color")
+        c = QColorDialog.getColor(getattr(self, "_text_fill_color", QColor("white")), self, self.tr("Text Fill Color"))
         if not c.isValid():
             return
         self._text_fill_color = c
@@ -2082,7 +2082,7 @@ class SignatureInsertDialogPro(QDialog):
         self._save_persistent_ui()
 
     def _pick_text_outline(self):
-        c = QColorDialog.getColor(getattr(self, "_text_outline_color", QColor("black")), self, "Text Outline Color")
+        c = QColorDialog.getColor(getattr(self, "_text_outline_color", QColor("black")), self, self.tr("Text Outline Color"))
         if not c.isValid():
             return
         self._text_outline_color = c
@@ -2185,9 +2185,9 @@ class SignatureInsertDialogPro(QDialog):
         ins = self._selected_insert_for_callout()
         if ins is not None:
             if ins in self._callout_items_by_insert:
-                self.lbl_callout_status.setText("Selected insert has a source region.")
+                self.lbl_callout_status.setText(self.tr("Selected insert has a source region."))
             else:
-                self.lbl_callout_status.setText("Selected insert has no source region yet.")
+                self.lbl_callout_status.setText(self.tr("Selected insert has no source region yet."))
 
 
     def _current_qfont(self) -> QFont:
@@ -2207,7 +2207,7 @@ class SignatureInsertDialogPro(QDialog):
             ti.setDefaultTextColor(color)
 
     def _on_add_text(self):
-        txt, ok = QInputDialog.getMultiLineText(self, "Add Text", "Enter text:")
+        txt, ok = QInputDialog.getMultiLineText(self, self.tr("Add Text"), self.tr("Enter text:"))
         if not ok or not txt.strip():
             return
         f = self._current_qfont()
@@ -2280,11 +2280,11 @@ class SignatureInsertDialogPro(QDialog):
             self._tech_rebuild(live=True)
 
     def _load_from_file(self):
-        fp, _ = QFileDialog.getOpenFileName(self, "Select Insert Image", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)")
+        fp, _ = QFileDialog.getOpenFileName(self, self.tr("Select Insert Image"), "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)")
         if not fp: return
         pm = QPixmap(fp)
         if pm.isNull():
-            QMessageBox.warning(self, "Load Failed", "Could not load image.")
+            QMessageBox.warning(self, self.tr("Load Failed"), self.tr("Could not load image."))
             return
         self._add_insert(pm)
 
@@ -2298,11 +2298,11 @@ class SignatureInsertDialogPro(QDialog):
                 if getattr(d, "image", None) is not None:
                     candidates.append((title, d))
         if not candidates:
-            QMessageBox.information(self, "Insert", "No other image windows found.")
+            QMessageBox.information(self, self.tr("Insert"), self.tr("No other image windows found."))
             return
 
         names = [t for (t, _) in candidates]
-        choice, ok = QInputDialog.getItem(self, "Load Insert from View", "Choose:", names, 0, False)
+        choice, ok = QInputDialog.getItem(self, self.tr("Load Insert from View"), self.tr("Choose:"), names, 0, False)
         if not ok: return
         d = candidates[names.index(choice)][1]
         pm = QPixmap.fromImage(self._numpy_to_qimage(np.asarray(d.image, dtype=np.float32)))
@@ -2396,7 +2396,7 @@ class SignatureInsertDialogPro(QDialog):
             r.setVisible(self.bounding_boxes_enabled)
 
     def _pick_box_color(self):
-        c = QColorDialog.getColor(self.bounding_box_pen.color(), self, "Bounding Box Color")
+        c = QColorDialog.getColor(self.bounding_box_pen.color(), self, self.tr("Bounding Box Color"))
         if c.isValid():
             self.bounding_box_pen.setColor(c)
             self._refresh_all_boxes()
@@ -2515,7 +2515,7 @@ class SignatureInsertDialogPro(QDialog):
 
         has_any_overlay = bool(self.inserts) or bool(self.text_inserts) or (self.tech_card_item is not None)
         if not has_any_overlay:
-            QMessageBox.information(self, "Signature / Insert", "Nothing to affix.")
+            QMessageBox.information(self, self.tr("Signature / Insert"), self.tr("Nothing to affix."))
             return
 
         for it in self.scene.selectedItems():
@@ -2765,7 +2765,7 @@ class SignatureInsertDialogPro(QDialog):
                 pass
             self._create_insert_preview_rect_item = None
 
-        self.lbl_callout_status.setText("Create insert from current cancelled.")
+        self.lbl_callout_status.setText(self.tr("Create insert from current cancelled."))
 
     def _cancel_callout_draw_mode(self):
         self._callout_draw_mode = False
@@ -2779,7 +2779,7 @@ class SignatureInsertDialogPro(QDialog):
                 pass
             self._callout_preview_rect_item = None
 
-        self.lbl_callout_status.setText("Set source region cancelled.")
+        self.lbl_callout_status.setText(self.tr("Set source region cancelled."))
 
     def eventFilter(self, obj, event):
         try:

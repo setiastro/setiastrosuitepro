@@ -41,7 +41,9 @@ __all__ = [
     "StackingRunReport", "parse_stacking_log", "find_stacking_logs",
     "LogLine", "GroupInfo", "FrameStat", "MasterBuild", "Phase", "Problem",
     "master_outputs", "frame_reconciliation", "slowest_steps", "fmt_hms",
-    "SEV_ERROR", "SEV_WARN", "SEV_INFO",
+    "SEV_ERROR", "SEV_WARN", "SEV_INFO", "SUMMARY_BEGIN", "SUMMARY_END",
+    "StackedRun", "frame_stems", "run_stems", "stacked_stems",
+    "rebuild_acquisition_summary",
 ]
 
 # ── severity ────────────────────────────────────────────────────────────────
@@ -279,6 +281,22 @@ def _model_counts(s: str) -> list:
 
 
 @dataclass
+class StackedRun:
+    """One finished integration, and what its Acquisition Summary can be
+    rebuilt from. A log can hold several."""
+
+    clock: str = ""
+    stacked: "OrderedDict[str, int]" = field(default_factory=OrderedDict)
+    measured: list = field(default_factory=list)      # frame names
+    registered: list = field(default_factory=list)    # frame names
+    rejected: list = field(default_factory=list)      # frame names
+    failed: list = field(default_factory=list)        # failed or skipped
+    light_groups: list = field(default_factory=list)  # (key, session, frames)
+    targets: list = field(default_factory=list)
+    n_sets: int = 1                                   # registration sets in it
+
+
+@dataclass
 class StackingRunReport:
     path: str = ""
     started: str = ""
@@ -299,6 +317,16 @@ class StackingRunReport:
     _cur_drizzle_group: str = ""                       # parser scratch
     afn: "OrderedDict[str, AFNGroup]" = field(default_factory=OrderedDict)
     _cur_afn_group: str = ""                           # parser scratch
+    # The Acquisition Summary the completion dialog showed, verbatim: one
+    # (clock, text) per finished run in this log. See SUMMARY_BEGIN.
+    summaries: list = field(default_factory=list)
+    # The last "Light groups summary": (group key, session, frames).
+    light_groups: list = field(default_factory=list)
+    _cur_cal_kind: str = ""                            # parser scratch
+    runs: list = field(default_factory=list)           # list[StackedRun]
+    _cur_run: object = field(default_factory=StackedRun)   # parser scratch
+    _run_done: bool = False                            # parser scratch
+    _set_pos: tuple = (0, 0)                           # parser scratch (k, n)
 
     facts: "OrderedDict[str, str]" = field(default_factory=OrderedDict)
     counters: Counter = field(default_factory=Counter)
@@ -362,6 +390,14 @@ class StackingRunReport:
 # ── helpers ─────────────────────────────────────────────────────────────────
 _TS = re.compile(r"^\[(\d{1,2}):(\d{2}):(\d{2})\]\s*(.*)$")
 _HDR = re.compile(r"^#\s*([A-Za-z ]+?):\s*(.*)$")
+
+# The copyable Acquisition Summary the completion dialog shows is logged as
+# ONE message (StackingSuiteDialog._log_acquisition_summary): this stamped
+# opening line, the summary exactly as shown, then the closing line -- so the
+# summary's own lines carry no timestamp. Fixed English on purpose: the
+# summary text may be translated, the markers must not be.
+SUMMARY_BEGIN = "📋 Stacking Summary"
+SUMMARY_END = "📋 End of Stacking Summary"
 
 _NUM = r"([-+]?\d+(?:\.\d+)?)"
 
@@ -464,7 +500,7 @@ RULES: list = [
     # masters / inputs
     ("master_dark",     re.compile(r"Added Master DARK\s*->\s*(?P<path>.+?)\s+under\s+(?P<key>.+?)\s+with metadata")),
     ("master_flat",     re.compile(r"Added Master FLAT\s*->\s*(?P<path>.+?)\s+under\s+(?P<key>.+?)\s+with metadata")),
-    ("light_added",     re.compile(r"Added\s+(?P<name>\S+)\s+as LIGHT")),
+    ("light_added",     re.compile(r"Added\s+(?P<name>\S.*?)\s+as LIGHT")),
     ("tree_snapshot",   re.compile(r"Tree snapshot\s*→\s*groups:\s*(?P<groups>\d+),\s*leaves seen:\s*(?P<leaves>\d+),\s*paths kept:\s*(?P<kept>\d+)")),
     ("group_files",     re.compile(r"Group\s+'(?P<g>[^']+)'\s+has\s+(?P<n>\d+)\s+file\(s\) after filtering")),
     ("group_listed",    re.compile(r"^⤴\s*(?P<g>.+?):\s*(?P<n>\d+)\s+files\s*$")),
@@ -475,9 +511,9 @@ RULES: list = [
     ("phase_done",      re.compile(r"Phase:\s*(?P<name>.+?)\s+complete\.?\s*$")),
 
     # calibration
-    ("calib_pair",      re.compile(r"^\U0001f527\s*(?P<frame>\S+)\s*->\s*Dark:\s*(?P<dark>.+?)\s*\|\s*Flat:\s*(?P<flat>.+?)\s*\|\s*Cosmetic:\s*(?P<cos>\w+)")),
+    ("calib_pair",      re.compile(r"^\U0001f527\s*(?P<frame>\S.*?)\s*->\s*Dark:\s*(?P<dark>.+?)\s*\|\s*Flat:\s*(?P<flat>.+?)\s*\|\s*Cosmetic:\s*(?P<cos>\w+)")),
     ("calib_group",     re.compile(r"Calibrating group:\s*(?P<g>.+)$")),
-    ("calib_saved",     re.compile(r"Saved:\s*(?P<name>\S+)\s*\((?P<i>\d+)/(?P<n>\d+)\)")),
+    ("calib_saved",     re.compile(r"Saved:\s*(?P<name>\S.*?)\s*\((?P<i>\d+)/(?P<n>\d+)\)")),
     ("calib_progress",  re.compile(r"Progress:\s*(?P<g>.+?)\s*—\s*(?P<i>\d+)/(?P<n>\d+)\s*frames")),
     ("pipeline_start",  re.compile(r"Calibration frames ready\. Starting pipeline on\s*(?P<n>\d+)")),
     ("satmask",         re.compile(r"^\[satmask\]")),
@@ -488,7 +524,7 @@ RULES: list = [
     ("measure_done",    re.compile(r"All chunks complete! Measured\s+(?P<n>\d+)\s+frames total")),
     ("measure_procs",   re.compile(r"Measuring\s+(?P<n>\d+)\s+frames across\s+(?P<p>\d+)\s+processes")),
     ("frame_stat",      re.compile(
-        r"^\U0001f4c2\s*(?P<name>\S+)\s*→\s*StarCount=(?P<stars>[-+\d.]+)"
+        r"^\U0001f4c2\s*(?P<name>\S.*?)\s*→\s*StarCount=(?P<stars>[-+\d.]+)"
         r"(?:.*?Ecc=(?P<ecc>[-+\d.]+))?(?:.*?Bg=(?P<bg>[-+\d.]+))?"
         r"(?:.*?FWHM~(?P<fwhm>[-+\d.]+))?(?:.*?Sharp=(?P<sharp>[-+\d.]+))?"
         r"(?:.*?SNR=(?P<snr>[-+\d.]+))?(?:.*?ExpScale=(?P<exps>[-+\d.]+))?"
@@ -497,7 +533,7 @@ RULES: list = [
     ("weights_group",   re.compile(r"Weight range for\s+'(?P<g>[^']+)':\s*min=" + _NUM + r"\s*max=" + _NUM + r"\s*mean=" + _NUM)),
     ("weights_mode",    re.compile(r"Frame Weights Debug Log\s*\(mode:\s*(?P<mode>[^)]+)\)")),
     ("sub_reject_sum",  re.compile(r"Sub rejection:\s*(?P<n>\d+)\s*/\s*(?P<tot>\d+)\s*subs rejected across\s*(?P<g>\d+)\s*filter group")),
-    ("sub_reject_one",  re.compile(r"Rejected sub \(score outlier\):\s*(?P<name>\S+)\s*\(score\s*" + _NUM + r"\)")),
+    ("sub_reject_one",  re.compile(r"Rejected sub \(score outlier\):\s*(?P<name>\S.*?)\s*\(score\s*" + _NUM + r"\)")),
     ("no_outliers",     re.compile(r"no outliers across any filter\s*—\s*all\s*(?P<n>\d+)\s*subs kept")),
 
     # reference / geometry
@@ -531,12 +567,12 @@ RULES: list = [
     ("align_procs",     re.compile(r"Using\s+(?P<n>\d+)\s+processes for stellar alignment")),
     ("align_progress",  re.compile(r"Aligning stars…\s*\((?P<i>\d+)/(?P<n>\d+)\)")),
     ("refine_pass",     re.compile(r"Refinement Pass\s*(?P<i>\d+)/(?P<n>\d+)")),
-    ("aa_delta",        re.compile(r"Astroalign delta for\s+(?P<name>\S+)\s*\([^)]*\):\s*dx=" + _NUM + r",\s*dy=" + _NUM)),
+    ("aa_delta",        re.compile(r"Astroalign delta for\s+(?P<name>\S.*?)\s*\([^()]*\):\s*dx=" + _NUM + r",\s*dy=" + _NUM)),
     ("aa_tile",         re.compile(r"^\[AA tile")),
     ("ransac",          re.compile(r"^\[RANSAC\]")),
     ("finalize_dbg",    re.compile(r"^\[finalize\]")),
-    ("distortion",      re.compile(r"Distortion Correction on\s+(?P<name>\S+):\s*warp=(?P<warp>\S+)")),
-    ("wrote_frame",     re.compile(r"Wrote\s+(?P<name>\S+)\s*\[(?P<warp>[^\]]+)\]")),
+    ("distortion",      re.compile(r"Distortion Correction on\s+(?P<name>\S.*?):\s*warp=(?P<warp>\S+)")),
+    ("wrote_frame",     re.compile(r"Wrote\s+(?P<name>\S.*?)\s*\[(?P<warp>[^\]]+)\]")),
     ("flip",            re.compile(r"(?P<deg>\d+)° rotate \(PA Δ≈[^)]*\):\s*(?P<name>\S+)")),
     ("flip_plain",      re.compile(r"^Flipping Image")),
     ("reg_complete",    re.compile(r"Registration complete\. Valid frames:\s*(?P<ok>\d+)/(?P<tot>\d+)")),
@@ -598,21 +634,23 @@ RULES: list = [
     ("masters_opened",  re.compile(r"Opened\s+(?P<n>\d+)\s+master\(s\) in SASpro")),
     ("summary_headers", re.compile(r"Reading headers from\s+(?P<n>\d+)\s+frame\(s\) for the summary")),
     ("hdr_read",        re.compile(r"Read\s+(?P<i>\d+)/(?P<n>\d+)\s+calibrated frame headers")),
-    ("sets_assigned",   re.compile(r"Auto-assigned targets to Sets:\s*(?P<v>.+?)\.")),
+    ("set_begin",       re.compile(r"Set\s+(?P<k>\d+)/(?P<n>\d+):\s*'(?P<name>.+?)'\s*\u2014\s*\d+\s+frame\(s\)")),
+    ("sets_assigned",   re.compile(
+        r"Auto-assigned targets to Sets:\s*(?P<v>.+?)\.(?=\s+Review\b|\s*$)")),
     ("tidying",         re.compile(r"Doing a little tidying up")),
     ("released",        re.compile(r"Releasing previous set runtime buffers")),
     ("cancelled",       re.compile(r"Registration cancelled|Stacking cancelled|halted", re.I)),
 
     # --- per-frame failures (round 2: from corpus survey) ---------------
-    ("aa_failed",       re.compile(r"Error:\s*Astroalign failed for\s+(?P<name>\S+?):\s*(?P<why>.+)$")),
-    ("aa_timeout",      re.compile(r"Error:\s*Astroalign timeout for\s+(?P<name>\S+?)\s*\((?P<why>[^)]*)\)")),
-    ("finalize_error",  re.compile(r"Finalize error\s+(?P<name>\S+?):\s*(?P<why>.+)$")),
-    ("gpu_calib_fail",  re.compile(r"GPU calibration failed for\s+(?P<name>\S+?):\s*(?P<why>.+)$")),
-    ("align_skipped",   re.compile(r"Skipping\s+(?P<name>\S+?)\s*\u2014\s*(?P<why>.*?alignment failed.*?)(?:\.|$)")),
+    ("aa_failed",       re.compile(r"Error:\s*Astroalign failed for\s+(?P<name>\S.*?):\s*(?P<why>.+)$")),
+    ("aa_timeout",      re.compile(r"Error:\s*Astroalign timeout for\s+(?P<name>\S.*?)\s*\((?P<why>[^)]*)\)")),
+    ("finalize_error",  re.compile(r"Finalize error\s+(?P<name>\S.*?):\s*(?P<why>.+)$")),
+    ("gpu_calib_fail",  re.compile(r"GPU calibration failed for\s+(?P<name>\S.*?):\s*(?P<why>.+)$")),
+    ("align_skipped",   re.compile(r"Skipping\s+(?P<name>\S.*?)\s*\u2014\s*(?P<why>.*?alignment failed.*?)(?:\.|$)")),
     ("failed_bare",     re.compile(r"^\u274c\s*(?P<name>[\w\-.+]+\.(?:fits?|fts|xisf))\s*$")),
 
     # --- calibration detail --------------------------------------------
-    ("frame_added",     re.compile(r"Added\s+(?P<name>\S+)\s+as\s+(?P<kind>DARK|FLAT|BIAS|FLATDARK)\b")),
+    ("frame_added",     re.compile(r"Added\s+(?P<name>\S.*?)\s+as\s+(?P<kind>DARK|FLAT|BIAS|FLATDARK)\b")),
     ("dark_sub",        re.compile(r"Dark Subtracted:\s*(?P<name>\S+)")),
     ("flat_applied",    re.compile(r"Flat Applied:\s*(?P<name>\S+)")),
     ("cosmetic_bayer",  re.compile(r"Cosmetic Correction Applied for Bayer Pattern\s*\((?P<pat>[^)]*)\)")),
@@ -630,7 +668,7 @@ RULES: list = [
     ("measured_orig",   re.compile(r"Measured\s+(?P<i>\d+)/(?P<n>\d+)\s+originals")),
     ("coverage_comp",   re.compile(r"Coverage computed\s+(?P<i>\d+)/(?P<n>\d+)")),
     ("measure_chunk",   re.compile(r"Measuring chunk\s+(?P<i>\d+)/(?P<n>\d+)")),
-    ("filter_target",   re.compile(r"Filter\s+'(?P<f>[^']+)'\s*target\s*\u2190\s*(?P<name>\S+)\s*\(score=" + _NUM + r"\)")),
+    ("filter_target",   re.compile(r"Filter\s+'(?P<f>[^']+)'\s*target\s*\u2190\s*(?P<name>\S.*?)\s*\(score=" + _NUM + r"\)")),
 
     # --- background extraction -----------------------------------------
     ("abe_config",      re.compile(r"Gradient removal \(ABE[^)]*\):\s*(?P<cfg>.+)$")),
@@ -666,7 +704,7 @@ RULES: list = [
         r"\s*\((?P<elig>\d+)\s*eligible to stack\)\s*[\u2014-]\s*(?P<files>\d+)\s*files total")),
     ("cal_groups_hdr",  re.compile(r"(?P<kind>Dark|Flat|Light) groups summary")),
     ("cal_group_line",  re.compile(
-        r"^\u2022\s*(?P<g>.+?)\s*\|\s*session:\s*(?P<sess>\S+)\s*"
+        r"^\u2022\s*(?P<g>.+?)\s*\|\s*session:\s*(?P<sess>\S.*?)\s*"
         r"\u2192\s*(?P<n>\d+)\s*files,\s*(?P<dur>.+?)\s*$")),
     ("total_tiles",     re.compile(r"Total tiles to process:\s*(?P<n>\d+)")),
     ("progress_init",   re.compile(r"Progress initialized:\s*(?P<n>\d+)\s*tiles")),
@@ -683,14 +721,14 @@ RULES: list = [
     ("temp_memmap",     re.compile(r"Creating temp memmap:\s*(?P<name>\S+)")),
     ("group_tiles",     re.compile(r"(?P<n>\d+)\s+tiles to process for this group")),
     ("tile_proc_start", re.compile(r"Starting tile processing for group\s+'(?P<g>[^']+)'")),
-    ("mdark_saved",     re.compile(r"Master Dark saved(?:\s+and added to UI)?:\s*(?P<path>.+?)\s*$")),
+    ("mdark_saved",     re.compile(r"Master Dark (?:queued|saved)(?:\s+and added to UI)?:\s*(?P<path>.+?)\s*$")),
     ("mflat_saved",     re.compile(r"Master Flat (?:queued|saved)(?:\s+and added to UI)?:\s*(?P<path>.+?)\s*$")),
     ("mflats_done",     re.compile(r"All master flats saved")),
     ("preload_darks",   re.compile(r"Pre-loading\s+(?P<n>\d+)\s+unique master dark")),
     ("cal_precheck",    re.compile(r"cal-precheck:\s*(?P<ok>\d+)/(?P<tot>\d+)\s*usable twins")),
     ("load_masters_gpu", re.compile(r"Loading master calibration frames to GPU")),
     ("calib_complete",  re.compile(r"Calibration Complete")),
-    ("checked_file",    re.compile(r"^\u2713\s*(?P<name>\S+\.(?:fits?|fts|xisf))\s*$")),
+    ("checked_file",    re.compile(r"^\u2713\s*(?P<name>\S.*?\.(?:fits?|fts|xisf))\s*$")),
 
     # --- round 5: integration timing, rejection detail, audit output ----
     ("int_timing",      re.compile(
@@ -772,6 +810,18 @@ def _read_text(path: str) -> str:
         return fh.read()
 
 
+def _summary_line(rep: StackingRunReport, lineno: int, t, clock: str,
+                  text: str) -> None:
+    """A line of a Stacking Summary block: listed in the raw log and counted
+    as recognised, but never run through RULES or flagged as a problem."""
+    rep.lines.append(LogLine(idx=len(rep.lines), lineno=lineno, t=t,
+                             clock=clock, text=text, severity=SEV_INFO,
+                             rule="stacking_summary"))
+    rep.n_lines += 1
+    rep.n_matched += 1
+    rep.counters["stacking_summary"] += 1
+
+
 def parse_stacking_log(path: str, *, keep_transient: bool = False
                        ) -> StackingRunReport:
     """Parse one stacking log into a :class:`StackingRunReport`.
@@ -792,9 +842,32 @@ def parse_stacking_log(path: str, *, keep_transient: bool = False
     last_t = None
     last_clock = ""
     matched_ids = set()
+    summary_buf = None              # lines of an open Stacking Summary block
+    summary_clock = ""
 
     for lineno, raw in enumerate(text.split("\n"), start=1):
         line = raw.rstrip("\n")
+
+        # Inside a Stacking Summary: keep every line as written -- blank
+        # lines and column padding are its layout -- and keep it away from
+        # RULES, since its "Total frames:" and per-filter rows report on the
+        # run rather than being events in it. Its lines are never stamped, so
+        # a stamped line means the block was cut short: keep what arrived and
+        # read that line normally.
+        if summary_buf is not None:
+            if line.strip() == SUMMARY_END:
+                rep.summaries.append((summary_clock, "\n".join(summary_buf)))
+                summary_buf = None
+                _summary_line(rep, lineno, last_t, last_clock, line.strip())
+                continue
+            if not _TS.match(line):
+                summary_buf.append(line)
+                if line.strip():
+                    _summary_line(rep, lineno, last_t, last_clock, line)
+                continue
+            rep.summaries.append((summary_clock, "\n".join(summary_buf).rstrip()))
+            summary_buf = None
+
         if not line.strip():
             continue
 
@@ -839,6 +912,11 @@ def parse_stacking_log(path: str, *, keep_transient: bool = False
             # written this way). Attach it to the last known time so it still
             # places on the timeline.
             t, clock, txt = last_t, last_clock, body
+
+        if txt.startswith(SUMMARY_BEGIN):
+            summary_buf, summary_clock = [], clock
+            _summary_line(rep, lineno, t, clock, txt)
+            continue
 
         if not (txt or "").strip():
             # A timestamped line with no body carries nothing; counting it as
@@ -889,6 +967,9 @@ def parse_stacking_log(path: str, *, keep_transient: bool = False
             rep.problems.append(Problem(t=t, clock=clock, text=txt,
                                         severity=ll.severity, lineno=lineno))
 
+    if summary_buf is not None:                  # the log ends inside one
+        rep.summaries.append((summary_clock, "\n".join(summary_buf).rstrip()))
+
     # close the last open phase
     end_t = max((l.t for l in rep.lines if l.t is not None), default=None)
     for ph in rep.phases:
@@ -898,6 +979,332 @@ def parse_stacking_log(path: str, *, keep_transient: bool = False
     rep.modes = _detect_modes(rep, matched_ids, text)
     _afn_fact(rep)
     return rep
+
+
+# ── finished runs, and their Acquisition Summary rebuilt ────────────────────
+_GROUP_KEY = re.compile(
+    r"^(?P<f>.+?)\s+-\s+(?P<e>[0-9.]+)s\s*\((?P<sz>\d+x\d+)\)")
+_ISO_NIGHT = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_PASS_HASH = re.compile(r"^[0-9a-f]{6}_")
+_PASS_SUFFIX = re.compile(r"(?:_n)?(?:_cfa)?(?:_r)?$")
+_INNER_EXT = re.compile(r"\.(?:fits?|fts|xisf|tiff?)$", re.I)
+UNKNOWN_NIGHT = "Unknown date"            # format_acquisition_summary's label
+
+
+def _run_open(rep: StackingRunReport) -> StackedRun:
+    """The run being logged. The first frame line after a finished one starts
+    the next; a run that logs no frames of its own (integrating the same
+    registered frames again) keeps the ones before it."""
+    if rep._run_done:
+        rep._cur_run = StackedRun()
+        rep._run_done = False
+    return rep._cur_run
+
+
+def _run_stacked(rep: StackingRunReport, group: str, n: int, ll: LogLine) -> None:
+    """A '• group: N stacked' line, from the block that ends an integration."""
+    same_block = (len(rep.lines) > 1 and rep.lines[-2].rule == "group_stacked")
+    if not (same_block and rep.runs):
+        cur = rep._cur_run
+        failed = [x for x, _r in rep.failed_frames] + [x for x, _r in rep.skipped_frames]
+        k, n_sets = rep._set_pos
+        if k > 1 and rep.runs:            # a later set of the same queue
+            run = rep.runs[-1]
+            run.measured += cur.measured
+            run.registered += cur.registered
+            run.rejected += cur.rejected
+            run.failed += failed
+            run.n_sets = max(run.n_sets, n_sets)
+        else:
+            rep.runs.append(StackedRun(
+                measured=list(cur.measured), registered=list(cur.registered),
+                rejected=list(cur.rejected), failed=failed,
+                light_groups=list(rep.light_groups), n_sets=max(1, n_sets),
+                targets=[x.strip() for x in
+                         (rep.facts.get("Registration sets") or "").split(",")
+                         if x.strip()]))
+        if n_sets and k >= n_sets:
+            rep._set_pos = (0, 0)         # that queue is finished
+        rep._run_done = True
+    run = rep.runs[-1]
+    run.clock = ll.clock
+    run.stacked[group] = run.stacked.get(group, 0) + n
+
+
+def frame_stems(name: str) -> list:
+    """Stems a logged frame name can stand for: its sources first, as written
+    last. Each pass adds a 6-hex prefix and normalising / registering add a
+    suffix, so '8237c7_cc800b_x_L_0062_c_n_r.fit' comes from
+    'cc800b_x_L_0062_c.fit'."""
+    stem = os.path.splitext(re.split(r"[\\/]", name or "")[-1])[0]
+    out = []
+    base = _PASS_SUFFIX.sub("", stem)
+    if base and base != stem:
+        base = _INNER_EXT.sub("", base)       # 'x.xisf_n.fit' came from x.xisf
+        out.append(base)
+        while _PASS_HASH.match(base):
+            base = base[7:]
+            out.append(base)
+    out.append(stem)
+    return out
+
+
+def _canonical(name: str, known) -> str:
+    stems = frame_stems(name)
+    for s in stems:
+        if s in known:
+            return s
+    # Nothing to check against: one prefix belongs to the pass, the rest (if
+    # any) to the frame.
+    return stems[1] if len(stems) > 2 else stems[0]
+
+
+def _canon(run: StackedRun, names) -> list:
+    """One stem per frame, whichever stage each name was logged at."""
+    known = {frame_stems(n)[-1] for n in run.measured}
+    return list(dict.fromkeys(_canonical(n, known) for n in names if n))
+
+
+def run_stems(run: StackedRun) -> list:
+    """Every frame a run names."""
+    return _canon(run, [*run.measured, *run.registered, *run.rejected,
+                        *run.failed])
+
+
+def stacked_stems(run: StackedRun) -> tuple:
+    """(stems of the frames the run stacked, stems it dropped).
+
+    The log names the frames it measured, registered, rejected and failed but
+    not the ones it stacked, so take whichever combination has exactly as many
+    frames as were stacked; failing that the shortest one long enough to hold
+    them, so nothing that was stacked is left out.
+    """
+    meas = _canon(run, run.measured)
+    reg = _canon(run, run.registered)
+    in_reg = set(reg)
+    rejected = set(_canon(run, run.rejected))
+    failed = set(_canon(run, run.failed))
+    counts = list(run.stacked.values())
+    total = sum(counts)
+    lists = []
+    # A frame can fail one step and still be stacked (a retry, or a transform
+    # that was already good), so without the failures only as a second try.
+    for gone in (rejected | failed, rejected):
+        for names in (meas, reg, [s for s in meas if s in in_reg]):
+            left = [s for s in names if s not in gone]
+            if left:
+                lists.append(left)
+    best = None
+    for want in (total, counts[0] if len(set(counts)) == 1 else total):
+        # the second is a dual-band split: every frame in each band's group
+        best = best or next((c for c in lists if len(c) == want), None)
+    if best is None:
+        longer = [c for c in lists if len(c) > total]
+        best = (min(longer, key=len) if longer
+                else max(lists, key=len) if lists else [])
+    return best, (rejected | failed) - set(best)
+
+
+def _group_triple(name: str):
+    """'L - 120.0s (8288x5644) [G121]' -> ('L', 120.0, '8288x5644')."""
+    m = _GROUP_KEY.match((name or "").strip())
+    if not m:
+        return None
+    try:
+        return m.group("f").strip(), float(m.group("e")), m.group("sz")
+    except ValueError:
+        return None
+
+
+def _pick_group(rec: dict, groups):
+    """The stacked group a frame's header puts it in."""
+    if len(groups) == 1:
+        return groups[0]
+    same = [t for t in groups if t[0] == rec["group"]]
+    if not same:
+        return None
+    near = min(abs(t[1] - rec["exposure"]) for t in same)
+    same = [t for t in same if abs(t[1] - rec["exposure"]) - near < 1e-6]
+    if len(same) > 1:                     # same exposure, different binning
+        same = [t for t in same if t[2] == rec.get("size")] or same
+    return same[0]
+
+
+def rebuild_acquisition_summary(run: StackedRun, frames=None):
+    """Rebuild one finished run's Acquisition Summary from a log that doesn't
+    carry it (see SUMMARY_BEGIN).
+
+    ``frames`` maps frame stems to what their own headers say, for those that
+    could be read: {'filter', 'exposure', 'night', 'object', 'group' (filter
+    as the stacker names groups), 'size', 'session'}. When that covers every
+    stacked frame, group by group, the summary is tallied from the same
+    headers the completion dialog reads. Otherwise the totals and filters
+    come from the stacked counts and the nights from the Light groups summary
+    or from the headers there are; whatever stays unknown is said in a note,
+    never guessed.
+
+    Returns (data, notes, source) for format_acquisition_summary -- source is
+    'frames' or 'log' -- or (None, reason, "").
+    """
+    from setiastro.saspro.acquisition_summary import (
+        aggregate_records, blank_filter_bucket, blank_night_bucket)
+
+    frames = frames or {}
+    stacked: "OrderedDict[tuple, int]" = OrderedDict()
+    for name, n in run.stacked.items():
+        t = _group_triple(name)
+        if t is None:
+            return None, f"Couldn't read the group name '{name}'.", ""
+        if n:
+            stacked[t] = stacked.get(t, 0) + n
+    if not stacked:
+        return None, "Nothing was stacked in this run.", ""
+    groups = list(stacked)
+
+    stems, gone = stacked_stems(run)
+
+    def _into(rec, t):
+        """The record as part of group t, which fills in what its header
+        doesn't say."""
+        return dict(rec, set="",
+                    filter=t[0] if rec["filter"] == "Unknown" else rec["filter"],
+                    exposure=rec["exposure"] or t[1])
+
+    got = {t: [] for t in groups}
+    dual = (len(groups) > 1 and len(stems) > 0
+            and all(n == len(stems) for n in stacked.values())
+            and not any(frames[s]["group"] in {t[0] for t in groups}
+                        for s in stems if s in frames))
+    for s in stems:
+        rec = frames.get(s)
+        if rec is None:
+            continue
+        if dual:                          # every frame is split into each band
+            for t in groups:
+                got[t].append(dict(_into(rec, t), filter=t[0]))
+            continue
+        t = _pick_group(rec, groups)
+        if t is not None:
+            got[t].append(_into(rec, t))
+
+    notes = []
+    if run.n_sets > 1:
+        notes.append("This run stacked several registration sets; the by-set "
+                     "breakdown isn't rebuilt.")
+
+    if all(len(got[t]) == n for t, n in stacked.items()):
+        return (aggregate_records([r for t in groups for r in got[t]]),
+                notes, "frames")
+
+    # -- not every frame's header is here: groups one by one ----------------
+    found: "OrderedDict[tuple, OrderedDict]" = OrderedDict()
+    for gkey, sess, n in run.light_groups:
+        t = _group_triple(gkey)
+        if t is None or not n:
+            continue
+        nights = found.setdefault(t, OrderedDict())
+        nights[sess] = nights.get(sess, 0) + n
+
+    def _light_nights(t):
+        """The light group's nights; by filter and exposure if the sizes were
+        written differently in the two places (binning)."""
+        if t in found:
+            return found[t]
+        same = [k for k in found if k[0] == t[0] and abs(k[1] - t[1]) < 1e-6]
+        return found[same[0]] if len(same) == 1 else None
+
+    # Only a light list that this run explains is this run's: each frame it
+    # lists beyond what was stacked must be one the log says was dropped.
+    over = 0
+    for t, n in stacked.items():
+        over += max(0, sum((_light_nights(t) or {}).values()) - n)
+    explained = over <= len(gone)
+
+    placed = {t: defaultdict(int) for t in groups}
+    for s in gone:
+        rec = frames.get(s)
+        t = _pick_group(rec, groups) if rec else None
+        if t is not None:
+            placed[t][rec["session"]] += 1
+
+    def _from_light(t, n):
+        """(nights, frames too many, frames with no night) or None."""
+        nights = _light_nights(t)
+        if not nights or not all(_ISO_NIGHT.match(s) for s in nights):
+            return None                           # named sessions aren't nights
+        short = sum(nights.values()) - n          # listed but not stacked
+        if short > 0 and not explained:
+            return None
+        if short < 0:
+            return dict(nights), 0, -short
+        if short == 0:
+            return dict(nights), 0, 0
+        if len(nights) == 1:
+            return {next(iter(nights)): n}, 0, 0
+        where = {s: c for s, c in placed[t].items() if s in nights}
+        if sum(where.values()) > short or any(c > nights[s] for s, c in where.items()):
+            where = {}                            # names from another run
+        return ({s: c - where.get(s, 0) for s, c in nights.items()},
+                short - sum(where.values()), 0)
+
+    def _from_headers(t, n):
+        nights = Counter(r["night"] for r in got[t])
+        if not nights:
+            return None
+        return (dict(nights), max(0, len(got[t]) - n), max(0, n - len(got[t])))
+
+    by_filter = defaultdict(blank_filter_bucket)
+    by_night = defaultdict(blank_night_bucket)
+    total_frames, total_integration = 0, 0.0
+    unplaced = unmatched = 0
+    for t, n in stacked.items():
+        filt, exp, _size = t
+        b = by_filter[filt]
+        b["count"] += n
+        b["integration"] += n * exp
+        b["exposures"][round(exp, 3)] += n
+        total_frames += n
+        total_integration += n * exp
+
+        options = [o for o in (_from_headers(t, n), _from_light(t, n)) if o]
+        nights, extra, lost = (min(options, key=lambda o: o[1] + o[2])
+                               if options else ({}, 0, n))
+        unplaced += extra
+        unmatched += lost
+        if lost:
+            nights = dict(nights)
+            nights[UNKNOWN_NIGHT] = nights.get(UNKNOWN_NIGHT, 0) + lost
+        for night, c in nights.items():
+            if c > 0:
+                nb = by_night[night]
+                nb["count"] += c
+                nb["integration"] += c * exp
+                nb["filters"][filt] += c
+
+    nights_unknown = set(by_night) <= {UNKNOWN_NIGHT}
+    if nights_unknown:
+        notes.append("The nights can't be told from this log, and the frames "
+                     "weren't found to read them from.")
+    else:
+        if unplaced:
+            notes.append(
+                f"By night includes {unplaced} frame(s) that weren't stacked: "
+                f"which night they came from isn't in the log, and the frames "
+                f"weren't found to read it from.")
+        if unmatched:
+            notes.append(f"{unmatched} stacked frame(s) couldn't be matched to "
+                         f"a night.")
+
+    objects = {r["object"] for rs in got.values() for r in rs if r["object"]}
+    return {
+        "objects": sorted(objects or set(run.targets)),
+        "total_frames": total_frames,
+        "total_integration": total_integration,
+        "by_filter": by_filter,
+        "by_set": OrderedDict(),
+        "by_night": by_night,
+        "nights_unknown": nights_unknown,
+    }, notes, "log"
 
 
 def _open_phase(rep: StackingRunReport, name: str, t) -> None:
@@ -1127,6 +1534,9 @@ def _apply(rep: StackingRunReport, rid: str, m, ll: LogLine) -> None:
         gi.prepass_seconds = _f(m.group(m.lastindex))
     elif rid == "group_stacked":
         rep.group((g.get("g") or "").strip()).stacked = _i(g.get("n"))
+        _run_stacked(rep, (g.get("g") or "").strip(), _i(g.get("n")) or 0, ll)
+    elif rid == "set_begin":
+        rep._set_pos = (_i(g.get("k")) or 0, _i(g.get("n")) or 0)
     elif rid == "int_algo":
         rep.group(g["g"]).algorithm = (g.get("algo") or "").strip()
     elif rid == "int_start":
@@ -1157,8 +1567,10 @@ def _apply(rep: StackingRunReport, rid: str, m, ll: LogLine) -> None:
             exp_scale=_f(g.get("exps")), weight=_f(g.get("w")),
             normalized=_f(g.get("norm")),
         ))
+        _run_open(rep).measured.append(g.get("name") or "")
     elif rid == "sub_reject_one":
         rep.rejected_subs.append(((g.get("name") or ""), _f(m.group(m.lastindex))))
+        _run_open(rep).rejected.append(g.get("name") or "")
     elif rid == "light_added":
         rep.lights_added.append(g.get("name") or "")
     elif rid == "master_dark":
@@ -1179,8 +1591,10 @@ def _apply(rep: StackingRunReport, rid: str, m, ll: LogLine) -> None:
     elif rid == "aa_delta":
         rep.align_deltas.append((g.get("name") or "",
                                  _f(m.group(2)), _f(m.group(3))))
+        _run_open(rep).registered.append(g.get("name") or "")
     elif rid == "wrote_frame":
         rep.written_frames.append(g.get("name") or "")
+        _run_open(rep).registered.append(g.get("name") or "")
     elif rid == "finalize_time":
         rep.counters["finalize_seconds"] = int(_f(m.group(1)) or 0)
 
@@ -1260,10 +1674,20 @@ def _apply(rep: StackingRunReport, rid: str, m, ll: LogLine) -> None:
         rep.facts[f"Discovered ({what})"] = (
             f"{g.get('n')} group(s), {g.get('elig')} eligible, "
             f"{g.get('files')} file(s)")
+    elif rid == "cal_groups_hdr":
+        rep._cur_cal_kind = g.get("kind") or ""
+        if rep._cur_cal_kind == "Light":
+            # Re-listed in full each time lights are added; the last listing
+            # is what the run stacked.
+            rep.light_groups = []
     elif rid == "cal_group_line":
         rep.cal_groups.append(((g.get("g") or "").strip(),
                                (g.get("sess") or "").strip(),
                                _i(g.get("n")), (g.get("dur") or "").strip()))
+        if rep._cur_cal_kind == "Light":
+            rep.light_groups.append(((g.get("g") or "").strip(),
+                                     (g.get("sess") or "").strip(),
+                                     _i(g.get("n"))))
     elif rid in ("mdark_group", "mflat_group"):
         mb = MasterBuild(
             kind=("dark" if rid == "mdark_group" else "flat"),

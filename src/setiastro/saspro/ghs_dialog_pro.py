@@ -766,7 +766,7 @@ class GhsDialogPro(QDialog):
     # Function-mode helpers
     # -----------------------------------------------------------------------
     def _on_toggle_preview(self, checked: bool):
-        self.btn_toggle_preview.setText("Preview: ON" if checked else "Preview: OFF")
+        self.btn_toggle_preview.setText(self.tr("Preview: ON") if checked else self.tr("Preview: OFF"))
         if self._pix is None:
             return
         if checked:

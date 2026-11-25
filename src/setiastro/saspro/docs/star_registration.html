@@ -56,13 +56,13 @@
 <h1>Stacking Suite</h1>
 <p class="sub">SASpro's complete calibration-and-integration pipeline: from raw camera RAW/TIFF through master darks and flats, debayer, cosmetic correction, satellite trail masking, registration against any alignment model up to 4th-order polynomial, drizzle, up to multi-panel mosaic sets, multi-frame deconvolution, and a final rejected-and-weighted integrated master &mdash; all driven from one window, with CPU, CUDA, MPS and DirectML backends shared across every heavy stage.</p>
 
-<p>The Stacking Suite is laid out as six tabs along the top (<i>Quick Stack</i>, <i>Convert Camera RAW/TIFF</i>, <i>Darks</i>, <i>Flats</i>, <i>Lights</i>, <i>Image Integration</i>) with a header strip above them (wrench, folder path, Change&hellip;, Open Log, document) and almost every parameter you'll want to touch living in the orange-wrench <b>Stacking Settings</b> dialog. The sections below walk through each tab in the order you'll meet them, then cover the Settings dialog, then the maths and plumbing behind the scenes.</p>
+<p>The Stacking Suite is laid out as six tabs along the top (<i>Pipeline</i>, <i>Convert Camera RAW/TIFF</i>, <i>Darks</i>, <i>Flats</i>, <i>Lights</i>, <i>Image Integration</i>) with a header strip above them (wrench, folder path, Change&hellip;, Open Log, document) and almost every parameter you'll want to touch living in the orange-wrench <b>Stacking Settings</b> dialog. The sections below walk through each tab in the order you'll meet them, then cover the Settings dialog, then the maths and plumbing behind the scenes.</p>
 
 <div class="toc">
 <h3>Contents</h3>
 <ul>
   <li><a href="#top-row">Top row &amp; the wrench</a></li>
-  <li><a href="#quick-stack">1. Quick Stack</a></li>
+  <li><a href="#pipeline">1. Pipeline</a></li>
   <li><a href="#convert">2. Convert Camera RAW/TIFF</a></li>
   <li><a href="#darks">3. Darks</a></li>
   <li><a href="#flats">4. Flats</a></li>
@@ -105,8 +105,8 @@
       <td>This help page. Added at the far right of the row.</td></tr>
 </table>
 
-<a id="quick-stack"></a>
-<h2>1. Quick Stack</h2>
+<a id="pipeline"></a>
+<h2>1. Pipeline</h2>
 <p>The default tab, and the easiest way to get a stack out the door. Five cards walk you top-left to bottom-right through the pipeline, each with a traffic-light indicator:</p>
 
 <div class="workflow"><b>Workflow</b><br>
@@ -170,11 +170,11 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 
 <a id="flats"></a>
 <h2>4. Flats</h2>
-<p>Same shape as Darks but with filter awareness and per-group dark-override controls.</p>
+<p>Same shape as Darks, with filter awareness. Each flat group shows the master dark it will use, and you can change it there.</p>
 
 <h3>4.1 Left pane: raw flats tree</h3>
 <ul>
-  <li><b>Flat Frames tree</b> &mdash; four columns: Filter &amp; Exposure, Metadata, Master Dark Used, Override Dark.</li>
+  <li><b>Flat Frames tree</b> &mdash; two columns: Filter &amp; Exposure, Metadata. Under each group: its <b>Dark</b> row (&sect;4.3) and an <b>N frames</b> row; click that to list or hide the group's frames.</li>
   <li><b>Add Flat Files</b> / <b>Add Flat Directory</b> &mdash; same semantics as Darks.</li>
   <li><b>Recurse subfolders</b>, <b>Auto-detect session</b> &mdash; shared toggles. When Auto-detect is off, the <b>Manual Session</b> field below applies to every new flat.</li>
   <li><b>Manual Session</b> &mdash; freeform tag (e.g. <code>Night1</code>, <code>2025-12-13</code>, <code>SessionA</code>). Only used when Auto-detect is off, and master flats always include their session in the key.</li>
@@ -183,25 +183,34 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 <h3>4.2 Right pane</h3>
 <ul>
   <li><b>Exposure Tolerance (seconds)</b> &mdash; sub-second precision (0&ndash;30&nbsp;s, step 0.01), persisted. Flats are usually short, so a tight tolerance groups 1.1&nbsp;s and 1.2&nbsp;s shots correctly.</li>
-  <li><b>Auto-Select Closest Master Dark</b> &mdash; for every flat group, scores the available master darks by exposure proximity (and GAIN/OFFSET match within 1 count) and picks the best.</li>
+  <li><b>Auto-Select Closest Master Dark</b> &mdash; for every flat group, picks a master dark of the same size, then with matching GAIN/OFFSET (within 1 count), then the nearest exposure, then the nearest temperature. Unchecked, a group gets no dark unless you pick one in its Dark row.</li>
   <li><b>Turn Those Flats Into Master Flats</b> &mdash; builds one master flat per (filter, size, session) group.</li>
 </ul>
 
-<h3>4.3 Right-click &amp; context</h3>
-<p>Right-click any flat group for:</p>
+<h3>4.3 Each group's master dark</h3>
+<p>The <b>Dark</b> row under a flat group lists:</p>
 <ul>
-  <li><b>Override Master Dark for this group&hellip;</b> &mdash; file picker; the chosen dark is used only for this flat group. Row's Override column turns gold.</li>
-  <li><b>Clear Dark Override for this group</b> &mdash; reverts to Auto (or None if auto-select is off).</li>
-  <li><b>No Dark Calibration for this group</b> &mdash; flats go through without any dark subtraction. Row goes red. Useful for cameras where the flat-dark pedestal is baked in.</li>
-  <li><b>Set Session Tag&hellip;</b> &mdash; retags the whole group.</li>
+  <li><b>Auto: &lt;name&gt;</b> &mdash; what Auto-Select picks for this group.</li>
+  <li>Every loaded master dark, with its exposure, gain, temperature and size. One of another size is listed but greyed out.</li>
+  <li><b>None</b> &mdash; flats go through without any dark subtraction. Useful for cameras where the flat-dark pedestal is baked in.</li>
+  <li><b>Add a master dark&hellip;</b> &mdash; loads one (as <i>Load Master Dark</i> does) and uses it for this group.</li>
 </ul>
+<p>The badge beside it says why: <b>✓ auto</b>, <b>✎ your choice</b> or <b>✎ none</b>, plus a <b>⚠</b> when the dark is another size, its exposure differs by more than 5% (or the exposure tolerance), its gain or offset differs, or its temperature differs by more than 2&nbsp;&deg;C. <b>Turn Those Flats Into Master Flats</b> uses exactly the dark each row shows.</p>
+<p>Right-click a flat group for <b>Set Session Tag&hellip;</b>, which retags the whole group.</p>
 
 <a id="lights"></a>
 <h2>5. Lights</h2>
 <p>Where you load the actual signal data, apply the calibration pipeline, and optionally hand off straight to registration.</p>
 
 <h3>5.1 Lights tree</h3>
-<p>Five columns: Filter &amp; Exposure, Metadata, Master Dark, Master Flat, Corrections. Grouped by filter at the top level and by (exposure, size) beneath. Leaves show individual frames with their status and chosen masters.</p>
+<p>Five columns: Filter &amp; Exposure, Metadata, Master Dark, Master Flat, Corrections. Grouped by filter at the top level and by (exposure, size) beneath. Each frame shows the masters it gets (<b>✎</b> marks a frame's own pick, &sect;5.6).</p>
+<p>Under each group:</p>
+<ul>
+  <li><b>Dark</b> &mdash; the master dark for the whole group. Auto picks one of the same size, then with matching GAIN/OFFSET, then the nearest exposure, then the nearest temperature.</li>
+  <li><b>Flat</b> &mdash; one row per session (night) in the group, since flats are matched by night. Auto picks a master flat of the same filter and size from the same night, else the nearest night, preferring a matching gain.</li>
+  <li><b>N frames</b> &mdash; click to list or hide the group's frames.</li>
+</ul>
+<p>Each Dark and Flat row lists <b>Auto: &lt;name&gt;</b>, every loaded master (one of another size greyed out), <b>None</b> and <b>Add a master dark/flat&hellip;</b>. Its badge says why: <b>✓ auto</b>, <b>✓ same night</b>, <b>≈ nearest night: &lt;date&gt;</b>, <b>✎ your choice</b>, <b>✎ none</b>, and a <b>⚠</b> when nothing fits or the master is another size, another filter, another gain, or an exposure or temperature away from the frames. When a row's frames would get different masters (different temperatures, say), it reads <b>Auto: N masters, picked per frame</b>. <b>Calibrate Light Frames</b> uses exactly what each frame shows.</p>
 
 <ul>
   <li><b>Add Light Files</b>, <b>Add Light Directory</b> &mdash; files or recursive folder scan.</li>
@@ -234,9 +243,9 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 
 <h3>5.6 Overrides &amp; context</h3>
 <ul>
-  <li><b>Override Dark Frame</b>, <b>Override Flat Frame</b> &mdash; file pickers that force a specific master for selected leaves (or every leaf in a selected exposure/filter group).</li>
+  <li><b>Override Dark Frame</b>, <b>Override Flat Frame</b> &mdash; file pickers that load a master and use it for the selection: selected frames get it as their own pick (<b>✎</b>), a selected exposure or filter group gets it in its Dark or Flat rows.</li>
   <li><b>🚀 Calibrate Light Frames 🚀</b> &mdash; the big orange button. Runs the two-phase GPU pipeline (see &sect;9.1).</li>
-  <li><b>Right-click a light</b> &mdash; same three items as the Overrides buttons plus <i>Set Session Tag&hellip;</i>. Can be applied to a whole exposure group at once.</li>
+  <li><b>Right-click a light</b> &mdash; <i>Override Dark Frame</i>, <i>Override Flat Frame</i>, <i>Use the Group's Dark and Flat</i> (drops the frames' own picks) and <i>Set Session Tag&hellip;</i>. Can be applied to a whole exposure group at once.</li>
 </ul>
 
 <a id="integration"></a>
@@ -333,7 +342,7 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 <ul>
   <li><b>🔥🚀 Register and Integrate Images 🔥🚀</b> &mdash; the full back-half: register every group against its reference, normalize, reject, weight, integrate, and save.</li>
   <li><b>Skip Registration and Integrate</b> &mdash; integrate only. Expects <code>_r.fit</code> registered frames to already exist (from a previous run). Great for re-running integration with different rejection settings.</li>
-  <li><b>🗑️ Clean Up Temp Files</b> &mdash; same cleanup action as on the Quick Stack tab.</li>
+  <li><b>🗑️ Clean Up Temp Files</b> &mdash; same cleanup action as on the Pipeline tab.</li>
 </ul>
 
 <a id="settings"></a>
@@ -508,7 +517,7 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
 
 <ul>
   <li>Changes made in the Settings dialog are saved <i>live</i> to QSettings. &ldquo;Loading&rdquo; a profile overwrites those keys and <b>restarts the Stacking Suite dialog</b> so every control re-reads them. Expect a brief flicker as the dialog re-opens.</li>
-  <li>Built-in profiles are seeded on first run (see <code>_ensure_builtin_stacking_profiles</code>). Your own override anything built-in with the same name.</li>
+  <li><b>Frank&rsquo;s Settings (Recommended)</b> is built in, and a fresh install starts on exactly these settings. When SASpro ships new recommendations the profile is refreshed (your live settings only change when you click <i>Load</i>). If you had saved your own settings over it, they are kept as a profile named <i>My Saved Settings</i>.</li>
   <li>Export writes a JSON file with just the shareable keys (nothing machine-specific like absolute paths). Import validates and merges; incompatible or old-format keys are mapped forward where possible.</li>
 </ul>
 
@@ -742,7 +751,7 @@ GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.6
   <li><b>Satellite trail CNN</b> &mdash; third-party CNN packaged with SASpro's runtime; invoked here as a post-calibration pass.</li>
   <li><b>Spectrophotometric Standard Star Calibration</b> work that informs the plate-solve-first master handling &mdash; Franklin Marek, DOI <code>10.5281/zenodo.23107662</code> (CC-BY 4.0).</li>
 </ul>
-Pipeline design, the quick-stack card UI, the shared GPU runtime, the three-thread calibration pipeline, Registration Sets, dual-band advanced split, the frame-weighting modes, and the per-group dark/flat overrides are original to this suite.
+Pipeline design, the Pipeline-tab card UI, the shared GPU runtime, the three-thread calibration pipeline, Registration Sets, dual-band advanced split, the frame-weighting modes, and the per-group dark/flat overrides are original to this suite.
 </div>
 
 </body>

@@ -6,12 +6,17 @@ import numpy as np
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QProgressBar, QPushButton, QMessageBox, QFormLayout, QDialogButtonBox, QSpinBox, QCheckBox, QComboBox, QLabel, QApplication
 
-from PyQt6.QtCore import QSettings
+from PyQt6.QtCore import QSettings, QCoreApplication
 # reuse everything from the UI module
 from .aberration_ai import (
     ort, IS_APPLE_ARM,
     _ONNXWorker, pick_providers, _preserve_border
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("AberrationAIPreset", text)
+
 
 # ---------------------- Headless entry ----------------------
 
@@ -29,7 +34,7 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
                   "CUDAExecutionProvider", "DmlExecutionProvider"
     """
     if ort is None:
-        QMessageBox.critical(main, "Aberration AI", "onnxruntime not installed.")
+        QMessageBox.critical(main, "Aberration AI", _tr("onnxruntime not installed."))
         return
 
     # active doc
@@ -38,7 +43,7 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
         doc = d() if callable(d) else d
 
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "Aberration AI", "Load an image first.")
+        QMessageBox.warning(main, "Aberration AI", _tr("Load an image first."))
         return
 
     p = dict(preset or {})
@@ -46,7 +51,7 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
     # model path (preset beats QSettings)
     model = p.get("model") or QSettings().value("AberrationAI/model_path", type=str)
     if not model or not os.path.isfile(model):
-        QMessageBox.warning(main, "Aberration AI", "Model not set. Open the Aberration AI tool once and choose a model, or put 'model' into the preset.")
+        QMessageBox.warning(main, "Aberration AI", _tr("Model not set. Open the Aberration AI tool once and choose a model, or put 'model' into the preset."))
         return
 
     patch    = int(p.get("patch", 512))
@@ -78,10 +83,10 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
 
     # ---- minimal progress dialog ----
     dlg = QDialog(main)
-    dlg.setWindowTitle("Aberration AI (Headless)")
+    dlg.setWindowTitle(_tr("Aberration AI (Headless)"))
     lay = QVBoxLayout(dlg)
     bar = QProgressBar(); bar.setRange(0, 100); lay.addWidget(bar)
-    btn = QPushButton("Cancel"); lay.addWidget(btn)
+    btn = QPushButton(_tr("Cancel")); lay.addWidget(btn)
 
     img = np.asarray(doc.image)
     orig_for_border = img.copy()
@@ -93,7 +98,7 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
 
     def _cancel_clicked():
         btn.setEnabled(False)
-        btn.setText("Canceling…")
+        btn.setText(_tr("Canceling…"))
         worker.cancel()  # <-- SAFE
         QApplication.processEvents()
 
@@ -173,7 +178,7 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
                 pass
             # -------------------------------------------------------
         except Exception as e:
-            QMessageBox.critical(main, "Aberration AI", f"Failed to apply result:\n{e}")
+            QMessageBox.critical(main, "Aberration AI", _tr("Failed to apply result:\n{0}").format(e))
         finally:
             dlg.close()
 
@@ -208,29 +213,29 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
 class AberrationAIPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Aberration AI — Preset")
+        self.setWindowTitle(self.tr("Aberration AI — Preset"))
         p = dict(initial or {})
 
         self.spin_patch   = QSpinBox(); self.spin_patch.setRange(128, 2048); self.spin_patch.setValue(int(p.get("patch", 512)))
         self.spin_overlap = QSpinBox(); self.spin_overlap.setRange(16, 512);  self.spin_overlap.setValue(int(p.get("overlap", 64)))
         self.spin_border  = QSpinBox(); self.spin_border.setRange(0, 64);     self.spin_border.setValue(int(p.get("border_px", 10)))
 
-        self.chk_auto = QCheckBox("Auto GPU (prefer DML/CUDA)"); self.chk_auto.setChecked(bool(p.get("auto_gpu", True)))
+        self.chk_auto = QCheckBox(self.tr("Auto GPU (prefer DML/CUDA)")); self.chk_auto.setChecked(bool(p.get("auto_gpu", True)))
         self.cmb_provider = QComboBox(); self.cmb_provider.addItems([
             "CPUExecutionProvider", "DmlExecutionProvider", "CUDAExecutionProvider", "CoreMLExecutionProvider"
         ])
         self.cmb_provider.setCurrentText(str(p.get("provider", "CPUExecutionProvider")))
 
         # info: model is taken from QSettings unless preset provides an absolute path from code
-        info = QLabel("Model path is taken from the Aberration AI tool (QSettings) unless you pass 'model' in the preset programmatically.")
+        info = QLabel(self.tr("Model path is taken from the Aberration AI tool (QSettings) unless you pass 'model' in the preset programmatically."))
         info.setWordWrap(True); info.setStyleSheet("color:#888; font-size:11px;")
 
         form = QFormLayout(self)
-        form.addRow("Patch:", self.spin_patch)
-        form.addRow("Overlap:", self.spin_overlap)
-        form.addRow("Preserve border (px):", self.spin_border)
+        form.addRow(self.tr("Patch:"), self.spin_patch)
+        form.addRow(self.tr("Overlap:"), self.spin_overlap)
+        form.addRow(self.tr("Preserve border (px):"), self.spin_border)
         form.addRow(self.chk_auto)
-        form.addRow("Provider (if Auto off):", self.cmb_provider)
+        form.addRow(self.tr("Provider (if Auto off):"), self.cmb_provider)
         form.addRow(info)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)

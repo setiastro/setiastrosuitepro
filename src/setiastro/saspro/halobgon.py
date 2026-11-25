@@ -338,25 +338,25 @@ class HaloBGonDialogPro(QDialog):
         v = QVBoxLayout(self)
 
         # Controls
-        grp = QGroupBox("Halo-B-Gon Parameters")
+        grp = QGroupBox(self.tr("Halo-B-Gon Parameters"))
         grid = QGridLayout(grp)
 
-        grid.addWidget(QLabel("Reduction:"), 0, 0)
+        grid.addWidget(QLabel(self.tr("Reduction:")), 0, 0)
         self.sl = QSlider(Qt.Orientation.Horizontal); self.sl.setRange(0, 3); self.sl.setValue(0)
-        self.lbl = QLabel("Extra Low")
+        self.lbl = QLabel(self.tr("Extra Low"))
         def _lab(v):
-            self.lbl.setText(["Extra Low","Low","Medium","High"][int(v)])
+            self.lbl.setText([self.tr("Extra Low"),self.tr("Low"),self.tr("Medium"),self.tr("High")][int(v)])
         self.sl.valueChanged.connect(_lab); _lab(0)
         self.sl.valueChanged.connect(self._debounce)
         grid.addWidget(self.sl, 0, 1); grid.addWidget(self.lbl, 0, 2)
 
-        self.cb_linear = QCheckBox("Linear data"); self.cb_linear.setChecked(False)
+        self.cb_linear = QCheckBox(self.tr("Linear data")); self.cb_linear.setChecked(False)
         self.cb_linear.toggled.connect(self._debounce)
         grid.addWidget(self.cb_linear, 1, 1)
 
         # Apply target
-        grid.addWidget(QLabel("Apply to:"), 2, 0)
-        self.cmb_target = QComboBox(); self.cmb_target.addItems(["Overwrite active view", "Create new view"])
+        grid.addWidget(QLabel(self.tr("Apply to:")), 2, 0)
+        self.cmb_target = QComboBox(); self.cmb_target.addItems([self.tr("Overwrite active view"), self.tr("Create new view")])
         grid.addWidget(self.cmb_target, 2, 1, 1, 2)
 
         v.addWidget(grp)
@@ -370,11 +370,11 @@ class HaloBGonDialogPro(QDialog):
 
         # Buttons (themed)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Zoom: Ctrl+Wheel"))
+        row.addWidget(QLabel(self.tr("Zoom: Ctrl+Wheel")))
 
-        b_minus = themed_toolbtn("zoom-out", "Zoom Out")
-        b_plus  = themed_toolbtn("zoom-in", "Zoom In")
-        b_fit   = themed_toolbtn("zoom-fit-best", "Fit to View")
+        b_minus = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        b_plus  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        b_fit   = themed_toolbtn("zoom-fit-best", self.tr("Fit to View"))
 
         b_minus.clicked.connect(self.view.zoom_out)
         b_plus .clicked.connect(self.view.zoom_in)
@@ -388,9 +388,9 @@ class HaloBGonDialogPro(QDialog):
 
 
         row2 = QHBoxLayout()
-        b_apply = QPushButton("Apply"); b_apply.clicked.connect(self._apply)
-        b_reset = QPushButton("Reset"); b_reset.clicked.connect(self._reset)
-        b_cancel= QPushButton("Cancel"); b_cancel.clicked.connect(self.reject)
+        b_apply = QPushButton(self.tr("Apply")); b_apply.clicked.connect(self._apply)
+        b_reset = QPushButton(self.tr("Reset")); b_reset.clicked.connect(self._reset)
+        b_cancel= QPushButton(self.tr("Cancel")); b_cancel.clicked.connect(self.reject)
         row2.addStretch(1); row2.addWidget(b_apply); row2.addWidget(b_reset); row2.addWidget(b_cancel)
         v.addLayout(row2)
 
@@ -465,7 +465,7 @@ class HaloBGonDialogPro(QDialog):
             self.cb_linear.blockSignals(False)
 
         # label is driven by a valueChanged lambda we just blocked — set by hand
-        self.lbl.setText(["Extra Low", "Low", "Medium", "High"][lvl])
+        self.lbl.setText([self.tr("Extra Low"), self.tr("Low"), self.tr("Medium"), self.tr("High")][lvl])
         self._update_preview()
 
     def _update_preview(self):
@@ -491,7 +491,7 @@ class HaloBGonDialogPro(QDialog):
         if getattr(self, "_memory_released", False) or res.get("orig") is not self.orig:
             return                           # closed, or the image changed meanwhile
         if "error" in res:
-            QMessageBox.warning(self, "Halo-B-Gon", f"Preview failed:\n{res['error']}")
+            QMessageBox.warning(self, "Halo-B-Gon", self.tr("Preview failed:\n{0}").format(res['error']))
             return
         self._pv_prep = (res["orig"], res["linear"], res["prep"])
         self._pv_result = (res["orig"], res["level"], res["linear"], res["u8"])
@@ -611,7 +611,7 @@ class HaloBGonDialogPro(QDialog):
                     else:
                         QMessageBox.warning(
                             self, "Halo-B-Gon",
-                            "Could not find DocManager or window spawner; applying to the active view instead."
+                            self.tr("Could not find DocManager or window spawner; applying to the active view instead.")
                         )
                         # fall through to overwrite
 
@@ -621,7 +621,7 @@ class HaloBGonDialogPro(QDialog):
             self._refresh_document_from_active()
 
         except Exception as e:
-            QMessageBox.critical(self, "Halo-B-Gon", f"Failed to apply:\n{e}")
+            QMessageBox.critical(self, "Halo-B-Gon", self.tr("Failed to apply:\n{0}").format(e))
 
     def _refresh_document_from_active(self):
         """
@@ -649,11 +649,24 @@ class HaloBGonDialogPro(QDialog):
         self._update_preview()
 
     def closeEvent(self, ev):
+        self._close_teardown()
+        super().closeEvent(ev)
+
+    def done(self, r):
+        # Esc / Cancel end a QDialog through done(), which never delivers
+        # closeEvent: without this they skipped the release and the dialog
+        # kept its full-size buffers until collected. Runs once.
+        self._close_teardown()
+        super().done(r)
+
+    def _close_teardown(self):
+        if getattr(self, "_close_torn_down", False):
+            return
+        self._close_torn_down = True
         try:
             self._release_memory()
         except Exception:
             pass
-        super().closeEvent(ev)
 
     def _release_memory(self):
         """Drop full-frame orig/display buffers and pixmap on close."""

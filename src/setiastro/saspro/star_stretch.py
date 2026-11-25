@@ -192,17 +192,17 @@ class StarStretchDialog(QDialog):
 
         # Left column (controls)
         left = QVBoxLayout()
-        info = QLabel(
+        info = QLabel(self.tr(
             "Instructions:\n"
             "1) Adjust stretch and options.\n"
             "2) Preview the result.\n"
             "3) Apply to the current document."
-        )
+        ))
         info.setWordWrap(True)
         left.addWidget(info)
 
         # Stretch slider (0..8.00)
-        self.lbl_st = QLabel(self.tr("Stretch Amount:") + " 5.00")
+        self.lbl_st = QLabel(self.tr("Stretch Amount: {0:.2f}").format(5.0))
         self.sld_st = QSlider(Qt.Orientation.Horizontal)
         self.sld_st.setRange(0, 800)
         self.sld_st.setValue(500)
@@ -211,7 +211,7 @@ class StarStretchDialog(QDialog):
         left.addWidget(self.sld_st)
 
         # Saturation slider (0..2.00)
-        self.lbl_sat = QLabel(self.tr("Color Boost:") + " 1.00")
+        self.lbl_sat = QLabel(self.tr("Color Boost: {0:.2f}").format(1.0))
         self.sld_sat = QSlider(Qt.Orientation.Horizontal)
         self.sld_sat.setRange(0, 200)
         self.sld_sat.setValue(100)
@@ -225,7 +225,7 @@ class StarStretchDialog(QDialog):
 
         # Auto-refresh (instant preview) toggle - mirrors Stat Stretch
         self.chk_auto = QCheckBox(self.tr("Auto-refresh preview"))
-        self.chk_auto.setChecked(False)
+        self.chk_auto.setChecked(True)
         self.chk_auto.setToolTip(self.tr(
             "When enabled, any control change updates the preview automatically\n"
             "after a short settle, so you don't have to press Preview."
@@ -352,11 +352,11 @@ class StarStretchDialog(QDialog):
 
     # --- UI change handlers ---
     def _on_stretch_changed(self, v: int):
-        self.lbl_st.setText(f"Stretch Amount: {v/100.0:.2f}")
+        self.lbl_st.setText(self.tr("Stretch Amount: {0:.2f}").format(v/100.0))
         self._on_any_control_changed()
 
     def _on_sat_changed(self, v: int):
-        self.lbl_sat.setText(f"Color Boost: {v/100.0:.2f}")
+        self.lbl_sat.setText(self.tr("Color Boost: {0:.2f}").format(v/100.0))
         self._on_any_control_changed()
 
     # --- auto-refresh (instant preview) ---
@@ -416,7 +416,7 @@ class StarStretchDialog(QDialog):
         img = getattr(self.doc, "image", None) if self.doc is not None else None
         if img is None:
             if interactive:
-                QMessageBox.information(self, "No image", "Open an image first.")
+                QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             self._apply_when_ready = False
             return
 
@@ -466,6 +466,9 @@ class StarStretchDialog(QDialog):
         # run(), so the thread is still alive here and _run_preview's
         # single-flight guard would reject anything started from this slot.
 
+    def _rerun_preview_for_apply(self):
+        self._run_preview(False)
+
     def _on_worker_finished(self):
         """Worker thread done: free the slot, then settle any pending work."""
         self._busy = False
@@ -482,7 +485,9 @@ class StarStretchDialog(QDialog):
                 # Controls moved mid-flight - recompute, then apply that result
                 # (_apply_when_ready stays set).  Converges once the user stops
                 # touching the sliders.
-                QTimer.singleShot(0, lambda: self._run_preview(False))
+                # A bound method, not a lambda: PyQt drops a bound-method
+                # call once the dialog is deleted; a lambda would still run.
+                QTimer.singleShot(0, self._rerun_preview_for_apply)
                 return
             self._apply_when_ready = False
             QTimer.singleShot(0, self._finish_apply)
@@ -547,11 +552,11 @@ class StarStretchDialog(QDialog):
         try:
             stretch = float(p.get("stretch_factor", 5.0))
             self.sld_st.setValue(int(round(stretch * 100)))
-            self.lbl_st.setText(f"Stretch Amount: {stretch:.2f}")
+            self.lbl_st.setText(self.tr("Stretch Amount: {0:.2f}").format(stretch))
 
             boost = float(p.get("color_boost", 1.0))
             self.sld_sat.setValue(int(round(boost * 100)))
-            self.lbl_sat.setText(f"Color Boost: {boost:.2f}")
+            self.lbl_sat.setText(self.tr("Color Boost: {0:.2f}").format(boost))
 
             self.chk_scnr.setChecked(bool(p.get("scnr_green", False)))
         finally:
@@ -570,6 +575,11 @@ class StarStretchDialog(QDialog):
             self._auto_timer.start()
 
     def _finish_apply(self):
+        # Scheduled from _on_worker_finished; the dialog may have been closed
+        # (and its image released) before this ran. Nothing to apply then --
+        # going on would pop "Apply failed: 'NoneType' ..." after the close.
+        if getattr(self, "_memory_released", False):
+            return
         # No auto-refresh firing into a dialog that is about to close
         try:
             self._auto_timer.stop()
@@ -596,6 +606,8 @@ class StarStretchDialog(QDialog):
             self.doc.apply_edit(self._preview.copy(), metadata=meta, step_name="Star Stretch")
 
             mw = self._find_main_window()
+            if mw is not None:
+                display_stretch_off_for(mw, self.doc)
             if mw and hasattr(mw, "_log"):
                 mw._log("Star Stretch: applied to document.")
 
@@ -613,7 +625,7 @@ class StarStretchDialog(QDialog):
                 pass
 
         except Exception as e:
-            QMessageBox.critical(self, "Apply failed", str(e))
+            QMessageBox.critical(self, self.tr("Apply failed"), str(e))
             return
         
         # Dialog stays open so user can apply to other images
@@ -811,6 +823,20 @@ class StarStretchDialog(QDialog):
         return (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
 
     def closeEvent(self, ev):
+        self._close_teardown()
+        super().closeEvent(ev)
+
+    def done(self, r):
+        # Esc ends a QDialog through done(), which never delivers closeEvent:
+        # without this it skipped the settings flush, the worker wait and the
+        # release, and the dialog kept its preview until collected. Runs once.
+        self._close_teardown()
+        super().done(r)
+
+    def _close_teardown(self):
+        if getattr(self, "_close_torn_down", False):
+            return
+        self._close_torn_down = True
         if not self._headless and self.isVisible():
             try:
                 self._save_window_geometry()
@@ -876,7 +902,6 @@ class StarStretchDialog(QDialog):
             self._release_memory()
         except Exception:
             pass
-        super().closeEvent(ev)
 
     def _release_memory(self):
         """Drop preview buffer and pixmap on close."""
@@ -937,7 +962,7 @@ class StarStretchDialog(QDialog):
                 stretch = self._DEFAULT_STRETCH_X100
             stretch = max(self.sld_st.minimum(), min(self.sld_st.maximum(), stretch))
             self.sld_st.setValue(stretch)
-            self.lbl_st.setText(f"Stretch Amount: {stretch/100.0:.2f}")
+            self.lbl_st.setText(self.tr("Stretch Amount: {0:.2f}").format(stretch/100.0))
 
             try:
                 boost = int(s.value("star_stretch_ui/color_boost_x100",
@@ -946,12 +971,12 @@ class StarStretchDialog(QDialog):
                 boost = self._DEFAULT_BOOST_X100
             boost = max(self.sld_sat.minimum(), min(self.sld_sat.maximum(), boost))
             self.sld_sat.setValue(boost)
-            self.lbl_sat.setText(f"Color Boost: {boost/100.0:.2f}")
+            self.lbl_sat.setText(self.tr("Color Boost: {0:.2f}").format(boost/100.0))
 
             self.chk_scnr.setChecked(bool(s.value("star_stretch_ui/scnr_green",
                                                   False, type=bool)))
             self.chk_auto.setChecked(bool(s.value("star_stretch_ui/auto_refresh",
-                                                  False, type=bool)))
+                                                  True, type=bool)))
         except Exception:
             pass
         finally:
@@ -1086,6 +1111,50 @@ def open_star_stretch_with_preset(main_window, preset: dict | None = None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def display_stretch_off_for(main_window, doc) -> int:
+    """
+    After Star Stretch has changed `doc`'s pixels: turn Display-Stretch off on
+    every view showing it, or the screen stretches the already-stretched data
+    a second time. Statistical Stretch does the same. Returns how many views
+    were switched off.
+    """
+    mdi = getattr(main_window, "mdi", None)
+    if mdi is None or doc is None:
+        return 0
+
+    def resolved(d):
+        try:
+            if hasattr(d, "_target") and callable(d._target):
+                return d._target()               # a _DocProxy: its current document
+        except Exception:
+            pass
+        return d
+
+    # The dialog is handed view.document, which is a _DocProxy; a Preview tab
+    # hands it an ROI document whose _parent_doc is the image. Any of them
+    # names the image, so compare by identity against all of them.
+    wanted = [d for d in (doc, resolved(doc), getattr(doc, "_parent_doc", None)) if d is not None]
+    n = 0
+    for sw in list(mdi.subWindowList()):
+        try:
+            view = sw.widget()
+        except RuntimeError:                     # deleted with its window
+            continue
+        if view is None or not getattr(view, "autostretch_enabled", False):
+            continue
+        shown = getattr(view, "document", None)
+        mine = [d for d in (shown, resolved(shown), getattr(view, "base_document", None))
+                if d is not None]
+        if not any(a is b for a in mine for b in wanted):
+            continue
+        try:
+            view.set_autostretch(False)
+            n += 1
+        except Exception:
+            pass
+    return n
+
+
 def apply_star_stretch_preset_to_doc(doc, preset: dict | None = None):
     """
     Headless Star Stretch on a specific document: what a shortcut or a drop on

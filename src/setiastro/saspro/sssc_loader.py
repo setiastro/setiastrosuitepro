@@ -41,7 +41,7 @@ class SSSCSplash(QWidget):
         layout.addWidget(logo_label)
 
         # Title
-        title = QLabel("Spectrophotometric Standard Star Calibration")
+        title = QLabel(self.tr("Spectrophotometric Standard Star Calibration"))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         font = QFont()
         font.setPointSize(12)
@@ -49,12 +49,12 @@ class SSSCSplash(QWidget):
         title.setFont(font)
         layout.addWidget(title)
 
-        subtitle = QLabel("SSSC — Empirical system response from Gaia XP spectra")
+        subtitle = QLabel(self.tr("SSSC — Empirical system response from Gaia XP spectra"))
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet("color: #888888; font-size: 10px;")
         layout.addWidget(subtitle)
 
-        self._status = QLabel("Initialising…")
+        self._status = QLabel(self.tr("Initialising…"))
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status.setStyleSheet("color: #aaaaaa; font-size: 11px;")
         layout.addWidget(self._status)
@@ -121,7 +121,7 @@ class SSSCLoader(QThread):
 
     def run(self):
         try:
-            self.progress.emit("Loading astronomy modules…")
+            self.progress.emit(self.tr("Loading astronomy modules…"))
             import numpy          # noqa
             import scipy          # noqa
             import sep            # noqa
@@ -130,13 +130,13 @@ class SSSCLoader(QThread):
             from astropy.wcs import WCS   # noqa
             from astroquery.simbad import Simbad  # noqa
 
-            self.progress.emit("Loading Gaia local database…")
+            self.progress.emit(self.tr("Loading Gaia local database…"))
             from setiastro.saspro.gaia_database import get_library  # noqa — local SQLite, no network
 
-            self.progress.emit("Loading SSSC…")
+            self.progress.emit(self.tr("Loading SSSC…"))
             from setiastro.saspro.sssc import SSSCDialog  # noqa — warms module cache
 
-            self.progress.emit("Almost ready…")
+            self.progress.emit(self.tr("Almost ready…"))
             self.ready.emit()
 
         except Exception as exc:

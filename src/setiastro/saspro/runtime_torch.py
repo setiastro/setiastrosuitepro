@@ -13,6 +13,17 @@ import re
 from pathlib import Path
 from contextlib import contextmanager
 
+# AMD (ROCm): MIOpen's fp16 Winograd convolutions return NaN on RDNA4. On a
+# user's RX 9070 XT (gfx1201, ROCm 7.2, torch 2.15 nightly) every Dark Star and
+# Cosmic Clarity tile came back NaN -- a black image. fp32, and fp16 with
+# Winograd off, both matched the CPU (fp16 within 7e-4, as on NVIDIA). The same
+# solvers overflow to inf on gfx1100/gfx1151/gfx950 (ROCm/rocm-libraries#16595).
+# It must be set before torch loads MIOpen, and the runtime torch is only
+# importable through this module, so here is early enough; spawned workers
+# inherit it. Only MIOpen reads it -- CUDA, MPS, DirectML and CPU ignore it.
+# setdefault: exporting MIOPEN_DEBUG_CONV_WINOGRAD=1 still brings Winograd back.
+os.environ.setdefault("MIOPEN_DEBUG_CONV_WINOGRAD", "0")
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
@@ -342,6 +353,11 @@ def mps_is_usable(torch=None) -> bool:
 
 
 _DML_PROBE_CACHE = None   # None=unknown, else cached bool for this process
+# The verdict is also put in the environment, so processes spawned afterwards
+# (registration / finalize workers, whose gpu_star_detect and gpu_warp call
+# best_device(prefer_dml=True)) inherit it instead of each starting its own
+# torch + torch_directml subprocess: ~4.5 s per worker, per pool, all at once.
+_DML_PROBE_ENV = "SASPRO_DML_PROBE_OK"
 
 def directml_probe_ok(status_cb=lambda *_: None, timeout=60, force=False) -> bool:
     """True iff `import torch_directml` + a trivial device op succeed in a
@@ -360,6 +376,11 @@ def directml_probe_ok(status_cb=lambda *_: None, timeout=60, force=False) -> boo
         return False
     if _DML_PROBE_CACHE is not None and not force:
         return _DML_PROBE_CACHE
+    if not force:
+        _inherited = os.environ.get(_DML_PROBE_ENV)
+        if _inherited in ("0", "1"):           # probed by the process that spawned this one
+            _DML_PROBE_CACHE = (_inherited == "1")
+            return _DML_PROBE_CACHE
     ok = False
     try:
         rt = _user_runtime_dir(status_cb=lambda *_: None)
@@ -384,6 +405,10 @@ def directml_probe_ok(status_cb=lambda *_: None, timeout=60, force=False) -> boo
         status_cb(f"[RT] torch-directml probe error: {e}")
         ok = False
     _DML_PROBE_CACHE = ok
+    try:
+        os.environ[_DML_PROBE_ENV] = "1" if ok else "0"
+    except Exception:
+        pass
     return ok
 
 
@@ -2098,6 +2123,7 @@ def import_torch(
     if _TORCH_CACHED is not None:
         return _TORCH_CACHED
     _install_worker_path_guard()      # every path below may prepend the venv
+    prefer_runtime_torch()            # in a worker it is already on the path, but not first
 
     # torchaudio is installed opportunistically (see _install_torch) but is NOT a
     # required dependency of any SASpro tool. Never let its absence gate import,
@@ -2259,7 +2285,11 @@ def import_torch(
                     except Exception:
                         pass
                 import torch
-                import torchvision
+                # No torchvision here. Importing it costs ~2.5 s per session
+                # (it pulls in torch._dynamo, sympy and its custom-op registry)
+                # and only the satellite engine uses it, which imports it
+                # itself. This cache entry was written after torchvision
+                # imported cleanly, and the slower paths below still check it.
                 if require_torchaudio:
                     import torchaudio
                 _TORCH_CACHED = torch
@@ -2712,6 +2742,14 @@ def _detected_python_versions() -> list[str]:
     return seen
 
 
+def python_download_url(need: str) -> str:
+    """Where to get Python `need` ("3.12"): the installer itself on Windows."""
+    full = {"3.12": "3.12.10", "3.13": "3.13.9", "3.14": "3.14.2"}.get(need)
+    if full and sys.platform.startswith("win"):
+        return f"https://www.python.org/ftp/python/{full}/python-{full}-amd64.exe"
+    return "https://www.python.org/downloads/"
+
+
 def runtime_python_preflight(status_cb=None) -> dict | None:
     """
     Answer one question at startup: can this build ever stand up its AI runtime?
@@ -2813,9 +2851,8 @@ def _put_runtime_site_on_path(sp: str) -> None:
 # parent's numpy. In a frozen build that entry is the bundle, which never holds
 # torch (the spec excludes it): torch still comes from the venv, and what the
 # app ships comes from the app, as in the parent. In a pip/source install it is
-# the user's environment; if that has its own torch, a worker now imports that
-# one -- a difference on the GPU paths only, against a numpy mismatch that can
-# take down every worker.
+# the user's environment, which may have a torch of its own (a CPU wheel, say);
+# prefer_runtime_torch() below keeps torch itself coming from the venv there.
 
 def _worker_path_key(p) -> str:
     return os.path.normcase(os.path.abspath(str(p))).rstrip("\\/")
@@ -2882,6 +2919,66 @@ def _install_worker_path_guard() -> None:
         pass
 
 
+# torch, and the packages that must be the build that goes with it.
+_RUNTIME_TORCH_NAMES = frozenset({
+    "torch", "torchvision", "torchaudio", "torchgen", "functorch",
+    "torch_directml", "torch_directml_native",
+})
+
+
+class _RuntimeTorchFinder:
+    """Looks for torch in the runtime venv before the rest of sys.path, and
+    leaves every other import alone."""
+
+    def __init__(self, sites: list):
+        self.sites = sites
+
+    def find_spec(self, name, path=None, target=None):
+        if path is not None or name not in _RUNTIME_TORCH_NAMES:
+            return None
+        from importlib.machinery import PathFinder
+        return PathFinder.find_spec(name, self.sites, target)
+
+
+def prefer_runtime_torch() -> bool:
+    """Make `import torch` find the runtime venv's torch although the app's
+    environment comes first on sys.path, which is how a spawned worker of a
+    source/pip run starts (_worker_sys_path). Without this such a worker found
+    the environment's own torch if it had one, usually a CPU wheel, and star
+    detection, the warp and the demosaic quietly left the GPU.
+
+    Only for a runtime venv that is already on sys.path. Runs nothing, installs
+    nothing, safe in a worker. True if torch comes, or will come, from there."""
+    try:
+        if getattr(sys, "frozen", False):
+            return False                # the bundle holds no torch to get in the way
+        rt = _worker_path_key(_runtime_base_dir())
+        sites = [p for p in sys.path if isinstance(p, str) and p
+                 and _worker_path_key(p).startswith(rt + os.sep)
+                 and os.path.isdir(os.path.join(p, "torch"))]
+        if not sites:
+            return False
+        loaded = sys.modules.get("torch")
+        if loaded is not None:          # too late to choose: never mix two builds
+            return _worker_path_key(getattr(loaded, "__file__", None) or "").startswith(rt + os.sep)
+        for f in sys.meta_path:
+            if isinstance(f, _RuntimeTorchFinder):
+                f.sites = sites
+                return True
+        sys.meta_path.insert(0, _RuntimeTorchFinder(sites))
+        return True
+    except Exception:
+        return False
+
+
+def in_spawned_worker() -> bool:
+    try:
+        import multiprocessing
+        return multiprocessing.parent_process() is not None
+    except Exception:
+        return False
+
+
 def add_runtime_to_sys_path(status_cb=print) -> None:
     _install_worker_path_guard()
     rt = _user_runtime_dir(status_cb=status_cb)
@@ -2930,6 +3027,7 @@ def add_runtime_to_sys_path(status_cb=print) -> None:
             if c.exists():
                 _put_runtime_site_on_path(str(c))
         _demote_shadow_torch_paths(status_cb=status_cb)
+        prefer_runtime_torch()
         _register_dll_dirs_for_frozen(site, vpy, status_cb=status_cb)   # <-- add
     except Exception:
         return

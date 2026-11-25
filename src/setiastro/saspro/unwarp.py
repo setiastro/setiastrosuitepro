@@ -36,7 +36,7 @@ from concurrent.futures import as_completed
 
 import numpy as np
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal as _Signal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal as _Signal, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QLabel,
@@ -75,6 +75,12 @@ except Exception:                       # pragma: no cover
     unwarp_path = None
 
 from setiastro.saspro.help_support import make_help_button
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("Unwarp", text)
+
+
 # Command id used by the shortcuts / replay system for this tool.
 UNWARP_COMMAND_ID = "unwarp"
 _STEP_NAME = "Unwarp (remove SIP)"
@@ -441,7 +447,7 @@ def unwarp_image(
             done_rows += rows
             if progress is not None:
                 pct = int(done_rows / outH * 100)
-                if progress(pct, f"Resampling… {done_rows}/{outH} rows") is False:
+                if progress(pct, _tr("Resampling… {0}/{1} rows").format(done_rows, outH)) is False:
                     ex.shutdown(wait=False, cancel_futures=True)
                     raise RuntimeError("cancelled")
 
@@ -540,7 +546,9 @@ class _UnwarpWorker(QThread):
 # Canonical preset schema (single source of truth):
 #   {"expand": bool, "order": int(0/1/3), "fill_nan": bool}
 
-_INTERP = [("Bicubic (best)", 3), ("Bilinear", 1), ("Nearest", 0)]
+_INTERP = [(QT_TRANSLATE_NOOP("Unwarp", "Bicubic (best)"), 3),
+           (QT_TRANSLATE_NOOP("Unwarp", "Bilinear"), 1),
+           (QT_TRANSLATE_NOOP("Unwarp", "Nearest"), 0)]
 
 
 def _order_to_index(order: int) -> int:
@@ -608,23 +616,23 @@ class _UnwarpPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: Optional[dict] = None):
         super().__init__(parent)
-        self.setWindowTitle("Unwarp — Preset")
+        self.setWindowTitle(self.tr("Unwarp — Preset"))
         init = dict(default_preset())
         init.update(initial or {})
 
         self.combo_interp = QComboBox()
         for label, _ in _INTERP:
-            self.combo_interp.addItem(label)
+            self.combo_interp.addItem(QCoreApplication.translate("Unwarp", label))
         self.combo_interp.setCurrentIndex(_order_to_index(init.get("order", 3)))
 
-        self.chk_expand = QCheckBox("Expand canvas to fit corrected corners")
+        self.chk_expand = QCheckBox(self.tr("Expand canvas to fit corrected corners"))
         self.chk_expand.setChecked(bool(init.get("expand", True)))
 
-        self.chk_nan = QCheckBox("Fill outside footprint with NaN (else black)")
+        self.chk_nan = QCheckBox(self.tr("Fill outside footprint with NaN (else black)"))
         self.chk_nan.setChecked(bool(init.get("fill_nan", False)))
 
         form = QFormLayout(self)
-        form.addRow("Interpolation:", self.combo_interp)
+        form.addRow(self.tr("Interpolation:"), self.combo_interp)
         form.addRow("", self.chk_expand)
         form.addRow("", self.chk_nan)
 
@@ -667,7 +675,7 @@ class UnwarpDialog(QDialog):
                  list_open_docs_fn=None, document=None,
                  apply_fn=None, create_fn=None):
         super().__init__(parent)
-        self.setWindowTitle("Unwarp (Remove SIP Distortion)")
+        self.setWindowTitle(self.tr("Unwarp (Remove SIP Distortion)"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -700,17 +708,17 @@ class UnwarpDialog(QDialog):
         v.setContentsMargins(14, 14, 14, 14)
         v.setSpacing(10)
 
-        intro = QLabel(
+        intro = QLabel(self.tr(
             "Resamples the active image onto a distortion-free grid using its "
             "plate-solved WCS + SIP polynomial. The canvas is expanded so the "
-            "corrected corners aren't clipped; the result carries a clean linear WCS.")
+            "corrected corners aren't clipped; the result carries a clean linear WCS."))
         intro.setWordWrap(True)
         intro.setStyleSheet("color:#889; font-size:11px;")
         v.addWidget(intro)
 
         # Source
         src_row = QHBoxLayout()
-        src_row.addWidget(QLabel("Source image:"))
+        src_row.addWidget(QLabel(self.tr("Source image:")))
         self._combo_src = QComboBox()
         self._combo_src.currentIndexChanged.connect(self._on_source_changed)
         src_row.addWidget(self._combo_src, stretch=1)
@@ -733,26 +741,26 @@ class UnwarpDialog(QDialog):
         og.setHorizontalSpacing(10)
         og.setVerticalSpacing(8)
 
-        og.addWidget(QLabel("Interpolation:"), 0, 0)
+        og.addWidget(QLabel(self.tr("Interpolation:")), 0, 0)
         self._combo_interp = QComboBox()
         for label, _ in self._INTERP:
-            self._combo_interp.addItem(label)
+            self._combo_interp.addItem(QCoreApplication.translate("Unwarp", label))
         og.addWidget(self._combo_interp, 0, 1)
 
-        self._chk_expand = QCheckBox("Expand canvas to fit corrected corners")
+        self._chk_expand = QCheckBox(self.tr("Expand canvas to fit corrected corners"))
         self._chk_expand.setChecked(True)
-        self._chk_expand.setToolTip(
+        self._chk_expand.setToolTip(self.tr(
             "On: grow the output so nothing is clipped (recommended).\n"
             "Off: keep the original dimensions — distortion at the edges may "
-            "push some pixels out of frame.")
+            "push some pixels out of frame."))
         self._chk_expand.toggled.connect(self._refresh_info)
         og.addWidget(self._chk_expand, 1, 0, 1, 2)
 
-        self._chk_nan = QCheckBox("Fill outside footprint with NaN (else black)")
+        self._chk_nan = QCheckBox(self.tr("Fill outside footprint with NaN (else black)"))
         self._chk_nan.setChecked(False)
-        self._chk_nan.setToolTip(
+        self._chk_nan.setToolTip(self.tr(
             "Areas the source doesn't cover after correction. NaN keeps them "
-            "as 'no data'; unchecked fills them with 0 (black).")
+            "as 'no data'; unchecked fills them with 0 (black)."))
         og.addWidget(self._chk_nan, 2, 0, 1, 2)
 
         v.addWidget(opt)
@@ -773,28 +781,28 @@ class UnwarpDialog(QDialog):
 
         # Buttons
         btns = QHBoxLayout()
-        self._btn_apply = QPushButton("Apply (in place)")
-        self._btn_apply.setToolTip("Replace the source image with the unwarped "
-                                   "result (undoable).")
+        self._btn_apply = QPushButton(self.tr("Apply (in place)"))
+        self._btn_apply.setToolTip(self.tr("Replace the source image with the unwarped "
+                                           "result (undoable)."))
         self._btn_apply.clicked.connect(lambda: self._run("apply"))
         btns.addWidget(self._btn_apply)
 
-        self._btn_new = QPushButton("New View")
-        self._btn_new.setToolTip("Open the unwarped result as a new image.")
+        self._btn_new = QPushButton(self.tr("New View"))
+        self._btn_new.setToolTip(self.tr("Open the unwarped result as a new image."))
         self._btn_new.clicked.connect(lambda: self._run("new"))
         btns.addWidget(self._btn_new)
 
-        self._btn_save = QPushButton("Save FITS…")
-        self._btn_save.setToolTip("Write the unwarped result straight to a FITS file.")
+        self._btn_save = QPushButton(self.tr("Save FITS…"))
+        self._btn_save.setToolTip(self.tr("Write the unwarped result straight to a FITS file."))
         self._btn_save.clicked.connect(lambda: self._run("save"))
         btns.addWidget(self._btn_save)
 
         btns.addStretch(1)
-        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel = QPushButton(self.tr("Cancel"))
         self._btn_cancel.setVisible(False)
         self._btn_cancel.clicked.connect(self._cancel)
         btns.addWidget(self._btn_cancel)
-        self._btn_close = QPushButton("Close")
+        self._btn_close = QPushButton(self.tr("Close"))
         self._btn_close.clicked.connect(self.close)
         btns.addWidget(self._btn_close)
         v.addLayout(btns)
@@ -808,7 +816,7 @@ class UnwarpDialog(QDialog):
                     UNWARP_COMMAND_ID,
                     self._unwarp_params,
                     icon=QIcon(unwarp_path) if unwarp_path else QIcon(),
-                    tooltip=(
+                    tooltip=self.tr(
                         "Drag to the canvas to create an Unwarp shortcut with "
                         "these exact settings.\n"
                         "Drop directly on a plate-solved image to unwarp it "
@@ -829,7 +837,7 @@ class UnwarpDialog(QDialog):
             miss = []
             if not _HAS_ASTROPY: miss.append("astropy")
             if not _HAS_SCIPY:   miss.append("scipy")
-            self._status.setText("Missing dependency: " + ", ".join(miss))
+            self._status.setText(self.tr("Missing dependency: {0}").format(", ".join(miss)))
             for b in (self._btn_apply, self._btn_new, self._btn_save):
                 b.setEnabled(False)
 
@@ -920,7 +928,7 @@ class UnwarpDialog(QDialog):
         self._combo_src.blockSignals(True)
         self._combo_src.clear()
         if not self._docs:
-            self._combo_src.addItem("— no open images —")
+            self._combo_src.addItem(self.tr("— no open images —"))
             self._combo_src.setEnabled(False)
         else:
             for title, _ in self._docs:
@@ -948,22 +956,22 @@ class UnwarpDialog(QDialog):
             b.setEnabled(False)
 
         if doc is None:
-            self._info.setText("No image selected.")
+            self._info.setText(self.tr("No image selected."))
             return
         img = get_doc_image(doc)
         if img is None:
-            self._info.setText("Selected item has no readable image data.")
+            self._info.setText(self.tr("Selected item has no readable image data."))
             return
         wcs = extract_wcs(doc)
         if wcs is None:
-            self._info.setText(
+            self._info.setText(self.tr(
                 "No astrometric solution (WCS) on this image.\n"
-                "Run the Plate Solver first — with SIP enabled — then unwarp.")
+                "Run the Plate Solver first — with SIP enabled — then unwarp."))
             return
         if not has_sip(wcs):
-            self._info.setText(
+            self._info.setText(self.tr(
                 "This image is solved but its WCS has NO SIP distortion terms.\n"
-                "There's nothing to unwarp — the solution is already linear.")
+                "There's nothing to unwarp — the solution is already linear."))
             return
 
         H, W = img.shape[:2]
@@ -971,20 +979,21 @@ class UnwarpDialog(QDialog):
             geom = compute_geometry(img.shape, wcs, expand=self._chk_expand.isChecked())
             scale = pixel_scale_arcsec(wcs)
             growth = geom["growth"]
-            grow_note = (f"canvas grows ×{growth:.2f}"
+            grow_note = (self.tr("canvas grows ×{0:.2f}").format(growth)
                          if geom["outW"] * geom["outH"] > W * H else
-                         "canvas unchanged")
+                         self.tr("canvas unchanged"))
             warn = ""
             if growth > 2.5:
-                warn = "\n⚠ large expansion — check the SIP solution is sane"
+                warn = self.tr("\n⚠ large expansion — check the SIP solution is sane")
             self._info.setText(
-                f"SIP order {geom['sip_order']}   ·   {scale:.3f}\"/px\n"
-                f"input   {W} × {H}\n"
-                f"output  {geom['outW']} × {geom['outH']}   ({grow_note}){warn}")
+                self.tr("SIP order {0}   ·   {1:.3f}\"/px\n"
+                        "input   {2} × {3}\n"
+                        "output  {4} × {5}   ({6}){7}").format(
+                    geom['sip_order'], scale, W, H, geom['outW'], geom['outH'], grow_note, warn))
             for b in (self._btn_apply, self._btn_new, self._btn_save):
                 b.setEnabled(True)
         except Exception as e:
-            self._info.setText(f"Could not analyze the solution: {e}")
+            self._info.setText(self.tr("Could not analyze the solution: {0}").format(e))
 
     # ── run ─────────────────────────────────────────────────────────────────
 
@@ -1017,7 +1026,7 @@ class UnwarpDialog(QDialog):
     def _cancel(self):
         if self._worker is not None:
             self._worker.cancel()
-            self._status.setText("Cancelling…")
+            self._status.setText(self.tr("Cancelling…"))
 
     def _set_busy(self, busy: bool):
         self._bar.setVisible(busy)
@@ -1033,14 +1042,22 @@ class UnwarpDialog(QDialog):
         self._bar.setValue(pct)
         self._status.setText(msg)
 
+    def _take_worker(self):
+        """Drop self._worker once its run() has really returned (its signals
+        fire from inside run()), so the thread is freed here on the GUI thread
+        rather than from inside itself as run() unwinds."""
+        w, self._worker = self._worker, None
+        if w is not None:
+            w.wait()
+
     def _on_failed(self, msg: str):
         self._set_busy(False)
-        self._worker = None
+        self._take_worker()
         self._reset_status_style()
         self._refresh_info()
         if msg != "Cancelled.":
-            QMessageBox.warning(self, "Unwarp", f"Unwarp failed:\n{msg}")
-        self._status.setText(msg)
+            QMessageBox.warning(self, self.tr("Unwarp"), self.tr("Unwarp failed:\n{0}").format(msg))
+        self._status.setText(self.tr("Cancelled.") if msg == "Cancelled." else msg)
 
     def _result_summary(self, geom, verb):
         n = geom.get("sip_order", 0)
@@ -1050,22 +1067,24 @@ class UnwarpDialog(QDialog):
         med_px = geom.get("med_shift_px", 0.0)
         scale = getattr(self, "_last_scale_arcsec", 0.0)
 
-        lines = [f"✓ {verb} — SIP order {n} distortion removed."]
+        lines = [self.tr("✓ {0} — SIP order {1} distortion removed.").format(verb, n)]
         if scale > 0:
             lines.append(
-                f"Peak edge to edge correction: {max_px:.1f}px ({max_px*scale:.2f}\")   ·   "
-                f"median {med_px:.1f}px ({med_px*scale:.2f}\")")
+                self.tr("Peak edge to edge correction: {0:.1f}px ({1:.2f}\")   ·   "
+                        "median {2:.1f}px ({3:.2f}\")").format(
+                    max_px, max_px*scale, med_px, med_px*scale))
         else:
-            lines.append(f"Peak edge correction: {max_px:.1f}px   ·   median {med_px:.1f}px")
+            lines.append(self.tr("Peak edge correction: {0:.1f}px   ·   median {1:.1f}px").format(
+                max_px, med_px))
         lines.append(
-            f"Canvas {iw}×{ih} → {ow}×{oh}"
-            + (f"  (×{grow:.2f})" if ow*oh != iw*ih else "  (unchanged)"))
-        lines.append("The result carries a clean linear WCS. Re-solve to confirm "
-                     "the residuals collapse.")
+            self.tr("Canvas {0}×{1} → {2}×{3}").format(iw, ih, ow, oh)
+            + (f"  (×{grow:.2f})" if ow*oh != iw*ih else self.tr("  (unchanged)")))
+        lines.append(self.tr("The result carries a clean linear WCS. Re-solve to confirm "
+                             "the residuals collapse."))
         return "\n".join(lines)
 
     _STATUS_PLAIN   = "color:#778; font-size:11px;"
-    _STATUS_SUCCESS = ("color:#8 fdb98; font-size:13px; font-weight:600; "
+    _STATUS_SUCCESS = ("color:#8fdb98; font-size:13px; font-weight:600; "
                        "line-height:150%;")
 
     def _show_result(self, text: str):
@@ -1081,7 +1100,7 @@ class UnwarpDialog(QDialog):
         self._status.setStyleSheet(self._STATUS_PLAIN)
 
     def _on_finished(self, image, wcs, header, geom):
-        self._worker = None
+        self._take_worker()
         self._set_busy(False)
         self._result = (image, wcs, header, geom)
         mode = getattr(self, "_pending_mode", "new")
@@ -1100,17 +1119,17 @@ class UnwarpDialog(QDialog):
             elif mode == "apply" and doc is not None:
                 self._apply_inplace(doc, image, metadata)
                 self._remember_replay()
-                self._show_result(self._result_summary(geom, "Unwarped in place"))
+                self._show_result(self._result_summary(geom, self.tr("Unwarped in place")))
             else:
                 self._create_new(image, metadata, title)
                 self._remember_replay()
-                self._show_result(self._result_summary(geom, "Opened unwarped result"))
+                self._show_result(self._result_summary(geom, self.tr("Opened unwarped result")))
         except Exception as e:
             QMessageBox.warning(
-                self, "Unwarp",
-                f"The image was unwarped, but delivering it to the app failed:\n{e}\n\n"
-                f"You can still use “Save FITS…”.")
-            self._status.setText(f"Delivery failed: {e}")
+                self, self.tr("Unwarp"),
+                self.tr("The image was unwarped, but delivering it to the app failed:\n{0}\n\n"
+                        "You can still use “Save FITS…”.").format(e))
+            self._status.setText(self.tr("Delivery failed: {0}").format(e))
 
     # ── delivery ─────────────────────────────────────────────────────────────
 
@@ -1141,37 +1160,50 @@ class UnwarpDialog(QDialog):
 
     def _save_fits(self, image, header):
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Unwarped FITS", "",
+            self, self.tr("Save Unwarped FITS"), "",
             "FITS files (*.fits *.fit *.fts);;All files (*)")
         if not path:
-            self._status.setText("Save cancelled.")
+            self._status.setText(self.tr("Save cancelled."))
             return
         try:
             from astropy.io import fits
         except Exception as e:
-            QMessageBox.warning(self, "Unwarp", f"astropy.io.fits unavailable:\n{e}")
+            QMessageBox.warning(self, self.tr("Unwarp"), self.tr("astropy.io.fits unavailable:\n{0}").format(e))
             return
         data = image
         if data.ndim == 3:                      # FITS wants channels-first for color
             data = np.moveaxis(data, 2, 0)
         try:
+            from setiastro.saspro.legacy.image_manager import _wcs_pc_to_cd
+            if isinstance(header, fits.Header):  # PixInsight reads CD, never PC
+                header = _wcs_pc_to_cd(header.copy())
             fits.PrimaryHDU(data=np.asarray(data, dtype=np.float32),
                             header=header).writeto(path, overwrite=True)
-            self._status.setText(f"Saved → {path}")
+            self._status.setText(self.tr("Saved → {0}").format(path))
         except Exception as e:
-            QMessageBox.warning(self, "Unwarp", f"Could not write FITS:\n{e}")
+            QMessageBox.warning(self, self.tr("Unwarp"), self.tr("Could not write FITS:\n{0}").format(e))
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
-    def closeEvent(self, ev):
+    def _stop_worker(self):
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(3000)
+
+    def closeEvent(self, ev):
+        self._stop_worker()
         try:
             self._release_memory()
         except Exception:
             pass
         super().closeEvent(ev)
+
+    def reject(self):
+        # Esc deletes this WA_DeleteOnClose dialog without a closeEvent; cancel
+        # the run the same way the close button does instead of leaving it
+        # computing for a window that is gone.
+        self._stop_worker()
+        super().reject()
 
     def _release_memory(self):
         """Drop unwarp result buffers on close."""

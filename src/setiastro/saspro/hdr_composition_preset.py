@@ -245,7 +245,7 @@ class HDRCompositionPresetDialog(QDialog):
 
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("HDR Composition Preset")
+        self.setWindowTitle(self.tr("HDR Composition Preset"))
         p = hdr_composition_params_from_preset(initial)
 
         form = QFormLayout()
@@ -254,27 +254,27 @@ class HDRCompositionPresetDialog(QDialog):
         self.sp_threshold.setDecimals(3)
         self.sp_threshold.setSingleStep(0.01)
         self.sp_threshold.setValue(p["threshold"])
-        form.addRow("Binarizing threshold:", self.sp_threshold)
+        form.addRow(self.tr("Binarizing threshold:"), self.sp_threshold)
 
         self.sp_growth = QSpinBox()
         self.sp_growth.setRange(0, 64)
         self.sp_growth.setValue(p["growth"])
-        form.addRow("Mask growth (px):", self.sp_growth)
+        form.addRow(self.tr("Mask growth (px):"), self.sp_growth)
 
         self.sp_smooth = QDoubleSpinBox()
         self.sp_smooth.setRange(0.0, 64.0)
         self.sp_smooth.setDecimals(1)
         self.sp_smooth.setSingleStep(0.5)
         self.sp_smooth.setValue(p["smoothness"])
-        form.addRow("Mask smoothness (px):", self.sp_smooth)
+        form.addRow(self.tr("Mask smoothness (px):"), self.sp_smooth)
 
-        self.chk_mask = QCheckBox("Also open the replacement mask")
+        self.chk_mask = QCheckBox(self.tr("Also open the replacement mask"))
         self.chk_mask.setChecked(p["open_mask"])
         form.addRow(self.chk_mask)
 
         self.ed_titles = QLineEdit(", ".join(p["doc_titles"]))
-        self.ed_titles.setPlaceholderText("Longest first: Long 300s, Short 30s")
-        form.addRow("View titles:", self.ed_titles)
+        self.ed_titles.setPlaceholderText(self.tr("Longest first: Long 300s, Short 30s"))
+        form.addRow(self.tr("View titles:"), self.ed_titles)
 
         root = QVBoxLayout(self)
         root.addLayout(form)

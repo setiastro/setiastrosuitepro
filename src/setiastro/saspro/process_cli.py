@@ -1415,6 +1415,27 @@ _register(Tool(
     ], aliases=["halobgon", "halo_reduction", "halo"]))
 
 
+# ── Repair ──────────────────────────────────────────────────────────────────
+
+def _run_banding_blaster(doc, p, ctx):
+    from setiastro.saspro.banding_blaster import apply_banding_blaster_preset_to_doc
+    apply_banding_blaster_preset_to_doc(ctx.main, doc, p)
+
+
+_register(Tool(
+    "banding_blaster", "Banding Blaster",
+    "reduce row (horizontal) or column (vertical) banding.",
+    _run_banding_blaster, [
+        Param("direction", "choice", "horizontal", "horizontal: row banding (Canon DSLRs); "
+              "vertical: column banding.", choices=["horizontal", "vertical"]),
+        Param("amount", "float", 1.0, "Strength; 1 brings each row's median to the image median.",
+              min=0.0, max=4.0),
+        Param("protect_highlights", "bool", True, "Leave stars and bright cores out of the row medians."),
+        Param("sigma", "float", 1.0, "With --protect-highlights: how far above the median a pixel is "
+              "left out, in robust sigmas. Lower leaves out more.", min=0.01, max=5.0),
+    ], aliases=["banding", "banding_reduction"]))
+
+
 # ── Examples shown at the foot of each tool's --help ────────────────────────
 _P = "setiastrosuitepro process "
 _EXAMPLES = {
@@ -1483,6 +1504,10 @@ _EXAMPLES = {
     ],
     "halo_b_gon": [
         _P + "halo_b_gon -i in.tif -o out.tif --reduction 1",
+    ],
+    "banding_blaster": [
+        _P + "banding_blaster -i stack.fits -o out.fits",
+        _P + "banding_blaster -i stack.fits -o out.fits --direction vertical --amount 0.8 --sigma 0.5",
     ],
 }
 for _id, _ex in _EXAMPLES.items():

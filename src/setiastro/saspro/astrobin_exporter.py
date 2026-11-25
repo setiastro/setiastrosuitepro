@@ -14,7 +14,7 @@ from datetime import datetime, timezone, timedelta
 import numpy as np
 from astropy.io import fits
 
-from PyQt6.QtCore import Qt, QTimer, QSettings
+from PyQt6.QtCore import Qt, QTimer, QSettings, QCoreApplication
 from PyQt6.QtGui import (
     QFontMetrics, QIntValidator, QDoubleValidator,
     QStandardItemModel, QStandardItem
@@ -33,6 +33,10 @@ try:
     from setiastro.saspro.legacy.xisf import XISF
 except Exception:
     XISF = None  # handled gracefully below
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("AstrobinExporter", text)
 
 # ---- constants --------------------------------------------------------------
 
@@ -429,7 +433,7 @@ class FilterProfileDialog(QDialog):
     def __init__(self, parent, current_map: Dict[str, str],
                  get_profiles_fn, save_profile_fn, delete_profile_fn):
         super().__init__(parent)
-        self.setWindowTitle("Filter Profiles")
+        self.setWindowTitle(self.tr("Filter Profiles"))
         self.setMinimumWidth(500)
 
         self.current_map      = current_map
@@ -446,20 +450,20 @@ class FilterProfileDialog(QDialog):
         outer.setSpacing(8)
 
         # ── Save current mapping as a new profile ─────────────────────────
-        save_box = QGroupBox("Save current filter map as a profile")
+        save_box = QGroupBox(self.tr("Save current filter map as a profile"))
         save_lay = QHBoxLayout(save_box)
-        save_lay.addWidget(QLabel("Profile name:"))
+        save_lay.addWidget(QLabel(self.tr("Profile name:")))
         self._name_edit = QLineEdit()
-        self._name_edit.setPlaceholderText("e.g. Takahashi FSQ + ASI2600")
+        self._name_edit.setPlaceholderText(self.tr("e.g. Takahashi FSQ + ASI2600"))
         self._name_edit.setMinimumWidth(220)
         save_lay.addWidget(self._name_edit, 1)
-        save_btn = QPushButton("Save")
+        save_btn = QPushButton(self.tr("Save"))
         save_btn.clicked.connect(self._on_save)
         save_lay.addWidget(save_btn)
         outer.addWidget(save_box)
 
         # ── Saved profiles list ───────────────────────────────────────────
-        list_box = QGroupBox("Saved profiles")
+        list_box = QGroupBox(self.tr("Saved profiles"))
         list_lay = QVBoxLayout(list_box)
 
         self._list = QListWidget()
@@ -471,14 +475,14 @@ class FilterProfileDialog(QDialog):
         self._preview = QTextEdit()
         self._preview.setReadOnly(True)
         self._preview.setFixedHeight(90)
-        self._preview.setPlaceholderText("Select a profile to preview its filter mappings…")
+        self._preview.setPlaceholderText(self.tr("Select a profile to preview its filter mappings…"))
         list_lay.addWidget(self._preview)
         self._list.currentItemChanged.connect(self._on_selection_changed)
 
         btn_row = QHBoxLayout()
-        load_btn   = QPushButton("Load selected")
+        load_btn   = QPushButton(self.tr("Load selected"))
         load_btn.clicked.connect(self._on_load)
-        delete_btn = QPushButton("Delete selected")
+        delete_btn = QPushButton(self.tr("Delete selected"))
         delete_btn.clicked.connect(self._on_delete)
         btn_row.addWidget(load_btn)
         btn_row.addWidget(delete_btn)
@@ -488,7 +492,7 @@ class FilterProfileDialog(QDialog):
         outer.addWidget(list_box, 1)
 
         # ── Current active mapping preview ────────────────────────────────
-        cur_box = QGroupBox("Current active filter map")
+        cur_box = QGroupBox(self.tr("Current active filter map"))
         cur_lay = QVBoxLayout(cur_box)
         self._current_preview = QTextEdit()
         self._current_preview.setReadOnly(True)
@@ -506,7 +510,7 @@ class FilterProfileDialog(QDialog):
     @staticmethod
     def _map_to_text(mapping: Dict[str, str]) -> str:
         if not mapping:
-            return "(empty)"
+            return _tr("(empty)")
         return "  " + "\n  ".join(
             f"{k}  →  {v}"
             for k, v in sorted(mapping.items(), key=lambda kv: kv[0].lower())
@@ -518,7 +522,7 @@ class FilterProfileDialog(QDialog):
         for name in sorted(profiles.keys(), key=str.lower):
             self._list.addItem(QListWidgetItem(name))
         if self._list.count() == 0:
-            self._preview.setPlainText("No saved profiles yet.")
+            self._preview.setPlainText(self.tr("No saved profiles yet."))
 
     def _on_selection_changed(self, current, _previous):
         if current is None:
@@ -532,15 +536,15 @@ class FilterProfileDialog(QDialog):
     def _on_save(self):
         name = self._name_edit.text().strip()
         if not name:
-            QMessageBox.warning(self, "Profile name required",
-                                "Please enter a name for this profile.")
+            QMessageBox.warning(self, self.tr("Profile name required"),
+                                self.tr("Please enter a name for this profile."))
             return
 
         profiles = self._get_profiles()
         if name in profiles:
             ans = QMessageBox.question(
-                self, "Overwrite profile?",
-                f"A profile named '{name}' already exists.\nOverwrite it?",
+                self, self.tr("Overwrite profile?"),
+                self.tr("A profile named '{0}' already exists.\nOverwrite it?").format(name),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -548,8 +552,8 @@ class FilterProfileDialog(QDialog):
                 return
 
         if not self.current_map:
-            QMessageBox.warning(self, "Nothing to save",
-                                "The current filter map is empty — nothing was saved.")
+            QMessageBox.warning(self, self.tr("Nothing to save"),
+                                self.tr("The current filter map is empty — nothing was saved."))
             return
 
         self._save_profile_fn(name, self.current_map)
@@ -562,21 +566,21 @@ class FilterProfileDialog(QDialog):
                 self._list.setCurrentRow(i)
                 break
 
-        QMessageBox.information(self, "Saved",
-                                f"Profile '{name}' saved with "
-                                f"{len(self.current_map)} filter mapping(s).")
+        QMessageBox.information(self, self.tr("Saved"),
+                                self.tr("Profile '{0}' saved with "
+                                        "{1} filter mapping(s).").format(name, len(self.current_map)))
 
     def _on_load(self):
         item = self._list.currentItem()
         if item is None:
-            QMessageBox.information(self, "No selection",
-                                    "Please select a profile to load.")
+            QMessageBox.information(self, self.tr("No selection"),
+                                    self.tr("Please select a profile to load."))
             return
         profiles = self._get_profiles()
         mp = profiles.get(item.text(), {})
         if not mp:
-            QMessageBox.warning(self, "Empty profile",
-                                f"Profile '{item.text()}' has no filter mappings.")
+            QMessageBox.warning(self, self.tr("Empty profile"),
+                                self.tr("Profile '{0}' has no filter mappings.").format(item.text()))
             return
 
         self.selected_map = mp
@@ -586,13 +590,13 @@ class FilterProfileDialog(QDialog):
     def _on_delete(self):
         item = self._list.currentItem()
         if item is None:
-            QMessageBox.information(self, "No selection",
-                                    "Please select a profile to delete.")
+            QMessageBox.information(self, self.tr("No selection"),
+                                    self.tr("Please select a profile to delete."))
             return
         name = item.text()
         ans = QMessageBox.question(
-            self, "Delete profile?",
-            f"Delete profile '{name}'? This cannot be undone.",
+            self, self.tr("Delete profile?"),
+            self.tr("Delete profile '{0}'? This cannot be undone.").format(name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -739,7 +743,7 @@ class AstrobinExportTab(QWidget):
         rlyt.addWidget(self.table, 1)
 
         # CSV preview
-        rlyt.addWidget(QLabel("CSV Preview:"))
+        rlyt.addWidget(QLabel(self.tr("CSV Preview:")))
         self.csv_view = QTextEdit(self); self.csv_view.setReadOnly(True)
         rlyt.addWidget(self.csv_view, 1)
 
@@ -1168,13 +1172,16 @@ class AstrobinExportTab(QWidget):
         self._refresh_table(); self._refresh_csv_text()
 
     def _refresh_table(self):
+        # Row-dict keys (English, never translated) in column order; `cols` are the header labels.
+        keys = ['date', 'filter', 'number', 'duration', 'gain', 'iso', 'binning', 'sensorCooling',
+                'fNumber', 'darks', 'flats', 'flatDarks', 'bias', 'bortle', 'meanSqm', 'meanFwhm', 'temperature']
         cols = [self.tr('date'), self.tr('filter'), self.tr('number'), self.tr('duration'), self.tr('gain'), self.tr('iso'), self.tr('binning'), self.tr('sensorCooling'),
                 self.tr('fNumber'), self.tr('darks'), self.tr('flats'), self.tr('flatDarks'), self.tr('bias'), self.tr('bortle'), self.tr('meanSqm'), self.tr('meanFwhm'), self.tr('temperature')]
         self.table.setRowCount(len(self.rows))
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         for r, row in enumerate(self.rows):
-            for c, key in enumerate(cols):
+            for c, key in enumerate(keys):
                 item = QTableWidgetItem(str(row.get(key, "")))
                 if key == "filter" and not str(row.get(key, "")).isdigit():
                     item.setForeground(Qt.GlobalColor.red)

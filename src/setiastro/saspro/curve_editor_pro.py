@@ -632,7 +632,7 @@ class CurveEditor(QWidget):
             if is_drag or is_hover:
                 x_norm = sx / self._SZ
                 y_norm = 1.0 - sy / self._SZ
-                lbl = f"in {x_norm:.3f}  out {y_norm:.3f}"
+                lbl = self.tr("in {0:.3f}  out {1:.3f}").format(x_norm, y_norm)
                 p.setFont(QFont("Segoe UI", 8))
                 p.setPen(QColor(255, 240, 180))
                 tx = min(pt.x() + 12, self.width() - 110)
@@ -1273,7 +1273,7 @@ class StretchCurveView(QWidget):
         if compact:
             self.pan.setFixedHeight(12)
 
-        self.lbl_clip = QLabel("Clip %: 0.0000 shadows / 0.0000 highlights")
+        self.lbl_clip = QLabel(self.tr("Clip %: {0:.4f} shadows / {1:.4f} highlights").format(0.0, 0.0))
         self.lbl_clip.setStyleSheet("color: #9a9a9a; font-size: 11px;")
         self.lbl_clip.setVisible(not compact)
 
@@ -1399,7 +1399,7 @@ class StretchCurveView(QWidget):
             ref = self._before.get("K", self._before.get("R"))
             if ref is not None:
                 lo, hi = _clip_pct(ref, self._lut)
-                self.lbl_clip.setText(f"Clip %: {lo:.4f} shadows / {hi:.4f} highlights")
+                self.lbl_clip.setText(self.tr("Clip %: {0:.4f} shadows / {1:.4f} highlights").format(lo, hi))
 
     # -- CurveEditor compatibility facade
     def setPreviewCallback(self, cb):   self._preview_cb = cb
@@ -1757,7 +1757,7 @@ class CurvesDialogPro(QDialog):
         # --- numeric editor for the selected curve point (X/Y in 0..1) ------
         self._suppress_pt_spin = False
         pt_row = QHBoxLayout()
-        pt_row.addWidget(QLabel("Point:"))
+        pt_row.addWidget(QLabel(self.tr("Point:")))
         pt_row.addWidget(QLabel("X"))
         self.pt_x = QDoubleSpinBox()
         self.pt_x.setRange(0.0, 1.0); self.pt_x.setDecimals(4)
@@ -1996,9 +1996,9 @@ class CurvesDialogPro(QDialog):
         finally:
             self._suppress_pt_spin = False
         if is_black:
-            self._pt_hint.setText("black point (locks to x=0 or y=0)")
+            self._pt_hint.setText(self.tr("black point (locks to x=0 or y=0)"))
         elif is_white:
-            self._pt_hint.setText("white point (locks to x=1 or y=1)")
+            self._pt_hint.setText(self.tr("white point (locks to x=1 or y=1)"))
         else:
             self._pt_hint.setText("")
 
@@ -2391,8 +2391,17 @@ class CurvesDialogPro(QDialog):
         return np.clip(out, 0.0, 1.0).astype(np.float32)
 
     def _fit_after_load(self, tries=0):
-        if self._did_initial_fit:
+        if self._did_initial_fit or getattr(self, "_memory_released", False):
             return
+        # The retries below are lambdas, which Qt still runs after the dialog
+        # is deleted (closed within the first few hundred ms): stop there
+        # instead of raising RuntimeError into the crash handler's box.
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self):
+                return
+        except Exception:
+            pass
         if not self.isVisible():
             QTimer.singleShot(0, lambda: self._fit_after_load(tries))
             return
@@ -2696,15 +2705,15 @@ class CurvesDialogPro(QDialog):
     def _rebuild_presets_menu(self):
         m = QMenu(self)
         builtins = [
-            ("Linear",              {"mode":"K (Brightness)","shape":"linear"}),
-            ("S-Curve (mild)",      {"mode":"K (Brightness)","shape":"s_mild","amount":1.0}),
-            ("S-Curve (medium)",    {"mode":"K (Brightness)","shape":"s_med","amount":1.0}),
-            ("S-Curve (strong)",    {"mode":"K (Brightness)","shape":"s_strong","amount":1.0}),
-            ("Lift Shadows",        {"mode":"K (Brightness)","shape":"lift_shadows","amount":1.0}),
-            ("Crush Shadows",       {"mode":"K (Brightness)","shape":"crush_shadows","amount":1.0}),
-            ("Fade Blacks",         {"mode":"K (Brightness)","shape":"fade_blacks","amount":1.0}),
-            ("Rolloff Highlights",  {"mode":"K (Brightness)","shape":"rolloff_highlights","amount":1.0}),
-            ("Flatten",             {"mode":"K (Brightness)","shape":"flatten","amount":1.0}),
+            (self.tr("Linear"),              {"mode":"K (Brightness)","shape":"linear"}),
+            (self.tr("S-Curve (mild)"),      {"mode":"K (Brightness)","shape":"s_mild","amount":1.0}),
+            (self.tr("S-Curve (medium)"),    {"mode":"K (Brightness)","shape":"s_med","amount":1.0}),
+            (self.tr("S-Curve (strong)"),    {"mode":"K (Brightness)","shape":"s_strong","amount":1.0}),
+            (self.tr("Lift Shadows"),        {"mode":"K (Brightness)","shape":"lift_shadows","amount":1.0}),
+            (self.tr("Crush Shadows"),       {"mode":"K (Brightness)","shape":"crush_shadows","amount":1.0}),
+            (self.tr("Fade Blacks"),         {"mode":"K (Brightness)","shape":"fade_blacks","amount":1.0}),
+            (self.tr("Rolloff Highlights"),  {"mode":"K (Brightness)","shape":"rolloff_highlights","amount":1.0}),
+            (self.tr("Flatten"),             {"mode":"K (Brightness)","shape":"flatten","amount":1.0}),
         ]
         mb = m.addMenu(self.tr("Built-ins"))
         for label, preset in builtins:
@@ -2714,7 +2723,7 @@ class CurvesDialogPro(QDialog):
         if customs:
             mc = m.addMenu(self.tr("Custom"))
             for pp in sorted(customs, key=lambda d: d.get("name","").lower()):
-                act = mc.addAction(pp.get("name","(unnamed)"))
+                act = mc.addAction(pp.get("name",self.tr("(unnamed)")))
                 act.triggered.connect(lambda _=False, pp=pp: self._apply_preset_dict(pp))
             mc.addSeparator()
             mc.addAction(self.tr("Manage…")).triggered.connect(self._open_manage_customs_dialog)
@@ -3352,6 +3361,21 @@ class CurvesDialogPro(QDialog):
         return (m*out + (1.0-m)*src).astype(np.float32, copy=False)
 
     def closeEvent(self, ev):
+        self._close_teardown()
+        super().closeEvent(ev)
+
+    def done(self, r):
+        # Esc / Discard end a QDialog through done(), which never delivers
+        # closeEvent: without this they ran only _cleanup_connections (via
+        # finished), skipping the geometry save, the pop-out teardown and the
+        # release, so the dialog kept its image until collected. Runs once.
+        self._close_teardown()
+        super().done(r)
+
+    def _close_teardown(self):
+        if getattr(self, "_close_torn_down", False):
+            return
+        self._close_torn_down = True
         try: self._save_window_geometry()
         except Exception: pass
         # If detached, remember the pop-out geometry (and leave the "active"
@@ -3381,7 +3405,6 @@ class CurvesDialogPro(QDialog):
             self._release_memory()
         except Exception:
             pass
-        super().closeEvent(ev)
 
     def _release_memory(self):
         """Drop full/preview image buffers and pixmap so RAM can be reclaimed."""
@@ -3631,7 +3654,7 @@ class CurvesDialogPro(QDialog):
         self._editor_set_from_norm(ptsN)
         self._curves_store[self._current_mode_key] = self._editor_points_norm()
         self._refresh_overlays(); self._quick_preview()
-        shape_tag = f"[{shape}]" if shape else "[custom]"
+        shape_tag = f"[{shape}]" if shape else self.tr("[custom]")
         self._set_status(self.tr("Preset: {0}  {1}").format(
             preset.get("name",self.tr("(built-in)")), shape_tag))
 

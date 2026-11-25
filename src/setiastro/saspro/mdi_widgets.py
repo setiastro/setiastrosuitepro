@@ -373,11 +373,11 @@ class ConsoleListWidget(QListWidget):
     def contextMenuEvent(self, event):
         menu = QMenu(self)
 
-        act_select_all = menu.addAction("Select All")
-        act_copy_sel = menu.addAction("Copy Selected")
-        act_copy_all = menu.addAction("Copy All")
+        act_select_all = menu.addAction(self.tr("Select All"))
+        act_copy_sel = menu.addAction(self.tr("Copy Selected"))
+        act_copy_all = menu.addAction(self.tr("Copy All"))
         menu.addSeparator()
-        act_clear = menu.addAction("Clear")
+        act_clear = menu.addAction(self.tr("Clear"))
 
         action = menu.exec(event.globalPos())
         if action is None:

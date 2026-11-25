@@ -437,7 +437,7 @@ class DynamicFilterRow(QWidget):
         # Row 0: enable + name + preset dropdown + remove button
         row0 = QHBoxLayout()
 
-        self.cb_enable = QCheckBox("Enable")
+        self.cb_enable = QCheckBox(self.tr("Enable"))
         self.cb_enable.setChecked(False)
         self.cb_enable.toggled.connect(self._on_enable_toggled)
         row0.addWidget(self.cb_enable)
@@ -453,7 +453,7 @@ class DynamicFilterRow(QWidget):
 
         # Preset snap button
         self.cmb_preset = QComboBox()
-        self.cmb_preset.setToolTip("Snap hue to a known filter wavelength")
+        self.cmb_preset.setToolTip(self.tr("Snap hue to a known filter wavelength"))
         for pname in _FILTER_PRESET_NAMES:
             _, hue, desc = _FILTER_PRESETS[pname]
             nm = _FILTER_PRESETS[pname][0]
@@ -466,7 +466,7 @@ class DynamicFilterRow(QWidget):
 
         # Name edit
         self.name_edit = QLineEdit(default_name)
-        self.name_edit.setPlaceholderText("Filter name")
+        self.name_edit.setPlaceholderText(self.tr("Filter name"))
         self.name_edit.setFixedWidth(90)
         self.name_edit.textChanged.connect(self._on_name_changed)
         row0.addWidget(self.name_edit)
@@ -474,14 +474,14 @@ class DynamicFilterRow(QWidget):
         # Remove button
         btn_remove = QPushButton("✕")
         btn_remove.setFixedSize(24, 24)
-        btn_remove.setToolTip("Remove this filter")
+        btn_remove.setToolTip(self.tr("Remove this filter"))
         btn_remove.clicked.connect(lambda: self.removeRequested.emit(self))
         row0.addWidget(btn_remove)
 
         gb_layout.addLayout(row0)
 
         # Row 1: hue label
-        gb_layout.addWidget(QLabel("Colorize hue (°):"))
+        gb_layout.addWidget(QLabel(self.tr("Colorize hue (°):")))
 
         # Row 2: hue gradient slider
         self.hue_slider = HueGradientSlider(default_hue=default_hue)
@@ -491,7 +491,7 @@ class DynamicFilterRow(QWidget):
 
         # Row 3: hue spin + amount + saturation
         row3 = QHBoxLayout()
-        row3.addWidget(QLabel("Hue:"))
+        row3.addWidget(QLabel(self.tr("Hue:")))
         self.hue_spin = QDoubleSpinBox()
         self.hue_spin.setRange(0.0, 359.9)
         self.hue_spin.setSingleStep(1.0)
@@ -502,33 +502,33 @@ class DynamicFilterRow(QWidget):
         row3.addWidget(self.hue_spin)
 
         row3.addSpacing(16)
-        row3.addWidget(QLabel("Amount:"))
+        row3.addWidget(QLabel(self.tr("Amount:")))
         self.amt_spin = QDoubleSpinBox()
         self.amt_spin.setRange(0.0, 2.0)
         self.amt_spin.setSingleStep(0.05)
         self.amt_spin.setDecimals(2)
         self.amt_spin.setValue(1.0)
         self.amt_spin.setEnabled(False)
-        self.amt_spin.setToolTip("0 = no contribution, 1 = full screen, 2 = double weight")
+        self.amt_spin.setToolTip(self.tr("0 = no contribution, 1 = full screen, 2 = double weight"))
         self.amt_spin.valueChanged.connect(self.changed)
         row3.addWidget(self.amt_spin)
 
         row3.addSpacing(16)
-        row3.addWidget(QLabel("Sat:"))
+        row3.addWidget(QLabel(self.tr("Sat:")))
         self.sat_spin = QDoubleSpinBox()
         self.sat_spin.setRange(0.0, 1.0)
         self.sat_spin.setSingleStep(0.05)
         self.sat_spin.setDecimals(2)
         self.sat_spin.setValue(1.0)
         self.sat_spin.setEnabled(False)
-        self.sat_spin.setToolTip(
+        self.sat_spin.setToolTip(self.tr(
             "1.0 = full colorized hue  |  0.0 = greyscale signal only (no hue, full luminance)"
-        )
+        ))
         self.sat_spin.valueChanged.connect(self.changed)
         row3.addWidget(self.sat_spin)
 
         gb_layout.addLayout(row3)
-        lbl_levels = QLabel("Levels  (Black / Mid / White):")
+        lbl_levels = QLabel(self.tr("Levels  (Black / Mid / White):"))
         lbl_levels.setStyleSheet("color:#aaa; font-size:11px;")
         lbl_levels.setEnabled(False)
         gb_layout.addWidget(lbl_levels)
@@ -637,7 +637,7 @@ class NarrowbandIntegrationDialog(QDialog):
 
     def __init__(self, doc_manager=None, parent=None, window_icon: QIcon | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Narrowband Integration")
+        self.setWindowTitle(self.tr("Narrowband Integration"))
         if window_icon:
             self.setWindowIcon(window_icon)
         try:
@@ -695,7 +695,7 @@ class NarrowbandIntegrationDialog(QDialog):
         self._controls_layout.setSpacing(10)
 
         # ── RGB source ──────────────────────────────────────────────────────
-        gb_rgb = QGroupBox("Broadband RGB Image")
+        gb_rgb = QGroupBox(self.tr("Broadband RGB Image"))
         gl_rgb = QVBoxLayout(gb_rgb)
         rgb_row = QHBoxLayout()
         self.cmb_rgb = QComboBox()
@@ -703,8 +703,8 @@ class NarrowbandIntegrationDialog(QDialog):
         self.cmb_rgb.setMinimumContentsLength(28)
         self.cmb_rgb.currentIndexChanged.connect(self._schedule_preview)
         rgb_row.addWidget(self.cmb_rgb, 1)
-        btn_refresh = QPushButton("↺ Refresh")
-        btn_refresh.setToolTip("Refresh dropdowns from currently open images")
+        btn_refresh = QPushButton(self.tr("↺ Refresh"))
+        btn_refresh.setToolTip(self.tr("Refresh dropdowns from currently open images"))
         btn_refresh.setFixedWidth(80)
         btn_refresh.clicked.connect(self._refresh_views)
         rgb_row.addWidget(btn_refresh)
@@ -720,9 +720,9 @@ class NarrowbandIntegrationDialog(QDialog):
         self._nb_enabled     = {}
 
         nb_descriptions = {
-            "Ha":   "Hα  656 nm  (hydrogen alpha)",
-            "SII":  "SII  672 nm  (sulfur II)",
-            "OIII": "OIII  496/501 nm  (oxygen III)",
+            "Ha":   self.tr("Hα  656 nm  (hydrogen alpha)"),
+            "SII":  self.tr("SII  672 nm  (sulfur II)"),
+            "OIII": self.tr("OIII  496/501 nm  (oxygen III)"),
         }
 
         for label in _NB_LABELS:
@@ -731,7 +731,7 @@ class NarrowbandIntegrationDialog(QDialog):
             g.setSpacing(6)
 
             row0 = QHBoxLayout()
-            cb_en = QCheckBox("Enable")
+            cb_en = QCheckBox(self.tr("Enable"))
             cb_en.setChecked(False)
             cb_en.toggled.connect(lambda checked, lbl=label: self._on_nb_enable_toggled(lbl, checked))
             self._nb_enabled[label] = cb_en
@@ -746,7 +746,7 @@ class NarrowbandIntegrationDialog(QDialog):
             row0.addWidget(cmb, 1)
             g.addLayout(row0)
 
-            g.addWidget(QLabel("Colorize hue (°):"))
+            g.addWidget(QLabel(self.tr("Colorize hue (°):")))
 
             hue_slider = HueGradientSlider(default_hue=_DEFAULT_HUE[label])
             hue_slider.setEnabled(False)
@@ -755,7 +755,7 @@ class NarrowbandIntegrationDialog(QDialog):
             g.addWidget(hue_slider)
 
             row3 = QHBoxLayout()
-            row3.addWidget(QLabel("Hue:"))
+            row3.addWidget(QLabel(self.tr("Hue:")))
             hue_spin = QDoubleSpinBox()
             hue_spin.setRange(0.0, 359.9)
             hue_spin.setSingleStep(1.0)
@@ -767,36 +767,36 @@ class NarrowbandIntegrationDialog(QDialog):
             row3.addWidget(hue_spin)
 
             row3.addSpacing(16)
-            row3.addWidget(QLabel("Amount:"))
+            row3.addWidget(QLabel(self.tr("Amount:")))
             amt_spin = QDoubleSpinBox()
             amt_spin.setRange(0.0, 2.0)
             amt_spin.setSingleStep(0.05)
             amt_spin.setDecimals(2)
             amt_spin.setValue(1.0)
             amt_spin.setEnabled(False)
-            amt_spin.setToolTip("0 = no contribution, 1 = full screen, 2 = double weight")
+            amt_spin.setToolTip(self.tr("0 = no contribution, 1 = full screen, 2 = double weight"))
             amt_spin.valueChanged.connect(self._schedule_preview)
             self._nb_amount[label] = amt_spin
             row3.addWidget(amt_spin)
 
             row3.addSpacing(16)
-            row3.addWidget(QLabel("Sat:"))
+            row3.addWidget(QLabel(self.tr("Sat:")))
             sat_spin = QDoubleSpinBox()
             sat_spin.setRange(0.0, 1.0)
             sat_spin.setSingleStep(0.05)
             sat_spin.setDecimals(2)
             sat_spin.setValue(1.0)
             sat_spin.setEnabled(False)
-            sat_spin.setToolTip(
+            sat_spin.setToolTip(self.tr(
                 "1.0 = full colorized hue  |  0.0 = greyscale signal only (no hue, full luminance)"
-            )
+            ))
             sat_spin.valueChanged.connect(self._schedule_preview)
             self._nb_sat[label] = sat_spin
             row3.addWidget(sat_spin)
 
             g.addLayout(row3)
 
-            lbl_levels = QLabel("Levels  (Black / Mid / White):")
+            lbl_levels = QLabel(self.tr("Levels  (Black / Mid / White):"))
             lbl_levels.setStyleSheet("color:#aaa; font-size:11px;")
             lbl_levels.setEnabled(False)
             g.addWidget(lbl_levels)
@@ -817,8 +817,8 @@ class NarrowbandIntegrationDialog(QDialog):
 
         # ── Add Filter button ───────────────────────────────────────────────
         add_row = QHBoxLayout()
-        self.btn_add_filter = QPushButton("＋  Add Filter")
-        self.btn_add_filter.setToolTip("Add a custom narrowband filter channel")
+        self.btn_add_filter = QPushButton(self.tr("＋  Add Filter"))
+        self.btn_add_filter.setToolTip(self.tr("Add a custom narrowband filter channel"))
         self.btn_add_filter.clicked.connect(self._add_dynamic_filter)
         add_row.addWidget(self.btn_add_filter)
         add_row.addStretch(1)
@@ -835,15 +835,15 @@ class NarrowbandIntegrationDialog(QDialog):
         left_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         left_outer.addWidget(left_scroll, 1)
 
-        self.cb_small = QCheckBox("Small preview (fast)")
+        self.cb_small = QCheckBox(self.tr("Small preview (fast)"))
         self.cb_small.setChecked(True)
         self.cb_small.toggled.connect(self._schedule_preview)
         left_outer.addWidget(self.cb_small)
 
         btn_row = QHBoxLayout()
-        self.btn_apply     = QPushButton("Apply to Current View")
-        self.btn_apply_new = QPushButton("Apply as New Document")
-        self.btn_reset     = QPushButton("↺ Reset")
+        self.btn_apply     = QPushButton(self.tr("Apply to Current View"))
+        self.btn_apply_new = QPushButton(self.tr("Apply as New Document"))
+        self.btn_reset     = QPushButton(self.tr("↺ Reset"))
         self.btn_apply.clicked.connect(self._apply_to_current)
         self.btn_apply_new.clicked.connect(self._apply_as_new)
         self.btn_reset.clicked.connect(self._reset_controls)
@@ -869,10 +869,10 @@ class NarrowbandIntegrationDialog(QDialog):
         right.setSpacing(6)
 
         zoom_row = QHBoxLayout()
-        self.btn_zoom_out = themed_toolbtn("zoom-out",      "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in",       "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out",      self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in",       self.tr("Zoom In"))
         self.btn_zoom_1   = themed_toolbtn("zoom-original", "1:1")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit")
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit"))
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.btn_zoom_in)
         zoom_row.addWidget(self.btn_zoom_1)
@@ -885,7 +885,7 @@ class NarrowbandIntegrationDialog(QDialog):
         self.btn_zoom_1.clicked.connect(lambda: self._apply_zoom(1.0))
         self.btn_fit.clicked.connect(self._fit_to_preview)
 
-        lbl_help = QLabel("🖱️  <b>Drag</b>: pan  &nbsp;•&nbsp;  <b>Wheel</b>: zoom")
+        lbl_help = QLabel(self.tr("🖱️  <b>Drag</b>: pan  &nbsp;•&nbsp;  <b>Wheel</b>: zoom"))
         lbl_help.setTextFormat(Qt.TextFormat.RichText)
         lbl_help.setStyleSheet("color: #888; font-size: 11px;")
         right.addWidget(lbl_help)
@@ -943,7 +943,7 @@ class NarrowbandIntegrationDialog(QDialog):
                         break
 
     def _build_doc_items(self) -> list[tuple]:
-        items = [("— None —", None)]
+        items = [(self.tr("— None —"), None)]
         if self.docman is None:
             return items
         try:
@@ -988,7 +988,7 @@ class NarrowbandIntegrationDialog(QDialog):
 
         self.cmb_rgb.blockSignals(True)
         self.cmb_rgb.clear()
-        self.cmb_rgb.addItem("— Select RGB image —", None)
+        self.cmb_rgb.addItem(self.tr("— Select RGB image —"), None)
         for d, name in img_docs:
             self.cmb_rgb.addItem(name, d)
         self.cmb_rgb.setCurrentIndex(0)
@@ -998,7 +998,7 @@ class NarrowbandIntegrationDialog(QDialog):
             cmb = self._nb_combos[label]
             cmb.blockSignals(True)
             cmb.clear()
-            cmb.addItem("— None —", None)
+            cmb.addItem(self.tr("— None —"), None)
             for d, name in img_docs:
                 cmb.addItem(name, d)
             cmb.blockSignals(False)
@@ -1172,7 +1172,7 @@ class NarrowbandIntegrationDialog(QDialog):
             return
         rgb = self._get_rgb_image()
         if rgb is None:
-            self.lbl_preview.setText("Select a broadband RGB image.")
+            self.lbl_preview.setText(self.tr("Select a broadband RGB image."))
             self._cached_result_pm = None
             return
         base   = _downsample(rgb, 1200) if self.cb_small.isChecked() else rgb
@@ -1318,7 +1318,7 @@ class NarrowbandIntegrationDialog(QDialog):
     def _apply_fullres(self) -> np.ndarray | None:
         doc = self.cmb_rgb.currentData()
         if doc is None or not hasattr(doc, "image") or doc.image is None:
-            QMessageBox.information(self, "No image", "Please select a broadband RGB image.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Please select a broadband RGB image."))
             return None
         return self._compute_result(_ensure_rgb(_to_f32(doc.image)))
 
@@ -1343,7 +1343,7 @@ class NarrowbandIntegrationDialog(QDialog):
 
     def _open_result(self, result: np.ndarray, source_doc, suffix: str):
         if self.docman is None:
-            QMessageBox.warning(self, "No document manager", "Cannot create new document.")
+            QMessageBox.warning(self, self.tr("No document manager"), self.tr("Cannot create new document."))
             return
         title = f"{self._doc_name(source_doc)} {suffix}" if source_doc else suffix
         try:
@@ -1354,7 +1354,7 @@ class NarrowbandIntegrationDialog(QDialog):
             else:
                 self.docman.create_document(image=result, name=title)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to create document:\n{e}")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to create document:\n{0}").format(e))
 
     # -----------------------------------------------------------------------
     # Window state

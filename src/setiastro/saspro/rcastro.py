@@ -21,7 +21,7 @@ import tempfile
 import shutil
 import numpy as np
 
-from PyQt6.QtCore    import Qt, QThread, pyqtSignal, QSettings
+from PyQt6.QtCore    import Qt, QThread, pyqtSignal, QSettings, QCoreApplication
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QPushButton, QComboBox, QDoubleSpinBox, QSpinBox,
@@ -30,6 +30,11 @@ from PyQt6.QtWidgets import (
     QLineEdit, QApplication, QScrollArea,
 )
 from PyQt6.QtGui import QFont
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("RCAstro", text)
+
 
 # ── SetiAstro copyright header ────────────────────────────────────────────────
 #
@@ -262,7 +267,7 @@ class _ProgressDialog(QDialog):
 
         outer = QVBoxLayout(self)
 
-        self.lbl_stage = QLabel("Starting…")
+        self.lbl_stage = QLabel(self.tr("Starting…"))
         outer.addWidget(self.lbl_stage)
 
         self.pbar = QProgressBar()
@@ -275,7 +280,7 @@ class _ProgressDialog(QDialog):
         self.log.setFont(QFont("Courier New", 9))
         outer.addWidget(self.log, 1)
 
-        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
         self.btn_cancel.clicked.connect(self._on_cancel_clicked)
         outer.addWidget(self.btn_cancel)
 
@@ -345,26 +350,26 @@ class _BXTPanel(QWidget):
 
         # Correct Only checkbox — disables star sharpening when checked
         self.chk_correct_only = QCheckBox(
-            "Correct Only  (PSF aberration correction without any sharpening)"
+            self.tr("Correct Only  (PSF aberration correction without any sharpening)")
         )
         self.chk_correct_only.setChecked(False)
-        self.chk_correct_only.setToolTip(
+        self.chk_correct_only.setToolTip(self.tr(
             "Passes --correct-only to BXT.\n"
             "Corrects PSF aberrations without applying any star sharpening.\n"
             "Equivalent to leaving Sharpen Stars at 0."
-        )
+        ))
         form.addRow("", self.chk_correct_only)
 
         self.cmb_model = QComboBox()
         # # === SASpro rcastro v5/lp v1 ===: starts with legacy 2-item list; rebuilt by
         # set_ml_versions() once the --json probe has run.
-        self.cmb_model.addItems(["Latest", "AI2 (legacy)"])
-        self.cmb_model.setToolTip(
+        self.cmb_model.addItems([self.tr("Latest"), self.tr("AI2 (legacy)")])
+        self.cmb_model.setToolTip(self.tr(
             "BXT ML model version.\n"
             "Latest — current default model (recommended).\n"
             "Other entries pass --ml-version <N>.\n"
-            "Requires RC-Astro CLI 0.9.8 or later.")
-        form.addRow("Model:", self.cmb_model)
+            "Requires RC-Astro CLI 0.9.8 or later."))
+        form.addRow(self.tr("Model:"), self.cmb_model)
         self._model_form   = form
         self._ml_supported = False
         self._ml_versions: list[str] = []   # populated by set_ml_versions
@@ -373,13 +378,13 @@ class _BXTPanel(QWidget):
         # # === SASpro rcastro v5/lp v1 ===: lunar / planetary mode (--lp flag, BXT only).
         # Hidden by default; the parent dialog un-hides it once it has
         # confirmed the CLI supports --lp (via a --help grep).
-        self.chk_lunar_planetary = QCheckBox("Lunar / planetary mode")
+        self.chk_lunar_planetary = QCheckBox(self.tr("Lunar / planetary mode"))
         self.chk_lunar_planetary.setChecked(False)
-        self.chk_lunar_planetary.setToolTip(
+        self.chk_lunar_planetary.setToolTip(self.tr(
             "Passes --lp to BXT for lunar and planetary imagery.\n"
             "Uses a different processing path tuned for high-contrast\n"
             "surface detail rather than deep-sky stars + faint structure.\n"
-            "Requires RC-Astro CLI 2.6.6 or later.")
+            "Requires RC-Astro CLI 2.6.6 or later."))
         form.addRow("", self.chk_lunar_planetary)
         self._lp_supported = False
         self.chk_lunar_planetary.setVisible(False)
@@ -388,27 +393,27 @@ class _BXTPanel(QWidget):
         # the sliders and wondered why nothing changed).
         self.chk_lunar_planetary.toggled.connect(self._on_lp_toggled)
 
-        self.sld_ss  = _form_slider(form, "Sharpen Stars (0 – 0.7):",
+        self.sld_ss  = _form_slider(form, self.tr("Sharpen Stars (0 – 0.7):"),
                                     0.0, 0.7, 0.0, decimals=2, scale=100)
-        self.sld_ash = _form_slider(form, "Adjust Star Halos (−0.5 – 0.5):",
+        self.sld_ash = _form_slider(form, self.tr("Adjust Star Halos (−0.5 – 0.5):"),
                                     -0.5, 0.5, 0.0, decimals=2, scale=100)
 
-        self.chk_auto_nsr = QCheckBox("Auto-detect nonstellar PSF (recommended)")
+        self.chk_auto_nsr = QCheckBox(self.tr("Auto-detect nonstellar PSF (recommended)"))
         self.chk_auto_nsr.setChecked(True)
         form.addRow("", self.chk_auto_nsr)
 
-        self.sld_nsr = _form_slider(form, "Manual Nonstellar PSF (0 – 8 px):",
+        self.sld_nsr = _form_slider(form, self.tr("Manual Nonstellar PSF (0 – 8 px):"),
                                     0.0, 8.0, 0.0, decimals=1, scale=10)
         self.sld_nsr.setEnabled(False)
         self.chk_auto_nsr.toggled.connect(
             lambda on: self.sld_nsr.setEnabled(not on))
 
-        self.sld_sn  = _form_slider(form, "Sharpen Nonstellar (0 – 1):",
+        self.sld_sn  = _form_slider(form, self.tr("Sharpen Nonstellar (0 – 1):"),
                                     0.0, 1.0, 0.0, decimals=2, scale=100)
 
-        note = QLabel(
+        note = QLabel(self.tr(
             "BXT handles linear / non-linear detection automatically.\n"
-            "No pre-stretch needed — just run it on your linear or stretched image.")
+            "No pre-stretch needed — just run it on your linear or stretched image."))
         note.setWordWrap(True)
         note.setStyleSheet("color:#888; font-size:11px;")
         form.addRow("", note)
@@ -533,7 +538,7 @@ class _BXTPanel(QWidget):
         self.cmb_model.clear()
         if self._ml_versions:
             latest = self._ml_versions[0]
-            self.cmb_model.addItem(f"Latest (ML{latest})")
+            self.cmb_model.addItem(self.tr("Latest (ML{0})").format(latest))
             for v in self._ml_versions:
                 self.cmb_model.addItem(f"ML{v}")
             # Restore selection: match the version string if we can
@@ -546,7 +551,7 @@ class _BXTPanel(QWidget):
                 except ValueError:
                     self.cmb_model.setCurrentIndex(0)
         else:
-            self.cmb_model.addItems(["Latest", "AI2 (legacy)"])
+            self.cmb_model.addItems([self.tr("Latest"), self.tr("AI2 (legacy)")])
             self.cmb_model.setCurrentIndex(1 if prev == "2" else 0)
         self.cmb_model.blockSignals(False)
 
@@ -607,13 +612,13 @@ class _SXTPanel(QWidget):
         form = QFormLayout(self)
 
         self.chk_stars = QCheckBox(
-            "Also write stars-only image  (original − starless)")
+            self.tr("Also write stars-only image  (original − starless)"))
         self.chk_stars.setChecked(True)
         form.addRow("", self.chk_stars)
 
-        self.chk_unscreen = QCheckBox(
+        self.chk_unscreen = QCheckBox(self.tr(
             "Unscreen — recover star intensities lost to screening\n"
-            "(requires stars-only output above)")
+            "(requires stars-only output above)"))
         self.chk_unscreen.setChecked(False)
         self.chk_unscreen.setEnabled(False)
         self.chk_stars.toggled.connect(self.chk_unscreen.setEnabled)
@@ -621,18 +626,18 @@ class _SXTPanel(QWidget):
         form.addRow("", self.chk_unscreen)
 
         self.sld_overlap = _form_slider(
-            form, "Tile Overlap (0 – 0.5):",
+            form, self.tr("Tile Overlap (0 – 0.5):"),
             0.0, 0.5, 0.2, decimals=2, scale=100
         )
-        self.sld_overlap.setToolTip(
+        self.sld_overlap.setToolTip(self.tr(
             "Tile overlap fraction passed to --overlap.\n"
             "Default 0.20 (20%). Higher values reduce seam artifacts\n"
             "but increase processing time."
-        )
+        ))
 
-        note = QLabel(
+        note = QLabel(self.tr(
             "SASpro will load the starless result into the current document\n"
-            "and push the stars-only image as a new document.")
+            "and push the stars-only image as a new document."))
         note.setWordWrap(True)
         note.setStyleSheet("color:#888; font-size:11px;")
         form.addRow("", note)
@@ -670,11 +675,11 @@ class _NXTPanel(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
 
         # ── Mode selector ─────────────────────────────────────────────────────
-        mode_box = QGroupBox("Denoise Mode")
+        mode_box = QGroupBox(self.tr("Denoise Mode"))
         mode_h   = QHBoxLayout(mode_box)
-        self.rb_simple = QRadioButton("Simple")
-        self.rb_ic     = QRadioButton("Intensity && Color")
-        self.rb_freq   = QRadioButton("Frequency")
+        self.rb_simple = QRadioButton(self.tr("Simple"))
+        self.rb_ic     = QRadioButton(self.tr("Intensity && Color"))
+        self.rb_freq   = QRadioButton(self.tr("Frequency"))
         self.rb_simple.setChecked(True)
         for rb in (self.rb_simple, self.rb_ic, self.rb_freq):
             mode_h.addWidget(rb)
@@ -684,16 +689,16 @@ class _NXTPanel(QWidget):
         model_row = QWidget()
         model_h   = QHBoxLayout(model_row)
         model_h.setContentsMargins(0, 0, 0, 0)
-        self.lbl_model = QLabel("Model:")
+        self.lbl_model = QLabel(self.tr("Model:"))
         self.cmb_model = QComboBox()
         # # === SASpro rcastro v5/lp v1 ===: starts with legacy 2-item list; rebuilt by
         # set_ml_versions() once the --json probe has run.
-        self.cmb_model.addItems(["Latest", "AI2 (legacy)"])
-        self.cmb_model.setToolTip(
+        self.cmb_model.addItems([self.tr("Latest"), self.tr("AI2 (legacy)")])
+        self.cmb_model.setToolTip(self.tr(
             "NXT ML model version.\n"
             "Latest — current default model (recommended).\n"
             "Other entries pass --ml-version <N>.\n"
-            "Requires RC-Astro CLI 0.9.8 or later.")
+            "Requires RC-Astro CLI 0.9.8 or later."))
         self._ml_versions: list[str] = []
         model_h.addWidget(self.lbl_model)
         model_h.addWidget(self.cmb_model)
@@ -704,27 +709,27 @@ class _NXTPanel(QWidget):
         self.cmb_model.currentIndexChanged.connect(self._on_model_changed)
         self.set_ml_version_supported(False)
         # ── Simple ────────────────────────────────────────────────────────────
-        self._simple_box = QGroupBox("Simple")
+        self._simple_box = QGroupBox(self.tr("Simple"))
         simple_form = QFormLayout(self._simple_box)
-        self.sld_dn = _form_slider(simple_form, "Denoise (0–1):", 0, 1, 0.0)
+        self.sld_dn = _form_slider(simple_form, self.tr("Denoise (0–1):"), 0, 1, 0.0)
         outer.addWidget(self._simple_box)
 
         # ── Intensity & Color ─────────────────────────────────────────────────
-        self._ic_box = QGroupBox("Intensity && Color")
+        self._ic_box = QGroupBox(self.tr("Intensity && Color"))
         ic_form = QFormLayout(self._ic_box)
-        self.sld_di = _form_slider(ic_form, "Denoise Intensity (0–1):", 0, 1, 0.0)
-        self.sld_dc = _form_slider(ic_form, "Denoise Color (0–1):",     0, 1, 0.0)
+        self.sld_di = _form_slider(ic_form, self.tr("Denoise Intensity (0–1):"), 0, 1, 0.0)
+        self.sld_dc = _form_slider(ic_form, self.tr("Denoise Color (0–1):"),     0, 1, 0.0)
         outer.addWidget(self._ic_box)
 
         # ── Frequency ─────────────────────────────────────────────────────────
-        self._freq_box = QGroupBox("Frequency")
+        self._freq_box = QGroupBox(self.tr("Frequency"))
         freq_form = QFormLayout(self._freq_box)
-        self.sld_hf  = _form_slider(freq_form, "High-freq (0–1):",              0, 1, 0.0)
-        self.sld_lf  = _form_slider(freq_form, "Low-freq (0–1):",               0, 1, 0.0)
-        self.sld_ihf = _form_slider(freq_form, "Intensity High-freq (0–1):",    0, 1, 0.0)
-        self.sld_ilf = _form_slider(freq_form, "Intensity Low-freq (0–1):",     0, 1, 0.0)
-        self.sld_chf = _form_slider(freq_form, "Color High-freq (0–1):",        0, 1, 0.0)
-        self.sld_clf = _form_slider(freq_form, "Color Low-freq (0–1):",         0, 1, 0.0)
+        self.sld_hf  = _form_slider(freq_form, self.tr("High-freq (0–1):"),              0, 1, 0.0)
+        self.sld_lf  = _form_slider(freq_form, self.tr("Low-freq (0–1):"),               0, 1, 0.0)
+        self.sld_ihf = _form_slider(freq_form, self.tr("Intensity High-freq (0–1):"),    0, 1, 0.0)
+        self.sld_ilf = _form_slider(freq_form, self.tr("Intensity Low-freq (0–1):"),     0, 1, 0.0)
+        self.sld_chf = _form_slider(freq_form, self.tr("Color High-freq (0–1):"),        0, 1, 0.0)
+        self.sld_clf = _form_slider(freq_form, self.tr("Color Low-freq (0–1):"),         0, 1, 0.0)
 
         fs_row = QWidget()
         fs_h   = QHBoxLayout(fs_row)
@@ -739,7 +744,7 @@ class _NXTPanel(QWidget):
             lambda v: self.lbl_fs.setText(f"{v/10.0:.1f}"))
         fs_h.addWidget(self.sld_fs, 1)
         fs_h.addWidget(self.lbl_fs)
-        freq_form.addRow("Frequency Scale (1–100 px):", fs_row)
+        freq_form.addRow(self.tr("Frequency Scale (1–100 px):"), fs_row)
         outer.addWidget(self._freq_box)
 
         # ── Iterations (common to all modes) ──────────────────────────────────
@@ -754,7 +759,7 @@ class _NXTPanel(QWidget):
         iter_h.addWidget(self.sp_iter)
         iter_h.addStretch(1)
         iter_form = QFormLayout()
-        iter_form.addRow("Iterations (1–5):", iter_row)
+        iter_form.addRow(self.tr("Iterations (1–5):"), iter_row)
         outer.addLayout(iter_form)
         outer.addStretch(1)
 
@@ -797,7 +802,7 @@ class _NXTPanel(QWidget):
         self.cmb_model.clear()
         if self._ml_versions:
             latest = self._ml_versions[0]
-            self.cmb_model.addItem(f"Latest (ML{latest})")
+            self.cmb_model.addItem(self.tr("Latest (ML{0})").format(latest))
             for v in self._ml_versions:
                 self.cmb_model.addItem(f"ML{v}")
             if prev is None:
@@ -809,7 +814,7 @@ class _NXTPanel(QWidget):
                 except ValueError:
                     self.cmb_model.setCurrentIndex(0)
         else:
-            self.cmb_model.addItems(["Latest", "AI2 (legacy)"])
+            self.cmb_model.addItems([self.tr("Latest"), self.tr("AI2 (legacy)")])
             self.cmb_model.setCurrentIndex(1 if prev == "2" else 0)
         self.cmb_model.blockSignals(False)
 
@@ -932,23 +937,23 @@ class _LicensePanel(QWidget):
 
         self.edit_email = QLineEdit()
         self.edit_email.setPlaceholderText("license@example.com")
-        form.addRow("Email:", self.edit_email)
+        form.addRow(self.tr("Email:"), self.edit_email)
 
         key_row = QHBoxLayout()
         self.edit_key = QLineEdit()
         self.edit_key.setPlaceholderText("XXXX-XXXX-XXXX-XXXX")
         self.edit_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.btn_show = QPushButton("Show")
+        self.btn_show = QPushButton(self.tr("Show"))
         self.btn_show.setCheckable(True)
         self.btn_show.setFixedWidth(54)
         self.btn_show.toggled.connect(self._toggle_show)
         key_row.addWidget(self.edit_key, 1)
         key_row.addWidget(self.btn_show)
-        form.addRow("License Key:", key_row)
+        form.addRow(self.tr("License Key:"), key_row)
 
         btn_row = QHBoxLayout()
-        self.btn_activate = QPushButton(f"Activate {label}")
-        self.btn_check    = QPushButton("Check Status")
+        self.btn_activate = QPushButton(self.tr("Activate {0}").format(label))
+        self.btn_check    = QPushButton(self.tr("Check Status"))
         self.btn_activate.clicked.connect(self._activate)
         self.btn_check.clicked.connect(self._check_status)
         btn_row.addWidget(self.btn_activate)
@@ -959,14 +964,14 @@ class _LicensePanel(QWidget):
         self.lbl_status = QLabel("")
         self.lbl_status.setWordWrap(True)
         self.lbl_status.setStyleSheet("font-size:11px; color:#aaa;")
-        form.addRow("Status:", self.lbl_status)
+        form.addRow(self.tr("Status:"), self.lbl_status)
 
         self._load()
 
     def _toggle_show(self, on: bool):
         self.edit_key.setEchoMode(
             QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
-        self.btn_show.setText("Hide" if on else "Show")
+        self.btn_show.setText(self.tr("Hide") if on else self.tr("Show"))
 
     def _save(self):
         s = QSettings()
@@ -982,7 +987,7 @@ class _LicensePanel(QWidget):
         exe = self._get_exe()
         if not exe or not os.path.exists(exe):
             QMessageBox.warning(self, "RC-Astro",
-                "RC-Astro executable not set. Browse for it in the main tab.")
+                self.tr("RC-Astro executable not set. Browse for it in the main tab."))
             return
         import subprocess
         self.lbl_status.setText(stage)
@@ -994,23 +999,23 @@ class _LicensePanel(QWidget):
             # strip ASCII-art banner lines
             lines = [l for l in out.splitlines()
                      if l.strip() and not l.strip()[0] in "/_\\|"]
-            self.lbl_status.setText("\n".join(lines) or "Done.")
+            self.lbl_status.setText("\n".join(lines) or self.tr("Done."))
         except Exception as e:
-            self.lbl_status.setText(f"Error: {e}")
+            self.lbl_status.setText(self.tr("Error: {0}").format(e))
 
     def _activate(self):
         email = self.edit_email.text().strip()
         key   = self.edit_key.text().strip()
         if not email or not key:
-            QMessageBox.warning(self, "Activate",
-                "Enter your email and license key first.")
+            QMessageBox.warning(self, self.tr("Activate"),
+                self.tr("Enter your email and license key first."))
             return
         self._save()
         self._run_cli(["--activate", email, key],
-                      f"Activating {PRODUCT_LABELS[self._product]}…")
+                      self.tr("Activating {0}…").format(PRODUCT_LABELS[self._product]))
 
     def _check_status(self):
-        self._run_cli(["--license"], "Checking license status…")
+        self._run_cli(["--license"], self.tr("Checking license status…"))
 
 def _parse_cli_version(text: str):
     """Extract a (major, minor, patch) tuple from rc-astro --help output."""
@@ -1028,7 +1033,7 @@ class RCAstroDialog(QDialog):
     def __init__(self, parent, doc=None, doc_manager=None,
                  list_open_docs_fn=None, rcastro_icon=None):
         super().__init__(parent)
-        self.setWindowTitle("RC-Astro Tools")
+        self.setWindowTitle(self.tr("RC-Astro Tools"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         if platform.system() == "Darwin":
             self.setWindowFlag(Qt.WindowType.Tool, True)
@@ -1057,35 +1062,35 @@ class RCAstroDialog(QDialog):
         root = QVBoxLayout(self)
 
         # ── Executable row ────────────────────────────────────────────────────
-        exe_box  = QGroupBox("RC-Astro Executable")
+        exe_box  = QGroupBox(self.tr("RC-Astro Executable"))
         exe_form = QFormLayout(exe_box)
 
         exe_row = QHBoxLayout()
         self.edit_exe = QLineEdit()
         self.edit_exe.setReadOnly(True)
-        self.edit_exe.setPlaceholderText("Path to rc-astro  (.exe on Windows)")
-        self.btn_browse = QPushButton("Browse…")
+        self.edit_exe.setPlaceholderText(self.tr("Path to rc-astro  (.exe on Windows)"))
+        self.btn_browse = QPushButton(self.tr("Browse…"))
         self.btn_browse.clicked.connect(self._browse_exe)
         exe_row.addWidget(self.edit_exe, 1)
         exe_row.addWidget(self.btn_browse)
-        exe_form.addRow("Executable:", exe_row)
+        exe_form.addRow(self.tr("Executable:"), exe_row)
 
         self.lbl_version = QLabel("")
         self.lbl_version.setStyleSheet("color:#888; font-size:11px;")
         exe_form.addRow("", self.lbl_version)
 
         dl_row = QHBoxLayout()
-        self.btn_dl_models = QPushButton("Download All Models")
-        self.btn_dl_models.setToolTip(
+        self.btn_dl_models = QPushButton(self.tr("Download All Models"))
+        self.btn_dl_models.setToolTip(self.tr(
             "Downloads model weights for every activated product.\n"
-            "Requires an internet connection.")
+            "Requires an internet connection."))
         self.btn_dl_models.clicked.connect(self._download_models)
         dl_row.addWidget(self.btn_dl_models)
 
-        self.btn_update = QPushButton("Upgrade RC-Astro CLI")
-        self.btn_update.setToolTip(
+        self.btn_update = QPushButton(self.tr("Upgrade RC-Astro CLI"))
+        self.btn_update.setToolTip(self.tr(
             "Downloads and installs the latest RC-Astro CLI version.\n"
-            "Requires an internet connection.")
+            "Requires an internet connection."))
         self.btn_update.clicked.connect(self._upgrade_cli)
         dl_row.addWidget(self.btn_update)
 
@@ -1119,46 +1124,46 @@ class RCAstroDialog(QDialog):
             setattr(self, f"_lic_{prod}", panel)
             lic_tabs.addTab(panel, PRODUCT_LABELS[prod])
         lic_v.addWidget(lic_tabs)
-        self.tabs.addTab(lic_outer, "Licenses / Activation")
+        self.tabs.addTab(lic_outer, self.tr("Licenses / Activation"))
 
         root.addWidget(self.tabs, 1)
 
         # ── Common options ────────────────────────────────────────────────────
-        common_box  = QGroupBox("Common Options")
+        common_box  = QGroupBox(self.tr("Common Options"))
         common_form = QFormLayout(common_box)
 
         eng_row = QHBoxLayout()
         self.cmb_engine = QComboBox()
         self.cmb_engine.addItems(["auto", "gpu", "cpu"])
         self.cmb_engine.setEditable(True)
-        self.cmb_engine.setToolTip(
+        self.cmb_engine.setToolTip(self.tr(
             "auto  — let rc-astro pick the best available device\n"
             "gpu   — use GPU (0.9.7+) / was 'dml' on older CLI\n"
             "cpu   — force CPU (slow but always works)\n"
-            "gpu0, gpu1 etc. — select a specific GPU (0.9.7+ only)")
+            "gpu0, gpu1 etc. — select a specific GPU (0.9.7+ only)"))
         eng_row.addWidget(self.cmb_engine)
-        self.btn_list_devices = QPushButton("List Devices")
-        self.btn_list_devices.setToolTip("Run rc-astro --device to show available compute devices.")
+        self.btn_list_devices = QPushButton(self.tr("List Devices"))
+        self.btn_list_devices.setToolTip(self.tr("Run rc-astro --device to show available compute devices."))
         self.btn_list_devices.clicked.connect(self._list_devices)
         eng_row.addWidget(self.btn_list_devices)
         eng_row.addStretch(1)
-        common_form.addRow("Compute Device:", eng_row)
+        common_form.addRow(self.tr("Compute Device:"), eng_row)
 
         self.lbl_devices = QLabel("")
         self.lbl_devices.setWordWrap(True)
         self.lbl_devices.setStyleSheet("color:#aaa; font-size:11px;")
         common_form.addRow("", self.lbl_devices)
 
-        self.chk_overwrite = QCheckBox("Overwrite existing output files")
+        self.chk_overwrite = QCheckBox(self.tr("Overwrite existing output files"))
         self.chk_overwrite.setChecked(True)
         common_form.addRow("", self.chk_overwrite)
-        self.chk_high_perf_gpu = QCheckBox("Prefer high-performance GPU (NVIDIA)")
+        self.chk_high_perf_gpu = QCheckBox(self.tr("Prefer high-performance GPU (NVIDIA)"))
         self.chk_high_perf_gpu.setChecked(True)
-        self.chk_high_perf_gpu.setToolTip(
+        self.chk_high_perf_gpu.setToolTip(self.tr(
             "On hybrid-GPU Windows laptops, DirectML defaults to the Intel\n"
             "integrated GPU. This tells Windows to run rc-astro on the\n"
             "discrete NVIDIA GPU instead. No effect on macOS/Linux or\n"
-            "single-GPU systems.")
+            "single-GPU systems."))
         common_form.addRow("", self.chk_high_perf_gpu)
 
         self.cmb_engine.currentTextChanged.connect(self._update_gpu_pref_visibility)
@@ -1167,10 +1172,10 @@ class RCAstroDialog(QDialog):
 
         # ── Run / Close ───────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
-        self.btn_run = QPushButton("▶  Run")
+        self.btn_run = QPushButton(self.tr("▶  Run"))
         self.btn_run.setStyleSheet("font-weight:bold; padding:6px 22px;")
         self.btn_run.clicked.connect(self._run)
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.close)
         btn_row.addWidget(self.btn_run)
         btn_row.addStretch(1)
@@ -1210,16 +1215,16 @@ class RCAstroDialog(QDialog):
     def _list_devices(self):
         exe = self._get_exe()
         if not exe or not os.path.exists(exe):
-            self.lbl_devices.setText("Set the rc-astro executable path first.")
+            self.lbl_devices.setText(self.tr("Set the rc-astro executable path first."))
             return
         s = QSettings()
         if not bool(s.value("rcastro/uses_device_flag", True, type=bool)):
-            self.lbl_devices.setText(
+            self.lbl_devices.setText(self.tr(
                 "Device listing requires RC-Astro CLI 0.9.7 or later. "
-                "Please upgrade using the button above.")
+                "Please upgrade using the button above."))
             return
         import subprocess
-        self.lbl_devices.setText("Querying devices…")
+        self.lbl_devices.setText(self.tr("Querying devices…"))
         QApplication.processEvents()
         QApplication.processEvents()
         try:
@@ -1235,9 +1240,9 @@ class RCAstroDialog(QDialog):
             ]
             # Drop the "Select a device with..." trailing instruction line
             lines = [l for l in lines if not l.strip().lower().startswith("select a device")]
-            self.lbl_devices.setText("\n".join(lines) or "No device info returned.")
+            self.lbl_devices.setText("\n".join(lines) or self.tr("No device info returned."))
         except Exception as e:
-            self.lbl_devices.setText(f"Error: {e}")
+            self.lbl_devices.setText(self.tr("Error: {0}").format(e))
 
     def _device_flag(self) -> str:
         """Returns '--device' for 0.9.7+ or '--engine' for older CLI."""
@@ -1252,20 +1257,20 @@ class RCAstroDialog(QDialog):
         exe = self._get_exe()
         if not exe or not os.path.exists(exe):
             QMessageBox.warning(self, "RC-Astro",
-                "Set the rc-astro executable path first.")
+                self.tr("Set the rc-astro executable path first."))
             return
-        dlg = _ProgressDialog(self, "Upgrade RC-Astro CLI")
-        dlg.set_stage("Connecting…")
+        dlg = _ProgressDialog(self, self.tr("Upgrade RC-Astro CLI"))
+        dlg.set_stage(self.tr("Connecting…"))
         cmd = [exe, "update", "--install"] + _host_args()
         worker = _RCAstroWorker(cmd, os.path.dirname(exe) or os.getcwd())
         dlg.set_cancel_fn(worker.cancel)
         worker.output_signal.connect(dlg.append)
         def _on_finish(rc: int):
             if rc == 0:
-                dlg.set_stage("Upgrade complete.")
+                dlg.set_stage(self.tr("Upgrade complete."))
                 self._probe_version(exe)  # refresh version label
             else:
-                dlg.set_stage(f"Upgrade failed (code {rc}).")
+                dlg.set_stage(self.tr("Upgrade failed (code {0}).").format(rc))
             dlg.mark_done()
         worker.finished_signal.connect(_on_finish)
         worker.start()
@@ -1280,7 +1285,7 @@ class RCAstroDialog(QDialog):
         else:
             filt = "All Files (*)"
         fn, _ = QFileDialog.getOpenFileName(
-            self, "Select rc-astro Executable", "", filt)
+            self, self.tr("Select rc-astro Executable"), "", filt)
         if not fn:
             return
         self.edit_exe.setText(fn)
@@ -1366,24 +1371,24 @@ class RCAstroDialog(QDialog):
                 if "version" in line.lower() and ("build" in line.lower() or re.search(r'\d+\.\d+', line)):
                     self.lbl_version.setText(line)
                     return
-            self.lbl_version.setText("rc-astro found.")
+            self.lbl_version.setText(self.tr("rc-astro found."))
         except Exception as e:
-            self.lbl_version.setText(f"rc-astro found (could not read version: {e})")
+            self.lbl_version.setText(self.tr("rc-astro found (could not read version: {0})").format(e))
 
     def _download_models(self):
         exe = self._get_exe()
         if not exe or not os.path.exists(exe):
             QMessageBox.warning(self, "RC-Astro",
-                "Set the rc-astro executable path first.")
+                self.tr("Set the rc-astro executable path first."))
             return
-        dlg = _ProgressDialog(self, "Download Models")
-        dlg.set_stage("Connecting…")
+        dlg = _ProgressDialog(self, self.tr("Download Models"))
+        dlg.set_stage(self.tr("Connecting…"))
         cmd = [exe, "--no-banner", "download-models"] + _host_args()
         worker = _RCAstroWorker(cmd, os.path.dirname(exe) or os.getcwd())
         dlg.set_cancel_fn(worker.cancel)
         worker.output_signal.connect(dlg.append)
         def _on_finish(rc: int):
-            dlg.set_stage("Download complete." if rc == 0 else f"Failed (code {rc}).")
+            dlg.set_stage(self.tr("Download complete.") if rc == 0 else self.tr("Failed (code {0}).").format(rc))
             dlg.mark_done()
         worker.finished_signal.connect(_on_finish)
         worker.start()
@@ -1519,12 +1524,12 @@ class RCAstroDialog(QDialog):
         exe = self._get_exe()
         if not exe or not os.path.exists(exe):
             QMessageBox.warning(self, "RC-Astro",
-                "Set the rc-astro executable path first.")
+                self.tr("Set the rc-astro executable path first."))
             return
 
         doc = self._doc
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "RC-Astro", "No image available.")
+            QMessageBox.warning(self, "RC-Astro", self.tr("No image available."))
             return
 
         tab = self.tabs.currentIndex()
@@ -1532,7 +1537,7 @@ class RCAstroDialog(QDialog):
         product = product_map.get(tab)
         if product is None:
             QMessageBox.information(self, "RC-Astro",
-                "Select a product tab (BXT / SXT / NXT) to run.")
+                self.tr("Select a product tab (BXT / SXT / NXT) to run."))
             return
 
         self._save_settings()
@@ -1590,7 +1595,7 @@ class RCAstroDialog(QDialog):
         except Exception as e:
             shutil.rmtree(work_dir, ignore_errors=True)
             QMessageBox.critical(self, label,
-                f"Failed to write input TIFF:\n{e}")
+                self.tr("Failed to write input TIFF:\n{0}").format(e))
             return
 
         # TIFF is on disk — drop prep arrays + torch caches before rc-astro
@@ -1613,8 +1618,8 @@ class RCAstroDialog(QDialog):
             _prefer_high_perf_gpu(exe)
         cmd += _host_args()
         # ── Progress dialog ───────────────────────────────────────────────────
-        dlg = _ProgressDialog(self, f"{label} — Processing")
-        dlg.set_stage(f"Launching {label}…")
+        dlg = _ProgressDialog(self, self.tr("{0} — Processing").format(label))
+        dlg.set_stage(self.tr("Launching {0}…").format(label))
         dlg.append("Command: " + " ".join(cmd) + "\n")
 
         worker = _RCAstroWorker(cmd, cwd=work_dir)
@@ -1637,13 +1642,13 @@ class RCAstroDialog(QDialog):
                     pct  = max(0, min(100, int(m.group(1))))
                     n    = _tile_total["n"] or 100
                     done = int(n * pct / 100.0)
-                    dlg.set_progress(done, n, f"Processing… {pct}%")
+                    dlg.set_progress(done, n, self.tr("Processing… {0}%").format(pct))
                 except Exception:
                     pass
             dlg.append(line)
 
         def _on_finish(rc: int):
-            dlg.set_progress(100, 100, "Finished. Loading result…")
+            dlg.set_progress(100, 100, self.tr("Finished. Loading result…"))
             _on_finished(
                 self, doc, rc, dlg,
                 input_path, output_path, stars_path,
@@ -1706,16 +1711,16 @@ def _on_finished(main_dlg, doc, return_code, dlg,
 
     if return_code != 0:
         QMessageBox.critical(main_dlg, label,
-            f"{label} failed (return code {return_code}).\n"
+            _tr("{0} failed (return code {1}).\n"
             "Check the log for details.\n\n"
-            "Tip: run --license to verify activation.")
+            "Tip: run --license to verify activation.").format(label, return_code))
         _cleanup()
         dlg.mark_done()
         return
 
     if not os.path.exists(output_path):
         QMessageBox.critical(main_dlg, label,
-            f"Output file not found:\n{output_path}")
+            _tr("Output file not found:\n{0}").format(output_path))
         _cleanup()
         dlg.mark_done()
         return
@@ -1725,7 +1730,7 @@ def _on_finished(main_dlg, doc, return_code, dlg,
     result, _, _, _ = load_image(output_path)
 
     if result is None:
-        QMessageBox.critical(main_dlg, label, "Failed to load output image.")
+        QMessageBox.critical(main_dlg, label, _tr("Failed to load output image."))
         _cleanup()
         dlg.mark_done()
         return
@@ -1781,7 +1786,7 @@ def _on_finished(main_dlg, doc, return_code, dlg,
         dlg.append(f"{label} result applied to current document.\n")
     except Exception as e:
         QMessageBox.critical(main_dlg, label,
-            f"Failed to apply result to document:\n{e}")
+            _tr("Failed to apply result to document:\n{0}").format(e))
         _cleanup()
         dlg.mark_done()
         return
@@ -1815,6 +1820,10 @@ def _push_new_doc(main, file_path: str, source_doc=None):
                 new_doc.changed.emit()
             except Exception as e:
                 print(f"[RC-Astro] _push_new_doc rename failed: {e}")
+        if new_doc is not None and source_doc is not None:
+            # the parent's Display-Stretch, not one measured on the stars pixels
+            from setiastro.saspro.remove_stars import _share_display_stretch
+            _share_display_stretch(main, source_doc, new_doc)
     except Exception as e:
         print(f"[RC-Astro] _push_new_doc failed: {e}")
 
@@ -1831,7 +1840,7 @@ class RCAstroPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("RC-Astro — Preset")
+        self.setWindowTitle(self.tr("RC-Astro — Preset"))
         p = dict(initial or {})
 
         from PyQt6.QtWidgets import QDialogButtonBox, QScrollArea
@@ -1843,13 +1852,13 @@ class RCAstroPresetDialog(QDialog):
         self.cmb_product.addItems(["bxt", "sxt", "nxt"])
         self.cmb_product.setCurrentText(str(p.get("product", "bxt")))
         self.cmb_product.currentTextChanged.connect(self._product_changed)
-        prod_form.addRow("Product:", self.cmb_product)
+        prod_form.addRow(self.tr("Product:"), self.cmb_product)
 
         self.cmb_engine = QComboBox()
         self.cmb_engine.addItems(["auto", "gpu", "cpu"])
         self.cmb_engine.setEditable(True)
         self.cmb_engine.setCurrentText(str(p.get("engine", "auto")))
-        prod_form.addRow("Engine:", self.cmb_engine)
+        prod_form.addRow(self.tr("Engine:"), self.cmb_engine)
         outer.addLayout(prod_form)
 
         # Stacked param area — one widget per product
@@ -2112,7 +2121,7 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
         if callable(doc):
             doc = doc()
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "RC-Astro", "No active image.")
+        QMessageBox.warning(main, "RC-Astro", _tr("No active image."))
         return
 
     # Resolve exe
@@ -2120,8 +2129,8 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
     exe = str(s.value("rcastro/exe_path", ""))
     if not exe or not os.path.exists(exe):
         QMessageBox.warning(main, "RC-Astro",
-            "RC-Astro executable not set.\n"
-            "Open RC-Astro Tools and browse for the executable first.")
+            _tr("RC-Astro executable not set.\n"
+            "Open RC-Astro Tools and browse for the executable first."))
         return
 
     product = str(p.get("product", "bxt"))
@@ -2177,7 +2186,7 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
                    image_meta=None, file_meta=None)
     except Exception as e:
         shutil.rmtree(work_dir, ignore_errors=True)
-        QMessageBox.critical(main, "RC-Astro", f"Failed to write temp TIFF:\n{e}")
+        QMessageBox.critical(main, "RC-Astro", _tr("Failed to write temp TIFF:\n{0}").format(e))
         return
 
     # TIFF is on disk — drop prep arrays + torch caches before rc-astro runs.
@@ -2197,8 +2206,8 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
     label = PRODUCT_LABELS.get(product, product.upper())
 
     # Show a simple non-blocking progress dialog
-    dlg = _ProgressDialog(main, f"{label} — Processing")
-    dlg.set_stage(f"Running {label} headlessly…")
+    dlg = _ProgressDialog(main, _tr("{0} — Processing").format(label))
+    dlg.set_stage(_tr("Running {0} headlessly…").format(label))
     dlg.append("Command: " + " ".join(cmd) + "\n")
 
     worker = _RCAstroWorker(cmd, cwd=work_dir)
@@ -2218,12 +2227,12 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
             try:
                 pct  = max(0, min(100, int(m.group(1))))
                 n    = _tile_total["n"] or 100
-                dlg.set_progress(int(n * pct / 100), n, f"Processing… {pct}%")
+                dlg.set_progress(int(n * pct / 100), n, _tr("Processing… {0}%").format(pct))
             except Exception: pass
         dlg.append(line)
 
     def _on_finish(rc: int):
-        dlg.set_progress(100, 100, "Finished. Loading result…")
+        dlg.set_progress(100, 100, _tr("Finished. Loading result…"))
         _on_finished(
             dlg, doc, rc, dlg,
             input_path, output_path, stars_path,

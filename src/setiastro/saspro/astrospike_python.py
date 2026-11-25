@@ -1080,7 +1080,7 @@ class AstroSpikeWindow(QDialog):
     
     def __init__(self, image_data_255: np.ndarray, image_data_float: np.ndarray, ctx):
         super().__init__()
-        self.setWindowTitle("AstroSpike - Star Diffraction Spikes")
+        self.setWindowTitle(self.tr("AstroSpike - Star Diffraction Spikes"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -1149,13 +1149,13 @@ class AstroSpikeWindow(QDialog):
         top_layout.setSpacing(15)
         
         # Apply to Document button
-        btn_apply = QPushButton("✓ Apply to Document")
-        btn_apply.setToolTip("Apply effect and close")
+        btn_apply = QPushButton(self.tr("✓ Apply to Document"))
+        btn_apply.setToolTip(self.tr("Apply effect and close"))
         btn_apply.clicked.connect(self.apply_to_document)
         btn_apply.setStyleSheet("background: #007acc; color: white; font-weight: bold; padding: 8px 16px;")
         
-        btn_save = QPushButton("💾 Save Image")
-        btn_save.setToolTip("Save Image to File")
+        btn_save = QPushButton(self.tr("💾 Save Image"))
+        btn_save.setToolTip(self.tr("Save Image to File"))
         btn_save.clicked.connect(self.save_image)
         
         top_layout.addWidget(btn_apply)
@@ -1168,11 +1168,11 @@ class AstroSpikeWindow(QDialog):
         top_layout.addWidget(line1)
         
         # Undo/Redo
-        self.btn_undo = QPushButton("↩️ Undo")
+        self.btn_undo = QPushButton(self.tr("↩️ Undo"))
         self.btn_undo.clicked.connect(self.undo)
         self.btn_undo.setEnabled(False)
         
-        self.btn_redo = QPushButton("↪️ Redo")
+        self.btn_redo = QPushButton(self.tr("↪️ Redo"))
         self.btn_redo.clicked.connect(self.redo)
         self.btn_redo.setEnabled(False)
         
@@ -1186,20 +1186,20 @@ class AstroSpikeWindow(QDialog):
         top_layout.addWidget(line2)
         
         # Tools
-        lbl_tools = QLabel("Tools:")
+        lbl_tools = QLabel(self.tr("Tools:"))
         lbl_tools.setStyleSheet("color: #888; font-weight: bold;")
         top_layout.addWidget(lbl_tools)
         
-        self.btn_pan = QPushButton("✋ Pan")
+        self.btn_pan = QPushButton(self.tr("✋ Pan"))
         self.btn_pan.setCheckable(True)
         self.btn_pan.setChecked(True)
         self.btn_pan.clicked.connect(lambda: self.set_tool_mode(ToolMode.NONE))
         
-        self.btn_brush_add = QPushButton("⭐ Add Star")
+        self.btn_brush_add = QPushButton(self.tr("⭐ Add Star"))
         self.btn_brush_add.setCheckable(True)
         self.btn_brush_add.clicked.connect(lambda: self.set_tool_mode(ToolMode.ADD))
         
-        self.btn_eraser = QPushButton("🧹 Eraser")
+        self.btn_eraser = QPushButton(self.tr("🧹 Eraser"))
         self.btn_eraser.setCheckable(True)
         self.btn_eraser.clicked.connect(lambda: self.set_tool_mode(ToolMode.ERASE))
         
@@ -1213,7 +1213,7 @@ class AstroSpikeWindow(QDialog):
         line_tool_sep.setStyleSheet("background: #444;")
         top_layout.addWidget(line_tool_sep)
         
-        lbl_star_size = QLabel("Star Size:")
+        lbl_star_size = QLabel(self.tr("Star Size:"))
         lbl_star_size.setStyleSheet("color: #888;")
         top_layout.addWidget(lbl_star_size)
         
@@ -1228,7 +1228,7 @@ class AstroSpikeWindow(QDialog):
         self.lbl_star_size_val.setFixedWidth(25)
         top_layout.addWidget(self.lbl_star_size_val)
         
-        lbl_eraser_size = QLabel("Eraser:")
+        lbl_eraser_size = QLabel(self.tr("Eraser:"))
         lbl_eraser_size.setStyleSheet("color: #888;")
         top_layout.addWidget(lbl_eraser_size)
         
@@ -1250,9 +1250,9 @@ class AstroSpikeWindow(QDialog):
         top_layout.addWidget(line3)
         
         # Zoom Controls (standardized)
-        self.btn_zoom_in  = themed_toolbtn("zoom-in",       "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out",      "Zoom Out")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to View")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in",       self.tr("Zoom In"))
+        self.btn_zoom_out = themed_toolbtn("zoom-out",      self.tr("Zoom Out"))
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit to View"))
 
         top_layout.addWidget(self.btn_zoom_in)
         top_layout.addWidget(self.btn_zoom_out)
@@ -1260,7 +1260,7 @@ class AstroSpikeWindow(QDialog):
         
         top_layout.addStretch()
         
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel(self.tr("Ready"))
         self.status_label.setStyleSheet("color: #aaa;")
         self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         top_layout.addWidget(self.status_label)
@@ -1339,13 +1339,13 @@ class AstroSpikeWindow(QDialog):
             self.detect_timer.start(100)
             return
 
-        self.status_label.setText("Detecting stars...")
+        self.status_label.setText(self.tr("Detecting stars..."))
         self.thread = StarDetectionThread(self.image_data, self.config.threshold)
         self.thread.stars_detected.connect(self.on_stars_detected)
         self.thread.start()
 
     def on_stars_detected(self, stars):
-        self.status_label.setText(f"Found {len(stars)} stars")
+        self.status_label.setText(self.tr("Found {0} stars").format(len(stars)))
         self.canvas.set_stars(stars)
         self.canvas.set_config(self.config)
         self._reset_history(stars)
@@ -1415,7 +1415,7 @@ class AstroSpikeWindow(QDialog):
     def save_image(self):
         """Save rendered image to file."""
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Image", "astrospike_output.png", 
+            self, self.tr("Save Image"), "astrospike_output.png", 
             "PNG Images (*.png);;JPEG Images (*.jpg);;TIFF Images (*.tif)"
         )
         if file_path:
@@ -1425,7 +1425,7 @@ class AstroSpikeWindow(QDialog):
                                         self.canvas.stars, self.config)
             painter.end()
             final_image.save(file_path)
-            self.status_label.setText(f"Saved to {file_path}")
+            self.status_label.setText(self.tr("Saved to {0}").format(file_path))
             self.ctx.log(f"Saved image to {file_path}")
 
     def apply_to_document(self):
@@ -1440,7 +1440,7 @@ class AstroSpikeWindow(QDialog):
         at full float precision instead of falling back to the separate NumPy
         renderer (render_spikes), which produced different-looking spikes.
         """
-        self.status_label.setText("Applying to document...")
+        self.status_label.setText(self.tr("Applying to document..."))
 
         base = np.clip(np.asarray(self.image_data_float, dtype=np.float32), 0.0, 1.0)
         h, w = base.shape[:2]
@@ -1550,12 +1550,12 @@ class ControlPanel(QWidget):
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(10, 10, 10, 0)
         
-        lbl_title = QLabel("PARAMETERS")
+        lbl_title = QLabel(self.tr("PARAMETERS"))
         lbl_title.setStyleSheet("font-weight: bold; color: #888; letter-spacing: 1px;")
         header_layout.addWidget(lbl_title)
         header_layout.addStretch()
         
-        btn_reset = QPushButton("↺ Reset")
+        btn_reset = QPushButton(self.tr("↺ Reset"))
         btn_reset.setStyleSheet("background: #333; border: 1px solid #555; padding: 4px 8px; font-size: 11px;")
         btn_reset.clicked.connect(self.reset_requested.emit)
         header_layout.addWidget(btn_reset)
@@ -1581,68 +1581,68 @@ class ControlPanel(QWidget):
             if child.widget():
                 child.widget().deleteLater()
         
-        self._add_group("Detection", [
-            ("Threshold", 1, 100, 1, self.config.threshold, "threshold", ""),
-            ("Quantity Limit %", 0, 100, 1, self.config.star_amount, "star_amount", "%"),
-            ("Min Star Size", 0, 100, 1, self.config.min_star_size, "min_star_size", ""),
-            ("Max Star Size", 0, 100, 1, self.config.max_star_size, "max_star_size", "")
+        self._add_group(self.tr("Detection"), [
+            (self.tr("Threshold"), 1, 100, 1, self.config.threshold, "threshold", ""),
+            (self.tr("Quantity Limit %"), 0, 100, 1, self.config.star_amount, "star_amount", "%"),
+            (self.tr("Min Star Size"), 0, 100, 1, self.config.min_star_size, "min_star_size", ""),
+            (self.tr("Max Star Size"), 0, 100, 1, self.config.max_star_size, "max_star_size", "")
         ])
         
-        self._add_group("Geometry", [
-            ("Global Scale", 0.2, 3.0, 0.1, self.config.global_scale, "global_scale", ""),
-            ("Points", 2, 8, 1, self.config.quantity, "quantity", ""),
-            ("Length", 10, 1500, 10, self.config.length, "length", ""),
-            ("Angle", 0, 180, 1, self.config.angle, "angle", "°"),
-            ("Thickness", 0.1, 5.0, 0.1, self.config.spike_width, "spike_width", "")
+        self._add_group(self.tr("Geometry"), [
+            (self.tr("Global Scale"), 0.2, 3.0, 0.1, self.config.global_scale, "global_scale", ""),
+            (self.tr("Points"), 2, 8, 1, self.config.quantity, "quantity", ""),
+            (self.tr("Length"), 10, 1500, 10, self.config.length, "length", ""),
+            (self.tr("Angle"), 0, 180, 1, self.config.angle, "angle", "°"),
+            (self.tr("Thickness"), 0.1, 5.0, 0.1, self.config.spike_width, "spike_width", "")
         ])
         
-        self._add_group("Appearance", [
-            ("Intensity", 0, 1.0, 0.05, self.config.intensity, "intensity", ""),
-            ("Color Saturation", 0, 2.0, 0.05, self.config.color_saturation, "color_saturation", ""),
-            ("Hue Shift", -180, 180, 1, self.config.hue_shift, "hue_shift", "°")
+        self._add_group(self.tr("Appearance"), [
+            (self.tr("Intensity"), 0, 1.0, 0.05, self.config.intensity, "intensity", ""),
+            (self.tr("Color Saturation"), 0, 2.0, 0.05, self.config.color_saturation, "color_saturation", ""),
+            (self.tr("Hue Shift"), -180, 180, 1, self.config.hue_shift, "hue_shift", "°")
         ])
         
         # Halo
-        halo_group = QGroupBox("Star Halo / Rings")
+        halo_group = QGroupBox(self.tr("Star Halo / Rings"))
         halo_layout = QVBoxLayout()
         
-        self.halo_check = QCheckBox("Enable Halo")
+        self.halo_check = QCheckBox(self.tr("Enable Halo"))
         self.halo_check.setChecked(self.config.enable_halo)
         self.halo_check.toggled.connect(lambda c: self._update_config("enable_halo", c))
         halo_layout.addWidget(self.halo_check)
         
-        self._add_slider(halo_layout, "Intensity", 0, 1.0, 0.05, self.config.halo_intensity, "halo_intensity", "")
-        self._add_slider(halo_layout, "Radius", 0.1, 5.0, 0.1, self.config.halo_scale, "halo_scale", "")
-        self._add_slider(halo_layout, "Width", 0.2, 10.0, 0.2, self.config.halo_width, "halo_width", "")
-        self._add_slider(halo_layout, "Blur", 0, 10.0, 0.1, self.config.halo_blur, "halo_blur", "")
-        self._add_slider(halo_layout, "Saturation", 0, 3.0, 0.1, self.config.halo_saturation, "halo_saturation", "")
+        self._add_slider(halo_layout, self.tr("Intensity"), 0, 1.0, 0.05, self.config.halo_intensity, "halo_intensity", "")
+        self._add_slider(halo_layout, self.tr("Radius"), 0.1, 5.0, 0.1, self.config.halo_scale, "halo_scale", "")
+        self._add_slider(halo_layout, self.tr("Width"), 0.2, 10.0, 0.2, self.config.halo_width, "halo_width", "")
+        self._add_slider(halo_layout, self.tr("Blur"), 0, 10.0, 0.1, self.config.halo_blur, "halo_blur", "")
+        self._add_slider(halo_layout, self.tr("Saturation"), 0, 3.0, 0.1, self.config.halo_saturation, "halo_saturation", "")
         
         halo_group.setLayout(halo_layout)
         self.layout.addWidget(halo_group)
         
-        self._add_group("Secondary Spikes", [
-            ("Intensity", 0, 1.0, 0.05, self.config.secondary_intensity, "secondary_intensity", ""),
-            ("Length", 0, 500, 10, self.config.secondary_length, "secondary_length", ""),
-            ("Offset Angle", 0, 90, 1, self.config.secondary_offset, "secondary_offset", "°")
+        self._add_group(self.tr("Secondary Spikes"), [
+            (self.tr("Intensity"), 0, 1.0, 0.05, self.config.secondary_intensity, "secondary_intensity", ""),
+            (self.tr("Length"), 0, 500, 10, self.config.secondary_length, "secondary_length", ""),
+            (self.tr("Offset Angle"), 0, 90, 1, self.config.secondary_offset, "secondary_offset", "°")
         ])
         
-        self._add_group("Soft Flare", [
-            ("Glow Intensity", 0, 3.0, 0.05, self.config.soft_flare_intensity, "soft_flare_intensity", ""),
-            ("Glow Size", 0, 200, 5, self.config.soft_flare_size, "soft_flare_size", "")
+        self._add_group(self.tr("Soft Flare"), [
+            (self.tr("Glow Intensity"), 0, 3.0, 0.05, self.config.soft_flare_intensity, "soft_flare_intensity", ""),
+            (self.tr("Glow Size"), 0, 200, 5, self.config.soft_flare_size, "soft_flare_size", "")
         ])
         
         # Spectral
-        spectral_group = QGroupBox("Spectral Effects")
+        spectral_group = QGroupBox(self.tr("Spectral Effects"))
         spectral_layout = QVBoxLayout()
         
-        self.rainbow_check = QCheckBox("Enable Rainbow FX")
+        self.rainbow_check = QCheckBox(self.tr("Enable Rainbow FX"))
         self.rainbow_check.setChecked(self.config.enable_rainbow)
         self.rainbow_check.toggled.connect(lambda c: self._update_config("enable_rainbow", c))
         spectral_layout.addWidget(self.rainbow_check)
         
-        self._add_slider(spectral_layout, "Intensity", 0, 1.0, 0.05, self.config.rainbow_spike_intensity, "rainbow_spike_intensity", "")
-        self._add_slider(spectral_layout, "Frequency", 0.1, 3.0, 0.1, self.config.rainbow_spike_frequency, "rainbow_spike_frequency", "")
-        self._add_slider(spectral_layout, "Coverage", 0.1, 1.0, 0.1, self.config.rainbow_spike_length, "rainbow_spike_length", "")
+        self._add_slider(spectral_layout, self.tr("Intensity"), 0, 1.0, 0.05, self.config.rainbow_spike_intensity, "rainbow_spike_intensity", "")
+        self._add_slider(spectral_layout, self.tr("Frequency"), 0.1, 3.0, 0.1, self.config.rainbow_spike_frequency, "rainbow_spike_frequency", "")
+        self._add_slider(spectral_layout, self.tr("Coverage"), 0.1, 1.0, 0.1, self.config.rainbow_spike_length, "rainbow_spike_length", "")
         
         spectral_group.setLayout(spectral_layout)
         self.layout.addWidget(spectral_group)
@@ -1765,7 +1765,7 @@ class CanvasPreview(QWidget):
         
         if not self.image:
             painter.setPen(QColor(100, 100, 100))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No Image Loaded")
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.tr("No Image Loaded"))
             return
 
         painter.save()
@@ -1785,7 +1785,7 @@ class CanvasPreview(QWidget):
         
         painter.setPen(QColor(200, 200, 200))
         mode_str = self.tool_mode.value.upper() if self.tool_mode else "NONE"
-        painter.drawText(10, 20, f"Zoom: {self.scale*100:.0f}% | Stars: {len(self.stars)} | Tool: {mode_str}")
+        painter.drawText(10, 20, self.tr("Zoom: {0:.0f}% | Stars: {1} | Tool: {2}").format(self.scale*100, len(self.stars), mode_str))
 
     def _draw_cursor_preview(self, painter: QPainter):
         if self.tool_mode == ToolMode.ADD:

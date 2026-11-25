@@ -7,7 +7,7 @@ import datetime as _dt
 import numpy as np
 import time
 import threading
-from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QPointF, QThread, QCoreApplication
+from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QPointF, QThread, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QPen, QColor
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog,
@@ -47,7 +47,7 @@ class LiveStackSettingsDialog(QDialog):
     """
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("Live Stack & Culling Settings")
+        self.setWindowTitle(self.tr("Live Stack & Culling Settings"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -116,27 +116,27 @@ class LiveStackSettingsDialog(QDialog):
             initial=int(getattr(parent, "star_target", _lsw.STAR_TARGET)),
             step=10
         )
-        self.star_target_spin.setToolTip(
+        self.star_target_spin.setToolTip(self.tr(
             "How many stars star detection aims for. On a stack's first good frame the\n"
             "threshold steps down (100σ, 50σ, 25σ … 3.5σ) until it finds at least this\n"
             "many, and that threshold is then kept for the rest of the stack, so the star\n"
             "count stays comparable from frame to frame (a cloudy frame shows fewer stars).\n"
-            "Each filter gets its own threshold. A change applies after Reset.")
+            "Each filter gets its own threshold. A change applies after Reset."))
         # Ignore non-FITS files
-        self.fits_only_check = QCheckBox("Ignore non-FITS files (skip TIFF/PNG/JPG/RAW/XISF)")
+        self.fits_only_check = QCheckBox(self.tr("Ignore non-FITS files (skip TIFF/PNG/JPG/RAW/XISF)"))
         self.fits_only_check.setChecked(parent.fits_only)
-        self.fits_only_check.setToolTip(
+        self.fits_only_check.setToolTip(self.tr(
             "When enabled, only *.fit and *.fits files are picked up from the watch folder.\n"
             "Useful when your capture software also writes preview JPGs, autostretch TIFFs,\n"
             "or other derived images alongside the raw FITS frames."
-        )
+        ))
         # Frame weighting (Stacking Suite 'Balanced' score)
-        self.weight_check = QCheckBox("Weight frames by quality")
+        self.weight_check = QCheckBox(self.tr("Weight frames by quality"))
         self.weight_check.setChecked(bool(getattr(parent, "weight_frames", True)))
-        self.weight_check.setToolTip(
-            "Each frame counts in proportion to its quality, scored like the Stacking\n"
-            "Suite's 'Balanced' weighting: star count, roundness, sky darkness and\n"
-            "sharpness. Poor frames still add signal, just less of it.")
+        self.weight_check.setToolTip(self.tr(
+            "Each frame counts in proportion to its quality, scored like the\n"
+            "Stacking Suite's 'Balanced' weighting: star count, roundness, sky darkness and\n"
+            "sharpness. Poor frames still add signal, just less of it."))
 
         # SNR goal for the frames-needed estimate
         self.snr_goal_spin = CustomDoubleSpinBox(
@@ -145,24 +145,24 @@ class LiveStackSettingsDialog(QDialog):
             initial=float(getattr(parent, "snr_goal", 10.0)),
             step=1.0
         )
-        self.snr_goal_spin.setToolTip(
+        self.snr_goal_spin.setToolTip(self.tr(
             "Signal-to-noise per pixel you want in the SNR region (drag it on the\n"
             "preview with 'SNR Region'). Live Stacking estimates how many more frames\n"
-            "it takes to get there.")
+            "it takes to get there."))
 
         # Build form layout
         form = QFormLayout()
-        form.addRow("Switch to μ–σ clipping after:", self.bs_spin)
-        form.addRow("Clip threshold:", self.sigma_spin)
+        form.addRow(self.tr("Switch to μ–σ clipping after:"), self.bs_spin)
+        form.addRow(self.tr("Clip threshold:"), self.sigma_spin)
         form.addRow(QLabel(""))  # blank row for separation
-        form.addRow("Max FWHM (px):", self.fwhm_spin)
-        form.addRow("Max Eccentricity:", self.ecc_spin)
-        form.addRow("Min Star Count:", self.star_spin)
-        form.addRow("Acquisition Delay:", self.delay_spin)
-        form.addRow("Stars to detect:", self.star_target_spin)
+        form.addRow(self.tr("Max FWHM (px):"), self.fwhm_spin)
+        form.addRow(self.tr("Max Eccentricity:"), self.ecc_spin)
+        form.addRow(self.tr("Min Star Count:"), self.star_spin)
+        form.addRow(self.tr("Acquisition Delay:"), self.delay_spin)
+        form.addRow(self.tr("Stars to detect:"), self.star_target_spin)
         form.addRow(self.fits_only_check)
         form.addRow(self.weight_check)
-        form.addRow("SNR goal (per pixel):", self.snr_goal_spin)
+        form.addRow(self.tr("SNR goal (per pixel):"), self.snr_goal_spin)
 
         self.mapping_combo = QComboBox()
         opts = ["Natural", "SHO", "HSO", "OSH", "SOH", "HOS", "OHS"]
@@ -171,18 +171,18 @@ class LiveStackSettingsDialog(QDialog):
         idx = opts.index(parent.narrowband_mapping) \
               if parent.narrowband_mapping in opts else 0
         self.mapping_combo.setCurrentIndex(idx)
-        form.addRow("Narrowband Mapping:", self.mapping_combo)
+        form.addRow(self.tr("Narrowband Mapping:"), self.mapping_combo)
 
         # Demosaic for OSC / Bayer frames: the Stacking Suite's methods
         # (Strict CFA left out: it only prepares CFA drizzle)
         self.debayer_combo = QComboBox()
         for label, tok in DEBAYER_METHODS:
-            self.debayer_combo.addItem(label, tok)
+            self.debayer_combo.addItem(QCoreApplication.translate("LiveStacking", label), tok)
         cur = str(getattr(parent, "debayer_method", "rcd")).lower()
         self.debayer_combo.setCurrentIndex(
             next((i for i in range(self.debayer_combo.count())
                   if self.debayer_combo.itemData(i) == cur), 0))
-        self.debayer_combo.setToolTip(
+        self.debayer_combo.setToolTip(self.tr(
             "Demosaic used for OSC / Bayer frames (FITS with BAYERPAT and camera RAW),\n"
             "the same methods as the Stacking Suite's Debayer setting:\n"
             "• RCD: noise-robust, keeps faint colour; best for astro, also OSC narrowband.\n"
@@ -190,8 +190,8 @@ class LiveStackSettingsDialog(QDialog):
             "• VNG: sharp on bright subjects, speckles colour in dim noisy areas.\n"
             "• Edge-aware / Bilinear: fastest, lower quality.\n"
             "Applies to frames stacked after the change; Reset to restack with it.\n"
-            "X-Trans RAW always uses LibRaw's demosaic.")
-        form.addRow("Debayer:", self.debayer_combo)
+            "X-Trans RAW always uses LibRaw's demosaic."))
+        form.addRow(self.tr("Debayer:"), self.debayer_combo)
 
         # OK / Cancel buttons
         btns = QDialogButtonBox(
@@ -230,8 +230,8 @@ class LiveStackSettingsDialog(QDialog):
                 weight_frames, snr_goal, debayer_method)
 
 # Debayer methods offered in Settings (the Stacking Suite's, minus Strict CFA)
-DEBAYER_METHODS = (("RCD", "rcd"), ("Edge-aware", "edge"), ("AHD", "ahd"),
-                   ("VNG", "vng"), ("Bilinear", "bilinear"))
+DEBAYER_METHODS = (("RCD", "rcd"), (QT_TRANSLATE_NOOP("LiveStacking", "Edge-aware"), "edge"), ("AHD", "ahd"),
+                   ("VNG", "vng"), (QT_TRANSLATE_NOOP("LiveStacking", "Bilinear"), "bilinear"))
 
 
 def _qget(settings: QSettings, key: str, default, typ):
@@ -260,8 +260,11 @@ class LiveMetricsPanel(QWidget):
     Pure random noise falls with slope −½ on the log–log noise plot.
     Culled frames are a red × and appear on the per-frame plots only.
     """
-    TITLES = ["FWHM (px)", "Eccentricity", "Star Count",
-              "Frame weight (× median)", "Stack noise (log–log)", "SNR / px (region)"]
+    TITLES = ["FWHM (px)", QT_TRANSLATE_NOOP("LiveMetricsPanel", "Eccentricity"),
+              QT_TRANSLATE_NOOP("LiveMetricsPanel", "Star Count"),
+              QT_TRANSLATE_NOOP("LiveMetricsPanel", "Frame weight (× median)"),
+              QT_TRANSLATE_NOOP("LiveMetricsPanel", "Stack noise (log–log)"),
+              QT_TRANSLATE_NOOP("LiveMetricsPanel", "SNR / px (region)")]
     _NOISE = 4
     # filter key → (legend label, colour). "__main__" = the single stack.
     SERIES = {
@@ -292,20 +295,20 @@ class LiveMetricsPanel(QWidget):
 
         for idx, title in enumerate(self.TITLES):
             pw = grid.addPlot(row=idx // 2, col=idx % 2)
-            pw.setTitle(title)
+            pw.setTitle(QCoreApplication.translate("LiveMetricsPanel", title))
             pw.showGrid(x=True, y=True, alpha=0.3)
             if idx == self._NOISE:
                 # x = frame number like the other plots, so filters line up;
                 # the trend slope is still fitted against N_eff
-                pw.setLabel('bottom', "Frame # (per filter)")
+                pw.setLabel('bottom', self.tr("Frame # (per filter)"))
                 # Camera units: a filter's first frame keeps gain 1 and later
                 # frames are scaled to it, so filters share units. Absolute
                 # noise rises with brightness (shot noise); noise relative to
                 # signal is the SNR plot.
-                pw.setLabel('left', "noise (camera units)")
+                pw.setLabel('left', self.tr("noise (camera units)"))
                 pw.setLogMode(x=True, y=True)
             else:
-                pw.setLabel('bottom', "Frame # (per filter)")
+                pw.setLabel('bottom', self.tr("Frame # (per filter)"))
             self.plots.append(pw)
 
     def _series_for(self, i, key):
@@ -396,7 +399,7 @@ class LiveMetricsWindow(QWidget):
         # its own window, but owned by Live Stacking: it stays above it and is
         # never a primary window that keeps SASpro running after exit
         self.setWindowFlag(Qt.WindowType.Window, True)
-        self.setWindowTitle("Live Stack Metrics")
+        self.setWindowTitle(self.tr("Live Stack Metrics"))
         self.resize(760, 820)
 
         layout = QVBoxLayout(self)
@@ -749,7 +752,7 @@ class _LiveWatchThread(QThread):
                     win._watch_loop(self.frameDone.emit, self.message.emit)
                     break
                 except Exception as e:
-                    self.message.emit(f"⚠ Live stacking error: {e}")
+                    self.message.emit(self.tr("⚠ Live stacking error: {0}").format(e))
                     if win._should_stop():
                         break
                     win._stop_event.wait(1.5)
@@ -764,7 +767,7 @@ class LiveStackWindow(QDialog):
         self._docman = doc_manager
         self._wrench_path = wrench_path
         self._spinner_path = spinner_path
-        self.setWindowTitle("Live Stacking")
+        self.setWindowTitle(self.tr("Live Stacking"))
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.resize(900, 600)
 
@@ -856,7 +859,7 @@ class LiveStackWindow(QDialog):
 
 
         self.total_exposure = 0.0  # seconds
-        self.exposure_label = QLabel("Total Exp: 00:00:00")
+        self.exposure_label = QLabel(self.tr("Total Exp: {0}").format("00:00:00"))
         self.exposure_label.setStyleSheet("color: #cccccc; font-weight: bold;")
 
         self.brightness = 0.0   # [-1.0..+1.0]
@@ -871,51 +874,51 @@ class LiveStackWindow(QDialog):
 
         # ─── UI ELEMENTS FOR STACKING DIALOG ───────────────────────
         # 1) Folder selection
-        self.folder_label = QLabel("Folder: (none)")
-        self.select_folder_btn = QPushButton("Select Folder…")
+        self.folder_label = QLabel(self.tr("Folder: (none)"))
+        self.select_folder_btn = QPushButton(self.tr("Select Folder…"))
         self.select_folder_btn.clicked.connect(self.select_folder)
 
         # 2) Load master dark/flat
-        self.load_darks_btn = QPushButton("Load Master Dark…")
+        self.load_darks_btn = QPushButton(self.tr("Load Master Dark…"))
         self.load_darks_btn.clicked.connect(self.load_masters)
-        self.load_flats_btn = QPushButton("Load Master Flat…")
+        self.load_flats_btn = QPushButton(self.tr("Load Master Flat…"))
         self.load_flats_btn.clicked.connect(self.load_masters)
-        self.load_filter_flats_btn = QPushButton("Load MonoFilter Flats…")
+        self.load_filter_flats_btn = QPushButton(self.tr("Load MonoFilter Flats…"))
         self.load_filter_flats_btn.clicked.connect(self.load_filter_flats)        
 
         # 2b) Cull folder selection
-        self.cull_folder_label = QLabel("Cull Folder: (none)")
-        self.select_cull_btn = QPushButton("Select Cull Folder…")
+        self.cull_folder_label = QLabel(self.tr("Cull Folder: (none)"))
+        self.select_cull_btn = QPushButton(self.tr("Select Cull Folder…"))
         self.select_cull_btn.clicked.connect(self.select_cull_folder)
 
-        self.dark_status_label = QLabel("Dark: ❌")
-        self.flat_status_label = QLabel("Flat: ❌")
+        self.dark_status_label = QLabel(self.tr("Dark: ❌"))
+        self.flat_status_label = QLabel(self.tr("Flat: ❌"))
         for lbl in (self.dark_status_label, self.flat_status_label):
             lbl.setStyleSheet("color: #cccccc; font-weight: bold;")
         # 3) “Process & Monitor” / “Monitor Only” / “Stop” / “Reset”
-        self.mono_color_checkbox = QCheckBox("Mono → Color Stacking")
-        self.mono_color_checkbox.setToolTip(
+        self.mono_color_checkbox = QCheckBox(self.tr("Mono → Color Stacking"))
+        self.mono_color_checkbox.setToolTip(self.tr(
             "When checked, bucket mono frames by FILTER and composite R, G, B, Ha, OIII, SII."
-        )
+        ))
         # **Connect the toggled(bool) signal** before we ever call it
         self.mono_color_checkbox.toggled.connect(self._on_mono_color_toggled)
 
         # ** new: Star-Trail mode checkbox **
-        self.star_trail_checkbox = QCheckBox("★★ Star-Trail Mode ★★")
+        self.star_trail_checkbox = QCheckBox(self.tr("★★ Star-Trail Mode ★★"))
         self.star_trail_checkbox.setChecked(self.star_trail_mode)
-        self.star_trail_checkbox.setToolTip("If checked, build a max-value trail instead of a running stack")
+        self.star_trail_checkbox.setToolTip(self.tr("If checked, build a max-value trail instead of a running stack"))
         self.star_trail_checkbox.toggled.connect(self._on_star_trail_toggled)
 
-        self.process_and_monitor_btn = QPushButton("Process && Monitor")
+        self.process_and_monitor_btn = QPushButton(self.tr("Process && Monitor"))
         self.process_and_monitor_btn.clicked.connect(self.start_and_process)
-        self.monitor_only_btn = QPushButton("Monitor Only")
+        self.monitor_only_btn = QPushButton(self.tr("Monitor Only"))
         self.monitor_only_btn.clicked.connect(self.start_monitor_only)
-        self.stop_btn = QPushButton("Stop")
+        self.stop_btn = QPushButton(self.tr("Stop"))
         self.stop_btn.clicked.connect(self.stop_live)
-        self.reset_btn = QPushButton("Reset")
+        self.reset_btn = QPushButton(self.tr("Reset"))
         self.reset_btn.clicked.connect(self.reset_live)
 
-        self.frame_count_label = QLabel("Frames: 0")
+        self.frame_count_label = QLabel(self.tr("Frames: {0}").format(0))
 
         # 4) Live‐stack preview area (QGraphicsView)
         self.scene = QGraphicsScene(self)
@@ -930,9 +933,9 @@ class LiveStackWindow(QDialog):
         # 5) Zoom toolbar + Settings icon
         tb = QToolBar()
 
-        zi = QAction(QIcon.fromTheme("zoom-in"), "Zoom In", self)
-        zo = QAction(QIcon.fromTheme("zoom-out"), "Zoom Out", self)
-        fit = QAction(QIcon.fromTheme("zoom-fit-best"), "Fit to Window", self)
+        zi = QAction(QIcon.fromTheme("zoom-in"), self.tr("Zoom In"), self)
+        zo = QAction(QIcon.fromTheme("zoom-out"), self.tr("Zoom Out"), self)
+        fit = QAction(QIcon.fromTheme("zoom-fit-best"), self.tr("Fit to Window"), self)
 
         tb.addAction(zi)
         tb.addAction(zo)
@@ -940,27 +943,27 @@ class LiveStackWindow(QDialog):
 
         # Preview: statistical stretch (default) or the linear stack as it is
         tb.addSeparator()
-        self.act_autostretch = QAction("Auto Stretch", self)
+        self.act_autostretch = QAction(self.tr("Auto Stretch"), self)
         self.act_autostretch.setCheckable(True)
         self.act_autostretch.setChecked(bool(self.auto_stretch))
-        self.act_autostretch.setToolTip(
+        self.act_autostretch.setToolTip(self.tr(
             "Show the stack with a statistical stretch. This only changes the preview;\n"
-            "the stack itself stays linear. Uncheck to see the linear stack as it is.")
+            "the stack itself stays linear. Uncheck to see the linear stack as it is."))
         self.act_autostretch.toggled.connect(self._on_autostretch_toggled)
         tb.addAction(self.act_autostretch)
 
         # SNR region: drag a box over faint signal → SNR and frames-to-goal
         tb.addSeparator()
-        self.act_snr_region = QAction("SNR Region", self)
+        self.act_snr_region = QAction(self.tr("SNR Region"), self)
         self.act_snr_region.setCheckable(True)
-        self.act_snr_region.setToolTip(
+        self.act_snr_region.setToolTip(self.tr(
             "Drag a box over the faint signal you care about. Live Stacking reports its\n"
             "signal-to-noise per pixel and how many more frames reach the SNR goal\n"
-            "(set in Settings).")
+            "(set in Settings)."))
         self.act_snr_region.toggled.connect(self._on_snr_pick_toggled)
         tb.addAction(self.act_snr_region)
-        self.act_snr_clear = QAction("Clear Region", self)
-        self.act_snr_clear.setToolTip("Remove the SNR region")
+        self.act_snr_clear = QAction(self.tr("Clear Region"), self)
+        self.act_snr_clear.setToolTip(self.tr("Remove the SNR region"))
         self.act_snr_clear.triggered.connect(self._clear_snr_region)
         tb.addAction(self.act_snr_clear)
 
@@ -975,7 +978,7 @@ class LiveStackWindow(QDialog):
         # — Replace the QAction “wrench” with a styled QToolButton —
         self.wrench_button = QToolButton()
         self.wrench_button.setIcon(QIcon(self._wrench_path))
-        self.wrench_button.setToolTip("Settings")
+        self.wrench_button.setToolTip(self.tr("Settings"))
         # Apply your stylesheet to the QToolButton
         self.wrench_button.setStyleSheet("""
             QToolButton {
@@ -1005,42 +1008,42 @@ class LiveStackWindow(QDialog):
         bright_slider = QSlider(Qt.Orientation.Horizontal)
         bright_slider.setRange(-100, 100)
         bright_slider.setValue(0)
-        bright_slider.setToolTip("Brightness")
+        bright_slider.setToolTip(self.tr("Brightness"))
         bright_slider.valueChanged.connect(self.on_brightness_changed)
 
         contrast_slider = QSlider(Qt.Orientation.Horizontal)
         contrast_slider.setRange(10, 1000)
         contrast_slider.setValue(100)
-        contrast_slider.setToolTip("Contrast")
+        contrast_slider.setToolTip(self.tr("Contrast"))
         contrast_slider.valueChanged.connect(self.on_contrast_changed)
 
         bc_layout = QHBoxLayout()
-        bc_layout.addWidget(QLabel("Brightness"))
+        bc_layout.addWidget(QLabel(self.tr("Brightness")))
         bc_layout.addWidget(bright_slider)
-        bc_layout.addWidget(QLabel("Contrast"))
+        bc_layout.addWidget(QLabel(self.tr("Contrast")))
         bc_layout.addWidget(contrast_slider)
 
         # 7) “Send to Slot” button
-        self.open_linear_btn = QPushButton("Open Linear Stack ▶")
-        self.open_linear_btn.setToolTip(
+        self.open_linear_btn = QPushButton(self.tr("Open Linear Stack ▶"))
+        self.open_linear_btn.setToolTip(self.tr(
             "Open the linear 32-bit stack as a new image, for processing\n"
-            "(colour calibration, gradient removal, your own stretch).")
+            "(colour calibration, gradient removal, your own stretch)."))
         self.open_linear_btn.clicked.connect(lambda _=False: self.send_to_new_view("linear"))
-        self.open_stretched_btn = QPushButton("Open Stretched ▶")
-        self.open_stretched_btn.setToolTip(
+        self.open_stretched_btn = QPushButton(self.tr("Open Stretched ▶"))
+        self.open_stretched_btn.setToolTip(self.tr(
             "Open the Auto Stretch image with your brightness/contrast as a new image.\n"
-            "Stretched data: not for further linear processing.")
+            "Stretched data: not for further linear processing."))
         self.open_stretched_btn.clicked.connect(lambda _=False: self.send_to_new_view("stretched"))
-        self.open_filters_btn = QPushButton("Open Each Filter ▶")
-        self.open_filters_btn.setToolTip(
-            "Mono → Color: open every filter's linear stack as its own mono image.")
+        self.open_filters_btn = QPushButton(self.tr("Open Each Filter ▶"))
+        self.open_filters_btn.setToolTip(self.tr(
+            "Mono → Color: open every filter's linear stack as its own mono image."))
         self.open_filters_btn.clicked.connect(lambda _=False: self.send_to_new_view("filters"))
         open_row = QHBoxLayout()
         for b in (self.open_linear_btn, self.open_stretched_btn, self.open_filters_btn):
             open_row.addWidget(b)
 
         # 8) “Show Metrics” button
-        self.show_metrics_btn = QPushButton("Show Metrics")
+        self.show_metrics_btn = QPushButton(self.tr("Show Metrics"))
         self.show_metrics_btn.clicked.connect(self.show_metrics_window)
 
         # ─── ASSEMBLE MAIN LAYOUT (exactly one setLayout call!) ─────
@@ -1087,10 +1090,10 @@ class LiveStackWindow(QDialog):
 
         # G) “Send to Slot” + mode/idle labels
         main_layout.addLayout(open_row)
-        self.mode_label = QLabel("Mode: Weighted Average")
+        self.mode_label = QLabel(self.tr("Mode: Weighted Average"))
         self.mode_label.setStyleSheet("color: #a0a0a0;")
         main_layout.addWidget(self.mode_label)
-        self.status_label = QLabel("Idle")
+        self.status_label = QLabel(self.tr("Idle"))
         self.status_label.setStyleSheet("color: #a0a0a0;")
         main_layout.addWidget(self.status_label)
         self.snr_label = QLabel("")
@@ -1121,7 +1124,7 @@ class LiveStackWindow(QDialog):
         """Enable/disable star-trail mode."""
         self.star_trail_mode = checked
         QSettings().setValue("LiveStack/star_trail_mode", checked)
-        self.mode_label.setText("Mode: Star-Trail" if checked else "Mode: Weighted Average")
+        self.mode_label.setText(self.tr("Mode: Star-Trail") if checked else self.tr("Mode: Weighted Average"))
         # if you want, disable mono/color checkbox when star-trail is on:
         self.mono_color_checkbox.setEnabled(not checked)
         self._update_open_buttons()
@@ -1137,8 +1140,8 @@ class LiveStackWindow(QDialog):
             self._display_rev += 1
             self._preview_cache = None
 
-        msg = "Enabled" if checked else "Disabled"
-        self.status_label.setText(f"Mono→Color Mode {msg}")
+        msg = self.tr("Enabled") if checked else self.tr("Disabled")
+        self.status_label.setText(self.tr("Mono→Color Mode {0}").format(msg))
         self._update_open_buttons()
 
     def _update_open_buttons(self):
@@ -1147,11 +1150,11 @@ class LiveStackWindow(QDialog):
         trail = bool(self.star_trail_mode)
         mono_color = bool(getattr(self, "mono_color_mode", False))
         if trail:
-            self.open_linear_btn.setText("Open Star-Trail Image ▶")
+            self.open_linear_btn.setText(self.tr("Open Star-Trail Image ▶"))
         elif mono_color:
-            self.open_linear_btn.setText("Open Linear Color Composite ▶")
+            self.open_linear_btn.setText(self.tr("Open Linear Color Composite ▶"))
         else:
-            self.open_linear_btn.setText("Open Linear Stack ▶")
+            self.open_linear_btn.setText(self.tr("Open Linear Stack ▶"))
         self.open_stretched_btn.setVisible(not trail)
         self.open_filters_btn.setVisible(mono_color and not trail)
 
@@ -1162,10 +1165,10 @@ class LiveStackWindow(QDialog):
 
 
     def select_cull_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Cull Folder")
+        folder = QFileDialog.getExistingDirectory(self, self.tr("Select Cull Folder"))
         if folder:
             self.cull_folder = folder
-            self.cull_folder_label.setText(f"Cull: {os.path.basename(folder)}")
+            self.cull_folder_label.setText(self.tr("Cull: {0}").format(os.path.basename(folder)))
 
     def _cull_frame(self, path: str, reason: str = "") -> str:
         """
@@ -1179,10 +1182,10 @@ class LiveStackWindow(QDialog):
                 os.makedirs(self.cull_folder, exist_ok=True)
                 dst = os.path.join(self.cull_folder, name)
                 shutil.move(path, dst)
-                return f"⚠ Culled {name}{why} → {self.cull_folder}"
+                return self.tr("⚠ Culled {0}{1} → {2}").format(name, why, self.cull_folder)
             except Exception:
-                return f"⚠ Failed to cull {name}{why}"
-        return f"⚠ Not stacked: {name}{why}"
+                return self.tr("⚠ Failed to cull {0}{1}").format(name, why)
+        return self.tr("⚠ Not stacked: {0}{1}").format(name, why)
 
     def open_settings(self):
         dlg = LiveStackSettingsDialog(self)
@@ -1224,12 +1227,16 @@ class LiveStackWindow(QDialog):
                 self._display_rev += 1     # mapping may have changed
 
             self.status_label.setText(
-                f"↺ Settings saved: BS={bs}, σ={sigma:.1f}, "
-                f"FWHM≤{fwhm:.1f}, ECC≤{ecc:.2f}, Stars≥{stars}, "
-                f"Mapping={mapping}, Stars to detect={star_target}, "
-                f"FITS-only={'on' if fits_only else 'off'}, "
-                f"Weights={'on' if weight_frames else 'off'}, SNR goal={snr_goal:g}, "
-                f"Debayer={debayer_method.upper()}"
+                self.tr("↺ Settings saved: BS={0}, σ={1:.1f}, "
+                        "FWHM≤{2:.1f}, ECC≤{3:.2f}, Stars≥{4}, "
+                        "Mapping={5}, Stars to detect={6}, "
+                        "FITS-only={7}, "
+                        "Weights={8}, SNR goal={9:g}, "
+                        "Debayer={10}").format(
+                    bs, sigma, fwhm, ecc, stars, mapping, star_target,
+                    self.tr('on') if fits_only else self.tr('off'),
+                    self.tr('on') if weight_frames else self.tr('off'),
+                    snr_goal, debayer_method.upper())
             )
             self._preview_cache = None
             self._refresh_preview()
@@ -1276,8 +1283,8 @@ class LiveStackWindow(QDialog):
         self._preview_cache = None
         self._refresh_preview()
         self.status_label.setText(
-            "Preview: auto stretch (display only)" if on else
-            "Preview: the linear stack, no stretch")
+            self.tr("Preview: auto stretch (display only)") if on else
+            self.tr("Preview: the linear stack, no stretch"))
 
     def on_brightness_changed(self, val: int):
         self.brightness = val / 100.0  # map to [-1,1]
@@ -1308,8 +1315,8 @@ class LiveStackWindow(QDialog):
             mw = self.parent
             dm = getattr(mw, "docman", None) or getattr(mw, "doc_manager", None)
         if dm is None or not hasattr(dm, "open_array"):
-            QMessageBox.warning(self, "Open Failed",
-                                "No document manager is available to open the result.")
+            QMessageBox.warning(self, self.tr("Open Failed"),
+                                self.tr("No document manager is available to open the result."))
             return
 
         stamp = f"{_dt.datetime.now():%Y%m%d_%H%M%S}"
@@ -1354,7 +1361,7 @@ class LiveStackWindow(QDialog):
                                  self._composite_header(use), n_all))
 
         if not outs:
-            self.status_label.setText("⚠ Nothing to open")
+            self.status_label.setText(self.tr("⚠ Nothing to open"))
             return
         for img, title, hdr, n in outs:
             meta = {"source": "LiveStack", "frames_stacked": int(n),
@@ -1364,11 +1371,11 @@ class LiveStackWindow(QDialog):
             try:
                 dm.open_array(img, metadata=meta, title=title)
             except Exception as e:
-                QMessageBox.warning(self, "Open Failed", f"Could not open {title}:\n{e}")
+                QMessageBox.warning(self, self.tr("Open Failed"), self.tr("Could not open {0}:\n{1}").format(title, e))
                 return
         what = ("" if self.star_trail_mode else
-                " (stretched)" if kind == "stretched" else " (linear)")
-        self.status_label.setText(f"Opened {len(outs)} new view(s){what}")
+                self.tr(" (stretched)") if kind == "stretched" else self.tr(" (linear)"))
+        self.status_label.setText(self.tr("Opened {0} new view(s){1}").format(len(outs), what))
 
     def _composite_header(self, use, stretched: bool = False):
         """Header for a result built from one stack or several filter stacks."""
@@ -1487,10 +1494,10 @@ class LiveStackWindow(QDialog):
 
 
     def select_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder to Watch")
+        folder = QFileDialog.getExistingDirectory(self, self.tr("Select Folder to Watch"))
         if folder:
             self.watch_folder = folder
-            self.folder_label.setText(f"Folder: {os.path.basename(folder)}")
+            self.folder_label.setText(self.tr("Folder: {0}").format(os.path.basename(folder)))
 
     def load_masters(self):
         """
@@ -1500,7 +1507,7 @@ class LiveStackWindow(QDialog):
         a 2D flat while the dark is 3D (for example).
         """
         sender = self.sender()
-        dlg = QFileDialog(self, "Select Master Files",
+        dlg = QFileDialog(self, self.tr("Select Master Files"),
                          filter="FITS TIFF or XISF (*.fit *.fits *.tif *.tiff *.xisf)")
         dlg.setFileMode(QFileDialog.FileMode.ExistingFiles)
         if not dlg.exec():
@@ -1509,48 +1516,49 @@ class LiveStackWindow(QDialog):
         chosen = dlg.selectedFiles()[0]
         img, hdr, bit_depth, is_mono = load_image(chosen)
         if img is None:
-            QMessageBox.warning(self, "Load Error",
-                                f"Failed to load master file:\n{chosen}")
+            QMessageBox.warning(self, self.tr("Load Error"),
+                                self.tr("Failed to load master file:\n{0}").format(chosen))
             return
 
         # Convert everything to float32 for consistency
         img = img.astype(np.float32)
 
-        if "Dark" in sender.text():
+        # Which button, by identity: its text is translated.
+        if sender is self.load_darks_btn:
             # If a flat is already loaded, ensure shape‐compatibility
             if self.master_flat is not None:
                 if not self._shapes_compatible(master=img, other=self.master_flat):
                     QMessageBox.warning(
-                        self, "Shape Mismatch",
-                        "Cannot load this master dark: it has incompatible shape "
-                        "vs. the already‐loaded master flat."
+                        self, self.tr("Shape Mismatch"),
+                        self.tr("Cannot load this master dark: it has incompatible shape "
+                                "vs. the already‐loaded master flat.")
                     )
                     return
 
             self.master_dark = img
-            self.dark_status_label.setText("Dark: ✅")
+            self.dark_status_label.setText(self.tr("Dark: ✅"))
             self.dark_status_label.setStyleSheet("color: #00cc66; font-weight: bold;")            
             QMessageBox.information(
-                self, "Master Dark Loaded",
-                f"Loaded master dark:\n{os.path.basename(chosen)}"
+                self, self.tr("Master Dark Loaded"),
+                self.tr("Loaded master dark:\n{0}").format(os.path.basename(chosen))
             )
         else:
             # "Flat" was clicked
             if self.master_dark is not None:
                 if not self._shapes_compatible(master=self.master_dark, other=img):
                     QMessageBox.warning(
-                        self, "Shape Mismatch",
-                        "Cannot load this master flat: it has incompatible shape "
-                        "vs. the already‐loaded master dark."
+                        self, self.tr("Shape Mismatch"),
+                        self.tr("Cannot load this master flat: it has incompatible shape "
+                                "vs. the already‐loaded master dark.")
                     )
                     return
 
             self.master_flat = img
-            self.flat_status_label.setText("Flat: ✅")
+            self.flat_status_label.setText(self.tr("Flat: ✅"))
             self.flat_status_label.setStyleSheet("color: #00cc66; font-weight: bold;")            
             QMessageBox.information(
-                self, "Master Flat Loaded",
-                f"Loaded master flat:\n{os.path.basename(chosen)}"
+                self, self.tr("Master Flat Loaded"),
+                self.tr("Loaded master flat:\n{0}").format(os.path.basename(chosen))
             )
 
     def load_filter_flats(self):
@@ -1559,7 +1567,7 @@ class LiveStackWindow(QDialog):
         We try to read the FITS header FILTER key to decide which filter
         each flat belongs to; otherwise fall back to the filename.
         """
-        dlg = QFileDialog(self, "Select Filter Flats",
+        dlg = QFileDialog(self, self.tr("Select Filter Flats"),
                           filter="FITS or TIFF (*.fit *.fits *.tif *.tiff)")
         dlg.setFileMode(QFileDialog.FileMode.ExistingFiles)
         if not dlg.exec():
@@ -1586,15 +1594,15 @@ class LiveStackWindow(QDialog):
         # update the flat status label to list loaded filters
         if loaded:
             names = ", ".join(loaded)
-            self.flat_status_label.setText(f"Flats: {names}")
+            self.flat_status_label.setText(self.tr("Flats: {0}").format(names))
             self.flat_status_label.setStyleSheet("color: #00cc66; font-weight: bold;")
             QMessageBox.information(
-                self, "Filter Flats Loaded",
-                f"Loaded flats for filters: {names}"
+                self, self.tr("Filter Flats Loaded"),
+                self.tr("Loaded flats for filters: {0}").format(names)
             )
         else:
-            QMessageBox.warning(self, "No Flats Loaded",
-                                "No flats could be loaded.")
+            QMessageBox.warning(self, self.tr("No Flats Loaded"),
+                                self.tr("No flats could be loaded."))
 
     def _shapes_compatible(self, master: np.ndarray, other: np.ndarray) -> bool:
         """
@@ -1617,17 +1625,17 @@ class LiveStackWindow(QDialog):
     def start_and_process(self):
         """Process everything currently in folder, then begin monitoring."""
         if not self.watch_folder:
-            self.status_label.setText("❗ No folder selected")
+            self.status_label.setText(self.tr("❗ No folder selected"))
             return
         self._wait_worker()
         self.processed_files.clear()
         self._start_worker()
-        self.status_label.setText(f"▶ Processing & Monitoring: {os.path.basename(self.watch_folder)}")
+        self.status_label.setText(self.tr("▶ Processing & Monitoring: {0}").format(os.path.basename(self.watch_folder)))
 
     def start_monitor_only(self):
         """Mark existing files as seen and only process new arrivals."""
         if not self.watch_folder:
-            self.status_label.setText("❗ No folder selected")
+            self.status_label.setText(self.tr("❗ No folder selected"))
             return
         self._wait_worker()
         # Populate processed_files with all existing files so they won't be re-processed
@@ -1639,16 +1647,16 @@ class LiveStackWindow(QDialog):
 
         # Start monitoring
         self._start_worker()
-        self.status_label.setText(f"▶ Monitoring Only: {os.path.basename(self.watch_folder)}")
+        self.status_label.setText(self.tr("▶ Monitoring Only: {0}").format(os.path.basename(self.watch_folder)))
 
     def start_live(self):
         if not self.watch_folder:
-            self.status_label.setText("❗ No folder selected")
+            self.status_label.setText(self.tr("❗ No folder selected"))
             return
         self._wait_worker()
         self._start_worker()
-        self.status_label.setText(f"▶ Monitoring: {os.path.basename(self.watch_folder)}")
-        self.mode_label.setText("Mode: Weighted Average")
+        self.status_label.setText(self.tr("▶ Monitoring: {0}").format(os.path.basename(self.watch_folder)))
+        self.mode_label.setText(self.tr("Mode: Weighted Average"))
 
     def _wait_worker(self, msecs: int = -1) -> bool:
         """Wait for a stopping watch thread to finish its current frame."""
@@ -1656,7 +1664,7 @@ class LiveStackWindow(QDialog):
         if w is None or not w.isRunning():
             return True
         self._stop_event.set()
-        self.status_label.setText("Finishing the current frame…")
+        self.status_label.setText(self.tr("Finishing the current frame…"))
         QApplication.processEvents()
         return bool(w.wait() if msecs < 0 else w.wait(msecs))
 
@@ -1674,7 +1682,7 @@ class LiveStackWindow(QDialog):
 
     def _on_worker_finished(self):
         if not self.is_running:
-            self.status_label.setText("■ Stopped")
+            self.status_label.setText(self.tr("■ Stopped"))
 
     def _set_status(self, text: str):
         self.status_label.setText(text)
@@ -1690,9 +1698,9 @@ class LiveStackWindow(QDialog):
         self.is_running = False
         w = self._worker
         if w is not None and w.isRunning():
-            self.status_label.setText("■ Stopping after the current frame…")
+            self.status_label.setText(self.tr("■ Stopping after the current frame…"))
         else:
-            self.status_label.setText("■ Stopped")
+            self.status_label.setText(self.tr("■ Stopped"))
 
     def reset_live(self):
         self.stop_live()
@@ -1706,10 +1714,10 @@ class LiveStackWindow(QDialog):
         self.metrics_window.metrics_panel.clear_all()
 
         # Update labels
-        self.frame_count_label.setText("Frames: 0")
-        self.exposure_label.setText("Total Exp: 00:00:00")
-        self.status_label.setText("↺ Reset")
-        self.mode_label.setText("Mode: Weighted Average")
+        self.frame_count_label.setText(self.tr("Frames: {0}").format(0))
+        self.exposure_label.setText(self.tr("Total Exp: {0}").format("00:00:00"))
+        self.status_label.setText(self.tr("↺ Reset"))
+        self.mode_label.setText(self.tr("Mode: Weighted Average"))
 
         # Clear the displayed image
         self.pixmap_item.setPixmap(QPixmap())
@@ -1840,7 +1848,7 @@ class LiveStackWindow(QDialog):
             return
         candidates = self._scan_candidates(set())
         if candidates:
-            emit_msg(f"➜ New/updated files: {len(candidates)}")
+            emit_msg(self.tr("➜ New/updated files: {0}").format(len(candidates)))
         for path in candidates:
             if self._should_stop():
                 break
@@ -1865,9 +1873,9 @@ class LiveStackWindow(QDialog):
         self._probe[norm] = info
         if info["fails"] >= 3:
             self.processed_files.add(norm)
-            emit_msg(f"⚠ Skipping {os.path.basename(path)} after {info['fails']} failures: {e}")
+            emit_msg(self.tr("⚠ Skipping {0} after {1} failures: {2}").format(os.path.basename(path), info['fails'], e))
         else:
-            emit_msg(f"⚠ Error on {os.path.basename(path)} (try {info['fails']}): {e}")
+            emit_msg(self.tr("⚠ Error on {0} (try {1}): {2}").format(os.path.basename(path), info['fails'], e))
 
     def _inline_frame(self, path, emit_frame, emit_msg):
         """Prepare and stack one frame on this thread. A frame is marked done
@@ -1915,7 +1923,7 @@ class LiveStackWindow(QDialog):
                     break
                 if not said_stopping:
                     said_stopping = True
-                    emit_msg(f"■ Stopping: finishing {len(inflight)} frame(s) already being prepared…")
+                    emit_msg(self.tr("■ Stopping: finishing {0} frame(s) already being prepared…").format(len(inflight)))
                 _fwait([inflight[0][0]], timeout=0.2)
                 continue
 
@@ -2011,7 +2019,7 @@ class LiveStackWindow(QDialog):
             import multiprocessing as _mp
             from concurrent.futures import ProcessPoolExecutor
             n = self._n_workers()
-            emit_msg(f"Starting {n} worker process(es)…")
+            emit_msg(self.tr("Starting {0} worker process(es)…").format(n))
             pool = ProcessPoolExecutor(
                 max_workers=n, mp_context=_mp.get_context("spawn"),
                 initializer=_lsw.init_worker,
@@ -2029,8 +2037,8 @@ class LiveStackWindow(QDialog):
             self._pool_failed = True
             self._pool = None
             print(f"[LiveStack] worker processes unavailable: {type(e).__name__}: {e}")
-            emit_msg("ℹ Worker processes unavailable; frames are prepared on a "
-                     "background thread instead (the window may respond more slowly).")
+            emit_msg(self.tr("ℹ Worker processes unavailable; frames are prepared on a "
+                             "background thread instead (the window may respond more slowly)."))
         return self._pool
 
     def _drop_pool(self, emit_msg, e=None):
@@ -2043,7 +2051,7 @@ class LiveStackWindow(QDialog):
             except Exception:
                 pass
             print(f"[LiveStack] worker processes stopped: {type(e).__name__ if e else ''} {e or ''}")
-            emit_msg("⚠ Worker processes stopped; continuing on a background thread.")
+            emit_msg(self.tr("⚠ Worker processes stopped; continuing on a background thread."))
         return None
 
     def _shutdown_pool(self):
@@ -2209,8 +2217,8 @@ class LiveStackWindow(QDialog):
         """GUI side of a processed frame: labels, metrics plots, preview."""
         if not res or res.get("gen") != self._gen:
             return      # from before a Reset / mode switch
-        self.frame_count_label.setText(f"Frames: {res['frame_count']}")
-        self.exposure_label.setText(f"Total Exp: {_fmt_hms(res['total_exposure'])}")
+        self.frame_count_label.setText(self.tr("Frames: {0}").format(res['frame_count']))
+        self.exposure_label.setText(self.tr("Total Exp: {0}").format(_fmt_hms(res['total_exposure'])))
         if res.get("mode"):
             self.mode_label.setText(res["mode"])
         if res.get("snr_text") is not None:
@@ -2299,14 +2307,16 @@ class LiveStackWindow(QDialog):
         if reason is None and self.weight_frames:
             weight = self._frame_weight(key, sc, ecc, bg, fwhm)
             if not (weight > 0.0):
-                reason = "no usable stars to weight it by"
+                reason = self.tr("no usable stars to weight it by")
         frame = prep.get("frame")
         acc = self.stacks.get(key)
         if reason is None and acc is not None and acc.shape != frame.shape:
-            reason = (f"size {frame.shape[1]}x{frame.shape[0]}x{frame.shape[2]} differs from "
-                      f"this stack's {acc.shape[1]}x{acc.shape[0]}x{acc.shape[2]}")
+            reason = self.tr("size {0}x{1}x{2} differs from "
+                             "this stack's {3}x{4}x{5}").format(
+                frame.shape[1], frame.shape[0], frame.shape[2],
+                acc.shape[1], acc.shape[0], acc.shape[2])
         if reason is None and not prep.get("aligned") and self.reference_image_2d is not None:
-            reason = "prepared before the reference frame was chosen"
+            reason = self.tr("prepared before the reference frame was chosen")
         if reason is not None:
             return self._result(gen, status=self._cull_frame(path, reason),
                                 point=(frame_no, [fwhm, ecc, sc, None, None, None], True, key))
@@ -2363,15 +2373,16 @@ class LiveStackWindow(QDialog):
 
         tag = f" ({self._key_label(key)})" if key != "__main__" else ""
         if acc.clipping:
-            mode = f"Mode: Weighted σ-Clipping Average, k={acc.k:g}{tag}"
+            mode = self.tr("Mode: Weighted σ-Clipping Average, k={0:g}{1}").format(acc.k, tag)
         else:
-            mode = f"Mode: Weighted Average, bootstrap {acc.n_frames}/{acc.bootstrap}{tag}"
-        msg = f"✔ {name}{tag}: weight {w_rel:.2f}× median"
+            mode = self.tr("Mode: Weighted Average, bootstrap {0}/{1}{2}").format(
+                acc.n_frames, acc.bootstrap, tag)
+        msg = self.tr("✔ {0}{1}: weight {2:.2f}× median").format(name, tag, w_rel)
         if acc.clipping and acc.n_frames > acc.bootstrap:
-            msg += f", rejected {100.0 * acc.last_reject_frac:.3f}% of pixels"
+            msg += self.tr(", rejected {0:.3f}% of pixels").format(100.0 * acc.last_reject_frac)
         elif acc.clipping and acc.bootstrap >= 3:
-            msg += (f", σ-clipping on: an outlier was taken back out of "
-                    f"{100.0 * acc.bootstrap_removed_frac:.3f}% of pixels")
+            msg += self.tr(", σ-clipping on: an outlier was taken back out of "
+                           "{0:.3f}% of pixels").format(100.0 * acc.bootstrap_removed_frac)
 
         # Preview image (Auto Stretch or linear; display only)
         rev = self._display_rev
@@ -2434,46 +2445,48 @@ class LiveStackWindow(QDialog):
         slope = noise_trend_slope([h[0] for h in hist], [h[1] for h in hist])
         floor = slope is not None and acc.n_frames >= 16 and slope > -0.25
         if slope is None:
-            trend = "noise trend: needs more frames"
+            trend = self.tr("noise trend: needs more frames")
         else:
-            trend = f"noise ∝ N^{slope:+.2f} (ideal −0.50)"
+            trend = self.tr("noise ∝ N^{0:+.2f} (ideal −0.50)").format(slope)
         if floor:
-            trend += (" ⚠ noise has stopped falling as it should: a fixed pattern "
-                      "dominates, more frames help little; dither between frames")
+            trend += self.tr(" ⚠ noise has stopped falling as it should: a fixed pattern "
+                             "dominates, more frames help little; dither between frames")
 
         snr = None
         rect = self._region_for(acc.shape)
         if self.snr_region is None:
-            text = (f"{tag}{trend}  ·  Use 'SNR Region' and drag a box over faint "
-                    f"signal to estimate the frames needed for an SNR of {self.snr_goal:g}")
+            text = self.tr("{0}{1}  ·  Use 'SNR Region' and drag a box over faint "
+                           "signal to estimate the frames needed for an SNR of {2:g}").format(
+                tag, trend, self.snr_goal)
         elif rect is None:
-            text = f"{tag}The SNR region is outside this stack  ·  {trend}"
+            text = self.tr("{0}The SNR region is outside this stack  ·  {1}").format(tag, trend)
         elif acc.n_frames < 3:
-            text = f"{tag}SNR starts after 3 frames  ·  {trend}"
+            text = self.tr("{0}SNR starts after 3 frames  ·  {1}").format(tag, trend)
         else:
             sky = self._sky_for(key, lum)
             snr, sig, _nz = region_snr(acc, rect, sky)
             if snr is None:
-                text = f"{tag}SNR: not enough data in the region yet  ·  {trend}"
+                text = self.tr("{0}SNR: not enough data in the region yet  ·  {1}").format(tag, trend)
             elif sig <= 0:
                 snr = None
-                text = f"{tag}SNR: the region is not brighter than the sky  ·  {trend}"
+                text = self.tr("{0}SNR: the region is not brighter than the sky  ·  {1}").format(tag, trend)
             else:
                 goal = float(self.snr_goal)
                 if snr >= goal:
-                    est = "goal reached"
+                    est = self.tr("goal reached")
                 else:
                     n_eff = acc.n_eff
                     per_frame = n_eff / max(acc.n_frames, 1)
                     need_eff = n_eff * (goal / snr) ** 2
                     more = int(np.ceil((need_eff - n_eff) / max(per_frame, 1e-9)))
                     exp = self._exp_per_frame(key)
-                    est = f"≈{more} more frames"
+                    est = self.tr("≈{0} more frames").format(more)
                     if exp:
                         est += f" (≈{_fmt_dur(more * exp)})"
                     if floor:
-                        est += ", optimistic"
-                text = f"{tag}SNR/px {snr:.1f} → goal {goal:g}: {est}  ·  {trend}"
+                        est += self.tr(", optimistic")
+                text = self.tr("{0}SNR/px {1:.1f} → goal {2:g}: {3}  ·  {4}").format(
+                    tag, snr, goal, est, trend)
         return text, snr
 
     def _refresh_snr_readout(self):
@@ -2481,7 +2494,7 @@ class LiveStackWindow(QDialog):
         acc = self.stacks.get(key) if key is not None else None
         if acc is None:
             self.snr_label.setText(
-                "SNR region set; the estimate starts with the first frames."
+                self.tr("SNR region set; the estimate starts with the first frames.")
                 if self.snr_region is not None else "")
             return
         with self._lock:
@@ -2495,9 +2508,9 @@ class LiveStackWindow(QDialog):
         self.view.setDragMode(QGraphicsView.DragMode.RubberBandDrag if on
                               else QGraphicsView.DragMode.ScrollHandDrag)
         if on:
-            self.status_label.setText(
+            self.status_label.setText(self.tr(
                 "Drag a box over the faint signal you want to reach the SNR goal "
-                "(click SNR Region again to cancel).")
+                "(click SNR Region again to cancel)."))
 
     def _on_rubber_band(self, rect, from_scene, to_scene):
         if not self._snr_pick:
@@ -2517,7 +2530,7 @@ class LiveStackWindow(QDialog):
         x0, y0 = int(np.floor(max(0.0, xa))), int(np.floor(max(0.0, ya)))
         x1, y1 = int(np.ceil(xb)), int(np.ceil(yb))
         if x1 - x0 < 3 or y1 - y0 < 3:
-            self.status_label.setText("SNR region too small; drag a larger box.")
+            self.status_label.setText(self.tr("SNR region too small; drag a larger box."))
             return
         self.snr_region = (x0, y0, x1, y1)
         if self._snr_rect_item is None:
@@ -2531,7 +2544,7 @@ class LiveStackWindow(QDialog):
             self.scene.addItem(item)
             self._snr_rect_item = item
         self._snr_rect_item.setRect(x0, y0, x1 - x0, y1 - y0)
-        self.status_label.setText(f"SNR region: {x1 - x0}×{y1 - y0} px at ({x0}, {y0})")
+        self.status_label.setText(self.tr("SNR region: {0}×{1} px at ({2}, {3})").format(x1 - x0, y1 - y0, x0, y0))
         self._refresh_snr_readout()
 
     def _draw_sky_box(self, box):
@@ -2552,7 +2565,7 @@ class LiveStackWindow(QDialog):
             pen.setStyle(Qt.PenStyle.DashLine)
             item.setPen(pen)
             item.setZValue(10)
-            item.setToolTip("SNR sky sample (found like Background Neutralization's Find Background)")
+            item.setToolTip(self.tr("SNR sky sample (found like Background Neutralization's Find Background)"))
             self.scene.addItem(item)
             self._sky_rect_item = item
         x0, y0, x1, y1 = box
@@ -2639,7 +2652,7 @@ class LiveStackWindow(QDialog):
             self._add_exposure("__main__", header)
             disp = self.current_stack
             n = self.frame_count
-        return self._result(gen, status=f"★ Star-Trail frame {n}: {name}",
+        return self._result(gen, status=self.tr("★ Star-Trail frame {0}: {1}").format(n, name),
                             display=disp, display_rev=self._display_rev)
 
     def closeEvent(self, event):

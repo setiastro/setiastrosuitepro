@@ -810,10 +810,10 @@ import numpy as np
 from numba import njit, prange
 
 # -------------------------------
-# Windsorized Sigma Clipping (Weighted, Iterative)
+# Winsorized Sigma Clipping (Weighted, Iterative)
 # -------------------------------
 @njit(parallel=True, fastmath=True, cache=True)
-def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5, iterations=2):
+def winsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5, iterations=2):
     num_frames, height, width = stack.shape
     clipped = np.zeros((height, width), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
@@ -879,7 +879,7 @@ def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5
 
 
 @njit(parallel=True, fastmath=True, cache=True)
-def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5, iterations=2):
+def winsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5, iterations=2):
     num_frames, height, width, channels = stack.shape
     clipped = np.zeros((height, width, channels), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
@@ -942,13 +942,13 @@ def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5
 
     return clipped, rej_mask
 
-def windsorized_sigma_clip_weighted(stack, weights, lower=2.5, upper=2.5, iterations=2):
+def winsorized_sigma_clip_weighted(stack, weights, lower=2.5, upper=2.5, iterations=2):
     if stack.ndim == 3:
-        return windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower, upper, iterations)
+        return winsorized_sigma_clip_weighted_3d_iter(stack, weights, lower, upper, iterations)
     elif stack.ndim == 4:
-        return windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower, upper, iterations)
+        return winsorized_sigma_clip_weighted_4d_iter(stack, weights, lower, upper, iterations)
     else:
-        raise ValueError(f"windsorized_sigma_clip_weighted: stack must be 3D or 4D, got {stack.shape}")
+        raise ValueError(f"winsorized_sigma_clip_weighted: stack must be 3D or 4D, got {stack.shape}")
 
 
 # -------------------------------
@@ -1758,10 +1758,10 @@ def modified_zscore_clip_weighted(stack, weights, threshold=3.5):
 
 
 # -------------------------------
-# Windsorized Sigma Clipping (Non-weighted)
+# Winsorized Sigma Clipping (Non-weighted)
 # -------------------------------
 @njit(parallel=True, fastmath=True, cache=True)
-def windsorized_sigma_clip_3d(stack, lower=2.5, upper=2.5):
+def winsorized_sigma_clip_3d(stack, lower=2.5, upper=2.5):
     num_frames, height, width = stack.shape
     clipped = np.zeros((height, width), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
@@ -1819,7 +1819,7 @@ def windsorized_sigma_clip_3d(stack, lower=2.5, upper=2.5):
 
 
 @njit(parallel=True, fastmath=True, cache=True)
-def windsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
+def winsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
     num_frames, height, width, channels = stack.shape
     clipped = np.zeros((height, width, channels), dtype=np.float32)
     rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
@@ -1877,13 +1877,13 @@ def windsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
     return clipped, rej_mask
 
 
-def windsorized_sigma_clip(stack, lower=2.5, upper=2.5):
+def winsorized_sigma_clip(stack, lower=2.5, upper=2.5):
     if stack.ndim == 3:
-        return windsorized_sigma_clip_3d(stack, lower, upper)
+        return winsorized_sigma_clip_3d(stack, lower, upper)
     elif stack.ndim == 4:
-        return windsorized_sigma_clip_4d(stack, lower, upper)
+        return winsorized_sigma_clip_4d(stack, lower, upper)
     else:
-        raise ValueError(f"windsorized_sigma_clip: stack must be 3D or 4D, got {stack.shape}")
+        raise ValueError(f"winsorized_sigma_clip: stack must be 3D or 4D, got {stack.shape}")
 
 
 def max_value_stack(stack, weights=None):
@@ -2366,38 +2366,65 @@ def normalize_images(stack, ref_median):
     else:
         raise ValueError(f"normalize_images: stack must be 3D or 4D, got shape {stack.shape}")
 
-@njit(parallel=True, fastmath=True, cache=True)
-def _bilinear_interpolate_numba(out):
-    H, W, C = out.shape
-    for c in range(C):
-        for y in prange(H):
-            for x in range(W):
-                if out[y, x, c] == 0:
-                    sumv = 0.0
-                    cnt = 0
-                    # 3x3 neighborhood average of non-zero samples (simple & fast)
-                    for dy in (-1, 0, 1):
-                        yy = y + dy
-                        if yy < 0 or yy >= H: 
-                            continue
-                        for dx in (-1, 0, 1):
-                            xx = x + dx
-                            if xx < 0 or xx >= W:
-                                continue
-                            v = out[yy, xx, c]
-                            if v != 0:
-                                sumv += v
-                                cnt += 1
-                    if cnt > 0:
-                        out[y, x, c] = sumv / cnt
+# ── Bilinear and edge-aware demosaic, read from the IMMUTABLE mosaic ────────
+# Both used to fill the zero sites of a sparse (H,W,3) array in place, while
+# reading the same array from a parallel loop. A pixel could therefore average
+# samples that had just been invented by its neighbours, in whatever order the
+# threads ran: the same frame gave a different result every time, and star
+# centroids moved by up to 0.4 px between channels. Reading only the mosaic
+# makes each output depend on real samples alone.
+#
+# A sample that is exactly 0 is no data (a clipped satellite or cosmic-ray
+# pixel), so it never enters an average. A pixel with nothing to average from
+# stays 0.
+@njit(inline="always")
+def _cfa_channel(y, x, r0, c0, r1, c1):
+    if (y & 1) == 0:
+        return c0 if (x & 1) else r0
+    return c1 if (x & 1) else r1
+
+
+@njit(inline="always")
+def _cfa_box_mean(image, y, x, c, r0, c0, r1, c1, H, W):
+    """Mean of the non-zero samples of channel c in the 3x3 around (y, x)."""
+    s = 0.0
+    n = 0
+    for dy in range(-1, 2):
+        yy = y + dy
+        if yy < 0 or yy >= H:
+            continue
+        for dx in range(-1, 2):
+            xx = x + dx
+            if xx < 0 or xx >= W:
+                continue
+            if _cfa_channel(yy, xx, r0, c0, r1, c1) == c:
+                v = image[yy, xx]
+                if v != 0:
+                    s += v
+                    n += 1
+    return s / n if n > 0 else 0.0
+
+
+@njit(parallel=True, cache=True)
+def _bilinear_from_mosaic(image, r0, c0, r1, c1):
+    """Full (H,W,3) bilinear demosaic of a Bayer mosaic."""
+    H, W = image.shape
+    out = np.zeros((H, W, 3), dtype=image.dtype)
+    for y in prange(H):
+        for x in range(W):
+            own = _cfa_channel(y, x, r0, c0, r1, c1)
+            for c in range(3):
+                if c == own:
+                    out[y, x, c] = image[y, x]
+                else:
+                    out[y, x, c] = _cfa_box_mean(image, y, x, c, r0, c0, r1, c1, H, W)
     return out
 
 
-@njit(parallel=True, fastmath=True)
-def _edge_aware_interpolate_numba(out):
+@njit(parallel=True, cache=True)
+def _edge_aware_from_mosaic(image, r0, c0, r1, c1):
     """
-    For each pixel in out (shape: (H,W,3)) where out[y,x,c] == 0,
-    use a simple edge-aware approach:
+    Full (H,W,3) edge-aware demosaic of a Bayer mosaic. For each missing sample:
       1) Compute horizontal gradient = abs( left - right )
       2) Compute vertical gradient   = abs( top - bottom )
       3) Choose the direction with the smaller gradient => average neighbors
@@ -2406,85 +2433,37 @@ def _edge_aware_interpolate_numba(out):
     This is simpler than AHD but usually better than naive bilinear
     for high-contrast features like star cores.
     """
-    H, W, C = out.shape
-
-    for c in range(C):
-        for y in prange(H):
-            for x in range(W):
-                if out[y, x, c] == 0:
-                    # Gather immediate neighbors
-                    left = 0.0
-                    right = 0.0
-                    top = 0.0
-                    bottom = 0.0
-                    have_left = False
-                    have_right = False
-                    have_top = False
-                    have_bottom = False
-
-                    # Left
-                    if x - 1 >= 0:
-                        val = out[y, x - 1, c]
-                        if val != 0:
-                            left = val
-                            have_left = True
-
-                    # Right
-                    if x + 1 < W:
-                        val = out[y, x + 1, c]
-                        if val != 0:
-                            right = val
-                            have_right = True
-
-                    # Top
-                    if y - 1 >= 0:
-                        val = out[y - 1, x, c]
-                        if val != 0:
-                            top = val
-                            have_top = True
-
-                    # Bottom
-                    if y + 1 < H:
-                        val = out[y + 1, x, c]
-                        if val != 0:
-                            bottom = val
-                            have_bottom = True
-
-                    # Compute gradients
-                    # If we don't have valid neighbors for that direction,
-                    # set the gradient to a large number => won't be chosen
-                    gh = 1e6
-                    gv = 1e6
-
-                    if have_left and have_right:
-                        gh = abs(left - right)
-                    if have_top and have_bottom:
-                        gv = abs(top - bottom)
-
-                    # Decide which direction to interpolate
-                    if gh < gv and have_left and have_right:
-                        # Horizontal interpolation
-                        out[y, x, c] = 0.5 * (left + right)
-                    elif gv <= gh and have_top and have_bottom:
-                        # Vertical interpolation
-                        out[y, x, c] = 0.5 * (top + bottom)
-                    else:
-                        # Fallback: average 3×3 region
-                        sumv = 0.0
-                        count = 0
-                        for dy in range(-1, 2):
-                            for dx in range(-1, 2):
-                                yy = y + dy
-                                xx = x + dx
-                                if 0 <= yy < H and 0 <= xx < W:
-                                    val = out[yy, xx, c]
-                                    if val != 0:
-                                        sumv += val
-                                        count += 1
-                        if count > 0:
-                            out[y, x, c] = sumv / count
-
+    H, W = image.shape
+    out = np.zeros((H, W, 3), dtype=image.dtype)
+    for y in prange(H):
+        for x in range(W):
+            own = _cfa_channel(y, x, r0, c0, r1, c1)
+            for c in range(3):
+                if c == own:
+                    out[y, x, c] = image[y, x]
+                    continue
+                left = right = top = bottom = 0.0
+                if x >= 1 and _cfa_channel(y, x - 1, r0, c0, r1, c1) == c:
+                    left = image[y, x - 1]
+                if x + 1 < W and _cfa_channel(y, x + 1, r0, c0, r1, c1) == c:
+                    right = image[y, x + 1]
+                if y >= 1 and _cfa_channel(y - 1, x, r0, c0, r1, c1) == c:
+                    top = image[y - 1, x]
+                if y + 1 < H and _cfa_channel(y + 1, x, r0, c0, r1, c1) == c:
+                    bottom = image[y + 1, x]
+                have_h = left != 0 and right != 0
+                have_v = top != 0 and bottom != 0
+                gh = abs(left - right) if have_h else 1e6
+                gv = abs(top - bottom) if have_v else 1e6
+                if gh < gv and have_h:
+                    out[y, x, c] = 0.5 * (left + right)
+                elif gv <= gh and have_v:
+                    out[y, x, c] = 0.5 * (top + bottom)
+                else:
+                    out[y, x, c] = _cfa_box_mean(image, y, x, c, r0, c0, r1, c1, H, W)
     return out
+
+
 # === Separate Full-Resolution Demosaicing Kernels ===
 # These njit functions assume the raw image is arranged in a Bayer pattern
 # and that we want a full (H,W,3) output.
@@ -2492,6 +2471,8 @@ def _edge_aware_interpolate_numba(out):
 @njit(parallel=True, fastmath=True, cache=True)
 def debayer_RGGB_fullres_fast(image, interpolate=True):
     H, W = image.shape
+    if interpolate:
+        return _edge_aware_from_mosaic(image, 0, 1, 1, 2)
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
@@ -2501,13 +2482,13 @@ def debayer_RGGB_fullres_fast(image, interpolate=True):
             else:
                 if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
                 else:            out[y, x, 2] = image[y, x]  # B
-    if interpolate:
-        _edge_aware_interpolate_numba(out)
     return out
 
 @njit(parallel=True, fastmath=True, cache=True)
 def debayer_BGGR_fullres_fast(image, interpolate=True):
     H, W = image.shape
+    if interpolate:
+        return _edge_aware_from_mosaic(image, 2, 1, 1, 0)
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
@@ -2517,13 +2498,13 @@ def debayer_BGGR_fullres_fast(image, interpolate=True):
             else:
                 if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
                 else:            out[y, x, 0] = image[y, x]  # R
-    if interpolate:
-        _edge_aware_interpolate_numba(out)
     return out
 
 @njit(parallel=True, fastmath=True, cache=True)
 def debayer_GRBG_fullres_fast(image, interpolate=True):
     H, W = image.shape
+    if interpolate:
+        return _edge_aware_from_mosaic(image, 1, 0, 2, 1)
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
@@ -2533,13 +2514,13 @@ def debayer_GRBG_fullres_fast(image, interpolate=True):
             else:
                 if (x & 1) == 0: out[y, x, 2] = image[y, x]  # B
                 else:            out[y, x, 1] = image[y, x]  # G
-    if interpolate:
-        _edge_aware_interpolate_numba(out)
     return out
 
 @njit(parallel=True, fastmath=True, cache=True)
 def debayer_GBRG_fullres_fast(image, interpolate=True):
     H, W = image.shape
+    if interpolate:
+        return _edge_aware_from_mosaic(image, 1, 2, 0, 1)
     out = np.zeros((H, W, 3), dtype=image.dtype)
     for y in prange(H):
         for x in range(W):
@@ -2549,8 +2530,6 @@ def debayer_GBRG_fullres_fast(image, interpolate=True):
             else:
                 if (x & 1) == 0: out[y, x, 0] = image[y, x]  # R
                 else:            out[y, x, 1] = image[y, x]  # G
-    if interpolate:
-        _edge_aware_interpolate_numba(out)
     return out
 
 @njit(parallel=True, fastmath=True, cache=True)
@@ -3523,14 +3502,13 @@ def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False,
     if bp not in ("RGGB", "BGGR", "GRBG", "GBRG"):
         raise ValueError(f"Unsupported Bayer pattern: {bayer_pattern}")
 
-    # 1) lay down samples -- only for the paths that read them (CFA drizzle,
-    # bilinear, edge). RCD, VNG and AHD build their RGB from the raw mosaic
-    # and strict_cfa needs only the shape; building the split anyway cost a
-    # 3-plane allocation and a full-frame kernel per frame, then went
-    # straight in the bin. (Spotted by Spec-Chum.)
-    _m = (method or "edge").lower()
+    # 1) lay down samples -- only for CFA drizzle, which wants the sparse
+    # split itself. Every interpolating method builds its RGB from the raw
+    # mosaic; building the split anyway cost a 3-plane allocation and a
+    # full-frame kernel per frame, then went straight in the bin.
+    # (Spotted by Spec-Chum.)
     out = None
-    if not (interpolate and _m in ("strict_cfa", "vng", "rcd", "ahd")):
+    if not interpolate:
         if bp == "RGGB":
             out = debayer_RGGB_fullres_fast(image_data, interpolate=False)
         elif bp == "BGGR":
@@ -3544,7 +3522,8 @@ def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False,
     if interpolate:
         m = (method or "edge").lower()
         if m == "bilinear":
-            _bilinear_interpolate_numba(out)
+            r0, c0r, r1, c1r = _CFA_CHAN[bp]
+            out = _bilinear_from_mosaic(image_data, r0, c0r, r1, c1r)
         elif m == "strict_cfa":
             out = np.zeros(image_data.shape[:2] + (3,), dtype=image_data.dtype)
             r0, c0r, r1, c1r = _CFA_CHAN[bp]
@@ -3585,7 +3564,8 @@ def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False,
                                 clip_threshold=ahd_clip_threshold,
                                 clip_feather=ahd_clip_feather)
         else:   # "edge" default
-            _edge_aware_interpolate_numba(out)
+            r0, c0r, r1, c1r = _CFA_CHAN[bp]
+            out = _edge_aware_from_mosaic(image_data, r0, c0r, r1, c1r)
 
     # 3) re-assert clipped pixels as (0,0,0) across all channels
     if zero_mask is not None and zero_mask.any():

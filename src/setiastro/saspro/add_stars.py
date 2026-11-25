@@ -4,7 +4,7 @@ import os
 import numpy as np
 
 # Qt
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSettings, QByteArray, QThread
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSettings, QByteArray, QThread, QCoreApplication
 from PyQt6.QtGui import QImage, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -22,6 +22,10 @@ try:
     import cv2
 except Exception:
     cv2 = None
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("AddStars", text)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -419,9 +423,9 @@ class AddStarsDialog(QDialog):
 
         # Zoom row (standardized themed toolbuttons)
         zrow = QHBoxLayout()
-        self.btn_zoom_in  = themed_toolbtn("zoom-in",       "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out",      "Zoom Out")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in",       self.tr("Zoom In"))
+        self.btn_zoom_out = themed_toolbtn("zoom-out",      self.tr("Zoom Out"))
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         self.btn_zoom_in.clicked.connect(self.zoom_in)
         self.btn_zoom_out.clicked.connect(self.zoom_out)
@@ -521,14 +525,14 @@ class AddStarsDialog(QDialog):
     # File load ----------------------------------------------------------------
     def _load_from_file(self, which: str):
         fn, _ = QFileDialog.getOpenFileName(
-            self, f"Select {'Starless' if which=='starless' else 'Stars-Only'} Image", "",
+            self, self.tr("Select Starless Image") if which=='starless' else self.tr("Select Stars-Only Image"), "",
             "Image Files (*.png *.tif *.tiff *.fits *.fit *.xisf *.jpg *.jpeg)"
         )
         if not fn:
             return
         img, _, _, _ = load_image(fn)
         if img is None:
-            QMessageBox.critical(self, "Load Error", f"Failed to load: {os.path.basename(fn)}")
+            QMessageBox.critical(self, self.tr("Load Error"), self.tr("Failed to load: {0}").format(os.path.basename(fn)))
             return
         if which == 'starless':
             self.starless = self._to_rgb01(img)
@@ -572,7 +576,7 @@ class AddStarsDialog(QDialog):
             return
         img = _doc_image(data)
         if img is None:
-            QMessageBox.warning(self, "Empty View", "Selected starless view has no image.")
+            QMessageBox.warning(self, self.tr("Empty View"), self.tr("Selected starless view has no image."))
             return
         self.starless = self._to_rgb01(img)
         self.update_preview()
@@ -584,7 +588,7 @@ class AddStarsDialog(QDialog):
             return
         img = _doc_image(data)
         if img is None:
-            QMessageBox.warning(self, "Empty View", "Selected stars-only view has no image.")
+            QMessageBox.warning(self, self.tr("Empty View"), self.tr("Selected stars-only view has no image."))
             return
         self.stars_only = self._to_rgb01(img)
         self.update_preview()
@@ -616,7 +620,7 @@ class AddStarsDialog(QDialog):
 
         # same size?
         if self.starless.shape != self.stars_only.shape:
-            QMessageBox.critical(self, "Size Mismatch", "Starless and Stars-Only views are different sizes.")
+            QMessageBox.critical(self, self.tr("Size Mismatch"), self.tr("Starless and Stars-Only views are different sizes."))
             return None
 
         mode, r, m = self._blend_inputs()
@@ -649,7 +653,7 @@ class AddStarsDialog(QDialog):
             self.blended_image = None
             self._pix = None
             self.preview_label.clear()
-            QMessageBox.critical(self, "Size Mismatch", "Starless and Stars-Only views are different sizes.")
+            QMessageBox.critical(self, self.tr("Size Mismatch"), self.tr("Starless and Stars-Only views are different sizes."))
             return
         H, W = self.starless.shape[:2]
         scale = float(self.scale_factor)
@@ -667,7 +671,7 @@ class AddStarsDialog(QDialog):
 
     def _on_preview_ready(self, res: dict):
         if "error" in res:
-            self.preview_label.setText(f"Preview failed: {res['error']}")
+            self.preview_label.setText(self.tr("Preview failed: {0}").format(res['error']))
             return
         if res["starless"] is not self.starless or res["stars_only"] is not self.stars_only:
             return                       # a source changed meanwhile; its own preview follows
@@ -757,7 +761,7 @@ class AddStarsDialog(QDialog):
             return
         if (self.starless is None or self.stars_only is None
                 or self.starless.shape != self.stars_only.shape):
-            QMessageBox.warning(self, "No Blend", "No blended image to apply.")
+            QMessageBox.warning(self, self.tr("No Blend"), self.tr("No blended image to apply."))
             return
 
         sel = self.cmb_starless.currentData()
@@ -780,8 +784,8 @@ class AddStarsDialog(QDialog):
             target_doc = self._resolve_doc_object(sel)
 
         if target_doc is None:
-            QMessageBox.warning(self, "No Target",
-                                "Pick a starless view to overwrite (or activate a destination window).")
+            QMessageBox.warning(self, self.tr("No Target"),
+                                self.tr("Pick a starless view to overwrite (or activate a destination window)."))
             return
 
         mode, r, m = self._blend_inputs()
@@ -798,7 +802,7 @@ class AddStarsDialog(QDialog):
         target_doc, self._apply_target = self._apply_target, None
         self.btn_apply.setEnabled(True)
         if "error" in res:
-            QMessageBox.critical(self, "Add Stars", f"Failed to blend:\n{res['error']}")
+            QMessageBox.critical(self, self.tr("Add Stars"), self.tr("Failed to blend:\n{0}").format(res['error']))
             return
         # Emit (target_doc, blended_image)
         self.stars_added.emit(target_doc, res["result"].astype(np.float32, copy=False))
@@ -921,7 +925,7 @@ def add_stars(main):
     if callable(doc):
         doc = doc()
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "No Image", "Please activate a destination image window first.")
+        QMessageBox.warning(main, _tr("No Image"), _tr("Please activate a destination image window first."))
         return
 
     dlg = AddStarsDialog(main, parent=main)
@@ -957,7 +961,7 @@ def add_stars(main):
 def _apply_to_doc(main, doc, arr: np.ndarray):
     """Overwrite the given document with the blended (stars added) result."""
     if doc is None:
-        QMessageBox.warning(main, "No Target Document", "No document to apply to.")
+        QMessageBox.warning(main, _tr("No Target Document"), _tr("No document to apply to."))
         return
     try:
         meta = {
@@ -969,4 +973,4 @@ def _apply_to_doc(main, doc, arr: np.ndarray):
         if hasattr(main, "_log"):
             main._log("Stars Added")
     except Exception as e:
-        QMessageBox.critical(main, "Add Stars", f"Failed to apply result:\n{e}")
+        QMessageBox.critical(main, _tr("Add Stars"), _tr("Failed to apply result:\n{0}").format(e))

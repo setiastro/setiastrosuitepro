@@ -10,6 +10,21 @@ import ctypes
 import logging
 import sys
 
+# Preferences checkbox, macOS only. Off puts the menus back inside the
+# window as in 1.24.6: a notched MacBook has no room in the macOS menu bar
+# for all of SASpro's menus, and macOS cuts their titles short.
+NATIVE_MENU_BAR_KEY = "ui/native_menu_bar"
+
+
+def use_native_menu_bar(settings) -> bool:
+    """True when the menus go in the macOS menu bar (the macOS default)."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        return bool(settings.value(NATIVE_MENU_BAR_KEY, True, type=bool))
+    except Exception:
+        return True
+
 
 def register_help_menu(title: str) -> bool:
     """Call on the GUI thread after Qt has attached its native menu bar."""

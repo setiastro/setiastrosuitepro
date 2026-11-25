@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QSpinBox, QDoubleSpinBox, QLabel,
     QLineEdit, QPushButton, QHBoxLayout, QWidget, QFileDialog,
 )
-from PyQt6.QtCore import QThread, pyqtSignal, QSettings
+from PyQt6.QtCore import QThread, pyqtSignal, QSettings, QCoreApplication
 from setiastro.saspro.legacy.image_manager import save_image, load_image
 from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
     darkstar_starremoval_rgb01,
@@ -26,6 +26,11 @@ from .remove_stars import (
     _detect_starnet_version, _safe_rmdir,
 )
 from setiastro.saspro.starless_engines.syqon_nafnet_engine import nafnet_starless_rgb01
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("RemoveStarsPreset", text)
+
 
 # ---------- Headless public entry ----------
 def run_remove_stars_via_preset(main, doc_or_preset=None, preset: dict | None = None, target_doc=None):
@@ -54,7 +59,7 @@ def run_remove_stars_via_preset(main, doc_or_preset=None, preset: dict | None = 
         doc = d() if callable(d) else d
 
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "Remove Stars", "Load an image first.")
+        QMessageBox.warning(main, _tr("Remove Stars"), _tr("Load an image first."))
         return
 
     tool = str(p.get("tool", "starnet")).lower()
@@ -77,7 +82,7 @@ def run_remove_stars_via_preset(main, doc_or_preset=None, preset: dict | None = 
         elif tool in ("syqon", "syqon_starless"):
             _run_syqon_headless(main, doc, p)
         else:
-            QMessageBox.critical(main, "Remove Stars", f"Unknown tool '{tool}'.")
+            QMessageBox.critical(main, _tr("Remove Stars"), _tr("Unknown tool '{0}'.").format(tool))
     finally:
         QTimer.singleShot(1200, _clear_flags)
 
@@ -115,7 +120,7 @@ def _resolve_starnet_exe_headless(main, override: str | None) -> str | None:
 def _run_starnet_headless(main, doc, p):
     exe = _resolve_starnet_exe_headless(main, p.get("starnet_exe") or p.get("exe"))
     if not exe:
-        QMessageBox.warning(main, "StarNet", "StarNet path not set. Open the interactive tool once to set it.")
+        QMessageBox.warning(main, "StarNet", _tr("StarNet path not set. Open the interactive tool once to set it."))
         return
 
     src = np.asarray(doc.image)
@@ -163,7 +168,7 @@ def _run_starnet_headless(main, doc, p):
                    bit_depth="16-bit", original_header=None, is_mono=False,
                    image_meta=None, file_meta=None)
     except Exception as e:
-        QMessageBox.critical(main, "StarNet", f"Failed to write input TIFF:\n{e}")
+        QMessageBox.critical(main, "StarNet", _tr("Failed to write input TIFF:\n{0}").format(e))
         _safe_rmdir(tmp_dir)
         return
 
@@ -184,7 +189,7 @@ def _run_starnet_headless(main, doc, p):
         else:
             command = [exe, in_path, out_path]
 
-    dlg = _ProcDialog(main, title="StarNet Progress")
+    dlg = _ProcDialog(main, title=_tr("StarNet Progress"))
     thr = _ProcThread(command, cwd=starnet_dir)
     thr.output_signal.connect(dlg.append_text)
     thr.finished_signal.connect(lambda rc: _finish_starnet(main, doc, rc, dlg, in_path, out_path, did_stretch))
@@ -193,12 +198,12 @@ def _run_starnet_headless(main, doc, p):
 
 def _finish_starnet(main, doc, rc, dlg, in_path, out_path, did_stretch):
     if rc != 0 or not os.path.exists(out_path):
-        QMessageBox.critical(main, "StarNet", "StarNet failed or no output image produced.")
+        QMessageBox.critical(main, "StarNet", _tr("StarNet failed or no output image produced."))
         _safe_rm(in_path); _safe_rm(out_path); _safe_rmdir(os.path.dirname(in_path)); dlg.close(); return
 
     starless_rgb, _, _, _ = load_image(out_path)
     if starless_rgb is None:
-        QMessageBox.critical(main, "StarNet", "Failed to load starless image.")
+        QMessageBox.critical(main, "StarNet", _tr("Failed to load starless image."))
         _safe_rm(in_path); _safe_rm(out_path); _safe_rmdir(os.path.dirname(in_path)); dlg.close(); return
 
     if starless_rgb.ndim == 2 or (starless_rgb.ndim == 3 and starless_rgb.shape[2] == 1):
@@ -248,7 +253,7 @@ def _finish_starnet(main, doc, rc, dlg, in_path, out_path, did_stretch):
         doc.apply_edit(final_starless.astype(np.float32, copy=False), metadata=meta, step_name="Stars Removed")
         if hasattr(main, "_log"): main._log("Stars Removed (StarNet, headless)")
     except Exception as e:
-        QMessageBox.critical(main, "StarNet", f"Failed to apply starless result:\n{e}")
+        QMessageBox.critical(main, "StarNet", _tr("Failed to apply starless result:\n{0}").format(e))
 
     _safe_rm(in_path); _safe_rm(out_path); _safe_rmdir(os.path.dirname(in_path)); dlg.close()
 
@@ -298,7 +303,7 @@ def _run_darkstar_headless(main, doc, p):
         output_stars_only=show,
     )
 
-    dlg = _ProcDialog(main, title="Dark Star Progress")
+    dlg = _ProcDialog(main, title=_tr("Dark Star Progress"))
     dlg.append_text("Starting Dark Star (integrated engine)…\n")
     thr = _DarkStarEngineThread(x, params, parent=dlg)
 
@@ -307,7 +312,7 @@ def _run_darkstar_headless(main, doc, p):
 
     def _on_done(starless, stars_only, was_mono, err):
         if err:
-            QMessageBox.critical(main, "CosmicClarity DarkStar", f"DarkStar failed:\n{err}")
+            QMessageBox.critical(main, "CosmicClarity DarkStar", _tr("DarkStar failed:\n{0}").format(err))
             dlg.close(); return
 
         if scale_factor > 1.0:
@@ -354,7 +359,7 @@ def _run_darkstar_headless(main, doc, p):
             if hasattr(main, "_log"):
                 main._log("Stars Removed (DarkStar, headless/integrated)")
         except Exception as e:
-            QMessageBox.critical(main, "CosmicClarity DarkStar", f"Failed to apply starless result:\n{e}")
+            QMessageBox.critical(main, "CosmicClarity DarkStar", _tr("Failed to apply starless result:\n{0}").format(e))
 
         dlg.close()
 
@@ -366,17 +371,17 @@ def _run_darkstar_headless(main, doc, p):
 
 def _finish_darkstar(main, doc, rc, dlg, in_path, output_dir):
     if rc != 0:
-        QMessageBox.critical(main, "CosmicClarity DarkStar", "Process failed.")
+        QMessageBox.critical(main, "CosmicClarity DarkStar", _tr("Process failed."))
         _safe_rm(in_path); dlg.close(); return
 
     starless_path = os.path.join(output_dir, "imagetoremovestars_starless.tif")
     if not os.path.exists(starless_path):
-        QMessageBox.critical(main, "CosmicClarity DarkStar", "Starless image not found.")
+        QMessageBox.critical(main, "CosmicClarity DarkStar", _tr("Starless image not found."))
         _safe_rm(in_path); dlg.close(); return
 
     starless, _, _, _ = load_image(starless_path)
     if starless is None:
-        QMessageBox.critical(main, "CosmicClarity DarkStar", "Failed to load starless image.")
+        QMessageBox.critical(main, "CosmicClarity DarkStar", _tr("Failed to load starless image."))
         _safe_rm(in_path); dlg.close(); return
 
     if starless.ndim == 2 or (starless.ndim == 3 and starless.shape[2] == 1):
@@ -408,7 +413,7 @@ def _finish_darkstar(main, doc, rc, dlg, in_path, output_dir):
         doc.apply_edit(final_starless.astype(np.float32, copy=False), metadata=meta, step_name="Stars Removed")
         if hasattr(main, "_log"): main._log("Stars Removed (DarkStar, headless)")
     except Exception as e:
-        QMessageBox.critical(main, "CosmicClarity DarkStar", f"Failed to apply starless result:\n{e}")
+        QMessageBox.critical(main, "CosmicClarity DarkStar", _tr("Failed to apply starless result:\n{0}").format(e))
 
     try:
         _safe_rm(in_path)
@@ -424,7 +429,7 @@ def _finish_darkstar(main, doc, rc, dlg, in_path, output_dir):
 class RemoveStarsPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Remove Stars — Preset")
+        self.setWindowTitle(self.tr("Remove Stars — Preset"))
         p = dict(initial or {})
 
         self.cmb_tool = QComboBox()
@@ -439,15 +444,15 @@ class RemoveStarsPresetDialog(QDialog):
         self.cmb_tool.setCurrentIndex(idx)
 
         # StarNet options
-        self.chk_linear = QCheckBox("Image is linear (apply temporary stretch)")
+        self.chk_linear = QCheckBox(self.tr("Image is linear (apply temporary stretch)"))
         self.chk_linear.setChecked(bool(p.get("linear", True)))
 
         # DarkStar options
-        self.chk_disable_gpu = QCheckBox("Disable GPU")
+        self.chk_disable_gpu = QCheckBox(self.tr("Disable GPU"))
         self.chk_disable_gpu.setChecked(bool(p.get("disable_gpu", False)))
         self.cmb_mode = QComboBox(); self.cmb_mode.addItems(["unscreen", "additive"])
         self.cmb_mode.setCurrentText(str(p.get("mode", "unscreen")))
-        self.chk_show = QCheckBox("Show extracted stars")
+        self.chk_show = QCheckBox(self.tr("Show extracted stars"))
         self.chk_show.setChecked(bool(p.get("show_extracted_stars", True)))
         self.cmb_stride = QComboBox()
         for v in (64, 128, 256, 512, 1024): self.cmb_stride.addItem(str(v), v)
@@ -455,16 +460,16 @@ class RemoveStarsPresetDialog(QDialog):
 
         # SyQon options
         self.syq_engine = QComboBox()
-        self.syq_engine.addItem("Integrated (built-in model)", "integrated")
-        self.syq_engine.addItem("Standalone CLI (SyQonStarless)", "standalone_cli")
+        self.syq_engine.addItem(self.tr("Integrated (built-in model)"), "integrated")
+        self.syq_engine.addItem(self.tr("Standalone CLI (SyQonStarless)"), "standalone_cli")
         em = str(p.get("engine_mode", "integrated")).strip().lower()
         self.syq_engine.setCurrentIndex(
             1 if em in ("standalone_cli", "cli", "standalone") else 0
         )
 
-        self.lbl_cli_path   = QLabel("CLI executable:")
+        self.lbl_cli_path   = QLabel(self.tr("CLI executable:"))
         self.syq_cli_path   = QLineEdit()
-        self.syq_cli_browse = QPushButton("Browse…")
+        self.syq_cli_browse = QPushButton(self.tr("Browse…"))
         self.syq_cli_browse.clicked.connect(self._browse_syqon_cli)
         cli_default = str(p.get("cli_path") or "")
         if not cli_default:
@@ -498,7 +503,7 @@ class RemoveStarsPresetDialog(QDialog):
         self.syq_overlap.setValue(int(p.get("overlap", 64)))
 
         # Temp stretch controls
-        self.syq_use_mtf = QCheckBox("Apply temporary stretch before inference (recommended for linear data)")
+        self.syq_use_mtf = QCheckBox(self.tr("Apply temporary stretch before inference (recommended for linear data)"))
         self.syq_use_mtf.setChecked(bool(p.get("use_mtf", True)))
 
         self.syq_mtf_median = QDoubleSpinBox()
@@ -508,12 +513,12 @@ class RemoveStarsPresetDialog(QDialog):
         self.syq_mtf_median.setValue(float(p.get("mtf_target_median", 0.25)))
         self.syq_mtf_median.setEnabled(self.syq_use_mtf.isChecked())
         self.syq_use_mtf.toggled.connect(self.syq_mtf_median.setEnabled)
-        self.lbl_mtf_median = QLabel("Stretch target median:")
+        self.lbl_mtf_median = QLabel(self.tr("Stretch target median:"))
 
-        self.syq_make_stars = QCheckBox("Also create stars-only document (_stars)")
+        self.syq_make_stars = QCheckBox(self.tr("Also create stars-only document (_stars)"))
         self.syq_make_stars.setChecked(bool(p.get("make_stars", True)))
 
-        self.syq_pad = QCheckBox("Pad edges (reflect)")
+        self.syq_pad = QCheckBox(self.tr("Pad edges (reflect)"))
         self.syq_pad.setChecked(bool(p.get("pad_edges", True)))
         self.syq_pad_px = QSpinBox(); self.syq_pad_px.setRange(0, 1024); self.syq_pad_px.setSingleStep(16)
         self.syq_pad_px.setValue(int(p.get("pad_pixels", 128)))
@@ -523,26 +528,26 @@ class RemoveStarsPresetDialog(QDialog):
         self.syq_extract.setCurrentText("unscreen" if sx == "unscreen" else "subtract")
 
         form = QFormLayout(self)
-        form.addRow("Tool:", self.cmb_tool)
+        form.addRow(self.tr("Tool:"), self.cmb_tool)
         form.addRow(QLabel("— StarNet —"))
         form.addRow("", self.chk_linear)
         form.addRow(QLabel("— DarkStar —"))
-        form.addRow("Mode:", self.cmb_mode)
-        form.addRow("Stride:", self.cmb_stride)
+        form.addRow(self.tr("Mode:"), self.cmb_mode)
+        form.addRow(self.tr("Stride:"), self.cmb_stride)
         form.addRow("", self.chk_disable_gpu)
         form.addRow("", self.chk_show)
         form.addRow(QLabel("— SyQon —"))
-        form.addRow("Engine:", self.syq_engine)
+        form.addRow(self.tr("Engine:"), self.syq_engine)
         form.addRow(self.lbl_cli_path, self.syq_cli_row)
-        form.addRow("Model:", self.syq_model)
-        form.addRow("Tile size:", self.syq_tile)
-        form.addRow("Overlap:", self.syq_overlap)
+        form.addRow(self.tr("Model:"), self.syq_model)
+        form.addRow(self.tr("Tile size:"), self.syq_tile)
+        form.addRow(self.tr("Overlap:"), self.syq_overlap)
         form.addRow("", self.syq_use_mtf)
         form.addRow(self.lbl_mtf_median, self.syq_mtf_median)
         form.addRow("", self.syq_make_stars)
         form.addRow("", self.syq_pad)
-        form.addRow("Pad pixels:", self.syq_pad_px)
-        form.addRow("Stars-only extraction:", self.syq_extract)
+        form.addRow(self.tr("Pad pixels:"), self.syq_pad_px)
+        form.addRow(self.tr("Stars-only extraction:"), self.syq_extract)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
@@ -590,7 +595,7 @@ class RemoveStarsPresetDialog(QDialog):
                 start = ""
         filt = "Executable (*.exe)" if os.name == "nt" else "All Files (*)"
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select Starless Standalone Executable", start, filt
+            self, self.tr("Select Starless Standalone Executable"), start, filt
         )
         if path:
             self.syq_cli_path.setText(path)
@@ -707,8 +712,8 @@ def _run_syqon_headless(main, doc, p):
     if not ckpt_path or not os.path.exists(ckpt_path):
         QMessageBox.warning(
             main, "SyQon",
-            f"SyQon model not installed for '{model_kind}'.\n"
-            "Run the interactive SyQon tool once to install it."
+            _tr("SyQon model not installed for '{0}'.\n"
+            "Run the interactive SyQon tool once to install it.").format(model_kind)
         )
         return
 
@@ -752,7 +757,7 @@ def _run_syqon_headless(main, doc, p):
         x_for_net  = xrgb
 
     # ---- UI progress dialog + thread ----
-    dlg = _ProcDialog(main, title="SyQon Progress")
+    dlg = _ProcDialog(main, title=_tr("SyQon Progress"))
     dlg.append_text("Starting SyQon…\n")
 
     thr = _SyQonEngineThread(
@@ -765,7 +770,7 @@ def _run_syqon_headless(main, doc, p):
 
     def _on_done(starless_s, info, aux, err):
         if err or starless_s is None:
-            QMessageBox.critical(main, "SyQon", f"SyQon failed:\n{err or 'Unknown error'}")
+            QMessageBox.critical(main, "SyQon", _tr("SyQon failed:\n{0}").format(err or _tr("Unknown error")))
             dlg.close(); return
 
         starless_s = np.asarray(starless_s, dtype=np.float32)
@@ -832,7 +837,7 @@ def _run_syqon_headless(main, doc, p):
             if hasattr(main, "_log"):
                 main._log("Stars Removed (SyQon, headless)")
         except Exception as e:
-            QMessageBox.critical(main, "SyQon", f"Failed to apply result:\n{e}")
+            QMessageBox.critical(main, "SyQon", _tr("Failed to apply result:\n{0}").format(e))
 
         dlg.close()
 
@@ -863,9 +868,9 @@ def _run_syqon_standalone_cli_headless(main, doc, p):
     if not exe_path or not (os.path.isfile(exe_path) or os.path.isdir(exe_path)):
         QMessageBox.warning(
             main, "SyQon",
-            "SyQon Starless standalone CLI path not configured.\n"
+            _tr("SyQon Starless standalone CLI path not configured.\n"
             "Open the interactive SyQon tool once to set it, or provide "
-            "'cli_path' in the preset."
+            "'cli_path' in the preset.")
         )
         return
 
@@ -899,7 +904,7 @@ def _run_syqon_standalone_cli_headless(main, doc, p):
         xrgb = _pad_reflect(xrgb, pad_pixels)
 
     # ---- progress dialog + thread ----
-    dlg = _ProcDialog(main, title="SyQon Starless CLI Progress")
+    dlg = _ProcDialog(main, title=_tr("SyQon Starless CLI Progress"))
     dlg.append_text("Starting SyQon Starless (standalone CLI)…\n")
 
     thr = _SyQonStandaloneCLIThread(
@@ -913,7 +918,7 @@ def _run_syqon_standalone_cli_headless(main, doc, p):
     def _on_done(starless_rgb, stars_rgb, info, err):
         if err or starless_rgb is None:
             QMessageBox.critical(main, "SyQon",
-                                 f"SyQon Starless failed:\n{err or 'Unknown error'}")
+                                 _tr("SyQon Starless failed:\n{0}").format(err or _tr("Unknown error")))
             dlg.close(); return
 
         starless_lin = np.asarray(starless_rgb, dtype=np.float32)
@@ -984,12 +989,15 @@ def _run_syqon_standalone_cli_headless(main, doc, p):
                 main._log("Stars Removed (SyQon Standalone CLI, headless)")
         except Exception as e:
             QMessageBox.critical(main, "SyQon",
-                                 f"Failed to apply starless result:\n{e}")
+                                 _tr("Failed to apply starless result:\n{0}").format(e))
 
         dlg.close()
 
     thr.progress.connect(_on_prog)
-    thr.finished.connect(_on_done)
+    # `result` (4 args), not QThread.finished (no args): the thread's own signal
+    # was renamed to stop it shadowing QThread.finished, and this connect was
+    # left pointing at the no-arg Qt signal, so the result was never applied.
+    thr.result.connect(_on_done)
     dlg.cancel_button.clicked.connect(thr.cancel)
     dlg.show(); thr.start(); dlg.exec()
 

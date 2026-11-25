@@ -25,8 +25,12 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QThread, QEventLoop, pyqtSignal, Qt
+from PyQt6.QtCore import QThread, QEventLoop, pyqtSignal, Qt, QCoreApplication
 from PyQt6.QtWidgets import QProgressDialog
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("AsyncTask", text)
 
 
 class AsyncCancelled(Exception):
@@ -99,7 +103,7 @@ def run_async_blocking(
     # loop.exec() starts, the quit is posted and exec() returns immediately.
     worker.finished.connect(loop.quit)
 
-    dlg = QProgressDialog(label, "Cancel", 0, 0, parent)   # (0,0) => busy bar
+    dlg = QProgressDialog(label, _tr("Cancel"), 0, 0, parent)   # (0,0) => busy bar
     dlg.setWindowTitle(title)
     dlg.setWindowModality(Qt.WindowModality.WindowModal)
     dlg.setMinimumDuration(0)

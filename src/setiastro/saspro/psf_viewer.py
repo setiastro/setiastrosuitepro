@@ -36,7 +36,7 @@ class _ProcessingOverlay(QWidget):
         """)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 14)
-        self.lbl = QLabel("Processing…", self)
+        self.lbl = QLabel(self.tr("Processing…"), self)
         self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self.lbl)
 
@@ -71,7 +71,7 @@ class _StarWidget(QWidget):
         self._valid = False
         # Click to toggle smooth ↔ true-pixel view
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Click to toggle: smooth ↔ true pixels")
+        self.setToolTip(self.tr("Click to toggle: smooth ↔ true pixels"))
 
     def set_star(self, a: float, b: float, theta: float, fwhm: float, hfr: float, ecc: float,
                  pixel_stamp: np.ndarray | None = None):
@@ -205,12 +205,12 @@ class _StarWidget(QWidget):
         # Eccentricity readout bottom-left
         p.setFont(QFont("Segoe UI", 8))
         p.setPen(QColor(200, 200, 200))
-        p.drawText(8, N - 8, f"ecc: {self._ecc:.3f}")
+        p.drawText(8, N - 8, self.tr("ecc: {0:.3f}").format(self._ecc))
 
         # Mode hint bottom-right
         p.setFont(QFont("Segoe UI", 8))
         p.setPen(QColor(150, 150, 165))
-        p.drawText(N - 130, N - 8, "click → true pixels")
+        p.drawText(N - 130, N - 8, self.tr("click → true pixels"))
 
         p.end()
         self._cached_smooth_pm = pm
@@ -322,7 +322,7 @@ class _StarWidget(QWidget):
         # Header — stamp dimensions in image pixels + scale factor
         p.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         p.setPen(QColor(230, 230, 230))
-        p.drawText(8, 16, f"True Pixels  {W}×{H} px  ·  1 px → {pix_size}px")
+        p.drawText(8, 16, self.tr("True Pixels  {0}×{1} px  ·  1 px → {2}px").format(W, H, pix_size))
 
         # FWHM readout bottom-left
         p.setFont(QFont("Segoe UI", 8))
@@ -331,7 +331,7 @@ class _StarWidget(QWidget):
 
         # Mode hint bottom-right
         p.setPen(QColor(150, 150, 165))
-        p.drawText(N - 120, N - 8, "click → smooth")
+        p.drawText(N - 120, N - 8, self.tr("click → smooth"))
 
         p.end()
         self._cached_pixel_pm = pm
@@ -344,7 +344,7 @@ class _StarWidget(QWidget):
             p.fillRect(self.rect(), QColor(30, 30, 40))
             p.setPen(QColor(100, 100, 120))
             p.setFont(QFont("Segoe UI", 9))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No stars\ndetected")
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.tr("No stars\ndetected"))
             p.end()
             return
 
@@ -386,7 +386,7 @@ class _PSFWorker(QThread):
     def run(self):
         try:
             if self.image is None:
-                self.done.emit(None, "Status: No image.")
+                self.done.emit(None, self.tr("Status: No image."))
                 return
 
             if self.image.ndim == 3:
@@ -406,12 +406,12 @@ class _PSFWorker(QThread):
                     strips=True,                 # keep the GUI responsive
                 )
                 if cat is None or cat['n'] == 0:
-                    self.done.emit(None, "Status: Extraction completed — 0 stars.")
+                    self.done.emit(None, self.tr("Status: Extraction completed — 0 stars."))
                     return
                 sig_used = cat['sigma_stopped']
                 raw_at   = cat['total_at_stop']
-                status = (f"Status: Auto — {cat['n']} stars at σ={sig_used:g} "
-                          f"(kept {cat['n']}/{raw_at} at that threshold).")
+                status = self.tr("Status: Auto — {0} stars at σ={1:g} "
+                                 "(kept {0}/{2} at that threshold).").format(cat['n'], sig_used, raw_at)
             else:
                 # Manual: single-shot at the user's exact sigma. Still filter
                 # so medians aren't polluted by saturated / blended detections.
@@ -423,11 +423,11 @@ class _PSFWorker(QThread):
                     strips=True,
                 )
                 if cat is None or cat['n'] == 0:
-                    self.done.emit(None, f"Status: Extraction completed — 0 stars at σ={self.threshold_sigma:g}.")
+                    self.done.emit(None, self.tr("Status: Extraction completed — 0 stars at σ={0:g}.").format(self.threshold_sigma))
                     return
                 raw_at = cat['total_at_stop']
-                status = (f"Status: Manual — {cat['n']} stars at σ={self.threshold_sigma:g} "
-                          f"(kept {cat['n']}/{raw_at} after quality filter).")
+                status = self.tr("Status: Manual — {0} stars at σ={1:g} "
+                                 "(kept {0}/{2} after quality filter).").format(cat['n'], self.threshold_sigma, raw_at)
 
             a_arr = cat['a'].astype(np.float32, copy=False)
             b_arr = cat['b'].astype(np.float32, copy=False)
@@ -444,7 +444,7 @@ class _PSFWorker(QThread):
 
             self.done.emit(tbl, status)
         except Exception as e:
-            self.failed.emit(f"Extraction failed: {e}")
+            self.failed.emit(self.tr("Extraction failed: {0}").format(e))
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +453,7 @@ class _PSFWorker(QThread):
 class PSFViewer(QDialog):
     def __init__(self, view_or_doc, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("PSF Viewer")
+        self.setWindowTitle(self.tr("PSF Viewer"))
 
         doc = getattr(view_or_doc, "document", None)
         self.doc = doc if doc is not None else view_or_doc
@@ -537,7 +537,7 @@ class PSFViewer(QDialog):
         # Star graphic column — expands with window
         star_col = QVBoxLayout()
         star_col.setSpacing(4)
-        star_lbl = QLabel("Median Star Profile")
+        star_lbl = QLabel(self.tr("Median Star Profile"))
         star_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         star_lbl.setStyleSheet("font-size: 11px; color: #aaa;")
         self._star_widget = _StarWidget(self)
@@ -555,24 +555,24 @@ class PSFViewer(QDialog):
         self.stats_table = QTableWidget(self)
         self.stats_table.setRowCount(4)
         self.stats_table.setColumnCount(0)
-        self.stats_table.setVerticalHeaderLabels(["Median", "Min", "Max", "StdDev"])
+        self.stats_table.setVerticalHeaderLabels([self.tr("Median"), self.tr("Min"), self.tr("Max"), self.tr("StdDev")])
         self.stats_table.setMinimumHeight(138)
         self.stats_table.setMaximumHeight(160)
         self.stats_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         main_layout.addWidget(self.stats_table)
 
         # ── Status ──────────────────────────────────────────────────────
-        self.status_label = QLabel("Status: Ready", self)
+        self.status_label = QLabel(self.tr("Status: Ready"), self)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.status_label)
 
         # ── Zoom controls ───────────────────────────────────────────────
         controls_layout = QHBoxLayout()
-        controls_layout.addWidget(QLabel("Zoom:"))
+        controls_layout.addWidget(QLabel(self.tr("Zoom:")))
 
-        btn_zoom_out = themed_toolbtn("zoom-out",      "Zoom Out")
-        btn_zoom_in  = themed_toolbtn("zoom-in",       "Zoom In")
-        btn_fit      = themed_toolbtn("zoom-fit-best", "Fit")
+        btn_zoom_out = themed_toolbtn("zoom-out",      self.tr("Zoom Out"))
+        btn_zoom_in  = themed_toolbtn("zoom-in",       self.tr("Zoom In"))
+        btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit"))
         btn_zoom_out.clicked.connect(lambda: self._step_zoom(1 / 1.25))
         btn_zoom_in.clicked.connect(lambda:  self._step_zoom(1.25))
         btn_fit.clicked.connect(self._fit_histogram)
@@ -588,13 +588,13 @@ class PSFViewer(QDialog):
         self.zoom_slider.valueChanged.connect(self.updateZoom)
         controls_layout.addWidget(self.zoom_slider, 1)
 
-        self.log_toggle_button = QPushButton("X-Axis: Linear", self)
+        self.log_toggle_button = QPushButton(self.tr("X-Axis: Linear"), self)
         self.log_toggle_button.setCheckable(True)
         self.log_toggle_button.setChecked(False)
         self.log_toggle_button.toggled.connect(self.toggleLogScale)
         controls_layout.addWidget(self.log_toggle_button)
 
-        self.mode_toggle_button = QPushButton("Show Flux Histogram", self)
+        self.mode_toggle_button = QPushButton(self.tr("Show Flux Histogram"), self)
         self.mode_toggle_button.clicked.connect(self.toggleHistogramMode)
         controls_layout.addWidget(self.mode_toggle_button)
         controls_layout.addStretch(1)
@@ -603,7 +603,7 @@ class PSFViewer(QDialog):
 
         # ── Threshold ───────────────────────────────────────────────────
         thresh_layout = QHBoxLayout()
-        thresh_layout.addWidget(QLabel("Detection Threshold (σ):", self))
+        thresh_layout.addWidget(QLabel(self.tr("Detection Threshold (σ):"), self))
         self.threshold_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.threshold_slider.setRange(1, 50)
         self.threshold_slider.setValue(self.detection_threshold)
@@ -614,13 +614,13 @@ class PSFViewer(QDialog):
         self.threshold_value_label = QLabel(str(self.detection_threshold), self)
         thresh_layout.addWidget(self.threshold_value_label)
 
-        self.chk_auto = QCheckBox("Auto (waterfall → ~1000 stars)", self)
-        self.chk_auto.setToolTip(
+        self.chk_auto = QCheckBox(self.tr("Auto (waterfall → ~1000 stars)"), self)
+        self.chk_auto.setToolTip(self.tr(
             "When checked, descend through σ = 100, 50, 25, 12, 6, 3 and stop "
             "as soon as ~1000 quality stars are detected. Fast on rich fields "
             "and gives a more representative PSF median than dropping the "
             "slider low. Uncheck to use the slider value literally."
-        )
+        ))
         self.chk_auto.setChecked(self.auto_detect)
         self.chk_auto.toggled.connect(self._on_auto_toggled)
         thresh_layout.addWidget(self.chk_auto)
@@ -632,7 +632,7 @@ class PSFViewer(QDialog):
         main_layout.addLayout(thresh_layout)
 
         # ── Close ───────────────────────────────────────────────────────
-        close_btn = QPushButton("Close", self)
+        close_btn = QPushButton(self.tr("Close"), self)
         close_btn.clicked.connect(self.close)
         main_layout.addWidget(close_btn)
 
@@ -691,12 +691,12 @@ class PSFViewer(QDialog):
     def _applyThreshold(self):
         if self.image is None:
             self.star_list = None
-            self.status_label.setText("Status: No image.")
+            self.status_label.setText(self.tr("Status: No image."))
             self.drawHistogram()
             self._star_widget.clear()
             return
 
-        self._show_processing("Processing… extracting stars / PSFs")
+        self._show_processing(self.tr("Processing… extracting stars / PSFs"))
         # One detection at a time. A change while one runs (threshold, Auto,
         # the image) re-runs it with the latest settings when it ends. The
         # old code waited 250 ms and then deleted the still-running thread,
@@ -734,7 +734,7 @@ class PSFViewer(QDialog):
         if self._psf_pending or self._closing:
             return
         self.star_list = None
-        self.status_label.setText(f"Status: {msg}")
+        self.status_label.setText(self.tr("Status: {0}").format(msg))
         self._hide_processing()
         self.drawHistogram()
         self._star_widget.clear()
@@ -805,24 +805,26 @@ class PSFViewer(QDialog):
     def toggleLogScale(self, checked: bool):
         self.log_scale = bool(checked)
         self.log_toggle_button.setText(
-            "X-Axis: Log  ✓" if checked else "X-Axis: Linear"
+            self.tr("X-Axis: Log  ✓") if checked else self.tr("X-Axis: Linear")
         )
         self.drawHistogram()
 
     def toggleHistogramMode(self):
         if self.histogram_mode == "PSF":
             self.histogram_mode = "Flux"
-            self.mode_toggle_button.setText("Show PSF Histogram")
+            self.mode_toggle_button.setText(self.tr("Show PSF Histogram"))
             # Flux spans huge range — default to log
             self.log_toggle_button.setChecked(True)
         else:
             self.histogram_mode = "PSF"
-            self.mode_toggle_button.setText("Show Flux Histogram")
+            self.mode_toggle_button.setText(self.tr("Show Flux Histogram"))
             # PSF/HFR is compact — default back to linear
             self.log_toggle_button.setChecked(False)
         self.drawHistogram()
 
-    def _show_processing(self, msg="Processing…"):
+    def _show_processing(self, msg=None):
+        if msg is None:
+            msg = self.tr("Processing…")
         if not hasattr(self, "_overlay") or self._overlay is None:
             self._overlay = _ProcessingOverlay(self.scroll_area)
             self._overlay.hide()
@@ -929,10 +931,11 @@ class PSFViewer(QDialog):
         cols = [c for c in col_order if c in data_map]
 
         self.stats_table.setColumnCount(len(cols))
-        self.stats_table.setHorizontalHeaderLabels(cols)
+        _hdr = {"eccentricity": self.tr("eccentricity"), "flux": self.tr("flux")}
+        self.stats_table.setHorizontalHeaderLabels([_hdr.get(c, c) for c in cols])
         self.stats_table.setRowCount(4)
         # Row order: Median, Min, Max, StdDev
-        self.stats_table.setVerticalHeaderLabels(["Median", "Min", "Max", "StdDev"])
+        self.stats_table.setVerticalHeaderLabels([self.tr("Median"), self.tr("Min"), self.tr("Max"), self.tr("StdDev")])
 
         for ci, col in enumerate(cols):
             arr  = data_map.get(col, np.zeros(0, dtype=float))

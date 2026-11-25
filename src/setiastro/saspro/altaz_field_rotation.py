@@ -25,7 +25,7 @@ from __future__ import annotations
 import math
 import numpy as np
 
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QCoreApplication
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -38,6 +38,10 @@ try:
     _HAS_PG = True
 except ImportError:
     _HAS_PG = False
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("AltazFieldRotation", text)
 
 
 # ── Math core ────────────────────────────────────────────────────────────────
@@ -97,16 +101,16 @@ def max_exposure_seconds(lat_deg: float, az_deg: float, alt_deg: float,
 
 def severity_badge(t_sec: float) -> str:
     if t_sec == float("inf"):
-        return "⭐ No limit (E/W)"
+        return _tr("⭐ No limit (E/W)")
     if t_sec >= 60:
-        return "⭐ Excellent  (≥ 60 s)"
+        return _tr("⭐ Excellent  (≥ 60 s)")
     if t_sec >= 20:
-        return "🟢 Good  (20–60 s)"
+        return _tr("🟢 Good  (20–60 s)")
     if t_sec >= 10:
-        return "🟡 Marginal  (10–20 s)"
+        return _tr("🟡 Marginal  (10–20 s)")
     if t_sec >= 5:
-        return "🔴 Poor  (5–10 s)"
-    return "❌ Very limited  (< 5 s)"
+        return _tr("🔴 Poor  (5–10 s)")
+    return _tr("❌ Very limited  (< 5 s)")
 
 
 # ── Dialog ────────────────────────────────────────────────────────────────────
@@ -144,7 +148,7 @@ class AltAzFieldRotationDialog(QDialog):
                  parent=None):
         super().__init__(parent)
         name_part = f" — {target_name}" if target_name else ""
-        self.setWindowTitle(f"Alt/Az Field Rotation Calculator{name_part}")
+        self.setWindowTitle(self.tr("Alt/Az Field Rotation Calculator{0}").format(name_part))
         self.resize(720, 600)
 
         self._lat         = lat
@@ -176,9 +180,9 @@ class AltAzFieldRotationDialog(QDialog):
 
         name_part = f"  —  <b>{self._target_name}</b>" if self._target_name else ""
         hdr = QLabel(
-            f"<b>Alt/Az Field Rotation Calculator</b>{name_part}"
-            f"<br><small>Observer latitude: <b>{self._lat:+.4f}°</b>  "
-            f"longitude: <b>{self._lon:+.4f}°</b></small>"
+            self.tr("<b>Alt/Az Field Rotation Calculator</b>{0}"
+                    "<br><small>Observer latitude: <b>{1:+.4f}°</b>  "
+                    "longitude: <b>{2:+.4f}°</b></small>").format(name_part, self._lat, self._lon)
         )
         hdr.setWordWrap(True)
         outer.addWidget(hdr)
@@ -188,7 +192,7 @@ class AltAzFieldRotationDialog(QDialog):
         sep.setFrameShadow(QFrame.Shadow.Sunken)
         outer.addWidget(sep)
 
-        input_box = QGroupBox("Target & Equipment")
+        input_box = QGroupBox(self.tr("Target && Equipment"))
         grid = QGridLayout(input_box)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(3, 1)
@@ -202,42 +206,42 @@ class AltAzFieldRotationDialog(QDialog):
             e.returnPressed.connect(self._calculate)
             return e
 
-        grid.addWidget(QLabel("Altitude (°):"),  0, 0, Qt.AlignmentFlag.AlignRight)
-        self._alt_edit = _le("e.g. 45.0")
+        grid.addWidget(QLabel(self.tr("Altitude (°):")),  0, 0, Qt.AlignmentFlag.AlignRight)
+        self._alt_edit = _le(self.tr("e.g. 45.0"))
         grid.addWidget(self._alt_edit, 0, 1)
 
-        grid.addWidget(QLabel("Azimuth (°):"),   0, 2, Qt.AlignmentFlag.AlignRight)
+        grid.addWidget(QLabel(self.tr("Azimuth (°):")),   0, 2, Qt.AlignmentFlag.AlignRight)
         self._az_edit = _le("0–360")
         grid.addWidget(self._az_edit, 0, 3)
 
-        az_hint = QLabel("<small>0=N  90=E  180=S  270=W</small>")
+        az_hint = QLabel(self.tr("<small>0=N  90=E  180=S  270=W</small>"))
         az_hint.setStyleSheet("color: palette(placeholderText);")
         grid.addWidget(az_hint, 0, 4)
 
-        grid.addWidget(QLabel("Focal length (mm):"), 1, 0, Qt.AlignmentFlag.AlignRight)
-        self._fl_edit = _le("e.g. 600")
+        grid.addWidget(QLabel(self.tr("Focal length (mm):")), 1, 0, Qt.AlignmentFlag.AlignRight)
+        self._fl_edit = _le(self.tr("e.g. 600"))
         grid.addWidget(self._fl_edit, 1, 1)
 
-        grid.addWidget(QLabel("Pixel pitch (µm):"),  1, 2, Qt.AlignmentFlag.AlignRight)
-        self._px_edit = _le("e.g. 3.76")
+        grid.addWidget(QLabel(self.tr("Pixel pitch (µm):")),  1, 2, Qt.AlignmentFlag.AlignRight)
+        self._px_edit = _le(self.tr("e.g. 3.76"))
         grid.addWidget(self._px_edit, 1, 3)
 
-        grid.addWidget(QLabel("Sensor width (mm):"),  2, 0, Qt.AlignmentFlag.AlignRight)
-        self._sw_edit = _le("e.g. 23.5")
+        grid.addWidget(QLabel(self.tr("Sensor width (mm):")),  2, 0, Qt.AlignmentFlag.AlignRight)
+        self._sw_edit = _le(self.tr("e.g. 23.5"))
         grid.addWidget(self._sw_edit, 2, 1)
 
-        grid.addWidget(QLabel("Sensor height (mm):"), 2, 2, Qt.AlignmentFlag.AlignRight)
-        self._sh_edit = _le("e.g. 15.6")
+        grid.addWidget(QLabel(self.tr("Sensor height (mm):")), 2, 2, Qt.AlignmentFlag.AlignRight)
+        self._sh_edit = _le(self.tr("e.g. 15.6"))
         grid.addWidget(self._sh_edit, 2, 3)
 
-        grid.addWidget(QLabel("Max corner pixels:"),  3, 0, Qt.AlignmentFlag.AlignRight)
-        self._tol_edit = _le("default: 1")
+        grid.addWidget(QLabel(self.tr("Max corner pixels:")),  3, 0, Qt.AlignmentFlag.AlignRight)
+        self._tol_edit = _le(self.tr("default: 1"))
         self._tol_edit.setText("1")
         grid.addWidget(self._tol_edit, 3, 1)
 
         tol_hint = QLabel(
-            "<small>Corner pixel movement before trailing is objectionable. "
-            "1 = tightest, 5–10 = relaxed.</small>")
+            self.tr("<small>Corner pixel movement before trailing is objectionable. "
+                    "1 = tightest, 5–10 = relaxed.</small>"))
         tol_hint.setWordWrap(True)
         tol_hint.setStyleSheet("color: palette(placeholderText);")
         grid.addWidget(tol_hint, 3, 2, 1, 3)
@@ -245,7 +249,7 @@ class AltAzFieldRotationDialog(QDialog):
         outer.addWidget(input_box)
 
         btn_row = QHBoxLayout()
-        calc_btn = QPushButton("Calculate")
+        calc_btn = QPushButton(self.tr("Calculate"))
         calc_btn.setFixedHeight(32)
         calc_btn.setDefault(True)
         calc_btn.clicked.connect(self._calculate)
@@ -277,19 +281,19 @@ class AltAzFieldRotationDialog(QDialog):
         st_lay.addLayout(self._result_grid)
         st_lay.addStretch(1)
 
-        note = QLabel(
+        note = QLabel(self.tr(
             "<small><b>How it works:</b> Stars rotate around the sensor center on an Alt/Az "
             "mount. The corner sweeps the largest arc. "
             "Rate = 15.04 × cos(lat) × cos(az) / cos(alt)  arcsec/sec. "
             "Max exposure = (tolerance × pixel pitch) / (2π/360 × corner half-diagonal × rate). "
             "Field rotation is zero due East/West and maximum due North/South.</small>"
-        )
+        ))
         note.setWordWrap(True)
         note.setStyleSheet(
             "color: palette(placeholderText); font-size: 10px; padding-top: 6px;")
         st_lay.addWidget(note)
 
-        self._tabs.addTab(summary_tab, "Results")
+        self._tabs.addTab(summary_tab, self.tr("Results"))
 
         # ── Tab 2: Exposure Over Night ────────────────────────────────────
         if _HAS_PG:
@@ -303,25 +307,25 @@ class AltAzFieldRotationDialog(QDialog):
             self._night_plot.setXRange(12, 36, padding=0)
             ticks = [(h, str(h if h <= 23 else h - 24)) for h in range(12, 37, 2)]
             self._night_plot.getAxis("bottom").setTicks([ticks])
-            self._night_plot.setLabel("bottom", "Local Time (h)")
-            self._night_plot.setLabel("left",   "Max Exposure (s)")
+            self._night_plot.setLabel("bottom", self.tr("Local Time (h)"))
+            self._night_plot.setLabel("left",   self.tr("Max Exposure (s)"))
             pt_lay.addWidget(self._night_plot, 1)
 
             self._night_plot_hint = QLabel(
-                "Run Calculate to generate the exposure curve over the night.")
+                self.tr("Run Calculate to generate the exposure curve over the night."))
             self._night_plot_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._night_plot_hint.setWordWrap(True)
             self._night_plot_hint.setStyleSheet(
                 "color: palette(placeholderText); font-size: 11px; padding: 4px;")
             pt_lay.addWidget(self._night_plot_hint, 0)
 
-            self._tabs.addTab(plot_tab, "Exposure Over Night")
+            self._tabs.addTab(plot_tab, self.tr("Exposure Over Night"))
         else:
             self._night_plot = None
 
         close_row = QHBoxLayout()
         close_row.addStretch()
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton(self.tr("Close"))
         close_btn.clicked.connect(self.close)
         close_row.addWidget(close_btn)
         outer.addLayout(close_row)
@@ -409,13 +413,14 @@ class AltAzFieldRotationDialog(QDialog):
         # ── Equipment summary (always shown) ──────────────────────────────
         res_now = max_exposure_seconds(self._lat, az, alt, sw, sh, px,
                                         max_corner_pixels=tol)
-        _row("Corner half-diagonal:",
+        _row(self.tr("Corner half-diagonal:"),
              f"{res_now['half_diag_mm']:.2f} mm  "
              f"({res_now['half_diag_um']:.0f} µm)", 0)
-        _row("Diagonal / pixel ratio:",
-             f"{res_now['d_over_s']:.1f} pixels", 1)
-        _row("Tolerance:",
-             f"{tol:.1f} corner pixel{'s' if tol != 1 else ''}", 2)
+        _row(self.tr("Diagonal / pixel ratio:"),
+             self.tr("{0:.1f} pixels").format(res_now['d_over_s']), 1)
+        _row(self.tr("Tolerance:"),
+             (self.tr("{0:.1f} corner pixels") if tol != 1
+              else self.tr("{0:.1f} corner pixel")).format(tol), 2)
 
         # ── Nightly stats — sample every 10 min during astronomical night ─
         # Uses RA/Dec + date if available; falls back to single-point otherwise.
@@ -432,29 +437,29 @@ class AltAzFieldRotationDialog(QDialog):
 
             self._result_badge.setStyleSheet("")
             self._result_badge.setText(
-                f"Nightly median  {_t_str(t_median)}   {severity_badge(t_median)}")
+                self.tr("Nightly median  {0}   {1}").format(_t_str(t_median), severity_badge(t_median)))
 
-            sep_lbl = QLabel("── Nightly stats (astro night, sampled every 10 min) ──")
+            sep_lbl = QLabel(self.tr("── Nightly stats (astro night, sampled every 10 min) ──"))
             sep_lbl.setStyleSheet(
                 "font-size: 10px; color: palette(placeholderText); padding-top: 8px;")
             self._result_grid.addWidget(sep_lbl, row_offset, 0, 1, 2)
             row_offset += 1
 
-            _row("Best exposure (max):",
+            _row(self.tr("Best exposure (max):"),
                  f"{_t_str(t_max)}   {severity_badge(t_max)}", row_offset, bold=True)
             row_offset += 1
-            _row("Median exposure:",
+            _row(self.tr("Median exposure:"),
                  f"{_t_str(t_median)}   {severity_badge(t_median)}", row_offset, bold=True)
             row_offset += 1
-            _row("Worst exposure (min):",
+            _row(self.tr("Worst exposure (min):"),
                  f"{_t_str(t_min)}   {severity_badge(t_min)}", row_offset, bold=True)
             row_offset += 1
-            _row("Samples during astro night:",
+            _row(self.tr("Samples during astro night:"),
                  f"{len(arr)}", row_offset)
             row_offset += 1
 
             # Per-tolerance comparison table
-            sep2 = QLabel("── Median at other tolerances ──")
+            sep2 = QLabel(self.tr("── Median at other tolerances ──"))
             sep2.setStyleSheet(
                 "font-size: 10px; color: palette(placeholderText); padding-top: 6px;")
             self._result_grid.addWidget(sep2, row_offset, 0, 1, 2)
@@ -468,7 +473,7 @@ class AltAzFieldRotationDialog(QDialog):
                 if other_samples:
                     other_arr = np.minimum(np.array(other_samples, dtype=float), 300.0)
                     t_med2 = float(np.median(other_arr))
-                    _row(f"  @ {ref_tol} px tolerance (median):",
+                    _row(self.tr("  @ {0} px tolerance (median):").format(ref_tol),
                          f"{_t_str(t_med2)}   {severity_badge(t_med2)}", row_offset)
                     row_offset += 1
 
@@ -479,16 +484,16 @@ class AltAzFieldRotationDialog(QDialog):
             self._result_badge.setStyleSheet("")
             self._result_badge.setText(
                 f"{_t_str(t)}   {severity_badge(t)}")
-            _row("Field rotation rate:",
+            _row(self.tr("Field rotation rate:"),
                  f"{res_now['rate_mag_asec_sec']:.4f} arcsec/sec  "
                  f"({res_now['rate_mag_asec_sec']*60:.2f} arcsec/min, {rate_sign}ve)",
                  row_offset)
             row_offset += 1
-            _row("Max exposure at entered Alt/Az:", _t_str(t), row_offset, bold=True)
+            _row(self.tr("Max exposure at entered Alt/Az:"), _t_str(t), row_offset, bold=True)
             row_offset += 1
-            note = QLabel(
+            note = QLabel(self.tr(
                 "<small><i>No target RA/Dec available — showing single-point result at "
-                "entered Alt/Az.  Select an object in WIMS to get nightly stats.</i></small>")
+                "entered Alt/Az.  Select an object in WIMS to get nightly stats.</i></small>"))
             note.setWordWrap(True)
             note.setStyleSheet("color: palette(placeholderText); font-size: 10px;")
             self._result_grid.addWidget(note, row_offset, 0, 1, 2)
@@ -578,9 +583,9 @@ class AltAzFieldRotationDialog(QDialog):
         tz_name  = self._tz_name
 
         if None in (ra_deg, dec_deg, date_str, tz_name):
-            self._night_plot_hint.setText(
+            self._night_plot_hint.setText(self.tr(
                 "No target RA/Dec or date available — "
-                "open via the WIMS object list for a full night curve.")
+                "open via the WIMS object list for a full night curve."))
             return
 
         # ── Build ephemeris — lifted directly from _compute_alt_curve ─────
@@ -615,7 +620,7 @@ class AltAzFieldRotationDialog(QDialog):
             hrs = 12.0 + np.linspace(0, 24, n)
 
         except Exception as e:
-            self._night_plot_hint.setText(f"Could not compute night curve: {e}")
+            self._night_plot_hint.setText(self.tr("Could not compute night curve: {0}").format(e))
             return
 
         # ── Compute max exposure at each timestep — hard cap 120 s ───────────
@@ -710,14 +715,14 @@ class AltAzFieldRotationDialog(QDialog):
         masked = np.where(above, exp_curve, np.nan)
         pw.plot(hrs, masked,
                 pen=pg.mkPen((100, 200, 255), width=2.5),
-                name=f"Max exp ({tol:.0f} px tol)")
+                name=self.tr("Max exp ({0:.0f} px tol)").format(tol))
 
         # ── Object altitude overlay — thin dashed yellow, scaled to CAP ──
         alt_scaled = np.where(above, obj_alts * (CAP / 90.0), np.nan)
         pw.plot(hrs, alt_scaled,
                 pen=pg.mkPen((255, 220, 80, 120), width=1.2,
                              style=Qt.PenStyle.DashLine),
-                name="Altitude (scaled)")
+                name=self.tr("Altitude (scaled)"))
 
         # Horizon line and 30°-equivalent guide line
         pw.addLine(y=0,                  pen=pg.mkPen("w", width=1,
@@ -730,11 +735,11 @@ class AltAzFieldRotationDialog(QDialog):
         pw.setYRange(0, CAP * 1.08, padding=0)   # small breathing room above cap
         ticks = [(h, str(h if h <= 23 else h - 24)) for h in range(12, 37, 2)]
         pw.getAxis("bottom").setTicks([ticks])
-        pw.setLabel("bottom", "Local Time (h)")
+        pw.setLabel("bottom", self.tr("Local Time (h)"))
 
-        cap_str = f"{int(CAP)} s" if CAP < 120 else "120 s (max)"
+        cap_str = f"{int(CAP)} s" if CAP < 120 else self.tr("120 s (max)")
         pw.setLabel("left",
-                    f"Max Exposure (s)  [{tol:.0f} px tolerance, cap {cap_str}]")
+                    self.tr("Max Exposure (s)  [{0:.0f} px tolerance, cap {1}]").format(tol, cap_str))
 
         pw.addLegend()
 
@@ -746,17 +751,17 @@ class AltAzFieldRotationDialog(QDialog):
             best_hr  = float(hrs[best_idx])
             pw.addLine(x=best_hr,
                        pen=pg.mkPen("r", width=1.5, style=Qt.PenStyle.DashLine))
-            ann = pg.TextItem(f"Best {best_val:.1f} s", color="r", anchor=(0, 1))
+            ann = pg.TextItem(self.tr("Best {0:.1f} s").format(best_val), color="r", anchor=(0, 1))
             ann.setPos(best_hr, best_val + CAP * 0.03)   # offset scales with axis
             pw.addItem(ann)
 
         name_part = f"{self._target_name}  —  " if self._target_name else ""
         self._night_plot_hint.setText(
-            f"{name_part}{date_str}  —  "
-            f"Blue = max exposure vs. time  •  "
-            f"Yellow dashed = target altitude (scaled)  •  "
-            f"Red dashed = best exposure during astronomical night  •  "
-            f"Curve is zero while target is below horizon."
+            self.tr("{0}{1}  —  "
+                    "Blue = max exposure vs. time  •  "
+                    "Yellow dashed = target altitude (scaled)  •  "
+                    "Red dashed = best exposure during astronomical night  •  "
+                    "Curve is zero while target is below horizon.").format(name_part, date_str)
         )
 
 

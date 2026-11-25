@@ -12,7 +12,8 @@ so tools that are NOT replayable steps are intentionally omitted here:
   - viewers / analysis:  histogram, psf_viewer, image_peeker, magnitude_tool,
     snr_tool, dither_analysis, isophote, whats_in_my_sky, whats_in_my_image,
     finder_chart, atlas, exo_detector, supernova_hunter
-  - capture / stacking:  blink, live_stacking, stacking_suite, planetary_stacker
+  - capture / stacking:  blink, live_stacking, quick_stack, stacking_suite,
+    planetary_stacker
   - project / view I/O:  open, save_as, checkpoint_save, undo, redo,
     project_new/save/load, view_bundles, function_bundles, zoom_1_1, autostretch
     (export_fits IS a replayable bundle step — see aliases below)
@@ -159,6 +160,11 @@ COMMAND_ID_ALIASES: dict[str, str] = {
     "cosmetic_correction": "cosmetic_correction",
     "cosmetic correction": "cosmetic_correction",
     "cosmetic": "cosmetic_correction",
+    "banding_blaster": "banding_blaster",
+    "banding blaster": "banding_blaster",
+    "banding": "banding_blaster",
+    "banding_reduction": "banding_blaster",
+    "banding reduction": "banding_blaster",
     "unwarp": "unwarp",
     "remove_sip": "unwarp",
     "remove sip": "unwarp",

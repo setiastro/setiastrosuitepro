@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QSlider, QHBoxLayout,
     QPushButton, QMessageBox, QCheckBox, QComboBox
@@ -19,6 +19,10 @@ from setiastro.saspro.widgets.image_utils import (
 )
 from setiastro.saspro.help_support import make_help_button
 
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("RemoveGreen", text)
+
 def _ensure_rgb(arr: np.ndarray) -> np.ndarray | None:
     """Return float32 RGB [0..1] or None if impossible."""
     a = _to_float01(arr)
@@ -32,9 +36,9 @@ def _ensure_rgb(arr: np.ndarray) -> np.ndarray | None:
 
 # ---------- SCNR core (with modes + preserve lightness) ----------
 _SCNR_MODE_LABELS = {
-    "avg": "Average of other two",
-    "max": "Max of other two",
-    "min": "Min of other two",
+    "avg": QT_TRANSLATE_NOOP("RemoveGreen", "Average of other two"),
+    "max": QT_TRANSLATE_NOOP("RemoveGreen", "Max of other two"),
+    "min": QT_TRANSLATE_NOOP("RemoveGreen", "Min of other two"),
 }
 def _compute_neutral(r: np.ndarray, b: np.ndarray, mode: str) -> np.ndarray:
     if mode == "max":
@@ -46,8 +50,12 @@ def _compute_neutral(r: np.ndarray, b: np.ndarray, mode: str) -> np.ndarray:
 
 _CHANNEL_INDEX = {"R": 0, "G": 1, "B": 2}
 _CHANNEL_LABELS = {
-    "R": "Red",   "G": "Green",   "B": "Blue",
-    "C": "Cyan",  "M": "Magenta", "Y": "Yellow",
+    "R": QT_TRANSLATE_NOOP("RemoveGreen", "Red"),
+    "G": QT_TRANSLATE_NOOP("RemoveGreen", "Green"),
+    "B": QT_TRANSLATE_NOOP("RemoveGreen", "Blue"),
+    "C": QT_TRANSLATE_NOOP("RemoveGreen", "Cyan"),
+    "M": QT_TRANSLATE_NOOP("RemoveGreen", "Magenta"),
+    "Y": QT_TRANSLATE_NOOP("RemoveGreen", "Yellow"),
 }
 # CMY channels are just RGB SCNR applied in inverted space:
 #   Cyan    = inverted Red
@@ -247,8 +255,8 @@ class RemoveGreenDialog(QDialog):
         self.slider.setValue(100)
         self.slider.setTickInterval(10)
         self.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.value_label = QLabel("Amount: 1.00")
-        self.slider.valueChanged.connect(lambda v: self.value_label.setText(f"Amount: {v/100.0:.2f}"))
+        self.value_label = QLabel(self.tr("Amount: {0:.2f}").format(1.00))
+        self.slider.valueChanged.connect(lambda v: self.value_label.setText(self.tr("Amount: {0:.2f}").format(v/100.0)))
         lay.addWidget(self.slider)
         lay.addWidget(self.value_label)
 
@@ -257,9 +265,9 @@ class RemoveGreenDialog(QDialog):
         row_mode.addWidget(QLabel(self.tr("Neutral mode:")))
         self.mode_box = QComboBox()
         # order: avg (default), max, min
-        self.mode_box.addItem(_SCNR_MODE_LABELS["avg"], userData="avg")
-        self.mode_box.addItem(_SCNR_MODE_LABELS["max"], userData="max")
-        self.mode_box.addItem(_SCNR_MODE_LABELS["min"], userData="min")
+        self.mode_box.addItem(_tr(_SCNR_MODE_LABELS["avg"]), userData="avg")
+        self.mode_box.addItem(_tr(_SCNR_MODE_LABELS["max"]), userData="max")
+        self.mode_box.addItem(_tr(_SCNR_MODE_LABELS["min"]), userData="min")
         self.mode_box.setCurrentIndex(0)
         row_mode.addWidget(self.mode_box)
         row_mode.addStretch(1)
@@ -377,7 +385,7 @@ class RemoveGreenDialog(QDialog):
 
     def _apply(self):
         if self.doc is None or getattr(self.doc, "image", None) is None:
-            QMessageBox.warning(self, "Remove Green", "No image.")
+            QMessageBox.warning(self, self.tr("Remove Green"), self.tr("No image."))
             return
 
         amount   = self.slider.value() / 100.0
@@ -422,7 +430,7 @@ class RemoveGreenDialog(QDialog):
 
         # Show applied status (channel name + doc name)
         try:
-            ch_label = _CHANNEL_LABELS.get(str(channel).upper(), str(channel))
+            ch_label = _tr(_CHANNEL_LABELS.get(str(channel).upper(), str(channel)))
             doc_name = ""
             try:
                 if hasattr(self.doc, "display_name"):
@@ -431,10 +439,10 @@ class RemoveGreenDialog(QDialog):
                 pass
             if doc_name:
                 self.status_label.setText(
-                    self.tr(f"✓ Removed {ch_label} from “{doc_name}”")
+                    self.tr("✓ Removed {0} from “{1}”").format(ch_label, doc_name)
                 )
             else:
-                self.status_label.setText(self.tr(f"✓ Removed {ch_label}"))
+                self.status_label.setText(self.tr("✓ Removed {0}").format(ch_label))
         except Exception:
             self.status_label.setText(self.tr("✓ Applied"))
 
@@ -471,7 +479,7 @@ def open_remove_green_dialog(main, doc=None, preset: dict | None = None):
             doc = doc()
 
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.information(main, "Remove Green", "Open an image first.")
+        QMessageBox.information(main, _tr("Remove Green"), _tr("Open an image first."))
         return
 
     dlg = RemoveGreenDialog(main, doc, parent=main)

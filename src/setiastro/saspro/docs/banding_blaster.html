@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  kbd { background:#333; color:#fff; padding:1px 6px; border-radius:3px;
+        border:1px solid #555; font-family:Consolas,"DejaVu Sans Mono",monospace;
+        font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Banding Blaster</h1>
+<p class="sub">Removes row banding (horizontal stripes, the classic Canon DSLR
+pattern) or column banding (vertical stripes, seen on some CMOS cameras) from
+the whole image. Every row is shifted up or down so its background level
+matches the rest of the frame. Mask-aware, one undo step.</p>
+
+<p>The same correction is also a mode of <b>Blemish Blaster</b>
+(Mode: Banding Blaster). Both give identical results; this standalone tool adds
+a before/after preview, a preset grip, replay, Function Bundles, scripting and
+the command line.</p>
+
+<h2>1. Using the tool</h2>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Direction</td><td><b>Horizontal</b> (default) corrects rows.
+      <b>Vertical</b> corrects columns.</td></tr>
+  <tr><td>Amount</td><td>0.00&ndash;4.00, default 1.00. How much of each
+      row's offset is removed. <b>1.00</b> brings every row's median to the
+      image median. <b>Below 1</b> is a partial correction, for bands with
+      real signal mixed in. <b>Above 1</b> over-corrects and is rarely
+      useful: it tends to add noise or inverse banding.</td></tr>
+  <tr><td>Protect highlights</td><td>On by default. Leaves bright pixels
+      (stars, nebula and galaxy cores) out of each row's median, so a row
+      that crosses a bright object is not pulled down. Keep it on for
+      astronomical images.</td></tr>
+  <tr><td>Sigma</td><td>0.01&ndash;5.00, default 1.00, used only with Protect
+      highlights. Pixels brighter than the image median plus Sigma robust
+      sigmas are left out. Lower leaves out more; try 0.3&ndash;0.5 on very
+      star-dense fields.</td></tr>
+  <tr><td>Apply</td><td>Writes the result to the image as one undo step named
+      &ldquo;Banding Blaster&rdquo; and closes the tool.</td></tr>
+</table>
+
+<h3>Preview</h3>
+<p>The preview shows the whole image, display-stretched so faint banding is
+visible. Before and after go through the same stretch, so any difference you
+see is the correction itself. The stretch is for the preview only; the data
+you apply is never stretched.</p>
+<ul>
+  <li><b>After / Before / Split / Side by side</b> &mdash; what the preview
+      shows. In Split, drag the divider in the image or use the Divider
+      slider.</li>
+  <li><b>Hold to compare</b>, or hold <kbd>Space</kbd> &mdash; shows the
+      original while held.</li>
+  <li>Mouse wheel zooms about the cursor, drag pans, <b>Fit</b> shows the
+      whole frame. Zoomed in past 1:1, pixels stay sharp so single-row bands
+      are easy to judge.</li>
+  <li>The line under the controls gives the <b>largest row (or column)
+      shift</b> the current settings apply, in image units (0&ndash;1).</li>
+</ul>
+<p>The tool follows the active view: click another image and the preview
+switches to it. Changing Amount is quick; changing Direction, Protect
+highlights or Sigma measures the image again.</p>
+
+<div class="tip">If the image has an active mask, the correction is blended
+through it (white = corrected, black = untouched), in the preview and when
+applied.</div>
+
+<h2>2. Shortcuts, replay and automation</h2>
+<ul>
+  <li><b>Preset grip</b> (bottom left): drag it to the workspace to make a
+      desktop shortcut with the current settings, or drop it on an image to
+      apply them there without opening the tool. Double-clicking the shortcut
+      opens the tool with those settings.</li>
+  <li><b>Replay Last Action</b> and <b>Function Bundles</b> run it with the
+      recorded settings. Replay on a preview runs on the full image, since
+      the row medians need the whole frame.</li>
+  <li><b>Scripts:</b>
+      <code>ctx.run_command('banding_blaster', {'direction': 'vertical', 'amount': 0.8})</code></li>
+  <li><b>Command line:</b>
+      <code>setiastrosuitepro process banding_blaster -i stack.fits -o out.fits --direction vertical</code></li>
+</ul>
+<table>
+  <tr><th>Preset key</th><th>Values</th><th>Default</th></tr>
+  <tr><td><code>direction</code></td><td><code>horizontal</code> or <code>vertical</code></td><td>horizontal</td></tr>
+  <tr><td><code>amount</code></td><td>0&ndash;4</td><td>1.0</td></tr>
+  <tr><td><code>protect_highlights</code></td><td>true / false</td><td>true</td></tr>
+  <tr><td><code>sigma</code></td><td>0.01&ndash;5</td><td>1.0</td></tr>
+</table>
+
+<h2>3. How it works</h2>
+<p>Each channel is corrected on its own. Vertical banding is handled by
+running the row algorithm on columns. Let <code>g</code> be the channel's
+global median and <code>I</code> the channel. The robust background sigma
+uses the mean (not the median) of absolute deviations, as Georg Viehoever's
+original script does:</p>
+<div class="matheq">\sigma_{\mathrm{rob}} \;=\; 1.4826\,\cdot\,\mathrm{mean}\!\left(|I - g|\right)</div>
+<p>With Protect highlights on, each row's median uses only the pixels at or
+below a threshold (a row with none left keeps its offset at zero):</p>
+<div class="matheq">m_r \;=\; \mathrm{median}\!\left\{ I_{r,c} \;:\; I_{r,c} \leq g + \sigma\,\sigma_{\mathrm{rob}} \right\}</div>
+<p>Each row is then shifted by the same amount end to end, which is the right
+fix for a constant per-row readout offset:</p>
+<div class="matheq-hero">I'_{r,c} \;=\; \mathrm{clip}\!\left(I_{r,c} + (g - m_r)\,\cdot\,\mathrm{amount},\;0,\;1\right)</div>
+<p>The row medians are measured once per Direction / Protect highlights /
+Sigma setting and reused while you change Amount.</p>
+
+<div class="credit">
+<b>Credits.</b> The algorithm is a port of <b>CanonBandingReduction.js
+v0.9.1</b> by <b>Georg Viehoever</b> (PixInsight JavaScript, GPLv3,
+2009&ndash;2013). All credit for the row-median method with robust-sigma
+highlight rejection goes to Georg. SASpro's port is a translation to
+Python/NumPy with a sort-based masked median, parallel row measurement and
+vertical-direction support. The port is also GPLv3.
+</div>
+
+</body>
+</html>

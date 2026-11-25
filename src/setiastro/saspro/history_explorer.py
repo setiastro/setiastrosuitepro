@@ -615,7 +615,7 @@ class HistoryListWidget(QListWidget):
 class HistoryExplorerDialog(QDialog):
     def __init__(self, document, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("History Explorer")
+        self.setWindowTitle(self.tr("History Explorer"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -633,11 +633,11 @@ class HistoryExplorerDialog(QDialog):
         )        
         layout.addWidget(self.history_list)
         self.history_instructions = QLabel(
-            "Double-click any row to view the image at that step  •  "
+            self.tr("Double-click any row to view the image at that step  •  "
             "Drag a step/steps onto the canvas to create a function shortcut(s)  •  "
             "Select multiple (or all) steps and use Create Function Bundle to "
             "bundle them into a replayable function  •  "
-            "Drag a step/steps onto the Workflow Assistant to create a Workflow  •  "
+            "Drag a step/steps onto the Workflow Assistant to create a Workflow  •  ")
         )
         self.history_instructions.setWordWrap(True)
         layout.addWidget(self.history_instructions)
@@ -713,7 +713,7 @@ class HistoryExplorerDialog(QDialog):
         row_index = 0
         if self.undo_entries:
             orig_src, orig_meta, _ = self.undo_entries[0]
-            item = QListWidgetItem("1. Original Image")
+            item = QListWidgetItem(self.tr("1. Original Image"))
             self.history_list.addItem(item)
             self.items.append((orig_src, orig_meta, "Original Image"))
             row_index += 1
@@ -721,7 +721,7 @@ class HistoryExplorerDialog(QDialog):
         # 2) Per-operation states
         n = len(self.undo_entries)
         for op_idx in range(n):
-            op_name = self.undo_entries[op_idx][2] or f"Step {op_idx + 1}"
+            op_name = self.undo_entries[op_idx][2] or self.tr("Step {0}").format(op_idx + 1)
 
             if op_idx + 1 < n:
                 src, meta, _ = self.undo_entries[op_idx + 1]
@@ -752,7 +752,7 @@ class HistoryExplorerDialog(QDialog):
             if is_replayable:
                 item.setData(Qt.ItemDataRole.UserRole, payload)
                 item.setData(ROLE_IS_OP, True)                
-                item.setToolTip("Replayable step. Alt+Drag to drop onto a view or desktop.")
+                item.setToolTip(self.tr("Replayable step. Alt+Drag to drop onto a view or desktop."))
             self.history_list.addItem(item)
 
             self.items.append((src, meta, op_name))
@@ -777,13 +777,13 @@ class HistoryExplorerDialog(QDialog):
 
         cur_replay = cur_payload is not None
 
-        label = f"{row_index + 1}. Current Image"
+        label = self.tr("{0}. Current Image").format(row_index + 1)
         if cur_replay:
             label += "  ⟲"
         cur_item = QListWidgetItem(label)
         if cur_replay:
             cur_item.setData(Qt.ItemDataRole.UserRole, cur_payload)
-            cur_item.setToolTip("Replayable step. Alt+Drag to drop onto a view or desktop.")
+            cur_item.setToolTip(self.tr("Replayable step. Alt+Drag to drop onto a view or desktop."))
         self.history_list.addItem(cur_item)
         self.items.append((cur_img, cur_meta, "Current Image"))
 
@@ -791,18 +791,18 @@ class HistoryExplorerDialog(QDialog):
         self.history_list.itemDoubleClicked.connect(self._open_preview)
 
         row = QHBoxLayout()
-        self.btn_make_bundle = QPushButton("Create Function Bundle")
+        self.btn_make_bundle = QPushButton(self.tr("Create Function Bundle"))
         self.btn_make_bundle.setToolTip(
-            "Turn the selected replayable steps (or all of them) into a Function "
+            self.tr("Turn the selected replayable steps (or all of them) into a Function "
             "Bundle you can drop on any other image.\n"
-            "Tip: Alt+Drag a multi-selection straight onto a view to run the recipe there."
+            "Tip: Alt+Drag a multi-selection straight onto a view to run the recipe there.")
         )
         self.btn_make_bundle.clicked.connect(self._create_bundle_from_selection)
 
-        self.btn_open_bundles = QPushButton("Open Function Bundles…")
+        self.btn_open_bundles = QPushButton(self.tr("Open Function Bundles…"))
         self.btn_open_bundles.clicked.connect(self._open_function_bundles)
 
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.close)
 
         row.addWidget(self.btn_make_bundle)
@@ -816,7 +816,7 @@ class HistoryExplorerDialog(QDialog):
         if 0 <= row < len(self.items):
             src, meta, name = self.items[row]
             if src is None:
-                QMessageBox.warning(self, "Preview", "No image stored for this step.")
+                QMessageBox.warning(self, self.tr("Preview"), self.tr("No image stored for this step."))
                 return
             pv = HistoryImagePreview(src, meta, self.doc, parent=self)
             pv.setWindowTitle(item.text())
@@ -825,7 +825,7 @@ class HistoryExplorerDialog(QDialog):
             if mw and hasattr(mw, "_log"):
                 mw._log(f"History: preview opened → {item.text()}")
         else:
-            QMessageBox.warning(self, "Preview", "Invalid selection.")
+            QMessageBox.warning(self, self.tr("Preview"), self.tr("Invalid selection."))
 
     def _create_bundle_from_selection(self):
         steps = self.history_list.selected_replay_steps()
@@ -834,8 +834,8 @@ class HistoryExplorerDialog(QDialog):
             steps = self.history_list.all_replay_steps()
         if not steps:
             QMessageBox.information(
-                self, "Function Bundle",
-                "No replayable steps were found in this history."
+                self, self.tr("Function Bundle"),
+                self.tr("No replayable steps were found in this history.")
             )
             return
 
@@ -846,9 +846,9 @@ class HistoryExplorerDialog(QDialog):
         default_name = f"Recipe from {base_name}"
 
         name, ok = QInputDialog.getText(
-            self, "Create Function Bundle",
-            f"Create a bundle from {len(steps)} "
-            f"{'selected ' if used_selection else ''}step(s).\n\nBundle name:",
+            self, self.tr("Create Function Bundle"),
+            (self.tr("Create a bundle from {0} selected step(s).\n\nBundle name:") if used_selection
+             else self.tr("Create a bundle from {0} step(s).\n\nBundle name:")).format(len(steps)),
             text=default_name,
         )
         if not ok:
@@ -858,7 +858,7 @@ class HistoryExplorerDialog(QDialog):
             from setiastro.saspro.function_bundle import add_function_bundle
             final = add_function_bundle(name or default_name, steps, parent=self)
         except Exception as e:
-            QMessageBox.critical(self, "Function Bundle", f"Could not create bundle:\n{e}")
+            QMessageBox.critical(self, self.tr("Function Bundle"), self.tr("Could not create bundle:\n{0}").format(e))
             return
 
         mw = self._find_main_window()
@@ -866,8 +866,8 @@ class HistoryExplorerDialog(QDialog):
             mw._log(f"History: created Function Bundle '{final}' with {len(steps)} step(s).")
 
         if QMessageBox.question(
-            self, "Function Bundle",
-            f"Created '{final}' with {len(steps)} step(s).\n\nOpen Function Bundles now?",
+            self, self.tr("Function Bundle"),
+            self.tr("Created '{0}' with {1} step(s).\n\nOpen Function Bundles now?").format(final, len(steps)),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         ) == QMessageBox.StandardButton.Yes:
@@ -878,7 +878,7 @@ class HistoryExplorerDialog(QDialog):
             from setiastro.saspro.function_bundle import show_function_bundles
             show_function_bundles(self._find_main_window() or self, focus_name=focus_name)
         except Exception as e:
-            QMessageBox.critical(self, "Function Bundles", f"Could not open:\n{e}")
+            QMessageBox.critical(self, self.tr("Function Bundles"), self.tr("Could not open:\n{0}").format(e))
 
     def _find_main_window(self):
         p = self.parent()
@@ -933,19 +933,19 @@ class HistoryImagePreview(QWidget):
         self.label.installEventFilter(self)
 
         # controls
-        self.btn_stretch = QPushButton("Toggle AutoStretch")
+        self.btn_stretch = QPushButton(self.tr("Toggle AutoStretch"))
         self.btn_stretch.clicked.connect(self._toggle_autostretch)
 
-        self.btn_fit = QPushButton("Fit")
+        self.btn_fit = QPushButton(self.tr("Fit"))
         self.btn_fit.clicked.connect(self._fit_to_view)
 
         self.btn_1to1 = QPushButton("1:1")
         self.btn_1to1.clicked.connect(lambda: self._set_zoom(1.0))
 
-        self.btn_compare = QPushButton("Compare to Current…")
+        self.btn_compare = QPushButton(self.tr("Compare to Current…"))
         self.btn_compare.clicked.connect(self._open_compare)
 
-        self.btn_restore = QPushButton("Restore This Version")
+        self.btn_restore = QPushButton(self.tr("Restore This Version"))
         self.btn_restore.clicked.connect(self._restore)
 
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -1024,19 +1024,19 @@ class HistoryImagePreview(QWidget):
     def _open_compare(self):
         cur = getattr(self.doc, "image", None)
         if cur is None:
-            QMessageBox.warning(self, "Compare", "No current image to compare.")
+            QMessageBox.warning(self, self.tr("Compare"), self.tr("No current image to compare."))
             return
 
         win = QWidget(self, Qt.WindowType.Window)
-        win.setWindowTitle("Compare with Current")
+        win.setWindowTitle(self.tr("Compare with Current"))
         win.resize(900, 700)
 
         v = QVBoxLayout(win)
 
         help_lbl = QLabel(
-            "Left-click + drag: move before/after divider  •  "
+            self.tr("Left-click + drag: move before/after divider  •  "
             "Middle-click + drag, or hold Space + left-click + drag: pan image  •  "
-            "Ctrl+wheel: zoom"
+            "Ctrl+wheel: zoom")
         )
         help_lbl.setWordWrap(True)
         v.addWidget(help_lbl)
@@ -1045,9 +1045,9 @@ class HistoryImagePreview(QWidget):
         v.addWidget(self.slider_widget, 1)
 
         bar = QHBoxLayout()
-        b_out = QPushButton("Zoom Out"); b_in = QPushButton("Zoom In")
-        b_fit = QPushButton("Fit"); b_1  = QPushButton("1:1")
-        b_st  = QPushButton("Toggle AutoStretch")
+        b_out = QPushButton(self.tr("Zoom Out")); b_in = QPushButton(self.tr("Zoom In"))
+        b_fit = QPushButton(self.tr("Fit")); b_1  = QPushButton("1:1")
+        b_st  = QPushButton(self.tr("Toggle AutoStretch"))
         b_out.clicked.connect(self.slider_widget.zoom_out)
         b_in.clicked.connect(self.slider_widget.zoom_in)
         b_fit.clicked.connect(self.slider_widget.fit_to_view)
@@ -1072,14 +1072,14 @@ class HistoryImagePreview(QWidget):
             elif hasattr(self.doc, "update_image"):
                 self.doc.update_image(self.image_data.copy(), {"step_name": "Restored from History"})
             else:
-                QMessageBox.critical(self, "Restore", "Document does not support setting image.")
+                QMessageBox.critical(self, self.tr("Restore"), self.tr("Document does not support setting image."))
                 return
             mw = self._find_main_window()
             if mw and hasattr(mw, "_log"):
                 mw._log("History: restored image from history.")
             self.close()
         except Exception as e:
-            QMessageBox.critical(self, "Restore failed", str(e))
+            QMessageBox.critical(self, self.tr("Restore failed"), str(e))
 
     def _find_main_window(self):
         p = self.parent()

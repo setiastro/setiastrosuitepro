@@ -23,9 +23,14 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+from PyQt6.QtCore import QCoreApplication
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy
 
 from setiastro.saspro.exoplanet_photometry import bin_curve
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("ExoplanetSciplot", text)
 
 # Categorical series colours in a fixed order (never cycled; a colour-blind
 # validated set).  A single light curve is drawn in ink, not a series colour.
@@ -208,7 +213,7 @@ def draw_light_curves(fig: Figure, series: Sequence[dict], *, panels=None,
                         "g": g, "rx": rx, "ry": ry, "off": 0.0})
         n = len(ser)
         if n == 0:
-            draw_message(fig, "Select a star in the list")
+            draw_message(fig, _tr("Select a star in the list"))
             return
 
         # Stack several stars: each one's band sits below the previous one's.
@@ -257,7 +262,7 @@ def draw_light_curves(fig: Figure, series: Sequence[dict], *, panels=None,
                 e = s["e"][fin] if s["e"] is not None else None
                 g = s["g"][fin]
                 _errorbar_points(ax, x, y, e, pcol, 0.45 if n == 1 else 0.3,
-                                 label=("data (±1σ)" if n == 1 and first_ax else None))
+                                 label=(_tr("data (±1σ)") if n == 1 and first_ax else None))
                 y_spans.append(_span(y, e))
                 if bin_w and bin_w > 0 and x.size:
                     first = True
@@ -277,7 +282,7 @@ def draw_light_curves(fig: Figure, series: Sequence[dict], *, panels=None,
                     if np.any(rin):
                         ax.plot(s["rx"][rin], s["ry"][rin] + s["off"], ls="none", marker="x",
                                 ms=3.5, mew=0.8, color=REJECT, alpha=0.75, zorder=2,
-                                label=("rejected" if first_ax else None))
+                                label=(_tr("rejected") if first_ax else None))
             for (s0, s1, slab) in spans:
                 if x0 is not None and (s1 < x0 or s0 > x1):
                     continue
@@ -311,9 +316,9 @@ def draw_light_curves(fig: Figure, series: Sequence[dict], *, panels=None,
             axes[0].set_xlabel(xlabel)
 
         if ylabel is None:
-            ylabel = r"$\Delta m$ (mag)" if mag else "Relative flux"
+            ylabel = r"$\Delta m$ (mag)" if mag else _tr("Relative flux")
             if n > 1:
-                ylabel += " + offset"
+                ylabel += _tr(" + offset")
         axes[0].set_ylabel(ylabel)
         if title:
             fig.suptitle(title, wrap=True)   # wraps instead of running off a narrow canvas
@@ -365,21 +370,21 @@ def draw_transit_fit(fig: Figure, *, x, y, err, used, model_x, model_y, resid,
         ax.tick_params(labelbottom=False)
         u, c = used, ~used
 
-        _errorbar_points(ax, x[u], y[u], err[u], POINT, 0.45, label="data (±1σ)")
+        _errorbar_points(ax, x[u], y[u], err[u], POINT, 0.45, label=_tr("data (±1σ)"))
         if np.any(c):
             ax.plot(x[c], y[c], ls="none", marker="x", ms=3.5, mew=0.8, color=REJECT,
-                    alpha=0.75, zorder=2, label="clipped")
+                    alpha=0.75, zorder=2, label=_tr("clipped"))
         spans = [_span(y[u], err[u])]
         if bin_w and bin_w > 0:
             tb, yb, eb = bin_curve(x[u], y[u], bin_w, e=err[u])
             _errorbar_bins(ax, tb, yb, eb, INK, label=bin_label or None)
-        ax.plot(model_x, model_y, color=MODEL, lw=1.6, zorder=4, label="transit model")
+        ax.plot(model_x, model_y, color=MODEL, lw=1.6, zorder=4, label=_tr("transit model"))
         spans.append(_span(model_y))
         if pred_x is not None and np.isfinite(pred_x):
             ax.axvline(pred_x, color=INK_2, ls="--", lw=0.8, zorder=0,
-                       label="predicted mid-transit")
+                       label=_tr("predicted mid-transit"))
         _set_ylim(ax, spans)
-        ax.set_ylabel("Relative flux (detrended)")
+        ax.set_ylabel(_tr("Relative flux (detrended)"))
         ax.legend(loc="lower right", handletextpad=0.4, borderaxespad=0.6)
         if info:
             ax.text(0.02, 0.04, "\n".join(info), transform=ax.transAxes, ha="left",
@@ -395,7 +400,7 @@ def draw_transit_fit(fig: Figure, *, x, y, err, used, model_x, model_y, resid,
         m = max(abs(lo), abs(hi))
         axr.set_ylim(-m, m)
         axr.yaxis.set_major_locator(MaxNLocator(nbins=4, symmetric=True))
-        axr.set_ylabel("Residual (ppt)")
+        axr.set_ylabel(_tr("Residual (ppt)"))
         axr.set_xlabel(xlabel)
         fig.align_ylabels([ax, axr])
         if title:

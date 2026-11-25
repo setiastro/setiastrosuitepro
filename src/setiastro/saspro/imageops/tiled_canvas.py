@@ -303,7 +303,7 @@ class TiledImageCanvas(ViewportImageCanvas):
             # still turning or a pan is being dragged, smooth once it stops.
             # The owner drives it from _request_zoom_redraw /
             # _apply_zoom_redraw and from the pan press/release.
-            smooth = (bool(getattr(self._owner, "_smooth_zoom", True))
+            smooth = (bool(getattr(self._owner, "_smooth_zoom", False))
                       and not self._interacting)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, smooth)
 

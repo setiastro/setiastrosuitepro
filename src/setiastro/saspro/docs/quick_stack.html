@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Quick Stack</h1>
+<p class="sub">Pick a set of subs, press one button, get an image. Quick Stack is a fast look at what you have: calibrated with master darks and flats if you have them (or with masters it makes from your single dark and flat frames) and weighted by the stars in each frame, but with no distortion model and no calibrated or aligned files on disk. It is not a replacement for the <b>Stacking Suite</b>.</p>
+
+<div class="workflow"><b>Workflow</b><br>
+<b>Add Files&hellip;</b> or <b>Add Folder&hellip;</b> (or drop them on the window: lights, darks and flats together, masters or single frames) &rarr; check the groups in the list, and the dark and flat under each &rarr; optionally choose a <b>Reference</b> &rarr; press <b>&#9889; Quick Stack</b>. Each group opens as its own new image in the main window, behind this one, and is listed at the bottom of Quick Stack with a preview: double-click it, or press <b>Show in SASpro</b>, to bring it forward. The stacks are not saved until you save them. Stacking the same frames again opens a second copy, named with <i>_1</i> on the end.
+</div>
+
+<div class="tip"><b>Looking for the full pipeline?</b> The guided calibrate / register / integrate page is the <b>Pipeline</b> tab of the Stacking Suite (it was called Quick Stack in older versions). This tool is separate.</div>
+
+<h2>What it does to each frame</h2>
+<ul>
+  <li><b>Load.</b> FITS, XISF, TIFF and camera RAW, linear, 32-bit.</li>
+  <li><b>Calibrate,</b> if you loaded masters, on the mosaic and in memory: the dark is subtracted, then the flat is divided out (normalised to its own median, per colour plane for a Bayer sensor). It is the same arithmetic as the Stacking Suite with one difference: nothing is clipped at zero, because a stack has to keep the negative half of the noise.</li>
+  <li><b>Debayer.</b> One-shot-colour frames are debayered with the bilinear method.</li>
+  <li><b>Align.</b> A single similarity transform: position, rotation and scale. It comes from the same star matching the registration tools use, including the meridian-flip check. There is no distortion correction, so if your optics' distortion differs between the two pier sides a flip can leave the stars slightly soft, mostly near the corners.</li>
+  <li><b>Normalize.</b> A simple one: a single offset per colour channel per frame (its sky level, the median of the frame, minus the reference&rsquo;s), so every frame sits at the reference&rsquo;s sky level and frames with a brighter sky are compared fairly by the trim. Frames are not scaled.</li>
+  <li><b>Weight.</b> Each frame counts in proportion to the stars found in it when it was aligned: a frame with half the stars counts half as much. Clouds, a brighter sky, poor seeing, a focus shift and guiding trouble all cost a frame stars, so the count catches all of them. No frame is thrown out for its count; even a poor frame adds a little signal.</li>
+</ul>
+
+<h2>Weighting</h2>
+<p>The count is every star the alignment finds at your detection sigma (<i>Star detect &sigma;</i>, under Alignment in the Stacking Suite&rsquo;s settings), on the same reduced-size copy of the frame it matches stars on, not just the few hundred it keeps for matching. A frame that only matches after the sigma is lowered (thin cloud, narrowband) is still counted at your sigma, so it weighs what it is worth.</p>
+<p>The log gives the range, for example <i>Weighted by the stars found in each frame: 212 to 498, so weights 0.43 to 1.00 (the frames count as 37.2 equal ones)</i>. The last figure is how many equally weighted frames the stack is worth: close to the number of frames on a clear night, lower when some frames are much worse than the rest.</p>
+<p>When the reference shows fewer than 20 stars at your sigma, the counts are too small to say much, and every frame weighs the same; the log says so. If an NVIDIA card has the memory for the stack but not for the weights as well, the stack stays on the card with every frame weighing the same, and the log says that too.</p>
+
+<h2>Masters</h2>
+<p>Load as many <b>master darks</b> and <b>master flats</b> as you have (FITS, XISF or TIFF, the same size as the subs): one flat per filter, darks for each exposure. Drop them on the window with the lights, or use <b>Add Masters&hellip;</b>. Every group in the list shows, right under it, the <b>Dark</b> and the <b>Flat</b> it will be calibrated with, and why:</p>
+<ul>
+  <li><b>Dark:</b> the same size, then the same gain, then the nearest exposure.</li>
+  <li><b>Flat:</b> the same size, then the same filter: as written, then written another way (<i>O3</i> for <i>OIII</i>, <i>H-alpha</i> or <i>Ha 7nm</i> for <i>Ha</i>, <i>S2</i>, <i>Lum</i>, <i>Red</i>&hellip;), then named in the file or folder name of a flat that has no FILTER card (<i>MasterFlat_Ha.fits</i>, <i>Flats/OIII/</i>). If you load only one flat, it is used for every group of its size.</li>
+</ul>
+<p>The badge beside each says how it was picked: <span style="color:#3fb950">&#10003; auto</span>, <span style="color:#58a6ff">&asymp; matched by another spelling or by the file name</span>, <span style="color:#58a6ff">&#9998; your choice</span>, or <span style="color:#d29922">&#9888;</span> when nothing fits or the pick does not quite match (another filter, exposure or gain). To change a group&rsquo;s pick, open its list and choose another master, <b>None</b>, or <b>Add a master &hellip;</b> to load one just for it. Your choice holds for that group until you change it back to <b>Auto</b>; masters of another size are greyed out.</p>
+<p>What you add is sorted by its IMAGETYP card, or else by its file or folder name (<i>Flats</i>, <i>Darks 300s</i>, <i>MasterFlat_Ha</i>). Lights go to the list, master darks and flats to the masters, and single dark and flat frames are made into masters (below). Bias and flat-dark frames are left out, and the log lists them. A master that says nothing about what it is is asked about when you add it with <b>Add Masters&hellip;</b>.</p>
+
+<h3>Single dark and flat frames</h3>
+<p>You do not need masters: add your dark and flat frames as they came off the camera, with the lights, with <b>Add Masters&hellip;</b>, or from a group&rsquo;s list (<b>Add a master dark or dark frames&hellip;</b>). A file is a master when it says so (MASTER in IMAGETYP, <i>master</i> in its name, NCOMBINE above 1, or floating-point pixels); anything else is a frame.</p>
+<ul>
+  <li><b>Darks</b> are grouped by exposure, gain, size and binning, <b>flats</b> by filter, size, binning, gain and night (DATE-OBS), since dust moves between nights. Each group stands in the lists like a master, for example <i>46 dark frames, 900 s</i> or <i>25 Ha flat frames, 2026-07-19</i>, and is picked by the same rules. When a filter has flats from several nights, Auto takes the night nearest the lights&rsquo;.</li>
+  <li>The first stack that uses one combines its frames with the same trimmed mean as the lights, and keeps the master in memory: every later stack in the window uses it as it is, and nothing is written to disk. The log says how long it took (46 frames of 46.8 MP take a few seconds). <b>Clear Masters</b>, or closing the window, lets them go.</li>
+  <li>Each flat is divided by its own level first (per Bayer site on a colour sensor), so flats of different brightness combine properly. No dark or bias is taken off the flats: at a flat&rsquo;s exposure the offset moves the corner correction by a few tenths of a percent.</li>
+  <li>A frame that cannot be read, or is another size, is left out of its master and the log says so.</li>
+</ul>
+<p>The log names the masters each group used and repeats the warnings. A group that nothing fits is stacked without that master. Masters cannot be applied to X-Trans RAW frames.</p>
+<p>A master does not have to be stored the way the subs are:</p>
+<ul>
+  <li><b>A debayered (colour) master on raw one-shot-colour subs</b> gives its Bayer mosaic back: at each pixel, the sample the camera measured there is taken back out of it. That is exact for any demosaic that keeps the measured samples, which SASpro&rsquo;s all do.</li>
+  <li><b>A raw mosaic master on subs that were debayered elsewhere</b> is debayered to match, with the pattern on its BAYERPAT card (or the subs&rsquo;). A dark with no pattern is applied to each colour channel alike; a flat with no pattern is left out, since its colour planes cannot be told apart.</li>
+</ul>
+<p>What cannot be made to fit is not guessed at. A master of another size (turned 90&deg;, or at another binning), a dark far brighter than the subs (another camera&rsquo;s, or in other units), or a file that cannot be read is left out, the log says why, and the group is stacked without it. A master never stops a stack: a single sub that does not fit the masters is skipped and listed, like any other bad sub.</p>
+
+<h2>Combining: trimmed mean</h2>
+<p>For every pixel the brightest and faintest samples are dropped, the same number off each end, and the rest are averaged, each by its frame&rsquo;s weight. Which samples are dropped depends only on their values, never on the weights. That removes hot pixels, cosmic rays and bright streaks that appear in only one or two frames. A trail in several frames is weakened, not removed. The noise is close to a plain average&rsquo;s: up to about 5% higher on the smallest stacks, next to nothing on deep ones.</p>
+<table>
+  <tr><th>Frames at that pixel</th><th>Dropped</th></tr>
+  <tr><td>Fewer than 6</td><td>Nothing (plain average)</td></tr>
+  <tr><td>6 to 14</td><td>The highest and the lowest</td></tr>
+  <tr><td>15 or more</td><td>The two highest and the two lowest</td></tr>
+</table>
+
+<h2>Groups</h2>
+<p>Frames are stacked together only when their filter, exposure, size, binning and Bayer pattern match. The list shows the groups; each one becomes one image. Select rows and press <b>Remove Selected</b> to leave frames out.</p>
+
+<h2>Reference</h2>
+<p>If you do not choose one, the first frame of each group that has enough stars is used. A reference you choose is stacked only with the group it belongs to; any other group is aligned to it and nothing more, which is how to line up an LRGB or narrowband set on one frame. If its size does not match a group, that group falls back to its own first frame.</p>
+
+<h2>Frames that cannot be used</h2>
+<p>A frame that cannot be opened, has a different size, or cannot be matched to the reference is skipped, and the log says why. If nothing aligns at all you get an error, never a stack of the reference alone.</p>
+
+<h2>Speed</h2>
+<p>Frames are read, aligned and added in parallel, and only running totals are kept, so memory use does not grow with the number of frames. The number of worker processes is limited by free memory.</p>
+<p>With an <b>NVIDIA GPU</b> that SASpro&rsquo;s hardware acceleration can reach, the debayer, star detection, warping and averaging run on the card, and only reading files and matching stars stay on the CPU. The window starts the GPU as soon as it opens (it takes several seconds), and shows which engine it will use beside the buttons. If the card cannot be used, or fails partway, the stack is done on the CPU instead and the log says why. <i>Use hardware acceleration if available</i> in Stacking Settings turns the GPU off.</p>
+
+<h2>What it leaves out</h2>
+<p>No bias or flat-dark frames (a master flat should already be calibrated, and flats made from single frames are not dark-subtracted), no cosmetic correction, no rejection by quality (a poor frame is weighted down, never dropped), no scaling or local normalization, no drizzle, no distortion correction. Use the Stacking Suite when you want those.</p>
+
+</body>
+</html>

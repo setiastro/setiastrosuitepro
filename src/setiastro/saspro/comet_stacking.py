@@ -1320,7 +1320,7 @@ class CometCentroidPreview(QDialog):
     """
     def __init__(self, file_list, initial_xy=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Comet: Review & Adjust Centroids")
+        self.setWindowTitle(self.tr("Comet: Review & Adjust Centroids"))
         self.files = list(file_list)
         self.xy = dict(initial_xy or {})
         self.gamma = 0.6
@@ -1365,14 +1365,14 @@ class CometCentroidPreview(QDialog):
         self.s_blur.valueChanged.connect(self._refresh_current)
 
         self.n_prop = QSpinBox(); self.n_prop.setRange(1, 50); self.n_prop.setValue(3)
-        self.cb_show_gamma = QCheckBox("Show gamma preview"); self.cb_show_gamma.setChecked(True)
+        self.cb_show_gamma = QCheckBox(self.tr("Show gamma preview")); self.cb_show_gamma.setChecked(True)
 
-        self.btn_auto   = QPushButton("Auto")
-        self.btn_prev   = QPushButton("⟲ Prev")
-        self.btn_next   = QPushButton("Next ⟳")
-        self.btn_copyf  = QPushButton("Propagate →")
-        self.btn_ok     = QPushButton("OK")
-        self.btn_cancel = QPushButton("Cancel")
+        self.btn_auto   = QPushButton(self.tr("Auto"))
+        self.btn_prev   = QPushButton(self.tr("⟲ Prev"))
+        self.btn_next   = QPushButton(self.tr("Next ⟳"))
+        self.btn_copyf  = QPushButton(self.tr("Propagate →"))
+        self.btn_ok     = QPushButton(self.tr("OK"))
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
 
         self.btn_auto.clicked.connect(self._auto_pick)
         self.btn_prev.clicked.connect(lambda: self._change_row(-1))
@@ -1382,16 +1382,16 @@ class CometCentroidPreview(QDialog):
         self.btn_cancel.clicked.connect(self.reject)
 
         ctrls = QVBoxLayout()
-        ctrls.addWidget(QLabel("Gamma")); ctrls.addWidget(self.s_gamma)
-        ctrls.addWidget(QLabel("Blur σ")); ctrls.addWidget(self.s_blur)
+        ctrls.addWidget(QLabel(self.tr("Gamma"))); ctrls.addWidget(self.s_gamma)
+        ctrls.addWidget(QLabel(self.tr("Blur σ"))); ctrls.addWidget(self.s_blur)
         ctrls.addWidget(self.cb_show_gamma)
 
         # Zoom buttons
         zoom_row = QHBoxLayout()
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
         self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit"))
         self.btn_zoom_in.clicked.connect(self._zoom_in)
         self.btn_zoom_out.clicked.connect(self._zoom_out)
         self.btn_zoom_100.clicked.connect(self._zoom_11)

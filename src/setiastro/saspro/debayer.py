@@ -6,11 +6,15 @@ import cv2
 import os
 import threading as _threading
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QCoreApplication, Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDialogButtonBox,
     QGroupBox, QMessageBox, QProgressBar
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("Debayer", text)
 
 # Methods with a GPU implementation. Anything else resolves to the numba
 # kernel, so the dialog says so rather than letting the user pick GPU and
@@ -381,7 +385,8 @@ class _DebayerWorker(QThread):
             if self.pattern not in _VALID:
                 raise ValueError(f"Unsupported pattern: {self.pattern}")
 
-            self.progress.emit(5, f"Debayering ({self.pattern}, {self.method}) …")
+            self.progress.emit(5, self.tr("Debayering ({0}, {1}) …").format(
+                self.pattern, self.method))
             # Through debayer_array, not debayer_fits_fast. This used to call
             # the numba kernel directly, which meant the interactive tool could
             # never use the GPU however stacking/debayer_gpu was set -- and it
@@ -394,9 +399,10 @@ class _DebayerWorker(QThread):
             rgb = debayer_array(
                 img, pattern=self.pattern, roworder="", method=self.method,
                 cfa_drizzle=False, use_gpu=self.use_gpu,
-                status_cb=lambda s: self.progress.emit(60, f"Using {s} …"),
+                status_cb=lambda s: self.progress.emit(
+                    60, self.tr("Using {0} …").format(s)),
             )
-            self.progress.emit(96, "Finalizing …")
+            self.progress.emit(96, self.tr("Finalizing …"))
             self.finished.emit(rgb, self.pattern)
         except Exception as e:
             self.failed.emit(str(e))
@@ -485,12 +491,12 @@ class DebayerDialog(QDialog):
 
         # Reject non-mosaic early
         if arr.ndim == 3 and arr.shape[2] >= 3:
-            QMessageBox.information(self, "Debayer", "Image already has 3 channels.")
+            QMessageBox.information(self, self.tr("Debayer"), self.tr("Image already has 3 channels."))
             self.setEnabled(False)
             self.close()
             return
         if arr.ndim != 2:
-            QMessageBox.warning(self, "Debayer", "Only single-channel mosaics can be debayered.")
+            QMessageBox.warning(self, self.tr("Debayer"), self.tr("Only single-channel mosaics can be debayered."))
             self.setEnabled(False)
             self.close()
             return
@@ -527,18 +533,21 @@ class DebayerDialog(QDialog):
             "RGGB", "BGGR", "GRBG", "GBRG",
         ])
         self.combo_pattern.setCurrentIndex(0)
-        self.lbl_detect = QLabel(f"Detected: {detected or '(unknown)'}  "
-                                f"(XBAYROFF={xoff}, YBAYROFF={yoff}, ROWORDER={roworder or 'n/a'})")
+        self.lbl_detect = QLabel(self.tr("Detected: {0}  "
+                                         "(XBAYROFF={1}, YBAYROFF={2}, ROWORDER={3})").format(
+                                             detected or self.tr("(unknown)"),
+                                             xoff, yoff, roworder or 'n/a'))
         h.addWidget(self.combo_pattern, 1)
         h.addWidget(self.lbl_detect)
         v.addWidget(gb)
 
         if self._cfa_family == 'XTRANS':
             self.combo_pattern.setEnabled(False)
-            self.lbl_detect.setText("Detected: X-Trans (rawpy)")
+            self.lbl_detect.setText(self.tr("Detected: X-Trans (rawpy)"))
         else:
             norm = _normalize_bayer_token(self._detected_pattern or "")
-            self.lbl_detect.setText(f"Detected: {norm or '(unknown)'}")
+            self.lbl_detect.setText(self.tr("Detected: {0}").format(
+                norm or self.tr("(unknown)")))
 
         self.method_group = QGroupBox(self.tr("Method"), self)
         hm = QHBoxLayout(self.method_group)
@@ -682,6 +691,10 @@ class DebayerDialog(QDialog):
         return txt
 
     def _go(self):
+        # A second OK/Enter while debayering started a second run, and both
+        # applied their result to the document.
+        if self.worker is not None and self.worker.isRunning():
+            return
         pat = self._chosen_pattern()
         method_label = self.combo_method.currentText()
 
@@ -695,36 +708,37 @@ class DebayerDialog(QDialog):
                 if sib:
                     src_path = sib
                 else:
-                    QMessageBox.warning(self, "Debayer",
-                        "X-Trans detected, but original RAW path was not found.\n"
-                        "Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to the file.")
+                    QMessageBox.warning(self, self.tr("Debayer"),
+                        self.tr("X-Trans detected, but original RAW path was not found.\n"
+                                "Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to the file."))
                     return
             # map label → rawpy alg token
             alg = next((tok for (label, tok) in _XTRANS_METHODS if label == method_label), "AHD")
             try:
-                self.status.setText(f"Demosaicing X-Trans via rawpy ({alg}) …")
+                self.status.setText(self.tr("Demosaicing X-Trans via rawpy ({0}) …").format(alg))
                 self.bar.setValue(10)
                 rgb = _debayer_xtrans_via_rawpy(src_path, use_cam_wb=True, output_bps=16, alg=alg)
                 self.bar.setValue(96)
                 _apply_result_to_doc(self.dm, self.doc, rgb.astype(np.float32, copy=False),
                                     step_name=f"Debayer (X-Trans/{alg})")
-                self.status.setText("Done.")
+                self.status.setText(self.tr("Done."))
                 self.accept()
             except Exception as e:
-                QMessageBox.critical(self, "Debayer", f"X-Trans demosaic failed:\n{e}")
-                self.status.setText("Failed.")
+                QMessageBox.critical(self, self.tr("Debayer"),
+                                     self.tr("X-Trans demosaic failed:\n{0}").format(e))
+                self.status.setText(self.tr("Failed."))
             return
 
         # Bayer path (Numba) with method
         if pat not in _VALID:
-            QMessageBox.warning(self, "Debayer", "Unknown pattern (auto-detect failed). Choose a pattern explicitly.")
+            QMessageBox.warning(self, self.tr("Debayer"), self.tr("Unknown pattern (auto-detect failed). Choose a pattern explicitly."))
             return
 
         bayer_method = next((tok for (label, tok) in _BAYER_METHODS if label == method_label), "vng")
         _use_gpu = bool(self.combo_backend.currentData())
         self.status.setText(
-            f"Debayering as {pat} ({bayer_method}) on "
-            f"{'GPU' if _use_gpu else 'CPU'} …")
+            self.tr("Debayering as {0} ({1}) on {2} …").format(
+                pat, bayer_method, 'GPU' if _use_gpu else 'CPU'))
         self.bar.setValue(0)
         self.worker = _DebayerWorker(self._src, pat, method=bayer_method,
                                      use_gpu=_use_gpu)
@@ -738,8 +752,8 @@ class DebayerDialog(QDialog):
         self.bar.setValue(p); self.status.setText(msg)
 
     def _on_fail(self, err: str):
-        QMessageBox.critical(self, "Debayer", err)
-        self.status.setText("Failed.")
+        QMessageBox.critical(self, self.tr("Debayer"), err)
+        self.status.setText(self.tr("Failed."))
 
     def _on_done(self, rgb: np.ndarray, used_pattern: str):
         # We flipped the mosaic to top-down before debayering so the Bayer phase
@@ -748,7 +762,7 @@ class DebayerDialog(QDialog):
         if _roworder_is_bottom_up(self._roworder):
             rgb = np.ascontiguousarray(np.flipud(rgb))
         _apply_result_to_doc(self.dm, self.doc, rgb, step_name=f"Debayer ({used_pattern})")
-        self.status.setText("Done.")
+        self.status.setText(self.tr("Done."))
         self.accept()
 
 
@@ -939,7 +953,7 @@ def run_debayer_via_preset(main, preset: dict | None = None, *, doc=None):
 
     dm = getattr(main, "doc_manager", None) or getattr(main, "dm", None)
     if dm is None:
-        QMessageBox.warning(main, "Debayer", "DocManager not available.")
+        QMessageBox.warning(main, _tr("Debayer"), _tr("DocManager not available."))
         return
 
     if doc is None:
@@ -947,7 +961,7 @@ def run_debayer_via_preset(main, preset: dict | None = None, *, doc=None):
         doc = d() if callable(d) else d
 
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "Debayer", "Load an image first.")
+        QMessageBox.warning(main, _tr("Debayer"), _tr("Load an image first."))
         return
 
     try:
@@ -955,6 +969,6 @@ def run_debayer_via_preset(main, preset: dict | None = None, *, doc=None):
         if hasattr(main, "_log"):
             main._log(f"✅ Debayer (headless) pattern={used_pat}, preset={p}")
     except Exception as e:
-        QMessageBox.critical(main, "Debayer", str(e))
+        QMessageBox.critical(main, _tr("Debayer"), str(e))
         if hasattr(main, "_log"):
             main._log(f"❌ Debayer failed: {e}")

@@ -55,7 +55,9 @@ def _format_token_for_save(ext: str) -> str:
 
 class _BatchWorker(QThread):
     progress = pyqtSignal(int, str)   # (percent, message)
-    finished = pyqtSignal()
+    # Not "finished": that name would shadow QThread.finished (which fires only
+    # after run() returns), and this one is emitted from inside run().
+    succeeded = pyqtSignal()
     failed = pyqtSignal(str)
 
     def __init__(self, in_dir: str, out_dir: str, out_ext: str,
@@ -90,7 +92,7 @@ class _BatchWorker(QThread):
             files = self._collect_files()
             n = len(files)
             if not n:
-                self.failed.emit("No matching files in input directory.")
+                self.failed.emit(self.tr("No matching files in input directory."))
                 return
 
             Path(self.out_dir).mkdir(parents=True, exist_ok=True)
@@ -105,10 +107,10 @@ class _BatchWorker(QThread):
                 dst = os.path.join(self.out_dir, f"{base}{self.out_ext}")
 
                 if self.skip_existing and os.path.exists(dst):
-                    self.progress.emit(int(i * 100 / n), f"Skipping (exists): {os.path.basename(dst)}")
+                    self.progress.emit(int(i * 100 / n), self.tr("Skipping (exists): {0}").format(os.path.basename(dst)))
                     continue
 
-                self.progress.emit(int((i - 1) * 100 / n), f"Loading {os.path.basename(src)}")
+                self.progress.emit(int((i - 1) * 100 / n), self.tr("Loading {0}").format(os.path.basename(src)))
                 try:
                     # return_metadata=True so XISF sources hand their
                     # XISFProperties through to save_image. The FITS writer
@@ -120,11 +122,11 @@ class _BatchWorker(QThread):
                     src_meta = loaded[4] if len(loaded) > 4 else {}
                     image_meta = (src_meta or {}).get("xisf_meta")
                 except Exception as e:
-                    self.progress.emit(int(i * 100 / n), f"Skipping (load failed): {os.path.basename(src)}")
+                    self.progress.emit(int(i * 100 / n), self.tr("Skipping (load failed): {0}").format(os.path.basename(src)))
                     continue
 
                 if img is None:
-                    self.progress.emit(int(i * 100 / n), f"Skipping (unreadable): {os.path.basename(src)}")
+                    self.progress.emit(int(i * 100 / n), self.tr("Skipping (unreadable): {0}").format(os.path.basename(src)))
                     continue
 
                 # Decide bit depth to use
@@ -148,7 +150,7 @@ class _BatchWorker(QThread):
                         bit_depth = next(iter(allowed))
 
                 # Write
-                self.progress.emit(int((i - 1) * 100 / n), f"Saving {os.path.basename(dst)}")
+                self.progress.emit(int((i - 1) * 100 / n), self.tr("Saving {0}").format(os.path.basename(dst)))
                 try:
                     legacy_save_image(
                         img_array=img,
@@ -161,12 +163,12 @@ class _BatchWorker(QThread):
                         file_meta=None,
                     )
                 except Exception as e:
-                    self.progress.emit(int(i * 100 / n), f"ERROR: {os.path.basename(base)} → {e}")
+                    self.progress.emit(int(i * 100 / n), self.tr("ERROR: {0} → {1}").format(os.path.basename(base), e))
                     continue
 
-                self.progress.emit(int(i * 100 / n), f"Saved {os.path.basename(dst)}")
+                self.progress.emit(int(i * 100 / n), self.tr("Saved {0}").format(os.path.basename(dst)))
 
-            self.finished.emit()
+            self.succeeded.emit()
         except Exception as e:
             self.failed.emit(str(e))
 
@@ -190,22 +192,22 @@ class BatchConvertDialog(QDialog):
 
         # in dir
         self.in_edit = QLineEdit()
-        in_row = self._row("Input folder:", self.in_edit, self._browse_in)
+        in_row = self._row(self.tr("Input folder:"), self.in_edit, self._browse_in)
         lay.addLayout(in_row)
 
         # out dir
         self.out_edit = QLineEdit()
-        out_row = self._row("Output folder:", self.out_edit, self._browse_out)
+        out_row = self._row(self.tr("Output folder:"), self.out_edit, self._browse_out)
         lay.addLayout(out_row)
 
         # options row
         opt_row = QHBoxLayout()
 
-        self.recurse_cb = QCheckBox("Recurse subfolders")
+        self.recurse_cb = QCheckBox(self.tr("Recurse subfolders"))
         self.recurse_cb.setChecked(True)
         opt_row.addWidget(self.recurse_cb)
 
-        self.skip_cb = QCheckBox("Skip existing")
+        self.skip_cb = QCheckBox(self.tr("Skip existing"))
         self.skip_cb.setChecked(True)
         opt_row.addWidget(self.skip_cb)
 
@@ -259,18 +261,18 @@ class BatchConvertDialog(QDialog):
         hb = QHBoxLayout()
         hb.addWidget(QLabel(label))
         hb.addWidget(line, 1)
-        b = QPushButton("Browse…")
+        b = QPushButton(self.tr("Browse…"))
         b.clicked.connect(browse_fn)
         hb.addWidget(b)
         return hb
 
     def _browse_in(self):
-        d = QFileDialog.getExistingDirectory(self, "Choose Input Folder", self.in_edit.text().strip() or "")
+        d = QFileDialog.getExistingDirectory(self, self.tr("Choose Input Folder"),self.in_edit.text().strip() or "")
         if d:
             self.in_edit.setText(d)
 
     def _browse_out(self):
-        d = QFileDialog.getExistingDirectory(self, "Choose Output Folder", self.out_edit.text().strip() or "")
+        d = QFileDialog.getExistingDirectory(self, self.tr("Choose Output Folder"),self.out_edit.text().strip() or "")
         if d:
             self.out_edit.setText(d)
 
@@ -292,14 +294,14 @@ class BatchConvertDialog(QDialog):
         in_dir = self.in_edit.text().strip()
         out_dir = self.out_edit.text().strip()
         if not in_dir or not out_dir:
-            QMessageBox.warning(self, "Batch Convert", "Pick input and output folders.")
+            QMessageBox.warning(self, self.tr("Batch Convert"), self.tr("Pick input and output folders."))
             return
 
         if os.path.abspath(in_dir) == os.path.abspath(out_dir):
             # you *can* convert in place, but warn if target ext might overwrite sources
             QMessageBox.information(
-                self, "In-place Notice",
-                "Input and output folders are the same. Existing files with the same base name and extension may be overwritten."
+                self, self.tr("In-place Notice"),
+                self.tr("Input and output folders are the same. Existing files with the same base name and extension may be overwritten.")
             )
 
         out_ext = self.fmt.currentText()
@@ -309,12 +311,12 @@ class BatchConvertDialog(QDialog):
 
         self.worker = _BatchWorker(in_dir, out_dir, out_ext, recurse, skip_existing, bit_depth_choice)
         self.worker.progress.connect(self._on_progress)
-        self.worker.finished.connect(self._on_finished)
+        self.worker.succeeded.connect(self._on_finished)
         self.worker.failed.connect(self._on_failed)
 
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
-        self.status.setText("Starting…")
+        self.status.setText(self.tr("Starting…"))
         self.bar.setValue(0)
         self.worker.start()
 
@@ -330,10 +332,10 @@ class BatchConvertDialog(QDialog):
     def _on_finished(self):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
-        self.status.setText("Done.")
+        self.status.setText(self.tr("Done."))
 
     def _on_failed(self, err: str):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
-        self.status.setText("Failed.")
-        QMessageBox.critical(self, "Batch Convert", err)
+        self.status.setText(self.tr("Failed."))
+        QMessageBox.critical(self, self.tr("Batch Convert"), err)

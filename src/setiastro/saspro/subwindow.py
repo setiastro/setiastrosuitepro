@@ -31,6 +31,7 @@ from PyQt6.QtCore import (
     pyqtSignal,
     QSortFilterProxyModel,
     QSignalBlocker, QVariant,
+    QCoreApplication, QT_TRANSLATE_NOOP,
 )
 from PyQt6.QtGui import (
     QCursor,
@@ -108,24 +109,32 @@ from setiastro.saspro.shortcut_registry import add_shortcut, declare_key, declar
 # sheet lists them before any image is open. (A is the toolbar's
 # Display-Stretch action, not a view shortcut.)
 _VIEW_KEYS = (
-    ("F2",          "_rename_document",    "Rename the image"),
-    ("F3",          "_rename_document",    "Rename the image"),
-    ("Ctrl+Space",  "toggle_autostretch",  "Toggle display auto-stretch"),
-    ("Alt+Shift+A", "toggle_autostretch",  "Toggle display auto-stretch"),
-    ("Ctrl+K",      "toggle_mask_overlay", "Show/hide the mask overlay"),
+    ("F2",          "_rename_document",    QT_TRANSLATE_NOOP("CheatSheet", "Rename the image")),
+    ("F3",          "_rename_document",    QT_TRANSLATE_NOOP("CheatSheet", "Rename the image")),
+    ("Ctrl+Space",  "toggle_autostretch",  QT_TRANSLATE_NOOP("CheatSheet", "Toggle display auto-stretch")),
+    ("Alt+Shift+A", "toggle_autostretch",  QT_TRANSLATE_NOOP("CheatSheet", "Toggle display auto-stretch")),
+    ("Ctrl+K",      "toggle_mask_overlay", QT_TRANSLATE_NOOP("CheatSheet", "Show/hide the mask overlay")),
 )
 for _k, _m, _lab in _VIEW_KEYS:
-    declare_key(_k, _lab, "Image view")
-declare_key("Space", "Hold, then click or drag: read pixel values (and WCS)", "Image view")
+    declare_key(_k, _lab, QT_TRANSLATE_NOOP("CheatSheet", "Image view"))
+declare_key("Space", QT_TRANSLATE_NOOP("CheatSheet", "Hold, then click or drag: read pixel values (and WCS)"), QT_TRANSLATE_NOOP("CheatSheet", "Image view"))
 # The view tab's drag is chosen by modifier in _DragTab.mouseMoveEvent.
-declare_gesture("Drag the ⧉ tab onto another view", "Image view", "Copy this view's zoom and pan to it")
-declare_gesture("Drag the ⧉ tab onto empty canvas", "Image view", "Duplicate the image")
-declare_gesture("Alt+drag the ⧉ tab onto another view", "Image view", "Link the two views (live pan/zoom sync)")
-declare_gesture("Shift+drag the ⧉ tab onto another view", "Image view", "Apply this image to it as a mask")
-declare_gesture("Ctrl+drag the ⧉ tab onto another view", "Image view", "Copy the astrometric solution (WCS) to it")
-declare_gesture("Ctrl+drag the ⧉ tab onto a View Bundle", "Image view", "Copy the astrometric solution (WCS) to every open view in the bundle")
-declare_gesture("Mouse wheel", "Image view", "Zoom at the cursor")
-declare_gesture("Space+click or Space+drag", "Image view", "Read pixel values (and WCS) under the cursor")
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Drag the ⧉ tab onto another view"), QT_TRANSLATE_NOOP("CheatSheet", "Image view"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Copy this view's zoom and pan to it"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Drag the ⧉ tab onto empty canvas"), QT_TRANSLATE_NOOP("CheatSheet", "Image view"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Duplicate the image"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Alt+drag the ⧉ tab onto another view"), QT_TRANSLATE_NOOP("CheatSheet", "Image view"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Link the two views (live pan/zoom sync)"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Shift+drag the ⧉ tab onto another view"), QT_TRANSLATE_NOOP("CheatSheet", "Image view"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Apply this image to it as a mask"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Ctrl+drag the ⧉ tab onto another view"), QT_TRANSLATE_NOOP("CheatSheet", "Image view"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Copy the astrometric solution (WCS) to it"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Ctrl+drag the ⧉ tab onto a View Bundle"), QT_TRANSLATE_NOOP("CheatSheet", "Image view"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Copy the astrometric solution (WCS) to every open view in the bundle"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Mouse wheel"), QT_TRANSLATE_NOOP("CheatSheet", "Image view"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Zoom at the cursor"))
+declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Space+click or Space+drag"), QT_TRANSLATE_NOOP("CheatSheet", "Image view"),
+                QT_TRANSLATE_NOOP("CheatSheet", "Read pixel values (and WCS) under the cursor"))
 from setiastro.saspro.widgets.image_utils import ensure_contiguous
 from setiastro.saspro.imageops.viewport_render import resize_for_display, to_uint8_rgb
 from setiastro.saspro.imageops.viewport_canvas import ViewportImageCanvas
@@ -133,6 +142,10 @@ from setiastro.saspro.imageops.tiled_canvas import TiledImageCanvas
 
 
 __all__ = ["ImageSubWindow", "TableSubWindow"]
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("Subwindow", text)
 
 class SimpleTableModel(QAbstractTableModel):
     def __init__(self, rows: list[list], headers: list[str], parent=None):
@@ -759,10 +772,16 @@ class ImageSubWindow(QWidget):
         self._drag_start = QPoint()
         self._autostretch_linked = QSettings().value("display/stretch_linked", False, type=bool)
         self.autostretch_enabled = False
+        # True while Display-Stretch follows the image (see follow_linear_data);
+        # any explicit set_autostretch() hands control back to the user.
+        self._autostretch_follow = False
         self.autostretch_target = 0.25
         self.autostretch_sigma = 3.0
         self.autostretch_profile = "normal"
         self._autostretch_continuous = QSettings().value("display/autostretch_continuous", True, type=bool)
+        # Another view's LUT this view draws with (borrow_display_stretch), or None.
+        self._autostretch_borrowed_lut = None
+        self._autostretch_borrowed_linked = False
         self._autostretch_lut_cache = None
         self._autostretch_cache_key = None    
         self.show_mask_overlay = False
@@ -785,7 +804,7 @@ class ImageSubWindow(QWidget):
         self._link_badge_on = False
         s = getattr(self, "_settings", None) or QSettings()
         self._settings = s
-        self._smooth_zoom = s.value("display/smooth_zoom_settle", True, type=bool)
+        self._smooth_zoom = s.value("display/smooth_zoom_settle", False, type=bool)
 
 
 
@@ -908,6 +927,26 @@ class ImageSubWindow(QWidget):
 
         self._btn_wcs.toggled.connect(self._on_toggle_wcs_grid)
         row.addWidget(self._btn_wcs, 0, Qt.AlignmentFlag.AlignLeft)
+
+        # Shown whenever Display-Stretch is on for this view, so nobody mistakes
+        # the view for stretched pixels. _update_linear_chip words it: "Linear"
+        # while following linear data on its own, "On" when turned on by hand.
+        self._linear_chip = QToolButton(self)
+        self._linear_chip.setText(self.tr("Linear · Display-Stretch Applied"))
+        self._linear_chip.setToolTip(self.tr(
+            "This image is linear (unstretched), so Display-Stretch is brightening its view.\n"
+            "The pixels are not changed. A stretch such as Statistical Stretch changes them,\n"
+            "and Display-Stretch turns itself off once the image is stretched.\n\n"
+            "Click to turn Display-Stretch off for this view."))
+        self._linear_chip.setAutoRaise(True)
+        self._linear_chip.setStyleSheet(
+            "QToolButton { color: palette(window-text); font-size: 11px;"
+            " border: 1px solid rgba(120,140,220,0.65); border-radius: 8px;"
+            " padding: 0px 6px; }"
+            "QToolButton:hover { background: rgba(120,140,220,0.25); }")
+        self._linear_chip.clicked.connect(lambda: self.set_autostretch(False))
+        self._linear_chip.setVisible(False)
+        row.addWidget(self._linear_chip, 0, Qt.AlignmentFlag.AlignLeft)
         # ─────────────────────────────────────────────────────────────────
 
         row.addStretch(1)
@@ -916,7 +955,7 @@ class ImageSubWindow(QWidget):
         self._zoom_label.setFixedWidth(52)
         self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._zoom_label.setStyleSheet("color: rgba(255,255,255,0.55); font-size: 11px;")
-        self._zoom_label.setToolTip("Current zoom level")
+        self._zoom_label.setToolTip(self.tr("Current zoom level"))
         row.addWidget(self._zoom_label, 0, Qt.AlignmentFlag.AlignRight)
 
         # ---- Inline view title (shown when the MDI subwindow is maximized) ----
@@ -1030,7 +1069,7 @@ class ImageSubWindow(QWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_ctx_menu)
         for _k, _m, _lab in _VIEW_KEYS:
-            add_shortcut(self, _k, getattr(self, _m), label=_lab, context="Image view")
+            add_shortcut(self, _k, getattr(self, _m), label=_lab, context=QT_TRANSLATE_NOOP("CheatSheet", "Image view"))
 
         # Re-render when the document changes
         self.document.changed.connect(self._on_document_changed)
@@ -1068,6 +1107,7 @@ class ImageSubWindow(QWidget):
 
         This should be the main place that triggers a redraw for normal edits.
         """
+        self._follow_linear_data()
         self._render(rebuild=True)
 
     def reload_display_settings(self):
@@ -1075,9 +1115,14 @@ class ImageSubWindow(QWidget):
         self._settings = s
 
         # re-read any settings that are cached in the view
-        self._smooth_zoom = s.value("display/smooth_zoom_settle", True, type=bool)
+        self._smooth_zoom = s.value("display/smooth_zoom_settle", False, type=bool)
         self._autostretch_linked = s.value("display/stretch_linked", False, type=bool)
         self._autostretch_linked = s.value("display/stretch_linked", False, type=bool)
+        if getattr(self, "_autostretch_follow", False):
+            self._autostretch_linked = False    # following stays unlinked
+        if getattr(self, "_autostretch_borrowed_lut", None) is not None:
+            # a borrowed LUT was built linked or unlinked; draw it the same way
+            self._autostretch_linked = bool(self._autostretch_borrowed_linked)
         self._autostretch_continuous = s.value("display/autostretch_continuous", True, type=bool)
         # if you cache bg opacity or other display keys here, re-read them too
         # self._bg_opacity = s.value("display/bg_opacity", 50, type=int) / 100.0
@@ -1444,7 +1489,7 @@ class ImageSubWindow(QWidget):
         if menu is not None:
             for idx, entry in enumerate(reversed(history)):
                 real_index = len(history) - 1 - idx
-                step = entry.get("step") or f"Step {real_index+1}"
+                step = entry.get("step") or self.tr("Step {0}").format(real_index+1)
                 act = menu.addAction(step)
                 act.triggered.connect(
                     lambda _chk=False, i=real_index: self._replay_history_index(i)
@@ -1729,6 +1774,7 @@ class ImageSubWindow(QWidget):
         # Scale first, then the single render, then the scroll position.
         new_key = self._tab_key_for_index(idx)
         restored = self._apply_tab_scale(new_key)
+        self._follow_linear_data()  # a preview may be stretched and the full image not
         self._render(True)
         if restored:
             self._apply_tab_scroll(new_key)
@@ -2588,14 +2634,172 @@ class ImageSubWindow(QWidget):
             self._recompute_autostretch_and_update()
 
     def _invalidate_autostretch_cache(self):
-        self._autostretch_lut_cache = None
+        # A borrowed LUT outlives redraws and edits; only a Display-Stretch
+        # change made on this view lets it go (_release_borrowed_stretch).
+        self._autostretch_lut_cache = getattr(self, "_autostretch_borrowed_lut", None)
         self._autostretch_cache_key = None
+
+    def _release_borrowed_stretch(self):
+        self._autostretch_borrowed_lut = None
+
+    def display_stretch_lut(self):
+        """The LUT this view's Display-Stretch draws with, or None while it is
+        off. Built from the image exactly as _render() would when no render
+        has cached one yet."""
+        if not getattr(self, "autostretch_enabled", False):
+            return None
+        lut = getattr(self, "_autostretch_lut_cache", None)
+        if lut is not None:
+            return lut
+        try:
+            arr = np.asarray(getattr(self.document, "image", None))
+            if arr.ndim == 3 and arr.shape[2] == 1:
+                arr = arr[..., 0]
+            if arr.ndim not in (2, 3) or arr.size == 0:
+                return None
+            is_mono = (arr.ndim == 2)
+            if np.issubdtype(arr.dtype, np.integer):
+                arr = arr.astype(np.float32) / float(max(1, np.iinfo(arr.dtype).max))
+            arr = arr.astype(np.float32, copy=False)
+            mx = array_max(arr)
+            if np.isfinite(mx) and mx > 1.0:
+                arr = arr / mx
+            n = int(arr.shape[0]) * int(arr.shape[1])
+            s = max(1, int(np.sqrt(n / 65536.0))) if n > 65536 else 1
+            return autostretch_lut(
+                np.ascontiguousarray(arr[::s, ::s]),
+                target_median=self.autostretch_target,
+                sigma=self.autostretch_sigma,
+                linked=(not is_mono and self._autostretch_linked),
+                use_24bit=None,
+                no_black_clip=bool(getattr(self, "_no_black_clip", False)),
+            )
+        except Exception:
+            return None
+
+    def borrow_display_stretch(self, src) -> bool:
+        """Show this view through src's Display-Stretch: off if src's is off,
+        otherwise drawn with src's own LUT instead of one measured from this
+        image. For an image made from src's, such as the stars-only image of a
+        star removal: a stretch measured on mostly-black stars data lifts its
+        noise floor, while src's shows the stars the way they looked in src.
+        Kept through redraws and edits; turning Display-Stretch off and on, or
+        changing its settings, on this view goes back to this image's own.
+        True if a LUT was borrowed."""
+        lut = src.display_stretch_lut() if src is not None else None
+        self._autostretch_borrowed_lut = None
+        self._autostretch_follow = False
+        if lut is None:                         # src shows plain pixels: so does this
+            if self.autostretch_enabled:
+                self.set_autostretch(False)
+            else:
+                self._update_linear_chip()
+            return False
+
+        def _mono(view):
+            a = np.asarray(getattr(view.document, "image", None))
+            return a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 1)
+
+        self.autostretch_target = float(getattr(src, "autostretch_target", self.autostretch_target))
+        self.autostretch_sigma = float(getattr(src, "autostretch_sigma", self.autostretch_sigma))
+        self.autostretch_profile = getattr(src, "autostretch_profile", self.autostretch_profile)
+        self._no_black_clip = bool(getattr(src, "_no_black_clip", False))
+        self._autostretch_linked = bool(getattr(src, "_autostretch_linked", False))
+        try:
+            same_kind = (_mono(self) == _mono(src))
+        except Exception:
+            same_kind = False
+        if not same_kind:                       # a mono LUT can't draw colour, nor the reverse
+            self.set_autostretch(True)
+            return False
+
+        self._autostretch_borrowed_lut = lut
+        self._autostretch_borrowed_linked = self._autostretch_linked
+        self.autostretch_enabled = True
+        self._invalidate_autostretch_cache()    # the cache now holds the borrowed LUT
+        self._qimg_src = None
+        try:
+            self.autostretchChanged.emit(True)
+        except Exception:
+            pass
+        self._update_linear_chip()
+        self._render(True)
+        return True
     # ---------- public API ----------
+    def follow_linear_data(self):
+        """Let Display-Stretch follow this view's image: on while the image is
+        linear, off once a stretch makes it non-linear, on again if that is
+        undone. For new data the user opened (the main window decides); ends
+        the moment anything calls set_autostretch()."""
+        self._release_borrowed_stretch()
+        self._autostretch_follow = True
+        # Always unlinked, whatever "Link RGB channels" says: a linked stretch
+        # of linear colour data shows its cast (teal / green backgrounds);
+        # unlinked levels each channel's own background. Mono ignores it.
+        if self._autostretch_linked:
+            self._autostretch_linked = False
+            self._invalidate_autostretch_cache()
+            self._qimg_src = None
+        if self._follow_linear_data():
+            self._render(True)
+        self._update_linear_chip()
+
+    def _follow_linear_data(self) -> bool:
+        """Match Display-Stretch to the image while following. True if it
+        changed; the caller redraws."""
+        if not getattr(self, "_autostretch_follow", False):
+            return False
+        try:
+            img = getattr(self.document, "image", None)
+            if img is None:
+                return False
+            from setiastro.saspro.first_steps_tour import looks_linear
+            want = bool(looks_linear(img))
+        except Exception:
+            return False
+        if want == bool(self.autostretch_enabled):
+            return False
+        self.autostretch_enabled = want
+        self._invalidate_autostretch_cache()
+        self._qimg_src = None
+        try:
+            self.autostretchChanged.emit(want)
+        except Exception:
+            pass
+        self._update_linear_chip()
+        return True
+
+    def _update_linear_chip(self):
+        """Show the chip whenever Display-Stretch is on for this view. The gold
+        toolbar button only speaks for the active view; the chip marks every
+        stretched view, worded for why it is on."""
+        chip = getattr(self, "_linear_chip", None)
+        if chip is None:
+            return
+        on = bool(getattr(self, "autostretch_enabled", False))
+        if on and getattr(self, "_autostretch_follow", False):
+            chip.setText(self.tr("Linear · Display-Stretch Applied"))
+            chip.setToolTip(self.tr(
+                "This image is linear (unstretched), so Display-Stretch is brightening its view.\n"
+                "The pixels are not changed. A stretch such as Statistical Stretch changes them,\n"
+                "and Display-Stretch turns itself off once the image is stretched.\n\n"
+                "Click to turn Display-Stretch off for this view."))
+        elif on:
+            chip.setText(self.tr("Display-Stretch On"))
+            chip.setToolTip(self.tr(
+                "Display-Stretch is brightening this view.\n"
+                "The pixels are not changed. A stretch such as Statistical Stretch changes them.\n\n"
+                "Click to turn Display-Stretch off for this view."))
+        chip.setVisible(on)
+
     def set_autostretch(self, on: bool):
         on = bool(on)
+        self._autostretch_follow = False
+        self._release_borrowed_stretch()
 
         if not on:
             self.autostretch_enabled = False
+            self._update_linear_chip()
             self._invalidate_autostretch_cache()
             try:
                 self.autostretchChanged.emit(False)
@@ -2606,6 +2810,7 @@ class ImageSubWindow(QWidget):
 
         # turning ON -> always compute a fresh stretch once
         self.autostretch_enabled = True
+        self._update_linear_chip()
         self._invalidate_autostretch_cache()
         try:
             self.autostretchChanged.emit(True)
@@ -2617,12 +2822,14 @@ class ImageSubWindow(QWidget):
         self.set_autostretch(not self.autostretch_enabled)
 
     def set_autostretch_target(self, target: float):
+        self._release_borrowed_stretch()
         self.autostretch_target = float(target)
         self._invalidate_autostretch_cache()
         if self.autostretch_enabled:
             self._render(rebuild=True)
 
     def set_autostretch_sigma(self, sigma: float):
+        self._release_borrowed_stretch()
         self.autostretch_sigma = float(sigma)
         self._invalidate_autostretch_cache()
         if self.autostretch_enabled:
@@ -2641,6 +2848,7 @@ class ImageSubWindow(QWidget):
             self.autostretch_target = 0.3
             self.autostretch_sigma  = 5
         self.autostretch_profile = p
+        self._release_borrowed_stretch()
         self._invalidate_autostretch_cache()
         if self.autostretch_enabled:
             self._render(rebuild=True)
@@ -2653,6 +2861,7 @@ class ImageSubWindow(QWidget):
         if self._autostretch_linked == linked:
             return
         self._autostretch_linked = linked
+        self._release_borrowed_stretch()
         self._invalidate_autostretch_cache()
         if self.autostretch_enabled:
             self._recompute_autostretch_and_update()
@@ -3087,7 +3296,7 @@ class ImageSubWindow(QWidget):
         try:
             if self._zoom_settle_needs_rebuild():
                 self._render(rebuild=True)
-            elif getattr(self, "_smooth_zoom", True):
+            elif getattr(self, "_smooth_zoom", False):
                 self._present_scaled(interactive=False)
         except Exception:
             pass
@@ -3551,6 +3760,7 @@ class ImageSubWindow(QWidget):
 
     def set_no_black_clip(self, enabled: bool):
         self._no_black_clip = bool(enabled)
+        self._release_borrowed_stretch()
         if self.autostretch_enabled:
             self._autostretch_lut_cache = None   # invalidate cache
             self._render(rebuild=True)
@@ -3696,7 +3906,10 @@ class ImageSubWindow(QWidget):
                 bool(getattr(self, "_no_black_clip", False)),
                 tuple(arr_f.shape),
             )
-            use_cached = (
+            borrowed = getattr(self, "_autostretch_borrowed_lut", None)
+            if borrowed is not None:            # another view's stretch, never re-measured here
+                self._autostretch_lut_cache = borrowed
+            use_cached = (borrowed is not None) or (
                 (not self._autostretch_continuous)
                 and (self._autostretch_lut_cache is not None)
                 and (self._autostretch_cache_key == cache_key)
@@ -3812,7 +4025,7 @@ class ImageSubWindow(QWidget):
         # on the final settle. Otherwise stay on the fast (nearest-neighbour) present
         # so undo/redo, process-applied, and doc-region updates keep the real pixels
         # visible without needing a zoom/resize nudge.
-        self._present_scaled(interactive=not getattr(self, "_smooth_zoom", True))
+        self._present_scaled(interactive=not getattr(self, "_smooth_zoom", False))
 
         rebuild = False  # done
 
@@ -4211,7 +4424,7 @@ class ImageSubWindow(QWidget):
 
         # Honour the "smooth on final redraw" setting globally. If the user has
         # disabled it, we never smooth — even on non-interactive presents.
-        if interactive or not getattr(self, "_smooth_zoom", True):
+        if interactive or not getattr(self, "_smooth_zoom", False):
             mode = Qt.TransformationMode.FastTransformation
         else:
             mode = Qt.TransformationMode.SmoothTransformation
@@ -4927,7 +5140,7 @@ class ImageSubWindow(QWidget):
                 # scale. _render() ends on a smooth present when smooth-zoom is
                 # on, else a crisp (nearest) present — either way at full res.
                 self._render(rebuild=True)
-            elif getattr(self, "_smooth_zoom", True):
+            elif getattr(self, "_smooth_zoom", False):
                 # Nothing to re-rasterize (zoomed out, or already at native/cap):
                 # just give the smooth final present the settle used to provide.
                 self._present_scaled(interactive=False)
@@ -6293,13 +6506,13 @@ class TypedTableModel(QAbstractTableModel):
                 if arr is not None:
                     finite = arr[np.isfinite(arr)]
                     if finite.size:
-                        return (
-                            f"{ci.name}\n"
-                            f"Vector length: {arr.size}\n"
-                            f"Min: {float(np.min(finite)):.6g}\n"
-                            f"Max: {float(np.max(finite)):.6g}"
-                        )
-                    return f"{ci.name}\nVector length: {arr.size}"
+                        return self.tr(
+                            "{0}\n"
+                            "Vector length: {1}\n"
+                            "Min: {2:.6g}\n"
+                            "Max: {3:.6g}"
+                        ).format(ci.name, arr.size, float(np.min(finite)), float(np.max(finite)))
+                    return self.tr("{0}\nVector length: {1}").format(ci.name, arr.size)
 
             # For multi-dimensional array payloads, show shape summary instead
             desc = _describe_array_value(v)
@@ -6744,7 +6957,7 @@ def _guess_unit_from_values(col_name: str, vals: np.ndarray) -> Optional[str]:
 class PlotTableDialog(QDialog):
     def __init__(self, parent, source_model: TypedTableModel, proxy_model: MultiColumnContainsFilterProxy):
         super().__init__(parent)
-        self.setWindowTitle("Plot Table Columns")
+        self.setWindowTitle(self.tr("Plot Table Columns"))
         self._src = source_model
         self._proxy = proxy_model
         self._semantic = _guess_plot_columns(self._src)
@@ -6778,23 +6991,23 @@ class PlotTableDialog(QDialog):
         left_content_lay = QVBoxLayout(left_content)
         left_content_lay.setContentsMargins(0, 0, 0, 0)
 
-        ctrl = QGroupBox("Plot Settings", self)
+        ctrl = QGroupBox(self.tr("Plot Settings"), self)
         form = QFormLayout(ctrl)
         left_content_lay.addWidget(ctrl)
         left_content_lay.addStretch(1)
 
         self.cmb_preset = QComboBox(self)
-        self.cmb_preset.addItem("Generic X-Y", userData="generic")
-        self.cmb_preset.addItem("TESS Light Curve", userData="tess_lc")
-        self.cmb_preset.addItem("Phase Folded Light Curve", userData="phase")
-        self.cmb_preset.addItem("Spectrum", userData="spectrum")
-        self.cmb_preset.addItem("Histogram", userData="hist")
-        form.addRow("Preset:", self.cmb_preset)
+        self.cmb_preset.addItem(self.tr("Generic X-Y"), userData="generic")
+        self.cmb_preset.addItem(self.tr("TESS Light Curve"), userData="tess_lc")
+        self.cmb_preset.addItem(self.tr("Phase Folded Light Curve"), userData="phase")
+        self.cmb_preset.addItem(self.tr("Spectrum"), userData="spectrum")
+        self.cmb_preset.addItem(self.tr("Histogram"), userData="hist")
+        form.addRow(self.tr("Preset:"), self.cmb_preset)
 
         self.cmb_x = QComboBox(self)
         self.cmb_y = QComboBox(self)
         self.cmb_yerr = QComboBox(self)
-        self.cmb_yerr.addItem("(none)", userData=-1)
+        self.cmb_yerr.addItem(self.tr("(none)"), userData=-1)
 
         self._num_cols: list[int] = []
         for i, ci in enumerate(self._src.column_infos()):
@@ -6809,30 +7022,30 @@ class PlotTableDialog(QDialog):
 
         form.addRow("X:", self.cmb_x)
         form.addRow("Y:", self.cmb_y)
-        form.addRow("Y error:", self.cmb_yerr)
+        form.addRow(self.tr("Y error:"), self.cmb_yerr)
 
-        self.chk_sort_x = QCheckBox("Sort by X", self)
+        self.chk_sort_x = QCheckBox(self.tr("Sort by X"), self)
         self.chk_sort_x.setChecked(True)
         form.addRow("", self.chk_sort_x)
 
-        self.chk_remove_nan = QCheckBox("Remove NaNs / missing", self)
+        self.chk_remove_nan = QCheckBox(self.tr("Remove NaNs / missing"), self)
         self.chk_remove_nan.setChecked(True)
         form.addRow("", self.chk_remove_nan)
 
-        self.chk_line = QCheckBox("Connect points (line)", self)
+        self.chk_line = QCheckBox(self.tr("Connect points (line)"), self)
         self.chk_line.setChecked(False)
         form.addRow("", self.chk_line)
 
-        self.chk_normalize_y = QCheckBox("Normalize Y by median", self)
+        self.chk_normalize_y = QCheckBox(self.tr("Normalize Y by median"), self)
         self.chk_normalize_y.setChecked(False)
         form.addRow("", self.chk_normalize_y)
 
-        self.chk_invert_y = QCheckBox("Invert Y axis (magnitudes)", self)
+        self.chk_invert_y = QCheckBox(self.tr("Invert Y axis (magnitudes)"), self)
         self.chk_invert_y.setChecked(False)
         form.addRow("", self.chk_invert_y)
 
-        self.chk_log_x = QCheckBox("Log X axis", self)
-        self.chk_log_y = QCheckBox("Log Y axis", self)
+        self.chk_log_x = QCheckBox(self.tr("Log X axis"), self)
+        self.chk_log_y = QCheckBox(self.tr("Log Y axis"), self)
         log_row = QWidget(self)
         log_lay = QHBoxLayout(log_row)
         log_lay.setContentsMargins(0, 0, 0, 0)
@@ -6841,7 +7054,7 @@ class PlotTableDialog(QDialog):
         log_lay.addStretch(1)
         form.addRow("", log_row)
 
-        self.chk_sigma_clip = QCheckBox("Sigma clip Y", self)
+        self.chk_sigma_clip = QCheckBox(self.tr("Sigma clip Y"), self)
         self.chk_sigma_clip.setChecked(False)
         self.sp_sigma = QDoubleSpinBox(self)
         self.sp_sigma.setRange(0.5, 20.0)
@@ -6859,10 +7072,10 @@ class PlotTableDialog(QDialog):
         self.sp_ms.setRange(0.5, 20.0)
         self.sp_ms.setSingleStep(0.5)
         self.sp_ms.setValue(3.0)
-        form.addRow("Marker size:", self.sp_ms)
+        form.addRow(self.tr("Marker size:"), self.sp_ms)
 
         # -------- X crop controls --------
-        self.chk_crop_x = QCheckBox("Crop X range", self)
+        self.chk_crop_x = QCheckBox(self.tr("Crop X range"), self)
         self.chk_crop_x.setChecked(False)
 
         self.sp_xmin = QDoubleSpinBox(self)
@@ -6879,9 +7092,9 @@ class PlotTableDialog(QDialog):
         crop_lay = QHBoxLayout(crop_row)
         crop_lay.setContentsMargins(0, 0, 0, 0)
         crop_lay.addWidget(self.chk_crop_x)
-        crop_lay.addWidget(QLabel("Min:"))
+        crop_lay.addWidget(QLabel(self.tr("Min:")))
         crop_lay.addWidget(self.sp_xmin, 1)
-        crop_lay.addWidget(QLabel("Max:"))
+        crop_lay.addWidget(QLabel(self.tr("Max:")))
         crop_lay.addWidget(self.sp_xmax, 1)
         form.addRow("", crop_row)
 
@@ -6899,14 +7112,14 @@ class PlotTableDialog(QDialog):
         self.sp_phase_bins.setRange(2, 1000)
         self.sp_phase_bins.setValue(100)
 
-        form.addRow("Period:", self.sp_period)
-        form.addRow("Epoch:", self.sp_epoch)
-        form.addRow("Phase bins:", self.sp_phase_bins)
+        form.addRow(self.tr("Period:"), self.sp_period)
+        form.addRow(self.tr("Epoch:"), self.sp_epoch)
+        form.addRow(self.tr("Phase bins:"), self.sp_phase_bins)
 
         self.sp_hist_bins = QSpinBox(self)
         self.sp_hist_bins.setRange(5, 5000)
         self.sp_hist_bins.setValue(50)
-        form.addRow("Histogram bins:", self.sp_hist_bins)
+        form.addRow(self.tr("Histogram bins:"), self.sp_hist_bins)
 
         # ================= RIGHT: plot =================
         right_wrap = QWidget(self)
@@ -6928,7 +7141,7 @@ class PlotTableDialog(QDialog):
 
         # ---------------- bottom buttons ----------------
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self)
-        self.btn_plot = QPushButton("Plot", self)
+        self.btn_plot = QPushButton(self.tr("Plot"), self)
         self.btn_plot.clicked.connect(self._do_plot)
         btns.addButton(self.btn_plot, QDialogButtonBox.ButtonRole.ActionRole)
         btns.rejected.connect(self.reject)
@@ -7025,7 +7238,7 @@ class PlotTableDialog(QDialog):
         unit = self._guess_axis_unit(col, vals)
         if unit:
             return f"{name} [{unit}]"
-        return name or "Value"
+        return name or self.tr("Value")
 
 
     def _sync_crop_to_series(self, x: np.ndarray, *, force: bool = False):
@@ -7343,17 +7556,17 @@ class PlotTableDialog(QDialog):
                         y = y / med
 
                 if y.size == 0:
-                    ax.text(0.5, 0.5, "No valid numeric data for histogram.",
+                    ax.text(0.5, 0.5, self.tr("No valid numeric data for histogram."),
                             ha="center", va="center", transform=ax.transAxes)
                 else:
                     ax.hist(y, bins=int(self.sp_hist_bins.value()))
                     ax.set_xlabel(self._axis_label_for_col(ycol, y))
-                    ax.set_ylabel("Count")
-                    ax.set_title(f"Histogram: {self._column_name(ycol)}")
+                    ax.set_ylabel(self.tr("Count"))
+                    ax.set_title(self.tr("Histogram: {0}").format(self._column_name(ycol)))
 
             else:
                 if self.cmb_x.count() == 0:
-                    ax.text(0.5, 0.5, "No numeric/vector X column available.",
+                    ax.text(0.5, 0.5, self.tr("No numeric/vector X column available."),
                             ha="center", va="center", transform=ax.transAxes)
                 else:
                     x = self._gather_visible_series(xcol)
@@ -7365,11 +7578,11 @@ class PlotTableDialog(QDialog):
                         self._sync_crop_to_series(x, force=False)
 
                     if x.size == 0 or y.size == 0:
-                        ax.text(0.5, 0.5, "No data available.",
+                        ax.text(0.5, 0.5, self.tr("No data available."),
                                 ha="center", va="center", transform=ax.transAxes)
                     else:
                         if x.ndim == 1 and y.ndim == 1 and x.size != y.size:
-                            ax.text(0.5, 0.5, f"X and Y lengths do not match ({x.size} vs {y.size}).",
+                            ax.text(0.5, 0.5, self.tr("X and Y lengths do not match ({0} vs {1}).").format(x.size, y.size),
                                     ha="center", va="center", transform=ax.transAxes)
                         else:
                             if yerr is not None and yerr.size not in (0, y.size):
@@ -7381,7 +7594,7 @@ class PlotTableDialog(QDialog):
                             x2, y2, yerr2 = self._apply_x_crop(x2, y2, yerr2)
 
                             if x2.size == 0:
-                                ax.text(0.5, 0.5, "All rows were filtered out.",
+                                ax.text(0.5, 0.5, self.tr("All rows were filtered out."),
                                         ha="center", va="center", transform=ax.transAxes)
                             elif preset == "phase":
                                 period = float(self.sp_period.value())
@@ -7399,9 +7612,9 @@ class PlotTableDialog(QDialog):
                                 ax.plot(x2, y2, "o", alpha=0.35, markersize=max(1.0, ms - 1.0))
                                 if xb.size > 0:
                                     ax.plot(xb, yb, "-", linewidth=1.5)
-                                ax.set_xlabel("Phase")
+                                ax.set_xlabel(self.tr("Phase"))
                                 ax.set_ylabel(self._axis_label_for_col(ycol, y2))
-                                ax.set_title("Phase-Folded Light Curve")
+                                ax.set_title(self.tr("Phase-Folded Light Curve"))
 
                             else:
                                 if self.chk_sort_x.isChecked():
@@ -7421,7 +7634,7 @@ class PlotTableDialog(QDialog):
                                         )
                                     else:
                                         ax.plot(x2, y2, "-", linewidth=1.0)
-                                    ax.set_title("Spectrum")
+                                    ax.set_title(self.tr("Spectrum"))
                                 else:
                                     if yerr2 is not None:
                                         ax.errorbar(
@@ -7461,7 +7674,7 @@ class PlotTableDialog(QDialog):
         except Exception as e:
             self.fig.clear()
             ax = self.fig.add_subplot(111)
-            ax.text(0.5, 0.5, f"Plot failed:\n{type(e).__name__}: {e}",
+            ax.text(0.5, 0.5, self.tr("Plot failed:\n{0}: {1}").format(type(e).__name__, e),
                     ha="center", va="center", transform=ax.transAxes)
             ax.set_axis_off()
             self.fig.tight_layout()
@@ -7477,13 +7690,13 @@ class _TypeComboDelegate(QStyledItemDelegate):
     OPTIONS = ["text", "float", "int", "bool", "ra", "dec", "note"]
 
     _TOOLTIPS = {
-        "text": "General text",
-        "float": "Decimal numbers",
-        "int": "Whole numbers",
-        "bool": "True / False values",
-        "ra": "Right Ascension",
-        "dec": "Declination",
-        "note": "Longer notes or comments",
+        "text": QT_TRANSLATE_NOOP("_TypeComboDelegate", "General text"),
+        "float": QT_TRANSLATE_NOOP("_TypeComboDelegate", "Decimal numbers"),
+        "int": QT_TRANSLATE_NOOP("_TypeComboDelegate", "Whole numbers"),
+        "bool": QT_TRANSLATE_NOOP("_TypeComboDelegate", "True / False values"),
+        "ra": QT_TRANSLATE_NOOP("_TypeComboDelegate", "Right Ascension"),
+        "dec": QT_TRANSLATE_NOOP("_TypeComboDelegate", "Declination"),
+        "note": QT_TRANSLATE_NOOP("_TypeComboDelegate", "Longer notes or comments"),
     }
 
     def createEditor(self, parent, option, index):
@@ -7491,7 +7704,7 @@ class _TypeComboDelegate(QStyledItemDelegate):
         for opt in self.OPTIONS:
             combo.addItem(opt)
             i = combo.count() - 1
-            combo.setItemData(i, self._TOOLTIPS.get(opt, ""), Qt.ItemDataRole.ToolTipRole)
+            combo.setItemData(i, self.tr(self._TOOLTIPS.get(opt, "")), Qt.ItemDataRole.ToolTipRole)
         return combo
 
     def setEditorData(self, editor, index):
@@ -7504,7 +7717,7 @@ class _TypeComboDelegate(QStyledItemDelegate):
 
 
 class _NewTableColumnsModel(QAbstractTableModel):
-    HEADERS = ["Column Name", "Type"]
+    HEADERS = [QT_TRANSLATE_NOOP("_NewTableColumnsModel", "Column Name"), QT_TRANSLATE_NOOP("_NewTableColumnsModel", "Type")]
     TYPE_OPTIONS = ["text", "float", "int", "bool", "ra", "dec", "note"]
 
     def __init__(self, specs: list[NewTableColumnSpec], parent=None):
@@ -7530,7 +7743,7 @@ class _NewTableColumnsModel(QAbstractTableModel):
             return None
         if orientation == Qt.Orientation.Horizontal:
             if 0 <= section < len(self.HEADERS):
-                return self.HEADERS[section]
+                return self.tr(self.HEADERS[section])
         return str(section + 1)
 
     def flags(self, index):
@@ -7579,14 +7792,14 @@ class _NewTableColumnsModel(QAbstractTableModel):
 class CreateTableDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Create Table")
+        self.setWindowTitle(self.tr("Create Table"))
         self.resize(560, 420)
 
         root = QVBoxLayout(self)
 
         form = QFormLayout()
         self.edit_name = QLineEdit(self)
-        self.edit_name.setText("New Table")
+        self.edit_name.setText(self.tr("New Table"))
 
         self.sp_rows = QSpinBox(self)
         self.sp_rows.setRange(0, 100000)
@@ -7596,12 +7809,12 @@ class CreateTableDialog(QDialog):
         self.sp_cols.setRange(1, 256)
         self.sp_cols.setValue(3)
 
-        form.addRow("Table name:", self.edit_name)
-        form.addRow("Initial rows:", self.sp_rows)
-        form.addRow("Columns:", self.sp_cols)
+        form.addRow(self.tr("Table name:"), self.edit_name)
+        form.addRow(self.tr("Initial rows:"), self.sp_rows)
+        form.addRow(self.tr("Columns:"), self.sp_cols)
         root.addLayout(form)
 
-        root.addWidget(QLabel("Define columns:"))
+        root.addWidget(QLabel(self.tr("Define columns:")))
 
         self.col_table = QTableView(self)
         root.addWidget(self.col_table, 1)
@@ -7613,14 +7826,14 @@ class CreateTableDialog(QDialog):
         self.col_table.verticalHeader().setVisible(False)
         self.col_table.resizeColumnsToContents()
         help_lbl = QLabel(
-            "Column type guide:\n"
+            self.tr("Column type guide:\n"
             "• text  — general text\n"
             "• note  — longer comments / notes\n"
             "• int   — whole numbers\n"
             "• float — decimal numbers\n"
             "• bool  — true/false values\n"
             "• ra    — Right Ascension\n"
-            "• dec   — Declination"
+            "• dec   — Declination")
         )
         help_lbl.setWordWrap(True)
         help_lbl.setStyleSheet("""
@@ -7675,17 +7888,17 @@ class CreateTableDialog(QDialog):
     def _accept_if_valid(self):
         name = self.table_name().strip()
         if not name:
-            QMessageBox.information(self, "Create Table", "Please enter a table name.")
+            QMessageBox.information(self, self.tr("Create Table"), self.tr("Please enter a table name."))
             return
 
         specs = self.column_specs()
         if not specs:
-            QMessageBox.information(self, "Create Table", "Please define at least one column.")
+            QMessageBox.information(self, self.tr("Create Table"), self.tr("Please define at least one column."))
             return
 
         bad = [c.name for c in specs if not str(c.name).strip()]
         if bad:
-            QMessageBox.information(self, "Create Table", "All columns must have names.")
+            QMessageBox.information(self, self.tr("Create Table"), self.tr("All columns must have names."))
             return
 
         self.accept()
@@ -7702,7 +7915,7 @@ class CreateTableDialog(QDialog):
 
 class TableStatsPanel(QGroupBox):
     def __init__(self, parent=None):
-        super().__init__("Stats", parent)
+        super().__init__(_tr("Stats"), parent)
         self.setMinimumWidth(260)
 
         lay = QFormLayout(self)
@@ -7719,17 +7932,17 @@ class TableStatsPanel(QGroupBox):
         self.lbl_std = QLabel("—")
         self.lbl_unique = QLabel("—")
 
-        lay.addRow("Rows (visible):", self.lbl_rows)
-        lay.addRow("Columns:", self.lbl_cols)
-        lay.addRow("Selected col:", self.lbl_sel_col)
-        lay.addRow("Type:", self.lbl_type)
-        lay.addRow("Count:", self.lbl_count)
-        lay.addRow("Min:", self.lbl_min)
-        lay.addRow("Max:", self.lbl_max)
-        lay.addRow("Mean:", self.lbl_mean)
-        lay.addRow("Median:", self.lbl_median)
-        lay.addRow("Std:", self.lbl_std)
-        lay.addRow("Unique (sample):", self.lbl_unique)
+        lay.addRow(self.tr("Rows (visible):"), self.lbl_rows)
+        lay.addRow(self.tr("Columns:"), self.lbl_cols)
+        lay.addRow(self.tr("Selected col:"), self.lbl_sel_col)
+        lay.addRow(self.tr("Type:"), self.lbl_type)
+        lay.addRow(self.tr("Count:"), self.lbl_count)
+        lay.addRow(self.tr("Min:"), self.lbl_min)
+        lay.addRow(self.tr("Max:"), self.lbl_max)
+        lay.addRow(self.tr("Mean:"), self.lbl_mean)
+        lay.addRow(self.tr("Median:"), self.lbl_median)
+        lay.addRow(self.tr("Std:"), self.lbl_std)
+        lay.addRow(self.tr("Unique (sample):"), self.lbl_unique)
 
     def set_table_shape(self, nrows_visible: int, ncols: int):
         self.lbl_rows.setText(str(nrows_visible))
@@ -7743,7 +7956,7 @@ class TableStatsPanel(QGroupBox):
         unique_sample: Optional[int] = None,
     ):
         self.lbl_sel_col.setText(col_name or "—")
-        self.lbl_type.setText("numeric" if is_numeric else "text/mixed")
+        self.lbl_type.setText(self.tr("numeric") if is_numeric else self.tr("text/mixed"))
 
         if is_numeric and stats and stats.get("count", 0) > 0:
             self.lbl_count.setText(str(stats.get("count", "—")))
@@ -7906,7 +8119,7 @@ class TableSubWindow(QWidget):
         header_row.addStretch(1)
 
         self.search_edit = QLineEdit(self)
-        self.search_edit.setPlaceholderText("Search / filter rows…")
+        self.search_edit.setPlaceholderText(self.tr("Search / filter rows…"))
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.setMaximumWidth(360)
         header_row.addWidget(self.search_edit)
@@ -8054,14 +8267,14 @@ class TableSubWindow(QWidget):
         is_hdrlet = bool(md.get("is_hdrlet_table", False))
 
         if not notice and is_hdrlet:
-            notice = (
+            notice = self.tr(
                 "This table appears to be an HDRLET / WCS-correction reference table. "
                 "It is shown so all FITS data remains accessible, but it is not a normal "
                 "spectrum-style vector table."
             )
 
         self.info_lbl.setVisible(bool(notice))
-        self.info_lbl.setText(notice if notice else "")
+        self.info_lbl.setText(self.tr(notice) if notice else "")
 
     # ---- search/filter
     def _on_search_changed(self, text: str):
@@ -8123,7 +8336,7 @@ class TableSubWindow(QWidget):
             return
         rows = sel.selectedRows()
         if not rows:
-            QMessageBox.information(self, "Copy", "No rows selected.")
+            QMessageBox.information(self, self.tr("Copy"), self.tr("No rows selected."))
             return
 
         proxy_rows = sorted({r.row() for r in rows})
@@ -8144,7 +8357,7 @@ class TableSubWindow(QWidget):
 
         txt = "\n".join(out_lines)
         QGuiApplication.clipboard().setText(txt)
-        QMessageBox.information(self, "Copy", f"Copied {len(proxy_rows)} rows to clipboard as CSV.")
+        QMessageBox.information(self, self.tr("Copy"), self.tr("Copied {0} rows to clipboard as CSV.").format(len(proxy_rows)))
 
     def _persist_editable_table_back_to_document(self):
         if not self._editable:
@@ -8184,7 +8397,7 @@ class TableSubWindow(QWidget):
 
         proxy_rows = sorted({idx.row() for idx in sel.selectedRows()}, reverse=True)
         if not proxy_rows:
-            QMessageBox.information(self, "Delete Rows", "No rows selected.")
+            QMessageBox.information(self, self.tr("Delete Rows"), self.tr("No rows selected."))
             return
 
         source_rows = []
@@ -8201,14 +8414,14 @@ class TableSubWindow(QWidget):
         if not self._editable:
             return
 
-        name, ok = QInputDialog.getText(self, "Add Column", "Column name:")
+        name, ok = QInputDialog.getText(self, self.tr("Add Column"), self.tr("Column name:"))
         if not ok or not str(name).strip():
             return
 
         kind, ok = QInputDialog.getItem(
             self,
-            "Add Column",
-            "Column type:",
+            self.tr("Add Column"),
+            self.tr("Column type:"),
             ["text", "float", "int", "bool", "ra", "dec", "note"],
             0,
             False,

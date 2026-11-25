@@ -45,7 +45,7 @@ from astropy.io import fits
 
 from PyQt6.QtCore import (
     Qt, QObject, QPointF, QRect, QRectF, QSettings, QStandardPaths,
-    QStringListModel, QTimer, pyqtSignal,
+    QStringListModel, QTimer, pyqtSignal, QCoreApplication,
 )
 from PyQt6.QtGui import (
     QAction, QBrush, QColor, QIcon, QImage, QKeySequence, QPainter,
@@ -62,6 +62,10 @@ from PyQt6.QtWidgets import (
     QSplitter, QTableWidget, QTableWidgetItem, QToolButton, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("SpectralCurves", text)
 
 
 def _pg():
@@ -1423,8 +1427,8 @@ def _make_plot(height: int | None = None):
     pi = pw.getPlotItem()
     pi.getAxis("bottom").enableAutoSIPrefix(False)
     pi.getAxis("left").enableAutoSIPrefix(False)
-    pw.setLabel("bottom", "Wavelength (nm)")
-    pw.setLabel("left", "Response")
+    pw.setLabel("bottom", _tr("Wavelength (nm)"))
+    pw.setLabel("left", _tr("Response"))
     pw.showGrid(x=True, y=True, alpha=0.2)
     pw.setMenuEnabled(False)
     if height:
@@ -3186,7 +3190,7 @@ class SpectralCurveManager(QDialog):
             total = sum(1 for _ in self._leaves_under(g))
             vis = visible_children(g)
             g.setHidden(vis == 0 and g is not self._g_mine)
-            g.setText(0, f"{label} ({vis})" if vis == total else f"{label} ({vis} of {total})")
+            g.setText(0, f"{label} ({vis})" if vis == total else self.tr("{0} ({1} of {2})").format(label, vis, total))
             if toks:
                 g.setExpanded(vis > 0)
         if self._g_mine.childCount() == 0:

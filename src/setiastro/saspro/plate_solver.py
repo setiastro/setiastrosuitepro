@@ -886,6 +886,43 @@ def _first_int(v):
     return int(m.group(0)) if m else None
 
 
+def _header_pixel_um(h) -> float | None:
+    """
+    Size in microns of one pixel of the image as it is, or None.
+
+    XPIXSZ/YPIXSZ already include binning and are used as written. SGP bin 2
+    on the 2.315 um ASI294MM writes XPIXSZ=4.63 with XBINNING=2, and
+    PixInsight and SASpro scale XPIXSZ when they drizzle or resample.
+    Multiplying by XBINNING again made the scale hint 2x too big on binned
+    data and wrote FOCALLEN back as twice the real focal length.
+
+    PIXSIZE1/PIXSIZE2 are the native sensor pixel (INDI writes them next to a
+    binned XPIXSZ), so only those are multiplied by the binning -- the same
+    convention as the stacking suite's _robust_scale_from_header.
+    """
+    def _pair(kx, ky):
+        a = _first_float(h.get(kx))
+        b = _first_float(h.get(ky))
+        a = a if (a is not None and np.isfinite(a) and a > 0) else None
+        b = b if (b is not None and np.isfinite(b) and b > 0) else None
+        if a and b:
+            return 0.5 * (a + b)
+        return a or b
+
+    try:
+        px = _pair("XPIXSZ", "YPIXSZ")
+        if px:
+            return float(px)
+        base = _pair("PIXSIZE1", "PIXSIZE2")
+        if base:
+            bx = _first_int(h.get("XBINNING")) or _first_int(h.get("XBIN")) or 1
+            by = _first_int(h.get("YBINNING")) or _first_int(h.get("YBIN")) or 1
+            return float(base * (bx + by) / 2.0)
+    except Exception:
+        pass
+    return None
+
+
 def _parse_ra_deg(h: Header) -> float | None:
     ra = _first_float(h.get("CRVAL1"))
     if ra is not None: return ra
@@ -975,19 +1012,11 @@ def _compute_scale_arcsec_per_pix(h: Header) -> float | None:
         if val is not None:
             return val
 
-    # 3) Pixel size + focal length
-    px_um_x = _first_float(h.get("XPIXSZ"))
-    px_um_y = _first_float(h.get("YPIXSZ"))
+    # 3) Pixel size + focal length (XPIXSZ already includes binning)
+    px_um = _header_pixel_um(h)
     focal_mm = _first_float(h.get("FOCALLEN"))
-    if focal_mm and (px_um_x or px_um_y):
-        px_um = px_um_x if (px_um_x and not px_um_y) else px_um_y if (px_um_y and not px_um_x) else None
-        if px_um is None:
-            px_um = (px_um_x + px_um_y) / 2.0
-        bx = _first_int(h.get("XBINNING")) or _first_int(h.get("XBIN")) or 1
-        by = _first_int(h.get("YBINNING")) or _first_int(h.get("YBIN")) or 1
-        bin_factor = (bx + by) / 2.0
-        px_um_eff = px_um * bin_factor
-        val = 206.264806 * px_um_eff / float(focal_mm)
+    if focal_mm and px_um:
+        val = 206.264806 * px_um / float(focal_mm)
         val = _sanity(val)
         if val is not None:
             return val
@@ -1587,8 +1616,10 @@ def _merge_wcs_into_base_header(base_header: Header | None, wcs_header: Header |
             pass
 
     # ── Recompute the true focal length from the solved plate scale ──
-    # scale("/px) = 206.265 · (pixel_size_um · binning) / focal_mm
-    #   ⇒ focal_mm = 206.265 · pixel_size_um_binned / scale("/px)
+    # scale("/px) = 206.265 · pixel_size_um / focal_mm
+    #   ⇒ focal_mm = 206.265 · pixel_size_um / scale("/px)
+    # pixel_size_um is XPIXSZ as written: it already includes binning
+    # (see _header_pixel_um), so it is NOT multiplied by XBINNING here.
     # Scale is read the SAME way as the success popup (proj_plane_pixel_scales),
     # so it works whether the solver wrote a CD matrix (ASTAP) or PC+CDELT
     # (astropy/Gaia). Pixel size comes from the acquisition header.
@@ -1622,20 +1653,10 @@ def _merge_wcs_into_base_header(base_header: Header | None, wcs_header: Header |
             elif c2:
                 scale_arcsec = abs(c2) * 3600.0
 
-        px_um_x = _first_float(out.get("XPIXSZ"))
-        px_um_y = _first_float(out.get("YPIXSZ"))
-        px_um = None
-        if px_um_x and px_um_y:
-            px_um = 0.5 * (px_um_x + px_um_y)
-        elif px_um_x:
-            px_um = px_um_x
-        elif px_um_y:
-            px_um = px_um_y
+        px_um = _header_pixel_um(out)
 
         if scale_arcsec and scale_arcsec > 0 and px_um and px_um > 0:
-            bx = _first_int(out.get("XBINNING")) or _first_int(out.get("XBIN")) or 1
-            by = _first_int(out.get("YBINNING")) or _first_int(out.get("YBIN")) or 1
-            focal_mm = 206.264806 * (px_um * (bx + by) / 2.0) / scale_arcsec
+            focal_mm = 206.264806 * px_um / scale_arcsec
             if np.isfinite(focal_mm) and 1.0 <= focal_mm <= 50000.0:
                 _derived_focal = float(focal_mm)
     except Exception:
@@ -1861,6 +1882,60 @@ def _gaia_pass(parent, settings, image, seed_header, say=None):
     return False, f"{res}  (blind retry also failed: {res2})"
 
 
+# Header cards that hint at the pixel scale (as _gaia_pass's retry drops them).
+_SCALE_HINT_KEYS = ("FOCALLEN", "PIXSCALE", "SCALE", "PLTSCALE", "SECPIX",
+                    "SECPIX1", "SECPIX2", "XPIXSZ", "YPIXSZ", "PIXSZ",
+                    "PIXSIZE1", "PIXSIZE2", "XBINNING", "YBINNING")
+
+
+def _gaia_blind_resolve(parent, settings, image, seed_header):
+    """
+    Re-solve an image whose current solution is known to be wrong, from the
+    star pattern alone: the in-house Gaia DR3 solver, forced blind.
+
+    The current WCS goes, and with it the scale it implies -- when the
+    solution is what's in doubt, so is its scale, and _estimate_scale_arcsec
+    _from_header reads the WCS first. Focal length and pixel size stay for the
+    first try, since they narrow the quad search; if that fails, one more try
+    with no scale at all, the way _gaia_pass retries a failed seeded solve.
+    Gaia only: this is the "find the field from scratch" button, not the
+    fallback chain. Returns (ok, Header | error_str).
+    """
+    try:
+        try:
+            from setiastro.saspro.gaia_quad_index import get_quad_library
+            have_index = get_quad_library().any_installed()
+        except Exception:
+            have_index = False
+        if not have_index:
+            return False, ("Gaia DR3 blind solve needs a Blind Solve Index. Build one "
+                           "on the Gaia DR3 Library → Blind Solve Index tab.")
+        base = _strip_wcs_keys(seed_header) if isinstance(seed_header, Header) else None
+        ok, res = _solve_with_GAIA_threaded(parent, settings, image, base,
+                                            force_blind=True)
+        if ok:
+            return True, res
+        if base is None or _estimate_scale_arcsec_from_header(base) is None:
+            return False, res
+        bare = base.copy()
+        for _k in _SCALE_HINT_KEYS:
+            bare.pop(_k, None)
+        print("[PlateSolver] blind re-solve with the header's scale failed; "
+              "retrying at every scale")
+        _set_status_ui(parent, "Status: Blind solve at the header's pixel scale "
+                               "failed — retrying at every scale…")
+        ok2, res2 = _solve_with_GAIA_threaded(parent, settings, image, bare,
+                                              force_blind=True)
+        if ok2:
+            return True, res2
+        return False, f"{res}  (retry at every scale also failed: {res2})"
+    finally:
+        try:
+            _status_popup_close()
+        except Exception:
+            pass
+
+
 def _solve_numpy_with_fallback_impl(
     parent, settings, image: np.ndarray, seed_header
 ) -> tuple[bool, "Header | str"]:
@@ -1923,6 +1998,27 @@ def _solve_numpy_with_fallback_impl(
         err1 = "skipped (ASTAP only)"
         print(f"[PlateSolver] Pass 1 skipped — {err1}")
 
+    # ── Which external solvers are actually set up? ──────────────────────────
+    # A solver that is not configured is skipped with a note rather than
+    # tried: users who only have the in-house Gaia index should still get
+    # their Gaia solve, and a failure should say what was never attempted.
+    _astap_exe = _get_astap_exe(settings)
+    astap_ready = bool(_astap_exe) and os.path.exists(_astap_exe)
+    skipped_notes: list[str] = []
+    if not astap_ready:
+        skipped_notes.append(QCoreApplication.translate("PlateSolver",
+            "ASTAP solve disabled until the path to ASTAP is set in "
+            "Settings → Preferences."))
+        print("[PlateSolver] ASTAP not configured — skipping ASTAP passes")
+        if pref == "astap_only":
+            _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+                "Status: Solver is set to ASTAP only, but ASTAP is not configured."))
+            return False, skipped_notes[0]
+
+    def _failure_with_notes(msg: str) -> str:
+        """Append the 'not configured' notes so the user knows what never ran."""
+        return "\n".join([msg] + skipped_notes) if skipped_notes else msg
+
     # ── ASTAP only early exit after Gaia fails ───────────────────────────────
     # (still runs ASTAP passes below, just won't fall through to Astrometry.net)
 
@@ -1969,7 +2065,7 @@ def _solve_numpy_with_fallback_impl(
         _has_seed = (ra is not None and dec is not None)
 
     # ── Pass 2: ASTAP seeded ─────────────────────────────────────────────────
-    if _has_seed:
+    if _has_seed and astap_ready:
         _r_display = "auto" if _orig_radius_mode == "auto" else f"{_orig_radius_val}°"
         _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
             "Status: ASTAP solving (seeded from header, r={0})…").format(_r_display))
@@ -2014,34 +2110,38 @@ def _solve_numpy_with_fallback_impl(
         err2 = str(res2) if res2 is not None else "unknown error"
         print(f"[PlateSolver] Pass 2 (ASTAP seeded) failed: {err2}")
     else:
-        err2 = "no seed available"
+        err2 = "no seed available" if astap_ready else "ASTAP not configured"
         print(f"[PlateSolver] Pass 2 skipped — {err2}")
 
     # ── Pass 3: ASTAP blind ──────────────────────────────────────────────────
-    _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
-        "Status: {0} Trying ASTAP blind solve…"
-    ).format(f"Seeded solve failed ({err2})." if _has_seed else "No seed available."))
-    QApplication.processEvents()
-
-    settings.setValue("astap/seed_mode",         "none")
-    settings.setValue("astap/seed_radius_mode",  "value")
-    settings.setValue("astap/seed_radius_value",  179.0)
-    settings.setValue("astap/seed_fov_mode",      "auto")
-    settings.setValue("astap/seed_fov_value",      0.0)
-    print("[PlateSolver] Pass 3: blind  r=179  fov=auto")
-
-    try:
-        ok3, res3 = _solve_numpy_with_astap(parent, settings, image, None)
-    finally:
-        _restore()
-
-    if ok3:
+    if astap_ready:
         _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
-            "Status: Solved with ASTAP (blind)."))
-        return True, res3
+            "Status: {0} Trying ASTAP blind solve…"
+        ).format(f"Seeded solve failed ({err2})." if _has_seed else "No seed available."))
+        QApplication.processEvents()
 
-    err3 = str(res3) if res3 is not None else "unknown error"
-    print(f"[PlateSolver] Pass 3 (ASTAP blind) failed: {err3}")
+        settings.setValue("astap/seed_mode",         "none")
+        settings.setValue("astap/seed_radius_mode",  "value")
+        settings.setValue("astap/seed_radius_value",  179.0)
+        settings.setValue("astap/seed_fov_mode",      "auto")
+        settings.setValue("astap/seed_fov_value",      0.0)
+        print("[PlateSolver] Pass 3: blind  r=179  fov=auto")
+
+        try:
+            ok3, res3 = _solve_numpy_with_astap(parent, settings, image, None)
+        finally:
+            _restore()
+
+        if ok3:
+            _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+                "Status: Solved with ASTAP (blind)."))
+            return True, res3
+
+        err3 = str(res3) if res3 is not None else "unknown error"
+        print(f"[PlateSolver] Pass 3 (ASTAP blind) failed: {err3}")
+    else:
+        err3 = "ASTAP not configured"
+        print(f"[PlateSolver] Pass 3 skipped — {err3}")
 
     # ── Pass 4: Astrometry.net ───────────────────────────────────────────────
     if pref == "astap_only":
@@ -2056,17 +2156,44 @@ def _solve_numpy_with_fallback_impl(
         return False, QCoreApplication.translate("PlateSolver",
             "In-house Gaia DR3 solve failed. ASTAP and Astrometry.net fallback are disabled.")
 
-    _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
-        "Status: ASTAP failed ({0}). Falling back to Astrometry.net…").format(err3))
+    # Astrometry.net needs either a local solve-field or a web API key. With
+    # neither, the web path would only report "key not configured" -- report
+    # why the whole chain failed instead, starting with the Gaia reason.
+    _sf_exe = _get_solvefield_exe(settings)
+    astrometry_ready = (bool(_sf_exe) and os.path.exists(_sf_exe)) \
+        or bool(_get_astrometry_api_key(settings))
+    if not astrometry_ready:
+        skipped_notes.append(QCoreApplication.translate("PlateSolver",
+            "Astrometry.net solve disabled until an Astrometry.net API key is "
+            "set in Settings → Preferences."))
+        print("[PlateSolver] Astrometry.net not configured — skipping Pass 4")
+        if astap_ready:
+            last = QCoreApplication.translate("PlateSolver",
+                "ASTAP failed: {0}").format(err3)
+        else:
+            last = QCoreApplication.translate("PlateSolver",
+                "In-house Gaia DR3 failed: {0}").format(err1)
+        msg = _failure_with_notes(last)
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: Plate solve failed. {0}").format(msg))
+        return False, msg
+
+    if astap_ready:
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: ASTAP failed ({0}). Falling back to Astrometry.net…").format(err3))
+    else:
+        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+            "Status: In-house Gaia DR3 failed. Trying Astrometry.net…"))
     QApplication.processEvents()
 
     ok4, res4 = _solve_numpy_with_astrometry(parent, settings, image, seed_header)
     if ok4:
         _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
             "Status: Solved via Astrometry.net."))
-    else:
-        _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
-            "Status: All solvers failed. Last error: {0}").format(str(res4)))
+        return ok4, res4
+    res4 = _failure_with_notes(str(res4))
+    _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
+        "Status: All solvers failed. Last error: {0}").format(res4))
     return ok4, res4
 
 def _solve_numpy_with_astrometry(
@@ -2110,7 +2237,7 @@ def _solve_numpy_with_astrometry(
     if not api_key:
         return False, QCoreApplication.translate(
             "PlateSolver",
-            "Astrometry.net API key not configured (Preferences → API Keys)."
+            "Astrometry.net API key not configured (Settings → Preferences)."
         )
 
     session = _astrometry_login(settings, parent=parent)
@@ -5007,7 +5134,11 @@ def plate_solve_numpy_headless(
         return True, _merge_wcs_into_base_header(acq_base, res)
     return True, res
 
-def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
+def plate_solve_doc_inplace(parent, doc, settings, *,
+                            gaia_blind: bool = False) -> Tuple[bool, Header | str]:
+    """Solve `doc` and merge the solution into it. gaia_blind=True skips the
+    fallback chain for _gaia_blind_resolve: for an image whose current
+    solution is wrong (plate_solution_check)."""
     img = getattr(doc, "image", None)
     if img is None:
         return False, QCoreApplication.translate("PlateSolver", "Active document has no image data.")
@@ -5066,7 +5197,10 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
 
     ok_solve = False
     try:
-        ok, res = _solve_numpy_with_fallback(parent, settings, img, seed_h)
+        if gaia_blind:
+            ok, res = _gaia_blind_resolve(parent, settings, img, seed_h)
+        else:
+            ok, res = _solve_numpy_with_fallback(parent, settings, img, seed_h)
         if not ok:
             return False, res
 
@@ -5279,33 +5413,12 @@ def _estimate_scale_arcsec_from_header(hdr: Header) -> float | None:
             except Exception:
                 pass
 
-    # 5) Pixel size + focal length
-    px_um_x  = _first_float(hdr.get("XPIXSZ"))
-    px_um_y  = _first_float(hdr.get("YPIXSZ"))
+    # 5) Pixel size + focal length. XPIXSZ already includes binning and is
+    #    used as written; only the native PIXSIZE1/2 get the binning.
+    px_um = _header_pixel_um(hdr)
     focal_mm = _first_float(hdr.get("FOCALLEN"))
-    if focal_mm and (px_um_x or px_um_y):
-        px_um = px_um_x or px_um_y
-        if px_um_x and px_um_y:
-            px_um = (px_um_x + px_um_y) / 2.0
-        bx = _first_int(hdr.get("XBINNING")) or _first_int(hdr.get("XBIN")) or 1
-        by = _first_int(hdr.get("YBINNING")) or _first_int(hdr.get("YBIN")) or 1
-        px_um_eff = px_um * ((bx + by) / 2.0)
-        result = _sane_arcsec(206.264806 * px_um_eff / float(focal_mm))
-        if result is not None:
-            return result
-
-    # 6) PIXSIZE1/PIXSIZE2 (base pixel size in microns, multiply by binning)
-    px_um_x  = _first_float(hdr.get("PIXSIZE1"))
-    px_um_y  = _first_float(hdr.get("PIXSIZE2"))
-    focal_mm = _first_float(hdr.get("FOCALLEN"))
-    if focal_mm and (px_um_x or px_um_y):
-        px_um = px_um_x or px_um_y
-        if px_um_x and px_um_y:
-            px_um = (px_um_x + px_um_y) / 2.0
-        bx = _first_int(hdr.get("XBINNING")) or _first_int(hdr.get("XBIN")) or 1
-        by = _first_int(hdr.get("YBINNING")) or _first_int(hdr.get("YBIN")) or 1
-        px_um_eff = px_um * ((bx + by) / 2.0)
-        result = _sane_arcsec(206.264806 * px_um_eff / float(focal_mm))
+    if focal_mm and px_um:
+        result = _sane_arcsec(206.264806 * px_um / float(focal_mm))
         if result is not None:
             return result
 
@@ -5523,20 +5636,20 @@ def show_solve_summary(parent, hdr: Header, img_w: int, img_h: int,
         cx, cy = img_w / 2.0, img_h / 2.0
         center = w.pixel_to_world(cx, cy)
         ra_c, dec_c = float(center.ra.deg), float(center.dec.deg)
-        lines.append(f"<b>Center:</b>  {_fmt_ra_hms(ra_c)}   {_fmt_dec_dms(dec_c)}")
+        lines.append(tr("<b>Center:</b>  {0}   {1}").format(_fmt_ra_hms(ra_c), _fmt_dec_dms(dec_c)))
 
         from astropy.wcs.utils import proj_plane_pixel_scales
         scales_deg = proj_plane_pixel_scales(w)
         scale = float(np.mean(scales_deg[:2])) * 3600.0
-        lines.append(f"<b>Pixel scale:</b>  {scale:.3f}\"/px")
+        lines.append(tr("<b>Pixel scale:</b>  {0:.3f}\"/px").format(scale))
 
         fov_w = img_w * scale / 3600.0
         fov_h = img_h * scale / 3600.0
-        lines.append(f"<b>Field of view:</b>  {_fmt_fov(fov_w)} \u00d7 {_fmt_fov(fov_h)}")
+        lines.append(tr("<b>Field of view:</b>  {0} \u00d7 {1}").format(_fmt_fov(fov_w), _fmt_fov(fov_h)))
 
         _fl = _first_float(hdr.get("FOCALLEN"))
         if _fl and _fl > 0:
-            lines.append(f"<b>Focal length:</b>  {_fl:.1f} mm  (from solve)")
+            lines.append(tr("<b>Focal length:</b>  {0:.1f} mm  (from solve)").format(_fl))
 
         # Rotation: angle of North from image +y, measured at center
         try:
@@ -5544,7 +5657,7 @@ def show_solve_summary(parent, hdr: Header, img_w: int, img_h: int,
             rot = math.degrees(math.atan2(float(xN) - cx, float(yN) - cy))
             if rot < 0:
                 rot += 360.0
-            lines.append(f"<b>Rotation:</b>  {rot:.2f}\u00b0 (N up = 0\u00b0)")
+            lines.append(tr("<b>Rotation:</b>  {0:.2f}\u00b0 (N up = 0\u00b0)").format(rot))
         except Exception:
             pass
 
@@ -5552,7 +5665,7 @@ def show_solve_summary(parent, hdr: Header, img_w: int, img_h: int,
         try:
             cd = w.pixel_scale_matrix
             det = float(cd[0, 0] * cd[1, 1] - cd[0, 1] * cd[1, 0])
-            lines.append(f"<b>Parity:</b>  {'flipped' if det > 0 else 'normal'}")
+            lines.append(tr("<b>Parity:</b>  flipped") if det > 0 else tr("<b>Parity:</b>  normal"))
         except Exception:
             pass
 
@@ -5563,7 +5676,7 @@ def show_solve_summary(parent, hdr: Header, img_w: int, img_h: int,
                 cosd = (math.sin(d0) * math.sin(d1)
                         + math.cos(d0) * math.cos(d1) * math.cos(d_ra))
                 dist_arcmin = math.degrees(math.acos(max(-1.0, min(1.0, cosd)))) * 60.0
-                lines.append(f"<b>Offset from seed:</b>  {dist_arcmin:.2f}'")
+                lines.append(tr("<b>Offset from seed:</b>  {0:.2f}'").format(dist_arcmin))
             except Exception:
                 pass
     except Exception as e:
@@ -5573,37 +5686,37 @@ def show_solve_summary(parent, hdr: Header, img_w: int, img_h: int,
     if sip_terms:
         try:
             order = int(hdr.get("A_ORDER", hdr.get("B_ORDER", 0)))
-            lines.append(f"<b>Distortion:</b>  SIP order {order} ({len(sip_terms)} terms)")
+            lines.append(tr("<b>Distortion:</b>  SIP order {0} ({1} terms)").format(order, len(sip_terms)))
         except Exception:
-            lines.append("<b>Distortion:</b>  SIP")
+            lines.append(tr("<b>Distortion:</b>  SIP"))
     else:
-        lines.append("<b>Distortion:</b>  none (linear TAN)")
+        lines.append(tr("<b>Distortion:</b>  none (linear TAN)"))
     # Fit quality (Gaia in-house solver only; ASTAP/asnet don't report RMS)
     try:
         rms = hdr.get("SOLVRMS")
         nst = hdr.get("SOLVNSTR")
         if rms is not None:
-            n_txt = f" over {int(nst)} stars" if nst is not None else ""
+            n_txt = tr(" over {0} stars").format(int(nst)) if nst is not None else ""
             px_txt = ""
             try:
                 px_txt = f" ({float(rms) / scale:.2f} px)"
             except Exception:
                 pass
-            lines.append(f"<b>Fit RMS vs Gaia:</b>  {float(rms):.2f}\"{px_txt}{n_txt}")
+            lines.append(tr("<b>Fit RMS vs Gaia:</b>  {0:.2f}\"{1}{2}").format(float(rms), px_txt, n_txt))
     except Exception:
         pass
     # A seed-grade solution carries no RMS, so without this it would look
     # exactly like a normal solve in the panel. Say plainly what it is.
     try:
         if str(hdr.get("SOLVSRC", "")).strip().lower() == "quad-seed":
-            lines.append(
+            lines.append(tr(
                 "<b>Fit quality:</b>  <span style=\'color:#c87f00\'>seed-grade"
                 " — quad index placement only</span><br>"
                 "<span style=\'color:#c87f00\'>The field is identified, but "
                 "refinement did not reach the accuracy gate: centre and scale "
                 "are approximate (expect a few pixels) and there are no "
                 "distortion terms. Not suitable for photometry or "
-                "mosaicking.</span>")
+                "mosaicking.</span>"))
     except Exception:
         pass
     if not lines:
@@ -5614,10 +5727,10 @@ def show_solve_summary(parent, hdr: Header, img_w: int, img_h: int,
         host = QApplication.activeWindow()
 
     box = QMessageBox(host)
-    box.setWindowTitle("Plate Solve Successful")
+    box.setWindowTitle(tr("Plate Solve Successful"))
     box.setIcon(QMessageBox.Icon.Information)
     box.setTextFormat(Qt.TextFormat.RichText)
-    box.setText("<h3>\u2714 Plate Solve Successful</h3>" + "<br>".join(lines))
+    box.setText(tr("<h3>\u2714 Plate Solve Successful</h3>") + "<br>".join(lines))
     box.setStandardButtons(QMessageBox.StandardButton.Ok)
     box.setWindowModality(Qt.WindowModality.NonModal)
     box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -5768,7 +5881,7 @@ class PlateSolverDialog(QDialog):
 
         # ---- Seeding group (shared) ----
         from PyQt6.QtWidgets import QGroupBox, QFormLayout
-        seed_box = QGroupBox(self.tr("Seeding & Constraints"), self)
+        seed_box = QGroupBox(self.tr("Seeding && Constraints"), self)
         seed_form = QFormLayout(seed_box)
         seed_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         seed_form.setHorizontalSpacing(8)
@@ -6151,7 +6264,7 @@ class PlateSolverDialog(QDialog):
                 star_name, ra, dec = str(entry[0]), float(entry[1]), float(entry[2])
                 mag = entry[3] if len(entry) > 3 else None
                 if _name_matches(star_name):
-                    note = f"Star  mag {mag:.2f}" if mag is not None else "Star"
+                    note = self.tr("Star  mag {0:.2f}").format(mag) if mag is not None else self.tr("Star")
                     results.append({
                         "name": star_name, "ra": ra, "dec": dec,
                         "alt": "", "note": note,
@@ -6332,8 +6445,11 @@ class PlateSolverDialog(QDialog):
         spec = self._persist_ui_to_settings()
         pref = spec["solver"]
 
-        # ── ASTAP check only when ASTAP will actually be used ────────────────
-        if pref not in ("gaia_only", "astrometry_only"):
+        # ── ASTAP check only when ASTAP is the ONLY solver ───────────────────
+        # The default chain (Gaia → ASTAP → Astrometry.net) skips any solver
+        # that is not set up, so a missing ASTAP path must not stop it here
+        # before the in-house Gaia pass even runs.
+        if pref == "astap_only":
             astap_exe = _get_astap_exe(self.settings)
             if not astap_exe or not os.path.exists(astap_exe):
                 self.status.setText(self.tr("ASTAP path missing. Set Preferences → ASTAP executable."))

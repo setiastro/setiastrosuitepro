@@ -11,13 +11,13 @@ from typing import Optional, Tuple, List
 from PyQt6.QtGui import (
     QIcon, QColor, QPixmap, QPainter, QPen, QImage, QPainterPath, QFont, QGuiApplication
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QEvent, QPointF, QCoreApplication, QSettings, QByteArray, QThread
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QEvent, QPointF, QRectF, QCoreApplication, QSettings, QByteArray, QThread
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel, QSlider,
     QPushButton, QComboBox, QSizePolicy, QMessageBox, QColorDialog, QWidget,
     QScrollArea, QScrollBar, QMdiSubWindow, QGraphicsScene, QGraphicsView,
     QGraphicsTextItem, QTableWidget, QTableWidgetItem, QLineEdit, QToolButton,
-    QSpinBox, QDoubleSpinBox
+    QSpinBox, QDoubleSpinBox, QCheckBox
 )
 from PyQt6.QtGui import QDoubleValidator, QIntValidator
 
@@ -40,7 +40,14 @@ from .plate_solver import plate_solve_doc_inplace
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 from astropy.wcs import WCS
 from .plate_solver import _seed_header_from_meta, _solve_numpy_with_fallback
+from .plate_solver import _first_float, _wcs_from_header_2d
+from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 from astropy.wcs import WCS
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("ImagePeekerPro", text)
+
 
 def _header_from_meta(meta):
     # Prefer real Header
@@ -143,6 +150,15 @@ class PreviewPane(QWidget):
     def set_overlay(self, overlays):
         """ Store and repaint overlays on top of the image. """
         self._overlays = overlays
+        self._update_display()
+
+    def set_panel_cells(self, cells):
+        """
+        Per-panel labels, each a dict: rect (x, y, w, h in mosaic pixels), tag,
+        big, small, centre. Drawn after zooming, so the text stays sharp and
+        the same size on screen whatever the zoom.
+        """
+        self._panel_cells = list(cells or [])
         self._update_display()
 
     def toggle_stretch(self):
@@ -294,6 +310,14 @@ class PreviewPane(QWidget):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation
         )
+        cells = getattr(self, "_panel_cells", None)
+        if cells and pix.width() > 0:
+            p2 = QPainter(scaled)
+            try:
+                _paint_panel_cells(p2, cells, scaled.width() / pix.width(),
+                                   self.palette().highlight().color())
+            finally:
+                p2.end()
         self.image_label.setPixmap(scaled)
 
     def eventFilter(self, source, evt):
@@ -2145,9 +2169,9 @@ def diagnose_optics(cat: dict, H: int, W: int,
     out: dict = {'findings': []}
     if cat is None or int(cat.get('n', 0)) < 20:
         out['findings'].append(
-            ('ok', 'Not enough stars to diagnose',
-             'At least 20 well-measured stars are needed to separate tilt '
-             'from field curvature.'))
+            ('ok', _tr('Not enough stars to diagnose'),
+             _tr('At least 20 well-measured stars are needed to separate tilt '
+                 'from field curvature.')))
         return out
 
     x = np.asarray(cat['x'], float)
@@ -2163,8 +2187,8 @@ def diagnose_optics(cat: dict, H: int, W: int,
 
     if defocus is None:
         out['findings'].append(
-            ('ok', 'Defocus model did not converge',
-             'Tilt and curvature could not be separated on this frame.'))
+            ('ok', _tr('Defocus model did not converge'),
+             _tr('Tilt and curvature could not be separated on this frame.')))
         return out
 
     tilt = defocus['tilt_um']
@@ -2201,23 +2225,25 @@ def diagnose_optics(cat: dict, H: int, W: int,
     corroborated = asym_sig >= min_sig
     if sev == 'ok':
         out['findings'].append((
-            'ok', 'Sensor tilt: not significant',
-            f'Peak-to-peak tilt defocus {tilt:.1f} µm '
-            f'({tsig:.1f}σ), worth about {100*tilt_pen:.0f}% on FWHM at the '
-            f'edge. Nothing to chase.'))
+            'ok', _tr('Sensor tilt: not significant'),
+            _tr('Peak-to-peak tilt defocus {0:.1f} µm '
+                '({1:.1f}σ), worth about {2:.0f}% on FWHM at the '
+                'edge. Nothing to chase.').format(tilt, tsig, 100*tilt_pen)))
     else:
         out['findings'].append((
-            sev, f'Sensor tilt: {tilt:.1f} µm peak-to-peak',
-            f'Defocus runs {tilt:.1f} ± {defocus["tilt_se"]:.1f} µm across '
-            f'the frame ({tsig:.1f}σ), steepest towards '
-            f'{defocus["tilt_angle_deg"]:.0f}°. That costs roughly '
-            f'{100*tilt_pen:.0f}% on FWHM at the worst edge. '
-            + ('The ellipticity field is one-sided in the same sense, which '
-               'corroborates it. ' if corroborated else
-               'The ellipticity field does not show a matching one-sided '
-               'pattern, so treat this as provisional. ')
-            + f'A shim of about {tilt/2.0:.0f} µm on the high side is the '
-              f'scale of correction implied.'))
+            sev, _tr('Sensor tilt: {0:.1f} µm peak-to-peak').format(tilt),
+            _tr('Defocus runs {0:.1f} ± {1:.1f} µm across '
+                'the frame ({2:.1f}σ), steepest towards '
+                '{3:.0f}°. That costs roughly '
+                '{4:.0f}% on FWHM at the worst edge. ').format(
+                    tilt, defocus["tilt_se"], tsig,
+                    defocus["tilt_angle_deg"], 100*tilt_pen)
+            + (_tr('The ellipticity field is one-sided in the same sense, which '
+                   'corroborates it. ') if corroborated else
+               _tr('The ellipticity field does not show a matching one-sided '
+                   'pattern, so treat this as provisional. '))
+            + _tr('A shim of about {0:.0f} µm on the high side is the '
+                  'scale of correction implied.').format(tilt/2.0)))
 
     # ---- field curvature / backfocus ---------------------------------
     sev = _sev(curv_pen, csig)
@@ -2225,25 +2251,33 @@ def diagnose_optics(cat: dict, H: int, W: int,
     rsig = shape.get('radial_sig', 0.0) if shape.get('ok') else 0.0
     if sev == 'ok':
         out['findings'].append((
-            'ok', 'Field curvature / backfocus: not significant',
-            f'Centre-to-corner defocus {curv:.1f} µm ({csig:.1f}σ). '
-            f'Spacing looks right.'))
+            'ok', _tr('Field curvature / backfocus: not significant'),
+            _tr('Centre-to-corner defocus {0:.1f} µm ({1:.1f}σ). '
+                'Spacing looks right.').format(curv, csig)))
     else:
-        detail = (f'Corners sit {curv:.1f} ± {defocus["curvature_se"]:.1f} µm '
-                  f'from the centre\'s focus ({csig:.1f}σ), about '
-                  f'{100*curv_pen:.0f}% on FWHM in the corners. ')
+        detail = _tr('Corners sit {0:.1f} ± {1:.1f} µm '
+                     'from the centre\'s focus ({2:.1f}σ), about '
+                     '{3:.0f}% on FWHM in the corners. ').format(
+                         curv, defocus["curvature_se"], csig, 100*curv_pen)
         if rsig >= min_sig and sense:
-            detail += (f'Corner stars are coherently elongated {sense}ly '
-                       f'({rsig:.1f}σ), which points at corrector spacing '
-                       f'rather than plain field curvature. ')
+            # Whole sentences per sense: "{0}ly" glued an English suffix onto
+            # an untranslated word, which no translation could follow.
+            if sense == 'radial':
+                detail += _tr('Corner stars are coherently elongated radially '
+                              '({0:.1f}σ), which points at corrector spacing '
+                              'rather than plain field curvature. ').format(rsig)
+            else:  # radial_sense is only ever 'radial' or 'tangential'
+                detail += _tr('Corner stars are coherently elongated tangentially '
+                              '({0:.1f}σ), which points at corrector spacing '
+                              'rather than plain field curvature. ').format(rsig)
         else:
-            detail += ('Corner stars are not coherently elongated, so this '
-                       'reads as pure field curvature — the corners are '
-                       'simply out of focus. ')
-        detail += ('How much spacer that is depends on your corrector, so '
-                   'change it a millimetre either way and re-measure — the '
-                   'number above is what should come down.')
-        out['findings'].append((sev, f'Backfocus / field curvature: {curv:.1f} µm', detail))
+            detail += _tr('Corner stars are not coherently elongated, so this '
+                          'reads as pure field curvature — the corners are '
+                          'simply out of focus. ')
+        detail += _tr('How much spacer that is depends on your corrector, so '
+                      'change it a millimetre either way and re-measure — the '
+                      'number above is what should come down.')
+        out['findings'].append((sev, _tr('Backfocus / field curvature: {0:.1f} µm').format(curv), detail))
 
     # ---- trailing ------------------------------------------------------
     if shape.get('ok'):
@@ -2252,27 +2286,28 @@ def diagnose_optics(cat: dict, H: int, W: int,
         if usig >= min_sig and ue > 0.05:
             sev = 'major' if ue > 0.15 else 'minor'
             out['findings'].append((
-                sev, f'Uniform elongation: {ue:.3f} at {shape["uniform_angle_deg"]:.0f}°',
-                f'Every star is elongated the same way ({usig:.1f}σ), which '
-                f'is not an optical fault — it is tracking, guiding, flexure '
-                f'or wind. No amount of shimming or spacing will change it.'))
+                sev, _tr('Uniform elongation: {0:.3f} at {1:.0f}°').format(
+                    ue, shape["uniform_angle_deg"]),
+                _tr('Every star is elongated the same way ({0:.1f}σ), which '
+                    'is not an optical fault — it is tracking, guiding, flexure '
+                    'or wind. No amount of shimming or spacing will change it.').format(usig)))
 
         # ---- centring sanity ------------------------------------------
         xsig = shape.get('cross_sig', 0.0)
         if xsig >= min_sig and xsig > 1.5 * max(rsig, 1e-9):
             out['findings'].append((
-                'minor', 'Aberration pattern is not centred on the frame',
-                f'The 45° (cross) component is stronger than the radial one '
-                f'({xsig:.1f}σ vs {rsig:.1f}σ). The optical axis is probably '
-                f'not at the frame centre — a decentred corrector, a cropped '
-                f'or offset sensor — so the curvature number above is '
-                f'measured about the wrong point and is an underestimate.'))
+                'minor', _tr('Aberration pattern is not centred on the frame'),
+                _tr('The 45° (cross) component is stronger than the radial one '
+                    '({0:.1f}σ vs {1:.1f}σ). The optical axis is probably '
+                    'not at the frame centre — a decentred corrector, a cropped '
+                    'or offset sensor — so the curvature number above is '
+                    'measured about the wrong point and is an underestimate.').format(xsig, rsig)))
 
     if not any(s in ('minor', 'major') for s, _, _ in out['findings']):
         out['findings'].insert(0, (
-            'ok', 'Optics look clean',
-            f'Baseline FWHM {f0:.1f} µm with no significant tilt, curvature '
-            f'or trailing across {defocus["n_used"]} stars.'))
+            'ok', _tr('Optics look clean'),
+            _tr('Baseline FWHM {0:.1f} µm with no significant tilt, curvature '
+                'or trailing across {1} stars.').format(f0, defocus["n_used"])))
 
     sev_rank = {'major': 0, 'minor': 1, 'ok': 2}
     out['findings'].sort(key=lambda t: sev_rank.get(t[0], 3))
@@ -2919,9 +2954,7 @@ def build_mosaic_numpy(
         c = arr.shape[2]
         mosaic = np.full((out_h, out_w, c), background, dtype=arr.dtype)
 
-    # evenly spaced top-left corners
-    xs = [int((w - panel) * i / (grid - 1)) for i in range(grid)]
-    ys = [int((h - panel) * j / (grid - 1)) for j in range(grid)]
+    xs, ys = _panel_grid(h, w, grid, panel)
 
     for row, y in enumerate(ys):
         for col, x in enumerate(xs):
@@ -2931,6 +2964,552 @@ def build_mosaic_numpy(
             mosaic[dy:dy + panel, dx:dx + panel, ...] = patch
 
     return mosaic
+
+
+def _panel_grid(h: int, w: int, grid: int, panel: int) -> Tuple[list, list]:
+    """Evenly spaced top-left corners of the grid x grid panels (x list, y list)."""
+    xs = [int((w - panel) * i / (grid - 1)) for i in range(grid)]
+    ys = [int((h - panel) * j / (grid - 1)) for j in range(grid)]
+    return xs, ys
+
+
+# =============================================================================
+#  Per-panel star statistics: the FWHM, star count and eccentricity drawn on
+#  each panel of the mosaic.
+#
+#  Measured on the stars inside each panel, so the numbers describe what the
+#  panel shows. FWHM comes from adaptive moments, not from SEP's a and b (see
+#  _adaptive_moments): panels are compared with each other, and SEP's size
+#  depends on how bright a star is, so a panel that happened to hold a bright
+#  star would read worse for no optical reason.
+# =============================================================================
+_PANEL_SIGMA = 5.0          # detection threshold, in background rms
+_PANEL_MARGIN = 48          # image read around a panel, so edge stars get a whole stamp
+_PANEL_MAX_MEASURED = 150   # brightest stars measured per panel; the median settles long before
+_PANEL_MIN_STARS = 3        # fewer measured stars than this and the panel reports no FWHM
+_PLATEAU_FRAC = 0.98        # pixels this close to a star's peak count toward a clipped core
+_PLATEAU_PIXELS = 6         # ... and this many of them make it clipped
+# Stamp half-widths tried per star, smallest first. A star whose window grows
+# to the edge of its stamp is measured again on the next size up. One size for
+# every star was wrong on real data: hot pixels pulled it down to 11 px, and
+# Frank's 8-11 px stars at 0.5"/px all hit the edge and none were measured.
+_STAMP_LADDER = (5, 8, 12, 18, 27, 40)
+_POINT_FWHM_PX = 1.0        # below this a detection is a hot pixel or cosmic ray
+# A panel's stars share one PSF, so they cluster tightly in size; nebula
+# knots, galaxies and blends only ever add on the large side. The panel's
+# FWHM is the median of the objects within this fraction of the most common
+# size. A plain median or a MAD clip failed on a real drizzled Soul master:
+# stars at 7.7-8.5 px, four knots at 15-24 px, and the median (12.3 px) fell
+# between the two groups with the spread too wide for a clip to cut.
+_LOCUS_TOL = 0.35
+
+
+def _stellar_locus(fw: np.ndarray) -> np.ndarray:
+    """Mask of the values in the cluster around the half-sample mode of fw."""
+    fw = np.asarray(fw, float)
+    if fw.size < 5:
+        return np.ones(fw.size, bool)
+    v = np.sort(fw)
+    lo, hi = 0, v.size
+    while hi - lo > 3:                       # half-sample mode (Bickel 2002)
+        h = (hi - lo + 1) // 2
+        widths = v[lo + h - 1:hi] - v[lo:hi - h + 1]
+        i = int(np.argmin(widths))
+        lo, hi = lo + i, lo + i + h
+    mode = float(np.median(v[lo:hi]))
+    return np.abs(fw - mode) <= _LOCUS_TOL * mode
+
+
+def _adaptive_moments(sub: np.ndarray, owner: np.ndarray,
+                      x: np.ndarray, y: np.ndarray, ids: np.ndarray,
+                      sigma0: np.ndarray, max_iter: int = 40):
+    """
+    Gaussian-weighted (adaptive) second moments, vectorised over stars.
+
+    The weight is an elliptical Gaussian, re-sized each pass to twice the
+    moments it measured, until it matches the star (Bernstein & Jarvis 2002).
+    At that fixed point the window IS the best-fitting elliptical Gaussian, so
+    the size does not depend on how bright the star is. SEP's a and b use only
+    the pixels above the detection threshold: that cuts a faint star short and
+    lets a bright star's wings in. On synthetic Gaussian stars SEP's
+    2.3548*sqrt(a*b) read 0.69x the true FWHM at peak SNR 15 and 1.12x at
+    SNR 600; this reads 1.00x at both, and a steady 1.13x at every SNR on
+    Moffat beta=3 stars (a Gaussian under-weights their wings).
+
+    sub     background-subtracted image
+    owner   same shape: index of the nearest detection for every pixel. A
+            stamp keeps only its own star's pixels, so a bright neighbour
+            cannot pull the moments.
+    x, y    centroids; ids: each star's index in owner
+    sigma0  starting sigma in pixels (any rough size will do)
+
+    Returns (fwhm_px, e1, e2, clipped, ok, point), arrays over the input
+    stars. e1, e2 are the polarisation components (a^2-b^2)/(a^2+b^2) at
+    2*theta, with the pixel's own 1/12 px^2 variance removed. clipped marks a
+    flat-topped (saturated) core, whose size is the clip's, not the star's.
+    point marks a detection that shrank to a single pixel: a hot pixel or
+    cosmic ray, not a star.
+    """
+    n = len(x)
+    fwhm = np.full(n, np.nan)
+    e1 = np.full(n, np.nan)
+    e2 = np.full(n, np.nan)
+    clipped = np.zeros(n, bool)
+    ok = np.zeros(n, bool)
+    point = np.zeros(n, bool)
+    if n == 0:
+        return fwhm, e1, e2, clipped, ok, point
+
+    # Pad, so a star near the crop edge still gets a whole stamp (zeros
+    # beyond the edge carry no flux and belong to no star).
+    pad = _STAMP_LADDER[-1]
+    subp = np.pad(np.asarray(sub, np.float64), pad)
+    ownp = np.pad(owner, pad, constant_values=-1)
+    sig = np.where(np.isfinite(sigma0) & (sigma0 > 0), sigma0, 1.0)
+    # The stamp must hold ~4 sigma; SEP's starting sigma runs up to ~30% small.
+    rung = np.searchsorted(np.asarray(_STAMP_LADDER), np.ceil(4.0 * sig))
+    rung = np.clip(rung, 0, len(_STAMP_LADDER) - 1)
+    todo = np.ones(n, bool)
+    for r, half in enumerate(_STAMP_LADDER):
+        sel = np.nonzero(todo & (rung <= r))[0]
+        if sel.size == 0:
+            continue
+        f_, a_, b_, c_, ok_, big_, pt_ = _adaptive_moments_at(
+            subp, ownp, x[sel] + pad, y[sel] + pad, ids[sel], sig[sel], half, max_iter)
+        fwhm[sel], e1[sel], e2[sel], clipped[sel], ok[sel], point[sel] = f_, a_, b_, c_, ok_, pt_
+        # Outgrew this stamp: try the next size, unless this was the last.
+        todo[sel] = big_ if r < len(_STAMP_LADDER) - 1 else False
+    return fwhm, e1, e2, clipped, ok, point
+
+
+def _adaptive_moments_at(subp, ownp, x, y, ids, sigma0, half: int, max_iter: int):
+    """_adaptive_moments for stars that share one stamp size (2*half+1).
+    Returns (fwhm, e1, e2, clipped, ok, outgrew, point)."""
+    n = len(x)
+    ix = np.round(x).astype(int)
+    iy = np.round(y).astype(int)
+    oy, ox = np.mgrid[-half:half + 1, -half:half + 1].astype(np.float64)
+    stamps = np.stack([subp[iy[i] - half:iy[i] + half + 1, ix[i] - half:ix[i] + half + 1]
+                       for i in range(n)])
+    own = np.stack([ownp[iy[i] - half:iy[i] + half + 1, ix[i] - half:ix[i] + half + 1]
+                    for i in range(n)]) == ids[:, None, None]
+    stamps = np.where(own, stamps, 0.0)
+
+    # A clipped core is a plateau: many pixels within a hair of the peak. An
+    # unclipped star has one or two even when bright (a Gaussian is within 2%
+    # of its peak only inside 0.2 sigma). Checked on the stamp itself because
+    # calibrated and processed frames carry no SATURATE level to compare with.
+    s0 = np.asarray(sigma0, float)
+    core = (ox * ox + oy * oy)[None] <= np.maximum(2.0, 2.0 * s0)[:, None, None] ** 2
+    peak = np.where(core, stamps, -np.inf).max(axis=(1, 2))
+    near = (stamps >= _PLATEAU_FRAC * peak[:, None, None]) & core
+    clip_i = (peak > 0) & (near.sum(axis=(1, 2)) >= _PLATEAU_PIXELS)
+
+    cx = (x - ix)[:, None, None]
+    cy = (y - iy)[:, None, None]
+    lo, hi = 0.2, (half / 2.0) ** 2
+    s2 = np.clip(s0, 0.5, half / 2.0) ** 2
+    cxx, cyy, cxy = s2.copy(), s2.copy(), np.zeros_like(s2)
+    conv = np.zeros(n, bool)
+    good = np.ones(n, bool)
+    for _ in range(int(max_iter)):
+        det = np.maximum(cxx * cyy - cxy * cxy, 1e-12)
+        dx = ox[None] - cx
+        dy = oy[None] - cy
+        q = ((cyy / det)[:, None, None] * dx * dx
+             - 2.0 * (cxy / det)[:, None, None] * dx * dy
+             + (cxx / det)[:, None, None] * dy * dy)
+        w = np.exp(-0.5 * q) * stamps
+        sw = w.sum(axis=(1, 2))
+        good = sw > 0
+        sw = np.where(good, sw, 1.0)
+        mx = (w * dx).sum(axis=(1, 2)) / sw
+        my = (w * dy).sum(axis=(1, 2)) / sw
+        ncxx = np.clip(2.0 * ((w * dx * dx).sum(axis=(1, 2)) / sw - mx * mx), lo, hi)
+        ncyy = np.clip(2.0 * ((w * dy * dy).sum(axis=(1, 2)) / sw - my * my), lo, hi)
+        lim = 0.95 * np.sqrt(ncxx * ncyy)
+        ncxy = np.clip(2.0 * ((w * dx * dy).sum(axis=(1, 2)) / sw - mx * my), -lim, lim)
+        # The centre may wander a little, never off the star.
+        cx = np.clip(cx + mx[:, None, None], -half / 2.0, half / 2.0)
+        cy = np.clip(cy + my[:, None, None], -half / 2.0, half / 2.0)
+        delta = np.abs(ncxx - cxx) + np.abs(ncyy - cyy) + np.abs(ncxy - cxy)
+        cxx, cyy, cxy = ncxx, ncyy, ncxy
+        conv = good & (delta < 1e-4 * (cxx + cyy))
+        if conv.all():
+            break
+
+    # Pixel variance (Sheppard): a sampled star's moments are the true ones
+    # plus 1/12 px^2. Only removed where that leaves a sensible moment.
+    pv = 1.0 / 12.0
+    mxx = np.where(cxx > 2 * pv, cxx - pv, cxx)
+    myy = np.where(cyy > 2 * pv, cyy - pv, cyy)
+    det = np.maximum(mxx * myy - cxy * cxy, 0.0)
+    tr = np.maximum(mxx + myy, 1e-12)
+    outgrew = good & ((cxx >= hi * 0.999) | (cyy >= hi * 0.999))
+    fwhm = _FWHM_FACTOR * det ** 0.25
+    # Hot pixel or cosmic ray: collapses onto one pixel. SEP's smoothing
+    # spreads a hot pixel over 9, so it passes minarea; on a raw sub most
+    # "stars" in a 256 px panel were these.
+    point = good & ((cxx <= lo * 1.001) | (cyy <= lo * 1.001) | (fwhm < _POINT_FWHM_PX))
+    ok = conv & good & ~outgrew & ~point & np.isfinite(fwhm)
+    return fwhm, (mxx - myy) / tr, 2.0 * cxy / tr, clip_i, ok, outgrew, point
+
+
+_EMPTY_PANEL = {"n": 0, "n_measured": 0, "fwhm_px": None, "ecc": None, "n_clipped": 0}
+
+# Panels searched in one sep.extract call, up to this many pixels. In the GUI
+# process the pixel stack is 20M (set at import, and never lowered, see
+# sep_tiled), and every call allocates all of it: ~250 ms whatever the image
+# size, against ~5 ms for a 320 px panel on SEP's default stack. One call per
+# panel made a 3x3 grid take 2.3 s; one call for the lot takes ~0.3 s. The cap
+# keeps each GIL hold to ~0.5 s on big grids (a 4 Mpx strip of a dense field
+# held it ~1 s).
+_STITCH_MAX_PX = 2_000_000
+_STITCH_GAP = 8
+
+
+def _panel_prepare(img: np.ndarray, x0: int, y0: int, panel: int):
+    """
+    The panel plus _PANEL_MARGIN around it, as luminance with its own
+    background removed. Returns a dict (sub, nodata, rms, px0, py0, panel)
+    -- px0, py0 being the panel's corner inside the crop -- or None.
+    """
+    H, W = img.shape[:2]
+    m = _PANEL_MARGIN
+    cx0, cy0 = max(0, int(x0) - m), max(0, int(y0) - m)
+    cx1, cy1 = min(W, int(x0) + int(panel) + m), min(H, int(y0) + int(panel) + m)
+    gray = _to_gray32(np.asarray(img[cy0:cy1, cx0:cx1], dtype=np.float32))
+    if gray.ndim == 3:
+        gray = gray[..., 0]
+    gray = np.ascontiguousarray(gray, dtype=np.float32)
+    if gray.ndim != 2 or min(gray.shape) < 16:
+        return None
+
+    # 0.0 is no-data (registration borders), as everywhere in SASpro.
+    nodata = ~np.isfinite(gray) | (gray == 0.0)
+    if nodata.all():
+        return None
+    if nodata.any():
+        gray = np.where(nodata, 0.0, gray).astype(np.float32)
+    try:
+        box = int(max(16, min(64, min(gray.shape) // 3)))
+        bkg = sep.Background(gray, mask=nodata, bw=box, bh=box)
+        sub = np.ascontiguousarray(gray - bkg.back(), dtype=np.float32)
+        rms = float(bkg.globalrms)
+    except Exception:
+        return None
+    if not (rms > 0 and math.isfinite(rms)):
+        return None
+    sub[nodata] = 0.0
+    return {"sub": sub, "nodata": nodata, "rms": rms,
+            "px0": int(x0) - cx0, "py0": int(y0) - cy0, "panel": int(panel)}
+
+
+def _extract_stitched(preps: list) -> list:
+    """
+    One sep.extract over several prepared panels stacked into a strip, with
+    masked gutters between them and each panel's own noise as the error map.
+    Returns one catalogue per prep: a dict of x, y, a, b, flag, flux arrays in
+    that crop's coordinates, or None.
+    """
+    W = max(p["sub"].shape[1] for p in preps)
+    H = sum(p["sub"].shape[0] for p in preps) + _STITCH_GAP * (len(preps) - 1)
+    canvas = np.zeros((H, W), np.float32)
+    err = np.full((H, W), float(np.median([p["rms"] for p in preps])), np.float32)
+    mask = np.ones((H, W), bool)
+    offs = []
+    y = 0
+    for p in preps:
+        h, w = p["sub"].shape
+        canvas[y:y + h, :w] = p["sub"]
+        err[y:y + h, :w] = p["rms"]
+        mask[y:y + h, :w] = p["nodata"]
+        offs.append(y)
+        y += h + _STITCH_GAP
+    try:
+        stars = sep.extract(canvas, _PANEL_SIGMA, err=err, mask=mask, minarea=5)
+    except Exception:
+        return [None] * len(preps)
+
+    sy = np.asarray(stars["y"], float) if stars is not None else np.zeros(0)
+    out = []
+    for p, y0 in zip(preps, offs):
+        h = p["sub"].shape[0]
+        sel = (sy >= y0 - 0.5) & (sy < y0 + h - 0.5)
+        out.append({
+            "x": np.asarray(stars["x"], float)[sel],
+            "y": sy[sel] - y0,
+            "a": np.asarray(stars["a"], float)[sel],
+            "b": np.asarray(stars["b"], float)[sel],
+            "flag": np.asarray(stars["flag"], int)[sel],
+            "flux": np.asarray(stars["flux"], float)[sel],
+        })
+    return out
+
+
+def _panel_measure(prep: dict, cat: dict) -> dict:
+    """
+    Star statistics for one prepared panel from its catalogue:
+        n            stars detected in the panel (saturated ones included)
+        n_measured   stars whose shape was measured
+        fwhm_px      median FWHM in pixels, or None
+        ecc          eccentricity of the panel's typical star, or None
+        n_clipped    stars skipped for a clipped core
+
+    The eccentricity is taken from the median shape (median e1, median e2),
+    not the median of each star's own eccentricity. Eccentricity cannot be
+    negative, so noise only ever adds to it: faint round stars read 0.2-0.35
+    each. Noise points every which way and cancels in the median shape, while
+    a real elongation, which points the same way across a panel, survives.
+    So this reads lower than per-star medians from other tools.
+    """
+    empty = dict(_EMPTY_PANEL)
+    if prep is None or cat is None or len(cat["x"]) == 0:
+        return empty
+    sub = prep["sub"]
+    sx, sy, a, b, flag = cat["x"], cat["y"], cat["a"], cat["b"], cat["flag"]
+    px0, py0, panel = prep["px0"], prep["py0"], prep["panel"]
+    in_panel = (sx >= px0) & (sx < px0 + panel) & (sy >= py0) & (sy < py0 + panel)
+    shaped = (a > 0) & (b > 0) & np.isfinite(sx) & np.isfinite(sy)
+    counted = in_panel & shaped
+    n = int(np.count_nonzero(counted))
+    if n == 0:
+        return empty
+
+    # Owner map from every detection, so each stamp is cut down to its own
+    # star's pixels.
+    from scipy.ndimage import distance_transform_edt
+    h, w = sub.shape
+    jx = np.clip(np.round(sx).astype(int), 0, w - 1)
+    jy = np.clip(np.round(sy).astype(int), 0, h - 1)
+    seeds = np.ones((h, w), bool)
+    seeds[jy, jx] = False
+    label = np.full((h, w), -1, np.int32)
+    label[jy, jx] = np.arange(len(sx), dtype=np.int32)
+    _, (ny, nx) = distance_transform_edt(seeds, return_indices=True)
+    owner = label[ny, nx]
+
+    # Merged (deblended) objects are fine once their neighbours are cut out;
+    # truncated or overflowed ones are not.
+    cand = np.nonzero(counted & ((flag & ~1) == 0))[0]
+    cand = cand[np.argsort(-cat["flux"][cand])]
+    sigma0 = np.sqrt(np.maximum(a * b, 0.25))
+
+    fw, e1, e2, clipped, ok, point = _adaptive_moments(
+        sub, owner, sx[cand], sy[cand], cand, sigma0[cand])
+    n -= int(np.count_nonzero(point))
+    if n <= 0:
+        return empty
+    n_clipped = int(np.count_nonzero(clipped & ~point))
+    keep = np.nonzero(ok & ~clipped)[0][:_PANEL_MAX_MEASURED]
+    keep = keep[_stellar_locus(fw[keep])]
+    out = dict(empty, n=n, n_measured=int(keep.size), n_clipped=n_clipped)
+    if keep.size >= _PANEL_MIN_STARS:
+        out["fwhm_px"] = float(np.median(fw[keep]))
+    # Shape only from stars resolved enough to have one (see _MIN_FWHM_PX).
+    shp = keep[fw[keep] >= _MIN_FWHM_PX]
+    if shp.size >= _PANEL_MIN_STARS:
+        e = math.hypot(float(np.median(e1[shp])), float(np.median(e2[shp])))
+        e = min(max(e, 0.0), 0.999999)
+        out["ecc"] = math.sqrt(2.0 * e / (1.0 + e))
+    return out
+
+
+def measure_panels(img: np.ndarray, corners, panel: int, stop=None) -> Optional[list]:
+    """
+    Star statistics (see _panel_measure) for each panel whose top-left corner
+    is in `corners`, in that order. `stop` is polled between steps; when it
+    returns True the result is None.
+    """
+    preps = [_panel_prepare(img, x, y, panel) for (x, y) in corners]
+    cats = [None] * len(preps)
+    live = [i for i, p in enumerate(preps) if p is not None]
+    group, px = [], 0
+    for k, i in enumerate(live):
+        group.append(i)
+        px += preps[i]["sub"].size
+        if px >= _STITCH_MAX_PX or k == len(live) - 1:
+            if stop is not None and stop():
+                return None
+            for j, c in zip(group, _extract_stitched([preps[j] for j in group])):
+                cats[j] = c
+            group, px = [], 0
+    out = []
+    for p, c in zip(preps, cats):
+        if stop is not None and stop():
+            return None
+        out.append(_panel_measure(p, c))
+    return out
+
+
+def measure_panel_stars(img: np.ndarray, x0: int, y0: int, panel: int) -> dict:
+    """Star statistics for the one panel at (x0, y0); see _panel_measure."""
+    return measure_panels(img, [(x0, y0)], panel)[0]
+
+
+def _panel_tag(row: int, col: int, n: int) -> str:
+    """TL / T / TR / L / C / R / BL / B / BR where those name one panel."""
+    last = n - 1
+    mid = last // 2 if n % 2 else None
+    v = "T" if row == 0 else "B" if row == last else ("" if row == mid else None)
+    h = "L" if col == 0 else "R" if col == last else ("" if col == mid else None)
+    if v is None or h is None:
+        return ""
+    return (v + h) or "C"
+
+
+def _paint_panel_cells(p: QPainter, cells, f: float, accent: QColor):
+    """Draw the per-panel labels onto the zoomed mosaic (f = zoom factor)."""
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    for c in cells:
+        x, y, w, h = (float(v) * f for v in c["rect"])
+        side = min(w, h)
+        rect = QRectF(x, y, w, h)
+        p.save()
+        p.setClipRect(rect)
+        if c.get("centre"):
+            pw = max(2.0, side * 0.008)
+            p.setPen(QPen(accent, pw))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(rect.adjusted(pw / 2, pw / 2, -pw / 2, -pw / 2))
+        if side < 44:
+            p.restore()
+            continue
+
+        big_px = int(min(max(side * 0.085, 11), 26))
+        small_px = int(min(max(big_px * 0.55, 8), 15))
+        pad = max(3.0, big_px * 0.3)
+        f_big = QFont(); f_big.setPixelSize(big_px); f_big.setBold(True)
+        f_small = QFont(); f_small.setPixelSize(small_px)
+
+        tag = c.get("tag") or ""
+        if tag:
+            p.setFont(f_small)
+            fm = p.fontMetrics()
+            box = QRectF(x + pad, y + pad, fm.horizontalAdvance(tag) + 2 * pad * 0.7,
+                         fm.height() + pad * 0.6)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 150))
+            p.drawRoundedRect(box, 3, 3)
+            p.setPen(QColor(235, 235, 235))
+            p.drawText(box, Qt.AlignmentFlag.AlignCenter, tag)
+
+        big = c.get("big") or ""
+        small = c.get("small") or ""
+        p.setFont(f_big)
+        fmb = p.fontMetrics()
+        p.setFont(f_small)
+        fms = p.fontMetrics()
+        bw = fmb.horizontalAdvance(big)
+        sw = fms.horizontalAdvance(small)
+        if small and sw + 2 * pad > w - 2 * pad:
+            small, sw = "", 0          # too narrow: keep the FWHM, drop the detail line
+        if not big and not small:
+            p.restore()
+            continue
+        th = (fmb.height() if big else 0) + (fms.height() if small else 0)
+        box = QRectF(x + pad, y + h - pad - th - pad, max(bw, sw) + 2 * pad, th + pad)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 150))
+        p.drawRoundedRect(box, 4, 4)
+        ty = box.top() + pad / 2
+        if big:
+            p.setFont(f_big)
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(QRectF(box.left() + pad, ty, bw + 1, fmb.height()),
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, big)
+            ty += fmb.height()
+        if small:
+            p.setFont(f_small)
+            p.setPen(QColor(210, 210, 210))
+            p.drawText(QRectF(box.left() + pad, ty, sw + 1, fms.height()),
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, small)
+        p.restore()
+
+
+def _image_optics(meta: dict) -> dict:
+    """
+    What the image itself records about its optics, each value None if absent:
+        pixel_um, focal_mm, aperture_mm  with the header key each came from
+        scale_arcsec                     from the plate solve (WCS), if any
+
+    XPIXSZ is used as written. Capture software writes it already binned (SGP
+    writes XPIXSZ=4.63 with XBINNING=2 on the 2.315 um ASI294MM), and
+    PixInsight and SASpro scale it when they drizzle or resample, so it is the
+    size of one pixel of THIS image. Multiplying by XBINNING again would
+    double it. PIXSIZE1/PIXSIZE2 (INDI) are the native sensor pixel, so only
+    those get the binning -- the plate solver's _header_pixel_um convention.
+    """
+    out = {"pixel_um": None, "pixel_key": None, "focal_mm": None, "focal_key": None,
+           "aperture_mm": None, "aperture_key": None, "scale_arcsec": None}
+    try:
+        hdr = _seed_header_from_meta(dict(meta or {}))
+    except Exception:
+        hdr = None
+    if not isinstance(hdr, fits.Header):
+        return out
+
+    def num(keys, lo, hi):
+        for k in keys:
+            try:
+                v = _first_float(hdr.get(k))
+            except Exception:
+                v = None
+            if v is not None and math.isfinite(v) and lo <= v <= hi:
+                return v, k
+        return None, None
+
+    out["pixel_um"], out["pixel_key"] = num(("XPIXSZ", "YPIXSZ"), 0.1, 100.0)
+    if out["pixel_um"] is None:
+        base, bkey = num(("PIXSIZE1", "PIXSIZE2"), 0.1, 100.0)
+        if base:
+            binning, _k = num(("XBINNING", "XBIN"), 1.0, 64.0)
+            if binning and binning > 1:
+                base, bkey = base * binning, f"{bkey} × {_k}"
+            if base <= 100.0:
+                out["pixel_um"], out["pixel_key"] = base, bkey
+    if out["pixel_um"] is None:
+        out["pixel_um"], out["pixel_key"] = num(("PIXSIZE",), 0.1, 100.0)
+    out["focal_mm"], out["focal_key"] = num(("FOCALLEN", "FOCLEN"), 1.0, 50000.0)
+    out["aperture_mm"], out["aperture_key"] = num(("APTDIA",), 1.0, 10000.0)
+    if out["aperture_mm"] is None and out["focal_mm"]:
+        ratio, _k = num(("FOCRATIO",), 0.5, 100.0)
+        if ratio:
+            out["aperture_mm"], out["aperture_key"] = out["focal_mm"] / ratio, "FOCALLEN / FOCRATIO"
+
+    try:
+        w = _wcs_from_header_2d(hdr, relax=True)
+        if w.has_celestial:
+            from astropy.wcs.utils import proj_plane_pixel_scales
+            s = float(np.mean(proj_plane_pixel_scales(w.celestial)[:2])) * 3600.0
+            if math.isfinite(s) and 0.01 < s < 1000.0:
+                out["scale_arcsec"] = s
+    except Exception:
+        pass
+    return out
+
+
+class _PanelStatsWorker(QThread):
+    """Measures every panel off the GUI thread. Parentless; run via start_owned_thread."""
+    measured = pyqtSignal(object, object)     # (key, list of per-panel dicts)
+
+    def __init__(self, key, img: np.ndarray, corners, panel: int):
+        super().__init__(None)
+        self._key = key
+        self._img = img
+        self._corners = list(corners)
+        self._panel = int(panel)
+
+    def run(self):
+        try:
+            out = measure_panels(self._img, self._corners, self._panel,
+                                 stop=self.isInterruptionRequested)
+        except Exception:
+            out = [None] * len(self._corners)
+        self._img = None
+        if out is not None:
+            self.measured.emit(self._key, out)
 
 
 
@@ -3027,10 +3606,10 @@ class TiltDialog(QDialog):
             H, W = img_shape
             cx, cy = W / 2.0, H / 2.0
             corners = [
-                ("Top Left",     0, 0),
-                ("Top Right",    W, 0),
-                ("Bottom Left",  0, H),
-                ("Bottom Right", W, H),
+                (self.tr("Top Left"),     0, 0),
+                (self.tr("Top Right"),    W, 0),
+                (self.tr("Bottom Left"),  0, H),
+                (self.tr("Bottom Right"), W, H),
             ]
             # Covariance of (p, q) from the fit, so each corner delta can
             # carry its own error bar. delta = p*dx + q*dy is linear in the
@@ -4350,14 +4929,32 @@ class ImagePeekerDialogPro(QDialog):
         self.sep_slider = QSlider(Qt.Orientation.Horizontal); self.sep_slider.setRange(0, 50); self.sep_slider.setValue(4)
         self.sep_value_label = QLabel(str(self.sep_slider.value()))
 
-        self.pixel_size_input = QDoubleSpinBox(); self.pixel_size_input.setRange(0.01, 50.0); self.pixel_size_input.setSingleStep(0.1)
-        self.focal_length_input = QDoubleSpinBox(); self.focal_length_input.setRange(10.0, 5000.0); self.focal_length_input.setSingleStep(10.0)
-        self.aperture_input = QDoubleSpinBox(); self.aperture_input.setRange(1.0, 5000.0); self.aperture_input.setSingleStep(1.0)
+        # Three decimals for pixel size: 2.315 um (ASI294MM) must not round to 2.32.
+        self.pixel_size_input = QDoubleSpinBox(); self.pixel_size_input.setRange(0.01, 100.0); self.pixel_size_input.setDecimals(3); self.pixel_size_input.setSingleStep(0.1)
+        self.focal_length_input = QDoubleSpinBox(); self.focal_length_input.setRange(1.0, 50000.0); self.focal_length_input.setDecimals(1); self.focal_length_input.setSingleStep(10.0)
+        self.aperture_input = QDoubleSpinBox(); self.aperture_input.setRange(1.0, 10000.0); self.aperture_input.setDecimals(1); self.aperture_input.setSingleStep(1.0)
 
         px = self.settings.value("pixel_size_um", 4.8, type=float)
         fl = self.settings.value("focal_length_mm", 800.0, type=float)
         ap = self.settings.value("aperture_mm", 100.0, type=float)
         self.pixel_size_input.setValue(px); self.focal_length_input.setValue(fl); self.aperture_input.setValue(ap)
+
+        # The image's own pixel size / focal length / aperture win over the
+        # remembered ones. They are not remembered in turn (_remember_optics):
+        # the remembered values are what YOU typed, for images that carry none.
+        self._optics_from_image = {}
+        self._image_optics_info = _image_optics(self._arr_and_meta()[1])
+        self._fill_optics_from_image()
+
+        self.scale_value_label = QLabel("")
+        self.scale_value_label.setWordWrap(True)
+        self.optics_note = QLabel("")
+        self.optics_note.setWordWrap(True)
+        self.optics_note.setStyleSheet("color:#999; font-size:11px;")
+        self.stats_chk = QCheckBox(self.tr("Show star statistics"))
+        self.stats_chk.setToolTip(self.tr(
+            "Median FWHM, star count and eccentricity of the stars in each panel"))
+        self.stats_chk.setChecked(bool(self.settings.value(self._k("show_stats"), True, type=bool)))
 
         row = 0
         gl.addWidget(QLabel(self.tr("Grid size:")), row, 0); gl.addWidget(self.grid_spin, row, 1); row += 1
@@ -4370,6 +4967,10 @@ class ImagePeekerDialogPro(QDialog):
         gl.addWidget(QLabel(self.tr("Pixel size (µm):")), row, 0); gl.addWidget(self.pixel_size_input, row, 1); row += 1
         gl.addWidget(QLabel(self.tr("Focal length (mm):")), row, 0); gl.addWidget(self.focal_length_input, row, 1); row += 1
         gl.addWidget(QLabel(self.tr("Aperture (mm):")), row, 0); gl.addWidget(self.aperture_input, row, 1); row += 1
+        gl.addWidget(self.optics_note, row, 0, 1, 2); row += 1
+        gl.addWidget(QLabel(self.tr("Image scale:")), row, 0); gl.addWidget(self.scale_value_label, row, 1); row += 1
+        gl.addWidget(self.stats_chk, row, 0, 1, 2); row += 1
+        gl.setRowStretch(row, 1)
 
         # Right side
         from PyQt6.QtWidgets import QTabWidget
@@ -4391,10 +4992,27 @@ class ImagePeekerDialogPro(QDialog):
         ok_btn = QPushButton(self.tr("Save Settings && Exit")); cancel_btn = QPushButton(self.tr("Exit without Saving"))
         btns.addWidget(ok_btn); btns.addWidget(cancel_btn)
 
+        # One line under the mosaic comparing the panels (centre vs corners).
+        self.stats_lbl = QLabel("")
+        self.stats_lbl.setWordWrap(True)
+        self.stats_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
         main = QHBoxLayout(self)
         main.addWidget(self.params)
-        right = QVBoxLayout(); right.addLayout(analysis_row); right.addWidget(self.status_lbl, 0), right.addWidget(self.preview_pane, 1); right.addLayout(btns)
+        right = QVBoxLayout(); right.addLayout(analysis_row); right.addWidget(self.status_lbl, 0), right.addWidget(self.preview_pane, 1); right.addWidget(self.stats_lbl, 0); right.addLayout(btns)
         main.addLayout(right, 1)
+
+        # Per-panel statistics: measured off the GUI thread, cached per image
+        # and panel layout, so separation and zoom changes only redraw.
+        self._stats_cache = {}
+        self._stats_shown_key = None
+        self._stats_worker = None
+        self._stats_wanted = None
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setSingleShot(True)
+        self._stats_timer.setInterval(150)
+        self._stats_timer.timeout.connect(self._start_stats_worker)
+        self._update_scale_label()
 
         # Signals
         self.grid_spin.valueChanged.connect(self._refresh_mosaic)
@@ -4413,7 +5031,231 @@ class ImagePeekerDialogPro(QDialog):
         self.pixel_size_input.editingFinished.connect(_save_after_change)
         self.focal_length_input.editingFinished.connect(_save_after_change)
         self.aperture_input.editingFinished.connect(_save_after_change)
+        self.pixel_size_input.valueChanged.connect(self._on_optics_changed)
+        self.focal_length_input.valueChanged.connect(self._on_optics_changed)
+        self.stats_chk.toggled.connect(self._on_stats_toggled)
         QTimer.singleShot(0, self._refresh_mosaic)
+
+    # ------------------------------------------------------------ optics --
+    def _fill_optics_from_image(self):
+        """Put the image's own pixel size, focal length and aperture in the fields."""
+        info = self._image_optics_info or {}
+        spins = (("pixel_size_um", self.pixel_size_input, "pixel_um", "pixel_key"),
+                 ("focal_length_mm", self.focal_length_input, "focal_mm", "focal_key"),
+                 ("aperture_mm", self.aperture_input, "aperture_mm", "aperture_key"))
+        for skey, spin, vkey, kkey in spins:
+            v = info.get(vkey)
+            if v is None:
+                spin.setToolTip(self.tr("Not recorded in the image: your last value."))
+                continue
+            spin.blockSignals(True)
+            spin.setValue(float(v))
+            spin.blockSignals(False)
+            self._optics_from_image[skey] = float(spin.value())
+            spin.setToolTip(self.tr("From the image header ({0}).").format(info.get(kkey)))
+
+    def _remember_optics(self, s):
+        """Save the optics fields, except values that came from the image unedited."""
+        for skey, spin in (("pixel_size_um", self.pixel_size_input),
+                           ("focal_length_mm", self.focal_length_input),
+                           ("aperture_mm", self.aperture_input)):
+            v = float(spin.value())
+            if skey in self._optics_from_image and abs(v - self._optics_from_image[skey]) < 1e-9:
+                continue
+            s.setValue(skey, v)
+
+    def _arcsec_per_px(self):
+        """(arcsec per pixel, where it came from) -- the plate solve wins."""
+        info = self._image_optics_info or {}
+        if info.get("scale_arcsec"):
+            return float(info["scale_arcsec"]), "solve"
+        px = float(self.pixel_size_input.value())
+        fl = float(self.focal_length_input.value())
+        if px > 0 and fl > 0:
+            return 206.264806 * px / fl, "optics"
+        return None, ""
+
+    def _update_scale_label(self):
+        scale, src = self._arcsec_per_px()
+        if scale is None:
+            self.scale_value_label.setText("—")
+            return
+        if src == "solve":
+            text = self.tr("{0:.3f}″/px (plate solve)").format(scale)
+            px = float(self.pixel_size_input.value())
+            fl = float(self.focal_length_input.value())
+            optics = 206.264806 * px / fl if px > 0 and fl > 0 else None
+            # Fields that disagree with the solve would give Tilt and Focal
+            # Plane the wrong microns: say so rather than pick one silently.
+            if optics and abs(optics / scale - 1.0) > 0.05:
+                text += "<br><span style='color:#d4a73e'>" + self.tr(
+                    "Pixel size and focal length give {0:.3f}″/px. "
+                    "Drizzled or resampled?").format(optics) + "</span>"
+        else:
+            text = self.tr("{0:.3f}″/px (pixel size ÷ focal length)").format(scale)
+        self.scale_value_label.setText(text)
+
+        names = []
+        if "pixel_size_um" in self._optics_from_image:
+            names.append(self.tr("pixel size"))
+        if "focal_length_mm" in self._optics_from_image:
+            names.append(self.tr("focal length"))
+        if "aperture_mm" in self._optics_from_image:
+            names.append(self.tr("aperture"))
+        if names:
+            self.optics_note.setText(self.tr("From the image: {0}.").format(", ".join(names)))
+        else:
+            self.optics_note.setText(self.tr("Not in the image header: enter your own."))
+
+    def _on_optics_changed(self, *_):
+        self._update_scale_label()
+        self._show_panel_stats()      # FWHM in arcsec follows the scale
+
+    # ------------------------------------------------- panel statistics --
+    def _on_stats_toggled(self, on: bool):
+        try:
+            self.settings.setValue(self._k("show_stats"), bool(on))
+        except Exception:
+            pass
+        self._request_panel_stats()
+
+    def _stats_layout(self):
+        """(cache key, image, panel corners, grid n, panel, sep) for the mosaic shown now."""
+        arr, _ = self._arr_and_meta()
+        if arr is None or arr.size == 0:
+            return None
+        n = max(2, int(self.grid_spin.value()))
+        ps = int(self.panel_slider.value())
+        sep_px = int(self.sep_slider.value())
+        h, w = arr.shape[:2]
+        xs, ys = _panel_grid(h, w, n, ps)
+        corners = [(x, y) for y in ys for x in xs]
+        doc = self._coerce_doc(self.document)
+        key = (id(getattr(doc, "image", None)), arr.shape, ps, tuple(xs), tuple(ys))
+        return key, arr, corners, n, ps, sep_px
+
+    def _request_panel_stats(self):
+        if not self.stats_chk.isChecked():
+            self._stats_timer.stop()
+            self._stats_wanted = None
+            self.preview_pane.set_panel_cells([])
+            self.stats_lbl.setText("")
+            return
+        lay = self._stats_layout()
+        if lay is None:
+            return
+        key = lay[0]
+        if key in self._stats_cache:
+            self._show_panel_stats()
+            return
+        # Never leave last layout's numbers on the new panels.
+        self.preview_pane.set_panel_cells([])
+        self.stats_lbl.setText(self.tr("Measuring stars in each panel…"))
+        self._stats_wanted = key
+        self._stats_timer.start()
+
+    def _start_stats_worker(self):
+        if thread_running(self._stats_worker):
+            self._stats_worker.requestInterruption()
+            return                      # _on_stats_measured starts the next one
+        lay = self._stats_layout()
+        if lay is None or not self.stats_chk.isChecked():
+            return
+        key, arr, corners, _n, ps, _sep = lay
+        if key in self._stats_cache:
+            self._show_panel_stats()
+            return
+        worker = _PanelStatsWorker(key, arr, corners, ps)
+        worker.measured.connect(self._on_stats_measured)
+        worker.finished.connect(self._on_stats_thread_done)
+        self._stats_worker = worker
+        start_owned_thread(worker)
+
+    def _on_stats_measured(self, key, results):
+        self._stats_cache[key] = results
+        if len(self._stats_cache) > 24:
+            self._stats_cache.pop(next(iter(self._stats_cache)))
+        lay = self._stats_layout()
+        if lay is not None and lay[0] == key:
+            self._show_panel_stats()
+
+    def _on_stats_thread_done(self):
+        """A run ended (finished or interrupted): measure the layout shown now if it still isn't."""
+        self._stats_worker = None
+        if not self.stats_chk.isChecked():
+            return
+        lay = self._stats_layout()
+        if lay is not None and lay[0] not in self._stats_cache:
+            self._stats_timer.start()
+
+    def _show_panel_stats(self):
+        if not self.stats_chk.isChecked():
+            return
+        lay = self._stats_layout()
+        if lay is None:
+            return
+        key, _arr, _corners, n, ps, sep_px = lay
+        results = self._stats_cache.get(key)
+        if results is None or len(results) != n * n:
+            return
+        scale, _src = self._arcsec_per_px()
+
+        def fmt(px):
+            if px is None:
+                return "—"
+            return f"{px * scale:.2f}″" if scale else f"{px:.2f} px"
+
+        cells = []
+        for i, r in enumerate(results):
+            row, col = divmod(i, n)
+            r = r or {}
+            cnt = int(r.get("n") or 0)
+            small = self.tr("no stars") if cnt == 0 else (
+                self.tr("1 star") if cnt == 1 else self.tr("{0} stars").format(cnt))
+            if r.get("ecc") is not None:
+                small += self.tr(" · ecc {0:.2f}").format(r["ecc"])
+            cells.append({
+                "rect": (col * (ps + sep_px), row * (ps + sep_px), ps, ps),
+                "tag": _panel_tag(row, col, n),
+                "big": fmt(r.get("fwhm_px")) if cnt else "",
+                "small": small,
+                "centre": bool(n % 2 and row == col == n // 2),
+            })
+        self.preview_pane.set_panel_cells(cells)
+        self.stats_lbl.setText(self._stats_summary(results, n, fmt))
+        self._stats_shown_key = key
+
+    def _stats_summary(self, results, n, fmt) -> str:
+        """Centre against corners: field curvature lifts every corner, tilt lifts one side."""
+        def fw(row, col):
+            r = results[row * n + col] or {}
+            return r.get("fwhm_px")
+
+        last = n - 1
+        corners = [(t, fw(r, c)) for t, r, c in (("TL", 0, 0), ("TR", 0, last),
+                                                 ("BL", last, 0), ("BR", last, last))]
+        corners = [(t, v) for t, v in corners if v is not None]
+        centre = fw(n // 2, n // 2) if n % 2 else None
+        if not corners and centre is None:
+            return self.tr("Too few stars in the panels to measure. A larger panel size holds more stars.")
+        parts = []
+        if centre is not None:
+            parts.append(self.tr("FWHM: centre {0}").format(fmt(centre)))
+        if corners:
+            lo = min(v for _t, v in corners)
+            worst_t, worst = max(corners, key=lambda tv: tv[1])
+            rng = fmt(lo) if len(corners) == 1 else f"{fmt(lo)}–{fmt(worst)}"
+            label = self.tr("corners {0}") if parts else self.tr("FWHM: corners {0}")
+            text = label.format(rng)
+            if len(corners) > 1:
+                ref = centre if centre is not None else lo
+                pct = 100.0 * (worst / ref - 1.0)
+                text += self.tr(", worst {0} ({1:+.0f}% vs {2})").format(
+                    worst_t, pct, self.tr("centre") if centre is not None else self.tr("best corner"))
+            parts.append(text)
+        total = sum(int((r or {}).get("n") or 0) for r in results)
+        parts.append(self.tr("{0} stars").format(total))
+        return " · ".join(parts)
 
     def _k(self, key: str) -> str:
         return f"{self._persist_prefix}/{key}"
@@ -4434,9 +5276,7 @@ class ImagePeekerDialogPro(QDialog):
             s.setValue(self._k("analysis_key"), str(self.analysis_combo.currentData()))
 
             # your optics values are already saved in accept(), but saving here helps if user closes w/out accept
-            s.setValue("pixel_size_um",   float(self.pixel_size_input.value()))
-            s.setValue("focal_length_mm", float(self.focal_length_input.value()))
-            s.setValue("aperture_mm",     float(self.aperture_input.value()))
+            self._remember_optics(s)
 
             try:
                 s.sync()
@@ -4503,6 +5343,14 @@ class ImagePeekerDialogPro(QDialog):
     def closeEvent(self, ev):
         try:
             self._save_ui_state()
+        except Exception:
+            pass
+        # The stats thread is owned by thread_keeper, so it may outlive this
+        # dialog safely; just tell it to stop early.
+        try:
+            self._stats_timer.stop()
+            if thread_running(self._stats_worker):
+                self._stats_worker.requestInterruption()
         except Exception:
             pass
         # If a worker is still running, ask it to finish (or drop the handle if
@@ -4591,9 +5439,7 @@ class ImagePeekerDialogPro(QDialog):
         return arr, meta
 
     def accept(self):
-        self.settings.setValue("pixel_size_um",   self.pixel_size_input.value())
-        self.settings.setValue("focal_length_mm", self.focal_length_input.value())
-        self.settings.setValue("aperture_mm",     self.aperture_input.value())
+        self._remember_optics(self.settings)
         super().accept()
 
 
@@ -4679,6 +5525,10 @@ class ImagePeekerDialogPro(QDialog):
 
                     arr, meta = self._arr_and_meta()
                     hdr = _header_from_meta(meta)
+                    # A fresh solve is the best scale there is.
+                    self._image_optics_info = _image_optics(meta)
+                    self._update_scale_label()
+                    self._show_panel_stats()
 
                 if hdr is None:
                     QMessageBox.critical(self, self.tr("WCS Error"),
@@ -4882,6 +5732,7 @@ class ImagePeekerDialogPro(QDialog):
 
         qimg = self._to_qimage(mosaic_f)       # 8-bit, for immediate display only
         self.preview_pane.load_qimage(qimg, source_float=mosaic_f)
+        self._request_panel_stats()
 
     def _on_ok(self):
         # user clicked OK → generate & display the mosaic

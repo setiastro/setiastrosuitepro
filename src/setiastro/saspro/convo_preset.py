@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QVBoxLayout, QHBoxLayout,
     QLabel, QComboBox, QCheckBox
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QCoreApplication
 
 # Reuse widgets/utilities from convo.py
 from .convo import (
@@ -15,6 +15,10 @@ from .convo import (
     make_elliptical_gaussian_psf, van_cittert_deconv, larson_sekanina,
     preset_psf_kernel,
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("ConvoPreset", text)
 
 # ---------------------------- Preset Editor Dialog ----------------------------
 class ConvoPresetDialog(QDialog):
@@ -24,7 +28,7 @@ class ConvoPresetDialog(QDialog):
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Convolution / Deconvolution — Preset")
+        self.setWindowTitle(self.tr("Convolution / Deconvolution — Preset"))
         p = dict(initial or {})
         op = p.get("op", "convolution")
 
@@ -35,7 +39,7 @@ class ConvoPresetDialog(QDialog):
         if op == "tv":
             op = "denoise"
         op_row = QHBoxLayout()
-        op_row.addWidget(QLabel("Operation:"))
+        op_row.addWidget(QLabel(self.tr("Operation:")))
         self.op_combo = QComboBox()
         self.op_combo.addItems(["convolution", "deconvolution", "denoise"])
         self.op_combo.setCurrentText(op if op in ("convolution", "deconvolution", "denoise") else "convolution")
@@ -49,27 +53,27 @@ class ConvoPresetDialog(QDialog):
         self.conv_aspect   = FloatSliderWithEdit(minimum=0.1, maximum=10.0,  step=0.1, initial=float(p.get("aspect", 1.0)))
         self.conv_rotation = FloatSliderWithEdit(minimum=0.0, maximum=360.0, step=1.0, initial=float(p.get("rotation", 0.0)), suffix="°")
         self.conv_strength = FloatSliderWithEdit(minimum=0.0, maximum=1.0,   step=0.01, initial=float(p.get("strength", 1.0)))
-        self.form_conv.addRow("Radius:", self.conv_radius)
-        self.form_conv.addRow("Kurtosis (σ):", self.conv_kurtosis)
-        self.form_conv.addRow("Aspect Ratio:", self.conv_aspect)
-        self.form_conv.addRow("Rotation:", self.conv_rotation)
-        self.form_conv.addRow("Strength:", self.conv_strength)
+        self.form_conv.addRow(self.tr("Radius:"), self.conv_radius)
+        self.form_conv.addRow(self.tr("Kurtosis (σ):"), self.conv_kurtosis)
+        self.form_conv.addRow(self.tr("Aspect Ratio:"), self.conv_aspect)
+        self.form_conv.addRow(self.tr("Rotation:"), self.conv_rotation)
+        self.form_conv.addRow(self.tr("Strength:"), self.conv_strength)
 
         self.form_deconv = QFormLayout()
         self.deconv_algo = QComboBox()
         self.deconv_algo.addItems(["Richardson-Lucy", "Wiener", "Larson-Sekanina", "Van Cittert"])
         self.deconv_algo.setCurrentText(p.get("algo", "Richardson-Lucy"))
-        self.form_deconv.addRow("Algorithm:", self.deconv_algo)
+        self.form_deconv.addRow(self.tr("Algorithm:"), self.deconv_algo)
 
         # RL/Wiener PSF params
         self.psf_radius   = FloatSliderWithEdit(minimum=0.1, maximum=100.0, step=0.1, initial=float(p.get("psf_radius", 3.0)), suffix=" px")
         self.psf_kurtosis = FloatSliderWithEdit(minimum=0.1, maximum=10.0,  step=0.1, initial=float(p.get("psf_kurtosis", 2.0)), suffix="σ")
         self.psf_aspect   = FloatSliderWithEdit(minimum=0.1, maximum=10.0,  step=0.1, initial=float(p.get("psf_aspect", 1.0)))
         self.psf_rot      = FloatSliderWithEdit(minimum=0.0, maximum=360.0, step=1.0,   initial=float(p.get("psf_rotation", 0.0)), suffix="°")
-        self.form_deconv.addRow("PSF Radius:", self.psf_radius)
-        self.form_deconv.addRow("PSF Kurtosis:", self.psf_kurtosis)
-        self.form_deconv.addRow("PSF Aspect:", self.psf_aspect)
-        self.form_deconv.addRow("PSF Rotation:", self.psf_rot)
+        self.form_deconv.addRow(self.tr("PSF Radius:"), self.psf_radius)
+        self.form_deconv.addRow(self.tr("PSF Kurtosis:"), self.psf_kurtosis)
+        self.form_deconv.addRow(self.tr("PSF Aspect:"), self.psf_aspect)
+        self.form_deconv.addRow(self.tr("PSF Rotation:"), self.psf_rot)
 
         # A preset saved from RL/Wiener on a stellar PSF carries that kernel;
         # keep it through an edit unless the user turns it off.
@@ -79,8 +83,8 @@ class ConvoPresetDialog(QDialog):
         except ValueError:
             _ks, self._psf_kernel = None, None
         self.chk_stellar_psf = QCheckBox(
-            f"Use the stellar PSF saved in this preset ({_ks.shape[1]}×{_ks.shape[0]}) "
-            "instead of the PSF sliders" if _ks is not None else "")
+            self.tr("Use the stellar PSF saved in this preset ({0}×{1}) "
+            "instead of the PSF sliders").format(_ks.shape[1], _ks.shape[0]) if _ks is not None else "")
         self.chk_stellar_psf.setChecked(_ks is not None)
         self.chk_stellar_psf.setVisible(_ks is not None)
         self.form_deconv.addRow("", self.chk_stellar_psf)
@@ -89,10 +93,10 @@ class ConvoPresetDialog(QDialog):
         self.rl_iter      = FloatSliderWithEdit(minimum=1, maximum=200, step=1, initial=float(p.get("rl_iter", 30)))
         self.rl_reg       = QComboBox(); self.rl_reg.addItems(["None (Plain R–L)", "Tikhonov (L2)", "Total Variation (TV)"])
         self.rl_reg.setCurrentText(p.get("rl_reg", "None (Plain R–L)"))
-        self.rl_clip      = QCheckBox("De-ring (bilateral)"); self.rl_clip.setChecked(bool(p.get("rl_dering", True)))
-        self.rl_l_only    = QCheckBox("L* only"); self.rl_l_only.setChecked(bool(p.get("luminance_only", True)))
-        self.form_deconv.addRow("RL Iterations:", self.rl_iter)
-        self.form_deconv.addRow("RL Regularization:", self.rl_reg)
+        self.rl_clip      = QCheckBox(self.tr("De-ring (bilateral)")); self.rl_clip.setChecked(bool(p.get("rl_dering", True)))
+        self.rl_l_only    = QCheckBox(self.tr("L* only")); self.rl_l_only.setChecked(bool(p.get("luminance_only", True)))
+        self.form_deconv.addRow(self.tr("RL Iterations:"), self.rl_iter)
+        self.form_deconv.addRow(self.tr("RL Regularization:"), self.rl_reg)
         self.form_deconv.addRow("", self.rl_clip)
         self.form_deconv.addRow("", self.rl_l_only)
 
@@ -100,9 +104,9 @@ class ConvoPresetDialog(QDialog):
         self.wiener_nsr   = FloatSliderWithEdit(minimum=0.0, maximum=1.0, step=0.001, initial=float(p.get("wiener_nsr", 0.01)))
         self.wiener_reg   = QComboBox(); self.wiener_reg.addItems(["None (Classical Wiener)", "Tikhonov (L2)"])
         self.wiener_reg.setCurrentText(p.get("wiener_reg", "None (Classical Wiener)"))
-        self.wiener_dering= QCheckBox("De-ring pass"); self.wiener_dering.setChecked(bool(p.get("wiener_dering", True)))
-        self.form_deconv.addRow("Wiener NSR:", self.wiener_nsr)
-        self.form_deconv.addRow("Wiener Regularization:", self.wiener_reg)
+        self.wiener_dering= QCheckBox(self.tr("De-ring pass")); self.wiener_dering.setChecked(bool(p.get("wiener_dering", True)))
+        self.form_deconv.addRow(self.tr("Wiener NSR:"), self.wiener_nsr)
+        self.form_deconv.addRow(self.tr("Wiener Regularization:"), self.wiener_reg)
         self.form_deconv.addRow("", self.wiener_dering)
 
         # Larson–Sekanina
@@ -110,20 +114,20 @@ class ConvoPresetDialog(QDialog):
         self.ls_astep     = FloatSliderWithEdit(minimum=0.1, maximum=360.0, step=0.1, initial=float(p.get("ls_astep", 1.0)), suffix="°")
         self.ls_operator  = QComboBox(); self.ls_operator.addItems(["Divide", "Subtract"]); self.ls_operator.setCurrentText(p.get("ls_operator", "Divide"))
         self.ls_blend     = QComboBox(); self.ls_blend.addItems(["SoftLight", "Screen"]);   self.ls_blend.setCurrentText(p.get("ls_blend", "SoftLight"))
-        self.form_deconv.addRow("LS Radial Step:", self.ls_rstep)
-        self.form_deconv.addRow("LS Angular Step:", self.ls_astep)
-        self.form_deconv.addRow("LS Operator:", self.ls_operator)
-        self.form_deconv.addRow("Blend:", self.ls_blend)
+        self.form_deconv.addRow(self.tr("LS Radial Step:"), self.ls_rstep)
+        self.form_deconv.addRow(self.tr("LS Angular Step:"), self.ls_astep)
+        self.form_deconv.addRow(self.tr("LS Operator:"), self.ls_operator)
+        self.form_deconv.addRow(self.tr("Blend:"), self.ls_blend)
 
         # Van Cittert
         self.vc_iter      = FloatSliderWithEdit(minimum=1, maximum=1000, step=1, initial=float(p.get("vc_iter", 10)))
         self.vc_relax     = FloatSliderWithEdit(minimum=0.0, maximum=1.0, step=0.01, initial=float(p.get("vc_relax", 0.0)))
-        self.form_deconv.addRow("VC Iterations:", self.vc_iter)
-        self.form_deconv.addRow("VC Relaxation:", self.vc_relax)
+        self.form_deconv.addRow(self.tr("VC Iterations:"), self.vc_iter)
+        self.form_deconv.addRow(self.tr("VC Relaxation:"), self.vc_relax)
 
         # Strength (applies to all ops)
         self.deconv_strength = FloatSliderWithEdit(minimum=0.0, maximum=1.0, step=0.01, initial=float(p.get("strength", 1.0)))
-        self.form_deconv.addRow("Strength:", self.deconv_strength)
+        self.form_deconv.addRow(self.tr("Strength:"), self.deconv_strength)
 
         # Classical Denoise (op="denoise") — method selector + per-method rows
         self.form_tv = QFormLayout()
@@ -133,43 +137,43 @@ class ConvoPresetDialog(QDialog):
             "Gaussian", "Median", "Wavelet",
         ])
         self.dn_algo.setCurrentText(str(p.get("denoise_algo", "TV Chambolle")))
-        self.form_tv.addRow("Method:", self.dn_algo)
+        self.form_tv.addRow(self.tr("Method:"), self.dn_algo)
 
-        self.dn_lum_only = QCheckBox("L* only (color — preserves chroma)")
+        self.dn_lum_only = QCheckBox(self.tr("L* only (color — preserves chroma)"))
         self.dn_lum_only.setChecked(bool(p.get("lum_only", True)))
         self.form_tv.addRow("", self.dn_lum_only)
 
         # TV Chambolle
         self.tv_weight = FloatSliderWithEdit(minimum=0.0, maximum=1.0, step=0.01, initial=float(p.get("tv_weight", 0.10)))
         self.tv_iter   = FloatSliderWithEdit(minimum=1, maximum=100, step=1, initial=float(p.get("tv_iter", 10)))
-        self.tv_multi  = QCheckBox("Multi-channel"); self.tv_multi.setChecked(bool(p.get("tv_multichannel", True)))
-        self.row_tv_weight = self.form_tv.addRow("TV Weight:", self.tv_weight) or None
-        self.form_tv.addRow("TV Iterations:", self.tv_iter)
+        self.tv_multi  = QCheckBox(self.tr("Multi-channel")); self.tv_multi.setChecked(bool(p.get("tv_multichannel", True)))
+        self.row_tv_weight = self.form_tv.addRow(self.tr("TV Weight:"), self.tv_weight) or None
+        self.form_tv.addRow(self.tr("TV Iterations:"), self.tv_iter)
         self.form_tv.addRow("", self.tv_multi)
 
         # Non-Local Means
         self.nlm_h     = FloatSliderWithEdit(minimum=0.001, maximum=0.30, step=0.001, initial=float(p.get("nlm_h", 0.015)))
         self.nlm_patch = FloatSliderWithEdit(minimum=3, maximum=15, step=2, initial=float(p.get("nlm_patch", 5)), suffix=" px")
         self.nlm_dist  = FloatSliderWithEdit(minimum=3, maximum=21, step=2, initial=float(p.get("nlm_dist", 7)), suffix=" px")
-        self.form_tv.addRow("NLM h (strength):", self.nlm_h)
-        self.form_tv.addRow("NLM Patch size:", self.nlm_patch)
-        self.form_tv.addRow("NLM Search dist:", self.nlm_dist)
+        self.form_tv.addRow(self.tr("NLM h (strength):"), self.nlm_h)
+        self.form_tv.addRow(self.tr("NLM Patch size:"), self.nlm_patch)
+        self.form_tv.addRow(self.tr("NLM Search dist:"), self.nlm_dist)
 
         # Bilateral
         self.bil_d     = FloatSliderWithEdit(minimum=1, maximum=25, step=2, initial=float(p.get("bil_d", 9)), suffix=" px")
         self.bil_sc    = FloatSliderWithEdit(minimum=1.0, maximum=200.0, step=1.0, initial=float(p.get("bil_sigma_color", 50.0)))
         self.bil_ss    = FloatSliderWithEdit(minimum=1.0, maximum=200.0, step=1.0, initial=float(p.get("bil_sigma_space", 50.0)))
-        self.form_tv.addRow("Bilateral Diameter:", self.bil_d)
-        self.form_tv.addRow("Bilateral Sigma colour:", self.bil_sc)
-        self.form_tv.addRow("Bilateral Sigma space:", self.bil_ss)
+        self.form_tv.addRow(self.tr("Bilateral Diameter:"), self.bil_d)
+        self.form_tv.addRow(self.tr("Bilateral Sigma colour:"), self.bil_sc)
+        self.form_tv.addRow(self.tr("Bilateral Sigma space:"), self.bil_ss)
 
         # Gaussian
         self.gau_sigma = FloatSliderWithEdit(minimum=0.1, maximum=10.0, step=0.1, initial=float(p.get("gau_sigma", 1.0)), suffix=" px")
-        self.form_tv.addRow("Gaussian Sigma:", self.gau_sigma)
+        self.form_tv.addRow(self.tr("Gaussian Sigma:"), self.gau_sigma)
 
         # Median
         self.med_size  = FloatSliderWithEdit(minimum=1, maximum=15, step=2, initial=float(p.get("med_size", 3)), suffix=" px")
-        self.form_tv.addRow("Median Kernel size:", self.med_size)
+        self.form_tv.addRow(self.tr("Median Kernel size:"), self.med_size)
 
         # Wavelet
         self.wav_sigma   = FloatSliderWithEdit(minimum=0.0, maximum=0.30, step=0.001, initial=float(p.get("wav_sigma", 0.0)))
@@ -177,13 +181,13 @@ class ConvoPresetDialog(QDialog):
         self.wav_wavelet.setCurrentText(str(p.get("wav_wavelet", "db2")))
         self.wav_mode    = QComboBox(); self.wav_mode.addItems(["soft","hard"])
         self.wav_mode.setCurrentText(str(p.get("wav_mode", "soft")))
-        self.form_tv.addRow("Wavelet Noise σ (0=auto):", self.wav_sigma)
-        self.form_tv.addRow("Wavelet:", self.wav_wavelet)
-        self.form_tv.addRow("Wavelet Threshold mode:", self.wav_mode)
+        self.form_tv.addRow(self.tr("Wavelet Noise σ (0=auto):"), self.wav_sigma)
+        self.form_tv.addRow(self.tr("Wavelet:"), self.wav_wavelet)
+        self.form_tv.addRow(self.tr("Wavelet Threshold mode:"), self.wav_mode)
 
         # Strength (all methods)
         self.tv_strength = FloatSliderWithEdit(minimum=0.0, maximum=1.0, step=0.01, initial=float(p.get("strength", 1.0)))
-        self.form_tv.addRow("Strength:", self.tv_strength)
+        self.form_tv.addRow(self.tr("Strength:"), self.tv_strength)
 
         # Per-method row visibility. Map each method to the widgets it owns.
         self._dn_row_map = {
@@ -536,7 +540,7 @@ def run_convo_via_preset(main, doc_or_preset=None, preset: dict | None = None, *
         doc = d() if callable(d) else d
 
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "Convolution / Deconvolution", "Load an image first.")
+        QMessageBox.warning(main, _tr("Convolution / Deconvolution"), _tr("Load an image first."))
         return
 
     # ---- Record for Replay ----

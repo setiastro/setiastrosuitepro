@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from PyQt6.QtCore import Qt, QRectF, QPointF, QSize, QTimer, pyqtSignal, QObject, QSettings
+from PyQt6.QtCore import Qt, QRectF, QPointF, QSize, QTimer, pyqtSignal, QObject, QSettings, QCoreApplication
 from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QPicture, QTransform
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (
 
 from setiastro.saspro.skychart_engine import *          # noqa: F401,F403
 from setiastro.saspro.skychart_engine import (           # underscore names
-    _PROJ_FOVMAX, _PROJ_TMAX,
+    _PROJ_FOVMAX, _PROJ_TMAX, _kind_label,
 )
 
 _log = logging.getLogger("setiastro.skychart")
@@ -201,7 +201,7 @@ class ColorButton(QPushButton):
 
     def _pick(self):
         from PyQt6.QtWidgets import QColorDialog
-        c = QColorDialog.getColor(QColor(self._color), self, "Colour")
+        c = QColorDialog.getColor(QColor(self._color), self, self.tr("Colour"))
         if c.isValid():
             self.setColor(c.name())
             for cb in self.callbacks:
@@ -213,13 +213,13 @@ class StarNamesDialog(QDialog):
 
     def __init__(self, data, chosen, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Star Names")
+        self.setWindowTitle(self.tr("Star Names"))
         self.resize(420, 560)
         v = QVBoxLayout(self)
-        self.ck_auto = QCheckBox("Automatic (bright stars, by magnitude)")
+        self.ck_auto = QCheckBox(self.tr("Automatic (bright stars, by magnitude)"))
         v.addWidget(self.ck_auto)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Name", "Mag.", "Constellation"])
+        self.tree.setHeaderLabels([self.tr("Name"), self.tr("Mag."), self.tr("Constellation")])
         self.tree.setRootIsDecorated(False)
         names = {}
         for i in np.nonzero(data.s_name != "")[0]:
@@ -240,16 +240,16 @@ class StarNamesDialog(QDialog):
         self.ck_auto.toggled.connect(lambda on: self.tree.setEnabled(not on))
         self.tree.setEnabled(bool(chosen))
         row = QHBoxLayout()
-        for txt, fn in (("All", lambda: self._set(True)), ("None", lambda: self._set(False)),
-                        ("Brighter than 2.5", lambda: self._by_mag(2.5)),
-                        ("Brighter than 4", lambda: self._by_mag(4.0))):
+        for txt, fn in ((self.tr("All"), lambda: self._set(True)), (self.tr("None"), lambda: self._set(False)),
+                        (self.tr("Brighter than 2.5"), lambda: self._by_mag(2.5)),
+                        (self.tr("Brighter than 4"), lambda: self._by_mag(4.0))):
             b = QPushButton(txt)
             b.clicked.connect(fn)
             row.addWidget(b)
         v.addLayout(row)
         row = QHBoxLayout()
         row.addStretch(1)
-        ok, cancel = QPushButton("OK"), QPushButton("Cancel")
+        ok, cancel = QPushButton(self.tr("OK")), QPushButton(self.tr("Cancel"))
         ok.clicked.connect(self.accept)
         cancel.clicked.connect(self.reject)
         row.addWidget(ok)
@@ -278,15 +278,16 @@ class DsoStylesDialog(QDialog):
 
     def __init__(self, styles, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Deep Sky Object Styles")
+        self.setWindowTitle(self.tr("Deep Sky Object Styles"))
         v = QVBoxLayout(self)
-        lab = QLabel("The styles of the symbols and outlines of deep sky objects. Nebula shapes "
-                     "(H-alpha, dust and OpenNGC outlines) use the colours of their types. "
-                     "A fill opacity of zero leaves the objects of a type unfilled.")
+        lab = QLabel(self.tr("The styles of the symbols and outlines of deep sky objects. Nebula shapes "
+                             "(H-alpha, dust and OpenNGC outlines) use the colours of their types. "
+                             "A fill opacity of zero leaves the objects of a type unfilled."))
         lab.setWordWrap(True)
         v.addWidget(lab)
         g = QGridLayout()
-        for c, t in enumerate(("Object type", "Line type", "Line color", "Opacity", "Fill color", "Opacity")):
+        for c, t in enumerate((self.tr("Object type"), self.tr("Line type"), self.tr("Line color"),
+                               self.tr("Opacity"), self.tr("Fill color"), self.tr("Opacity"))):
             g.addWidget(QLabel(f"<i>{t}</i>"), 0, c)
         self.rows = {}
         for r, name in enumerate(DSO_STYLE_DEFAULTS, start=1):
@@ -299,7 +300,7 @@ class DsoStylesDialog(QDialog):
             for sp, val in ((las, la), (fas, fa)):
                 sp.setRange(0, 255)
                 sp.setValue(int(val))
-            g.addWidget(QLabel(name), r, 0)
+            g.addWidget(QLabel(_kind_label(name)), r, 0)
             g.addWidget(cb, r, 1)
             g.addWidget(lcol, r, 2)
             g.addWidget(las, r, 3)
@@ -308,11 +309,11 @@ class DsoStylesDialog(QDialog):
             self.rows[name] = (cb, lcol, las, fcol, fas)
         v.addLayout(g)
         row = QHBoxLayout()
-        bd = QPushButton("Defaults")
+        bd = QPushButton(self.tr("Defaults"))
         bd.clicked.connect(self._defaults)
         row.addWidget(bd)
         row.addStretch(1)
-        ok, cancel = QPushButton("OK"), QPushButton("Cancel")
+        ok, cancel = QPushButton(self.tr("OK")), QPushButton(self.tr("Cancel"))
         ok.clicked.connect(self.accept)
         cancel.clicked.connect(self.reject)
         row.addWidget(ok)
@@ -424,20 +425,22 @@ class SkyChartPanel(QWidget):
         left = QWidget()
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
-        self.layer_label = QLabel("Layers")
+        self.layer_label = QLabel(self.tr("Layers"))
         lv.addWidget(self.layer_label)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Layer", "M", "L", "Description"])
+        self.tree.setHeaderLabels([self.tr("Layer"), self.tr("M"), self.tr("L"), self.tr("Description")])
         self.tree.setRootIsDecorated(False)
         self.tree.setMaximumHeight(210)
         hdr = self.tree.header()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.headerItem().setToolTip(1, "Markers: draw the objects of the layer")
-        self.tree.headerItem().setToolTip(2, "Labels: write the names of the objects of the layer")
+        self.tree.headerItem().setToolTip(1, self.tr("Markers: draw the objects of the layer"))
+        self.tree.headerItem().setToolTip(2, self.tr("Labels: write the names of the objects of the layer"))
         self.layer_checks, self.mark_checks, self.label_checks = {}, {}, {}
         for key, name, desc, _on in LAYERS:
+            name = QCoreApplication.translate("SkychartEngine", name)
+            desc = QCoreApplication.translate("SkychartEngine", desc)
             it = QTreeWidgetItem(["", "", "", desc])
             it.setData(0, Qt.ItemDataRole.UserRole, key)
             it.setToolTip(3, desc)
@@ -448,24 +451,24 @@ class SkyChartPanel(QWidget):
             self.tree.setItemWidget(it, 0, cb)
             self.layer_checks[key] = cb
             has_m, has_l = LAYER_ML.get(key, (True, False))
-            for col, has, store, tip in ((1, has_m, self.mark_checks, "Markers"),
-                                         (2, has_l, self.label_checks, "Labels")):
+            for col, has, store, tip in ((1, has_m, self.mark_checks, self.tr("Markers of {0}")),
+                                         (2, has_l, self.label_checks, self.tr("Labels of {0}"))):
                 if has:
                     c = QCheckBox()
                     c.setChecked(True)
-                    c.setToolTip(f"{tip} of {name}")
+                    c.setToolTip(tip.format(name))
                     c.toggled.connect(self._layer_toggled)
                     self.tree.setItemWidget(it, col, c)
                     store[key] = c
         self.tree.itemClicked.connect(self._layer_row_clicked)
         lv.addWidget(self.tree)
         lrow = QHBoxLayout()
-        for txt, on in (("All", True), ("None", False)):
+        for txt, on in ((self.tr("All"), True), (self.tr("None"), False)):
             b = QPushButton(txt)
             b.setFixedWidth(60)
             b.clicked.connect(lambda _=False, v=on: self._set_all_layers(v))
             lrow.addWidget(b)
-        self.ck_auto = QCheckBox("Update the preview automatically")
+        self.ck_auto = QCheckBox(self.tr("Update the preview automatically"))
         self.ck_auto.setChecked(True)
         lrow.addWidget(self.ck_auto)
         lrow.addStretch(1)
@@ -476,10 +479,10 @@ class SkyChartPanel(QWidget):
         self._auto_timer.timeout.connect(lambda: self.preview(keep_view=True))
 
         bar = QHBoxLayout()
-        for txt, tip, fn in (("+", "Zoom in", lambda: self.view.zoom(1.25)),
-                             ("−", "Zoom out", lambda: self.view.zoom(0.8)),
-                             ("Fit", "Fit the page in the view", lambda: self.view.fit()),
-                             ("1:1", "True size", lambda: self.view.one_to_one())):
+        for txt, tip, fn in (("+", self.tr("Zoom in"), lambda: self.view.zoom(1.25)),
+                             ("−", self.tr("Zoom out"), lambda: self.view.zoom(0.8)),
+                             (self.tr("Fit"), self.tr("Fit the page in the view"), lambda: self.view.fit()),
+                             ("1:1", self.tr("True size"), lambda: self.view.one_to_one())):
             b = QPushButton(txt)
             b.setToolTip(tip)
             b.setFixedWidth(44)
@@ -489,7 +492,7 @@ class SkyChartPanel(QWidget):
         self.chart_label = QLabel("")
         bar.addWidget(self.chart_label)
         bar.addStretch(1)
-        self.btn_preview = QPushButton("Preview")
+        self.btn_preview = QPushButton(self.tr("Preview"))
         self.btn_preview.setDefault(True)
         self.btn_preview.clicked.connect(lambda: self.preview())
         bar.addWidget(self.btn_preview)
@@ -501,7 +504,7 @@ class SkyChartPanel(QWidget):
         self.status = QLabel(" ")
         lv.addWidget(self.status)
         hrow = QHBoxLayout()
-        hrow.addWidget(QLabel("History:"))
+        hrow.addWidget(QLabel(self.tr("History:")))
         self.cb_hist = QComboBox()
         self.cb_hist.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         hrow.addWidget(self.cb_hist, 1)
@@ -510,8 +513,8 @@ class SkyChartPanel(QWidget):
             b.setFixedWidth(34)
             b.clicked.connect(lambda _=False, d=d: self._history_step(d))
             hrow.addWidget(b)
-        self.btn_restore = QPushButton("Restore")
-        self.btn_restore.setToolTip("Restore the chart parameters of the selected history entry")
+        self.btn_restore = QPushButton(self.tr("Restore"))
+        self.btn_restore.setToolTip(self.tr("Restore the chart parameters of the selected history entry"))
         self.btn_restore.clicked.connect(self._history_restore)
         hrow.addWidget(self.btn_restore)
         lv.addLayout(hrow)
@@ -519,10 +522,10 @@ class SkyChartPanel(QWidget):
 
         # ---- right: tabs
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._tab_chart(), "Chart")
-        self.tabs.addTab(self._tab_contents(), "Contents")
-        self.tabs.addTab(self._tab_rendering(), "Rendering")
-        self.tabs.addTab(self._tab_output(), "Output")
+        self.tabs.addTab(self._tab_chart(), self.tr("Chart"))
+        self.tabs.addTab(self._tab_contents(), self.tr("Contents"))
+        self.tabs.addTab(self._tab_rendering(), self.tr("Rendering"))
+        self.tabs.addTab(self._tab_output(), self.tr("Output"))
         self.tabs.setMinimumWidth(430)
         split.addWidget(self.tabs)
         self._wire_auto_preview()
@@ -531,13 +534,13 @@ class SkyChartPanel(QWidget):
 
         # ---- bottom
         bot = QHBoxLayout()
-        b_reset = QPushButton("Reset")
-        b_reset.setToolTip("Restore the default parameters")
+        b_reset = QPushButton(self.tr("Reset"))
+        b_reset.setToolTip(self.tr("Restore the default parameters"))
         b_reset.clicked.connect(self._reset)
         bot.addWidget(b_reset)
         bot.addStretch(1)
-        self.btn_run = QPushButton("Create Outputs")
-        self.btn_run.setToolTip("Generate the chart and write the outputs chosen in the Output tab")
+        self.btn_run = QPushButton(self.tr("Create Outputs"))
+        self.btn_run.setToolTip(self.tr("Generate the chart and write the outputs chosen in the Output tab"))
         self.btn_run.clicked.connect(self.run)
         bot.addWidget(self.btn_run)
         root.addLayout(bot)
@@ -561,12 +564,12 @@ class SkyChartPanel(QWidget):
     def _tab_chart(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        g = QGroupBox("Center")
+        g = QGroupBox(self.tr("Center"))
         f = QGridLayout(g)
         self.sp_rah, self.sp_ram, self.sp_ras = self._ispin(0, 23), self._ispin(0, 59), self._dspin(0, 59.99, 1, 2)
         self.sp_dcd, self.sp_dcm, self.sp_dcs = self._ispin(0, 90), self._ispin(0, 59), self._dspin(0, 59.99, 1, 2)
-        self.ck_south = QCheckBox("S")
-        self.ck_south.setToolTip("Southern declination")
+        self.ck_south = QCheckBox(self.tr("S"))
+        self.ck_south.setToolTip(self.tr("Southern declination"))
         ra_row = QHBoxLayout()
         for wdg, unit in ((self.sp_rah, "h"), (self.sp_ram, "m"), (self.sp_ras, "s")):
             ra_row.addWidget(wdg)
@@ -576,19 +579,19 @@ class SkyChartPanel(QWidget):
             dec_row.addWidget(wdg)
             dec_row.addWidget(QLabel(unit))
         dec_row.addWidget(self.ck_south)
-        f.addWidget(QLabel("Right Ascension:"), 0, 0)
+        f.addWidget(QLabel(self.tr("Right Ascension:")), 0, 0)
         f.addLayout(ra_row, 0, 1)
-        f.addWidget(QLabel("Declination:"), 1, 0)
+        f.addWidget(QLabel(self.tr("Declination:")), 1, 0)
         f.addLayout(dec_row, 1, 1)
         self.ed_search = QLineEdit()
-        self.ed_search.setPlaceholderText("Object or constellation: M 57, NGC 7000, Heart Nebula, Vega, Lyra...")
+        self.ed_search.setPlaceholderText(self.tr("Object or constellation: M 57, NGC 7000, Heart Nebula, Vega, Lyra..."))
         self.ed_search.returnPressed.connect(self.search)
         self.ed_search.textEdited.connect(self._ensure_completer)
-        b_s = QPushButton("Search")
+        b_s = QPushButton(self.tr("Search"))
         b_s.clicked.connect(self.search)
-        b_i = QPushButton("From image...")
-        b_i.setToolTip("Choose one of the plate-solved images open in SASpro and take its\n"
-                       "center, field, orientation and outline (the active one is preselected)")
+        b_i = QPushButton(self.tr("From image..."))
+        b_i.setToolTip(self.tr("Choose one of the plate-solved images open in SASpro and take its\n"
+                               "center, field, orientation and outline (the active one is preselected)"))
         b_i.clicked.connect(self.from_image)
         srow = QHBoxLayout()
         srow.addWidget(self.ed_search, 1)
@@ -597,23 +600,23 @@ class SkyChartPanel(QWidget):
         f.addWidget(b_i, 3, 1, alignment=Qt.AlignmentFlag.AlignRight)
         v.addWidget(g)
 
-        g = QGroupBox("Field")
+        g = QGroupBox(self.tr("Field"))
         f = QFormLayout(g)
         self.sp_fov = self._dspin(0.05, 300.0, 1.0, 3, " °")
         self.cb_proj = QComboBox()
         self.cb_proj.addItems(PROJECTIONS)
         self.sp_rot = self._dspin(-360.0, 360.0, 1.0, 2, " °")
-        self.sp_rot.setToolTip("Angle of celestial north, counter-clockwise from up")
-        self.ck_mir = QCheckBox("Mirrored")
+        self.sp_rot.setToolTip(self.tr("Angle of celestial north, counter-clockwise from up"))
+        self.ck_mir = QCheckBox(self.tr("Mirrored"))
         row = QHBoxLayout()
         row.addWidget(self.sp_rot)
         row.addWidget(self.ck_mir)
-        f.addRow("Field of view:", self.sp_fov)
-        f.addRow("Projection:", self.cb_proj)
-        f.addRow("Rotation:", row)
+        f.addRow(self.tr("Field of view:"), self.sp_fov)
+        f.addRow(self.tr("Projection:"), self.cb_proj)
+        f.addRow(self.tr("Rotation:"), row)
         v.addWidget(g)
 
-        g = QGroupBox("Page")
+        g = QGroupBox(self.tr("Page"))
         f = QFormLayout(g)
         self.cb_fmt = QComboBox()
         self.cb_fmt.addItems(list(PAGE_FORMATS.keys()))
@@ -626,20 +629,20 @@ class SkyChartPanel(QWidget):
         self.sp_h = self._dspin(40.0, 3000.0, 1.0, 1, " mm")
         self.sp_margin = self._dspin(0.0, 100.0, 1.0, 1, " mm")
         self.ed_title = QLineEdit()
-        self.ed_title.setPlaceholderText("(automatic: constellation name)")
-        f.addRow("Format:", row)
-        f.addRow("Width:", self.sp_w)
-        f.addRow("Height:", self.sp_h)
-        f.addRow("Margin:", self.sp_margin)
-        f.addRow("Title:", self.ed_title)
+        self.ed_title.setPlaceholderText(self.tr("(automatic: constellation name)"))
+        f.addRow(self.tr("Format:"), row)
+        f.addRow(self.tr("Width:"), self.sp_w)
+        f.addRow(self.tr("Height:"), self.sp_h)
+        f.addRow(self.tr("Margin:"), self.sp_margin)
+        f.addRow(self.tr("Title:"), self.ed_title)
         self.cb_fmt.currentTextChanged.connect(self._fmt_changed)
         self.cb_orient.currentTextChanged.connect(self._fmt_changed)
         v.addWidget(g)
 
-        g = QGroupBox("Image Outline")
+        g = QGroupBox(self.tr("Image Outline"))
         h = QHBoxLayout(g)
-        self.lb_outline = QLabel("No image outline")
-        b_rm = QPushButton("Remove")
+        self.lb_outline = QLabel(self.tr("No image outline"))
+        b_rm = QPushButton(self.tr("Remove"))
         b_rm.clicked.connect(self._remove_outline)
         h.addWidget(self.lb_outline, 1)
         h.addWidget(b_rm)
@@ -655,28 +658,28 @@ class SkyChartPanel(QWidget):
     def _tab_contents(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        g = QGroupBox("Stars")
+        g = QGroupBox(self.tr("Stars"))
         f = QFormLayout(g)
         self.sp_smag = self._dspin(1.0, 18.0, 0.5, 1)
-        self.sp_smag.setToolTip("Only stars of this magnitude or brighter are drawn.\n"
-                                "Typing a value switches 'Automatic' off.")
-        self.ck_smag_auto = QCheckBox("Automatic")
-        self.ck_smag_auto.setToolTip("Automatic: the faintest magnitude visible in the image when the chart\n"
-                                     "was made with 'From image'; otherwise the magnitude that gives the\n"
-                                     "star density below.")
+        self.sp_smag.setToolTip(self.tr("Only stars of this magnitude or brighter are drawn.\n"
+                                        "Typing a value switches 'Automatic' off."))
+        self.ck_smag_auto = QCheckBox(self.tr("Automatic"))
+        self.ck_smag_auto.setToolTip(self.tr("Automatic: the faintest magnitude visible in the image when the chart\n"
+                                             "was made with 'From image'; otherwise the magnitude that gives the\n"
+                                             "star density below."))
         row = QHBoxLayout()
         row.addWidget(self.sp_smag)
         row.addWidget(self.ck_smag_auto)
-        self.sp_density = self._dspin(0.5, 200.0, 1.0, 1, " stars/cm²")
-        self.btn_names = QPushButton("Select...")
+        self.sp_density = self._dspin(0.5, 200.0, 1.0, 1, self.tr(" stars/cm²"))
+        self.btn_names = QPushButton(self.tr("Select..."))
         self.btn_names.clicked.connect(self._select_names)
-        self.lb_names = QLabel("automatic")
+        self.lb_names = QLabel(self.tr("automatic"))
         nrow = QHBoxLayout()
         nrow.addWidget(self.btn_names)
         nrow.addWidget(self.lb_names, 1)
         self.sp_smin = self._dspin(0.05, 5.0, 0.05, 2, " mm")
         self.sp_smax = self._dspin(0.5, 20.0, 0.1, 2, " mm")
-        self.ck_halos = QCheckBox("Halos")
+        self.ck_halos = QCheckBox(self.tr("Halos"))
         self.sp_halo_w = self._dspin(0.0, 3.0, 0.05, 2, " mm")
         self.bt_halo = ColorButton("#ffffff")
         self.sp_halo_a = self._ispin(0, 255)
@@ -684,46 +687,46 @@ class SkyChartPanel(QWidget):
         hrow.addWidget(self.bt_halo)
         hrow.addWidget(self.sp_halo_a)
         hrow.addStretch(1)
-        self.ck_halo_map = QCheckBox("Map background (halos take the map colour)")
-        self.ck_colored = QCheckBox("Colored stars (B−V color index)")
-        self.ck_colored.setToolTip("Bright stars use the catalog B−V index. Gaia stars are colored from\n"
-                                   "their XP spectra when SASpro's Gaia XP spectral library is installed.")
-        self.ck_online = QCheckBox("Online Gaia colours for stars beyond the local XP library")
-        self.ck_online.setToolTip(
+        self.ck_halo_map = QCheckBox(self.tr("Map background (halos take the map colour)"))
+        self.ck_colored = QCheckBox(self.tr("Colored stars (B−V color index)"))
+        self.ck_colored.setToolTip(self.tr("Bright stars use the catalog B−V index. Gaia stars are colored from\n"
+                                           "their XP spectra when SASpro's Gaia XP spectral library is installed."))
+        self.ck_online = QCheckBox(self.tr("Online Gaia colours for stars beyond the local XP library"))
+        self.ck_online.setToolTip(self.tr(
             "Stars without a local XP spectrum (fainter than the installed XP groups) take their\n"
             "BP−RP colour from the Gaia archive (ESA). The local library always has priority.\n"
             "The preview is drawn at once and repainted when the colours arrive; every piece of\n"
-            "sky is downloaded only once and kept in a local cache. Only sky areas are sent.")
-        self.ck_outlined = QCheckBox("Outlined stars")
+            "sky is downloaded only once and kept in a local cache. Only sky areas are sent."))
+        self.ck_outlined = QCheckBox(self.tr("Outlined stars"))
         self.bt_outline = ColorButton("#000000")
         self.sp_outline_w = self._dspin(0.01, 1.0, 0.02, 2, " mm")
-        f.addRow("Star magnitude limit:", row)
-        f.addRow("Max. density:", self.sp_density)
-        f.addRow("Star names:", nrow)
-        f.addRow("Smallest star:", self.sp_smin)
-        f.addRow("Largest star:", self.sp_smax)
+        f.addRow(self.tr("Star magnitude limit:"), row)
+        f.addRow(self.tr("Max. density:"), self.sp_density)
+        f.addRow(self.tr("Star names:"), nrow)
+        f.addRow(self.tr("Smallest star:"), self.sp_smin)
+        f.addRow(self.tr("Largest star:"), self.sp_smax)
         f.addRow("", self.ck_halos)
-        f.addRow("Halo width:", self.sp_halo_w)
-        f.addRow("Halo color:", hrow)
+        f.addRow(self.tr("Halo width:"), self.sp_halo_w)
+        f.addRow(self.tr("Halo color:"), hrow)
         f.addRow("", self.ck_halo_map)
         f.addRow("", self.ck_colored)
         f.addRow("", self.ck_online)
         f.addRow("", self.ck_outlined)
-        f.addRow("Outline color:", self.bt_outline)
-        f.addRow("Outline width:", self.sp_outline_w)
+        f.addRow(self.tr("Outline color:"), self.bt_outline)
+        f.addRow(self.tr("Outline width:"), self.sp_outline_w)
         v.addWidget(g)
-        g = QGroupBox("Deep Sky Objects (galaxies, clusters, nebulae — not stars)")
+        g = QGroupBox(self.tr("Deep Sky Objects (galaxies, clusters, nebulae — not stars)"))
         f = QFormLayout(g)
         self.sp_dmag = self._dspin(1.0, 22.0, 0.5, 1)
-        self.sp_dmag.setToolTip("Applies to galaxies, clusters and nebulae only. The stars use the\n"
-                                "'Star magnitude limit' of the Stars box above.")
-        self.ck_dmag_auto = QCheckBox("Automatic")
+        self.sp_dmag.setToolTip(self.tr("Applies to galaxies, clusters and nebulae only. The stars use the\n"
+                                        "'Star magnitude limit' of the Stars box above."))
+        self.ck_dmag_auto = QCheckBox(self.tr("Automatic"))
         row = QHBoxLayout()
         row.addWidget(self.sp_dmag)
         row.addWidget(self.ck_dmag_auto)
         self.sp_dmin = self._dspin(0.3, 10.0, 0.1, 2, " mm")
-        f.addRow("Object magnitude limit:", row)
-        f.addRow("Smallest symbol:", self.sp_dmin)
+        f.addRow(self.tr("Object magnitude limit:"), row)
+        f.addRow(self.tr("Smallest symbol:"), self.sp_dmin)
         v.addWidget(g)
         v.addStretch(1)
         for wdg in (self.ck_smag_auto, self.ck_halos, self.ck_halo_map, self.ck_outlined, self.ck_dmag_auto):
@@ -733,7 +736,7 @@ class SkyChartPanel(QWidget):
     def _tab_rendering(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        g = QGroupBox("Chart")
+        g = QGroupBox(self.tr("Chart"))
         f = QFormLayout(g)
         self.sp_ts = self._dspin(0.4, 4.0, 0.05, 2)
         self.sp_gs = self._dspin(0.4, 4.0, 0.05, 2)
@@ -744,54 +747,54 @@ class SkyChartPanel(QWidget):
         frow.addWidget(self.sp_frame_a)
         frow.addStretch(1)
         self.cb_font = QFontComboBox()
-        self.ck_bw = QCheckBox("Black and white")
-        self.ck_bw.setToolTip("For visual observation sessions and monochrome printed media")
-        self.ck_dupes = QCheckBox("Remove duplicate objects")
-        self.ck_labelopt = QCheckBox("Label placement optimization")
-        self.ck_overlap = QCheckBox("Overlappable stars")
-        self.ck_overlap.setToolTip("Labels may be written over faint stars")
-        self.ck_outlabels = QCheckBox("Outlined labels")
-        self.ck_leader = QCheckBox("Leader lines")
+        self.ck_bw = QCheckBox(self.tr("Black and white"))
+        self.ck_bw.setToolTip(self.tr("For visual observation sessions and monochrome printed media"))
+        self.ck_dupes = QCheckBox(self.tr("Remove duplicate objects"))
+        self.ck_labelopt = QCheckBox(self.tr("Label placement optimization"))
+        self.ck_overlap = QCheckBox(self.tr("Overlappable stars"))
+        self.ck_overlap.setToolTip(self.tr("Labels may be written over faint stars"))
+        self.ck_outlabels = QCheckBox(self.tr("Outlined labels"))
+        self.ck_leader = QCheckBox(self.tr("Leader lines"))
         self.bt_leader = ColorButton("#303030")
         self.sp_leader_w = self._dspin(0.02, 1.0, 0.02, 2, " mm")
         self.sp_reduction = self._dspin(0.2, 1.0, 0.05, 2)
-        self.sp_reduction.setToolTip("Labels that do not fit are retried at this fraction of their size")
-        f.addRow("Text scale:", self.sp_ts)
-        f.addRow("Graphics scale:", self.sp_gs)
-        f.addRow("Background:", self.bt_bg)
-        f.addRow("Map background:", self.bt_map)
-        f.addRow("Frame and legend:", frow)
-        f.addRow("Font:", self.cb_font)
+        self.sp_reduction.setToolTip(self.tr("Labels that do not fit are retried at this fraction of their size"))
+        f.addRow(self.tr("Text scale:"), self.sp_ts)
+        f.addRow(self.tr("Graphics scale:"), self.sp_gs)
+        f.addRow(self.tr("Background:"), self.bt_bg)
+        f.addRow(self.tr("Map background:"), self.bt_map)
+        f.addRow(self.tr("Frame and legend:"), frow)
+        f.addRow(self.tr("Font:"), self.cb_font)
         f.addRow("", self.ck_bw)
         f.addRow("", self.ck_dupes)
         f.addRow("", self.ck_labelopt)
         f.addRow("", self.ck_overlap)
         f.addRow("", self.ck_outlabels)
         f.addRow("", self.ck_leader)
-        f.addRow("Leader line color:", self.bt_leader)
-        f.addRow("Leader line width:", self.sp_leader_w)
-        f.addRow("Reduction factor:", self.sp_reduction)
+        f.addRow(self.tr("Leader line color:"), self.bt_leader)
+        f.addRow(self.tr("Leader line width:"), self.sp_leader_w)
+        f.addRow(self.tr("Reduction factor:"), self.sp_reduction)
         v.addWidget(g)
-        g = QGroupBox("Deep Sky Objects")
+        g = QGroupBox(self.tr("Deep Sky Objects"))
         h = QHBoxLayout(g)
-        b = QPushButton("Edit...")
+        b = QPushButton(self.tr("Edit..."))
         b.clicked.connect(self._edit_styles)
         self.lb_styles = QLabel("")
-        h.addWidget(QLabel("Object styles:"))
+        h.addWidget(QLabel(self.tr("Object styles:")))
         h.addWidget(b)
         h.addWidget(self.lb_styles, 1)
         v.addWidget(g)
-        self.gb_legend = QGroupBox("Legend")
+        self.gb_legend = QGroupBox(self.tr("Legend"))
         self.gb_legend.setCheckable(True)
         f = QFormLayout(self.gb_legend)
         self.cb_legend_pos = QComboBox()
         self.cb_legend_pos.addItems(["Bottom", "Top"])
         self.cb_tfont, self.cb_xfont = QFontComboBox(), QFontComboBox()
         self.sp_tsize, self.sp_xsize = self._dspin(4, 48, 0.5, 1, " pt"), self._dspin(3, 24, 0.5, 1, " pt")
-        self.ck_tbold, self.ck_titalic = QCheckBox("Bold"), QCheckBox("Italic")
-        self.ck_xbold, self.ck_xitalic = QCheckBox("Bold"), QCheckBox("Italic")
-        for fcb, sp, bb, ii, label in ((self.cb_tfont, self.sp_tsize, self.ck_tbold, self.ck_titalic, "Title font:"),
-                                       (self.cb_xfont, self.sp_xsize, self.ck_xbold, self.ck_xitalic, "Text font:")):
+        self.ck_tbold, self.ck_titalic = QCheckBox(self.tr("Bold")), QCheckBox(self.tr("Italic"))
+        self.ck_xbold, self.ck_xitalic = QCheckBox(self.tr("Bold")), QCheckBox(self.tr("Italic"))
+        for fcb, sp, bb, ii, label in ((self.cb_tfont, self.sp_tsize, self.ck_tbold, self.ck_titalic, self.tr("Title font:")),
+                                       (self.cb_xfont, self.sp_xsize, self.ck_xbold, self.ck_xitalic, self.tr("Text font:"))):
             r1 = QHBoxLayout()
             r1.addWidget(fcb, 1)
             r1.addWidget(sp)
@@ -801,7 +804,7 @@ class SkyChartPanel(QWidget):
             r2.addStretch(1)
             f.addRow(label, r1)
             f.addRow("", r2)
-        f.insertRow(0, "Position:", self.cb_legend_pos)
+        f.insertRow(0, self.tr("Position:"), self.cb_legend_pos)
         v.addWidget(self.gb_legend)
         v.addStretch(1)
         self.ck_leader.toggled.connect(self._update_enabled)
@@ -825,37 +828,37 @@ class SkyChartPanel(QWidget):
         self.gb_svg.setCheckable(True)
         f = QFormLayout(self.gb_svg)
         self.ed_svg, h = file_row("svg")
-        f.addRow("File:", h)
-        self.ck_paths = QCheckBox("Convert text to paths")
-        self.ck_paths.setToolTip("Recommended: the chart looks the same in every application.\n"
-                                 "Disable to keep selectable text (the fonts must be available to the viewer).")
+        f.addRow(self.tr("File:"), h)
+        self.ck_paths = QCheckBox(self.tr("Convert text to paths"))
+        self.ck_paths.setToolTip(self.tr("Recommended: the chart looks the same in every application.\n"
+                                         "Disable to keep selectable text (the fonts must be available to the viewer)."))
         f.addRow("", self.ck_paths)
         self.gb_pdf = QGroupBox("PDF")
         self.gb_pdf.setCheckable(True)
         f = QFormLayout(self.gb_pdf)
         self.ed_pdf, h = file_row("pdf")
-        f.addRow("File:", h)
-        self.gb_png = QGroupBox("PNG file")
+        f.addRow(self.tr("File:"), h)
+        self.gb_png = QGroupBox(self.tr("PNG file"))
         self.gb_png.setCheckable(True)
         f = QFormLayout(self.gb_png)
         self.ed_png, h = file_row("png")
-        f.addRow("File:", h)
-        self.gb_image = QGroupBox("Image (new document in SASpro)")
+        f.addRow(self.tr("File:"), h)
+        self.gb_image = QGroupBox(self.tr("Image (new document in SASpro)"))
         self.gb_image.setCheckable(True)
         f = QFormLayout(self.gb_image)
         self.ed_imgid = QLineEdit()
-        self.ed_imgid.setPlaceholderText("(automatic: chart title)")
-        f.addRow("Identifier:", self.ed_imgid)
-        self.ck_match = QCheckBox("Match the reference image (same size and pixel grid)")
-        self.ck_match.setToolTip(
+        self.ed_imgid.setPlaceholderText(self.tr("(automatic: chart title)"))
+        f.addRow(self.tr("Identifier:"), self.ed_imgid)
+        self.ck_match = QCheckBox(self.tr("Match the reference image (same size and pixel grid)"))
+        self.ck_match.setToolTip(self.tr(
             "The chart is drawn exactly on the pixel grid of the image loaded with 'From Image':\n"
             "same size, scale, orientation and projection, without margins or legend, so that\n"
             "Link Pan/Zoom, blinking or overlays line it up pixel for pixel with the image.\n"
-            "Every chart sent to SASpro carries its astrometric solution (WCS) anyway.")
+            "Every chart sent to SASpro carries its astrometric solution (WCS) anyway."))
         f.addRow("", self.ck_match)
         for gb in (self.gb_svg, self.gb_pdf, self.gb_png, self.gb_image):
             v.addWidget(gb)
-        g = QGroupBox("Raster resolution (PNG and image)")
+        g = QGroupBox(self.tr("Raster resolution (PNG and image)"))
         f = QFormLayout(g)
         self.sp_res = self._dspin(10.0, 2400.0, 10.0, 2)
         self.cb_resunit = QComboBox()
@@ -865,14 +868,15 @@ class SkyChartPanel(QWidget):
         row.addWidget(self.cb_resunit)
         self.lb_px = QLabel("")
         self.lb_px.setStyleSheet("color: gray;")
-        f.addRow("Resolution:", row)
+        f.addRow(self.tr("Resolution:"), row)
         f.addRow("", self.lb_px)
         v.addWidget(g)
-        note = QLabel("Files with an empty name are asked for when the chart is run.\n\n"
+        note = QLabel(self.tr("Files with an empty name are asked for when the chart is run.\n\n"
                       "Data: SASpro's local Gaia DR3 library (stars and Milky Way), HYG 4.1 (bright stars, "
                       "names and colors, CC BY-SA), OpenNGC (catalog and nebula outlines, CC BY-SA), "
-                      "Finkbeiner H-alpha and SFD dust maps (NASA LAMBDA), d3-celestial (constellations, BSD), "
-                      "SASpro catalogs.")
+                      "Finkbeiner H-alpha and SFD dust maps (NASA LAMBDA), Dobashi et al. 2011 2MASS "
+                      "extinction (dark clouds), RCW and Dutra & Bica 2002 (nebula names, VizieR), "
+                      "d3-celestial (constellations, BSD), SASpro catalogs."))
         note.setWordWrap(True)
         note.setStyleSheet("color: gray;")
         v.addWidget(note)
@@ -884,7 +888,7 @@ class SkyChartPanel(QWidget):
     # ---- helpers --------------------------------------------------------------
     def _browse(self, ed, ext):
         start = ed.text().strip() or str(Path(getattr(self, "_last_dir", str(Path.home()))) / f"chart.{ext}")
-        fn, _ = QFileDialog.getSaveFileName(self, f"Sky Chart: {ext.upper()} file", start,
+        fn, _ = QFileDialog.getSaveFileName(self, self.tr("Sky Chart: {0} file").format(ext.upper()), start,
                                             f"{ext.upper()} files (*.{ext})")
         if fn:
             if not fn.lower().endswith("." + ext):
@@ -938,15 +942,16 @@ class SkyChartPanel(QWidget):
 
     def _update_styles_label(self):
         n = len(self.params.dso_styles or {})
-        self.lb_styles.setText("custom" if n else "defaults")
+        self.lb_styles.setText(self.tr("custom") if n else self.tr("defaults"))
 
     def _update_names_label(self):
         names = self.params.star_names or []
         total = getattr(self, "_n_names", None)
         if not names:
-            self.lb_names.setText("automatic (by magnitude)")
+            self.lb_names.setText(self.tr("automatic (by magnitude)"))
         else:
-            self.lb_names.setText(f"{len(names)} of {total} names" if total else f"{len(names)} names")
+            self.lb_names.setText(self.tr("{0} of {1} names").format(len(names), total) if total
+                                  else self.tr("{0} names").format(len(names)))
 
     def _select_names(self):
         if not self._ensure_data():
@@ -981,7 +986,7 @@ class SkyChartPanel(QWidget):
 
     def _update_layer_label(self, *_):
         n = sum(cb.isChecked() for cb in self.layer_checks.values())
-        self.layer_label.setText(f"<b>Layers ({n} of {len(self.layer_checks)} checked)</b>")
+        self.layer_label.setText(self.tr("<b>Layers ({0} of {1} checked)</b>").format(n, len(self.layer_checks)))
 
     def _layer_row_clicked(self, item, column):
         cb = self.layer_checks.get(item.data(0, Qt.ItemDataRole.UserRole))
@@ -1232,15 +1237,16 @@ class SkyChartPanel(QWidget):
 
     def _update_outline_label(self):
         if self.params.outline:
-            self.lb_outline.setText(f"Outline: {self.params.outline_name or 'image'}")
+            self.lb_outline.setText(self.tr("Outline: {0}").format(self.params.outline_name or self.tr("image")))
         else:
-            self.lb_outline.setText("No image outline")
+            self.lb_outline.setText(self.tr("No image outline"))
         try:
             g = self.params.ref_grid
             self.ck_match.setEnabled(bool(g))
-            self.ck_match.setText("Match the reference image (same size and pixel grid)" +
-                                  (f": {self.params.outline_name or 'image'}, {g['w']} x {g['h']} px" if g else
-                                   " - load one with 'From Image'"))
+            self.ck_match.setText(
+                self.tr("Match the reference image (same size and pixel grid): {0}, {1} x {2} px").format(
+                    self.params.outline_name or self.tr("image"), g['w'], g['h']) if g else
+                self.tr("Match the reference image (same size and pixel grid) - load one with 'From Image'"))
         except Exception:
             pass
 
@@ -1258,9 +1264,10 @@ class SkyChartPanel(QWidget):
         if self._history and self._history[self._hist_pos][1] == snap:
             return
         del self._history[self._hist_pos + 1:]
-        label = (f"{len(self._history) + 1}  {time.strftime('%H:%M:%S')}  "
-                 f"{(p.title or fmt_ra(p.ra) + ' ' + fmt_dec(p.dec))}, {p.fov:g}°, "
-                 f"{sum(p.layers.values())} layers")
+        label = self.tr("{0}  {1}  {2}, {3:g}°, {4} layers").format(
+            len(self._history) + 1, time.strftime('%H:%M:%S'),
+            (p.title or fmt_ra(p.ra) + ' ' + fmt_dec(p.dec)), p.fov,
+            sum(p.layers.values()))
         self._history.append((label, snap))
         self._history = self._history[-30:]
         self._hist_pos = len(self._history) - 1
@@ -1310,7 +1317,7 @@ class SkyChartPanel(QWidget):
             self.data = get_data(self.log)
         except Exception as e:
             QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "Sky Chart", f"Could not load the catalogs:\n\n{e}")
+            QMessageBox.critical(self, self.tr("Sky Chart"), self.tr("Could not load the catalogs:\n\n{0}").format(e))
             return False
         QApplication.restoreOverrideCursor()
         return True
@@ -1319,7 +1326,7 @@ class SkyChartPanel(QWidget):
         try:
             return self._ui_to_params()
         except Exception as e:
-            QMessageBox.warning(self, "Sky Chart", f"Invalid parameters: {e}")
+            QMessageBox.warning(self, self.tr("Sky Chart"), self.tr("Invalid parameters: {0}").format(e))
             return None
 
     def _ensure_completer(self, *_):
@@ -1352,12 +1359,12 @@ class SkyChartPanel(QWidget):
         view = self.data.view_for(name, self._frame_aspect(), self.cb_proj.currentText())
         if view is None:
             sug = self.data.suggestions(name)
-            msg = f"Object not found: {name}"
+            msg = self.tr("Object not found: {0}").format(name)
             if sug:
-                msg += "\n\nDid you mean:\n  " + "\n  ".join(sug)
-            msg += ("\n\nYou can also type a catalog designation (M 42, NGC 7000, IC 1805, "
-                    "Sh2-155, LBN 438, LDN 1622, B 33...) or enter the coordinates.")
-            QMessageBox.information(self, "Sky Chart", msg)
+                msg += self.tr("\n\nDid you mean:\n  ") + "\n  ".join(sug)
+            msg += self.tr("\n\nYou can also type a catalog designation (M 42, NGC 7000, IC 1805, "
+                           "Sh2-155, LBN 438, LDN 1622, B 33...) or enter the coordinates.")
+            QMessageBox.information(self, self.tr("Sky Chart"), msg)
             return
         ra, dec, title, fov = view
         self._loading = True
@@ -1424,6 +1431,23 @@ class SkyChartPanel(QWidget):
             pass
         return wcs
 
+    @staticmethod
+    def _doc_object_name(doc):
+        """The OBJECT keyword of a SASpro document's FITS header, or ''."""
+        meta = getattr(doc, "metadata", None) or {}
+        for key in ("original_header", "header", "wcs_header"):
+            hdr = meta.get(key) if hasattr(meta, "get") else None
+            if hdr is None:
+                continue
+            try:
+                v = hdr.get("OBJECT", "") if hasattr(hdr, "get") else ""
+            except Exception:
+                v = ""
+            v = re.sub(r"\s+", " ", str(v or "")).strip()
+            if v:
+                return v
+        return ""
+
     def _pick_image_document(self):
         """Ask which open SASpro image to use. Returns (doc, title) or (None, None)."""
         views = []
@@ -1448,7 +1472,7 @@ class SkyChartPanel(QWidget):
             if doc is None or img is None or id(doc) in seen:
                 continue
             seen.add(id(doc))
-            items.append((str(title or "Untitled"), doc, self._doc_wcs(doc) is not None,
+            items.append((str(title or self.tr("Untitled")), doc, self._doc_wcs(doc) is not None,
                           int(img.shape[1]), int(img.shape[0])))
         if not items:
             raise RuntimeError("There is no image open in SASpro.")
@@ -1460,14 +1484,14 @@ class SkyChartPanel(QWidget):
             return items[0][1], items[0][0]
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("Choose the reference image")
+        dlg.setWindowTitle(self.tr("Choose the reference image"))
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel("Image whose centre, field, orientation and outline the chart will use:"))
+        v.addWidget(QLabel(self.tr("Image whose centre, field, orientation and outline the chart will use:")))
         lst = QListWidget()
         pick = 0
         for n, (title, doc, ok, w, h) in enumerate(items):
-            it = QListWidgetItem(f"{title}    {w} x {h} px    "
-                                 f"{'plate solved' if ok else 'no astrometric solution'}")
+            it = QListWidgetItem((self.tr("{0}    {1} x {2} px    plate solved") if ok else
+                                  self.tr("{0}    {1} x {2} px    no astrometric solution")).format(title, w, h))
             if not ok:
                 it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEnabled & ~Qt.ItemFlag.ItemIsSelectable)
             lst.addItem(it)
@@ -1521,7 +1545,7 @@ class SkyChartPanel(QWidget):
         """Centre, field, orientation and outline from a plate-solved image: the
         given document, or one picked from the open images."""
         if doc is None and self.ctx is None:
-            QMessageBox.information(self, "Sky Chart", "No SASpro context available.")
+            QMessageBox.information(self, self.tr("Sky Chart"), self.tr("No SASpro context available."))
             return
         try:
             if doc is None:
@@ -1570,6 +1594,10 @@ class SkyChartPanel(QWidget):
                 except Exception:
                     name = ""
             self._loading = True
+            # the chart now shows this image's field: a title saved from an earlier
+            # search would name another object. The image's OBJECT keyword, or the
+            # automatic title (constellation name).
+            self.ed_title.setText(self._doc_object_name(doc))
             self._set_center(ra0, dec0)
             self.sp_rot.setValue(round(rot, 2))
             self.ck_mir.setChecked(bool(mirrored))
@@ -1597,7 +1625,7 @@ class SkyChartPanel(QWidget):
             self._update_outline_label()
             self.preview()
         except Exception as e:
-            QMessageBox.warning(self, "Sky Chart", str(e))
+            QMessageBox.warning(self, self.tr("Sky Chart"), str(e))
 
     def _image_limiting_mag(self, img, sky, ora, odec):
         """Faintest catalog magnitude actually visible in the image: detect the
@@ -1702,38 +1730,40 @@ class SkyChartPanel(QWidget):
             i = r.info
             if i.get("bprp_pending"):
                 self._start_bprp(i["bprp_pending"])
-            faint = f", faintest {i['faintest']:.2f}" if i.get("faintest") is not None else ""
-            self.chart_label.setText(f"{i['stars']} stars (magnitude ≤ {i['star_mag']:.1f}{faint}), "
-                                     f"{i['dsos']} deep-sky objects")
+            faint = self.tr(", faintest {0:.2f}").format(i['faintest']) if i.get("faintest") is not None else ""
+            self.chart_label.setText(self.tr("{0} stars (magnitude ≤ {1:.1f}{2}), "
+                                             "{3} deep-sky objects").format(i['stars'], i['star_mag'], faint, i['dsos']))
             gaia_txt = ""
             if i.get("gaia"):
                 n_xp = i.get("gaia_xp", i.get("gaia_colored", 0))
                 n_on = i.get("gaia_colored", 0) - n_xp
-                gaia_txt = (f"\nGaia DR3: {i['gaia']} stars, {n_xp} colored from the local XP spectra"
-                            + (f", {n_on} from the Gaia archive (BP−RP)" if n_on > 0 else "")
-                            + (" — downloading colours..." if self._bprp_busy else ""))
+                gaia_txt = (self.tr("\nGaia DR3: {0} stars, {1} colored from the local XP spectra").format(i['gaia'], n_xp)
+                            + (self.tr(", {0} from the Gaia archive (BP−RP)").format(n_on) if n_on > 0 else "")
+                            + (self.tr(" — downloading colours...") if self._bprp_busy else ""))
                 if not i.get("gaia_colored") and ChartData.xp_dir() is None and p.colored_stars \
                         and not p.black_white:
-                    gaia_txt += " (XP library not installed)"
+                    gaia_txt += self.tr(" (XP library not installed)")
             if not p.star_mag_auto:
                 auto_txt = ""
             elif p.image_mag and p.outline and p.image_mag <= i['star_mag'] + 0.05:
-                auto_txt = f" (measured on the image: {p.image_stars} stars detected)"
+                auto_txt = self.tr(" (measured on the image: {0} stars detected)").format(p.image_stars)
             else:
-                auto_txt = f" (automatic, {p.star_density:g} stars/cm²)"
+                auto_txt = self.tr(" (automatic, {0:g} stars/cm²)").format(p.star_density)
             if i.get("gaia_capped"):
-                gaia_txt += f"\nWide field: Gaia stars shown to G = {GAIA_CACHE_MAG}"
+                gaia_txt += self.tr("\nWide field: Gaia stars shown to G = {0}").format(GAIA_CACHE_MAG)
             k = p.dpi() / 25.4
             x0, y0, x1, y1 = r.frame
             arcsec_px = 3600.0 / (i['mm_per_deg'] * k)
             self.lb_info.setText(
-                f"Field {i['fov_w']:.4g}° × {i['fov_h']:.4g}°, 1° = {i['mm_per_deg']:.3g} mm, "
-                f"{arcsec_px:.2f}″/px\n"
-                f"Page {r.pw:.0f} × {r.ph:.0f} mm ({int(round(r.pw * k))} × {int(round(r.ph * k))} px), "
-                f"map {int(round((x1 - x0) * k))} × {int(round((y1 - y0) * k))} px\n"
-                f"Stars to magnitude {i['star_mag']:.1f}"
-                f"{auto_txt}, deep-sky objects to {i['dso_mag']:.1f}"
-                f"{' (automatic)' if p.dso_mag_auto else ''}" + gaia_txt)
+                self.tr("Field {0:.4g}° × {1:.4g}°, 1° = {2:.3g} mm, {3:.2f}″/px").format(
+                    i['fov_w'], i['fov_h'], i['mm_per_deg'], arcsec_px) + "\n"
+                + self.tr("Page {0:.0f} × {1:.0f} mm ({2} × {3} px), map {4} × {5} px").format(
+                    r.pw, r.ph, int(round(r.pw * k)), int(round(r.ph * k)),
+                    int(round((x1 - x0) * k)), int(round((y1 - y0) * k))) + "\n"
+                + self.tr("Stars to magnitude {0:.1f}{1}, deep-sky objects to {2:.1f}{3}").format(
+                    i['star_mag'], auto_txt, i['dso_mag'],
+                    self.tr(" (automatic)") if p.dso_mag_auto else "")
+                + gaia_txt)
             if p.star_mag_auto:
                 self._loading = True
                 self.sp_smag.setValue(round(i['star_mag'], 1))
@@ -1749,7 +1779,7 @@ class SkyChartPanel(QWidget):
             import traceback
             self.log(traceback.format_exc())
             QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "Sky Chart", f"Could not generate the chart:\n\n{e}")
+            QMessageBox.critical(self, self.tr("Sky Chart"), self.tr("Could not generate the chart:\n\n{0}").format(e))
             return False
         finally:
             QApplication.restoreOverrideCursor()
@@ -1801,14 +1831,15 @@ class SkyChartPanel(QWidget):
         if ra[0] != ra[0] or dec[0] != dec[0]:
             return
         zoom = self.view.transform().m11() * _ChartView.K / ((self.view.logicalDpiX() or 96) / 25.4)
-        self.status.setText(f"Zoom: {zoom:.2f}   x: {x_mm:.1f} mm   y: {y_mm:.1f} mm      "
-                            f"α: {fmt_ra(float(ra[0]), 1)}   δ: {fmt_dec(float(dec[0]), 0)}")
+        self.status.setText(self.tr("Zoom: {0:.2f}   x: {1:.1f} mm   y: {2:.1f} mm      "
+                                    "α: {3}   δ: {4}").format(zoom, x_mm, y_mm,
+                                                          fmt_ra(float(ra[0]), 1), fmt_dec(float(dec[0]), 0)))
 
     def _ask_file(self, ext, current, base):
         if current:
             return current
         last = getattr(self, "_last_dir", str(Path.home()))
-        fn, _ = QFileDialog.getSaveFileName(self, f"Sky Chart: {ext.upper()} file",
+        fn, _ = QFileDialog.getSaveFileName(self, self.tr("Sky Chart: {0} file").format(ext.upper()),
                                             str(Path(last) / f"{base}.{ext}"), f"{ext.upper()} files (*.{ext})")
         if fn and not fn.lower().endswith("." + ext):
             fn += "." + ext
@@ -1822,7 +1853,7 @@ class SkyChartPanel(QWidget):
             return
         self.params = p
         if not (p.out_svg or p.out_pdf or p.out_png or p.out_image):
-            QMessageBox.information(self, "Sky Chart", "Select at least one output in the Output tab.")
+            QMessageBox.information(self, self.tr("Sky Chart"), self.tr("Select at least one output in the Output tab."))
             return
         base = re.sub(r"[^\w\-]+", "_", (p.title or self.data.constellation_at(p.ra, p.dec))).strip("_") or "chart"
         done = []
@@ -1888,13 +1919,13 @@ class SkyChartPanel(QWidget):
             finally:
                 QApplication.restoreOverrideCursor()
             if done:
-                self.status.setText("Chart written: " + "; ".join(done))
+                self.status.setText(self.tr("Chart written: {0}").format("; ".join(done)))
             self._save_settings()
             self.preview(keep_view=True)
         except Exception as e:
             import traceback
             self.log(traceback.format_exc())
-            QMessageBox.critical(self, "Sky Chart", f"Could not write the chart:\n\n{e}")
+            QMessageBox.critical(self, self.tr("Sky Chart"), self.tr("Could not write the chart:\n\n{0}").format(e))
 
     # ---- lifetime ---------------------------------------------------------
     def shutdown(self):
@@ -1929,14 +1960,15 @@ class OverlayLayersDialog(QDialog):
                  note: str | None = None, defaults: dict | None = None,
                  options: dict | None = None, option_defaults: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle(title or "Sky Chart Overlay Layers")
+        self.setWindowTitle(title or self.tr("Sky Chart Overlay Layers"))
         defaults = dict(OVERLAY_DEFAULTS if defaults is None else defaults)
         v = QVBoxLayout(self)
-        lbl = QLabel(note or "Drawn over the survey image. The photograph already shows the stars, "
-                             "nebulae and Milky Way, so those are labelled, never painted.")
+        lbl = QLabel(note or self.tr("Drawn over the survey image. The photograph already shows the stars, "
+                                     "nebulae and Milky Way, so those are labelled, never painted."))
         lbl.setWordWrap(True)
         v.addWidget(lbl)
-        names = {k: (n, d) for k, n, d, _on in LAYERS}
+        names = {k: (QCoreApplication.translate("SkychartEngine", n),
+                     QCoreApplication.translate("SkychartEngine", d)) for k, n, d, _on in LAYERS}
         self._checks = {}
         grid = QGridLayout()
         for i, key in enumerate(OVERLAY_LAYERS):
@@ -1956,16 +1988,16 @@ class OverlayLayersDialog(QDialog):
             if "dso_mag" in options:
                 sp = QDoubleSpinBox()
                 sp.setRange(0.0, 20.0); sp.setDecimals(1); sp.setSingleStep(0.5)
-                sp.setSpecialValueText("Auto")
-                sp.setToolTip("Faintest deep-sky object drawn. Auto follows the field of view.")
+                sp.setSpecialValueText(self.tr("Auto"))
+                sp.setToolTip(self.tr("Faintest deep-sky object drawn. Auto follows the field of view."))
                 sp.setValue(float(options["dso_mag"]))
                 self._opts["dso_mag"] = sp
-                form.addRow("Faintest deep-sky object, mag ≤", sp)
+                form.addRow(self.tr("Faintest deep-sky object, mag ≤"), sp)
             for key, label, tip in (
-                    ("text_scale", "Label size",
-                     "Size of names and labels on screen; they stay this size while you zoom."),
-                    ("graphics_scale", "Line weight",
-                     "Thickness of constellation lines, borders and object outlines.")):
+                    ("text_scale", self.tr("Label size"),
+                     self.tr("Size of names and labels on screen; they stay this size while you zoom.")),
+                    ("graphics_scale", self.tr("Line weight"),
+                     self.tr("Thickness of constellation lines, borders and object outlines."))):
                 if key in options:
                     sp = QDoubleSpinBox()
                     sp.setRange(0.5, 4.0); sp.setDecimals(1); sp.setSingleStep(0.1)
@@ -1977,11 +2009,11 @@ class OverlayLayersDialog(QDialog):
             v.addLayout(form)
 
         row = QHBoxLayout()
-        for txt, on in (("All", True), ("None", False)):
+        for txt, on in ((self.tr("All"), True), (self.tr("None"), False)):
             b = QPushButton(txt)
             b.clicked.connect(lambda _=False, val=on: [c.setChecked(val) for c in self._checks.values()])
             row.addWidget(b)
-        b = QPushButton("Defaults")
+        b = QPushButton(self.tr("Defaults"))
 
         def _defaults():
             for k, c in self._checks.items():

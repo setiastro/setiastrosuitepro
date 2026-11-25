@@ -750,9 +750,15 @@ def _mark_band_schema_current(settings, log=None) -> bool:
     The version is read from stacking_suite rather than duplicated here, so a
     future bump does not leave a stale constant behind; if that import is not
     possible the write is skipped and behaviour is exactly as before.
+
+    Stamping the version is also what ends a fresh install's "start on Frank's
+    recommended settings" seeding, so that seeding runs here first. It never
+    overwrites a stored key, so the value just tuned survives it.
     """
     try:
-        from setiastro.saspro.stacking_suite import _STACKING_SCHEMA_VERSION
+        from setiastro.saspro.stacking_suite import (
+            _STACKING_SCHEMA_VERSION, _seed_recommended_stacking_defaults,
+        )
     except Exception:
         if log:
             log("   (could not read the settings schema version; if you have "
@@ -764,6 +770,7 @@ def _mark_band_schema_current(settings, log=None) -> bool:
     except Exception:
         cur = 0
     if cur < int(_STACKING_SCHEMA_VERSION):
+        _seed_recommended_stacking_defaults(settings)
         settings.setValue("stacking/settings_schema_version",
                           int(_STACKING_SCHEMA_VERSION))
         if log:
@@ -830,7 +837,7 @@ def _time_band(rows, width, n_frames, channels, algo,
 def tune_band_height(frame_shape=(3000, 4000),
                      n_frames: int = 24,
                      channels: int = 1,
-                     algo: str = "Weighted Windsorized Sigma Clipping",
+                     algo: str = "Weighted Winsorized Sigma Clipping",
                      *,
                      status_cb=None,
                      cancel_cb=None,
@@ -1902,7 +1909,7 @@ def tune_all(frame_shape=(3000, 4000),
              *,
              n_frames: int = 24,
              channels: int = 1,
-             algo: str = "Weighted Windsorized Sigma Clipping",
+             algo: str = "Weighted Winsorized Sigma Clipping",
              status_cb=None,
              cancel_cb=None,
              save: bool = True,

@@ -8,8 +8,8 @@ theme application, and system theme detection.
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QTimer, QRectF
-from PyQt6.QtGui import QBrush, QColor, QFont, QPalette, QPainter, QPixmap, QIcon, QTextOption
+from PyQt6.QtCore import Qt, QPointF, QTimer, QRectF
+from PyQt6.QtGui import QBrush, QColor, QFont, QPalette, QPainter, QPen, QPixmap, QIcon, QTextOption
 from PyQt6.QtWidgets import QApplication, QProxyStyle, QStyle, QStyleOptionTitleBar
 
 if TYPE_CHECKING:
@@ -17,12 +17,49 @@ if TYPE_CHECKING:
 
 
 class _SinglePassTitleStyle(QProxyStyle):
-    """Keep Fusion decorations, but draw MDI title text without its emboss pass."""
+    """Keep Fusion decorations, but draw MDI title text without its emboss pass,
+    and a toolbar's overflow arrow in the text color."""
 
     def __init__(self):
         super().__init__("Fusion")
 
+    def _draw_overflow_arrow(self, option, painter):
+        """The arrow at the end of a toolbar that has more buttons than fit.
+        Fusion's is a dark image, invisible on the Gray and Dark themes."""
+        r = QRectF(option.rect)
+        down = r.width() > r.height()            # a toolbar on the left or right edge
+        hot = option.state & (QStyle.StateFlag.State_MouseOver
+                              | QStyle.StateFlag.State_Sunken
+                              | QStyle.StateFlag.State_On)
+        painter.save()
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            if hot:
+                fill = QColor(option.palette.color(QPalette.ColorRole.Highlight))
+                fill.setAlpha(110)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(fill)
+                painter.drawRoundedRect(r.adjusted(0.5, 1, -0.5, -1), 3, 3)
+            pen = QPen(option.palette.color(QPalette.ColorRole.WindowText), 1.6)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.translate(r.center())
+            if down:
+                painter.rotate(90)
+            elif option.direction == Qt.LayoutDirection.RightToLeft:
+                painter.rotate(180)
+            for x in (-3.4, 0.6):
+                painter.drawPolyline([QPointF(x, -3.6), QPointF(x + 2.9, 0), QPointF(x, 3.6)])
+        finally:
+            painter.restore()
+
     def drawComplexControl(self, control, option, painter, widget=None):
+        if (control == QStyle.ComplexControl.CC_ToolButton and widget is not None
+                and widget.objectName() == "qt_toolbar_ext_button"):
+            self._draw_overflow_arrow(option, painter)
+            return
         if control != QStyle.ComplexControl.CC_TitleBar or not isinstance(option, QStyleOptionTitleBar):
             super().drawComplexControl(control, option, painter, widget)
             return
@@ -97,11 +134,13 @@ class ThemeMixin:
         except Exception:
             pass
 
-        # 3) Ensure the overlay canvas stays transparent and refreshes
+        # 3) Ensure the overlay canvas stays transparent and refreshes; chip
+        #    label color follows the new palette (shortcut_canvas_style)
         try:
             if hasattr(self, "shortcuts") and self.shortcuts and getattr(self.shortcuts, "canvas", None):
+                from setiastro.saspro.shortcuts import shortcut_canvas_style
                 c = self.shortcuts.canvas
-                c.setStyleSheet("background: transparent;")
+                c.setStyleSheet(shortcut_canvas_style())
                 c.update()
         except Exception:
             pass
@@ -110,6 +149,9 @@ class ThemeMixin:
         """Apply the theme based on current settings."""
         mode = self._theme_mode()
         app = QApplication.instance()
+        # Before the style and palette: Fusion fills the roles a palette leaves
+        # out from the color scheme, and "system" is read back just below.
+        self._sync_title_bars(mode)
         color_scheme = app.styleHints().colorScheme()
 
         # Resolve "system" to dark/light
@@ -160,9 +202,13 @@ class ThemeMixin:
                 try:
                     f = QFont()
                     if f.fromString(font_str):
+                        if getattr(self, "_font_before_custom", None) is None:
+                            self._font_before_custom = QFont(app.font())
                         app.setFont(f)
                 except Exception:
                     pass
+        elif getattr(self, "_font_before_custom", None) is not None:
+            app.setFont(self._font_before_custom)      # leaving the custom theme
 
         # Nudge widgets to pick up role changes
         self._repolish_top_levels()
@@ -182,6 +228,27 @@ class ThemeMixin:
             vp.update()
         except Exception:
             pass
+
+    def _sync_title_bars(self, mode: str):
+        """Title bars (and the native menus on macOS) follow SASpro's theme.
+        Left alone they follow the operating system, so Windows in light mode
+        puts a white title bar on the Gray and Dark themes."""
+        hints = QApplication.styleHints()
+        if not hasattr(hints, "setColorScheme"):
+            return                               # Qt before 6.8
+        try:
+            if mode in ("dark", "gray"):
+                hints.setColorScheme(Qt.ColorScheme.Dark)
+            elif mode == "light":
+                hints.setColorScheme(Qt.ColorScheme.Light)
+            elif mode == "custom":
+                window = self._custom_palette().color(QPalette.ColorRole.Window)
+                hints.setColorScheme(Qt.ColorScheme.Dark if window.lightness() < 128
+                                     else Qt.ColorScheme.Light)
+            else:
+                hints.unsetColorScheme()         # "system"
+        except Exception as e:
+            print(f"[theme] title bars: {e}")
 
     def _repolish_top_levels(self):
         """Force all top-level widgets to repolish their styles."""

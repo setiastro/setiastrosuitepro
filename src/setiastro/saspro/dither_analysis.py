@@ -776,14 +776,14 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
             # Flip RA so East is right on screen
             plot_x = -d_ra    # East = positive x on plot
             plot_y =  d_dec   # North = positive y on plot
-            xlabel = "ΔRA (\" East →)"
-            ylabel = "ΔDec (\" North →)"
+            xlabel = self.tr("ΔRA (\" East →)")
+            ylabel = self.tr("ΔDec (\" North →)")
         else:
             sc = float(unit_scale)
             plot_x = stats["dx"] * sc
             plot_y = stats["dy"] * sc
-            xlabel = f"ΔX center ({unit_label})"
-            ylabel = f"ΔY center ({unit_label})"
+            xlabel = self.tr("ΔX center ({0})").format(unit_label)
+            ylabel = self.tr("ΔY center ({0})").format(unit_label)
 
         steps   = stats["valid_steps"] * (float(unit_scale) if not use_radec else 1.0)
         n       = stats["n"]
@@ -813,7 +813,7 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
             vmin=0, vmax=n - 1,
         )
         cb = self.fig.colorbar(sc_plot, ax=ax_scatter, pad=0.02)
-        cb.set_label("Frame #", color=_FG, fontsize=8)
+        cb.set_label(self.tr("Frame #"), color=_FG, fontsize=8)
         cb.ax.yaxis.set_tick_params(color=_FG, labelsize=7)
         ax_scatter.scatter([0], [0], marker="+", s=120, c=_ACCENT,
                            zorder=5, linewidths=1.5)
@@ -830,8 +830,8 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
                     xytext=(0, 3), textcoords="offset points",
                 )
 
-        title_suffix = " (RA/Dec)" if use_radec else " — image center"
-        ax_scatter.set_title(f"Dither Scatter{title_suffix}", color=_ACCENT, fontsize=10)
+        title_suffix = " (RA/Dec)" if use_radec else self.tr(" — image center")
+        ax_scatter.set_title(self.tr("Dither Scatter{0}").format(title_suffix), color=_ACCENT, fontsize=10)
         ax_scatter.set_xlabel(xlabel, **lbl)
         ax_scatter.set_ylabel(ylabel, **lbl)
         ax_scatter.axhline(0, color=_DIM, lw=0.5, ls="--")
@@ -847,14 +847,14 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
                         s=20, zorder=3, edgecolors="none", alpha=0.85,
                         vmin=0, vmax=n - 1)
         ax_path.scatter([plot_x[0]], [plot_y[0]], marker="*", s=100, c=_GREEN,
-                        zorder=6, label="Frame 0")
+                        zorder=6, label=self.tr("Frame 0"))
         if ft is not None and ft.any():
             from matplotlib.lines import Line2D
             ax_path.legend(
                 handles=[
                     Line2D([0], [0], color=_GREEN, marker="*", markersize=7,
-                           linestyle="none", label="Frame 0"),
-                    Line2D([0], [0], color=_ORANGE, lw=1.5, label="Flip transition"),
+                           linestyle="none", label=self.tr("Frame 0")),
+                    Line2D([0], [0], color=_ORANGE, lw=1.5, label=self.tr("Flip transition")),
                 ],
                 fontsize=7, facecolor=_PANEL, edgecolor=_ACCENT2,
                 labelcolor=_FG, loc="upper right"
@@ -862,7 +862,7 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
         else:
             ax_path.legend(fontsize=7, facecolor=_PANEL,
                            edgecolor=_ACCENT2, labelcolor=_FG, loc="upper right")
-        ax_path.set_title(f"Dither Path{title_suffix}", color=_ACCENT, fontsize=10)
+        ax_path.set_title(self.tr("Dither Path{0}").format(title_suffix), color=_ACCENT, fontsize=10)
         ax_path.set_xlabel(xlabel, **lbl)
         ax_path.set_ylabel(ylabel, **lbl)
         ax_path.axhline(0, color=_DIM, lw=0.5, ls="--")
@@ -873,11 +873,11 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
         ax_hist.hist(steps, bins=bins, color=_ACCENT, edgecolor=_BG, alpha=0.85)
         if len(steps):
             ax_hist.axvline(steps.mean(), color=_YELLOW, lw=1.2, ls="--",
-                            label=f"Mean {steps.mean():.1f} {unit_label}")
-        ax_hist.set_title("Dither Step Distribution\n(flip transition steps excluded)",
+                            label=self.tr("Mean {0:.1f} {1}").format(steps.mean(), unit_label))
+        ax_hist.set_title(self.tr("Dither Step Distribution\n(flip transition steps excluded)"),
                           color=_ACCENT, fontsize=10)
-        ax_hist.set_xlabel(f"Step ({unit_label})", **lbl)
-        ax_hist.set_ylabel("Count", **lbl)
+        ax_hist.set_xlabel(self.tr("Step ({0})").format(unit_label), **lbl)
+        ax_hist.set_ylabel(self.tr("Count"), **lbl)
         ax_hist.legend(fontsize=7, facecolor=_PANEL,
                        edgecolor=_ACCENT2, labelcolor=_FG)
 
@@ -895,11 +895,11 @@ class _DitherPlot(FigureCanvas if _MPL else QWidget):
             mean_e = float(d_east_v.mean())
             mean_n = float(d_north_v.mean())
             pref_rad_plot = math.atan2(mean_n, mean_e) % (2 * math.pi)
-            rose_title = "Step Directions (N=up, E=right)"
+            rose_title = self.tr("Step Directions (N=up, E=right)")
         else:
             sa_rad_plot   = np.radians(stats["step_angles"])
             pref_rad_plot = math.radians(stats["pref_dir"])
-            rose_title = "Step Directions\n(flip transition steps excluded)"
+            rose_title = self.tr("Step Directions\n(flip transition steps excluded)")
         bins16 = np.linspace(0, 2 * math.pi, 17)
         counts, _ = np.histogram(
             sa_rad_plot if len(sa_rad_plot) else np.array([0.0]),
@@ -1004,7 +1004,7 @@ class DitherAnalysisWindow(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Dither Analysis")
+        self.setWindowTitle(self.tr("Dither Analysis"))
         self.setMinimumSize(1100, 720)
         self._settings   = QSettings("SetiAstro", "SASpro")
         self._reg_thread = None
@@ -1028,10 +1028,10 @@ class DitherAnalysisWindow(QWidget):
         root.setContentsMargins(8, 8, 8, 4)
         root.setSpacing(6)
 
-        hdr = QLabel(
+        hdr = QLabel(self.tr(
             '<span style="color:#e94560;font-size:18px;font-weight:700;">'
             '⬡ Dither Analysis</span>'
-        )
+        ))
         hdr.setTextFormat(Qt.TextFormat.RichText)
         root.addWidget(hdr)
 
@@ -1045,7 +1045,7 @@ class DitherAnalysisWindow(QWidget):
         lv.setSpacing(6)
 
         top_row = QHBoxLayout()
-        self._btn_mode_sasd = QPushButton("📄 Load Previous Transform File (.sasd)…")
+        self._btn_mode_sasd = QPushButton(self.tr("📄 Load Previous Transform File (.sasd)…"))
         self._btn_mode_sasd.setFixedHeight(28)
         self._btn_mode_sasd.setStyleSheet(
             "QPushButton{background:#0f3460;color:#eaeaea;border-radius:4px;}"
@@ -1055,14 +1055,14 @@ class DitherAnalysisWindow(QWidget):
         top_row.addStretch()
         lv.addLayout(top_row)
 
-        grp_files = QGroupBox("Light Frames  (first file = reference)")
+        grp_files = QGroupBox(self.tr("Light Frames  (first file = reference)"))
         grp_files.setStyleSheet(self._grp_style())
         gv = QVBoxLayout(grp_files)
 
         btn_row = QHBoxLayout()
-        self._btn_add    = QPushButton("Add Files…")
-        self._btn_remove = QPushButton("Remove")
-        self._btn_clear  = QPushButton("Clear")
+        self._btn_add    = QPushButton(self.tr("Add Files…"))
+        self._btn_remove = QPushButton(self.tr("Remove"))
+        self._btn_clear  = QPushButton(self.tr("Clear"))
         for b in (self._btn_add, self._btn_remove, self._btn_clear):
             b.setFixedHeight(26)
             btn_row.addWidget(b)
@@ -1080,34 +1080,34 @@ class DitherAnalysisWindow(QWidget):
         self._file_list.customContextMenuRequested.connect(self._on_file_list_context_menu)        
         gv.addWidget(self._file_list)
 
-        self._chk_save = QCheckBox("Save aligned images")
+        self._chk_save = QCheckBox(self.tr("Save aligned images"))
         self._chk_save.setStyleSheet("color:#eaeaea;")
         gv.addWidget(self._chk_save)
 
         out_row = QHBoxLayout()
-        self._btn_save_dir = QPushButton("Output folder…")
+        self._btn_save_dir = QPushButton(self.tr("Output folder…"))
         self._btn_save_dir.setEnabled(False)
         self._btn_save_dir.setFixedHeight(24)
-        self._lbl_save_dir = QLabel("(not set)")
+        self._lbl_save_dir = QLabel(self.tr("(not set)"))
         self._lbl_save_dir.setStyleSheet("color:#888;font-size:10px;")
         out_row.addWidget(self._btn_save_dir)
         out_row.addWidget(self._lbl_save_dir, stretch=1)
         gv.addLayout(out_row)
-        list_hint = QLabel("Right-click selected frames for move / copy / delete options")
+        list_hint = QLabel(self.tr("Right-click selected frames for move / copy / delete options"))
         list_hint.setStyleSheet("color:#888;font-size:10px;padding:1px 0;")
         list_hint.setWordWrap(True)
         lv.addWidget(list_hint)
         lv.addWidget(grp_files)
 
         ps_row = QHBoxLayout()
-        self._btn_plate_solve = QPushButton("🔭 Plate Solve Frame 0")
+        self._btn_plate_solve = QPushButton(self.tr("🔭 Plate Solve Frame 0"))
         self._btn_plate_solve.setFixedHeight(26)
         self._btn_plate_solve.setFixedWidth(200)
         self._btn_plate_solve.setEnabled(False)
-        self._btn_plate_solve.setToolTip(
+        self._btn_plate_solve.setToolTip(self.tr(
             "Plate solve the first frame to obtain sky orientation.\n"
             "Enables RA/Dec display and true N/E/S/W rose plot."
-        )
+        ))
         self._btn_plate_solve.setStyleSheet(
             "QPushButton{background:#0f3460;color:#eaeaea;border-radius:4px;font-size:11px;}"
             "QPushButton:hover{background:#e94560;color:#fff;}"
@@ -1119,7 +1119,7 @@ class DitherAnalysisWindow(QWidget):
         lv.addLayout(ps_row)
         # ── Detection sigma + trial detect (mirrors RGB Align) ──────────────
         sep_row = QHBoxLayout()
-        sep_lbl = QLabel("Detection σ:")
+        sep_lbl = QLabel(self.tr("Detection σ:"))
         sep_lbl.setStyleSheet("color:#eaeaea;font-size:11px;")
 
         self._sep_sigma_spin = QDoubleSpinBox()
@@ -1129,14 +1129,14 @@ class DitherAnalysisWindow(QWidget):
         self._sep_sigma_spin.setValue(12.0)
         self._sep_sigma_spin.setFixedHeight(26)
         self._sep_sigma_spin.setFixedWidth(70)
-        self._sep_sigma_spin.setToolTip(
+        self._sep_sigma_spin.setToolTip(self.tr(
             "Detection threshold in sigma above background.\n"
             "Lower = more stars (may include noise).\n"
             "Higher = only bright stars.\n"
             "Use Trial Detect to test before running."
-        )
+        ))
 
-        self._btn_trial_detect = QPushButton("🔍 Trial Detect")
+        self._btn_trial_detect = QPushButton(self.tr("🔍 Trial Detect"))
         self._btn_trial_detect.setFixedHeight(26)
         self._btn_trial_detect.setEnabled(False)
         self._btn_trial_detect.setStyleSheet(
@@ -1144,10 +1144,10 @@ class DitherAnalysisWindow(QWidget):
             "QPushButton:hover{background:#e94560;color:#fff;}"
             "QPushButton:disabled{background:#222;color:#555;}"
         )
-        self._btn_trial_detect.setToolTip(
+        self._btn_trial_detect.setToolTip(self.tr(
             "Run SEP star detection on frame 0 with the current\n"
             "threshold and report how many stars were found."
-        )
+        ))
         self._btn_trial_detect.clicked.connect(self._run_trial_detect)
 
         self._lbl_trial_result = QLabel("")
@@ -1159,7 +1159,7 @@ class DitherAnalysisWindow(QWidget):
         sep_row.addWidget(self._btn_trial_detect)
         sep_row.addWidget(self._lbl_trial_result, 1)
         lv.addLayout(sep_row)
-        self._btn_run = QPushButton("▶  Run Registration && Analyze")
+        self._btn_run = QPushButton(self.tr("▶  Run Registration && Analyze"))
         self._btn_run.setFixedHeight(34)
         self._btn_run.setStyleSheet(
             "QPushButton{background:#e94560;color:#fff;font-weight:700;"
@@ -1169,7 +1169,7 @@ class DitherAnalysisWindow(QWidget):
         )
         lv.addWidget(self._btn_run)
 
-        self._btn_abort = QPushButton("■  Abort")
+        self._btn_abort = QPushButton(self.tr("■  Abort"))
         self._btn_abort.setFixedHeight(28)
         self._btn_abort.setEnabled(False)
         self._btn_abort.setStyleSheet(
@@ -1179,12 +1179,12 @@ class DitherAnalysisWindow(QWidget):
         )
         lv.addWidget(self._btn_abort)
 
-        self._lbl_status = QLabel("Ready.")
+        self._lbl_status = QLabel(self.tr("Ready."))
         self._lbl_status.setStyleSheet("color:#888;font-size:10px;")
         self._lbl_status.setWordWrap(True)
         lv.addWidget(self._lbl_status)
 
-        grp_stats = QGroupBox("Statistics")
+        grp_stats = QGroupBox(self.tr("Statistics"))
         grp_stats.setStyleSheet(self._grp_style())
         sv = QVBoxLayout(grp_stats)
 
@@ -1224,15 +1224,15 @@ class DitherAnalysisWindow(QWidget):
         # ── unit / WCS controls ──────────────────────────────────────
         ctrl_row = QHBoxLayout()
 
-        plot_hint = QLabel("Left-click a point to select  ·  Right-click+drag to select multiple")
+        plot_hint = QLabel(self.tr("Left-click a point to select  ·  Right-click+drag to select multiple"))
         plot_hint.setStyleSheet("color:#888;font-size:10px;padding:1px 0;")
 
-        self._btn_show_px = QPushButton("Pixels")
+        self._btn_show_px = QPushButton(self.tr("Pixels"))
         self._btn_show_px.setCheckable(True)
         self._btn_show_px.setChecked(True)
         self._btn_show_px.setFixedHeight(24)
 
-        self._btn_show_arcsec = QPushButton("Arcsec")
+        self._btn_show_arcsec = QPushButton(self.tr("Arcsec"))
         self._btn_show_arcsec.setCheckable(True)
         self._btn_show_arcsec.setChecked(False)
         self._btn_show_arcsec.setEnabled(False)
@@ -1271,10 +1271,10 @@ class DitherAnalysisWindow(QWidget):
             self._plot = _DitherPlot(right)
             rv.addWidget(self._plot, stretch=1)
         else:
-            lbl = QLabel(
+            lbl = QLabel(self.tr(
                 "matplotlib not found.\nInstall:  pip install matplotlib\n"
                 "Statistics are still shown in the left panel."
-            )
+            ))
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet("color:#888;font-size:13px;")
             rv.addWidget(lbl, stretch=1)
@@ -1352,7 +1352,7 @@ class DitherAnalysisWindow(QWidget):
         from PyQt6.QtGui import QAction
 
         n = len(selected_items)
-        label = f"{n} frame{'s' if n != 1 else ''}"
+        plural = n != 1
 
         menu = QMenu(self)
         menu.setStyleSheet(
@@ -1361,10 +1361,14 @@ class DitherAnalysisWindow(QWidget):
             "QMenu::separator{height:1px;background:#0f3460;margin:3px 8px;}"
         )
 
-        act_remove = QAction(f"Remove {label} from list", self)
-        act_move   = QAction(f"Move {label} to folder…", self)
-        act_copy   = QAction(f"Copy {label} to folder…", self)
-        act_delete = QAction(f"Permanently delete {label} from disk…", self)
+        act_remove = QAction((self.tr("Remove {0} frames from list") if plural
+                              else self.tr("Remove {0} frame from list")).format(n), self)
+        act_move   = QAction((self.tr("Move {0} frames to folder…") if plural
+                              else self.tr("Move {0} frame to folder…")).format(n), self)
+        act_copy   = QAction((self.tr("Copy {0} frames to folder…") if plural
+                              else self.tr("Copy {0} frame to folder…")).format(n), self)
+        act_delete = QAction((self.tr("Permanently delete {0} frames from disk…") if plural
+                              else self.tr("Permanently delete {0} frame from disk…")).format(n), self)
 
         act_remove.triggered.connect(lambda: self._ctx_remove(selected_items))
         act_move.triggered.connect(lambda: self._ctx_move(selected_items))
@@ -1392,7 +1396,7 @@ class DitherAnalysisWindow(QWidget):
             self._file_list.takeItem(self._file_list.row(item))
 
     def _ctx_move(self, items):
-        dest = QFileDialog.getExistingDirectory(self, "Move frames to folder…", "")
+        dest = QFileDialog.getExistingDirectory(self, self.tr("Move frames to folder…"), "")
         if not dest:
             return
 
@@ -1401,7 +1405,7 @@ class DitherAnalysisWindow(QWidget):
         for item in items:
             src = self._resolve_item_path(item)
             if not src:
-                failed.append(f"{item.text()}: file not found on disk")
+                failed.append(self.tr("{0}: file not found on disk").format(item.text()))
                 continue
             try:
                 shutil.move(src, os.path.join(dest, os.path.basename(src)))
@@ -1410,11 +1414,11 @@ class DitherAnalysisWindow(QWidget):
                 failed.append(f"{os.path.basename(src)}: {e}")
 
         if failed:
-            QMessageBox.warning(self, "Move Frames",
-                "Some files could not be moved:\n\n" + "\n".join(failed))
+            QMessageBox.warning(self, self.tr("Move Frames"),
+                self.tr("Some files could not be moved:\n\n{0}").format("\n".join(failed)))
 
     def _ctx_copy(self, items):
-        dest = QFileDialog.getExistingDirectory(self, "Copy frames to folder…", "")
+        dest = QFileDialog.getExistingDirectory(self, self.tr("Copy frames to folder…"), "")
         if not dest:
             return
 
@@ -1423,7 +1427,7 @@ class DitherAnalysisWindow(QWidget):
         for item in items:
             src = self._resolve_item_path(item)
             if not src:
-                failed.append(f"{item.text()}: file not found on disk")
+                failed.append(self.tr("{0}: file not found on disk").format(item.text()))
                 continue
             try:
                 shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
@@ -1431,15 +1435,17 @@ class DitherAnalysisWindow(QWidget):
                 failed.append(f"{os.path.basename(src)}: {e}")
 
         if failed:
-            QMessageBox.warning(self, "Copy Frames",
-                "Some files could not be copied:\n\n" + "\n".join(failed))
+            QMessageBox.warning(self, self.tr("Copy Frames"),
+                self.tr("Some files could not be copied:\n\n{0}").format("\n".join(failed)))
 
     def _ctx_delete(self, items):
         n = len(items)
         reply = QMessageBox.warning(
-            self, "Permanently Delete Frames",
-            f"Permanently delete {n} frame{'s' if n != 1 else ''} from disk?\n\n"
-            "This cannot be undone.",
+            self, self.tr("Permanently Delete Frames"),
+            (self.tr("Permanently delete {0} frames from disk?\n\n"
+                     "This cannot be undone.") if n != 1
+             else self.tr("Permanently delete {0} frame from disk?\n\n"
+                          "This cannot be undone.")).format(n),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
@@ -1460,8 +1466,8 @@ class DitherAnalysisWindow(QWidget):
                 failed.append(f"{os.path.basename(src)}: {e}")
 
         if failed:
-            QMessageBox.warning(self, "Delete Frames",
-                "Some files could not be deleted:\n\n" + "\n".join(failed))
+            QMessageBox.warning(self, self.tr("Delete Frames"),
+                self.tr("Some files could not be deleted:\n\n{0}").format("\n".join(failed)))
 
     def _on_plot_frame_clicked(self, index: int, shift: bool):
         if index < 0 or index >= self._file_list.count():
@@ -1550,7 +1556,7 @@ class DitherAnalysisWindow(QWidget):
     def _add_files(self):
         last_dir = self._settings.value("DitherAnalysis/last_dir", "", type=str)
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select Light Frames", last_dir,
+            self, self.tr("Select Light Frames"), last_dir,
             "Images (*.fit *.fits *.fts *.tif *.tiff *.xisf);;All Files (*)"
         )
         if not paths:
@@ -1579,7 +1585,7 @@ class DitherAnalysisWindow(QWidget):
         self._file_list.clear()
 
     def _pick_save_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "Output Folder", "")
+        d = QFileDialog.getExistingDirectory(self, self.tr("Output Folder"), "")
         if d:
             self._save_dir = d
             self._lbl_save_dir.setText(d)
@@ -1587,7 +1593,7 @@ class DitherAnalysisWindow(QWidget):
     def _load_sasd_dialog(self):
         last_dir = self._settings.value("DitherAnalysis/last_sasd_dir", "", type=str)
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open Alignment Transform File", last_dir,
+            self, self.tr("Open Alignment Transform File"), last_dir,
             "SASD Files (*.sasd);;All Files (*)"
         )
         if path:
@@ -1614,18 +1620,18 @@ class DitherAnalysisWindow(QWidget):
             return
 
         if not self._transforms:
-            QMessageBox.warning(self, "Dither Analysis",
-                                "Load or run analysis first before plate solving.")
+            QMessageBox.warning(self, self.tr("Dither Analysis"),
+                                self.tr("Load or run analysis first before plate solving."))
             return
 
-        self._lbl_status.setText("Plate solving frame 0…")
+        self._lbl_status.setText(self.tr("Plate solving frame 0…"))
         QApplication.processEvents()
         self._run_plate_solve()
 
     def _run_plate_solve(self):
         """Plate solve frame 0 by mimicking plate_solve_doc_inplace with a fake doc."""
         if self._file_list.count() == 0:
-            self._lbl_status.setText("⚠  No frames in list for plate solving.")
+            self._lbl_status.setText(self.tr("⚠  No frames in list for plate solving."))
             return
 
         frame0_item = self._file_list.item(0)
@@ -1654,14 +1660,14 @@ class DitherAnalysisWindow(QWidget):
                     break
 
         if not frame0_path or not os.path.exists(frame0_path):
-            self._lbl_status.setText("⚠  Cannot locate frame 0 on disk.")
-            QMessageBox.warning(self, "Plate Solve",
-                "Cannot locate the source file for frame 0.\n\n"
-                "For .sasd files, the original image files must be present\n"
-                "in the same folder as the .sasd file.")
+            self._lbl_status.setText(self.tr("⚠  Cannot locate frame 0 on disk."))
+            QMessageBox.warning(self, self.tr("Plate Solve"),
+                self.tr("Cannot locate the source file for frame 0.\n\n"
+                        "For .sasd files, the original image files must be present\n"
+                        "in the same folder as the .sasd file."))
             return
 
-        self._lbl_status.setText(f"Plate solving {os.path.basename(frame0_path)}…")
+        self._lbl_status.setText(self.tr("Plate solving {0}…").format(os.path.basename(frame0_path)))
         QApplication.processEvents()
 
         try:
@@ -1714,8 +1720,8 @@ class DitherAnalysisWindow(QWidget):
             ok, result = plate_solve_doc_inplace(self, doc, ps_settings)
 
             if not ok:
-                self._lbl_status.setText(f"⚠  Plate solve failed: {result}")
-                QMessageBox.warning(self, "Plate Solve", f"Plate solve failed:\n{result}")
+                self._lbl_status.setText(self.tr("⚠  Plate solve failed: {0}").format(result))
+                QMessageBox.warning(self, self.tr("Plate Solve"), self.tr("Plate solve failed:\n{0}").format(result))
                 return
 
             # doc.metadata was updated in-place by plate_solve_doc_inplace
@@ -1739,8 +1745,8 @@ class DitherAnalysisWindow(QWidget):
 
             self._btn_show_radec.setEnabled(True)
             self._btn_show_radec.setToolTip(
-                f"WCS available  |  rotation {self._wcs_rotation_deg:.2f}°"
-                if self._wcs_rotation_deg is not None else "WCS available"
+                self.tr("WCS available  |  rotation {0:.2f}°").format(self._wcs_rotation_deg)
+                if self._wcs_rotation_deg is not None else self.tr("WCS available")
             )
 
             ps = _extract_pixscale(solved_hdr) or getattr(self, "_pixscale_arcsec", None)
@@ -1748,9 +1754,9 @@ class DitherAnalysisWindow(QWidget):
                 self._pixscale_arcsec = ps
                 self._btn_show_arcsec.setEnabled(True)
 
-            rot_str = (f"  |  rotation {self._wcs_rotation_deg:.2f}°"
+            rot_str = (self.tr("  |  rotation {0:.2f}°").format(self._wcs_rotation_deg)
                        if self._wcs_rotation_deg is not None else "")
-            self._lbl_status.setText(f"✅ Plate solved{rot_str}")
+            self._lbl_status.setText(self.tr("✅ Plate solved{0}").format(rot_str))
 
             if self._stats:
                 self._btn_show_radec.setChecked(True)
@@ -1770,11 +1776,11 @@ class DitherAnalysisWindow(QWidget):
                     )
             else:
                 self._lbl_status.setText(
-                    f"✅ Plate solved{rot_str}  |  Run analysis to see RA/Dec view"
+                    self.tr("✅ Plate solved{0}  |  Run analysis to see RA/Dec view").format(rot_str)
                 )
 
         except Exception as e:
-            self._lbl_status.setText(f"⚠  Plate solve error: {e}")
+            self._lbl_status.setText(self.tr("⚠  Plate solve error: {0}").format(e))
             import traceback
             traceback.print_exc()
 
@@ -1786,12 +1792,12 @@ class DitherAnalysisWindow(QWidget):
         ]
         paths = [p for p in raw if p is not None]
         if len(paths) < 2:
-            QMessageBox.warning(self, "Dither Analysis",
-                                "Add at least 2 light frames using Add Files.")
+            QMessageBox.warning(self, self.tr("Dither Analysis"),
+                                self.tr("Add at least 2 light frames using Add Files."))
             return
         if self._chk_save.isChecked() and not self._save_dir:
-            QMessageBox.warning(self, "Dither Analysis",
-                                "Please choose an output folder first.")
+            QMessageBox.warning(self, self.tr("Dither Analysis"),
+                                self.tr("Please choose an output folder first."))
             return
 
         self._filenames  = [os.path.basename(p) for p in paths]
@@ -1820,9 +1826,9 @@ class DitherAnalysisWindow(QWidget):
         #    write clean uint16 FITS with no BZERO/BSCALE so worker
         #    processes can memmap them without error.
         prep_progress = QProgressDialog(
-            "Preparing frames…", "Cancel", 0, len(paths), self
+            self.tr("Preparing frames…"), self.tr("Cancel"), 0, len(paths), self
         )
-        prep_progress.setWindowTitle("Dither Analysis")
+        prep_progress.setWindowTitle(self.tr("Dither Analysis"))
         prep_progress.setWindowModality(Qt.WindowModality.WindowModal)
         prep_progress.setMinimumDuration(0)
         prep_progress.setValue(0)
@@ -1831,7 +1837,7 @@ class DitherAnalysisWindow(QWidget):
         clean_paths = []
         for i, p in enumerate(paths):
             prep_progress.setLabelText(
-                f"Preparing frame {i + 1} of {len(paths)}\n{os.path.basename(p)}"
+                self.tr("Preparing frame {0} of {1}\n{2}").format(i + 1, len(paths), os.path.basename(p))
             )
             prep_progress.setValue(i)
             QApplication.processEvents()
@@ -1840,7 +1846,7 @@ class DitherAnalysisWindow(QWidget):
                 prep_progress.close()
                 self._btn_run.setEnabled(True)
                 self._btn_abort.setEnabled(False)
-                self._lbl_status.setText("Cancelled.")
+                self._lbl_status.setText(self.tr("Cancelled."))
                 return
 
             try:
@@ -1887,8 +1893,8 @@ class DitherAnalysisWindow(QWidget):
             except Exception as e:
                 prep_progress.close()
                 QMessageBox.warning(
-                    self, "Dither Analysis",
-                    f"Failed to prepare {os.path.basename(p)}:\n{e}"
+                    self, self.tr("Dither Analysis"),
+                    self.tr("Failed to prepare {0}:\n{1}").format(os.path.basename(p), e)
                 )
                 self._btn_run.setEnabled(True)
                 self._btn_abort.setEnabled(False)
@@ -1897,7 +1903,7 @@ class DitherAnalysisWindow(QWidget):
         prep_progress.setValue(len(paths))
         prep_progress.close()
 
-        self._lbl_status.setText("Starting registration…")
+        self._lbl_status.setText(self.tr("Starting registration…"))
         QApplication.processEvents()
 
         from setiastro.saspro.star_alignment import StarRegistrationThread, _align_prefs
@@ -1918,9 +1924,9 @@ class DitherAnalysisWindow(QWidget):
         from PyQt6.QtWidgets import QProgressDialog
 
         self._align_progress = QProgressDialog(
-            "Running stellar alignment…", "Abort", 0, 0, self
+            self.tr("Running stellar alignment…"), self.tr("Abort"), 0, 0, self
         )
-        self._align_progress.setWindowTitle("Dither Analysis — Registration")
+        self._align_progress.setWindowTitle(self.tr("Dither Analysis — Registration"))
         self._align_progress.setWindowModality(Qt.WindowModality.WindowModal)
         self._align_progress.setMinimumDuration(0)
         self._align_progress.setMinimumWidth(420)
@@ -1942,9 +1948,9 @@ class DitherAnalysisWindow(QWidget):
         self._btn_abort.setEnabled(False)
 
         if not success:
-            self._lbl_status.setText(f"Registration failed: {message}")
-            QMessageBox.warning(self, "Dither Analysis",
-                                f"Registration did not complete:\n{message}")
+            self._lbl_status.setText(self.tr("Registration failed: {0}").format(message))
+            QMessageBox.warning(self, self.tr("Dither Analysis"),
+                                self.tr("Registration did not complete:\n{0}").format(message))
             try:
                 if hasattr(self, "_temp_dir") and self._temp_dir:
                     shutil.rmtree(self._temp_dir, ignore_errors=True)
@@ -1993,7 +1999,7 @@ class DitherAnalysisWindow(QWidget):
 
         if os.path.exists(sasd_src):
             save_path, _ = QFileDialog.getSaveFileName(
-                self, "Save Alignment Transforms (.sasd)",
+                self, self.tr("Save Alignment Transforms (.sasd)"),
                 os.path.join(os.path.expanduser("~"), "dither_alignment.sasd"),
                 "SASD Files (*.sasd);;All Files (*)"
             )
@@ -2006,7 +2012,7 @@ class DitherAnalysisWindow(QWidget):
                             self._settings, save_path, self._pending_pixscale
                         )
                 except Exception as e:
-                    QMessageBox.warning(self, "Save .sasd", f"Could not save:\n{e}")
+                    QMessageBox.warning(self, self.tr("Save .sasd"), self.tr("Could not save:\n{0}").format(e))
 
             # also save against the temp sasd so bolt-on path works
             if getattr(self, "_pending_pixscale", None):
@@ -2021,7 +2027,7 @@ class DitherAnalysisWindow(QWidget):
         except Exception:
             pass
 
-        self._lbl_status.setText("Registration complete.  Analysing offsets…")
+        self._lbl_status.setText(self.tr("Registration complete.  Analysing offsets…"))
         self._btn_plate_solve.setEnabled(True)
         self.load_transforms(transforms, filenames, ref_shape=ref_shape)
     def _abort(self):
@@ -2030,7 +2036,7 @@ class DitherAnalysisWindow(QWidget):
             self._reg_thread.wait(3000)
         self._btn_run.setEnabled(True)
         self._btn_abort.setEnabled(False)
-        self._lbl_status.setText("Aborted.")
+        self._lbl_status.setText(self.tr("Aborted."))
 
     # ----------------------------------------------------------------- thread slots
     def _on_reg_progress(self, msg: str):
@@ -2085,10 +2091,10 @@ class DitherAnalysisWindow(QWidget):
         try:
             basenames, transforms, ref_shape = parse_sasd(path)
         except Exception as e:
-            QMessageBox.critical(self, "Load .sasd", f"Failed to parse:\n{e}")
+            QMessageBox.critical(self, self.tr("Load .sasd"), self.tr("Failed to parse:\n{0}").format(e))
             return
         if not basenames:
-            QMessageBox.warning(self, "Load .sasd", "No frame entries found.")
+            QMessageBox.warning(self, self.tr("Load .sasd"), self.tr("No frame entries found."))
             return
 
         self._pixscale_arcsec = None
@@ -2132,7 +2138,7 @@ class DitherAnalysisWindow(QWidget):
                 pass
 
         self._lbl_status.setText(
-            f"Loaded {len(basenames)} frames from {os.path.basename(path)}"
+            self.tr("Loaded {0} frames from {1}").format(len(basenames), os.path.basename(path))
             + (f"  |  {self._pixscale_arcsec:.3f}\"/px" if self._pixscale_arcsec else "")
         )
         self.load_transforms(transforms, basenames, ref_shape=ref_shape)
@@ -2149,11 +2155,11 @@ class DitherAnalysisWindow(QWidget):
         frame0_item = self._file_list.item(0)
         frame0_path = frame0_item.data(Qt.ItemDataRole.UserRole)
         if not frame0_path or not os.path.exists(frame0_path):
-            self._lbl_trial_result.setText("⚠  Cannot locate frame 0 on disk.")
+            self._lbl_trial_result.setText(self.tr("⚠  Cannot locate frame 0 on disk."))
             return
 
         self._btn_trial_detect.setEnabled(False)
-        self._lbl_trial_result.setText("Detecting…")
+        self._lbl_trial_result.setText(self.tr("Detecting…"))
         self._lbl_trial_result.setStyleSheet("color:#888;font-size:10px;")
         QApplication.processEvents()
 
@@ -2173,22 +2179,22 @@ class DitherAnalysisWindow(QWidget):
             n = len(objs) if objs is not None else 0
 
             if n == 0:
-                msg = "⚠  0 stars — lower threshold"
+                msg = self.tr("⚠  0 stars — lower threshold")
                 color = "#e94560"
             elif n < 5:
-                msg = f"⚠  {n} stars — lower threshold"
+                msg = self.tr("⚠  {0} stars — lower threshold").format(n)
                 color = "#e94560"
             elif n < 100:
-                msg = f"⚠  {n} stars — consider lowering threshold"
+                msg = self.tr("⚠  {0} stars — consider lowering threshold").format(n)
                 color = "#ffc107"
             elif n > 25000:
-                msg = f"⚠  {n:,} stars (very high — raise threshold)"
+                msg = self.tr("⚠  {0:,} stars (very high — raise threshold)").format(n)
                 color = "#e94560"
             elif n > 10000:
-                msg = f"⚠  {n:,} stars (high — consider raising threshold)"
+                msg = self.tr("⚠  {0:,} stars (high — consider raising threshold)").format(n)
                 color = "#ffc107"
             else:
-                msg = f"✓  {n:,} stars"
+                msg = self.tr("✓  {0:,} stars").format(n)
                 color = "#4caf50"
 
             self._lbl_trial_result.setStyleSheet(f"color:{color};font-size:10px;")
@@ -2204,10 +2210,10 @@ class DitherAnalysisWindow(QWidget):
     def _analyze(self):
         H, W = self._ref_shape
         if H == 0 or W == 0:
-            self._lbl_status.setText(
+            self._lbl_status.setText(self.tr(
                 "⚠  No REF_SHAPE available — showing raw tx/ty offsets "
                 "(meridian flip transitions will not be excluded from step stats)."
-            )
+            ))
             self._analyze_raw()
             return
 
@@ -2219,11 +2225,11 @@ class DitherAnalysisWindow(QWidget):
         n_total = len(self._transforms)
 
         if n_good < 2:
-            msg = (
-                f"Only {n_good} frame(s) registered successfully "
-                f"({failed} failed out of {n_total}).  "
+            msg = self.tr(
+                "Only {0} frame(s) registered successfully "
+                "({1} failed out of {2}).  "
                 "Need at least 2 valid frames."
-            )
+            ).format(n_good, failed, n_total)
             self._lbl_status.setText(msg)
             self._stats_text.setPlainText(msg)
             return
@@ -2245,13 +2251,14 @@ class DitherAnalysisWindow(QWidget):
         ps_suffix   = f" ({stats['rms_offset']*ps:.2f}\")" if ps else ""
         step_suffix = f" ({stats['mean_step']*ps:.2f}\")" if ps else ""
         n_ft        = stats.get("n_flip_transitions", 0)
-        walking_tag = "  |  ✗ WALKING NOISE" if stats.get("is_walking") else ""
+        walking_tag = self.tr("  |  ✗ WALKING NOISE") if stats.get("is_walking") else ""
 
         self._lbl_status.setText(
-            f"Done — {n_good}/{n_total} frames  |  "
-            f"RMS dither: {stats['rms_offset']:.2f} px{ps_suffix}  |  "
-            f"Mean step: {stats['mean_step']:.2f} px{step_suffix}"
-            + (f"  |  Meridian flips: {n_ft}" if n_ft else "")
+            self.tr("Done — {0}/{1} frames  |  "
+                    "RMS dither: {2:.2f} px{3}  |  "
+                    "Mean step: {4:.2f} px{5}").format(
+                n_good, n_total, stats['rms_offset'], ps_suffix, stats['mean_step'], step_suffix)
+            + (self.tr("  |  Meridian flips: {0}").format(n_ft) if n_ft else "")
             + walking_tag
         )
 
@@ -2265,11 +2272,11 @@ class DitherAnalysisWindow(QWidget):
         ps = getattr(self, "_pixscale_arcsec", None)
         self._btn_show_arcsec.setEnabled(bool(ps))
         if not ps:
-            self._btn_show_arcsec.setToolTip("No pixel scale found in header")
+            self._btn_show_arcsec.setToolTip(self.tr("No pixel scale found in header"))
             if self._btn_show_arcsec.isChecked():
                 self._btn_show_px.setChecked(True)
         else:
-            self._btn_show_arcsec.setToolTip(f"Pixel scale: {ps:.3f}\"/px")
+            self._btn_show_arcsec.setToolTip(self.tr("Pixel scale: {0:.3f}\"/px").format(ps))
         # RA/Dec enabled only if plate solve succeeded
         self._btn_show_radec.setEnabled(self._frame0_wcs_header is not None)
 
@@ -2311,13 +2318,14 @@ class DitherAnalysisWindow(QWidget):
         ps_suffix   = f" ({stats['rms_offset']*ps:.2f}\")" if ps else ""
         step_suffix = f" ({stats['mean_step']*ps:.2f}\")" if ps else ""
         n_ft        = stats.get("n_flip_transitions", 0)
-        walking_tag = "  |  ✗ WALKING NOISE" if stats.get("is_walking") else ""
+        walking_tag = self.tr("  |  ✗ WALKING NOISE") if stats.get("is_walking") else ""
 
         self._lbl_status.setText(
-            f"Done — {n_good}/{stats['n_total']} frames  |  "
-            f"RMS dither: {stats['rms_offset']:.2f} px{ps_suffix}  |  "
-            f"Mean step: {stats['mean_step']:.2f} px{step_suffix}"
-            + (f"  |  Meridian flips: {n_ft}" if n_ft else "")
+            self.tr("Done — {0}/{1} frames  |  "
+                    "RMS dither: {2:.2f} px{3}  |  "
+                    "Mean step: {4:.2f} px{5}").format(
+                n_good, stats['n_total'], stats['rms_offset'], ps_suffix, stats['mean_step'], step_suffix)
+            + (self.tr("  |  Meridian flips: {0}").format(n_ft) if n_ft else "")
             + walking_tag
         )
 
@@ -2331,11 +2339,11 @@ class DitherAnalysisWindow(QWidget):
         ps = getattr(self, "_pixscale_arcsec", None)
         self._btn_show_arcsec.setEnabled(bool(ps))
         if not ps:
-            self._btn_show_arcsec.setToolTip("No pixel scale found in header")
+            self._btn_show_arcsec.setToolTip(self.tr("No pixel scale found in header"))
             if self._btn_show_arcsec.isChecked():
                 self._btn_show_px.setChecked(True)
         else:
-            self._btn_show_arcsec.setToolTip(f"Pixel scale: {ps:.3f}\"/px")
+            self._btn_show_arcsec.setToolTip(self.tr("Pixel scale: {0:.3f}\"/px").format(ps))
         # RA/Dec enabled only if plate solve succeeded
         self._btn_show_radec.setEnabled(self._frame0_wcs_header is not None)
 
@@ -2387,23 +2395,23 @@ class DitherAnalysisWindow(QWidget):
 
             reasons = []
             if lr > 3.5:
-                reasons.append(f"scatter linearity {lr:.1f}× (threshold 3.5×)")
+                reasons.append(self.tr("scatter linearity {0:.1f}× (threshold 3.5×)").format(lr))
             if abs(tdc) > 0.75:
-                reasons.append(f"temporal drift correlation {tdc:+.2f} (threshold ±0.75)")
+                reasons.append(self.tr("temporal drift correlation {0:+.2f} (threshold ±0.75)").format(tdc))
             if dc > 0.65:
-                reasons.append(f"directional consistency {dc*100:.0f}% (threshold 65%)")
+                reasons.append(self.tr("directional consistency {0:.0f}% (threshold 65%)").format(dc*100))
 
-            body = (
+            body = self.tr(
                 "Dither offsets form a near-linear track — fixed-pattern noise "
                 "will not be fully suppressed.\n"
-                "Triggered by:  " + ";  ".join(reasons) + "\n"
+                "Triggered by:  {0}\n"
                 "Likely cause: unguided session with polar alignment error or "
                 "atmospheric drift.  Mitigation: guide, use PHD2 random-direction "
                 "dither, or spread frames across sessions."
-            )
+            ).format(";  ".join(reasons))
             cards.append(_make_card(
                 "#e94560", "#2a0d14",
-                "✗  Walking noise pattern detected",
+                self.tr("✗  Walking noise pattern detected"),
                 body,
             ))
 
@@ -2412,16 +2420,16 @@ class DitherAnalysisWindow(QWidget):
             cfrac = stats.get("clustered_frac", 0.0)
             mx    = stats.get("max_cluster_size", 1)
             mc    = stats.get("mean_cluster_size", 1.0)
-            body  = (
-                f"{cfrac*100:.0f}% of frames share a pointing position with neighbours "
-                f"(largest cluster: {mx} frames, mean: {mc:.1f}).  "
+            body  = self.tr(
+                "{0:.0f}% of frames share a pointing position with neighbours "
+                "(largest cluster: {1} frames, mean: {2:.1f}).  "
                 "Within-cluster frames share fixed-pattern noise and may not be "
                 "fully separated by sigma rejection.  Consider dithering every frame "
                 "or reducing the dither interval."
-            )
+            ).format(cfrac*100, mx, mc)
             cards.append(_make_card(
                 "#ffc107", "#221a00",
-                "⚠  Dither clustering detected",
+                self.tr("⚠  Dither clustering detected"),
                 body,
             ))
 
@@ -2440,7 +2448,7 @@ class DitherAnalysisWindow(QWidget):
             ov = QVBoxLayout(ok)
             ov.setContentsMargins(6, 4, 6, 4)
             ov.setSpacing(0)
-            ol = QLabel("✓  Dither quality looks good")
+            ol = QLabel(self.tr("✓  Dither quality looks good"))
             ol.setStyleSheet(
                 "color:#4caf50;font-weight:700;font-size:12px;"
                 "border:none;background:transparent;"
@@ -2461,7 +2469,7 @@ class DitherAnalysisWindow(QWidget):
         pref       = _dir_label(s["pref_dir"])
         cov        = s["coverage_px"]
         H, W       = self._ref_shape
-        shape_str  = f"{W} × {H} px" if W and H else "unknown"
+        shape_str  = f"{W} × {H} px" if W and H else self.tr("unknown")
         ps         = getattr(self, "_pixscale_arcsec", None)
         unit_scale = self._unit_scale
         ul         = self._unit_label
@@ -2476,8 +2484,8 @@ class DitherAnalysisWindow(QWidget):
                 return f"{val_px:.1f} px²  ({val_px * ps * ps:.1f} arcsec²)"
             return f"{val_px:.1f} px²"
 
-        cov_str = _px2(cov) if cov > 0 else "N/A (install scipy)"
-        ps_str  = f"{ps:.3f}\"/px" if ps else "unknown (no WCS/pixscale in header)"
+        cov_str = _px2(cov) if cov > 0 else self.tr("N/A (install scipy)")
+        ps_str  = f"{ps:.3f}\"/px" if ps else self.tr("unknown (no WCS/pixscale in header)")
         n_ft    = s.get("n_flip_transitions", 0)
 
         # ── Clustering note ──────────────────────────────────────────────
@@ -2490,25 +2498,25 @@ class DitherAnalysisWindow(QWidget):
 
         n_valid_steps = len(s.get("valid_steps", []))
         if n_valid_steps < 5:
-            cluster_note = (
-                f"  ℹ  Insufficient steps ({n_valid_steps}) for reliable\n"
-                f"     clustering analysis."
-            )
+            cluster_note = self.tr(
+                "  ℹ  Insufficient steps ({0}) for reliable\n"
+                "     clustering analysis."
+            ).format(n_valid_steps)
         elif is_clustered:
-            cluster_note = (
-                f"  ⚠  Clustering detected — {cfrac*100:.0f}% of frames share a\n"
-                f"     pointing position with neighbours.\n"
-                f"     Within-cluster frames share fixed-pattern noise and\n"
-                f"     may not be fully separated by sigma rejection."
-            )
+            cluster_note = self.tr(
+                "  ⚠  Clustering detected — {0:.0f}% of frames share a\n"
+                "     pointing position with neighbours.\n"
+                "     Within-cluster frames share fixed-pattern noise and\n"
+                "     may not be fully separated by sigma rejection."
+            ).format(cfrac*100)
         elif mc > 1.0 and n_cl >= 4:
-            cluster_note = (
-                f"  ✓  Dither pattern detected — mean {mc:.1f} frames per position.\n"
-                f"     This is normal for 'dither every N frames' workflows.\n"
-                f"     Fixed-pattern noise will be well suppressed."
-            )
+            cluster_note = self.tr(
+                "  ✓  Dither pattern detected — mean {0:.1f} frames per position.\n"
+                "     This is normal for 'dither every N frames' workflows.\n"
+                "     Fixed-pattern noise will be well suppressed."
+            ).format(mc)
         else:
-            cluster_note = f"  ✓  No significant clustering  (mean cluster size: {mc:.1f})"
+            cluster_note = self.tr("  ✓  No significant clustering  (mean cluster size: {0:.1f})").format(mc)
 
         # ── Walking noise note ───────────────────────────────────────────
         is_walking          = s.get("is_walking", False)
@@ -2520,88 +2528,88 @@ class DitherAnalysisWindow(QWidget):
             # Identify which metrics fired so the user understands the diagnosis
             reasons = []
             if linearity_ratio > 3.5:
-                reasons.append(f"scatter linearity {linearity_ratio:.1f}× (threshold 3.5×)")
+                reasons.append(self.tr("scatter linearity {0:.1f}× (threshold 3.5×)").format(linearity_ratio))
             if abs(temporal_drift_corr) > 0.75:
-                reasons.append(f"temporal drift correlation {temporal_drift_corr:+.2f} (threshold ±0.75)")
+                reasons.append(self.tr("temporal drift correlation {0:+.2f} (threshold ±0.75)").format(temporal_drift_corr))
             if dir_consistency > 0.65:
-                reasons.append(f"directional consistency {dir_consistency*100:.0f}% (threshold 65%)")
+                reasons.append(self.tr("directional consistency {0:.0f}% (threshold 65%)").format(dir_consistency*100))
             reason_lines = "\n".join(f"     · {r}" for r in reasons)
-            walking_note = (
-                f"  ✗  WALKING NOISE PATTERN DETECTED\n"
-                f"     The dither offsets form a near-linear track rather than\n"
-                f"     a 2-D scatter.  Triggered by:\n"
-                f"{reason_lines}\n"
-                f"     Fixed-pattern noise (amp glow, column bias, hot pixels)\n"
-                f"     will NOT be fully suppressed — the stack may show\n"
-                f"     residual gradient structure along the drift axis.\n"
-                f"     Likely cause: unguided session with consistent polar\n"
-                f"     alignment error or atmospheric refraction drift.\n"
-                f"     Mitigation: guide, use PHD2 random-direction dither,\n"
-                f"     or collect frames across multiple sessions with\n"
-                f"     intentionally varied PA / target hour angle."
-            )
+            walking_note = self.tr(
+                "  ✗  WALKING NOISE PATTERN DETECTED\n"
+                "     The dither offsets form a near-linear track rather than\n"
+                "     a 2-D scatter.  Triggered by:\n"
+                "{0}\n"
+                "     Fixed-pattern noise (amp glow, column bias, hot pixels)\n"
+                "     will NOT be fully suppressed — the stack may show\n"
+                "     residual gradient structure along the drift axis.\n"
+                "     Likely cause: unguided session with consistent polar\n"
+                "     alignment error or atmospheric refraction drift.\n"
+                "     Mitigation: guide, use PHD2 random-direction dither,\n"
+                "     or collect frames across multiple sessions with\n"
+                "     intentionally varied PA / target hour angle."
+            ).format(reason_lines)
         else:
-            walking_note = (
-                f"  ✓  No walking noise pattern  "
-                f"(linearity {linearity_ratio:.1f}×, "
-                f"drift corr {temporal_drift_corr:+.2f}, "
-                f"dir consistency {dir_consistency*100:.0f}%)"
-            )
+            walking_note = self.tr(
+                "  ✓  No walking noise pattern  "
+                "(linearity {0:.1f}×, "
+                "drift corr {1:+.2f}, "
+                "dir consistency {2:.0f}%)"
+            ).format(linearity_ratio, temporal_drift_corr, dir_consistency*100)
 
         lines = [
             "═" * 52,
-            f"  Reference size      : {shape_str}",
-            f"  Pixel scale         : {ps_str}",
-            f"  Frames analyzed     : {s['n']} / {s['n_total']}",
-            f"  Failed / skipped    : {s['n_failed']}",
-            f"  Meridian flips      : {n_ft}  (transition steps excluded from stats)",
+            self.tr("  Reference size      : {0}").format(shape_str),
+            self.tr("  Pixel scale         : {0}").format(ps_str),
+            self.tr("  Frames analyzed     : {0} / {1}").format(s['n'], s['n_total']),
+            self.tr("  Failed / skipped    : {0}").format(s['n_failed']),
+            self.tr("  Meridian flips      : {0}  (transition steps excluded from stats)").format(n_ft),
             "─" * 52,
-            "  Image-center dither offsets (all frames):",
-            f"  RMS offset          : {_px(s['rms_offset'])}",
-            f"  Mean offset         : {_px(s['mean_radius'])}",
-            f"  Max offset          : {_px(s['max_radius'])}",
-            f"  Span X              : {_px(s['span_x'])}",
-            f"  Span Y              : {_px(s['span_y'])}",
+            self.tr("  Image-center dither offsets (all frames):"),
+            self.tr("  RMS offset          : {0}").format(_px(s['rms_offset'])),
+            self.tr("  Mean offset         : {0}").format(_px(s['mean_radius'])),
+            self.tr("  Max offset          : {0}").format(_px(s['max_radius'])),
+            self.tr("  Span X              : {0}").format(_px(s['span_x'])),
+            self.tr("  Span Y              : {0}").format(_px(s['span_y'])),
             f"  Std(ΔX)             : {_px(s['std_dx'])}",
             f"  Std(ΔY)             : {_px(s['std_dy'])}",
             "─" * 52,
-            "  Step statistics  (flip transition steps excluded):",
-            f"  Mean step           : {_px(s['mean_step'])}",
-            f"  Max step            : {_px(s['max_step'])}",
-            f"  Preferred dir       : {s['pref_dir']:.1f}°  ({pref})",
-            f"  Coverage area       : {cov_str}",
+            self.tr("  Step statistics  (flip transition steps excluded):"),
+            self.tr("  Mean step           : {0}").format(_px(s['mean_step'])),
+            self.tr("  Max step            : {0}").format(_px(s['max_step'])),
+            self.tr("  Preferred dir       : {0:.1f}°  ({1})").format(s['pref_dir'], pref),
+            self.tr("  Coverage area       : {0}").format(cov_str),
             "─" * 52,
-            "  Clustering analysis:",
-            f"  Distinct positions  : {n_cl}",
-            f"  Mean frames/position: {mc:.1f}",
-            f"  Largest cluster     : {mx} frames",
-            f"  Clustered fraction  : {cfrac*100:.1f}%",
-            f"  Step threshold used : {cthr:.2f} {ul}",
+            self.tr("  Clustering analysis:"),
+            self.tr("  Distinct positions  : {0}").format(n_cl),
+            self.tr("  Mean frames/position: {0:.1f}").format(mc),
+            self.tr("  Largest cluster     : {0} frames").format(mx),
+            self.tr("  Clustered fraction  : {0:.1f}%").format(cfrac*100),
+            self.tr("  Step threshold used : {0:.2f} {1}").format(cthr, ul),
             "",
             cluster_note,
             "─" * 52,
-            "  Walking noise analysis:",
-            f"  Scatter linearity   : {linearity_ratio:.2f}×  (1.0 = perfect 2-D scatter)",
-            f"  Temporal drift corr : {temporal_drift_corr:+.3f}  (0.0 = no drift)",
-            f"  Dir. consistency    : {dir_consistency*100:.1f}%  (25% = uniform random)",
+            self.tr("  Walking noise analysis:"),
+            self.tr("  Scatter linearity   : {0:.2f}×  (1.0 = perfect 2-D scatter)").format(linearity_ratio),
+            self.tr("  Temporal drift corr : {0:+.3f}  (0.0 = no drift)").format(temporal_drift_corr),
+            self.tr("  Dir. consistency    : {0:.1f}%  (25% = uniform random)").format(dir_consistency*100),
             "",
             walking_note,
             "═" * 52,
             "",
-            "  Per-frame  (ΔX, ΔY = image-center offset from ref,  r = radius):",
+            self.tr("  Per-frame  (ΔX, ΔY = image-center offset from ref,  r = radius):"),
             "─" * 52,
         ]
 
         for i, (fn, M) in enumerate(zip(self._filenames, self._transforms)):
             if M is None:
-                lines.append(f"  [{i:>4}] {fn}  →  FAILED")
+                lines.append(self.tr("  [{0:>4}] {1}  →  FAILED").format(i, fn))
             else:
                 dx_v = dx_full[i]
                 dy_v = dy_full[i]
                 r    = math.hypot(dx_v, dy_v) if not math.isnan(dx_v) else float("nan")
                 ft_tag = ""
                 if i < len(flip_transitions_full) and flip_transitions_full[i]:
-                    ft_tag = "  → FLIP"
+                    ft_tag = self.tr("  → FLIP")
                 if ps and not math.isnan(r):
                     lines.append(
                         f"  [{i:>4}] {fn}  →  "

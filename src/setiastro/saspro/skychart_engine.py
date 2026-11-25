@@ -22,7 +22,7 @@
 #  At run time: SASpro's celestial catalog, and the local Gaia DR3 libraries.
 # =============================================================================
 
-SKYCHART_VERSION = "2.8.2"
+SKYCHART_VERSION = "2.9.0"
 __version__ = SKYCHART_VERSION
 
 import csv
@@ -39,7 +39,10 @@ from pathlib import Path
 
 import numpy as np
 
-from PyQt6.QtCore import Qt, QRectF, QPointF, QSize, QSizeF, QMarginsF, QRect, QTimer, pyqtSignal
+from PyQt6.QtCore import (
+    Qt, QRectF, QPointF, QSize, QSizeF, QMarginsF, QRect, QTimer, pyqtSignal,
+    QCoreApplication, QT_TRANSLATE_NOOP,
+)
 from PyQt6.QtGui import (
     QPainter, QPainterPath, QPen, QBrush, QColor, QFont, QFontMetricsF,
     QTransform, QPolygonF, QImage, QPicture, QPageSize, QPdfWriter,
@@ -53,6 +56,11 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QDialogButtonBox,
 )
 
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("SkychartEngine", text)
+
+
 D2R = math.pi / 180.0
 R2D = 180.0 / math.pi
 
@@ -61,6 +69,10 @@ R2D = 180.0 / math.pi
 # -----------------------------------------------------------------------------
 # All-sky maps (HEALPix NESTED, nside 512, galactic), log10-quantised to uint8.
 SKY_MAPS = {"halpha": "halpha_map.npz", "dust": "dust_map.npz"}
+# Dark clouds from Dobashi et al. 2011 (PASJ 63, S1) 2MASS A_J, reduced offline to a
+# 2' galactic grid for |b| <= 70 by J. d'Hooghvorst. Optional: without it the SFD
+# dust map draws the dark nebulae on its own.
+DARK_MAP_FILE = "dobashi_dark.npz"
 # PixInsight's SkyChartGenerator figures, measured pixel by pixel on its own charts:
 # Sky & Telescope (IAU) figures, except these constellations (Hipparcos numbers),
 # which PixInsight draws differently (Cepheus and Draco as Stellarium's 'modern'
@@ -195,6 +207,21 @@ KIND_NAMES = {
     K_CLNEB: "Cluster with nebula", K_RFN: "Reflection nebula",
     K_DARK: "Dark nebula", K_ASSOC: "Stellar association",
 }
+
+
+def _kind_label(name: str) -> str:
+    """Translated display text for a KIND_NAMES value. The English name stays the
+    key everywhere else (DSO_STYLE_DEFAULTS, saved dso_styles); only labels use this."""
+    labels = {
+        "Galaxy": _tr("Galaxy"), "Group of galaxies": _tr("Group of galaxies"),
+        "Open cluster": _tr("Open cluster"), "Globular cluster": _tr("Globular cluster"),
+        "Planetary nebula": _tr("Planetary nebula"), "Bright nebula": _tr("Bright nebula"),
+        "Cluster with nebula": _tr("Cluster with nebula"),
+        "Reflection nebula": _tr("Reflection nebula"), "Dark nebula": _tr("Dark nebula"),
+        "Stellar association": _tr("Stellar association"),
+    }
+    return labels.get(name, name)
+
 _ONGC_KIND = {
     "G": K_GALAXY, "GPair": K_GALAXY, "GTrpl": K_GALAXY, "GGroup": K_GROUP,
     "OCl": K_OC, "GCl": K_GC, "PN": K_PN, "Cl+N": K_CLNEB, "Neb": K_NEB,
@@ -269,6 +296,7 @@ class ChartData:
         self._load_milkyway(d)
         self._load_outlines(d)
         self._load_saspro_catalog()
+        self._load_nebula_names(d)
         self._load_wds(d)
         self._gaia = None
         self._xp_ci = {}          # Gaia source_id -> B-V derived from its XP spectrum
@@ -392,6 +420,66 @@ class ChartData:
                          maj, mnr, float("nan"), kind, "", []))
         except Exception as e:
             self.log(f"SASpro catalog not loaded: {e}")
+
+    # ---- names for the nebula shapes of the maps ---------------------------------
+    # Bundled VizieR extracts (verbatim TSV):
+    #   rcw.tsv      VII/216, RCW southern H-alpha regions (Rodgers, Campbell & Whiteoak 1960)
+    #   darkneb.tsv  J/A+A/383/631, dark nebulae of the whole sky merged from 21 catalogs:
+    #                Barnard, Lynds, Feitzinger & Stuwe, Hartley et al... (Dutra & Bica 2002)
+    _DARK_NAME_PRIO = ("B", "LDN", "Sa", "FeSt", "CB", "LM", "DC", "SDN")
+
+    @staticmethod
+    def _tsv_rows(path):
+        rows, head = [], None
+        for ln in open(path, encoding="utf-8", errors="replace"):
+            ln = ln.rstrip("\r\n")
+            if not ln or ln.startswith("#"):
+                continue
+            parts = ln.split("\t")
+            if head is None:
+                head = [p.strip() for p in parts]
+                continue
+            if parts[0].startswith("-") or not parts[0].strip() or parts[0].strip() in ("deg", '"h:m:s"'):
+                continue
+            rows.append({h: (parts[k].strip() if k < len(parts) else "") for k, h in enumerate(head)})
+        return rows
+
+    def _load_nebula_names(self, d: Path):
+        """RCW and the merged dark nebula catalog: names for the shapes of the
+        H-alpha and dust maps (never drawn as layers of their own)."""
+        try:
+            if (d / "rcw.tsv").exists():
+                out = []
+                for r in self._tsv_rows(d / "rcw.tsv"):
+                    ra, dec = _f(r.get("_RAJ2000", "")), _f(r.get("_DEJ2000", ""))
+                    if ra != ra or dec != dec:
+                        continue
+                    m = re.search(r"\bG(\d+)", r.get("IDs", ""))
+                    common = f"Gum {m.group(1)}" if m else ""
+                    out.append(("RCW", f"RCW {r.get('RCW', '').strip()}", ra, dec, float("nan"),
+                                _f(r.get("MajAxis", "")), _f(r.get("MinAxis", "")), float("nan"),
+                                K_NEB, common, []))
+                self.extra["RCW"] = out
+            if (d / "darkneb.tsv").exists():
+                prio = self._DARK_NAME_PRIO
+
+                def rank(n):
+                    p = re.match(r"[A-Za-z]+", n)
+                    p = p.group(0) if p else ""
+                    return prio.index(p) if p in prio else 99
+
+                out = []
+                for r in self._tsv_rows(d / "darkneb.tsv"):
+                    ra, dec = _f(r.get("_RAJ2000", "")), _f(r.get("_DEJ2000", ""))
+                    names = [n.strip() for n in r.get("Names", "").split(",") if n.strip()]
+                    if ra != ra or dec != dec or not names:
+                        continue
+                    label = re.sub(r"^([A-Za-z]+)(\d)", r"\1 \2", min(names, key=rank))
+                    out.append(("DarkNeb", label, ra, dec, float("nan"), _f(r.get("MajAxis", "")),
+                                _f(r.get("MinAxis", "")), float("nan"), K_DARK, "", names))
+                self.extra["DarkNeb"] = out
+        except Exception as e:
+            self.log(f"Nebula names not loaded: {e}")
 
     # ---- constellations --------------------------------------------------
     def _load_constellations(self, d: Path):
@@ -554,6 +642,23 @@ class ChartData:
         cache[key] = arr
         return arr
 
+    def dark_map(self):
+        """Dark clouds from Dobashi et al. (2011) 2MASS extinction (A_J): excess over
+        the local ~1 deg background and over twice the map noise, on a 2' galactic
+        grid for |b| <= 70. Returns (uint8 array, meta) or None; without it the SFD
+        dust map is used."""
+        if hasattr(self, "_dark"):
+            return self._dark
+        self._dark = None
+        f = data_dir() / DARK_MAP_FILE
+        if f.exists():
+            try:
+                with np.load(f, allow_pickle=False) as z:
+                    self._dark = (np.ascontiguousarray(z["aj"]), [float(v) for v in z["meta"]])
+            except Exception as e:
+                self.log(f"Could not read {DARK_MAP_FILE}: {e}")
+        return self._dark
+
     # ---- Gaia DR3 all-sky bright cache ------------------------------------
     def gaia_bright(self, gaia_dir: Path):
         """(ra, dec, gmag, source_id) of every Gaia star brighter than
@@ -575,9 +680,9 @@ class ChartData:
             return None
         dlg = None
         if QApplication.instance() is not None:
-            dlg = QProgressDialog("Reading bright stars from the local Gaia DR3 library\n"
-                                  "(one time only, a few minutes)...", "Cancel", 0, 100)
-            dlg.setWindowTitle("Sky Chart")
+            dlg = QProgressDialog(_tr("Reading bright stars from the local Gaia DR3 library\n"
+                                      "(one time only, a few minutes)..."), _tr("Cancel"), 0, 100)
+            dlg.setWindowTitle(_tr("Sky Chart"))
             dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
             dlg.setMinimumDuration(0)
             dlg.setValue(0)
@@ -1145,6 +1250,25 @@ _ID_PATTERNS = [
     (r"(?:pgc)\s*0*(\d+)", "PGC{}"),
     (r"(?:hcg)\s*0*(\d+)", "HCG{}"),
 ]
+
+
+_NICK_BY_ID = None
+
+
+def popular_name(layer: str, label: str, common: str) -> str:
+    """The popular name to print next to a designation: the catalog's own one, unless it
+    is missing or only a radio-source name ('Gem A', 'Cas A'), then a known nickname."""
+    global _NICK_BY_ID
+    c = common.split(",")[0].strip()
+    if c and not re.fullmatch(r"[A-Z][a-z]{2}\s?[A-Z]\d?", c):
+        return c
+    if _NICK_BY_ID is None:
+        _NICK_BY_ID = {}
+        for nick, target in NICKNAMES.items():
+            if isinstance(target, str):
+                _NICK_BY_ID.setdefault(canon_id(target) or target.upper(), nick.strip())
+    key = canon_id(f"NGC {label}" if layer == "NGC" and label[:1].isdigit() else label)
+    return _NICK_BY_ID.get(key, "") if key else ""
 
 
 def canon_id(s: str) -> str:
@@ -1765,33 +1889,59 @@ PAGE_FORMATS = {
 }
 
 LAYERS = [
-    ("milkyway", "Milky Way", "The Milky Way filled with its isophotes", True),
-    ("halpha", "Emission Nebulae", "Real shapes of emission nebulae from the all-sky H-alpha map "
-                                   "(Finkbeiner 2003, 6' resolution)", True),
-    ("dust", "Dark Nebulae", "Dark nebulae from the all-sky dust map (Schlegel, Finkbeiner & Davis 1998)", True),
-    ("grid", "Grid", "Grid in ICRS equatorial coordinates", True),
-    ("ecliptic", "Ecliptic", "The ecliptic great circle", False),
-    ("galactic", "Galactic Equator", "The ICRS galactic equator great circle", False),
-    ("borders", "Constellation Borders", "Borders of the constellations", True),
-    ("lines", "Constellation Lines", "Asterisms of the constellations", True),
-    ("connames", "Constellation Names", "Names of the constellations", True),
-    ("messier", "Messier", "Messier catalog (110 objects)", True),
-    ("ngc", "NGC", "New General Catalogue (OpenNGC)", True),
-    ("ic", "IC", "Index Catalogue (OpenNGC)", True),
-    ("other", "Other DSO", "OpenNGC addendum (Barnard, Melotte, Collinder...)", False),
-    ("sharpless", "Sharpless", "Sh2 HII regions (SASpro catalog)", False),
-    ("lbn", "LBN", "Lynds bright nebulae (SASpro catalog)", False),
-    ("ldn", "LDN", "Lynds dark nebulae (SASpro catalog)", False),
-    ("abell", "Abell", "Abell galaxy clusters (SASpro catalog)", False),
-    ("png", "PNG", "Galactic planetary nebulae (SASpro catalog)", False),
-    ("outlines", "Nebula Outlines", "Real outlines of nebulae at three brightness levels (OpenNGC)", True),
-    ("stars", "Bright Stars", "HYG 4.1: bright stars with names, Bayer letters and B-V colors", True),
-    ("gaia", "Gaia DR3 (local)", "All other stars, from SASpro's local Gaia DR3 library "
-                                 "(colors from the XP spectra when installed)", True),
-    ("starnames", "Star Names", "Proper names of bright stars", True),
-    ("bayer", "Bayer / Flamsteed", "Bayer letters and Flamsteed numbers", True),
-    ("variable", "Variable Stars", "Mark catalogued variable stars (GCVS designation)", True),
-    ("double", "Double Stars", "Mark double stars (Washington Double Star catalog)", True),
+    ("milkyway", QT_TRANSLATE_NOOP("SkychartEngine", "Milky Way"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "The Milky Way filled with its isophotes"), True),
+    ("halpha", QT_TRANSLATE_NOOP("SkychartEngine", "Emission Nebulae"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Real shapes of emission nebulae from the all-sky H-alpha map "
+                                         "(Finkbeiner 2003, 6' resolution)"), True),
+    ("dust", QT_TRANSLATE_NOOP("SkychartEngine", "Dark Nebulae"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Real shapes of dark nebulae from 2MASS extinction (Dobashi 2011, 2' "
+                                         "resolution); SFD 1998 dust map beyond |b| 70°"), True),
+    ("grid", QT_TRANSLATE_NOOP("SkychartEngine", "Grid"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Grid in ICRS equatorial coordinates"), True),
+    ("ecliptic", QT_TRANSLATE_NOOP("SkychartEngine", "Ecliptic"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "The ecliptic great circle"), False),
+    ("galactic", QT_TRANSLATE_NOOP("SkychartEngine", "Galactic Equator"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "The ICRS galactic equator great circle"), False),
+    ("borders", QT_TRANSLATE_NOOP("SkychartEngine", "Constellation Borders"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Borders of the constellations"), True),
+    ("lines", QT_TRANSLATE_NOOP("SkychartEngine", "Constellation Lines"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Asterisms of the constellations"), True),
+    ("connames", QT_TRANSLATE_NOOP("SkychartEngine", "Constellation Names"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Names of the constellations"), True),
+    ("messier", "Messier",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Messier catalog (110 objects)"), True),
+    ("ngc", "NGC",
+     QT_TRANSLATE_NOOP("SkychartEngine", "New General Catalogue (OpenNGC)"), True),
+    ("ic", "IC",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Index Catalogue (OpenNGC)"), True),
+    ("other", QT_TRANSLATE_NOOP("SkychartEngine", "Other DSO"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "OpenNGC addendum (Barnard, Melotte, Collinder...)"), False),
+    ("sharpless", "Sharpless",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Sh2 HII regions (SASpro catalog)"), False),
+    ("lbn", "LBN",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Lynds bright nebulae (SASpro catalog)"), False),
+    ("ldn", "LDN",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Lynds dark nebulae (SASpro catalog)"), False),
+    ("abell", "Abell",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Abell galaxy clusters (SASpro catalog)"), False),
+    ("png", "PNG",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Galactic planetary nebulae (SASpro catalog)"), False),
+    ("outlines", QT_TRANSLATE_NOOP("SkychartEngine", "Nebula Outlines"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Real outlines of nebulae at three brightness levels (OpenNGC)"), True),
+    ("stars", QT_TRANSLATE_NOOP("SkychartEngine", "Bright Stars"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "HYG 4.1: bright stars with names, Bayer letters and B-V colors"), True),
+    ("gaia", QT_TRANSLATE_NOOP("SkychartEngine", "Gaia DR3 (local)"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "All other stars, from SASpro's local Gaia DR3 library "
+                                         "(colors from the XP spectra when installed)"), True),
+    ("starnames", QT_TRANSLATE_NOOP("SkychartEngine", "Star Names"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Proper names of bright stars"), True),
+    ("bayer", "Bayer / Flamsteed",
+     QT_TRANSLATE_NOOP("SkychartEngine", "Bayer letters and Flamsteed numbers"), True),
+    ("variable", QT_TRANSLATE_NOOP("SkychartEngine", "Variable Stars"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Mark catalogued variable stars (GCVS designation)"), True),
+    ("double", QT_TRANSLATE_NOOP("SkychartEngine", "Double Stars"),
+     QT_TRANSLATE_NOOP("SkychartEngine", "Mark double stars (Washington Double Star catalog)"), True),
 ]
 
 
@@ -2322,6 +2472,7 @@ class ChartRenderer:
             self._draw_milkyway(painter)
         self.ha_lookup = self.dust_lookup = None
         self.outlined = set()
+        self._neb_regions = []
         self.info["outlines"] = 0
         if L.get("dust") or L.get("halpha") or L.get("outlines"):
             self._draw_nebulae(painter, gs)
@@ -2613,7 +2764,14 @@ class ChartRenderer:
         mrg = min(3.0 * sig_bg_mm, 2.0 * max(W, H))
         cc = max(sig_bg_mm / 4.0, cell, math.sqrt((W + 2 * mrg) * (H + 2 * mrg) / 2.5e5))
         xc, yc = self._grid(mrg, cc)
-        Hx = Cz = Hz = None
+        Hx = Cz = Hz = Dz = None
+        dark = self.d.dark_map() if want_dust else None
+        if dark is not None:
+            Dz, cov = self._sample_dark(dark, xs, ys)
+            # the 2' map is noisy at its own scale: smooth to ~1.5' before contouring
+            Dz = self._blur(Dz, max(1.5 / 60.0 * self.mm_per_deg / cell, 0.6)) + NEB_DUST_LEVEL
+            if cov.all():
+                dust = None                                   # SFD not needed here
         if ha is not None:
             Hz = self._sample(ha, xs, ys)
             okf = np.isfinite(Hz)
@@ -2633,11 +2791,39 @@ class ChartRenderer:
             Cz = np.where(np.where(valid, E, 0) > 0.25, Cz, 0.0)        # skip faint cirrus
             if Hz is not None:                                        # warm dust of HII regions
                 Cz = np.where(Hz > 40.0, np.minimum(Cz, 0.0), Cz)
+        if Dz is not None:                                    # Dobashi where it covers the sky
+            Cz = Dz if Cz is None else np.where(cov, Dz, Cz)
         res = (xs, ys, cell, Hx, Cz)
         if len(cache) > 6:
             cache.clear()
         cache[key] = res
         return res
+
+    def _sample_dark(self, dark, xs, ys):
+        """Dobashi dark-cloud excess (A_J above background + noise, mag; negative below)
+        on a grid of chart positions, and where the map covers the sky (|b| <= 70)."""
+        A, (b0, db, l0, dl, step, margin, bmax) = dark
+        X, Y = np.meshgrid(xs, ys)
+        ra, dec = self.proj.inverse(X.ravel(), Y.ravel())
+        ok = ~(np.isnan(ra) | np.isnan(dec))
+        v = np.full(len(ra), -margin)
+        cov = np.zeros(len(ra), dtype=bool)
+        if ok.any():
+            l, b = equ_to_gal(ra[ok], dec[ok])
+            l, b = np.degrees(l), np.degrees(b)
+            lw = (l + 180.0) % 360.0 - 180.0
+            fi = (b - b0) / db
+            fj = (lw - l0) / dl
+            i0 = np.clip(np.floor(fi).astype(int), 0, A.shape[0] - 2)
+            j0 = np.clip(np.floor(fj).astype(int), 0, A.shape[1] - 2)
+            ti = np.clip(fi - i0, 0.0, 1.0)
+            tj = np.clip(fj - j0, 0.0, 1.0)
+            q = ((A[i0, j0] * (1 - tj) + A[i0, j0 + 1] * tj) * (1 - ti) +
+                 (A[i0 + 1, j0] * (1 - tj) + A[i0 + 1, j0 + 1] * tj) * ti)
+            inside = np.abs(b) <= bmax - 0.05
+            v[ok] = np.where(inside, q * step - margin, -margin)
+            cov[ok] = inside
+        return v.reshape(X.shape), cov.reshape(X.shape)
 
     # ---- nebulae: one clean profile per nebula ---------------------------------
     @staticmethod
@@ -2645,6 +2831,11 @@ class ChartRenderer:
         path = QPainterPath()
         path.setFillRule(Qt.FillRule.WindingFill)
         for ring in rings:
+            # one orientation for all: with the winding rule an outline traced the other
+            # way round inside another one would otherwise punch a hole in it
+            ring = np.asarray(ring)
+            if float(np.sum(ring[:-1, 0] * ring[1:, 1] - ring[1:, 0] * ring[:-1, 1])) < 0:
+                ring = ring[::-1]
             poly = QPolygonF()
             for u, v in ring.tolist():
                 poly.append(QPointF(u, v))
@@ -2740,6 +2931,8 @@ class ChartRenderer:
         if not d_total.isEmpty():
             d_total = d_total.intersected(frame).subtracted(e_total)
         r_total = r_out_union.intersected(frame).subtracted(e_total) if not r_out_union.isEmpty() else r_out_union
+        # kept for the labels: every region drawn here gets a name if a catalog has one
+        self._neb_regions = [(K_NEB, e_total), (K_DARK, d_total), (K_RFN, r_total)]
 
         def shade(paths, color, alpha, clip):
             if not paths:
@@ -3380,6 +3573,15 @@ class ChartRenderer:
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
     # ---- deep-sky objects ------------------------------------------------------
+    def _shape_at(self, kind, aliases, x, y):
+        """Is this nebula drawn as a real shape (outline or map region) at (x, y)?"""
+        if any(a in self.outlined for a in aliases):
+            return True
+        look = self.dust_lookup if kind == K_DARK else self.ha_lookup
+        if look is None:
+            return False
+        return look(float(x), float(y)) >= (NEB_DUST_LEVEL if kind == K_DARK else NEB_HA_LEVEL)
+
     def _select_dsos(self):
         L, d = self.p.layers, self.d
         rows = []
@@ -3402,7 +3604,10 @@ class ChartRenderer:
             layer, label, ra_i, dec_i, mag, maj, mnr, pa, kind, common, _al = rows[i]
             a_mm = (maj / 120.0 * self.mm_per_deg) if maj == maj else 0.0      # semi-major, mm
             if mag == mag:
-                if mag > self.dso_mag and layer != "Messier":
+                # a nebula whose real shape is on the chart keeps its label whatever its
+                # catalog magnitude (IC 443 on wide fields)
+                if mag > self.dso_mag and layer != "Messier" and not (
+                        kind in (K_NEB, K_CLNEB, K_RFN, K_DARK) and self._shape_at(kind, _al, x[i], y[i])):
                     continue
             elif (layer != "Messier" and a_mm < 0.9 * rmin and not common
                   and not any(a in self.outlined for a in _al)):
@@ -3413,7 +3618,7 @@ class ChartRenderer:
                             common=common))
         for o in out:
             if o["layer"] == "Sharpless":
-                o["label"] = re.sub(r"^SH2-", "Sh2-", o["label"])
+                o["label"] = re.sub(r"^SH2[-\s]*", "Sh2-", o["label"], flags=re.I)
             elif o["layer"] in ("LBN", "LDN"):
                 o["label"] = re.sub(r"^(LBN|LDN)\s*", r"\1 ", o["label"])
         if self.p.remove_duplicates:
@@ -3634,6 +3839,139 @@ class ChartRenderer:
         hip = int(d.s_hip[i])
         return [(f"HIP {hip}", False)] if hip > 0 else None
 
+    # ---- names for the nebula regions -----------------------------------------
+    _REGION_FAMILY = {K_NEB: (K_NEB, K_CLNEB), K_DARK: (K_DARK,), K_RFN: (K_RFN, K_NEB)}
+    _REGION_PRIO = {"Messier": 0, "NGC": 1, "IC": 2, "Sharpless": 3, "RCW": 3.5, "Other": 4, "LBN": 5,
+                    "LDN": 6, "DarkNeb": 7}
+
+    def _neb_catalog(self):
+        """Every catalogued nebula (all catalogs, whatever layers are on), cached."""
+        d = self.d
+        cat = getattr(d, "_neb_cat", None)
+        if cat is None:
+            kinds = (K_NEB, K_CLNEB, K_RFN, K_DARK)
+            rows = [r for r in d.dsos if r[8] in kinds]
+            for c in ("Sharpless", "RCW", "LBN", "LDN", "DarkNeb"):
+                rows += [r for r in d.extra.get(c, []) if r[8] in kinds]
+            cat = d._neb_cat = (np.array([r[2] for r in rows], dtype=np.float64),
+                                np.array([r[3] for r in rows], dtype=np.float64), rows)
+        return cat
+
+    @staticmethod
+    def _label_of(r):
+        layer, label = r[0], str(r[1])
+        if layer == "Sharpless":
+            return re.sub(r"^SH2[-\s]*", "Sh2-", label, flags=re.I)
+        if layer in ("LBN", "LDN"):
+            return re.sub(r"^(LBN|LDN)\s*", r"\1 ", label)
+        if layer == "NGC" and label[:1].isdigit():
+            return f"NGC {label}"
+        return label
+
+    def _snap_anchor(self, x, y, kind, a_mm):
+        """A nebula's catalog position may fall outside the shape drawn for it (IC 443:
+        the outline is its bright rim): point its label at the nearest edge of the shape."""
+        best = None
+        for k, path in getattr(self, "_neb_regions", []):
+            if path.isEmpty() or kind not in self._REGION_FAMILY.get(k, (k,)):
+                continue
+            if path.contains(QPointF(x, y)):
+                return x, y
+            for q in path.toSubpathPolygons():
+                a = np.array([[pt.x(), pt.y()] for pt in q], dtype=np.float64)
+                if len(a) < 3:
+                    continue
+                dd = np.hypot(a[:, 0] - x, a[:, 1] - y)
+                j = int(np.argmin(dd))
+                if best is None or dd[j] < best[0]:
+                    best = (float(dd[j]), float(a[j, 0]), float(a[j, 1]))
+        if best is not None and best[0] <= max(2.0, 1.2 * a_mm):
+            return best[1], best[2]
+        return x, y
+
+    def _region_labels(self, dsos, todo, fov):
+        """Names for the nebula regions drawn on the chart that no label names yet.
+        Returns dicts(x, y, label, common, must, n)."""
+        regions = [(k, p) for k, p in getattr(self, "_neb_regions", []) if not p.isEmpty()]
+        if not regions:
+            return []
+        P = self.p
+        # the smallest region worth a name grows with the field (no clutter on wide charts)
+        a_min = 5.0 * max(1.0, fov / 8.0)
+        polys = []                         # (kind, ring Nx2, area, path)
+        for kind, path in regions:
+            rings = []
+            for q in path.toSubpathPolygons():
+                a = np.array([[pt.x(), pt.y()] for pt in q], dtype=np.float64)
+                if len(a) < 3:
+                    continue
+                sa = 0.5 * float(np.sum(a[:-1, 0] * a[1:, 1] - a[1:, 0] * a[:-1, 1]))
+                rings.append((a, sa))
+            if not rings:
+                continue
+            big = max(rings, key=lambda t: abs(t[1]))[1]
+            for a, sa in rings:
+                if sa * big > 0 and abs(sa) >= a_min:            # outer rings only
+                    polys.append((kind, a, abs(sa), path))
+        if not polys:
+            return []
+        polys.sort(key=lambda t: -t[2])
+
+        def dist(a, x, y):
+            return float(np.min(np.hypot(a[:, 0] - x, a[:, 1] - y)))
+
+        def near(a, area, path, x, y):
+            if path.contains(QPointF(float(x), float(y))):
+                bx0, by0 = a.min(axis=0)
+                bx1, by1 = a.max(axis=0)
+                return bx0 - 0.5 <= x <= bx1 + 0.5 and by0 - 0.5 <= y <= by1 + 0.5
+            return dist(a, x, y) <= max(2.0, 0.3 * math.sqrt(area))
+
+        # objects already named on the chart
+        named = [(float(o["x"]), float(o["y"]), o["kind"]) for o in dsos
+                 if P.labels(self._CAT_LAYER.get(o["layer"], "ngc"))]
+        ra, dec, rows = self._neb_catalog()
+        if not rows:
+            return []
+        x, y, th = self.proj.project(ra, dec)
+        x0, y0, x1, y1 = self.frame
+        pad = 15.0
+        vis = np.nonzero((th < self.proj.tmax) & (x > x0 - pad) & (x < x1 + pad) &
+                         (y > y0 - pad) & (y < y1 + pad))[0]
+        out, used = [], set()
+        for n, (kind, a, area, path) in enumerate(polys[:40]):
+            fam = self._REGION_FAMILY.get(kind, (kind,))
+            if any(k in fam and near(a, area, path, ox, oy) for ox, oy, k in named):
+                continue
+            best = None
+            for i in vis:
+                r = rows[i]
+                if r[8] not in fam or id(r) in used:
+                    continue
+                if not near(a, area, path, x[i], y[i]):
+                    continue
+                maj = r[5] if r[5] == r[5] else 0.0
+                prio = self._REGION_PRIO.get(r[0], 9)
+                if r[0] == "DarkNeb" and str(r[1]).startswith("B "):
+                    prio = 5.5                      # Barnard names before Lynds numbers
+                key = (prio, -maj)
+                if best is None or key < best[0]:
+                    best = (key, i)
+            if best is None:
+                continue
+            i = best[1]
+            r = rows[i]
+            used.add(id(r))
+            px, py = float(x[i]), float(y[i])
+            if not (path.contains(QPointF(px, py)) and x0 <= px <= x1 and y0 <= py <= y1):
+                k = int(np.argmin(np.hypot(a[:, 0] - px, a[:, 1] - py)))
+                px, py = float(a[k, 0]), float(a[k, 1])
+            common = popular_name(r[0], str(r[1]), str(r[9] or ""))
+            named.append((px, py, r[8]))
+            out.append(dict(x=px, y=py, label=self._label_of(r), common=common,
+                            must=area >= 4.0 * a_min, n=n))
+        return out
+
     def _draw_labels(self, painter, stars, dsos, ts):
         P, C, d, L = self.p, self.C, self.d, self.p.layers
         pl = self.placer
@@ -3694,12 +4032,31 @@ class ChartRenderer:
             elif narrow and o["layer"] == "IC" and re.match(r"^I(C)?\s*\d", text):
                 text = "IC " + re.sub(r"^I(C)?\s*", "", text)
             alts = [text]
-            common = str(o.get("common") or "").split(",")[0].strip()
+            common = popular_name(o["layer"], str(o["label"]), str(o.get("common") or ""))
             if with_common and common and common.lower() not in text.lower() and \
                     o["layer"] in ("Messier", "NGC", "IC", "Other"):
                 alts = [f"{text}  {common}", text]
-            todo.append((pr, o["mag"] if o["mag"] == o["mag"] else 30.0, o["x"], o["y"], rad,
+            ax, ay = o["x"], o["y"]
+            if (o["outlined"] or o.get("mapped")) and o["kind"] in (K_NEB, K_CLNEB, K_RFN, K_DARK):
+                try:
+                    ax, ay = self._snap_anchor(float(ax), float(ay), o["kind"], float(o["a"]))
+                except Exception:
+                    pass
+            todo.append((pr, o["mag"] if o["mag"] == o["mag"] else 30.0, ax, ay, rad,
                          text, size, False, ("d", n), must, alts))
+        # every nebula drawn as a shape gets a name: from the objects on the chart, or
+        # from any catalog (Sharpless, RCW, LBN, LDN, dark nebulae... even when those
+        # layers are off)
+        try:
+            for o in self._region_labels(dsos, todo, fov):
+                text = o["label"]
+                alts = [text]
+                if with_common and o["common"]:
+                    alts = [f"{text}  {o['common']}", text]
+                todo.append((2, 30.0, o["x"], o["y"], 0.6, text, s_n, False, ("r", o["n"]),
+                             o["must"], alts))
+        except Exception as e:
+            self.log(f"Nebula region labels not placed: {e}")
         # stars
         chosen = set(P.star_names or [])
         if len(stars["x"]) and P.labels("stars"):
@@ -3829,10 +4186,12 @@ class ChartRenderer:
         y = top + 1.5 * ts + tsz
         TT.draw(painter, x0, y, title, tsz, col, bold=tb, italic=ti)
         lines = [
-            f"Center α {fmt_ra(P.ra)}  δ {fmt_dec(P.dec)}",
-            f"Field {self.fov_w:.4g}° × {self.fov_h:.4g}°, 1° = {self.mm_per_deg:.3g} mm",
-            f"{self.proj.kind} projection" + (", mirrored" if P.mirrored else ""),
-            f"Epoch J2000.0, stars to magnitude {self.star_mag:.1f}",
+            _tr("Center α {0}  δ {1}").format(fmt_ra(P.ra), fmt_dec(P.dec)),
+            _tr("Field {0:.4g}° × {1:.4g}°, 1° = {2:.3g} mm").format(
+                self.fov_w, self.fov_h, self.mm_per_deg),
+            (_tr("{0} projection, mirrored") if P.mirrored
+             else _tr("{0} projection")).format(self.proj.kind),
+            _tr("Epoch J2000.0, stars to magnitude {0:.1f}").format(self.star_mag),
         ]
         y += 0.6 * ts
         for ln in lines:
@@ -3855,15 +4214,15 @@ class ChartRenderer:
             painter.drawEllipse(QPointF(mx + k * step, cy), r, r)
             T.draw(painter, mx + k * step, cy + 3.0 * ts + s, str(m), s, col, align="c", bold=bb, italic=bi)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        T.draw(painter, mx + (len(mags) - 1) * step / 2.0, cy + 4.6 * ts + 2 * s, "Magnitudes", s, col,
+        T.draw(painter, mx + (len(mags) - 1) * step / 2.0, cy + 4.6 * ts + 2 * s, _tr("Magnitudes"), s, col,
                align="c", bold=bb, italic=bi)
         # --- symbol key: only what appears on the chart
         kinds = [K_GALAXY, K_GROUP, K_OC, K_GC, K_PN, K_NEB, K_RFN, K_CLNEB, K_DARK, K_ASSOC]
-        items = [("dso", k, KIND_NAMES[k]) for k in kinds if k in self.kinds_drawn]
+        items = [("dso", k, _kind_label(KIND_NAMES[k])) for k in kinds if k in self.kinds_drawn]
         if self.has_var:
-            items.append(("var", None, "Variable star"))
+            items.append(("var", None, _tr("Variable star")))
         if self.has_dbl:
-            items.append(("dbl", None, "Double star"))
+            items.append(("dbl", None, _tr("Double star")))
         if not items:
             items = []
         rows = 3
@@ -3899,8 +4258,8 @@ class ChartRenderer:
         # --- credits
         cs = max(1.5 * ts, 0.83 * s)
         yb = top + self.legend_h - 3.2 * ts
-        T.draw(painter, x1, yb - 2.6 * ts, "Seti Astro Suite Pro — sky chart", cs, col, align="r")
-        T.draw(painter, x1, yb, "Data: Gaia DR3, HYG 4.1, OpenNGC, d3-celestial", cs, col, align="r")
+        T.draw(painter, x1, yb - 2.6 * ts, _tr("Seti Astro Suite Pro — sky chart"), cs, col, align="r")
+        T.draw(painter, x1, yb, _tr("Data: Gaia DR3, HYG 4.1, OpenNGC, d3-celestial"), cs, col, align="r")
 
 
 # -----------------------------------------------------------------------------
@@ -4160,8 +4519,9 @@ WCS_OVERLAY_DEFAULTS = {k: (k in {m for g in WCS_OVERLAY_GROUPS.values() for m i
 WCS_OVERLAY_OPTION_DEFAULTS = {"dso_mag": 0.0, "text_scale": 1.6, "graphics_scale": 1.3}
 _WCS_OVERLAY_LEGACY = {"constellations": "wcs_chart/constellations", "dso": "wcs_chart/dso",
                        "stars": "wcs_chart/star_names"}
-_WCS_OVERLAY_GROUP_NAMES = {"constellations": "Constellations",
-                            "dso": "all deep-sky catalogs", "stars": "star labels"}
+_WCS_OVERLAY_GROUP_NAMES = {"constellations": QT_TRANSLATE_NOOP("SkychartEngine", "Constellations"),
+                            "dso": QT_TRANSLATE_NOOP("SkychartEngine", "all deep-sky catalogs"),
+                            "stars": QT_TRANSLATE_NOOP("SkychartEngine", "star labels")}
 
 
 def wcs_overlay_config(settings) -> dict:
@@ -4209,12 +4569,12 @@ def wcs_overlay_summary(cfg: dict) -> str:
     parts, done = [], set()
     for g, keys in WCS_OVERLAY_GROUPS.items():
         if all(lay.get(k) for k in keys):
-            parts.append(_WCS_OVERLAY_GROUP_NAMES[g])
+            parts.append(QCoreApplication.translate("SkychartEngine", _WCS_OVERLAY_GROUP_NAMES[g]))
             done.update(keys)
     for k in OVERLAY_LAYERS:
         if lay.get(k) and k not in done:
-            parts.append(names.get(k, k))
-    return ", ".join(parts) if parts else "None"
+            parts.append(QCoreApplication.translate("SkychartEngine", names.get(k, k)))
+    return ", ".join(parts) if parts else _tr("None")
 
 
 def paint_wcs_overlay(painter: QPainter, wcs, w_full: int, h_full: int, zoom: float,

@@ -63,18 +63,15 @@ if sys.platform.startswith("win"):
 # Set SASPRO_SKIP_PYTHON_PREFLIGHT=1 to silence it.
 if getattr(sys, "frozen", False) and not os.environ.get("SASPRO_SKIP_PYTHON_PREFLIGHT"):
     try:
-        from setiastro.saspro.runtime_torch import runtime_python_preflight
+        from setiastro.saspro.runtime_torch import (
+            python_download_url, runtime_python_preflight,
+        )
 
         _pyprob = runtime_python_preflight()
         if _pyprob:
             _need = _pyprob["required"]                       # e.g. "3.12"
             _have = _pyprob.get("detected") or []
-            # Pinned full versions for the direct python.org installer link.
-            _PY_FULL = {"3.12": "3.12.10", "3.13": "3.13.9", "3.14": "3.14.2"}
-            _full = _PY_FULL.get(_need)
-            _url = (f"https://www.python.org/ftp/python/{_full}/python-{_full}-amd64.exe"
-                    if _full and sys.platform.startswith("win")
-                    else "https://www.python.org/downloads/")
+            _url = python_download_url(_need)
 
             _have_txt = (", ".join(_have) if _have
                          else "none that SAS Pro could detect")
@@ -210,6 +207,11 @@ if sys.platform.startswith("linux"):
         os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
 
 from PyQt6.QtCore import QCoreApplication
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("GuiEntry", text)
+
 
 # Global variables for splash screen and app
 _splash = None
@@ -946,24 +948,24 @@ def _bootstrap_imports():
     import random
 
     _GRAVITAS_MESSAGES = [
-        "Preserving diffuse gravitas fields...",
-        "Initializing volumetric coherence engine...",
-        "Calibrating transitional density gradients...",
-        "Mapping low-frequency spatial continuity...",
-        "Harmonizing environmental structure tensors...",
-        "Synchronizing large-scale field topology...",
-        "Resolving photometric flux coherence vectors...",
-        "Warming up statistical homogenization suppressor...",
-        "Aligning nebular gravitas preservers...",
-        "Configuring spatially believable rendering pipeline...",
-        "Bootstrapping coherent emission field integrator...",
-        "Loading diffuse structure continuity module...",
-        "Preparing quantum-adjacent star alignment kernels...",
-        "Engaging probabilistic pixel gravity synthesizer...",
-        "Normalizing interstellar density transition buffers...",
-        "Convincing hot pixels they are not stars...", 
-        "Checking whether Pluto is a planet today...",
-        "Debating optimal sigma-clipping thresholds internally...",
+        QCoreApplication.translate("Splash", "Preserving diffuse gravitas fields..."),
+        QCoreApplication.translate("Splash", "Initializing volumetric coherence engine..."),
+        QCoreApplication.translate("Splash", "Calibrating transitional density gradients..."),
+        QCoreApplication.translate("Splash", "Mapping low-frequency spatial continuity..."),
+        QCoreApplication.translate("Splash", "Harmonizing environmental structure tensors..."),
+        QCoreApplication.translate("Splash", "Synchronizing large-scale field topology..."),
+        QCoreApplication.translate("Splash", "Resolving photometric flux coherence vectors..."),
+        QCoreApplication.translate("Splash", "Warming up statistical homogenization suppressor..."),
+        QCoreApplication.translate("Splash", "Aligning nebular gravitas preservers..."),
+        QCoreApplication.translate("Splash", "Configuring spatially believable rendering pipeline..."),
+        QCoreApplication.translate("Splash", "Bootstrapping coherent emission field integrator..."),
+        QCoreApplication.translate("Splash", "Loading diffuse structure continuity module..."),
+        QCoreApplication.translate("Splash", "Preparing quantum-adjacent star alignment kernels..."),
+        QCoreApplication.translate("Splash", "Engaging probabilistic pixel gravity synthesizer..."),
+        QCoreApplication.translate("Splash", "Normalizing interstellar density transition buffers..."),
+        QCoreApplication.translate("Splash", "Convincing hot pixels they are not stars..."), 
+        QCoreApplication.translate("Splash", "Checking whether Pluto is a planet today..."),
+        QCoreApplication.translate("Splash", "Debating optimal sigma-clipping thresholds internally..."),
     ]
     random.shuffle(_GRAVITAS_MESSAGES)
     _grav_idx = [0]
@@ -982,7 +984,7 @@ def _bootstrap_imports():
         except Exception:
             pass
     _update_splash_gravitas(5)
-    _update_splash_technical("Loading PyTorch runtime...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Loading PyTorch runtime..."))
  
     from setiastro.saspro.runtime_torch import (
         add_runtime_to_sys_path,
@@ -1208,7 +1210,7 @@ def _bootstrap_imports():
         )
 
     _update_splash_gravitas(7)
-    _update_splash_technical("Preparing AI runtime cache...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Preparing AI runtime cache..."))
     try:
         from setiastro.saspro.runtime_torch import prewarm_torch_cache
         prewarm_torch_cache(
@@ -1222,7 +1224,7 @@ def _bootstrap_imports():
         pass
  
     _update_splash_gravitas(10)
-    _update_splash_technical("Loading standard libraries...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Loading standard libraries..."))
  
     import importlib
     import json
@@ -1249,10 +1251,10 @@ def _bootstrap_imports():
     from urllib.parse import quote, quote_plus
  
     _update_splash_gravitas(15)
-    _update_splash_technical("Loading NumPy...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Loading NumPy..."))
  
     _update_splash_gravitas(25)
-    _update_splash_technical("Configuring matplotlib...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Configuring matplotlib..."))
     from setiastro.saspro.config_bootstrap import ensure_mpl_config_dir
     _MPL_CFG_DIR = ensure_mpl_config_dir()
  
@@ -1371,7 +1373,7 @@ def _bootstrap_imports():
         return _lightkurve_module if _lightkurve_module else None
  
     _update_splash_gravitas(30)
-    _update_splash_technical("Loading UI utilities...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Loading UI utilities..."))
  
     from setiastro.saspro.widgets.common_utilities import (
         AboutDialog,
@@ -1382,7 +1384,7 @@ def _bootstrap_imports():
     )
  
     _update_splash_gravitas(45)
-    _update_splash_technical("Loading PyQt6 components...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Loading PyQt6 components..."))
  
     from PyQt6 import sip
  
@@ -1404,14 +1406,14 @@ def _bootstrap_imports():
         BUILD_TIMESTAMP = "dev"
  
     _update_splash_gravitas(50)
-    _update_splash_technical("Loading resources...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Loading resources..."))
  
     from setiastro.saspro.resources import (
         icon_path, windowslogo_path,
     )
  
     _update_splash_gravitas(55)
-    _update_splash_technical("Configuring Qt message handler...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Configuring Qt message handler..."))
  
     from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
  
@@ -1428,7 +1430,7 @@ def _bootstrap_imports():
     qInstallMessageHandler(_qt_msg_handler)
  
     _update_splash_gravitas(60)
-    _update_splash_technical("Loading MDI widgets...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Loading MDI widgets..."))
  
     from setiastro.saspro.mdi_widgets import (
         MdiArea, ViewLinkController, ConsoleListWidget, QtLogStream, _DocProxy,
@@ -1454,7 +1456,7 @@ def _bootstrap_imports():
     )
  
     _update_splash_gravitas(65)
-    _update_splash_technical("Loading main window module...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Loading main window module..."))
  
     # Wrap the main_window import to catch sys.exit() / ImportError from any
     # remaining bare `import torch` that slipped through the stub net.
@@ -1480,7 +1482,7 @@ def _bootstrap_imports():
         raise
  
     _update_splash_gravitas(70)
-    _update_splash_technical("Modules loaded, finalizing...")
+    _update_splash_technical(QCoreApplication.translate("Splash", "Modules loaded, finalizing..."))
  
     globals().update({
         "logging": logging,
@@ -1551,13 +1553,16 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
     except RuntimeError:
         pass
 
-    # --firstrun: a throwaway settings store, so this launch looks like a new
-    # install (settings_sandbox.py). Before the splash, which reads settings.
+    # --firstrun / --upgraderun: a throwaway settings store, so this launch looks
+    # like a new install, or like the first start after an upgrade
+    # (settings_sandbox.py). Before the splash, which reads settings.
     # Idempotent when __main__.entry() already did it.
     try:
-        from setiastro.saspro.settings_sandbox import wants_firstrun, enter_firstrun_sandbox
-        if wants_firstrun(argv if argv is not None else sys.argv[1:]):
-            enter_firstrun_sandbox()
+        from setiastro.saspro.settings_sandbox import wants_sandbox, enter_sandbox, without_language_word
+        _sandbox_argv = argv if argv is not None else sys.argv[1:]
+        if wants_sandbox(_sandbox_argv):
+            enter_sandbox(_sandbox_argv)
+            argv = without_language_word(_sandbox_argv)    # "--firstrun spanish" is not a file
     except Exception:
         import traceback as _tb
         print("[firstrun] could not set up the settings sandbox:")
@@ -1803,13 +1808,32 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
                 except Exception:
                     logging.exception("[single-instance] handoff handler crashed")
 
+            def _on_script(payload: dict, sock):
+                # setiastrosuitepro --run-script SCRIPT.py (script_bridge.py)
+                try:
+                    logging.info("[single-instance] --run-script %s from pid=%s",
+                                 payload.get("path"), payload.get("pid"))
+                    from setiastro.saspro.script_bridge_host import run_from_command
+                    run_from_command(win, payload, sock)
+                except Exception:
+                    logging.exception("[single-instance] --run-script handler crashed")
+                    try:
+                        import json as _json
+                        for msg in ({"err": "SASpro could not run the script. "
+                                            "Its log has the details.\n"}, {"exit": 1}):
+                            sock.write((_json.dumps(msg) + "\n").encode("utf-8"))
+                        sock.disconnectFromServer()
+                    except Exception:
+                        pass
+
             # Hang the server off the main window so GC doesn't eat it.
             # Not for a --firstrun sandbox: a file double-clicked while one is
             # open belongs in the real session, not in a throwaway one.
             from setiastro.saspro.settings_sandbox import active as _sandbox_active
             if not _sandbox_active():
                 win._single_instance_server = install_primary_listener(
-                    _app, _on_handoff, status_cb=lambda m: logging.info(m)
+                    _app, _on_handoff, status_cb=lambda m: logging.info(m),
+                    on_script=_on_script,
                 )
         except Exception:
             logging.exception("[single-instance] failed to install primary listener (continuing)")
@@ -1841,8 +1865,8 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
             try:
                 win.raise_()
                 win.activateWindow()
-                from setiastro.saspro.first_run_dialog import _is_first_run
-                if win.settings.value("updates/check_on_startup", True, type=bool) and not _is_first_run():
+                from setiastro.saspro.first_run_dialog import welcome_due
+                if win.settings.value("updates/check_on_startup", True, type=bool) and not welcome_due(win):
                     QTimer.singleShot(1000, win.check_for_updates_startup)
             except Exception:
                 pass
@@ -1888,13 +1912,13 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
                 from PyQt6.QtWidgets import QMessageBox as _QMB, QApplication as _QApp
                 _box = _QMB(win)
                 _box.setIcon(_QMB.Icon.Warning)
-                _box.setWindowTitle("Python environment problem")
-                _box.setText(
+                _box.setWindowTitle(_tr("Python environment problem"))
+                _box.setText(_tr(
                     "SASpro detected an inconsistent scientific-library setup.\n\n"
                     "It will still run. If the multi-core workers can't start, "
-                    "SASpro falls back to single-process (slower) until this is fixed.")
+                    "SASpro falls back to single-process (slower) until this is fixed."))
                 _box.setInformativeText(_msg)
-                _copy = _box.addButton("Copy fix command", _QMB.ButtonRole.ActionRole)
+                _copy = _box.addButton(_tr("Copy fix command"), _QMB.ButtonRole.ActionRole)
                 _box.addButton(_QMB.StandardButton.Ok)
                 _box.setDefaultButton(_QMB.StandardButton.Ok)
                 _box.exec()
@@ -2003,7 +2027,7 @@ def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
         msg.setIcon(QMessageBox.Icon.Critical)
         msg.setWindowTitle(QCoreApplication.translate("Main", "Application Error"))
         msg.setText(QCoreApplication.translate("Main", "An unexpected error occurred."))
-        msg.setInformativeText(tb.splitlines()[-1] if tb else "See details.")
+        msg.setInformativeText(tb.splitlines()[-1] if tb else _tr("See details."))
         msg.setDetailedText(tb)
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()

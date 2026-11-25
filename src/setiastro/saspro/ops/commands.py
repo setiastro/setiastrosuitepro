@@ -203,6 +203,10 @@ ALIASES: Dict[str, str] = {
     "plate_solve": "plate_solve",
     "plate solve": "plate_solve",
     "platesolve": "plate_solve",
+
+    "banding": "banding_blaster",
+    "banding blaster": "banding_blaster",
+    "banding_reduction": "banding_blaster",
 }
 
 
@@ -1206,20 +1210,55 @@ register(CommandSpec(
             type="float",
             default=50.0,
             min=1.0,
-            max=100.0,
+            max=200.0,
             optional=True,
             desc=(
-                "SEP star threshold (sigma) for star mode. "
+                "Star mode: SEP detection threshold (sigma). "
+                "Used only when auto_sigma is False. "
                 "Higher = fewer/brighter stars."
             ),
         ),
         PresetSpec(
-            key="reuse_cached_sources",
+            key="auto_sigma",
             type="bool",
             default=True,
             optional=True,
             desc=(
-                "Reuse cached SEP detections for speed (star mode)."
+                "Star mode: pick the threshold automatically, as the dialog's "
+                "Auto sigma (waterfall) does: tries sigma 200, 100, 50, 25, 12, 8, 5, 3 "
+                "and keeps the first that finds auto_sigma_min_stars stars. "
+                "Set False to use 'threshold'."
+            ),
+        ),
+        PresetSpec(
+            key="auto_sigma_min_stars",
+            type="int",
+            default=1200,
+            min=1,
+            optional=True,
+            desc="Star mode with auto_sigma: how many stars the waterfall stops at.",
+        ),
+        PresetSpec(
+            key="use_color_matrix",
+            type="bool",
+            default=False,
+            optional=True,
+            desc=(
+                "Star mode: Advanced Color Matrix WB, a 3x3 matrix solved from the "
+                "stars that rotates their colors onto the blackbody locus. "
+                "For broadband RGB; not for narrowband or duoband data."
+            ),
+        ),
+        PresetSpec(
+            key="matrix_strength",
+            type="float",
+            default=0.70,
+            min=0.0,
+            max=1.0,
+            optional=True,
+            desc=(
+                "Star mode with use_color_matrix: rotation strength, "
+                "0 = no rotation, 1 = full."
             ),
         ),
         PresetSpec(
@@ -1251,7 +1290,9 @@ register(CommandSpec(
         ),
     ],
     examples=[
-        "ctx.run_command('white_balance', {'mode': 'star', 'threshold': 45})",
+        "ctx.run_command('white_balance', {'mode': 'star'})",
+        "ctx.run_command('white_balance', {'mode': 'star', 'auto_sigma': False, 'threshold': 45})",
+        "ctx.run_command('white_balance', {'mode': 'star', 'use_color_matrix': True, 'matrix_strength': 0.7})",
         "ctx.run_command('white_balance', {'mode': 'auto'})",
         "ctx.run_command('white_balance', {'mode': 'manual', 'r_gain': 1.12, 'g_gain': 1.0, 'b_gain': 0.94})",
     ],
@@ -2019,6 +2060,53 @@ register(CommandSpec(
         "ctx.run_command('nbextract', {'preset': 'Ha / OIII', 'allow_fallback': True})",
     ],
     supports_mono=False,
+    supports_rgb=True,
+    supports_linear=True,
+    supports_nonlinear=True,
+))
+
+
+# ---------------- Repair ----------------
+
+register(CommandSpec(
+    id="banding_blaster",
+    name="Banding Blaster",
+    group="Repair",
+    import_path="setiastro.saspro.banding_blaster",
+    callable_name="apply_banding_blaster_preset_to_doc",
+    ui_method="_open_banding_blaster",
+    summary=(
+        "Reduces row (horizontal) or column (vertical) banding across the whole "
+        "image: each row is shifted so its median sits at the channel's global "
+        "median. Port of CanonBandingReduction by Georg Viehoever. Blends with "
+        "the active destination mask."
+    ),
+    presets=[
+        PresetSpec(
+            key="direction", type="enum", default="horizontal",
+            enum=["horizontal", "vertical"],
+            desc="horizontal = row banding (Canon DSLRs), vertical = column banding.",
+        ),
+        PresetSpec(
+            key="amount", type="float", default=1.0, min=0.0, max=4.0,
+            desc="Strength. 1.0 brings each row's median to the global median.",
+        ),
+        PresetSpec(
+            key="protect_highlights", type="bool", default=True,
+            desc="Leave bright pixels (stars, cores) out of the row medians.",
+        ),
+        PresetSpec(
+            key="sigma", type="float", default=1.0, min=0.01, max=5.0,
+            desc="With protect_highlights: pixels above median + sigma x robust "
+                 "sigma are left out. Lower = more rejected.",
+        ),
+    ],
+    aliases=["banding", "banding_reduction"],
+    examples=[
+        "ctx.run_command('banding_blaster', {'direction': 'horizontal'})",
+        "ctx.run_command('banding_blaster', {'direction': 'vertical', 'amount': 0.8, 'sigma': 0.5})",
+    ],
+    supports_mono=True,
     supports_rgb=True,
     supports_linear=True,
     supports_nonlinear=True,

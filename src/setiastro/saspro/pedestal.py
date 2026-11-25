@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import numpy as np
 
-from PyQt6.QtCore import Qt, QEvent, QPointF, QSettings, QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QEvent, QPointF, QSettings, QTimer, QThread, pyqtSignal, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDoubleSpinBox,
     QCheckBox, QPushButton, QScrollArea, QMessageBox, QWidget, QFrame
@@ -22,6 +22,10 @@ try:
 except Exception:
     pedestal_icon_path = None
 
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("Pedestal", text)
+
 # Target median for the preview-only auto display stretch (linear data).
 _DISPLAY_TARGET_MEDIAN = 0.25
 
@@ -37,9 +41,9 @@ _DISPLAY_TARGET_MEDIAN = 0.25
 #                   an image has a hard zero floor but real signal begins at a
 #                   small offset
 MODE_LABELS = {
-    "min":           "Image minimum",
-    "percentile":    "Low percentile (P{pct})",
-    "first_nonzero": "First non-zero value",
+    "min":           QT_TRANSLATE_NOOP("Pedestal", "Image minimum"),
+    "percentile":    QT_TRANSLATE_NOOP("Pedestal", "Low percentile (P{pct})"),
+    "first_nonzero": QT_TRANSLATE_NOOP("Pedestal", "First non-zero value"),
 }
 _MODE_ORDER = ["min", "percentile", "first_nonzero"]
 
@@ -300,12 +304,12 @@ class RemovePedestalDialog(QDialog):
         # Left column (controls)
         left = QVBoxLayout()
         info = QLabel(
-            "Subtract a pedestal (a constant offset) from the image.\n\n"
+            self.tr("Subtract a pedestal (a constant offset) from the image.\n\n"
             "• Image minimum — classic; removes the darkest value per channel.\n"
             "• Low percentile — ignores a few grossly-low cold pixels that would\n"
             "  otherwise peg the floor and make min-subtract do nothing.\n"
             "• First non-zero value — subtracts the smallest value above zero,\n"
-            "  for data sitting on a hard zero floor with a small real offset."
+            "  for data sitting on a hard zero floor with a small real offset.")
         )
         info.setWordWrap(True)
         left.addWidget(info)
@@ -328,9 +332,9 @@ class RemovePedestalDialog(QDialog):
         self.spin_pct.setValue(0.1)                 # P0.1 default
         self.spin_pct.setSuffix(" %")
         self.spin_pct.setToolTip(
-            "Percentile of pixel values to subtract.\n"
+            self.tr("Percentile of pixel values to subtract.\n"
             "0.1 % is a good starting point — it steps past a handful of\n"
-            "cold/hot outliers without eating real signal.")
+            "cold/hot outliers without eating real signal."))
         self.spin_pct.valueChanged.connect(lambda *_: self._schedule_preview())
         left.addWidget(self.lbl_pct)
         left.addWidget(self.spin_pct)
@@ -339,8 +343,8 @@ class RemovePedestalDialog(QDialog):
         self.chk_per_channel = QCheckBox(self.tr("Per-channel (RGB)"))
         self.chk_per_channel.setChecked(True)
         self.chk_per_channel.setToolTip(
-            "On: compute a separate pedestal for R, G and B (also removes a\n"
-            "background color cast).\nOff: one pedestal across all channels.")
+            self.tr("On: compute a separate pedestal for R, G and B (also removes a\n"
+            "background color cast).\nOff: one pedestal across all channels."))
         self.chk_per_channel.toggled.connect(lambda *_: self._schedule_preview())
         left.addWidget(self.chk_per_channel)
 
@@ -348,9 +352,9 @@ class RemovePedestalDialog(QDialog):
         self.chk_autostretch = QCheckBox(self.tr("Auto display stretch (preview only)"))
         self.chk_autostretch.setChecked(True)
         self.chk_autostretch.setToolTip(
-            "Linear data looks nearly black. This applies a temporary screen\n"
+            self.tr("Linear data looks nearly black. This applies a temporary screen\n"
             "stretch to the PREVIEW only so you can see what the pedestal is\n"
-            "doing — it does not change the data that gets applied.")
+            "doing — it does not change the data that gets applied."))
         self.chk_autostretch.toggled.connect(self._on_autostretch_toggled)
         left.addWidget(self.chk_autostretch)
 
@@ -428,7 +432,7 @@ class RemovePedestalDialog(QDialog):
 
     # --- mode label helper -------------------------------------------------
     def _mode_label(self, mode: str) -> str:
-        lbl = MODE_LABELS.get(mode, mode)
+        lbl = _tr(MODE_LABELS[mode]) if mode in MODE_LABELS else mode
         if "{pct}" in lbl:
             lbl = lbl.replace("{pct}", f"{self.spin_pct.value():g}" if hasattr(self, "spin_pct") else "0.1")
         return lbl
@@ -490,7 +494,7 @@ class RemovePedestalDialog(QDialog):
         if res.get("doc") is not self.doc:
             return                       # the active document changed meanwhile
         if "error" in res:
-            self.lbl_vals.setText(f"Subtracting: (error: {res['error']})")
+            self.lbl_vals.setText(self.tr("Subtracting: (error: {0})").format(res['error']))
             return
         self._preview = res["out"]
         self._preview_params = res["params"]
@@ -526,7 +530,7 @@ class RemovePedestalDialog(QDialog):
                 per_channel=self.chk_per_channel.isChecked(),
             )
         except Exception as e:
-            self.lbl_vals.setText(f"Subtracting: (error: {e})")
+            self.lbl_vals.setText(self.tr("Subtracting: (error: {0})").format(e))
             return
 
         total = int(src.shape[0] * src.shape[1]) if src.ndim >= 2 else int(src.size)
@@ -541,16 +545,16 @@ class RemovePedestalDialog(QDialog):
     def _update_readout(self, vals: list[float], clipped: list[int] | None = None,
                         total: int = 0):
         if not vals:
-            self.lbl_vals.setText("Subtracting: —")
+            self.lbl_vals.setText(self.tr("Subtracting: —"))
             return
         clipped = clipped or []
-        names = (["R", "G", "B", "A"][:len(vals)]) if len(vals) > 1 else ["Value"]
+        names = (["R", "G", "B", "A"][:len(vals)]) if len(vals) > 1 else [self.tr("Value")]
         lines = []
         for i, (n, v) in enumerate(zip(names, vals)):
             cnt = clipped[i] if i < len(clipped) else 0
             pct = (100.0 * cnt / total) if total else 0.0
-            lines.append(f"{n}: {v:.6f}   →  clipped {cnt:,} px ({pct:.3f}%)")
-        self.lbl_vals.setText("Subtracting / pixels clamped to black:\n" + "\n".join(lines))
+            lines.append(self.tr("{0}: {1:.6f}   →  clipped {2:,} px ({3:.3f}%)").format(n, v, cnt, pct))
+        self.lbl_vals.setText(self.tr("Subtracting / pixels clamped to black:\n{0}").format("\n".join(lines)))
 
     def _apply_to_doc(self):
         if not self._headless and self.isVisible():
@@ -565,7 +569,7 @@ class RemovePedestalDialog(QDialog):
                 or self._preview_doc is not self.doc):
             self._recompute_preview()
         if self._preview is None:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             return
         self._finish_apply()
 
@@ -662,7 +666,7 @@ class RemovePedestalDialog(QDialog):
                 pass
 
         except Exception as e:
-            QMessageBox.critical(self, "Apply failed", str(e))
+            QMessageBox.critical(self, self.tr("Apply failed"), str(e))
             return
 
         if not self._headless and self.isVisible():
@@ -1002,6 +1006,6 @@ def remove_pedestal(main, target_doc=None, preset: dict | None = None):
     except Exception as e:
         try:
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.critical(main, "Pedestal Removal", f"Failed:\n{e}")
+            QMessageBox.critical(main, _tr("Pedestal Removal"), _tr("Failed:\n{0}").format(e))
         except Exception:
             pass

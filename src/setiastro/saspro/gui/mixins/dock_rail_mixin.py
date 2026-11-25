@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import QToolBar, QDockWidget, QApplication, QToolButton
 
 # Fallback glyph size if the toolbar icon-size setting can't be read. The live
 # size follows QSettings "toolbar/icon_size" via _rail_icon_size().
-_RAIL_ICON_PX = 24
+_RAIL_ICON_PX = 20
 
 # edge -> Qt toolbar area (where the rail itself lives)
 _RAIL_AREAS = {
@@ -92,8 +92,11 @@ _PANEL_ICON_FILES: dict[str, str] = {
     "StatusLogDock":       "stackingpanel",   # "Stacking Log"
     "WindowShelfDock":     "minimizedpanel",  # "Minimized Views"
     "MinimapDock":         "minimappanel",
-    # System Log and Command Search have no stable objectName here; matched by
-    # title below.
+    # Titles are translated, so the title keywords below only match in
+    # English; these two are matched by objectName too.
+    "SystemLogDock":       "systempanel",     # "System Log"
+    "CommandSearchDock":   "searchpanel",     # "Command Search"
+    # Other docks without a stable objectName are matched by title below.
 }
 
 # Fallback for docks whose objectName we can't rely on: first title substring
@@ -324,9 +327,9 @@ class DockRailMixin:
             if s is None:
                 from PyQt6.QtCore import QSettings
                 s = QSettings()
-            n = int(s.value("toolbar/icon_size", 24, type=int))
+            n = int(s.value("toolbar/icon_size", 20, type=int))
         except Exception:
-            n = 24
+            n = 20
         return max(16, min(64, n))
 
     def _apply_rail_icon_size(self):

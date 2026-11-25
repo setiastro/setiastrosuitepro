@@ -14,6 +14,45 @@ from setiastro.saspro.model_manager import (
     sha256_file,
 )
 
+# Where the models come from. FILE links or file IDs, not folder links.
+# Order: Google Drive, backup, GitHub mirror.
+MODEL_SOURCES = {
+    "main": (
+        "https://drive.google.com/file/d/1d0wQr8Oau9UH3IalMW5anC0_oddxBjh3/view?usp=drive_link",
+        "https://drive.google.com/file/d/1XgqKNd8iBgV3LW8CfzGyS4jigxsxIf86/view?usp=drive_link",
+        "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4.zip",
+    ),
+    "walking": (
+        "https://drive.google.com/file/d/1yAn5gc6KVmkADvhKn-QKNNuDXSgAz1pY/view?usp=sharing",
+        "https://drive.google.com/file/d/1IEB9xosEA0JPGc-L5gDfueJoFYYXN_67/view?usp=sharing",
+        "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_Walking.zip",
+    ),
+    "correct": (
+        "https://drive.google.com/file/d/11Qb6C46OlJG7rmKM-zOPCkzN4xbRsvIc/view?usp=sharing",
+        "https://drive.google.com/file/d/1XgqKNd8iBgV3LW8CfzGyS4jigxsxIf86/view?usp=sharing",
+        "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_Correct.zip",
+    ),
+    "correct_v2": (
+        "https://drive.google.com/file/d/1HJYiYoH3r5EbFMgE6v1mRkz1_LnXuHOR/view?usp=sharing",
+        "https://drive.google.com/file/d/1kquTombkmjxLPycbyYhDtap4U4IUt7Pl/view?usp=sharing",
+        "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/SASPro_Models_AI4_CorrectV2.zip",
+    ),
+}
+
+
+def make_models_download_worker(should_cancel=None) -> "ModelsDownloadWorker":
+    """The full model download (Preferences and the setup window)."""
+    m, w, c, c2 = (MODEL_SOURCES[k] for k in ("main", "walking", "correct", "correct_v2"))
+    return ModelsDownloadWorker(
+        *m,
+        expected_sha256=None,
+        should_cancel=should_cancel,
+        walking_zip_url=w[0], walking_zip_backup=w[1], walking_zip_tertiary=w[2],
+        correct_zip_url=c[0], correct_zip_backup=c[1], correct_zip_tertiary=c[2],
+        correct_v2_zip_url=c2[0], correct_v2_zip_backup=c2[1], correct_v2_zip_tertiary=c2[2],
+    )
+
+
 class ModelsInstallZipWorker(QObject):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str)

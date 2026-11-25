@@ -129,12 +129,28 @@ def _resolve():
     # so the plain import succeeds and no bootstrap runs. runtime_torch is
     # still asked for the DEVICE, which is where its CUDA / ROCm / XPU /
     # DirectML / MPS preference order lives, so nothing is lost.
+    #
+    # WHICH torch a plain import finds is another matter: a worker of a source
+    # run has the app's environment ahead of the runtime venv, and a CPU wheel
+    # there would win. prefer_runtime_torch() only says where to look.
+    staged = in_worker = False
+    try:
+        from setiastro.saspro.runtime_torch import in_spawned_worker, prefer_runtime_torch
+        staged, in_worker = prefer_runtime_torch(), in_spawned_worker()
+    except Exception:
+        pass
     try:
         import torch as _t
         torch = _t
-        _RESOLVE_NOTE = "plain torch"
-    except Exception:
+        _RESOLVE_NOTE = "runtime torch" if staged else "plain torch"
+    except Exception as e:
         torch = None
+        if staged and in_worker:
+            # The runtime's torch is there and will not load. The bootstrap
+            # would only try the same one again, in every worker at once.
+            _TORCH, _DEVICE = None, None
+            _RESOLVE_NOTE = f"the runtime's torch does not load ({type(e).__name__})"
+            return _TORCH, _DEVICE
 
     if torch is None:
         try:
@@ -341,8 +357,10 @@ def detect_stars_full(
     except Exception:
         return None
 
-    a = np.asarray(image2d)
-    if a.ndim != 2 or a.size == 0:
+    # A tensor already on the card is used where it is (never modified).
+    on_device = torch.is_tensor(image2d)
+    a = image2d if on_device else np.asarray(image2d)
+    if a.ndim != 2 or (a.numel() if on_device else a.size) == 0:
         return None
     H, W = int(a.shape[0]), int(a.shape[1])
     if H < 16 or W < 16:
@@ -354,9 +372,12 @@ def detect_stars_full(
 
     try:
         with _inference_ctx(torch):
-            xt = torch.from_numpy(
-                np.ascontiguousarray(a, dtype=np.float32)
-            ).to(dev, dtype=torch.float32, non_blocking=True).reshape(1, 1, H, W)
+            if on_device:
+                xt = a.detach().to(dev, dtype=torch.float32).reshape(1, 1, H, W)
+            else:
+                xt = torch.from_numpy(
+                    np.ascontiguousarray(a, dtype=np.float32)
+                ).to(dev, dtype=torch.float32, non_blocking=True).reshape(1, 1, H, W)
 
             # ── validity: finite pixels, minus any caller mask ───────────────
             valid = torch.isfinite(xt)

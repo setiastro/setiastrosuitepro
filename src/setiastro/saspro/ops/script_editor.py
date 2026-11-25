@@ -7,7 +7,7 @@ from pathlib import Path
 
 from setiastro.saspro.ops.scripts import get_scripts_dir  # your existing helper
 
-from PyQt6.QtCore import Qt, QRect, QSize, QRegularExpression
+from PyQt6.QtCore import Qt, QRect, QSize, QRegularExpression, QCoreApplication
 from PyQt6.QtGui import QFont, QAction, QColor, QPainter, QTextCursor, QTextDocument, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QPlainTextEdit, QPushButton,
@@ -138,8 +138,8 @@ class CodeEditor(QPlainTextEdit):
         menu = self.createStandardContextMenu()
 
         menu.addSeparator()
-        act_find = menu.addAction("Find…")
-        act_replace = menu.addAction("Replace…")
+        act_find = menu.addAction(self.tr("Find…"))
+        act_replace = menu.addAction(self.tr("Replace…"))
 
         act_find.triggered.connect(lambda: self.open_find_bar(replace=False))
         act_replace.triggered.connect(lambda: self.open_find_bar(replace=True))
@@ -318,29 +318,29 @@ class FindReplaceBar(QWidget):
         lay.setSpacing(6)
 
         self.find_edit = QLineEdit()
-        self.find_edit.setPlaceholderText("Find…")
+        self.find_edit.setPlaceholderText(self.tr("Find…"))
 
         self.replace_edit = QLineEdit()
-        self.replace_edit.setPlaceholderText("Replace with…")
+        self.replace_edit.setPlaceholderText(self.tr("Replace with…"))
         self.replace_edit.setVisible(False)
 
-        self.chk_case = QCheckBox("Case")
-        self.chk_word = QCheckBox("Word")
-        self.chk_wrap = QCheckBox("Wrap")
+        self.chk_case = QCheckBox(self.tr("Case"))
+        self.chk_word = QCheckBox(self.tr("Word"))
+        self.chk_wrap = QCheckBox(self.tr("Wrap"))
         self.chk_wrap.setChecked(True)
 
-        self.btn_prev = QToolButton(); self.btn_prev.setText("Prev")
-        self.btn_next = QToolButton(); self.btn_next.setText("Next")
-        self.btn_replace = QToolButton(); self.btn_replace.setText("Replace")
-        self.btn_replace_all = QToolButton(); self.btn_replace_all.setText("All")
+        self.btn_prev = QToolButton(); self.btn_prev.setText(self.tr("Prev"))
+        self.btn_next = QToolButton(); self.btn_next.setText(self.tr("Next"))
+        self.btn_replace = QToolButton(); self.btn_replace.setText(self.tr("Replace"))
+        self.btn_replace_all = QToolButton(); self.btn_replace_all.setText(self.tr("All"))
         self.btn_close = QToolButton(); self.btn_close.setText("✕")
 
         self.btn_replace.setVisible(False)
         self.btn_replace_all.setVisible(False)
 
-        lay.addWidget(QLabel("Find:"))
+        lay.addWidget(QLabel(self.tr("Find:")))
         lay.addWidget(self.find_edit, 2)
-        lay.addWidget(QLabel("Replace:"))
+        lay.addWidget(QLabel(self.tr("Replace:")))
         lay.addWidget(self.replace_edit, 2)
         lay.addWidget(self.chk_case)
         lay.addWidget(self.chk_word)
@@ -644,7 +644,7 @@ class PythonHighlighter(QSyntaxHighlighter):
 
 class ScriptEditorDock(QDockWidget):
     def __init__(self, app_window, parent=None):
-        super().__init__("Script Editor", parent or app_window)
+        super().__init__(QCoreApplication.translate("ScriptEditorDock", "Script Editor"), parent or app_window)
         self.setObjectName("ScriptEditorDock") 
         self.app = app_window
         self.scripts_dir = get_scripts_dir()
@@ -664,14 +664,14 @@ class ScriptEditorDock(QDockWidget):
 
         # Row 1: file label + file ops
         row1 = QHBoxLayout()
-        self.lbl_file = QLabel("No script loaded")
+        self.lbl_file = QLabel(self.tr("No script loaded"))
         row1.addWidget(self.lbl_file, 0)
         row1.addSpacing(12)
 
-        self.btn_new = QPushButton("New")
-        self.btn_save = QPushButton("Save")
-        self.btn_save_as = QPushButton("Save As…")
-        self.btn_delete = QPushButton("🗑 Delete")  # if you added it already
+        self.btn_new = QPushButton(self.tr("New"))
+        self.btn_save = QPushButton(self.tr("Save"))
+        self.btn_save_as = QPushButton(self.tr("Save As…"))
+        self.btn_delete = QPushButton(self.tr("🗑 Delete"))  # if you added it already
 
         row1.addWidget(self.btn_new)
         row1.addWidget(self.btn_save)
@@ -682,14 +682,14 @@ class ScriptEditorDock(QDockWidget):
         # Row 2: edit + run + help ops
         row2 = QHBoxLayout()
 
-        self.btn_find = QPushButton("🔍 Find")
-        self.btn_replace = QPushButton("🧩 Replace")
+        self.btn_find = QPushButton(self.tr("🔍 Find"))
+        self.btn_replace = QPushButton(self.tr("🧩 Replace"))
 
-        self.btn_run = QPushButton("🟢▶ Run")
-        self.btn_run_base = QPushButton("▶ Run on Base")
+        self.btn_run = QPushButton(self.tr("🟢▶ Run"))
+        self.btn_run_base = QPushButton(self.tr("▶ Run on Base"))
 
-        self.btn_reload = QPushButton("Reload Scripts")
-        self.btn_cmd_help = QPushButton("❓ Command Help")
+        self.btn_reload = QPushButton(self.tr("Reload Scripts"))
+        self.btn_cmd_help = QPushButton(self.tr("❓ Command Help"))
 
         row2.addWidget(self.btn_find)
         row2.addWidget(self.btn_replace)
@@ -714,7 +714,7 @@ class ScriptEditorDock(QDockWidget):
         left = QWidget()
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(0,0,0,0)
-        left_lay.addWidget(QLabel("Scripts"))
+        left_lay.addWidget(QLabel(self.tr("Scripts")))
 
         self.list_scripts = QListWidget()
         left_lay.addWidget(self.list_scripts, 1)
@@ -752,7 +752,7 @@ class ScriptEditorDock(QDockWidget):
         out_wrap = QWidget()
         out_lay = QVBoxLayout(out_wrap)
         out_lay.setContentsMargins(0,0,0,0)
-        out_lay.addWidget(QLabel("Output / Traceback"))
+        out_lay.addWidget(QLabel(self.tr("Output / Traceback")))
 
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
@@ -760,8 +760,8 @@ class ScriptEditorDock(QDockWidget):
         out_lay.addWidget(self.output, 1)
 
         row2 = QHBoxLayout()
-        self.btn_copy = QPushButton("Copy All")
-        self.btn_clear = QPushButton("Clear")
+        self.btn_copy = QPushButton(self.tr("Copy All"))
+        self.btn_clear = QPushButton(self.tr("Clear"))
         row2.addStretch(1)
         row2.addWidget(self.btn_copy)
         row2.addWidget(self.btn_clear)
@@ -791,22 +791,22 @@ class ScriptEditorDock(QDockWidget):
         )
         self.editor.textChanged.connect(self._mark_dirty)
         # --- Find / Replace shortcuts ---
-        self.act_find = QAction("Find", self)
+        self.act_find = QAction(self.tr("Find"), self)
         self.act_find.setShortcut("Ctrl+F")
         self.act_find.triggered.connect(self.find_bar.show_find)
         self.addAction(self.act_find)
 
-        self.act_replace = QAction("Replace", self)
+        self.act_replace = QAction(self.tr("Replace"), self)
         self.act_replace.setShortcut("Ctrl+H")
         self.act_replace.triggered.connect(self.find_bar.show_replace)
         self.addAction(self.act_replace)
 
-        self.act_find_next = QAction("Find Next", self)
+        self.act_find_next = QAction(self.tr("Find Next"), self)
         self.act_find_next.setShortcut("F3")
         self.act_find_next.triggered.connect(self.find_bar.find_next)
         self.addAction(self.act_find_next)
 
-        self.act_find_prev = QAction("Find Previous", self)
+        self.act_find_prev = QAction(self.tr("Find Previous"), self)
         self.act_find_prev.setShortcut("Shift+F3")
         self.act_find_prev.triggered.connect(self.find_bar.find_prev)
         self.addAction(self.act_find_prev)
@@ -832,7 +832,7 @@ class ScriptEditorDock(QDockWidget):
         try:
             from setiastro.saspro.ops.command_help_dialog import CommandHelpDialog
         except Exception as e:
-            QMessageBox.critical(self, "Command Help", f"Failed to open help dialog:\n{e}")
+            QMessageBox.critical(self, self.tr("Command Help"), self.tr("Failed to open help dialog:\n{0}").format(e))
             return
 
         dlg = CommandHelpDialog(parent=self, editor=self.editor)
@@ -844,8 +844,8 @@ class ScriptEditorDock(QDockWidget):
         if not self._dirty:
             return True
         r = QMessageBox.question(
-            self, "Unsaved Changes",
-            "This script has unsaved changes. Save now?",
+            self, self.tr("Unsaved Changes"),
+            self.tr("This script has unsaved changes. Save now?"),
             QMessageBox.StandardButton.Yes |
             QMessageBox.StandardButton.No |
             QMessageBox.StandardButton.Cancel
@@ -860,13 +860,13 @@ class ScriptEditorDock(QDockWidget):
         if not self.maybe_save_dirty():
             return
         name, ok = QInputDialog.getText(
-            self, "New Script", "Script name (no extension):"
+            self, self.tr("New Script"), self.tr("Script name (no extension):")
         )
         if not ok or not name.strip():
             return
         path = self.scripts_dir / f"{name.strip()}.py"
         if path.exists():
-            QMessageBox.warning(self, "Exists", "A script with that name already exists.")
+            QMessageBox.warning(self, self.tr("Exists"), self.tr("A script with that name already exists."))
             return
 
         template = (
@@ -888,7 +888,7 @@ class ScriptEditorDock(QDockWidget):
         try:
             txt = path.read_text(encoding="utf-8")
         except Exception as e:
-            QMessageBox.critical(self, "Open failed", str(e))
+            QMessageBox.critical(self, self.tr("Open failed"), str(e))
             return
         self.editor.setPlainText(txt)
         self._current_path = path
@@ -918,12 +918,12 @@ class ScriptEditorDock(QDockWidget):
             self.reload_scripts()  # refresh menu + list
             return True
         except Exception as e:
-            QMessageBox.critical(self, "Save failed", str(e))
+            QMessageBox.critical(self, self.tr("Save failed"), str(e))
             return False
 
     def save_script_as(self) -> bool:
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Script As", str(self.scripts_dir),
+            self, self.tr("Save Script As"), str(self.scripts_dir),
             "Python Script (*.py)"
         )
         if not path:
@@ -957,7 +957,7 @@ class ScriptEditorDock(QDockWidget):
             target = self._current_path
 
         if target is None or not target.exists():
-            QMessageBox.information(self, "Delete Script", "No script selected or loaded.")
+            QMessageBox.information(self, self.tr("Delete Script"), self.tr("No script selected or loaded."))
             return
 
         # If deleting the currently open script and it's dirty, ask first
@@ -978,9 +978,9 @@ class ScriptEditorDock(QDockWidget):
         name = target.name
         r = QMessageBox.warning(
             self,
-            "Delete Script",
-            f"Delete '{name}' permanently?\n\n"
-            "This will remove the file from disk and cannot be undone.",
+            self.tr("Delete Script"),
+            self.tr("Delete '{0}' permanently?\n\n"
+            "This will remove the file from disk and cannot be undone.").format(name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -990,7 +990,7 @@ class ScriptEditorDock(QDockWidget):
         try:
             target.unlink()
         except Exception as e:
-            QMessageBox.critical(self, "Delete Failed", f"Could not delete '{name}':\n{e}")
+            QMessageBox.critical(self, self.tr("Delete Failed"), self.tr("Could not delete '{0}':\n{1}").format(name, e))
             return
 
         # If we deleted the open script, clear editor state
@@ -1013,7 +1013,7 @@ class ScriptEditorDock(QDockWidget):
     # running
     def run_script(self, *, on_base: bool):
         if self._current_path is None:
-            QMessageBox.information(self, "Run Script", "No script is loaded.")
+            QMessageBox.information(self, self.tr("Run Script"), self.tr("No script is loaded."))
             return
 
         # autosave before run
@@ -1051,10 +1051,10 @@ class ScriptEditorDock(QDockWidget):
             self.output.appendPlainText(tb)
             QMessageBox.critical(
                 self,
-                "Indentation / Syntax Error",
-                "This script has a Python parse or indentation problem.\n\n"
-                f"{e}\n\n"
-                "Fix it before running."
+                self.tr("Indentation / Syntax Error"),
+                self.tr("This script has a Python parse or indentation problem.\n\n"
+                "{0}\n\n"
+                "Fix it before running.").format(e)
             )
             return
 
@@ -1082,8 +1082,11 @@ class ScriptEditorDock(QDockWidget):
             self._log("Script ERROR:\n" + tb)
 
     def load_script_from_path(self, path: Path) -> ScriptEntry | None:
-        scripts_root = get_scripts_dir()
-        return self._load_one_script(path, scripts_root)
+        # The loader lives on ScriptManager; this dock has no _load_one_script.
+        man = getattr(self.app, "scriptman", None)
+        if man is None:
+            raise RuntimeError("ScriptManager not initialized on main window.")
+        return man.load_script_from_path(path)
 
     # ------------------------------------------------------------------
     # ui helpers
@@ -1095,7 +1098,7 @@ class ScriptEditorDock(QDockWidget):
         self._update_title()
 
     def _update_title(self):
-        name = self._current_path.name if self._current_path else "Untitled"
+        name = self._current_path.name if self._current_path else self.tr("Untitled")
         star = " *" if self._dirty else ""
         self.lbl_file.setText(f"{name}{star}")
 

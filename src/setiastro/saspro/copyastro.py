@@ -14,7 +14,7 @@ class CopyAstrometryDialog(QDialog):
     """
     def __init__(self, parent=None, target=None):
         super().__init__(parent)
-        self.setWindowTitle("Copy Astrometric Solution")
+        self.setWindowTitle(self.tr("Copy Astrometric Solution"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -42,20 +42,20 @@ class CopyAstrometryDialog(QDialog):
 
         lay = QVBoxLayout(self)
 
-        tgt_name = getattr(self._tgt, "display_name", lambda: None)() or "Active View"
-        lay.addWidget(QLabel(f"Target: <b>{tgt_name}</b>"))
+        tgt_name = getattr(self._tgt, "display_name", lambda: None)() or self.tr("Active View")
+        lay.addWidget(QLabel(self.tr("Target: <b>{0}</b>").format(tgt_name)))
 
-        lay.addWidget(QLabel("Choose a source image that already has a WCS/SIP solution:"))
+        lay.addWidget(QLabel(self.tr("Choose a source image that already has a WCS/SIP solution:")))
         self.combo = QComboBox(self)
         lay.addWidget(self.combo)
 
-        self.chk_ignore_sip = QCheckBox("Ignore SIP terms (copy TAN only)")
+        self.chk_ignore_sip = QCheckBox(self.tr("Ignore SIP terms (copy TAN only)"))
         self.chk_ignore_sip.setChecked(False)
         lay.addWidget(self.chk_ignore_sip)
 
         row = QHBoxLayout(); row.addStretch(1)
-        self.btn_copy = QPushButton("Copy")
-        self.btn_close = QPushButton("Close")
+        self.btn_copy = QPushButton(self.tr("Copy"))
+        self.btn_close = QPushButton(self.tr("Close"))
         row.addWidget(self.btn_copy); row.addWidget(self.btn_close)
         lay.addLayout(row)
 
@@ -171,7 +171,7 @@ class CopyAstrometryDialog(QDialog):
         self._candidates.clear()
 
         if not self._dm or not self._tgt:
-            self.combo.addItem("No target image.")
+            self.combo.addItem(self.tr("No target image."))
             self.btn_copy.setEnabled(False)
             return
 
@@ -187,7 +187,7 @@ class CopyAstrometryDialog(QDialog):
             w = self._extract_wcs_dict_for(d)
             if not w:
                 continue
-            name = getattr(d, "display_name", lambda: None)() or (getattr(d, "metadata", {}).get("file_path") or "Untitled")
+            name = getattr(d, "display_name", lambda: None)() or (getattr(d, "metadata", {}).get("file_path") or self.tr("Untitled"))
             # hint text (RA/Dec)
             ra, dec = w.get("CRVAL1"), w.get("CRVAL2")
             hint = f"  (RA={ra:.5f}, Dec={dec:.5f})" if isinstance(ra, (int, float)) and isinstance(dec, (int, float)) else ""
@@ -196,13 +196,13 @@ class CopyAstrometryDialog(QDialog):
             found_any = True
 
         if not found_any:
-            self.combo.addItem("No other images with WCS found")
+            self.combo.addItem(self.tr("No other images with WCS found"))
             self.btn_copy.setEnabled(False)
 
     # --- action ---------------------------------------------------------
     def _do_copy(self):
         if self._tgt is None:
-            QMessageBox.information(self, "Copy Astrometry", "No target image.")
+            QMessageBox.information(self, self.tr("Copy Astrometry"), self.tr("No target image."))
             return
 
         idx = self.combo.currentIndex()
@@ -232,7 +232,7 @@ class CopyAstrometryDialog(QDialog):
                 ok = False
 
         if not ok:
-            QMessageBox.warning(self, "Copy Astrometry", "Failed to apply astrometric solution.")
+            QMessageBox.warning(self, self.tr("Copy Astrometry"), self.tr("Failed to apply astrometric solution."))
             return
 
         # refresh header dock + listeners immediately
@@ -245,9 +245,9 @@ class CopyAstrometryDialog(QDialog):
             pass
 
         try:
-            tgt_name = getattr(self._tgt, "display_name", lambda: None)() or "Target"
-            QMessageBox.information(self, "Copy Astrometry",
-                                    f"Copied solution from “{src_name}” to “{tgt_name}”.")
+            tgt_name = getattr(self._tgt, "display_name", lambda: None)() or self.tr("Target")
+            QMessageBox.information(self, self.tr("Copy Astrometry"),
+                                    self.tr("Copied solution from “{0}” to “{1}”.").format(src_name, tgt_name))
         except Exception:
             pass
 

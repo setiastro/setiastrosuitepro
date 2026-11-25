@@ -651,9 +651,9 @@ class CLAHEDialogPro(QDialog):
         self.lbl_zoom = QLabel("")
         z.addWidget(self.lbl_zoom)
 
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
         self.btn_zoom_1x  = QToolButton(); self.btn_zoom_1x.setText("1:1")
         self.btn_zoom_1x.setToolTip(self.tr("One image pixel per screen pixel"))
         for b in (self.btn_zoom_in, self.btn_zoom_out, self.btn_zoom_fit, self.btn_zoom_1x):
@@ -751,6 +751,20 @@ class CLAHEDialogPro(QDialog):
             pass
 
     def closeEvent(self, ev):
+        self._close_teardown()
+        super().closeEvent(ev)
+
+    def done(self, r):
+        # Esc / Cancel end a QDialog through done(), which never delivers
+        # closeEvent: without this they skipped the teardown (settings save,
+        # released buffers) and the dialog kept its image until collected.
+        self._close_teardown()
+        super().done(r)
+
+    def _close_teardown(self):
+        if getattr(self, "_close_torn_down", False):
+            return
+        self._close_torn_down = True
         self._gen_box[0] += 1          # in-flight renders become stale and self-discard
         try: self._pool.clear()        # drop anything still queued
         except Exception: pass
@@ -766,13 +780,20 @@ class CLAHEDialogPro(QDialog):
             self._release_memory()
         except Exception:
             pass
-        super().closeEvent(ev)
 
     def _release_memory(self):
         """Drop full-frame orig/preview buffers and pixmaps on close."""
         if getattr(self, "_memory_released", False):
             return
         self._memory_released = True
+        # The dialog is only deleted when control gets back to the event loop
+        # it was closed in; a modal loop running first lets a pending preview
+        # debounce fire on the released dialog (orig is None). Stop it here;
+        # _request_preview also bails.
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
 
         self.orig = None
         self._disp_base = None
@@ -890,6 +911,8 @@ class CLAHEDialogPro(QDialog):
         self._request_preview()
 
     def _request_preview(self):
+        if self.orig is None:          # closed already (see _release_memory)
+            return
         clip = float(self.sp_clip.value())
         tile_px = int(self.sp_tile.value())
         blend = float(self.sp_blend.value()) / 100.0
@@ -1287,7 +1310,7 @@ class CLAHEDialogPro(QDialog):
         except Exception as e:
             try: QApplication.restoreOverrideCursor()
             except Exception: pass
-            QMessageBox.critical(self, "CLAHE", f"Failed to apply:\n{e}")
+            QMessageBox.critical(self, "CLAHE", self.tr("Failed to apply:\n{0}").format(e))
 
     def _rebind_doc(self, doc):
         """Point the dialog at doc and rebuild every preview cache."""

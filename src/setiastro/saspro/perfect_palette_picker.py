@@ -517,7 +517,7 @@ class PaletteAdjustDialog(QDialog):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSlider
         from PyQt6.QtCore import QTimer, Qt, QPoint, QEvent
         super().__init__(owner)
-        self.setWindowTitle("Adjust Palette Intensities")
+        self.setWindowTitle(self.tr("Adjust Palette Intensities"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -570,9 +570,9 @@ class PaletteAdjustDialog(QDialog):
         # Zoom controls
         zoom_layout = QHBoxLayout()
 
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         self.btn_zoom_in.clicked.connect(lambda: self._change_zoom(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._change_zoom(0.8))
@@ -596,19 +596,19 @@ class PaletteAdjustDialog(QDialog):
         vlayout.addWidget(self.preview_area, stretch=1)
 
         # Show adjusted vs original palette
-        self.chk_show_adj = QCheckBox("Show adjustment", self)
+        self.chk_show_adj = QCheckBox(self.tr("Show adjustment"), self)
         self.chk_show_adj.setChecked(True)
-        self.chk_show_adj.setToolTip(
+        self.chk_show_adj.setToolTip(self.tr(
             "Checked: preview the intensity-adjusted palette.\n"
             "Unchecked: show the original (unadjusted) palette."
-        )
+        ))
         self.chk_show_adj.toggled.connect(self._on_show_adjustment_toggled)
         vlayout.addWidget(self.chk_show_adj)
 
         # Sliders
         for name in ("Ha","OIII","SII"):
             row = QHBoxLayout()
-            row.addWidget(QLabel(f"{name} Intensity:", self))
+            row.addWidget(QLabel(self.tr("{0} Intensity:").format(name), self))
             sl = QSlider(Qt.Orientation.Horizontal, self); sl.setRange(0,200); sl.setValue(100)
             sl.valueChanged.connect(self._on_slider_change)
             setattr(self, f"_{name.lower()}_slider", sl)
@@ -617,9 +617,9 @@ class PaletteAdjustDialog(QDialog):
 
         # Buttons
         btns = QHBoxLayout(); btns.addStretch()
-        accept  = QPushButton("Accept", self); accept.clicked.connect(self._on_accept)
-        reset   = QPushButton("Reset",  self); reset.clicked.connect(self._on_reset)
-        discard = QPushButton("Discard",self); discard.clicked.connect(self.reject)
+        accept  = QPushButton(self.tr("Accept"), self); accept.clicked.connect(self._on_accept)
+        reset   = QPushButton(self.tr("Reset"),  self); reset.clicked.connect(self._on_reset)
+        discard = QPushButton(self.tr("Discard"),self); discard.clicked.connect(self.reject)
         btns.addWidget(accept); btns.addWidget(reset); btns.addWidget(discard)
         vlayout.addLayout(btns)
         self._btn_accept = accept
@@ -691,7 +691,7 @@ class PaletteAdjustDialog(QDialog):
             if self._accept_pending:
                 self._accept_pending = False
                 self._set_controls_enabled(True)
-            QMessageBox.warning(self, "Adjust Palette", f"Could not build the adjusted palette:\n{val}")
+            QMessageBox.warning(self, self.tr("Adjust Palette"), self.tr("Could not build the adjusted palette:\n{0}").format(val))
             return
         img, qimg = val
         self._result = (f, img)
@@ -812,7 +812,7 @@ class PaletteGridWindow(QDialog):
     """Non-modal companion window holding the palette thumbnail grid."""
     def __init__(self, owner, grid_host):
         super().__init__(owner)
-        self.setWindowTitle("Palette Gallery")
+        self.setWindowTitle(self.tr("Palette Gallery"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(False)
         self._owner = owner
@@ -849,7 +849,7 @@ class PerfectPalettePicker(QWidget):
         super().__init__(parent)
         self.doc_manager = doc_manager
         self.setWindowFlag(Qt.WindowType.Window, True)
-        self.setWindowTitle("Perfect Palette Picker")
+        self.setWindowTitle(self.tr("Perfect Palette Picker"))
         self._settings = QSettings()
         self._persist_prefix = "perfect_palette_picker"
         self._geom_restored = False
@@ -913,20 +913,20 @@ class PerfectPalettePicker(QWidget):
         left = QVBoxLayout()
         left_host = QWidget(self); left_host.setLayout(left); left_host.setFixedWidth(300)
 
-        left.addWidget(QLabel("<b>Load channels</b>"))
+        left.addWidget(QLabel(self.tr("<b>Load channels</b>")))
 
         # Load buttons + status labels
-        self.btn_ha   = QPushButton("Load Ha…");   self.btn_ha.clicked.connect(lambda: self._load_channel("Ha"))
-        self.btn_oiii = QPushButton("Load OIII…"); self.btn_oiii.clicked.connect(lambda: self._load_channel("OIII"))
-        self.btn_sii  = QPushButton("Load SII…");  self.btn_sii.clicked.connect(lambda: self._load_channel("SII"))
-        self.btn_osc1 = QPushButton("Load OSC1 (Ha/OIII)…"); self.btn_osc1.clicked.connect(lambda: self._load_channel("OSC1"))
-        self.btn_osc2 = QPushButton("Load OSC2 (SII/OIII)…"); self.btn_osc2.clicked.connect(lambda: self._load_channel("OSC2"))
+        self.btn_ha   = QPushButton(self.tr("Load Ha…"));   self.btn_ha.clicked.connect(lambda: self._load_channel("Ha"))
+        self.btn_oiii = QPushButton(self.tr("Load OIII…")); self.btn_oiii.clicked.connect(lambda: self._load_channel("OIII"))
+        self.btn_sii  = QPushButton(self.tr("Load SII…"));  self.btn_sii.clicked.connect(lambda: self._load_channel("SII"))
+        self.btn_osc1 = QPushButton(self.tr("Load OSC1 (Ha/OIII)…")); self.btn_osc1.clicked.connect(lambda: self._load_channel("OSC1"))
+        self.btn_osc2 = QPushButton(self.tr("Load OSC2 (SII/OIII)…")); self.btn_osc2.clicked.connect(lambda: self._load_channel("OSC2"))
 
-        self.lbl_ha   = QLabel("No Ha loaded.")
-        self.lbl_oiii = QLabel("No OIII loaded.")
-        self.lbl_sii  = QLabel("No SII loaded.")
-        self.lbl_osc1 = QLabel("No OSC1 loaded.")
-        self.lbl_osc2 = QLabel("No OSC2 loaded.")
+        self.lbl_ha   = QLabel(self.tr("No {0} loaded.").format("Ha"))
+        self.lbl_oiii = QLabel(self.tr("No {0} loaded.").format("OIII"))
+        self.lbl_sii  = QLabel(self.tr("No {0} loaded.").format("SII"))
+        self.lbl_osc1 = QLabel(self.tr("No {0} loaded.").format("OSC1"))
+        self.lbl_osc2 = QLabel(self.tr("No {0} loaded.").format("OSC2"))
         for lab in (self.lbl_ha, self.lbl_oiii, self.lbl_sii, self.lbl_osc1, self.lbl_osc2):
             lab.setWordWrap(True); lab.setStyleSheet("color:#888; margin-left:8px;")
 
@@ -940,45 +940,48 @@ class PerfectPalettePicker(QWidget):
             left.addWidget(btn); left.addWidget(lab)
 
         # Linear toggle (stretch BEFORE palette build)
-        self.chk_linear = QCheckBox("Linear input (apply statistical stretch before build)")
+        self.chk_linear = QCheckBox(self.tr("Linear input (apply statistical stretch before build)"))
         self.chk_linear.setChecked(True)
         self.chk_linear.stateChanged.connect(self._rebuild_stretch_cache_for_all)
         left.addSpacing(6); left.addWidget(self.chk_linear)
 
         # Output linear: invert the stretch on push so the new document is linear
-        self.chk_output_linear = QCheckBox("Output linear (invert stretch on push)")
+        self.chk_output_linear = QCheckBox(self.tr("Output linear (invert stretch on push)"))
         self.chk_output_linear.setChecked(False)
-        self.chk_output_linear.setToolTip(
+        self.chk_output_linear.setToolTip(self.tr(
             "When pushing to a new view, apply a linked no-clip statistical stretch\n"
             "back to the original channel median so the output lives in linear space.\n"
             "Works for Foraxx and Dynamic Inverse too.\n"
             "The on-screen preview stays stretched so you can see what you're doing."
-        )
+        ))
         self.chk_output_linear.setEnabled(self.chk_linear.isChecked())
         left.addWidget(self.chk_output_linear)
 
         # Which channel median to target when reverting
         row_tm = QHBoxLayout()
-        self.lbl_target_median = QLabel("Target median:")
+        self.lbl_target_median = QLabel(self.tr("Target median:"))
         self.lbl_target_median.setStyleSheet("margin-left:8px;")
         self.cmb_target_median = QComboBox(self)
-        self.cmb_target_median.addItems([
-            "Max (least stretched)",
-            "Min (most stretched)",
-            "Mean",
-            "Median of medians",
-            "Ha",
-            "OIII",
-            "SII",
-        ])
+        # Data = the English mode key that is persisted and parsed by
+        # _ppp_target_median; the label is translated.
+        for _key, _label in (
+            ("Max (least stretched)", self.tr("Max (least stretched)")),
+            ("Min (most stretched)", self.tr("Min (most stretched)")),
+            ("Mean", self.tr("Mean")),
+            ("Median of medians", self.tr("Median of medians")),
+            ("Ha", "Ha"),
+            ("OIII", "OIII"),
+            ("SII", "SII"),
+        ):
+            self.cmb_target_median.addItem(_label, _key)
         self.cmb_target_median.setCurrentIndex(0)
-        self.cmb_target_median.setToolTip(
+        self.cmb_target_median.setToolTip(self.tr(
             "Which raw channel median to target when inverting the stretch.\n"
             "• Max — preserves the brightest channel's dynamic range (default)\n"
             "• Min — pushes everything deeper (noisier)\n"
             "• Mean / Median of medians — compromise\n"
             "• Ha / OIII / SII — force a specific channel (falls back to Max if missing)"
-        )
+        ))
         self.cmb_target_median.setEnabled(self.chk_linear.isChecked() and
                                          self.chk_output_linear.isChecked())
         row_tm.addWidget(self.lbl_target_median)
@@ -1004,31 +1007,31 @@ class PerfectPalettePicker(QWidget):
         self.cmb_target_median.currentIndexChanged.connect(lambda *_: self._save_ui_state())
 
         # Actions
-        self.btn_clear = QPushButton("Clear Loaded Channels")
+        self.btn_clear = QPushButton(self.tr("Clear Loaded Channels"))
         self.btn_clear.clicked.connect(self._clear_channels)
         left.addWidget(self.btn_clear)
 
-        self.btn_create = QPushButton("Create Palettes")
+        self.btn_create = QPushButton(self.tr("Create Palettes"))
         self.btn_create.clicked.connect(self._create_palettes)
         left.addWidget(self.btn_create)
 
-        self.btn_push = QPushButton("Push Final to New View")
+        self.btn_push = QPushButton(self.tr("Push Final to New View"))
         self.btn_push.clicked.connect(self._push_final)
         left.addWidget(self.btn_push)
 
-        self.chk_balance_on_push = QCheckBox("Open balancing preview when pushing")
+        self.chk_balance_on_push = QCheckBox(self.tr("Open balancing preview when pushing"))
         self.chk_balance_on_push.setChecked(True)
-        self.chk_balance_on_push.setToolTip(
+        self.chk_balance_on_push.setToolTip(self.tr(
             "Checked: Push Final opens the Adjust Palette Intensities dialog\n"
             "(Ha / OIII / SII intensity sliders) before creating the new view.\n"
             "Unchecked: Push Final creates the new view straight away with the palette\n"
             "as previewed \u2014 the same image as opening the dialog and clicking\n"
             "Accept without touching a slider."
-        )
+        ))
         self.chk_balance_on_push.toggled.connect(self._on_balance_on_push_toggled)
         left.addWidget(self.chk_balance_on_push)
 
-        self.btn_gallery = QPushButton("Show Palette Gallery")
+        self.btn_gallery = QPushButton(self.tr("Show Palette Gallery"))
         self.btn_gallery.setCheckable(True)
         self.btn_gallery.setChecked(True)
         self.btn_gallery.toggled.connect(self._toggle_gallery)
@@ -1043,9 +1046,9 @@ class PerfectPalettePicker(QWidget):
         # zoom toolbar
         # zoom toolbar (themed)
         tools = QHBoxLayout()
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         self.btn_zoom_in.clicked.connect(lambda: self._zoom_at(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom_at(0.8))
@@ -1136,7 +1139,7 @@ class PerfectPalettePicker(QWidget):
             if hasattr(self, "chk_output_linear"):
                 s.setValue(self._k("output_linear"), bool(self.chk_output_linear.isChecked()))
             if hasattr(self, "cmb_target_median"):
-                s.setValue(self._k("target_median_mode"), self.cmb_target_median.currentText())
+                s.setValue(self._k("target_median_mode"), self.cmb_target_median.currentData())
             if hasattr(self, "chk_balance_on_push"):
                 s.setValue(self._k("open_balance_on_push"), bool(self.chk_balance_on_push.isChecked()))
             if getattr(self, "_gallery", None) is not None:
@@ -1170,7 +1173,7 @@ class PerfectPalettePicker(QWidget):
             self.chk_output_linear.blockSignals(False)
 
             tm_mode = s.value(self._k("target_median_mode"), "Max (least stretched)", type=str)
-            idx = self.cmb_target_median.findText(tm_mode)
+            idx = self.cmb_target_median.findData(tm_mode)
             if idx >= 0:
                 self.cmb_target_median.blockSignals(True)
                 self.cmb_target_median.setCurrentIndex(idx)
@@ -1249,13 +1252,13 @@ class PerfectPalettePicker(QWidget):
             lab.setText(text)
             lab.setStyleSheet("color:#2a7; font-weight:600; margin-left:8px;")
         else:
-            lab.setText(f"No {which} loaded.")
+            lab.setText(self.tr("No {0} loaded.").format(which))
             lab.setStyleSheet("color:#888; margin-left:8px;")
 
     # ------------- load by view/file -------------
     def _load_channel(self, which: str):
         src, ok = QInputDialog.getItem(
-            self, f"Load {which}", "Source:", ["From View", "From File"], 0, False
+            self, self.tr("Load {0}").format(which), self.tr("Source:"), ["From View", "From File"], 0, False
         )
         if not ok:
             return
@@ -1280,7 +1283,7 @@ class PerfectPalettePicker(QWidget):
         # store raw, normalized
         setattr(self, which.lower(), self._as_float01(img))
         self._set_status_label(which, label)
-        self.status.setText(f"{which} loaded ({'mono' if img.ndim==2 else 'RGB'}) shape={img.shape}")
+        self.status.setText(self.tr("{0} loaded ({1}) shape={2}").format(which, self.tr("mono") if img.ndim==2 else "RGB", img.shape))
 
         # build/clear stretched cache for this input
         self._cache_stretch(which)
@@ -1291,12 +1294,12 @@ class PerfectPalettePicker(QWidget):
     def _load_from_view(self, which):
         views = self._list_open_views()
         if not views:
-            QMessageBox.warning(self, "No Views", "No open image views were found.")
+            QMessageBox.warning(self, self.tr("No Views"), self.tr("No open image views were found."))
             return None
 
         labels = [lab for lab, _ in views]
         choice, ok = QInputDialog.getItem(
-            self, f"Select View for {which}", "Choose a view (by name):", labels, 0, False
+            self, self.tr("Select View for {0}").format(which), self.tr("Choose a view (by name):"), labels, 0, False
         )
         if not ok or not choice:
             return None
@@ -1306,7 +1309,7 @@ class PerfectPalettePicker(QWidget):
         doc = getattr(vw, "document", None)
 
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "Empty View", "Selected view has no image.")
+            QMessageBox.warning(self, self.tr("Empty View"), self.tr("Selected view has no image."))
             return None
 
         img = doc.image
@@ -1315,18 +1318,18 @@ class PerfectPalettePicker(QWidget):
         bit_depth = meta.get("bit_depth", "Unknown")
         is_mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
         path = meta.get("file_path", None)
-        return img, header, bit_depth, is_mono, path, f"From View: {choice}"
+        return img, header, bit_depth, is_mono, path, self.tr("From View: {0}").format(choice)
 
     def _load_from_file(self, which):
         filt = "Images (*.png *.tif *.tiff *.fits *.fit *.xisf)"
-        path, _ = QFileDialog.getOpenFileName(self, f"Select {which} File", "", filt)
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select {0} File").format(which), "", filt)
         if not path:
             return None
         img, header, bit_depth, is_mono = legacy_load_image(path)
         if img is None:
-            QMessageBox.critical(self, "Load Error", f"Could not load {os.path.basename(path)}")
+            QMessageBox.critical(self, self.tr("Load Error"), self.tr("Could not load {0}").format(os.path.basename(path)))
             return None
-        label = f"From File: {os.path.basename(path)}"
+        label = self.tr("From File: {0}").format(os.path.basename(path))
         return img, header, bit_depth, is_mono, path, label
 
     def showEvent(self, e):
@@ -1528,8 +1531,8 @@ class PerfectPalettePicker(QWidget):
         """
         picks = self._picked_inputs()
         if _ppp_present_count(*picks) < 2:
-            QMessageBox.warning(self, "Need Channels",
-                "Load any two of Ha / OIII / SII, or one OSC image.")
+            QMessageBox.warning(self, self.tr("Need Channels"),
+                self.tr("Load any two of Ha / OIII / SII, or one OSC image."))
             return
         if self._thumbs_thread is not None:
             self._thumbs_pending = True      # rebuilt from the current inputs when it lands
@@ -1539,7 +1542,7 @@ class PerfectPalettePicker(QWidget):
         thr.result.connect(self._on_thumbs_built)
         self._thumbs_thread = thr
         self._thumbs_serial = self._clear_serial
-        self.status.setText("Creating palette previews\u2026")
+        self.status.setText(self.tr("Creating palette previews\u2026"))
         start_owned_thread(thr)
 
     def _on_thumbs_built(self, out):
@@ -1554,7 +1557,7 @@ class PerfectPalettePicker(QWidget):
             return      # channels were cleared meanwhile
         kind, val = out
         if kind == "err":
-            self.status.setText(f"Could not create palette previews: {val}")
+            self.status.setText(self.tr("Could not create palette previews: {0}").format(val))
             return
 
         built = 0
@@ -1574,7 +1577,7 @@ class PerfectPalettePicker(QWidget):
             self._render_thumb(name)
             built += 1
 
-        self.status.setText(f"Created {built} palette previews.")
+        self.status.setText(self.tr("Created {0} palette previews.").format(built))
 
 
     def _on_palette_clicked(self, name: str):
@@ -1636,19 +1639,19 @@ class PerfectPalettePicker(QWidget):
             return True
         ref_name = "Ha" if sh_ha is not None else ("OIII" if sh_oo is not None else "SII")
         ref_h, ref_w = sh_ha or sh_oo or sh_si
-        msg = (
+        msg = self.tr(
             "The loaded channels have different image dimensions.\n\n"
-            f"\u2022 Ha:   {sh_ha}\n"
-            f"\u2022 OIII: {sh_oo}\n"
-            f"\u2022 SII:  {sh_si}\n\n"
-            f"SASpro can resize (warp) the channels to match the reference frame:\n"
-            f"\u2022 Reference: {ref_name}\n"
-            f"\u2022 Target size: ({ref_w} \u00d7 {ref_h})\n\n"
+            "\u2022 Ha:   {0}\n"
+            "\u2022 OIII: {1}\n"
+            "\u2022 SII:  {2}\n\n"
+            "SASpro can resize (warp) the channels to match the reference frame:\n"
+            "\u2022 Reference: {3}\n"
+            "\u2022 Target size: ({4} \u00d7 {5})\n\n"
             "Proceed and resize mismatched channels?"
-        )
+        ).format(sh_ha, sh_oo, sh_si, ref_name, ref_w, ref_h)
         ret = QMessageBox.question(
             self,
-            "Channel Size Mismatch",
+            self.tr("Channel Size Mismatch"),
             msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes
@@ -1701,7 +1704,7 @@ class PerfectPalettePicker(QWidget):
         thr.result.connect(self._on_final_built)
         self._gen_thread = thr
         self._gen_req = (pal, self._palette_key(pal, picks), self._clear_serial)
-        self.status.setText(f"Building {pal}\u2026")
+        self.status.setText(self.tr("Building {0}\u2026").format(pal))
         start_owned_thread(thr)
 
     def _on_final_built(self, out):
@@ -1713,9 +1716,9 @@ class PerfectPalettePicker(QWidget):
         if serial == self._clear_serial:
             kind, val = out
             if kind == "err":
-                QMessageBox.critical(self, "Palette Error", f"Could not build palette {pal}.\n\n{val}")
+                QMessageBox.critical(self, self.tr("Palette Error"), self.tr("Could not build palette {0}.\n\n{1}").format(pal, val))
             elif isinstance(val, str):
-                QMessageBox.critical(self, "Palette Error", f"Could not build palette {pal}.")
+                QMessageBox.critical(self, self.tr("Palette Error"), self.tr("Could not build palette {0}.").format(pal))
             elif val is not None:
                 rgb, in_range, qimg = val
                 self.final = rgb
@@ -1724,7 +1727,7 @@ class PerfectPalettePicker(QWidget):
                 # Fit only when there wasn't an existing preview yet
                 first = (self._base_pm is None)
                 self._set_preview_image(qimg, fit=first, preserve_view=True, src=rgb)
-                self.status.setText(f"Preview generated: {pal}")
+                self.status.setText(self.tr("Preview generated: {0}").format(pal))
         self._drain_queue()
 
     def _set_preview_image(self, qimg, *, fit: bool = False, preserve_view: bool = True, src=None):
@@ -1945,7 +1948,7 @@ class PerfectPalettePicker(QWidget):
         if not meds:
             return None
 
-        mode = self.cmb_target_median.currentText() if hasattr(self, "cmb_target_median") \
+        mode = self.cmb_target_median.currentData() if hasattr(self, "cmb_target_median") \
                else "Max (least stretched)"
         return _ppp_target_median(meds, mode)
 
@@ -1968,26 +1971,27 @@ class PerfectPalettePicker(QWidget):
         """GUI-thread snapshot for _ppp_output_linear, or None when Output linear is off."""
         if not (self.chk_linear.isChecked() and self.chk_output_linear.isChecked()):
             return None
-        mode = self.cmb_target_median.currentText() if hasattr(self, "cmb_target_median") \
+        mode = self.cmb_target_median.currentData() if hasattr(self, "cmb_target_median") \
                else "Max (least stretched)"
         return mode, (self.ha, self.oiii, self.sii, self.osc1, self.osc2)
 
     def _report_output_linear(self, info):
         kind, val, mode = info
         if kind == "none":
-            self.status.setText(
+            self.status.setText(self.tr(
                 "Output linear: no plausibly-linear channel medians found; "
                 "pushed stretched instead."
-            )
+            ))
         elif kind == "ok":
-            self.status.setText(
-                f"Output linear: inverted stretch to target median {val:.4f} "
-                f"({mode})."
-            )
+            _i = self.cmb_target_median.findData(mode)
+            self.status.setText(self.tr(
+                "Output linear: inverted stretch to target median {0:.4f} "
+                "({1})."
+            ).format(val, self.cmb_target_median.itemText(_i) if _i >= 0 else mode))
         else:
             QMessageBox.warning(
-                self, "Output Linear Failed",
-                f"Could not invert stretch:\n{val}\n\nPushing stretched image instead."
+                self, self.tr("Output Linear Failed"),
+                self.tr("Could not invert stretch:\n{0}\n\nPushing stretched image instead.").format(val)
             )
 
     # ------------- push to new subwindow -------------
@@ -2010,10 +2014,10 @@ class PerfectPalettePicker(QWidget):
         if self._busy():
             # A palette build or an earlier push is still running: push after it (queued).
             self._enqueue(("push", None))
-            self.status.setText("Push queued \u2014 it runs when the current palette job finishes.")
+            self.status.setText(self.tr("Push queued \u2014 it runs when the current palette job finishes."))
             return
         if self.final is None:
-            QMessageBox.warning(self, "No Image", "Generate a palette first.")
+            QMessageBox.warning(self, self.tr("No Image"), self.tr("Generate a palette first."))
             return
 
         pal = self.current_palette or "SHO"
@@ -2029,8 +2033,8 @@ class PerfectPalettePicker(QWidget):
                 self._start_push(self.final, key=key)
                 return
             if _ppp_present_count(*picks) < 2:
-                QMessageBox.warning(self, "Need Channels",
-                    "Load any two of Ha / OIII / SII, or one OSC image.")
+                QMessageBox.warning(self, self.tr("Need Channels"),
+                    self.tr("Load any two of Ha / OIII / SII, or one OSC image."))
                 return
             if not self._confirm_channel_sizes(picks):
                 return
@@ -2043,8 +2047,8 @@ class PerfectPalettePicker(QWidget):
         ha_prep, oo_prep, si_prep = self._prepared_channels()
         has_narrowband = sum(x is not None for x in (ha_prep, oo_prep, si_prep))
         if has_narrowband < 2:
-            QMessageBox.warning(self, "Need Channels",
-                "Load any two of Ha / OIII / SII, or one OSC image.")
+            QMessageBox.warning(self, self.tr("Need Channels"),
+                self.tr("Load any two of Ha / OIII / SII, or one OSC image."))
             return
 
         dlg = PaletteAdjustDialog(
@@ -2080,7 +2084,7 @@ class PerfectPalettePicker(QWidget):
         thr.result.connect(self._on_push_done)
         self._push_thread = thr
         self._push_req = (key, pm, olin is not None)
-        self.status.setText("Pushing palette to a new view\u2026")
+        self.status.setText(self.tr("Pushing palette to a new view\u2026"))
         start_owned_thread(thr)
 
     def _on_push_done(self, res):
@@ -2091,7 +2095,7 @@ class PerfectPalettePicker(QWidget):
         self._push_req = None
         kind, val = res
         if kind == "err":
-            QMessageBox.critical(self, "Error", f"Failed to open new view:\n{val}")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to open new view:\n{0}").format(val))
         else:
             final, out, qimg, info, copied = val
             self._finish_push(final, out, pm if pm is not None else qimg, info, key, olin_on, copied)
@@ -2138,7 +2142,7 @@ class PerfectPalettePicker(QWidget):
             viewer.show()
             # keep ref so it isn't GC'd
             self._last_popup_viewer = viewer
-            self.status.setText("DocManager not found; opened palette in stand-alone viewer.")
+            self.status.setText(self.tr("DocManager not found; opened palette in stand-alone viewer."))
             return
 
         # ---- normal SAS path: create a new document ----
@@ -2157,11 +2161,11 @@ class PerfectPalettePicker(QWidget):
             if output_img is self.final:
                 self._final_shared = True
             if olin_on:
-                self.status.setText("Opened final palette (linear) in a new view.")
+                self.status.setText(self.tr("Opened final palette (linear) in a new view."))
             else:
-                self.status.setText("Opened final palette in a new view.")
+                self.status.setText(self.tr("Opened final palette in a new view."))
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to open new view:\n{e}")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to open new view:\n{0}").format(e))
 
 
 
@@ -2187,7 +2191,7 @@ class PerfectPalettePicker(QWidget):
         self._selected_name = None
         for b in self._thumb_buttons.values():
             b.setIcon(QIcon())
-        self.status.setText("Cleared all loaded channels.")
+        self.status.setText(self.tr("Cleared all loaded channels."))
 
     def _as_float01(self, arr):
         a = np.asarray(arr)

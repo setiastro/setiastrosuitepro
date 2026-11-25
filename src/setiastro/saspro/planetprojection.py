@@ -1497,7 +1497,7 @@ class PlanetProjectionDialog(QDialog):
         self.setMinimumSize(520, 520)
 
         self.resize(560, 640)        
-        self.setWindowTitle("3D Projection")
+        self.setWindowTitle(self.tr("3D Projection"))
         self.setModal(False)
         self.parent = parent
         self.doc = document
@@ -1531,19 +1531,19 @@ class PlanetProjectionDialog(QDialog):
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
 
-        self.lbl_top = QLabel(
+        self.lbl_top = QLabel(self.tr(
             "Create a synthetic stereo pair from a planet ROI (sphere reprojection).\n"
             "• Stereo: side-by-side (Parallel or Cross-eye)\n"
             "• Wiggle: alternates L/R to create depth motion\n"
             "Optional: add a static starfield background (no parallax)."
-        )
+        ))
         self.lbl_top.setWordWrap(True)
         outer.addWidget(self.lbl_top)
 
         prev_row = QHBoxLayout()
-        self.btn_preview = QPushButton("Preview")
-        self.btn_save_still = QPushButton("Save Still…")
-        self.btn_save_wiggle = QPushButton("Save Wiggle…")
+        self.btn_preview = QPushButton(self.tr("Preview"))
+        self.btn_save_still = QPushButton(self.tr("Save Still…"))
+        self.btn_save_wiggle = QPushButton(self.tr("Save Wiggle…"))
 
         prev_row.addWidget(self.btn_preview)
         prev_row.addWidget(self.btn_save_still)
@@ -1556,34 +1556,34 @@ class PlanetProjectionDialog(QDialog):
         self.btn_save_still.clicked.connect(self._save_still)
         self.btn_save_wiggle.clicked.connect(self._save_wiggle)
         # Controls
-        box = QGroupBox("Parameters")
+        box = QGroupBox(self.tr("Parameters"))
         form = QFormLayout(box)
 
         self.cmb_mode = QComboBox()
         self.cmb_mode.addItems([
-            "Stereo (Parallel)  L | R",
-            "Stereo (Cross-eye)  R | L",
-            "Wiggle stereo (toggle L/R)",
-            "Anaglyph (Red/Cyan 3D Glasses)",
-            "Interactive 3D (HTML)",
-            "Galaxy Polar View (Top-Down)",
+            self.tr("Stereo (Parallel)  L | R"),
+            self.tr("Stereo (Cross-eye)  R | L"),
+            self.tr("Wiggle stereo (toggle L/R)"),
+            self.tr("Anaglyph (Red/Cyan 3D Glasses)"),
+            self.tr("Interactive 3D (HTML)"),
+            self.tr("Galaxy Polar View (Top-Down)"),
         ])
-        form.addRow("Output:", self.cmb_mode)
+        form.addRow(self.tr("Output:"), self.cmb_mode)
 
         self.cmb_planet_type = QComboBox()
         self.cmb_planet_type.addItems([
-            "Normal (Sphere only)",
-            "Saturn (Sphere + Rings)",
-            "Pseudo surface (Height from brightness)",
-            "Galaxy (Disk deprojection)",
+            self.tr("Normal (Sphere only)"),
+            self.tr("Saturn (Sphere + Rings)"),
+            self.tr("Pseudo surface (Height from brightness)"),
+            self.tr("Galaxy (Disk deprojection)"),
         ])
-        form.addRow("Planet type:", self.cmb_planet_type)
+        form.addRow(self.tr("Planet type:"), self.cmb_planet_type)
 
         # Rings group
-        rings_box = QGroupBox("Saturn rings")
+        rings_box = QGroupBox(self.tr("Saturn rings"))
         rings_form = QFormLayout(rings_box)
 
-        self.chk_rings = QCheckBox("Enable rings")
+        self.chk_rings = QCheckBox(self.tr("Enable rings"))
         self.chk_rings.setChecked(True)
         rings_form.addRow("", self.chk_rings)
 
@@ -1591,29 +1591,29 @@ class PlanetProjectionDialog(QDialog):
         self.spin_ring_pa.setRange(-180.0, 180.0)
         self.spin_ring_pa.setSingleStep(1.0)
         self.spin_ring_pa.setValue(0.0)
-        self.spin_ring_pa.setToolTip("Ring position angle in the image (deg). Rotate ellipse.")
-        rings_form.addRow("Ring PA (deg):", self.spin_ring_pa)
+        self.spin_ring_pa.setToolTip(self.tr("Ring position angle in the image (deg). Rotate ellipse."))
+        rings_form.addRow(self.tr("Ring PA (deg):"), self.spin_ring_pa)
 
         self.spin_ring_tilt = QDoubleSpinBox()
         self.spin_ring_tilt.setRange(0.05, 1.0)
         self.spin_ring_tilt.setSingleStep(0.02)
         self.spin_ring_tilt.setValue(0.35)
-        self.spin_ring_tilt.setToolTip("Ellipse minor/major ratio (0..1). Smaller = more edge-on.")
-        rings_form.addRow("Ring tilt (b/a):", self.spin_ring_tilt)
+        self.spin_ring_tilt.setToolTip(self.tr("Ellipse minor/major ratio (0..1). Smaller = more edge-on."))
+        rings_form.addRow(self.tr("Ring tilt (b/a):"), self.spin_ring_tilt)
 
         self.spin_ring_outer = QDoubleSpinBox()
         self.spin_ring_outer.setRange(1.0, 4.0)
         self.spin_ring_outer.setSingleStep(0.05)
         self.spin_ring_outer.setValue(2.20)
-        self.spin_ring_outer.setToolTip("Outer ring radius factor relative to body radius.")
-        rings_form.addRow("Outer factor:", self.spin_ring_outer)
+        self.spin_ring_outer.setToolTip(self.tr("Outer ring radius factor relative to body radius."))
+        rings_form.addRow(self.tr("Outer factor:"), self.spin_ring_outer)
 
         self.spin_ring_inner = QDoubleSpinBox()
         self.spin_ring_inner.setRange(0.2, 3.5)
         self.spin_ring_inner.setSingleStep(0.05)
         self.spin_ring_inner.setValue(1.25)
-        self.spin_ring_inner.setToolTip("Inner ring radius factor relative to body radius.")
-        rings_form.addRow("Inner factor:", self.spin_ring_inner)
+        self.spin_ring_inner.setToolTip(self.tr("Inner ring radius factor relative to body radius."))
+        rings_form.addRow(self.tr("Inner factor:"), self.spin_ring_inner)
 
         form.addRow(rings_box)
 
@@ -1621,28 +1621,28 @@ class PlanetProjectionDialog(QDialog):
         self.spin_theta.setRange(0.2, 25.0)
         self.spin_theta.setSingleStep(0.2)
         self.spin_theta.setValue(6.0)
-        self.spin_theta.setToolTip("Stereo strength in degrees. 6° usually looks best.")
-        form.addRow("Strength (deg):", self.spin_theta)
+        self.spin_theta.setToolTip(self.tr("Stereo strength in degrees. 6° usually looks best."))
+        form.addRow(self.tr("Strength (deg):"), self.spin_theta)
 
         # Pseudo surface group
-        ps_box = QGroupBox("Pseudo surface depth")
+        ps_box = QGroupBox(self.tr("Pseudo surface depth"))
         ps_form = QFormLayout(ps_box)
 
         self.spin_ps_gamma = QDoubleSpinBox()
         self.spin_ps_gamma.setRange(0.3, 4.0)
         self.spin_ps_gamma.setSingleStep(0.05)
         self.spin_ps_gamma.setValue(1.15)
-        self.spin_ps_gamma.setToolTip("Depth gamma. >1 emphasizes bright peaks; <1 broadens depth.")
-        ps_form.addRow("Depth gamma:", self.spin_ps_gamma)
+        self.spin_ps_gamma.setToolTip(self.tr("Depth gamma. >1 emphasizes bright peaks; <1 broadens depth."))
+        ps_form.addRow(self.tr("Depth gamma:"), self.spin_ps_gamma)
 
         self.spin_ps_blur = QDoubleSpinBox()
         self.spin_ps_blur.setRange(0.0, 12.0)
         self.spin_ps_blur.setSingleStep(0.2)
         self.spin_ps_blur.setValue(1.2)
-        self.spin_ps_blur.setToolTip("Smooth height map to avoid noisy depth.")
-        ps_form.addRow("Depth blur (px):", self.spin_ps_blur)
+        self.spin_ps_blur.setToolTip(self.tr("Smooth height map to avoid noisy depth."))
+        ps_form.addRow(self.tr("Depth blur (px):"), self.spin_ps_blur)
 
-        self.chk_ps_invert = QCheckBox("Normal depth (bright = closer), uncheck for inverted")
+        self.chk_ps_invert = QCheckBox(self.tr("Normal depth (bright = closer), uncheck for inverted"))
         self.chk_ps_invert.setChecked(True)
         ps_form.addRow("", self.chk_ps_invert)
 
@@ -1650,60 +1650,60 @@ class PlanetProjectionDialog(QDialog):
         # Pseudo-surface 3D coloring mode (how points are COLORED)
         self.cmb_ps_3d_mode = QComboBox(self)
         self.cmb_ps_3d_mode.addItems([
-            "Brightness (RGB)",
-            "Depth (Height Colormap)",
-            "Dual (RGB + Depth)",
+            self.tr("Brightness (RGB)"),
+            self.tr("Depth (Height Colormap)"),
+            self.tr("Dual (RGB + Depth)"),
         ])
-        self.cmb_ps_3d_mode.setToolTip(
+        self.cmb_ps_3d_mode.setToolTip(self.tr(
             "3D point cloud coloring:\n"
             "• Brightness: points colored from the image (RGB)\n"
             "• Depth: points colored by height (colormap)\n"
             "• Dual: overlays RGB + depth coloring"
-        )
-        ps_form.addRow("3D Color Mode:", self.cmb_ps_3d_mode)
+        ))
+        ps_form.addRow(self.tr("3D Color Mode:"), self.cmb_ps_3d_mode)
 
         # Height-from (what drives HEIGHT / Z)
         self.cmb_ps_height_from = QComboBox(self)
         self.cmb_ps_height_from.addItems([
-            "Brightness (Luminance)",
-            "Color Intensity (Saturation)",
-            "Dual (Brightness + Color)",
+            self.tr("Brightness (Luminance)"),
+            self.tr("Color Intensity (Saturation)"),
+            self.tr("Dual (Brightness + Color)"),
         ])
-        self.cmb_ps_height_from.setToolTip(
+        self.cmb_ps_height_from.setToolTip(self.tr(
             "What drives the HEIGHT (Z) of the 3D point cloud:\n"
             "• Brightness: luminance-derived height\n"
             "• Color Intensity: saturation/chroma-derived height\n"
             "• Dual: overlays TWO clouds (brightness height + saturation height)\n\n"
             "Tip: Dual gives nebulae \"bulk\" even where brightness is flatter."
-        )
-        ps_form.addRow("Height From:", self.cmb_ps_height_from)
+        ))
+        ps_form.addRow(self.tr("Height From:"), self.cmb_ps_height_from)
 
         # Max points (vertex cap)
         self.spin_ps_max_points = QSpinBox(self)
         self.spin_ps_max_points.setRange(50_000, 900_000)   # tune if you want
         self.spin_ps_max_points.setSingleStep(50_000)
         self.spin_ps_max_points.setValue(250_000)           # good default
-        self.spin_ps_max_points.setToolTip(
+        self.spin_ps_max_points.setToolTip(self.tr(
             "Maximum number of points used in the 3D plot.\n"
             "Higher = more detail but heavier in the browser."
-        )
-        ps_form.addRow("Max Points:", self.spin_ps_max_points)
+        ))
+        ps_form.addRow(self.tr("Max Points:"), self.spin_ps_max_points)
 
         # Dual saturation cloud opacity (only used when Height From == Dual)
         self.spin_ps_sat_opacity = QDoubleSpinBox(self)
         self.spin_ps_sat_opacity.setRange(0.05, 1.0)
         self.spin_ps_sat_opacity.setSingleStep(0.05)
         self.spin_ps_sat_opacity.setValue(0.45)
-        self.spin_ps_sat_opacity.setToolTip(
+        self.spin_ps_sat_opacity.setToolTip(self.tr(
             "Opacity of the saturation-height cloud when Height From is Dual.\n"
             "Lower = subtle bulk; higher = more pronounced volume."
-        )
-        ps_form.addRow("Dual Sat Opacity:", self.spin_ps_sat_opacity)
+        ))
+        ps_form.addRow(self.tr("Dual Sat Opacity:"), self.spin_ps_sat_opacity)
 
         # (Keep your existing)
         form.addRow(ps_box)
 
-        self.chk_auto_roi = QCheckBox("Auto ROI from planet centroid (green channel)")
+        self.chk_auto_roi = QCheckBox(self.tr("Auto ROI from planet centroid (green channel)"))
         self.chk_auto_roi.setChecked(True)
         form.addRow("", self.chk_auto_roi)
 
@@ -1711,29 +1711,29 @@ class PlanetProjectionDialog(QDialog):
         self.spin_pad.setRange(1.5, 6.0)
         self.spin_pad.setSingleStep(0.1)
         self.spin_pad.setValue(3.2)
-        self.spin_pad.setToolTip("ROI size ≈ pad × planet radius")
-        form.addRow("ROI pad (×radius):", self.spin_pad)
+        self.spin_pad.setToolTip(self.tr("ROI size ≈ pad × planet radius"))
+        form.addRow(self.tr("ROI pad (×radius):"), self.spin_pad)
 
         self.spin_min = QSpinBox()
         self.spin_min.setRange(128, 2000)
         self.spin_min.setValue(240)
-        form.addRow("ROI min size:", self.spin_min)
+        form.addRow(self.tr("ROI min size:"), self.spin_min)
 
         self.spin_max = QSpinBox()
         self.spin_max.setRange(128, 5000)
         self.spin_max.setValue(900)
-        form.addRow("ROI max size:", self.spin_max)
+        form.addRow(self.tr("ROI max size:"), self.spin_max)
 
         # Disk review + reset row
         disk_row_w = QWidget()
         disk_row = QHBoxLayout(disk_row_w)
         disk_row.setContentsMargins(0, 0, 0, 0)
 
-        self.chk_adjust_disk = QCheckBox("Review / adjust detected disk before generating")
+        self.chk_adjust_disk = QCheckBox(self.tr("Review / adjust detected disk before generating"))
         self.chk_adjust_disk.setChecked(True)
         disk_row.addWidget(self.chk_adjust_disk)
 
-        self.btn_reset_disk = themed_toolbtn("edit-undo", "Reset disk detection")
+        self.btn_reset_disk = themed_toolbtn("edit-undo", self.tr("Reset disk detection"))
         ...
         disk_row.addStretch(1)
         disk_row.addWidget(self.btn_reset_disk)
@@ -1741,7 +1741,7 @@ class PlanetProjectionDialog(QDialog):
         form.addRow("", disk_row_w)
 
 
-        self.chk_starfield = QCheckBox("Add static starfield background (no parallax)")
+        self.chk_starfield = QCheckBox(self.tr("Add static starfield background (no parallax)"))
         self.chk_starfield.setChecked(True)
         form.addRow("", self.chk_starfield)
 
@@ -1749,29 +1749,29 @@ class PlanetProjectionDialog(QDialog):
         self.spin_density.setRange(0.0, 0.2)
         self.spin_density.setSingleStep(0.005)
         self.spin_density.setValue(0.03)
-        self.spin_density.setToolTip("Star seed density. Try 0.01–0.06 for visible fields.")
-        form.addRow("Star density:", self.spin_density)
+        self.spin_density.setToolTip(self.tr("Star seed density. Try 0.01–0.06 for visible fields."))
+        form.addRow(self.tr("Star density:"), self.spin_density)
 
         self.spin_seed = QSpinBox()
         self.spin_seed.setRange(0, 999999)
         self.spin_seed.setValue(1)
-        form.addRow("Star seed:", self.spin_seed)
+        form.addRow(self.tr("Star seed:"), self.spin_seed)
         # Background image row
         bg_row = QHBoxLayout()
-        self.chk_bg_image = QCheckBox("Use background image")
+        self.chk_bg_image = QCheckBox(self.tr("Use background image"))
         self.chk_bg_image.setChecked(False)
         bg_row.addWidget(self.chk_bg_image)
 
         self.bg_path_edit = QLineEdit()
         self.bg_path_edit.setReadOnly(True)
-        self.bg_path_edit.setPlaceholderText("No background image selected")
+        self.bg_path_edit.setPlaceholderText(self.tr("No background image selected"))
         bg_row.addWidget(self.bg_path_edit, 1)
 
-        self.btn_bg_choose = QPushButton("Choose…")
+        self.btn_bg_choose = QPushButton(self.tr("Choose…"))
         self.btn_bg_choose.clicked.connect(self._choose_bg)
         bg_row.addWidget(self.btn_bg_choose)
 
-        form.addRow("Background:", bg_row)
+        form.addRow(self.tr("Background:"), bg_row)
 
         # Background depth (%): UI slider -2..10, internal -2000..10000 (x1000)
         bg_depth_row = QHBoxLayout()
@@ -1794,7 +1794,7 @@ class PlanetProjectionDialog(QDialog):
         self.sld_bg_depth.valueChanged.connect(_update_bg_depth_label)
         _update_bg_depth_label(self.sld_bg_depth.value())
 
-        tip = (
+        tip = self.tr(
             "Background parallax as a percent of the planet parallax.\n"
             "0% = no parallax (screen-locked)\n"
             "25% = far behind (recommended)\n"
@@ -1804,22 +1804,22 @@ class PlanetProjectionDialog(QDialog):
         self.sld_bg_depth.setToolTip(tip)
         self.lbl_bg_depth.setToolTip(tip)
 
-        form.addRow("Background depth (xR):", bg_depth_row)
+        form.addRow(self.tr("Background depth (xR):"), bg_depth_row)
 
 
         self.spin_wiggle_ms = QSpinBox()
         self.spin_wiggle_ms.setRange(40, 800)
         self.spin_wiggle_ms.setValue(120)
-        form.addRow("Wiggle period (ms):", self.spin_wiggle_ms)
+        form.addRow(self.tr("Wiggle period (ms):"), self.spin_wiggle_ms)
 
         outer.addWidget(box)
 
         # Buttons
         btns = QHBoxLayout()
-        self.btn_generate = QPushButton("Generate")
-        self.btn_stop = QPushButton("Stop Wiggle")
+        self.btn_generate = QPushButton(self.tr("Generate"))
+        self.btn_stop = QPushButton(self.tr("Stop Wiggle"))
         self.btn_stop.setEnabled(False)
-        self.btn_close = QPushButton("Close")
+        self.btn_close = QPushButton(self.tr("Close"))
         btns.addWidget(self.btn_generate)
         btns.addWidget(self.btn_stop)
         btns.addStretch(1)
@@ -1868,7 +1868,7 @@ class PlanetProjectionDialog(QDialog):
 
             # --- Galaxy vs Saturn UI tweaks inside rings_box ---
             if is_gal:
-                rings_box.setTitle("Galaxy disk")
+                rings_box.setTitle(self.tr("Galaxy disk"))
                 self.chk_rings.setVisible(False)  # only meaningful for Saturn
                 _set_form_row_visible(rings_form, self.spin_ring_outer, False)
                 _set_form_row_visible(rings_form, self.spin_ring_inner, False)
@@ -1877,7 +1877,7 @@ class PlanetProjectionDialog(QDialog):
                 if self.cmb_mode.currentIndex() != 5:
                     self.cmb_mode.setCurrentIndex(5)
             else:
-                rings_box.setTitle("Saturn rings")
+                rings_box.setTitle(self.tr("Saturn rings"))
                 self.chk_rings.setVisible(True)
                 _set_form_row_visible(rings_form, self.spin_ring_outer, True)
                 _set_form_row_visible(rings_form, self.spin_ring_inner, True)
@@ -1915,13 +1915,13 @@ class PlanetProjectionDialog(QDialog):
             mode = 0
 
         return {
-            0: "Stereo (Parallel)",
-            1: "Stereo (Cross-eye)",
-            2: "Wiggle Stereo",
-            3: "Anaglyph",
-            4: "Interactive 3D (HTML)",
-            5: "Galaxy Polar View",
-        }.get(mode, "Projection")
+            0: self.tr("Stereo (Parallel)"),
+            1: self.tr("Stereo (Cross-eye)"),
+            2: self.tr("Wiggle Stereo"),
+            3: self.tr("Anaglyph"),
+            4: self.tr("Interactive 3D (HTML)"),
+            5: self.tr("Galaxy Polar View"),
+        }.get(mode, self.tr("Projection"))
 
     def _ptype_name(self) -> str:
         """Human-friendly planet type name for titles/dialogs."""
@@ -1931,11 +1931,11 @@ class PlanetProjectionDialog(QDialog):
             ptype = 0
 
         return {
-            0: "Planet Projection",
-            1: "Saturn Projection",
-            2: "Pseudo Surface",
-            3: "Galaxy Projection",
-        }.get(ptype, "Projection")
+            0: self.tr("Planet Projection"),
+            1: self.tr("Saturn Projection"),
+            2: self.tr("Pseudo Surface"),
+            3: self.tr("Galaxy Projection"),
+        }.get(ptype, self.tr("Projection"))
 
     def _native_output_u8_for_push(self) -> np.ndarray | None:
         """
@@ -1989,12 +1989,12 @@ class PlanetProjectionDialog(QDialog):
         mode  = int(self.cmb_mode.currentIndex()) if hasattr(self, "cmb_mode") else 0
 
         if ptype == 2:
-            return "Pseudo Surface"
+            return self.tr("Pseudo Surface")
         if (ptype == 3) or (mode == 5):
-            return "Galaxy Polar View"
+            return self.tr("Galaxy Polar View")
         if ptype == 1:
-            return "Saturn Projection"
-        return "Planet Projection"
+            return self.tr("Saturn Projection")
+        return self.tr("Planet Projection")
 
     def _update_window_title(self):
         """Call this after any mode/type change to keep UI honest."""
@@ -2010,7 +2010,7 @@ class PlanetProjectionDialog(QDialog):
         if hasattr(self, "btn_reset_disk") and self.btn_reset_disk is not None:
             self.btn_reset_disk.setEnabled(False)
 
-        QMessageBox.information(self, self._ui_title(), "Disk refinement reset. Next Generate will re-detect.")
+        QMessageBox.information(self, self._ui_title(), self.tr("Disk refinement reset. Next Generate will re-detect."))
 
 
 
@@ -2198,12 +2198,12 @@ class PlanetProjectionDialog(QDialog):
         mode = int(self.cmb_mode.currentIndex())
 
         if self.image is None:
-            QMessageBox.information(self, self._ui_title(), "No image loaded.")
+            QMessageBox.information(self, self._ui_title(), self.tr("No image loaded."))
             return
 
         img = np.asarray(self.image)
         if img.ndim != 3 or img.shape[2] < 3:
-            QMessageBox.information(self, self._ui_title(), "Image must be RGB (3 channels).")
+            QMessageBox.information(self, self._ui_title(), self.tr("Image must be RGB (3 channels)."))
             return
 
         img = img[..., :3]  # ensure exactly RGB
@@ -2365,7 +2365,7 @@ class PlanetProjectionDialog(QDialog):
 
                     fn, _ = QFileDialog.getSaveFileName(
                         self,
-                        "Save Pseudo Surface As",
+                        self.tr("Save Pseudo Surface As"),
                         default_path,
                         "HTML Files (*.html)"
                     )
@@ -2382,7 +2382,7 @@ class PlanetProjectionDialog(QDialog):
                     webbrowser.open("file://" + tmp.name)
 
                 except Exception as e:
-                    QMessageBox.warning(self, "Pseudo Surface", f"Failed to generate 3D pseudo surface:\n{e}")
+                    QMessageBox.warning(self, self.tr("Pseudo Surface"), self.tr("Failed to generate 3D pseudo surface:\n{0}").format(e))
                 return
 
             if mode == 2:
@@ -2394,7 +2394,7 @@ class PlanetProjectionDialog(QDialog):
                     ana = _make_anaglyph(self._left, self._right, swap_eyes=False)
                     self._push_preview_u8(ana)
                 except Exception as e:
-                    QMessageBox.warning(self, "Anaglyph", f"Failed to build anaglyph:\n{e}")
+                    QMessageBox.warning(self, self.tr("Anaglyph"), self.tr("Failed to build anaglyph:\n{0}").format(e))
                 return
 
             cross_eye = (mode == 1)
@@ -2433,7 +2433,7 @@ class PlanetProjectionDialog(QDialog):
                     out_size=out_size,
                 )
             except Exception as e:
-                QMessageBox.warning(self, "Galaxy Polar View", f"Failed to deproject galaxy:\n{e}")
+                QMessageBox.warning(self, self.tr("Galaxy Polar View"), self.tr("Failed to deproject galaxy:\n{0}").format(e))
                 return
 
             # push single-frame output
@@ -2691,7 +2691,7 @@ class PlanetProjectionDialog(QDialog):
 
                 fn, _ = QFileDialog.getSaveFileName(
                     self,
-                    "Save Planet Sphere As",
+                    self.tr("Save Planet Sphere As"),
                     default_path,
                     "HTML Files (*.html)"
                 )
@@ -2708,7 +2708,7 @@ class PlanetProjectionDialog(QDialog):
                 webbrowser.open("file://" + tmp.name)
 
             except Exception as e:
-                QMessageBox.warning(self, "Planet Sphere", f"Failed to generate 3D sphere:\n{e}")
+                QMessageBox.warning(self, self.tr("Planet Sphere"), self.tr("Failed to generate 3D sphere:\n{0}").format(e))
             return
 
         if mode == 2:
@@ -2720,7 +2720,7 @@ class PlanetProjectionDialog(QDialog):
                 ana = _make_anaglyph(self._left, self._right, swap_eyes=False)
                 self._push_preview_u8(ana)
             except Exception as e:
-                QMessageBox.warning(self, "Anaglyph", f"Failed to build anaglyph:\n{e}")
+                QMessageBox.warning(self, self.tr("Anaglyph"), self.tr("Failed to build anaglyph:\n{0}").format(e))
             return
 
         cross_eye = (mode == 0)
@@ -2871,7 +2871,7 @@ class PlanetProjectionDialog(QDialog):
     def _choose_bg(self):
         fn, _ = QFileDialog.getOpenFileName(
             self,
-            "Select background image",
+            self.tr("Select background image"),
             "",
             "Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;All Files (*)",
         )
@@ -2905,11 +2905,11 @@ class PlanetProjectionDialog(QDialog):
             self._bg_img01 = im01
         except Exception as e:
             self._bg_img01 = None
-            QMessageBox.warning(self, "Background Image", f"Failed to load background:\n{e}")
+            QMessageBox.warning(self, self.tr("Background Image"), self.tr("Failed to load background:\n{0}").format(e))
 
     def _start_wiggle(self):
         if self._left is None or self._right is None:
-            QMessageBox.information(self, "Wiggle", "Nothing to wiggle yet. Click Generate first.")
+            QMessageBox.information(self, self.tr("Wiggle"), self.tr("Nothing to wiggle yet. Click Generate first."))
             return
 
         self.btn_stop.setEnabled(True)
@@ -2979,7 +2979,7 @@ class PlanetProjectionDialog(QDialog):
                 img = self._last_preview_u8
 
         if img is None:
-            QMessageBox.information(self, title, "Nothing to save yet. Click Generate first.")
+            QMessageBox.information(self, title, self.tr("Nothing to save yet. Click Generate first."))
             return
 
         img = np.asarray(img)
@@ -2996,7 +2996,7 @@ class PlanetProjectionDialog(QDialog):
 
         fn, filt = QFileDialog.getSaveFileName(
             self,
-            f"Save Still — {title}",
+            self.tr("Save Still — {0}").format(title),
             base,
             "PNG (*.png);;JPEG (*.jpg *.jpeg);;TIFF (*.tif *.tiff)"
         )
@@ -3020,13 +3020,13 @@ class PlanetProjectionDialog(QDialog):
                 im.save(fn)
 
         except Exception as e:
-            QMessageBox.warning(self, f"Save Still — {title}", f"Failed to save:\n{e}")
+            QMessageBox.warning(self, self.tr("Save Still — {0}").format(title), self.tr("Failed to save:\n{0}").format(e))
 
     def _push_to_new_document(self):
         title = self._ui_title()
         img_u8 = self._native_output_u8_for_push()
         if img_u8 is None:
-            QMessageBox.information(self, title, "Nothing to push yet. Click Generate first.")
+            QMessageBox.information(self, title, self.tr("Nothing to push yet. Click Generate first."))
             return
 
         # Build a nice doc title
@@ -3069,17 +3069,17 @@ class PlanetProjectionDialog(QDialog):
             else:
                 raise RuntimeError("DocManager has no known 'new document from array' method.")
         except Exception as e:
-            QMessageBox.warning(self, title, f"Failed to push to new document:\n{e}")
+            QMessageBox.warning(self, title, self.tr("Failed to push to new document:\n{0}").format(e))
 
 
     def _save_wiggle(self):
         if self._left is None or self._right is None:
-            QMessageBox.information(self, "Save Wiggle", "Nothing to save yet. Click Generate first.")
+            QMessageBox.information(self, self.tr("Save Wiggle"), self.tr("Nothing to save yet. Click Generate first."))
             return
 
         fn, filt = QFileDialog.getSaveFileName(
             self,
-            "Save Wiggle Animation",
+            self.tr("Save Wiggle Animation"),
             "",
             "Animated GIF (*.gif);;MP4 Video (*.mp4)"
         )
@@ -3134,7 +3134,7 @@ class PlanetProjectionDialog(QDialog):
                 )
                 return
             except Exception as e:
-                QMessageBox.warning(self, "Save Wiggle", f"Failed to save GIF:\n{e}")
+                QMessageBox.warning(self, self.tr("Save Wiggle"), self.tr("Failed to save GIF:\n{0}").format(e))
                 return
 
         # MP4
@@ -3154,10 +3154,10 @@ class PlanetProjectionDialog(QDialog):
         except Exception as e:
             QMessageBox.warning(
                 self,
-                "Save Wiggle (MP4)",
-                "Failed to save MP4.\n\n"
-                f"{e}\n\n"
-                "Tip: GIF export should always work. If you need MP4 reliably, we can bundle/use ffmpeg."
+                self.tr("Save Wiggle (MP4)"),
+                self.tr("Failed to save MP4.\n\n"
+                        "{0}\n\n"
+                        "Tip: GIF export should always work. If you need MP4 reliably, we can bundle/use ffmpeg.").format(e)
             )
             return
 
@@ -3179,7 +3179,7 @@ class PlanetDiskAdjustDialog(QDialog):
                 ring_outer: float = 2.2, ring_inner: float = 1.25):
         super().__init__(parent)
 
-        self.setWindowTitle("Adjust Planet Disk")
+        self.setWindowTitle(self.tr("Adjust Planet Disk"))
         self.setModal(True)
         self._preview_zoom = 1.0   # 1.0 = Fit
         self.overlay_mode = str(overlay_mode)
@@ -3215,16 +3215,16 @@ class PlanetDiskAdjustDialog(QDialog):
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
 
-        help_txt = (
+        help_txt = self.tr(
             "Ctrl+Click+Drag to move the circle.\n"
             "Use Radius controls and arrow nudges for precision."
         )
         if self.overlay_mode == "saturn":
-            help_txt += "\nAdjust ring PA / tilt / inner / outer to match Saturn's rings."
+            help_txt += self.tr("\nAdjust ring PA / tilt / inner / outer to match Saturn's rings.")
         elif self.overlay_mode == "galaxy":
-            help_txt += "\nAdjust disk PA / tilt to match the galaxy's projected ellipse."
+            help_txt += self.tr("\nAdjust disk PA / tilt to match the galaxy's projected ellipse.")
         elif self.overlay_mode == "planet":
-            help_txt += "\nSet Axis PA / tilt so derotation matches the planet's rotation axis."
+            help_txt += self.tr("\nSet Axis PA / tilt so derotation matches the planet's rotation axis.")
 
 
         self.lbl_help = QLabel(help_txt)
@@ -3233,10 +3233,10 @@ class PlanetDiskAdjustDialog(QDialog):
 
         # Zoom controls
         zoom_row = QHBoxLayout()
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
         self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit"))
 
         zoom_row.addStretch(1)
         zoom_row.addWidget(self.btn_zoom_out)
@@ -3262,11 +3262,11 @@ class PlanetDiskAdjustDialog(QDialog):
         # --- rings controls (optional) ---
         if self.overlay_mode in ("saturn", "galaxy", "planet"):
             if self.overlay_mode == "saturn":
-                title = "Saturn ring alignment"
+                title = self.tr("Saturn ring alignment")
             elif self.overlay_mode == "galaxy":
-                title = "Galaxy disk alignment"
+                title = self.tr("Galaxy disk alignment")
             else:
-                title = "Planet axis alignment (derotation)"
+                title = self.tr("Planet axis alignment (derotation)")
 
             rings_box = QGroupBox(title)
             rings_form = QFormLayout(rings_box)
@@ -3278,11 +3278,11 @@ class PlanetDiskAdjustDialog(QDialog):
                 on_change=self._on_ring_widgets_changed
             )
             if self.overlay_mode == "saturn":
-                pa_label = "Ring PA (deg):"
+                pa_label = self.tr("Ring PA (deg):")
             elif self.overlay_mode == "galaxy":
-                pa_label = "Disk PA (deg):"
+                pa_label = self.tr("Disk PA (deg):")
             else:
-                pa_label = "Axis PA (deg):"  # <-- derotation
+                pa_label = self.tr("Axis PA (deg):")  # <-- derotation
             rings_form.addRow(pa_label, row)
 
 
@@ -3293,11 +3293,11 @@ class PlanetDiskAdjustDialog(QDialog):
                 on_change=self._on_ring_widgets_changed
             )
             if self.overlay_mode == "saturn":
-                tilt_label = "Ring tilt (b/a):"
+                tilt_label = self.tr("Ring tilt (b/a):")
             elif self.overlay_mode == "galaxy":
-                tilt_label = "Disk tilt (b/a):"
+                tilt_label = self.tr("Disk tilt (b/a):")
             else:
-                tilt_label = "Axis tilt (b/a):"  # <-- derotation
+                tilt_label = self.tr("Axis tilt (b/a):")  # <-- derotation
             rings_form.addRow(tilt_label, row)
 
 
@@ -3308,30 +3308,27 @@ class PlanetDiskAdjustDialog(QDialog):
                     value=self.ring_outer, decimals=2,
                     on_change=self._on_ring_widgets_changed,
                 )
-                rings_form.addRow("Outer factor:", row)
+                rings_form.addRow(self.tr("Outer factor:"), row)
 
                 row, self.sld_ring_inner, self.spin_ring_inner = self._make_slider_spin_row(
                     min_v=0.2, max_v=3.5, step_v=0.05,
                     value=self.ring_inner, decimals=2,
                     on_change=self._on_ring_widgets_changed,
                 )
-                rings_form.addRow("Inner factor:", row)
+                rings_form.addRow(self.tr("Inner factor:"), row)
             outer.addWidget(rings_box)
 
-        if self.overlay_mode == "saturn":
-            help_txt += "\nAdjust ring PA / tilt / inner / outer to match Saturn's rings."
-        elif self.overlay_mode == "galaxy":
-            help_txt += "\nAdjust disk PA / tilt to match the galaxy's projected ellipse."
+        # The mode hint was already appended to help_txt at the top of _build_ui.
         self.lbl_help.setText(help_txt)
 
         # auto-detect row
         auto_row = QHBoxLayout()
-        self.btn_auto = QPushButton("🎯 Auto-detect disk")
-        self.btn_auto.setToolTip(
+        self.btn_auto = QPushButton(self.tr("🎯 Auto-detect disk"))
+        self.btn_auto.setToolTip(self.tr(
             "Automatically estimate the disk center, radius, and — for galaxy /\n"
             "planet / Saturn — the ellipse PA and tilt (oblateness) from the image.\n"
             "Gets you close (WinJUPOS-style); fine-tune from there."
-        )
+        ))
         self.btn_auto.clicked.connect(self._auto_detect)
         auto_row.addWidget(self.btn_auto)
         auto_row.addStretch(1)
@@ -3339,8 +3336,8 @@ class PlanetDiskAdjustDialog(QDialog):
 
         # radius row
         rad_row = QHBoxLayout()
-        self.btn_r_minus = QPushButton("Radius -")
-        self.btn_r_plus = QPushButton("Radius +")
+        self.btn_r_minus = QPushButton(self.tr("Radius -"))
+        self.btn_r_plus = QPushButton(self.tr("Radius +"))
         self.spin_r = QDoubleSpinBox()
         self.spin_r.setRange(5.0, float(max(self.W, self.H)))
         self.spin_r.setDecimals(2)
@@ -3368,7 +3365,7 @@ class PlanetDiskAdjustDialog(QDialog):
         self.spin_step = QSpinBox()
         self.spin_step.setRange(1, 200)
         self.spin_step.setValue(2)
-        nud_row.addWidget(QLabel("Nudge (px):"))
+        nud_row.addWidget(QLabel(self.tr("Nudge (px):")))
         nud_row.addWidget(self.spin_step)
 
         self.btn_left = QPushButton("◀")
@@ -3394,8 +3391,8 @@ class PlanetDiskAdjustDialog(QDialog):
 
         # ok/cancel
         btn_row = QHBoxLayout()
-        self.btn_ok = QPushButton("Use This Disk")
-        self.btn_cancel = QPushButton("Cancel")
+        self.btn_ok = QPushButton(self.tr("Use This Disk"))
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
         btn_row.addWidget(self.btn_ok)
         btn_row.addStretch(1)
         btn_row.addWidget(self.btn_cancel)
@@ -3699,13 +3696,13 @@ class PlanetDiskAdjustDialog(QDialog):
             tilt = float(getattr(self, "ring_tilt", 0.35))
             if overlay_mode == "planet":
                 self.lbl_status.setText(
-                    f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px   "
-                    f"Axis PA: {pa:.1f}°   Tilt(b/a): {tilt:.2f}"
+                    self.tr("Center: ({0:.1f}, {1:.1f})   Radius: {2:.1f}px   "
+                            "Axis PA: {3:.1f}°   Tilt(b/a): {4:.2f}").format(self.cx, self.cy, self.r, pa, tilt)
                 )
             else:
                 self.lbl_status.setText(
-                    f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px   "
-                    f"PA: {pa:.1f}°   Tilt(b/a): {tilt:.2f}"
+                    self.tr("Center: ({0:.1f}, {1:.1f})   Radius: {2:.1f}px   "
+                            "PA: {3:.1f}°   Tilt(b/a): {4:.2f}").format(self.cx, self.cy, self.r, pa, tilt)
                 )
 
         elif overlay_mode == "saturn":
@@ -3714,11 +3711,13 @@ class PlanetDiskAdjustDialog(QDialog):
             kout = float(getattr(self, "ring_outer", 2.2))
             kin  = float(getattr(self, "ring_inner", 1.25))
             self.lbl_status.setText(
-                f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px   "
-                f"PA: {pa:.1f}°   Tilt(b/a): {tilt:.2f}   Outer: {kout:.2f}   Inner: {kin:.2f}"
+                self.tr("Center: ({0:.1f}, {1:.1f})   Radius: {2:.1f}px   "
+                        "PA: {3:.1f}°   Tilt(b/a): {4:.2f}   Outer: {5:.2f}   Inner: {6:.2f}").format(
+                    self.cx, self.cy, self.r, pa, tilt, kout, kin)
             )
         else:
-            self.lbl_status.setText(f"Center: ({self.cx:.1f}, {self.cy:.1f})   Radius: {self.r:.1f}px")
+            self.lbl_status.setText(self.tr("Center: ({0:.1f}, {1:.1f})   Radius: {2:.1f}px").format(
+                self.cx, self.cy, self.r))
 
 
     # ---------- UI callbacks ----------
@@ -3744,9 +3743,9 @@ class PlanetDiskAdjustDialog(QDialog):
         res = _auto_fit_planet_ellipse(self.img)
         if res is None:
             QMessageBox.information(
-                self, "Auto-detect Disk",
-                "Could not detect a disk automatically.\n"
-                "Adjust the circle manually instead."
+                self, self.tr("Auto-detect Disk"),
+                self.tr("Could not detect a disk automatically.\n"
+                        "Adjust the circle manually instead.")
             )
             return
 
@@ -3858,7 +3857,7 @@ class PlanetProjectionPreviewDialog(QDialog):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("3D Projection — Preview")
+        self.setWindowTitle(self.tr("3D Projection — Preview"))
         self.setModal(False)
         self._img_zoom = 1.0      # content zoom (1.0 = full view)
         self._img_pan_x = 0.0     # in source pixels, relative to center
@@ -3890,12 +3889,12 @@ class PlanetProjectionPreviewDialog(QDialog):
 
         # Zoom controls (toolbtn icons like the rest of SASpro)
         zoom_row = QHBoxLayout()
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
         self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
-        self.btn_save_view = themed_toolbtn("document-save", "Save current preview view…")
-        self.btn_push = QPushButton("Push to New Document")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit"))
+        self.btn_save_view = themed_toolbtn("document-save", self.tr("Save current preview view…"))
+        self.btn_push = QPushButton(self.tr("Push to New Document"))
 
 
 
@@ -3916,14 +3915,14 @@ class PlanetProjectionPreviewDialog(QDialog):
         self.btn_zoom_100.clicked.connect(lambda: self.set_zoom(0.0))
 
         imgzoom_row = QHBoxLayout()
-        self.btn_img_reset = themed_toolbtn("edit-undo", "Reset Image Pan/Zoom")
+        self.btn_img_reset = themed_toolbtn("edit-undo", self.tr("Reset Image Pan/Zoom"))
 
         self.sld_img_zoom = QSlider(Qt.Orientation.Horizontal, self)
         self.sld_img_zoom.setRange(0, 200)   # 0 -> fit, +200 -> zoom in
         self.sld_img_zoom.setValue(0)
-        self.sld_img_zoom.setToolTip("Zoom into the image content (pan with mouse drag)")
+        self.sld_img_zoom.setToolTip(self.tr("Zoom into the image content (pan with mouse drag)"))
 
-        imgzoom_row.addWidget(QLabel("Image zoom:"))
+        imgzoom_row.addWidget(QLabel(self.tr("Image zoom:")))
         imgzoom_row.addWidget(self.sld_img_zoom, 1)
         imgzoom_row.addWidget(self.btn_img_reset)
         outer.addLayout(imgzoom_row)
@@ -4474,12 +4473,12 @@ class PlanetProjectionPreviewDialog(QDialog):
     def _save_current_view(self):
         canvas = self._get_current_view_canvas_u8()
         if canvas is None:
-            QMessageBox.information(self, "Save View", "No preview image to save yet.")
+            QMessageBox.information(self, self.tr("Save View"), self.tr("No preview image to save yet."))
             return
 
         fn, filt = QFileDialog.getSaveFileName(
             self,
-            "Save Preview View",
+            self.tr("Save Preview View"),
             "",
             "PNG (*.png);;JPEG (*.jpg *.jpeg)"
         )
@@ -4499,7 +4498,7 @@ class PlanetProjectionPreviewDialog(QDialog):
             else:
                 im.save(fn)
         except Exception as e:
-            QMessageBox.warning(self, "Save View", f"Failed to save:\n{e}")
+            QMessageBox.warning(self, self.tr("Save View"), self.tr("Failed to save:\n{0}").format(e))
 
     def _find_main_window(self):
         w = self
@@ -4516,7 +4515,7 @@ class PlanetProjectionPreviewDialog(QDialog):
     def _push_to_new_document(self):
         img_u8 = self._get_current_view_native_u8()
         if img_u8 is None:
-            QMessageBox.warning(self, "Push to New Document", "Nothing to push yet.")
+            QMessageBox.warning(self, self.tr("Push to New Document"), self.tr("Nothing to push yet."))
             return
 
         arr = np.asarray(img_u8)
@@ -4532,7 +4531,7 @@ class PlanetProjectionPreviewDialog(QDialog):
         mw = self._find_main_window()
         dm = getattr(mw, "docman", None) if mw else None
         if not mw or not dm:
-            QMessageBox.critical(self, "Push to New Document", "Main window or DocManager not available.")
+            QMessageBox.critical(self, self.tr("Push to New Document"), self.tr("Main window or DocManager not available."))
             return
 
         title = "Planet Projection Preview"
@@ -4553,4 +4552,4 @@ class PlanetProjectionPreviewDialog(QDialog):
                 sw.show()
 
         except Exception as e:
-            QMessageBox.critical(self, "Push to New Document", f"Failed to open new view:\n{e}")
+            QMessageBox.critical(self, self.tr("Push to New Document"), self.tr("Failed to open new view:\n{0}").format(e))

@@ -25,7 +25,7 @@ import os
 import platform
 import numpy as np
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QCoreApplication, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QComboBox,
@@ -35,6 +35,10 @@ from PyQt6.QtWidgets import (
     QProgressBar, QAbstractItemView, QRadioButton, QButtonGroup, QLineEdit,
     QWidget, QGridLayout, QToolButton,
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("CosmeticCorrection", text)
 
 # ---------- shared helpers ----------
 from setiastro.saspro.widgets.image_utils import (
@@ -828,7 +832,7 @@ class CosmeticCorrectionDialog(QDialog):
             self._orig_mono = False
         try:
             self.cmb_bayer.setItemText(
-                0, self.tr(f"Auto-detect  ({self._auto_bayer})") if self._auto_bayer
+                0, self.tr("Auto-detect  ({0})").format(self._auto_bayer) if self._auto_bayer
                    else self.tr("Auto-detect"))
         except Exception:
             pass
@@ -942,7 +946,7 @@ class CosmeticCorrectionDialog(QDialog):
             self.cmb_bayer.addItem(pat, userData=pat)
         # If auto-detected, tack the actual value into the "Auto" label so it's visible
         if self._auto_bayer:
-            self.cmb_bayer.setItemText(0, self.tr(f"Auto-detect  ({self._auto_bayer})"))
+            self.cmb_bayer.setItemText(0, self.tr("Auto-detect  ({0})").format(self._auto_bayer))
         self.cmb_bayer.setToolTip(self.tr(
             "How to treat the image for neighbour comparison.\n"
             "• Auto-detect: read BAYERPAT from FITS header if the image is a 2-D mosaic.\n"
@@ -971,9 +975,8 @@ class CosmeticCorrectionDialog(QDialog):
         # ---- preview area (before | after) ----
         prev_bar = QHBoxLayout()
         prev_bar.addWidget(QLabel(self.tr(
-            "<b>Preview</b> — %d px tile, always autostretched"
-            % self._PREVIEW_MAX_LONG_SIDE
-        )))
+            "<b>Preview</b> — {0} px tile, always autostretched"
+        ).format(self._PREVIEW_MAX_LONG_SIDE)))
         prev_bar.addStretch(1)
 
         # 3x3 region selector — lets the user pick which corner / edge /
@@ -1495,7 +1498,7 @@ class CosmeticCorrectionDialog(QDialog):
             )
         except Exception as e:
             QMessageBox.critical(self, self.tr("Cosmetic Correction"),
-                                 self.tr(f"Pixel map failed:\n{e}"))
+                                 self.tr("Pixel map failed:\n{0}").format(e))
             return
 
         # diff > 0 → original brighter → hot  → red
@@ -1542,7 +1545,7 @@ class CosmeticCorrectionDialog(QDialog):
 
         self.status_label.setStyleSheet("color: #4caf50; font-weight: bold;")
         self.status_label.setText(
-            self.tr(f"✓ Pixel map created — {n_hot} hot, {n_cold} cold"))
+            self.tr("✓ Pixel map created — {0} hot, {1} cold").format(n_hot, n_cold))
         if hasattr(self.main, "_log"):
             try:
                 self.main._log(
@@ -1613,7 +1616,7 @@ class CosmeticCorrectionDialog(QDialog):
             s.sync()
         except Exception as e:
             QMessageBox.warning(self, self.tr("Push to Stacking Suite"),
-                                self.tr(f"Could not update settings:\n{e}"))
+                                self.tr("Could not update settings:\n{0}").format(e))
             return
 
         if hasattr(self.main, "_log"):
@@ -1626,7 +1629,7 @@ class CosmeticCorrectionDialog(QDialog):
 
         self.status_label.setStyleSheet("color: #4caf50; font-weight: bold;")
         self.status_label.setText(
-            self.tr(f"✓ Pushed σ to Stacking Suite (hot={hs:.2f}, cold={cs:.2f})")
+            self.tr("✓ Pushed σ to Stacking Suite (hot={0:.2f}, cold={1:.2f})").format(hs, cs)
         )
 
     def _request_preview_refresh(self):
@@ -1674,7 +1677,7 @@ class CosmeticCorrectionDialog(QDialog):
 
     def _on_preview_fail(self, msg: str):
         self.status_label.setStyleSheet("color: #d05050; font-weight: bold;")
-        self.status_label.setText(self.tr(f"Preview failed: {msg}"))
+        self.status_label.setText(self.tr("Preview failed: {0}").format(msg))
         self.btn_refresh.setEnabled(True)
         self.btn_apply.setEnabled(True)
 
@@ -1712,7 +1715,7 @@ class CosmeticCorrectionDialog(QDialog):
                 s.sync()
             except Exception as e:
                 QMessageBox.warning(self, self.tr("Cosmetic Correction"),
-                    self.tr(f"Could not save settings:\n{e}"))
+                    self.tr("Could not save settings:\n{0}").format(e))
                 return
             if hasattr(self.main, "_log"):
                 try:
@@ -1758,7 +1761,7 @@ class CosmeticCorrectionDialog(QDialog):
             )
         except Exception as e:
             QMessageBox.critical(self, self.tr("Cosmetic Correction"),
-                                 self.tr(f"Apply failed:\n{e}"))
+                                 self.tr("Apply failed:\n{0}").format(e))
             return
 
         # Refresh the preview tile from the corrected image
@@ -1795,7 +1798,8 @@ class CosmeticCorrectionDialog(QDialog):
         n_cold = int(_counts.get("cold", 0)) if isinstance(_counts, dict) else 0
         target = f"“{name}”" if name else self.tr("image")
         self.status_label.setText(
-            self.tr(f"✓ Applied to {target} — corrected {n_hot} hot, {n_cold} cold pixel(s)")
+            self.tr("✓ Applied to {0} — corrected {1} hot, {2} cold pixel(s)").format(
+                target, n_hot, n_cold)
         )
         # The edit is committed to the document (undo lives in DocManager
         # history), so "Cancel" would be a lie from here on — relabel it.
@@ -1813,7 +1817,7 @@ class CosmeticCorrectionDialog(QDialog):
                     self.doc = new_doc
                     self._auto_bayer = _bayer_from_doc(self.doc)
                     if self._auto_bayer:
-                        self.cmb_bayer.setItemText(0, self.tr(f"Auto-detect  ({self._auto_bayer})"))
+                        self.cmb_bayer.setItemText(0, self.tr("Auto-detect  ({0})").format(self._auto_bayer))
                     else:
                         self.cmb_bayer.setItemText(0, self.tr("Auto-detect"))
                     try:
@@ -2128,8 +2132,8 @@ class CosmeticCorrectionBatchDialog(QDialog):
             "  0.40  no effective protection\n"
             "\n"
             "A star lights every photosite under the PSF; a hot pixel lights\n"
-            "only itself.  This sets how much company a candidate's adjacent\n"
-            "differently-coloured photosites must keep it before it is kept.\n"
+            "only itself.  A candidate is left alone when its adjacent\n"
+            "differently-coloured photosites are lit too; this sets how much is enough.\n"
             "\n"
             "Has no effect on mono / debayered input."
         ))
@@ -2261,7 +2265,7 @@ class CosmeticCorrectionBatchDialog(QDialog):
             s.sync()
         except Exception as e:
             QMessageBox.warning(self, self.tr("Push to Stacking Suite"),
-                                self.tr(f"Could not update settings:\n{e}"))
+                                self.tr("Could not update settings:\n{0}").format(e))
             return
 
         if hasattr(self.main, "_log"):
@@ -2274,7 +2278,7 @@ class CosmeticCorrectionBatchDialog(QDialog):
 
         self.status_label.setStyleSheet("color: #4caf50; font-weight: bold;")
         self.status_label.setText(
-            self.tr(f"✓ Pushed σ to Stacking Suite (hot={hs:.2f}, cold={cs:.2f})")
+            self.tr("✓ Pushed σ to Stacking Suite (hot={0:.2f}, cold={1:.2f})").format(hs, cs)
         )
 
     # ------------------------------------------------------------------
@@ -2300,12 +2304,12 @@ class CosmeticCorrectionBatchDialog(QDialog):
             added += 1
         if added:
             self.status_label.setStyleSheet("color: #4caf50; font-weight: bold;")
-            self.status_label.setText(self.tr(f"Added {added} file(s)."))
+            self.status_label.setText(self.tr("Added {0} file(s).").format(added))
 
     def _on_add_files(self):
         paths, _ = QFileDialog.getOpenFileNames(
             self, self.tr("Add files"), "",
-            self.tr(f"Images ({self._SUPPORTED_EXTS});;All files (*)"),
+            f"Images ({self._SUPPORTED_EXTS});;All files (*)",
         )
         if paths:
             self._add_paths(paths)
@@ -2414,8 +2418,8 @@ class CosmeticCorrectionBatchDialog(QDialog):
         if out_mode == "overwrite":
             ret = QMessageBox.question(
                 self, self.tr("Overwrite source files?"),
-                self.tr(f"This will overwrite {len(paths)} source file(s) in place. "
-                        "This cannot be undone.  Continue?"),
+                self.tr("This will overwrite {0} source file(s) in place. "
+                        "This cannot be undone.  Continue?").format(len(paths)),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -2428,7 +2432,7 @@ class CosmeticCorrectionBatchDialog(QDialog):
         self.progress.setRange(0, len(paths))
         self.progress.setValue(0)
         self.status_label.setStyleSheet("color: #4caf50; font-weight: bold;")
-        self.status_label.setText(self.tr(f"Processing {len(paths)} file(s)…"))
+        self.status_label.setText(self.tr("Processing {0} file(s)…").format(len(paths)))
 
         bp_raw = str(self.cmb_bayer.currentData() or "")
 
@@ -2515,11 +2519,12 @@ class CosmeticCorrectionBatchDialog(QDialog):
         self._set_controls_enabled(True)
         if n_fail == 0:
             self.status_label.setStyleSheet("color: #4caf50; font-weight: bold;")
-            self.status_label.setText(self.tr(f"✓ Done — {n_ok} file(s) processed."))
+            self.status_label.setText(self.tr("✓ Done — {0} file(s) processed.").format(n_ok))
         else:
             self.status_label.setStyleSheet("color: #ffb020; font-weight: bold;")
             self.status_label.setText(
-                self.tr(f"Done — {n_ok} ok, {n_fail} failed.  See list for details.")
+                self.tr("Done — {0} ok, {1} failed.  See list for details.").format(
+                    n_ok, n_fail)
             )
         if hasattr(self.main, "_log"):
             try:
@@ -2716,25 +2721,25 @@ def open_cosmetic_correction_tune(main, sample_light_path: str,
     try:
         from setiastro.saspro.legacy.image_manager import load_image
     except Exception as e:
-        QMessageBox.critical(main, "Cosmetic Correction",
-                             f"Could not import image loader:\n{e}")
+        QMessageBox.critical(main, _tr("Cosmetic Correction"),
+                             _tr("Could not import image loader:\n{0}").format(e))
         return None
 
     if not sample_light_path or not os.path.isfile(sample_light_path):
-        QMessageBox.warning(main, "Cosmetic Correction",
-                            "Could not find a sample light frame to load.")
+        QMessageBox.warning(main, _tr("Cosmetic Correction"),
+                            _tr("Could not find a sample light frame to load."))
         return None
 
     # Load the sample light
     try:
         image, header, _bit_depth, _is_mono = load_image(sample_light_path)
     except Exception as e:
-        QMessageBox.critical(main, "Cosmetic Correction",
-                             f"Failed to load sample light:\n{e}")
+        QMessageBox.critical(main, _tr("Cosmetic Correction"),
+                             _tr("Failed to load sample light:\n{0}").format(e))
         return None
     if image is None:
-        QMessageBox.warning(main, "Cosmetic Correction",
-                            f"Sample load returned no image:\n{sample_light_path}")
+        QMessageBox.warning(main, _tr("Cosmetic Correction"),
+                            _tr("Sample load returned no image:\n{0}").format(sample_light_path))
         return None
 
     # Wrap it as a stub doc for the dialog

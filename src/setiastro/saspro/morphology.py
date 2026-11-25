@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import cv2
 
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QCoreApplication
 from PyQt6.QtGui import QImage, QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QFormLayout,
@@ -20,6 +20,10 @@ from setiastro.saspro.widgets.image_utils import (
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("Morphology", text)
 
 # ---------------- Core (unchanged) ----------------
 # The operation runs on 8-bit data, so it splits into: the 8-bit input (fixed
@@ -204,9 +208,9 @@ class MorphologyDialogPro(QDialog):
         z = QHBoxLayout()
         z.addStretch(1)
 
-        btn_in  = themed_toolbtn("zoom-in", "Zoom In")
-        btn_out = themed_toolbtn("zoom-out", "Zoom Out")
-        btn_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        btn_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        btn_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        btn_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         btn_in.clicked.connect(self.view.zoom_in)
         btn_out.clicked.connect(self.view.zoom_out)
@@ -331,7 +335,7 @@ class MorphologyDialogPro(QDialog):
             H, W = self.orig.shape[:2]
             m = _get_active_mask_resized(self.doc, H, W)
         except Exception as e:
-            QMessageBox.warning(self, "Morphology", f"Preview failed:\n{e}")
+            QMessageBox.warning(self, self.tr("Morphology"), self.tr("Preview failed:\n{0}").format(e))
             return
         b = self._base_u8
         base_u8 = b[1] if (b is not None and b[0] is self.orig) else None
@@ -345,7 +349,7 @@ class MorphologyDialogPro(QDialog):
         if getattr(self, "_memory_released", False) or res.get("orig") is not self.orig:
             return                           # closed, or the image changed meanwhile
         if "error" in res:
-            QMessageBox.warning(self, "Morphology", f"Preview failed:\n{res['error']}")
+            QMessageBox.warning(self, self.tr("Morphology"), self.tr("Preview failed:\n{0}").format(res['error']))
             return
         self._base_u8 = (res["orig"], res["base_u8"])
         self._pv_result = (res["orig"], res["key"], res["out_u8"])
@@ -434,7 +438,7 @@ class MorphologyDialogPro(QDialog):
             # Refresh document reference for next operation
             self._refresh_document_from_active()
         except Exception as e:
-            QMessageBox.critical(self, "Morphology", f"Failed to apply:\n{e}")
+            QMessageBox.critical(self, self.tr("Morphology"), self.tr("Failed to apply:\n{0}").format(e))
 
     def _refresh_document_from_active(self):
         """
@@ -470,11 +474,24 @@ class MorphologyDialogPro(QDialog):
         self.view.fit_to_item(self.pix)
 
     def closeEvent(self, ev):
+        self._close_teardown()
+        super().closeEvent(ev)
+
+    def done(self, r):
+        # Esc / Cancel end a QDialog through done(), which never delivers
+        # closeEvent: without this they skipped the release and the dialog
+        # kept its full-size buffers until collected. Runs once.
+        self._close_teardown()
+        super().done(r)
+
+    def _close_teardown(self):
+        if getattr(self, "_close_torn_down", False):
+            return
+        self._close_torn_down = True
         try:
             self._release_memory()
         except Exception:
             pass
-        super().closeEvent(ev)
 
     def _release_memory(self):
         """Drop full-frame orig/display buffers and pixmap on close."""
@@ -520,7 +537,7 @@ class _MorphologyPresetDialog(QDialog):
 
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Morphology — Preset")
+        self.setWindowTitle(self.tr("Morphology — Preset"))
         p = dict(initial or {})
         f = QFormLayout(self)
 
@@ -543,9 +560,9 @@ class _MorphologyPresetDialog(QDialog):
         self.sp_iter.setRange(1, 10)
         self.sp_iter.setValue(int(p.get("iterations", 1)))
 
-        f.addRow("Operation:", self.cb_op)
-        f.addRow("Kernel size:", self.sp_kernel)
-        f.addRow("Iterations:", self.sp_iter)
+        f.addRow(self.tr("Operation:"), self.cb_op)
+        f.addRow(self.tr("Kernel size:"), self.sp_kernel)
+        f.addRow(self.tr("Iterations:"), self.sp_iter)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -603,7 +620,7 @@ def run_morphology_via_preset(main, preset: dict | None = None, *, target_doc=No
         doc = d() if callable(d) else d
 
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "Morphology", "Load an image first.")
+        QMessageBox.warning(main, _tr("Morphology"), _tr("Load an image first."))
         return
 
     try:
@@ -611,7 +628,7 @@ def run_morphology_via_preset(main, preset: dict | None = None, *, target_doc=No
         if hasattr(main, "_log"):
             main._log(f"✅ Morphology (headless) preset={p}")
     except Exception as e:
-        QMessageBox.critical(main, "Morphology", str(e))
+        QMessageBox.critical(main, _tr("Morphology"), str(e))
         if hasattr(main, "_log"):
             main._log(f"❌ Morphology failed: {e}")
 

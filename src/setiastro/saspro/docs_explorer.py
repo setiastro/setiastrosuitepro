@@ -20,7 +20,7 @@ import html as _html
 import os
 import re
 
-from PyQt6.QtCore import Qt, QSettings, QTimer, QUrl
+from PyQt6.QtCore import Qt, QSettings, QTimer, QUrl, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtGui import QDesktopServices, QKeySequence, QShortcut, QTextCursor
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSplitter, QStyle,
@@ -32,9 +32,13 @@ from setiastro.saspro.help_support import (
 )
 
 WIKI_URL = "https://github.com/setiastro/setiastrosuitepro/wiki"
-GENERAL = "Workspace & General"
+GENERAL = QT_TRANSLATE_NOOP("DocsExplorer", "Workspace & General")
 _SETTINGS = "docs_explorer"
 _ROLE_DOC = Qt.ItemDataRole.UserRole
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("DocsExplorer", text)
 
 # Pages whose file name is neither the tool's command id nor "act_<name>".
 _DOC_ACTIONS: dict[str, str] = {
@@ -97,7 +101,7 @@ def doc_tree(main_window, doc_ids) -> list:
     docs = list(doc_ids)
     by_title = lambda d: _doc_title(d).lower()
     if main_window is None:
-        return [("All Pages", [(None, sorted(docs, key=by_title))])]
+        return [(_tr("All Pages"), [(None, sorted(docs, key=by_title))])]
 
     from setiastro.saspro.gui import menu_spec
 
@@ -128,7 +132,7 @@ def doc_tree(main_window, doc_ids) -> list:
     placed: set[str] = set()
     tree = []
     for key in menu_spec.CHEAT_SHEET_ORDER:
-        title = menu_spec.MENU_TITLES.get(key, key.replace("_", " ").title())
+        title = menu_spec._tr(main_window, menu_spec.MENU_TITLES.get(key, key.replace("_", " ").title()))
         contents = menu_spec.MENU_CONTENTS.get(key, [])
         groups = list(menu_spec.SUBMENUS.get(key) or [])
         if groups:
@@ -147,13 +151,13 @@ def doc_tree(main_window, doc_ids) -> list:
                         placed.add(d)
                         ids.append(d)
             if ids:
-                out_groups.append((_menu_label(label) if label else None, ids))
+                out_groups.append((_menu_label(menu_spec._tr(main_window, label)) if label else None, ids))
         if out_groups:
             tree.append((title, out_groups))
 
     rest = sorted((d for d in docs if d not in placed), key=by_title)
     if rest:
-        tree.insert(0, (GENERAL, [(None, rest)]))
+        tree.insert(0, (_tr(GENERAL), [(None, rest)]))
     return tree
 
 
@@ -195,12 +199,12 @@ def _home_html(tree, n_pages: int) -> str:
     e = _html.escape
     parts = [
         "<html><head><meta charset='utf-8'><style>", _HOME_STYLE, "</style></head><body>",
-        "<h1>SASpro Documentation</h1>",
-        f"<p class='sub'>{n_pages} pages: the same ones each tool's help button opens.</p>",
-        "<p>Pick a page here or in the list on the left. The search box looks "
-        "through the text of every page, not just the titles.</p>",
-        f"<p class='tip'>The SASpro wiki on GitHub is the online companion to these "
-        f"pages: <a href='{WIKI_URL}'>open the wiki</a>.</p>",
+        _tr("<h1>SASpro Documentation</h1>"),
+        _tr("<p class='sub'>{0} pages: the same ones each tool's help button opens.</p>").format(n_pages),
+        _tr("<p>Pick a page here or in the list on the left. The search box looks "
+            "through the text of every page, not just the titles.</p>"),
+        _tr("<p class='tip'>The SASpro wiki on GitHub is the online companion to these "
+            "pages: <a href='{0}'>open the wiki</a>.</p>").format(WIKI_URL),
     ]
     for section, groups in tree:
         parts.append(f"<h2>{e(section)}</h2>")

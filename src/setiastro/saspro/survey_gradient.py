@@ -96,6 +96,11 @@ try:
 except Exception:  # pragma: no cover
     build_signal_mask = None
 from setiastro.saspro.autostretch import autostretch as hard_autostretch
+from PyQt6.QtCore import QCoreApplication, QT_TRANSLATE_NOOP
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("SurveyGradient", text)
 
 
 # =============================================================================
@@ -702,66 +707,66 @@ SDSS9_I = _sdss9("i")
 SURVEYS: dict[str, dict] = {
     "DSS2 colour (red / synth / blue) — all sky": {
         "channels": [DSS2_RED, "synth", DSS2_BLUE],
-        "note": "All-sky, both hemispheres, FITS. Green is synthesised as the "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "All-sky, both hemispheres, FITS. Green is synthesised as the "
                 "mean of red and blue — crude, but it gives each of your "
-                "channels its own reference. ODbL, no licence restriction.",
+                "channels its own reference. ODbL, no licence restriction."),
         "dec_min": -90.0,
         "noncommercial": False,
     },
     "DSS2 red + NSNS continuum (north) — colour": {
         "channels": [DSS2_RED, _nsns("vc"), _nsns("vc")],
-        "note": "Best colour reference reachable during the CDS outage. The "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "Best colour reference reachable during the CDS outage. The "
                 "red plate drives red; NSNS star-subtracted continuum drives "
                 "green and blue. Mixing surveys is fine here because each "
                 "channel solves its own offset and scale — only the SHAPE of "
                 "the structure has to be right per channel. North of -16 "
-                "only, since NSNS stops there. NSNS is CC-BY-NC-SA.",
+                "only, since NSNS stops there. NSNS is CC-BY-NC-SA."),
         "dec_min": -16.0,
         "noncommercial": True,
     },
     "DSS2 colour from 8-bit tiles (all sky) — colour": {
         "channels": [_dss2_colour(0), _dss2_colour(1), _dss2_colour(2)],
-        "note": "Real red AND real blue plates, linearly scaled into 8-bit by "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "Real red AND real blue plates, linearly scaled into 8-bit by "
                 "CDS. 256 levels is ample for a low-frequency background, and "
                 "this is the only route to the blue plate while CDS is down. "
                 "Green is CDS's synthetic blend, not a measurement. All sky, "
-                "both hemispheres. ODbL.",
+                "both hemispheres. ODbL."),
         "dec_min": -90.0,
         "noncommercial": False,
     },
     "SDSS colour from 8-bit tiles (north) — colour": {
         "channels": [_sdss9_colour(0), _sdss9_colour(1), _sdss9_colour(2)],
-        "note": "i/r/g mapped to R/G/B, band-matched to the NSNS continuum, "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "i/r/g mapped to R/G/B, band-matched to the NSNS continuum, "
                 "from CDS's 8-bit composite. Log-stretched rather than "
                 "linear, which a background's narrow range mostly absorbs "
                 "into the scale factor. 36% of sky, north galactic cap. "
-                "Check the survey/yours structure split on this one.",
+                "Check the survey/yours structure split on this one."),
         "dec_min": -25.0,
         "noncommercial": False,
     },
     "SDSS g/r/i colour (north, 36% of sky) — colour": {
         "channels": [SDSS9_I, SDSS9_R, SDSS9_G],
-        "note": "Band-matched broadband colour: real photometry in the same "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "Band-matched broadband colour: real photometry in the same "
                 "g/r/i system the NSNS continuum was calibrated in, mapped "
                 "i/r/g to R/G/B as CDS does. Only 36% of sky — north galactic "
                 "cap plus the equatorial stripes — so outside the footprint "
-                "fall back to DSS2 colour. No licence restriction.",
+                "fall back to DSS2 colour. No licence restriction."),
         "dec_min": -25.0,
         "noncommercial": False,
     },
     "NSNS visual continuum (north) — mono": {
         "channels": [_nsns("vc")],
-        "note": "NSNS star-subtracted visible continuum, mono (it is already "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "NSNS star-subtracted visible continuum, mono (it is already "
                 "an R+G+B combination). Each of your channels still gets its "
-                "own scale factor. CC-BY-NC-SA.",
+                "own scale factor. CC-BY-NC-SA."),
         "dec_min": -16.0,
         "noncommercial": True,
     },
     "NSNS SHO (Ha / OIII / SII) — colour": {
         "channels": [_nsns("halpha"), _nsns("oiii"), _nsns("sii")],
-        "note": "Narrowband colour reference: Ha, [OIII], [SII] as R, G, B. "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "Narrowband colour reference: Ha, [OIII], [SII] as R, G, B. "
                 "For SHO-mapped data, so each channel is matched to the line "
-                "it was actually imaged in. CC-BY-NC-SA.",
+                "it was actually imaged in. CC-BY-NC-SA."),
         "dec_min": -16.0,
         "noncommercial": True,
     },
@@ -786,128 +791,128 @@ SURVEYS: dict[str, dict] = {
     # CONTINUUM_CO_REGRESSOR below.
     "NSNS HOO (Ha / OIII / OIII) — OSC dual-band, north": {
         "channels": [_nsns("halpha"), _nsns("oiii"), _nsns("oiii")],
-        "note": "For one-shot-colour data behind a dual narrowband filter "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "For one-shot-colour data behind a dual narrowband filter "
                 "passing Ha and [OIII] (L-eXtreme, L-Ultimate, ALP-T, NBZ…). "
                 "Ha to red, [OIII] to green and blue, matching what the Bayer "
-                "matrix did to your frame. CC-BY-NC-SA.",
+                "matrix did to your frame. CC-BY-NC-SA."),
         "dec_min": -16.0,
         "noncommercial": True,
     },
     "NSNS SOO (SII / OIII / OIII) — OSC dual-band, north": {
         "channels": [_nsns("sii"), _nsns("oiii"), _nsns("oiii")],
-        "note": "As HOO, for a dual-band filter passing [SII] rather than Ha. "
-                "CC-BY-NC-SA.",
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "As HOO, for a dual-band filter passing [SII] rather than Ha. "
+                "CC-BY-NC-SA."),
         "dec_min": -16.0,
         "noncommercial": True,
     },
     "NSNS Ha (north) — mono": {
         "channels": [_nsns("halpha")],
-        "note": "NSNS H-alpha, linear intensity in Rayleighs. CC-BY-NC-SA.",
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "NSNS H-alpha, linear intensity in Rayleighs. CC-BY-NC-SA."),
         "dec_min": -16.0,
         "noncommercial": True,
     },
     "NSNS [OIII] (north) — mono": {
         "channels": [_nsns("oiii")],
-        "note": "NSNS [OIII] 500.7 nm. CC-BY-NC-SA.",
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "NSNS [OIII] 500.7 nm. CC-BY-NC-SA."),
         "dec_min": -16.0,
         "noncommercial": True,
     },
     "NSNS [SII] (north) — mono": {
         "channels": [_nsns("sii")],
-        "note": "NSNS [SII] 671.7/673.0 nm. CC-BY-NC-SA.",
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "NSNS [SII] 671.7/673.0 nm. CC-BY-NC-SA."),
         "dec_min": -16.0,
         "noncommercial": True,
     },
     "SHASSA Ha (south, dec < +15) — mono": {
         "channels": [SHASSA_HA],
-        "note": "Southern H-alpha Sky Survey Atlas, continuum subtracted, "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "Southern H-alpha Sky Survey Atlas, continuum subtracted, "
                 "linear FITS in deciRayleighs at 0.8 arcmin. The southern "
                 "narrowband reference — a real survey rather than a merge, "
                 "and seven times finer than the Finkbeiner composite. Below "
                 "dec +15 only; above that, or where SHASSA has no coverage, "
-                "use Finkbeiner. No licence restriction.",
+                "use Finkbeiner. No licence restriction."),
         "dec_min": -90.0,
         "dec_max": 15.0,
         "noncommercial": False,
     },
     "VTSS Ha (north, 1.6 arcmin) — mono": {
         "channels": [VTSS_HA],
-        "note": "Virginia Tech Spectral-line Survey H-alpha, linear FITS in "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "Virginia Tech Spectral-line Survey H-alpha, linear FITS in "
                 "Rayleighs. Ten times coarser than NSNS, so reach for it "
                 "when the non-commercial clause on NSNS is a problem, or as "
                 "a second opinion. Northern sky; outside its footprint the "
-                "fetch returns non-finite and the coverage check says so.",
+                "fetch returns non-finite and the coverage check says so."),
         "dec_min": -30.0,
         "noncommercial": False,
     },
     "NSNS RGB continuum (north) — colour": {
         "channels": [_nsns_band("rgb8", 0), _nsns_band("rgb8", 1),
                      _nsns_band("rgb8", 2)],
-        "note": "Real three-colour broadband continuum from NSNS itself, "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "Real three-colour broadband continuum from NSNS itself, "
                 "65% of sky, from one download. The northern colour "
                 "reference that is neither a photographic plate nor 36% of "
                 "sky — but it is an 8-bit visualisation tree with a tonal "
                 "curve and partial star subtraction, so check the "
-                "survey/yours structure split. CC-BY-NC-SA.",
+                "survey/yours structure split. CC-BY-NC-SA."),
         "dec_min": -16.0,
         "noncommercial": True,
     },
     "NSNS OHS ([OIII] / Ha / [SII]) — colour": {
         "channels": [_nsns_band("ohs8", 0), _nsns_band("ohs8", 1),
                      _nsns_band("ohs8", 2)],
-        "note": "For data mapped in the OHS palette — [OIII] to red, "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "For data mapped in the OHS palette — [OIII] to red, "
                 "H-alpha to green, [SII] to blue — which the SHO entry "
                 "cannot match, since it pairs the channels the other way "
                 "round. One download instead of three, at the cost of the "
-                "8-bit tonal curve. CC-BY-NC-SA.",
+                "8-bit tonal curve. CC-BY-NC-SA."),
         "dec_min": -16.0,
         "noncommercial": True,
     },
     "NSNS HBR (Ha / blue cont / red cont) — colour": {
         "channels": [_nsns_band("hbr8", 0), _nsns_band("hbr8", 1),
                      _nsns_band("hbr8", 2)],
-        "note": "H-alpha to red, blue continuum to green, red continuum to "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "H-alpha to red, blue continuum to green, red continuum to "
                 "blue. The only NSNS tree that separates the blue and red "
                 "continuum — vc combines them — so it suits colour data "
                 "where H-alpha dominates one channel. 8-bit tonal curve. "
-                "CC-BY-NC-SA.",
+                "CC-BY-NC-SA."),
         "dec_min": -16.0,
         "noncommercial": True,
     },
     "HI4PI neutral hydrogen (all sky) — mono": {
         "channels": [HI4PI_NHI],
-        "note": "21 cm HI column density, all sky, linear FITS at 16 "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "21 cm HI column density, all sky, linear FITS at 16 "
                 "arcmin. NOT an optical reference — a cirrus template. The "
                 "HI column traces the galactic dust and gas that a gradient "
                 "fit must not mistake for a gradient, and light pollution "
                 "is not in it, so what the fit leaves behind is the "
                 "gradient. The HI-to-optical ratio varies across the sky; "
-                "read this as a prior, not a measurement. No restriction.",
+                "read this as a prior, not a measurement. No restriction."),
         "dec_min": -90.0,
         "noncommercial": False,
     },
     "Finkbeiner Ha composite (all sky) — mono": {
         "channels": [FINKBEINER_HA],
-        "note": "All-sky H-alpha: WHAM + VTSS + SHASSA combined by "
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "All-sky H-alpha: WHAM + VTSS + SHASSA combined by "
                 "Finkbeiner (2003), linear FITS in Rayleighs. The "
                 "narrowband option that covers everywhere — reach for it "
                 "above dec +15, where SHASSA stops, or wherever SHASSA has "
                 "no coverage. Native resolution is ~6 arcmin, so it "
                 "constrains a gradient across a wide field but has little "
                 "to say across half a degree; check the survey/yours "
-                "structure split. No licence restriction.",
+                "structure split. No licence restriction."),
         "dec_min": -90.0,
         "noncommercial": False,
     },
     "DSS2 red (all sky) — mono": {
         "channels": [DSS2_RED],
-        "note": "All-sky red plates, FITS. ODbL.",
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "All-sky red plates, FITS. ODbL."),
         "dec_min": -90.0,
         "noncommercial": False,
     },
     "DSS2 blue (all sky) — mono": {
         "channels": [DSS2_BLUE],
-        "note": "All-sky blue plates, FITS. ODbL.",
+        "note": QT_TRANSLATE_NOOP("SurveyGradient", "All-sky blue plates, FITS. ODbL."),
         "dec_min": -90.0,
         "noncommercial": False,
     },
@@ -945,17 +950,17 @@ DEFAULT_SURVEY = "NSNS visual continuum (north) — mono"
 _AVAILABILITY = {
     "verified": "",
     "degraded": (
-        "⚠ DEGRADED while CDS is down: the blue plate is mirrored nowhere "
+        QT_TRANSLATE_NOOP("SurveyGradient", "⚠ DEGRADED while CDS is down: the blue plate is mirrored nowhere "
         "reachable, so this runs on the red plate alone and the other two "
         "channels are synthesised from it. Each channel still solves its own "
         "scale factor, but there is no real colour information in the "
-        "reference. "
+        "reference. ")
     ),
     "unavailable": (
-        "⚠ UNAVAILABLE while CDS is down: no mirror carries this as FITS "
+        QT_TRANSLATE_NOOP("SurveyGradient", "⚠ UNAVAILABLE while CDS is down: no mirror carries this as FITS "
         "(IRSA has only a jpeg composite, CASDA and ESA have nothing). "
         "Left here because it becomes the right choice when Strasbourg "
-        "returns. "
+        "returns. ")
     ),
 }
 
@@ -976,34 +981,34 @@ _SURVEY_AVAILABILITY = {
 # silently re-enabling a survey on that evidence would hand the user a
 # confident option that fails in a new way.
 _AVAILABILITY["moved"] = (
-    "⚠ MOVED: the survey's host is serving again, but the survey registry "
+    QT_TRANSLATE_NOOP("SurveyGradient", "⚠ MOVED: the survey's host is serving again, but the survey registry "
     "now lists this tree at a different address than SASpro knows, so "
-    "fetches will fail until SASpro is updated with the new location. "
+    "fetches will fail until SASpro is updated with the new location. ")
 )
 
 _AVAILABILITY["curved"] = (
-    "ℹ 8-bit visualisation tree: a non-linear tonal curve and compressed "
+    QT_TRANSLATE_NOOP("SurveyGradient", "ℹ 8-bit visualisation tree: a non-linear tonal curve and compressed "
     "dynamic range, per the survey's own description, plus partial star "
     "subtraction. The curve is monotone and a background occupies a narrow "
     "range, so most of it is absorbed into the fitted scale — but this is "
     "the compression the linear trees exist to avoid. Check the "
-    "survey/yours structure split. "
+    "survey/yours structure split. ")
 )
 
 _AVAILABILITY["tracer"] = (
-    "ℹ Not an optical survey — a tracer of the same structure at another "
+    QT_TRANSLATE_NOOP("SurveyGradient", "ℹ Not an optical survey — a tracer of the same structure at another "
     "wavelength. The fit solves its own scale and offset, so the units do "
     "not matter, but the ratio between this and optical sky brightness is "
     "not constant across the sky. Use it to separate real galactic cirrus "
     "from your gradient, and read the survey/yours split before trusting "
-    "the amount. "
+    "the amount. ")
 )
 
 _AVAILABILITY["stretched"] = (
-    "ℹ Log-stretched 8-bit source. Quantisation is irrelevant at these "
+    QT_TRANSLATE_NOOP("SurveyGradient", "ℹ Log-stretched 8-bit source. Quantisation is irrelevant at these "
     "frequencies, but the stretch is only approximately linear over the "
     "background's range, so check the survey/yours structure split on "
-    "the run summary. "
+    "the run summary. ")
 )
 
 # Prefer a reference that actually fetches today. NSNS continuum stays the
@@ -3606,12 +3611,12 @@ def ensure_solved_header(parent, img: np.ndarray, header, *, label: str,
 
     if parent is not None:
         reply = QMessageBox.question(
-            parent, "Plate solve needed",
-            f"{label} has no WCS, so the reference cannot be matched to it.\n\n"
-            f"Run the Gaia plate solver on it now?\n\n"
-            f"With no pointing in the header this falls back to a BLIND solve, "
-            f"which searches the quad index and can take a few minutes. It "
-            f"needs the Gaia databases to be downloaded.",
+            parent, _tr("Plate solve needed"),
+            _tr("{0} has no WCS, so the reference cannot be matched to it.\n"
+                "\n"
+                "Run the Gaia plate solver on it now?\n"
+                "\n"
+                "With no pointing in the header this falls back to a BLIND solve, which searches the quad index and can take a few minutes. It needs the Gaia databases to be downloaded.").format(label),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
@@ -4051,7 +4056,7 @@ class SurveyGradientDialog(QDialog):
         self.cmb_source.addItem(
             self.tr("My own image (dual scope / wider frame)"), "user")
         self.cmb_source.setToolTip(
-            "Survey: a published all-sky dataset of the same field.\n\n"
+            self.tr("Survey: a published all-sky dataset of the same field.\n\n"
             "My own image: a frame YOU took of the same field, typically the\n"
             "wide scope on a dual rig. It must cover the whole target field\n"
             "and be plate-solved (SRGC will offer to solve it if not).\n\n"
@@ -4059,7 +4064,7 @@ class SurveyGradientDialog(QDialog):
             "one: it saw the same sky on the same night. The one thing to\n"
             "watch is that it must not carry the SAME gradient -- if it does,\n"
             "b absorbs it and there is nothing left to subtract. Check the\n"
-            "reference share in diagnostics."
+            "reference share in diagnostics.")
         )
         self.cmb_source.currentIndexChanged.connect(self._source_changed)
 
@@ -4076,13 +4081,13 @@ class SurveyGradientDialog(QDialog):
         self._disp_cache = {}        # (mode, before, strength, patch) -> (buf, status)
         self.cmb_refdoc = QComboBox()
         self.cmb_refdoc.setToolTip(
-            "Pick one of the images you already have open.\n"
-            "Refreshed each time this dialog is shown.")
+            self.tr("Pick one of the images you already have open.\n"
+            "Refreshed each time this dialog is shown."))
         self.cmb_refdoc.currentIndexChanged.connect(self._refdoc_changed)
         self.btn_reffile = QPushButton(self.tr("From file…"))
         self.btn_reffile.setToolTip(
-            "Load a reference frame straight off disk, without opening it\n"
-            "as a view first.")
+            self.tr("Load a reference frame straight off disk, without opening it\n"
+            "as a view first."))
         self.btn_reffile.clicked.connect(self._pick_reference_file)
         self.lbl_refinfo = QLabel("")
         self.lbl_refinfo.setWordWrap(True)
@@ -4093,21 +4098,21 @@ class SurveyGradientDialog(QDialog):
         self.sp_work.setSingleStep(256)
         self.sp_work.setValue(1024)
         self.sp_work.setToolTip(
-            "Long side of the grid the reference is fetched on and both\n"
+            self.tr("Long side of the grid the reference is fetched on and both\n"
             "backgrounds are modelled at.\n\n"
             "A gradient is low-frequency by definition and NSNS is ~10 arcsec,\n"
             "so there is nothing above this scale to recover. Larger is slower\n"
-            "and makes the fetch heavier without improving the correction."
+            "and makes the fetch heavier without improving the correction.")
         )
 
         self.sp_degree = QSpinBox()
         self.sp_degree.setRange(0, 4)
         self.sp_degree.setValue(1)
         self.sp_degree.setToolTip(
-            "Polynomial degree for BOTH background models.\n\n"
+            self.tr("Polynomial degree for BOTH background models.\n\n"
             "Keep this low. A high-degree model on the target can absorb real\n"
             "structure before the reference ever gets a chance to explain it,\n"
-            "which defeats the point of this tool. Degree 1-2 is right."
+            "which defeats the point of this tool. Degree 1-2 is right.")
         )
 
         self.sp_exclude = QSpinBox()
@@ -4116,13 +4121,13 @@ class SurveyGradientDialog(QDialog):
         self.sp_exclude.setValue(50)
         self.sp_exclude.setSuffix(" %")
         self.sp_exclude.setToolTip(
-            "Fraction of the SURVEY's brightest pixels that are off-limits\n"
+            self.tr("Fraction of the SURVEY's brightest pixels that are off-limits\n"
             "to sampling (_exclude_bright_regions, same as gradient_abe and\n"
             "the stacking suite use).\n\n"
             "The survey decides, not your frame — your gradient must not\n"
             "disqualify a location or the fit starves on the bright side.\n\n"
             "Raise it on a field dominated by a big object (M31, M42).\n"
-            "Lower it on sparse fields where 50% is needlessly strict."
+            "Lower it on sparse fields where 50% is needlessly strict.")
         )
 
         self.sp_protect = QDoubleSpinBox()
@@ -4131,14 +4136,14 @@ class SurveyGradientDialog(QDialog):
         self.sp_protect.setValue(3.0)
         self.sp_protect.setDecimals(1)
         self.sp_protect.setToolTip(
-            "Signal protection on the reference, in MAD-sigma units — the\n"
+            self.tr("Signal protection on the reference, in MAD-sigma units — the\n"
             "same median + k*MAD threshold ADBE's multiscale stage uses, so\n"
             "k means the same thing in both tools.\n\n"
             "Thresholded, then dilated and blurred so a structure's faint\n"
             "wings are covered too, then interior holes are filled — which\n"
             "is what stops a point landing in M31's dust lanes.\n\n"
             "LOWER protects more. 3 is a reasonable default; drop to 1.5-2\n"
-            "on a field with a large bright object."
+            "on a field with a large bright object.")
         )
 
         self.chk_rbf = QCheckBox(self.tr("RBF refinement on both backgrounds"))
@@ -4155,13 +4160,13 @@ class SurveyGradientDialog(QDialog):
                                         "(multiscale, multiplicative)"))
         self.chk_ms.setChecked(False)
         self.chk_ms.setToolTip(
-            "A second, MULTIPLICATIVE pass for defects the additive fit\n"
+            self.tr("A second, MULTIPLICATIVE pass for defects the additive fit\n"
             "structurally cannot reach: dust motes, internal reflections,\n"
             "filter-edge shadows.\n\n"
             "These attenuate throughput rather than adding light, and they\n"
             "have hard edges, so no background surface of any degree models\n"
             "them. This divides out a mid-scale band instead.\n\n"
-            "Runs AFTER the gradient correction, on the corrected image.")
+            "Runs AFTER the gradient correction, on the corrected image."))
         self.chk_ms.toggled.connect(self._ms_toggled)
 
         self.sp_ms_lo = QSpinBox(); self.sp_ms_lo.setRange(1, 12)
@@ -4170,11 +4175,11 @@ class SurveyGradientDialog(QDialog):
         self.sp_ms_hi.setValue(8)
         for _sp in (self.sp_ms_lo, self.sp_ms_hi):
             _sp.setToolTip(
-                "Wavelet scales the defect is estimated from. 6-8 is the\n"
+                self.tr("Wavelet scales the defect is estimated from. 6-8 is the\n"
                 "band dust motes and reflections live in: coarse enough to\n"
                 "miss stars and noise, fine enough to keep their edges.\n\n"
                 "Lower catches smaller/sharper defects; higher drifts toward\n"
-                "the smooth gradient the additive stage already removed.")
+                "the smooth gradient the additive stage already removed."))
 
         self.sp_ms_strength = QDoubleSpinBox()
         self.sp_ms_strength.setRange(0.0, 2.0)
@@ -4188,14 +4193,14 @@ class SurveyGradientDialog(QDialog):
         self.sp_ms_protect.setDecimals(1)
         self.sp_ms_protect.setValue(3.0)
         self.sp_ms_protect.setToolTip(
-            "Signal protection for the refinement, in MAD-sigma units.\n"
-            "LOWER protects more.")
+            self.tr("Signal protection for the refinement, in MAD-sigma units.\n"
+            "LOWER protects more."))
 
         self.chk_ms_residual = QCheckBox(
             self.tr("Include coarsest residual"))
         self.chk_ms_residual.setChecked(False)
         self.chk_ms_residual.setToolTip(
-            "Fold everything COARSER than the band above into the\n"
+            self.tr("Fold everything COARSER than the band above into the\n"
             "multiplicative correction as well, instead of stopping at\n"
             "the top of the band.\n\n"
             "Leave OFF unless a broad multiplicative falloff survives\n"
@@ -4208,33 +4213,33 @@ class SurveyGradientDialog(QDialog):
             "nebulosity the survey just finished vouching for, on top of\n"
             "double-correcting the gradient.\n\n"
             "Costs time too: the full pyramid has to be built rather\n"
-            "than stopping at the top of the band."),
+            "than stopping at the top of the band.")),
 
         self.chk_ms_stars = QCheckBox(self.tr("Remove stars first (DarkStar)"))
         self.chk_ms_stars.setChecked(True)
         self.chk_ms_stars.setToolTip(
-            "Estimate the defect band on a STARLESS copy so stars do not\n"
+            self.tr("Estimate the defect band on a STARLESS copy so stars do not\n"
             "pollute it, while the protection mask is still built on the\n"
             "star-inclusive image. This pairing is what makes the band\n"
-            "clean; leave it on unless DarkStar is unavailable.")
+            "clean; leave it on unless DarkStar is unavailable."))
 
         self.chk_ms_survey_protect = QCheckBox(
             self.tr("Protect real structure using the survey"))
         self.chk_ms_survey_protect.setChecked(True)
         self.chk_ms_survey_protect.setToolTip(
-            "Use the SURVEY's own veto mask to decide what must not be\n"
+            self.tr("Use the SURVEY's own veto mask to decide what must not be\n"
             "touched by the refinement.\n\n"
             "This is the one thing SRGC knows that ADBE cannot: ADBE builds\n"
             "its protection from the image itself, so a bright extended blob\n"
             "looks the same whether it is a real nebula or an internal\n"
             "reflection. Here the survey says which it is — real structure is\n"
             "kept from the untouched source, and anything sharp sitting on\n"
-            "sky the survey says is empty is treated as a defect.")
+            "sky the survey says is empty is treated as a defect."))
 
         _msf = QFormLayout()
         _msf.setContentsMargins(0, 0, 0, 0)
         _band = QHBoxLayout(); _band.setContentsMargins(0, 0, 0, 0)
-        _band.addWidget(self.sp_ms_lo); _band.addWidget(QLabel("to"))
+        _band.addWidget(self.sp_ms_lo); _band.addWidget(QLabel(self.tr("to")))
         _band.addWidget(self.sp_ms_hi); _band.addStretch(1)
         _bandw = QWidget(); _bandw.setLayout(_band)
         _msf.addRow(self.tr("Scales:"), _bandw)
@@ -4251,14 +4256,14 @@ class SurveyGradientDialog(QDialog):
         self.sp_samples.setSingleStep(20)
         self.sp_samples.setValue(200)
         self.sp_samples.setToolTip(
-            "Background sample points, placed by the same star-avoiding\n"
+            self.tr("Background sample points, placed by the same star-avoiding\n"
             "gradient descent ADBE uses.\n\n"
             "One set of points is generated and used for BOTH background\n"
             "models, on the per-pixel maximum of the two images — so a point\n"
             "only counts as background where it is dim in your frame AND in\n"
             "the reference.\n\n"
             "Too many points on a nebula-filled field starts sampling the\n"
-            "nebula itself; too few and the fit cannot follow a real gradient."
+            "nebula itself; too few and the fit cannot follow a real gradient.")
         )
 
         self.sp_patch = QSpinBox()
@@ -4266,10 +4271,10 @@ class SurveyGradientDialog(QDialog):
         self.sp_patch.setSingleStep(2)
         self.sp_patch.setValue(15)
         self.sp_patch.setToolTip(
-            "Patch size in work-grid pixels for each sample point.\n\n"
+            self.tr("Patch size in work-grid pixels for each sample point.\n\n"
             "The descent scores a patch by its 25th percentile, so a larger\n"
             "patch is more robust against stars but blurs the distinction\n"
-            "between sky and faint extended signal."
+            "between sky and faint extended signal.")
         )
 
         self.sp_strength = QSpinBox()
@@ -4281,12 +4286,12 @@ class SurveyGradientDialog(QDialog):
         self.sp_strength.setValue(100)
         self.sp_strength.setSuffix(" %")
         self.sp_strength.setToolTip(
-            "Percent of the modelled gradient to subtract.\n\n"
+            self.tr("Percent of the modelled gradient to subtract.\n\n"
             "100% is the fit. Below that leaves some in; above it\n"
             "over-corrects, tipping the sky the other way. There is no\n"
             "physical reason to want that, but the model is an estimate\n"
             "and pushing past it is a quick way to tell a real gradient\n"
-            "residual from something the reference never explained.")
+            "residual from something the reference never explained."))
         # Strength changes what Corrected looks like, so it has to redraw.
         # It never did, which is only survivable because the redraw used to
         # be too slow to drag anyway.
@@ -4359,13 +4364,13 @@ class SurveyGradientDialog(QDialog):
         self.lbl_draw_hint.setSizePolicy(QSizePolicy.Policy.Ignored,
                                          QSizePolicy.Policy.Preferred)
         self.lbl_draw_hint.setToolTip(
-            "Drag on the image to enclose a region that must be left alone.\n"
+            self.tr("Drag on the image to enclose a region that must be left alone.\n"
             "No mode to turn on \u2014 drawing is always live, as in ADBE.\n\n"
             "Exclusion zones do two things:\n"
             "  \u2022 no background sample point is placed inside one, so a dark\n"
             "    nebula or a big galaxy cannot be mistaken for sky;\n"
             "  \u2022 the dust-mote refinement composites those pixels back from\n"
-            "    the untouched source, so nothing inside is altered.")
+            "    the untouched source, so nothing inside is altered."))
 
         # Display stretch. The old behaviour (hard autostretch to a 0.4
         # median) is punchy but unkind to faint data -- it exaggerates noise
@@ -4376,11 +4381,11 @@ class SurveyGradientDialog(QDialog):
         self.cmb_stretch.addItem(self.tr("Normal stretch"), "normal")
         self.cmb_stretch.addItem(self.tr("Aggressive stretch"), "aggressive")
         self.cmb_stretch.setToolTip(
-            "How the PREVIEW is displayed. Affects nothing that is applied.\n\n"
+            self.tr("How the PREVIEW is displayed. Affects nothing that is applied.\n\n"
             "Normal: statistical stretch, unlinked, target median 0.25, no\n"
             "black clip. What the rest of SASpro shows you.\n\n"
             "Aggressive: hard autostretch to a 0.4 median. Shows the faintest\n"
-            "structure, at the cost of making noise look like signal.")
+            "structure, at the cost of making noise look like signal."))
         self.cmb_stretch.currentIndexChanged.connect(self._stretch_changed)
 
         # Background views have their own problem, opposite to the one
@@ -4404,7 +4409,7 @@ class SurveyGradientDialog(QDialog):
             c.addItem(self.tr("Scale: min/max"), "minmax")
             c.addItem(self.tr("Scale: linear"), "linear")
             c.setToolTip(
-                "How the SURFACE views are displayed — Gradient removed,\n"
+                self.tr("How the SURFACE views are displayed — Gradient removed,\n"
                 "Target background, Survey background. One setting for\n"
                 "all three. Affects nothing that is applied, and nothing\n"
                 "in the other tabs.\n\n"
@@ -4415,7 +4420,7 @@ class SurveyGradientDialog(QDialog):
                 "sits at mid-grey and the gradient keeps its real size, so a\n"
                 "0.002 background is a barely-visible grey wash — which is\n"
                 "what it actually is. Full black to full white here would mean\n"
-                "the background spans 1.0, i.e. something has gone wrong.")
+                "the background spans 1.0, i.e. something has gone wrong."))
             _i = c.findData(self._bg_stretch_mode)
             if _i >= 0:
                 c.blockSignals(True)
@@ -4453,28 +4458,28 @@ class SurveyGradientDialog(QDialog):
 
         self.chk_before = QCheckBox(self.tr("Before"))
         self.chk_before.setToolTip(
-            "Show the image as it was when this correction was modelled,\n"
+            self.tr("Show the image as it was when this correction was modelled,\n"
             "so you can flick between before and after.\n\n"
             "This is the snapshot taken at model time, not the document as\n"
-            "it stands now \u2014 so it stays a true 'before' even after Apply.")
+            "it stands now \u2014 so it stays a true 'before' even after Apply."))
         self.chk_before.toggled.connect(self._redraw)
 
         _bar = QHBoxLayout()
         _bar.setContentsMargins(2, 2, 2, 2)
-        _bar.addWidget(_tb("\u2212", "Zoom out", self.pane_target.zoom_out))
-        _bar.addWidget(_tb("+", "Zoom in", self.pane_target.zoom_in))
-        _bar.addWidget(_tb("1:1", "Zoom to the original image scale",
+        _bar.addWidget(_tb("\u2212", self.tr("Zoom out"), self.pane_target.zoom_out))
+        _bar.addWidget(_tb("+", self.tr("Zoom in"), self.pane_target.zoom_in))
+        _bar.addWidget(_tb("1:1", self.tr("Zoom to the original image scale"),
                            self.pane_target.zoom_1_1))
-        _bar.addWidget(_tb("Fit", "Fit the whole frame",
+        _bar.addWidget(_tb(self.tr("Fit"), self.tr("Fit the whole frame"),
                            self.pane_target.zoom_fit))
         _bar.addSpacing(12)
         _bar.addWidget(self.cmb_stretch)
         _bar.addSpacing(12)
         _bar.addWidget(self.chk_before)
         _bar.addSpacing(12)
-        _bar.addWidget(_tb("Undo zone", "Remove the last exclusion zone",
+        _bar.addWidget(_tb(self.tr("Undo zone"), self.tr("Remove the last exclusion zone"),
                            self.pane_target.undo_polygon))
-        _bar.addWidget(_tb("Clear zones", "Remove every exclusion zone",
+        _bar.addWidget(_tb(self.tr("Clear zones"), self.tr("Remove every exclusion zone"),
                            self.pane_target.clear_polygons))
         _bar.addSpacing(12)
         _bar.addWidget(self.lbl_draw_hint)
@@ -4488,7 +4493,8 @@ class SurveyGradientDialog(QDialog):
         # polygon was released. Pinned to the width of the longest string it
         # will ever hold, so the layout never moves.
         self.lbl_zones.setFixedWidth(
-            self.lbl_zones.fontMetrics().horizontalAdvance("88 exclusion zones") + 8)
+            self.lbl_zones.fontMetrics().horizontalAdvance(
+                self.tr("{0} exclusion zones").format(88)) + 8)
         self.lbl_zones.setAlignment(Qt.AlignmentFlag.AlignRight
                                     | Qt.AlignmentFlag.AlignVCenter)
         _bar.addWidget(self.lbl_zones)
@@ -4534,15 +4540,15 @@ class SurveyGradientDialog(QDialog):
         # for, and driving it still propagates through the handler.
         self.cmb_bgstretch = self._bg_combos[0]
         self.tabs.addTab(self.pane_pts, self.tr("Sample points"))
-        self.tabs.setTabToolTip(0, "The result, and where you draw exclusions.")
-        self.tabs.setTabToolTip(1, "The fetched reference. Check it is the "
-                                   "right sky and the right way up.")
-        self.tabs.setTabToolTip(2, "What is being subtracted. If you can see "
+        self.tabs.setTabToolTip(0, self.tr("The result, and where you draw exclusions."))
+        self.tabs.setTabToolTip(1, self.tr("The fetched reference. Check it is the "
+                                   "right sky and the right way up."))
+        self.tabs.setTabToolTip(2, self.tr("What is being subtracted. If you can see "
                                    "your target in here, the model is eating "
-                                   "signal.")
-        self.tabs.setTabToolTip(3, "Your modelled background.")
-        self.tabs.setTabToolTip(4, "The survey's modelled background.")
-        self.tabs.setTabToolTip(5, "Green = points used, red tint = vetoed.")
+                                   "signal."))
+        self.tabs.setTabToolTip(3, self.tr("Your modelled background."))
+        self.tabs.setTabToolTip(4, self.tr("The survey's modelled background."))
+        self.tabs.setTabToolTip(5, self.tr("Green = points used, red tint = vetoed."))
         self.tabs.currentChanged.connect(self._redraw)
 
         # The old dropdown is gone; _redraw still speaks in these names, so
@@ -4558,22 +4564,22 @@ class SurveyGradientDialog(QDialog):
 
         self.btn_fetch = QPushButton(self.tr("1. Fetch Reference"))
         self.btn_fetch.setToolTip(
-            "Pull the reference for this field and show it, WITHOUT doing\n"
+            self.tr("Pull the reference for this field and show it, WITHOUT doing\n"
             "the correction.\n\n"
             "Worth doing first on an unfamiliar field: survey coverage is\n"
             "uneven, and a reference that is empty, plate-damaged or simply\n"
             "has no structure where your data does is better found out now\n"
             "than after a full model run. The fetch is cached, so carrying\n"
-            "on costs no second download.")
+            "on costs no second download."))
         self.btn_run = QPushButton(self.tr("2. Model && Correct"))
         self.btn_apply = QPushButton(self.tr("Apply"))
         self.btn_diag = QPushButton(self.tr("Run diagnostics"))
         self.btn_diag.setToolTip(
-            "Probe every route for the selected survey with a tiny cutout and\n"
+            self.tr("Probe every route for the selected survey with a tiny cutout and\n"
             "report what each one actually returned.\n\n"
             "Use this when a fetch fails or comes back empty — it separates a\n"
             "dead host from a rejected request from a genuine footprint miss,\n"
-            "which all look the same from the main error."
+            "which all look the same from the main error.")
         )
         self.btn_close = QPushButton(self.tr("Close"))
         self.btn_apply.setEnabled(False)
@@ -4583,7 +4589,7 @@ class SurveyGradientDialog(QDialog):
         self.btn_diag.clicked.connect(self._do_diagnostics)
         self.btn_close.clicked.connect(self.close)
 
-        self.status = QLabel("Ready")
+        self.status = QLabel(self.tr("Ready"))
         self.status.setWordWrap(True)
 
 
@@ -4790,12 +4796,10 @@ class SurveyGradientDialog(QDialog):
                 # one is PEP 701, i.e. Python 3.12+, and this file has to
                 # parse on the older interpreter the Intel-mac build uses.
                 _names = "; ".join(back)
-                self._set_status(f"Reachable again: {_names}.")
+                self._set_status(self.tr("Reachable again: {0}.").format(_names))
             elif moved:
                 self._set_status(
-                    f"{len(moved)} survey(s) are back online at a new address "
-                    f"SASpro does not know yet, and stay unavailable until "
-                    f"an update. The new address is in the log.")
+                    self.tr("{0} survey(s) are back online at a new address SASpro does not know yet, and stay unavailable until an update. The new address is in the log.").format(len(moved)))
         except Exception:
             pass
 
@@ -4932,11 +4936,11 @@ class SurveyGradientDialog(QDialog):
             wdg.setVisible(user)
         if user:
             self.lbl_note.setText(
-                "Your own frame of this field, reprojected onto the work "
+                self.tr("Your own frame of this field, reprojected onto the work "
                 "grid. It must COVER the whole target field — a narrower "
                 "reference fails the coverage check — and it must not carry "
                 "the same gradient, or b will absorb it and leave nothing "
-                "to subtract. Check the reference share in diagnostics.")
+                "to subtract. Check the reference share in diagnostics."))
         else:
             self._survey_changed(self.cmb_survey.currentText())
         self._save_settings()
@@ -5005,11 +5009,11 @@ class SurveyGradientDialog(QDialog):
             img, hdr, _bd, _mono = load_image(path)
         except Exception as e:
             QMessageBox.warning(self, self.tr("Reference image"),
-                                f"Could not load that file:\n\n{e}")
+                                self.tr("Could not load that file:\n\n{0}").format(e))
             return
         if img is None:
             QMessageBox.warning(self, self.tr("Reference image"),
-                                "That file produced no image data.")
+                                self.tr("That file produced no image data."))
             return
         import os
         self.cmb_refdoc.blockSignals(True)
@@ -5026,11 +5030,11 @@ class SurveyGradientDialog(QDialog):
         a = np.asarray(img)
         self._user_ref = (a, hdr, str(label))
         solved = _celestial_wcs_from_header(hdr) is not None
-        kind = "colour" if (a.ndim == 3 and a.shape[2] >= 3) else "mono"
+        kind = self.tr("colour") if (a.ndim == 3 and a.shape[2] >= 3) else self.tr("mono")
         self.lbl_refinfo.setText(
-            f"{label} — {a.shape[1]}×{a.shape[0]} {kind}, "
-            + ("plate-solved ✓" if solved
-               else "NOT plate-solved — SRGC will offer to solve it"))
+            (self.tr("{0} — {1}×{2} {3}, plate-solved ✓") if solved
+             else self.tr("{0} — {1}×{2} {3}, NOT plate-solved — SRGC will offer to solve it")
+             ).format(label, a.shape[1], a.shape[0], kind))
 
     def showEvent(self, ev):
         # The set of open documents changes behind this dialog, and it is
@@ -5048,7 +5052,10 @@ class SurveyGradientDialog(QDialog):
             # a survey that cannot currently fetch says so before the user
             # spends a minute watching it fail.
             prefix = _AVAILABILITY.get(info.get("availability", "verified"), "")
-            self.lbl_note.setText(prefix + info["note"])
+            if prefix:
+                prefix = QCoreApplication.translate("SurveyGradient", prefix)
+            self.lbl_note.setText(
+                prefix + QCoreApplication.translate("SurveyGradient", info["note"]))
         self._save_settings()
 
     def _set_status(self, text: str):
@@ -5092,8 +5099,8 @@ class SurveyGradientDialog(QDialog):
         """
         img = self._source_float()
         if img is None:
-            QMessageBox.information(self, "No image",
-                                    "No image in the active document.")
+            QMessageBox.information(self, self.tr("No image"),
+                                    self.tr("No image in the active document."))
             return
         self._save_settings()
         self.btn_fetch.setEnabled(False)
@@ -5116,7 +5123,7 @@ class SurveyGradientDialog(QDialog):
 
             if self._source() == "user":
                 ref = self._prepare_user_reference(img, hdr)
-                where = "your own image"
+                where = self.tr("your own image")
                 self._ref_info = {"route": "supplied", "format": None,
                                   "bits": None}
             else:
@@ -5139,13 +5146,13 @@ class SurveyGradientDialog(QDialog):
                     self._ref_info = self._ref_info_cache.get(key, {})
                 where = self.cmb_survey.currentText()
         except SurveyFetchError as e:
-            self._set_status("Fetch failed")
-            QMessageBox.warning(self, "Survey reference", str(e))
+            self._set_status(self.tr("Fetch failed"))
+            QMessageBox.warning(self, self.tr("Survey reference"), str(e))
             self.btn_fetch.setEnabled(True); self.btn_run.setEnabled(True)
             return
         except Exception as e:
-            self._set_status("Error")
-            QMessageBox.critical(self, "Survey reference", repr(e))
+            self._set_status(self.tr("Error"))
+            QMessageBox.critical(self, self.tr("Survey reference"), repr(e))
             self.btn_fetch.setEnabled(True); self.btn_run.setEnabled(True)
             return
 
@@ -5201,7 +5208,7 @@ class SurveyGradientDialog(QDialog):
         mask_from = base
         estimate_from = base
         if self.chk_ms_stars.isChecked():
-            self._set_status("Refinement: removing stars (DarkStar)…")
+            self._set_status(self.tr("Refinement: removing stars (DarkStar)…"))
             try:
                 from setiastro.saspro.remove_stars import (
                     darkstar_starless_from_array)
@@ -5211,7 +5218,7 @@ class SurveyGradientDialog(QDialog):
                 _starless, _stars, _mono = darkstar_starless_from_array(
                     base, use_gpu=True,
                     status_cb=lambda m: self._set_status(
-                        f"Refinement: DarkStar {m}"))
+                        self.tr("Refinement: DarkStar {0}").format(m)))
                 if _starless is None:
                     raise RuntimeError("DarkStar returned no starless image")
                 estimate_from = np.asarray(_starless, dtype=np.float32)
@@ -5220,8 +5227,8 @@ class SurveyGradientDialog(QDialog):
                 _log(f"multiscale: DarkStar unavailable ({_brief(e)}); "
                      f"estimating on the star-inclusive image")
                 self._set_status(
-                    "Refinement: DarkStar unavailable — estimating with "
-                    "stars in. Expect a softer result.")
+                    self.tr("Refinement: DarkStar unavailable — estimating with "
+                    "stars in. Expect a softer result."))
 
         # The survey-derived veto, upscaled to full resolution. True there
         # means "real structure", which is exactly what protect_blend_mask
@@ -5254,7 +5261,7 @@ class SurveyGradientDialog(QDialog):
             _log("multiscale: coarsest residual INCLUDED — the smooth "
                  "background is being corrected a second time, "
                  "multiplicatively")
-        self._set_status("Refinement: dividing out the defect band…")
+        self._set_status(self.tr("Refinement: dividing out the defect band…"))
         out = multiscale_gradient_correct(
             base,
             estimate_from=estimate_from,
@@ -5265,7 +5272,7 @@ class SurveyGradientDialog(QDialog):
             protect_k=float(self.sp_ms_protect.value()),
             protect_blend_mask=protect,
             estimate_downsample=1,
-            progress_cb=lambda m: self._set_status(f"Refinement: {m}"),
+            progress_cb=lambda m: self._set_status(self.tr("Refinement: {0}").format(m)),
         )
         if isinstance(out, tuple):
             out = out[0]
@@ -5311,9 +5318,9 @@ class SurveyGradientDialog(QDialog):
         fin = np.isfinite(a)
         cov = float(fin.mean()) * 100.0 if a.size else 0.0
         if not fin.any():
-            return (f"Reference from {where}: NO usable pixels. This field "
-                    f"is outside the survey, or the request was rejected — "
-                    f"Run diagnostics to tell which.")
+            return _tr("Reference from {0}: NO usable pixels. This field "
+                       "is outside the survey, or the request was rejected — "
+                       "Run diagnostics to tell which.").format(where)
         v = a[fin]
         lo, hi = np.percentile(v, [0.5, 99.5])
         span = float(hi - lo)
@@ -5323,41 +5330,42 @@ class SurveyGradientDialog(QDialog):
         # worth starting, and it only became trustworthy for 8-bit trees
         # once exact-black was read as no-data (see _decode_image_tile).
         if cov < 99.0:
-            gap = (f"  ⚠ {100.0 - cov:.0f}% of this reference has NO DATA"
-                   f" — the survey does not cover all of this field")
+            gap = _tr("  ⚠ {0:.0f}% of this reference has NO DATA"
+                      " — the survey does not cover all of this field").format(100.0 - cov)
         else:
             gap = ""
-        verdict = ("flat — little structure to fit against; expect this run "
-                   "to behave like ADBE with a survey-derived mask"
+        verdict = (_tr("flat — little structure to fit against; expect this run "
+                       "to behave like ADBE with a survey-derived mask")
                    if rel < 0.05 else
-                   "has structure to fit against")
+                   _tr("has structure to fit against"))
         if rel > 5.0:
             # Sky structure spans a factor of a few. Ten times its own
             # level usually means something instrumental is in frame --
             # mosaic seams, a plate edge, a scan stripe. Said, not acted
             # on: the picture in this tab is the real check.
-            verdict += ("; that is a very wide range for sky — check this "
-                        "tab for mosaic seams or plate edges before "
-                        "trusting it")
+            verdict += _tr("; that is a very wide range for sky — check this "
+                           "tab for mosaic seams or plate edges before "
+                           "trusting it")
         planes = 1 if a.ndim == 2 else a.shape[2]
         mono = ""
         if a.ndim == 3 and planes >= 2:
             p0 = np.nan_to_num(a[..., 0])
             if all(np.allclose(p0, np.nan_to_num(a[..., c]), rtol=1e-5)
                    for c in range(1, planes)):
-                mono = "  ·  MONO (all channels are the same plane)"
+                mono = _tr("  ·  MONO (all channels are the same plane)")
         prov = describe_reference_provenance(info)
         if prov:
             prov = "  ·  " + prov
-        return (f"Reference from {where}  ·  coverage {cov:.1f}%  ·  "
-                f"contrast {rel * 100:.1f}% of its own level — {verdict}"
-                f"{prov}{mono}{gap}")
+        return _tr("Reference from {0}  ·  coverage {1:.1f}%  ·  "
+                   "contrast {2:.1f}% of its own level — {3}"
+                   "{4}{5}{6}").format(where, cov, rel * 100, verdict,
+                                       prov, mono, gap)
 
     @_guard_deleted
     def _do_run(self):
         img = self._source_float()
         if img is None:
-            QMessageBox.information(self, "No image", "No image in the active document.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("No image in the active document."))
             return
 
         hdr = self._header()
@@ -5392,8 +5400,8 @@ class SurveyGradientDialog(QDialog):
                     self._ref_info = self._ref_info_cache.get(
                         cache_key, self._ref_info)
                     self._set_status(
-                        "Reusing the reference already fetched for these "
-                        "settings — no download.")
+                        self.tr("Reusing the reference already fetched for these "
+                        "settings — no download."))
 
             self._result = survey_gradient_model(
                 img, hdr,
@@ -5410,13 +5418,13 @@ class SurveyGradientDialog(QDialog):
                 progress_cb=self._set_status,
             )
         except SurveyFetchError as e:
-            self._set_status("Failed")
-            QMessageBox.warning(self, "Survey reference", str(e))
+            self._set_status(self.tr("Failed"))
+            QMessageBox.warning(self, self.tr("Survey reference"), str(e))
             self.btn_run.setEnabled(True)
             return
         except Exception as e:
-            self._set_status("Error")
-            QMessageBox.critical(self, "Survey gradient failed", repr(e))
+            self._set_status(self.tr("Error"))
+            QMessageBox.critical(self, self.tr("Survey gradient failed"), repr(e))
             self.btn_run.setEnabled(True)
             return
 
@@ -5477,10 +5485,12 @@ class SurveyGradientDialog(QDialog):
             except Exception as e:
                 _log(f"multiscale refinement failed: {_brief(e)}")
                 QMessageBox.warning(
-                    self, "Dust mote refinement",
-                    f"The gradient correction succeeded, but the "
-                    f"multiplicative refinement failed:\n\n{e}\n\n"
-                    f"The additive result is still available.")
+                    self, self.tr("Dust mote refinement"),
+                    self.tr("The gradient correction succeeded, but the multiplicative refinement failed:\n"
+                            "\n"
+                            "{0}\n"
+                            "\n"
+                            "The additive result is still available.").format(e))
 
         self.chk_before.setEnabled(True)
         cov = self._result["coverage"] * 100.0
@@ -5494,24 +5504,19 @@ class SurveyGradientDialog(QDialog):
         # with a survey mask.
         _d = self._result.get("diag") or {}
         _share = _d.get("reference_share", 0.0)
-        _warn = ("  ·  ⚠ the reference explains almost none of this — "
-                 "treat it as ADBE with a survey-derived mask"
+        _warn = (self.tr("  ·  ⚠ the reference explains almost none of this — "
+                         "treat it as ADBE with a survey-derived mask")
                  if _share < 0.05 else "")
         # A reference can explain a healthy share and still be fitted to a
         # staircase, so the resolution verdict is its own warning rather
         # than something reference_share can stand in for.
         if _d.get("ref_resolution") == "pinned":
-            _warn += (f"  ·  ⚠ the reference background is pinned to "
-                      f"{max(_d.get('ref_levels') or 1.0, 1.0):.0f} "
-                      f"quantisation level(s) — prefer a survey with "
-                      f"FITS tiles")
+            _warn += self.tr("  ·  ⚠ the reference background is pinned to "
+                             "{0:.0f} "
+                             "quantisation level(s) — prefer a survey with "
+                             "FITS tiles").format(max(_d.get('ref_levels') or 1.0, 1.0))
         self._set_status(
-            f"Coverage {cov:.1f}%  ·  work {self._result['work_shape'][1]}×"
-            f"{self._result['work_shape'][0]}  ·  {cs}  ·  "
-            f"structure: survey {_share * 100:.0f}% / yours "
-            f"{_d.get('residual_share', 0.0) * 100:.0f}%  ·  "
-            f"gradient peak-to-peak {float(np.nanmax(g) - np.nanmin(g)):.4f}"
-            f"{_warn}"
+            self.tr("Coverage {0:.1f}%  ·  work {1}×{2}  ·  {3}  ·  structure: survey {4:.0f}% / yours {5:.0f}%  ·  gradient peak-to-peak {6:.4f}{7}").format(cov, self._result['work_shape'][1], self._result['work_shape'][0], cs, _share * 100, _d.get('residual_share', 0.0) * 100, float(np.nanmax(g) - np.nanmin(g)), _warn)
         )
 
         # Step 1 flips to the reference so you can see what was fetched;
@@ -5652,7 +5657,7 @@ class SurveyGradientDialog(QDialog):
                     pass
 
         set_log_sink(tee)
-        self._set_status("Running diagnostics…")
+        self._set_status(self.tr("Running diagnostics…"))
         try:
             lines.append("=" * 64)
             lines.append("SRGC DIAGNOSTICS")
@@ -5779,7 +5784,7 @@ class SurveyGradientDialog(QDialog):
             lines.append(f"\ndiagnostics stopped early: {_brief(e)}")
         finally:
             set_log_sink(prev_sink)
-            self._set_status("Diagnostics complete.")
+            self._set_status(self.tr("Diagnostics complete."))
 
         self._show_report("\n".join(lines))
 
@@ -5833,8 +5838,8 @@ class SurveyGradientDialog(QDialog):
             # there is no gradient, no background and no sample points to
             # show. Say so instead of raising a KeyError.
             self._set_status(
-                "Only the reference has been fetched so far — "
-                "run '2. Model && Correct' to see this view.")
+                self.tr("Only the reference has been fetched so far — "
+                "run '2. Model && Correct' to see this view."))
             return
         overlay_pts = False
         # Set by the linear background path: that mapping is already a
@@ -5895,8 +5900,8 @@ class SurveyGradientDialog(QDialog):
         if mode == "Corrected" and self.chk_before.isChecked():
             arr = np.asarray(pimg, dtype=np.float32)
             self._set_status(
-                "BEFORE — the image as it was when this correction was "
-                "modelled. Untick to see the result.")
+                self.tr("BEFORE — the image as it was when this correction was "
+                "modelled. Untick to see the result."))
         elif mode == "Corrected":
             _pc = self._result.get("preview_corrected")
             _stale = (self._result.get("ms_strength") is not None
@@ -5909,9 +5914,9 @@ class SurveyGradientDialog(QDialog):
                                             self.sp_strength.value() / 100.0)
                 if _stale:
                     self._set_status(
-                        "Strength changed — this preview is the additive "
+                        self.tr("Strength changed — this preview is the additive "
                         "correction only. Re-run '2. Model && Correct' to "
-                        "redo the dust-mote refinement at the new strength.")
+                        "redo the dust-mote refinement at the new strength."))
         elif mode == "Gradient removed":
             g = np.asarray(self._result["gradient_small"], dtype=np.float32)
             _gs = _sp(g)
@@ -5924,22 +5929,11 @@ class SurveyGradientDialog(QDialog):
                 arr = _linear_mid(g, gain=_BG_LINEAR_GAIN)
                 raw_display = True
                 self._set_status(
-                    f"Gradient span = {_gs:.5g} in your image's units. "
-                    f"Display is LINEAR at true scale (zero at mid-grey, "
-                    f"gain {_BG_LINEAR_GAIN:g}), so it fills "
-                    f"{100.0 * _gs * _BG_LINEAR_GAIN:.1f}% of the tonal "
-                    f"range. Grey = nothing removed there; brighter = "
-                    f"subtracted, darker = added back. Switch to min/max "
-                    f"to see its shape.")
+                    self.tr("Gradient span = {0:.5g} in your image's units. Display is LINEAR at true scale (zero at mid-grey, gain {1:g}), so it fills {2:.1f}% of the tonal range. Grey = nothing removed there; brighter = subtracted, darker = added back. Switch to min/max to see its shape.").format(_gs, _BG_LINEAR_GAIN, 100.0 * _gs * _BG_LINEAR_GAIN))
             else:
                 arr = _norm01(g)
                 self._set_status(
-                    f"Gradient span = {_gs:.5g} in your image's units. "
-                    f"Display is min-max stretched, so a gradient of any "
-                    f"size fills the screen — trust the number, not the "
-                    f"picture. If your target is visible in here, the "
-                    f"model is eating signal. Switch to linear to see "
-                    f"the true amplitude.")
+                    self.tr("Gradient span = {0:.5g} in your image's units. Display is min-max stretched, so a gradient of any size fills the screen — trust the number, not the picture. If your target is visible in here, the model is eating signal. Switch to linear to see the true amplitude.").format(_gs))
         elif mode == "Reference":
             _ref = np.asarray(self._result["reference"], dtype=np.float32)
             arr = _norm01(np.nan_to_num(_ref, nan=float(np.nanmedian(_ref))))
@@ -5953,9 +5947,8 @@ class SurveyGradientDialog(QDialog):
                 self._result.get("diag"))
             if _prov:
                 self._set_status(
-                    _prov +
-                    "   ·  the fit absorbs any linear scale difference "
-                    "exactly, so units never need matching.")
+                    self.tr("{0}   ·  the fit absorbs any linear scale difference "
+                            "exactly, so units never need matching.").format(_prov))
             # Say WHY it is grey, when it is. A colour survey whose
             # channels all failed but one degrades to that survivor
             # replicated across all three slots -- an honest picture of a
@@ -5971,15 +5964,7 @@ class SurveyGradientDialog(QDialog):
                                    rtol=1e-5, atol=0.0))
                 if _same == _ref.shape[2] - 1:
                     self._set_status(
-                        f"Reference is MONO: all {_ref.shape[2]} channels "
-                        f"resolved to the same plane, so this preview is "
-                        f"grey because the DATA is grey — not because the "
-                        f"view is. A colour survey degrades to this when "
-                        f"every channel but one fails to fetch and the "
-                        f"rest are synthesised from the survivor; the "
-                        f"[SRGC] log names which one failed. For a "
-                        f"reference with real colour, pick a survey whose "
-                        f"note above carries no ⚠.")
+                        self.tr("Reference is MONO: all {0} channels resolved to the same plane, so this preview is grey because the DATA is grey — not because the view is. A colour survey degrades to this when every channel but one fails to fetch and the rest are synthesised from the survivor; the [SRGC] log names which one failed. For a reference with real colour, pick a survey whose note above carries no ⚠.").format(_ref.shape[2]))
         elif mode == "Sample points":
             # Exactly the map the points were chosen on: the survey's diffuse
             # structure, plus only the SHARP part of your frame. Your gradient
@@ -6012,15 +5997,19 @@ class SurveyGradientDialog(QDialog):
             note = ""
             if is_ref:
                 share = d.get("reference_share", 0.0) * 100.0
-                note = (f"  Accounts for {share:.0f}% of the background "
-                        f"structure; the remaining "
-                        f"{d.get('residual_share', 0.0) * 100.0:.0f}% is "
-                        f"your own gradient."
-                        + ("  Essentially flat — this run is ADBE with a "
-                           "survey-derived mask." if share < 5 else ""))
-            _who = "Reference" if is_ref else "Target"
-            _lead = (f"{_who} background span = {bg_span:.5g} "
-                     f"({pct:.2f}% of that image's own range). ")
+                note = (self.tr("  Accounts for {0:.0f}% of the background "
+                                "structure; the remaining "
+                                "{1:.0f}% is "
+                                "your own gradient.").format(
+                            share, d.get('residual_share', 0.0) * 100.0)
+                        + (self.tr("  Essentially flat — this run is ADBE with a "
+                                   "survey-derived mask.") if share < 5 else ""))
+            _lead = (self.tr("Reference background span = {0:.5g} "
+                             "({1:.2f}% of that image's own range). ")
+                     if is_ref else
+                     self.tr("Target background span = {0:.5g} "
+                             "({1:.2f}% of that image's own range). ")
+                     ).format(bg_span, pct)
             if _bgmode == "linear":
                 # Gain is fixed at 0.5, so the span occupies half as much of
                 # the display range as it does of the data range -- PROVIDED
@@ -6033,27 +6022,29 @@ class SurveyGradientDialog(QDialog):
                 _units = ""
                 if is_ref:
                     _lin, _fb = self._ref_bg_in_target_units(raw)
-                    _units = (f"Shown as b·B_r{_fb} — what it "
-                              f"contributes in YOUR units, since survey "
-                              f"counts mean nothing against a 0-1 frame. ")
+                    _units = self.tr("Shown as b·B_r{0} — what it "
+                                     "contributes in YOUR units, since survey "
+                                     "counts mean nothing against a 0-1 frame. ").format(_fb)
                 _lin_span = _sp(_lin, fr)
                 arr = _linear_mid(_lin, mask=fr, gain=_BG_LINEAR_GAIN)
                 raw_display = True
                 self._set_status(
                     _lead + _units +
-                    f"Display is LINEAR at true scale (median at mid-grey, "
-                    f"gain {_BG_LINEAR_GAIN:g}), so its {_lin_span:.5g} "
-                    f"span fills "
-                    f"{100.0 * _lin_span * _BG_LINEAR_GAIN:.1f}% of the tonal "
-                    f"range — a flat background genuinely looks flat "
-                    f"here. Switch to min/max to see its shape.{note}")
+                    self.tr("Display is LINEAR at true scale (median at mid-grey, "
+                            "gain {0:g}), so its {1:.5g} "
+                            "span fills "
+                            "{2:.1f}% of the tonal "
+                            "range — a flat background genuinely looks flat "
+                            "here. Switch to min/max to see its shape.{3}").format(
+                        _BG_LINEAR_GAIN, _lin_span,
+                        100.0 * _lin_span * _BG_LINEAR_GAIN, note))
             else:
                 arr = _norm01(raw)
                 self._set_status(
                     _lead +
-                    f"Display is min-max stretched, so flatness is invisible "
-                    f"— trust the number, not the picture. Switch to "
-                    f"linear to see the true amplitude.{note}")
+                    self.tr("Display is min-max stretched, so flatness is invisible "
+                            "— trust the number, not the picture. Switch to "
+                            "linear to see the true amplitude.{0}").format(note))
 
         if raw_display:
             disp = np.clip(np.nan_to_num(np.asarray(arr, dtype=np.float32),
@@ -6107,14 +6098,16 @@ class SurveyGradientDialog(QDialog):
             info = self._result.get("mask_info") or {}
             extra = ""
             if info.get("relaxed"):
-                extra = ("  RELAXED — structure dominates this field, so the "
-                         "veto was loosened to keep enough sky; treat the "
-                         "result with suspicion.")
+                extra = self.tr("  RELAXED — structure dominates this field, so the "
+                                "veto was loosened to keep enough sky; treat the "
+                                "result with suspicion.")
             self._set_status(
-                f"{n} points (green). {vetoed_pct:.0f}% vetoed by the survey "
-                f"(red): brightest "
-                f"{info.get('exclusion_fraction', 0.5)*100:.0f}% plus "
-                f"median+{info.get('protect_k', 3.0):.1f}·MAD, holes filled."
+                self.tr("{0} points (green). {1:.0f}% vetoed by the survey "
+                        "(red): brightest "
+                        "{2:.0f}% plus "
+                        "median+{3:.1f}·MAD, holes filled.").format(
+                    n, vetoed_pct, info.get('exclusion_fraction', 0.5)*100,
+                    info.get('protect_k', 3.0))
                 + extra
             )
         # Cache what was rendered AND the status that went with it, so a
@@ -6268,8 +6261,8 @@ class SurveyGradientDialog(QDialog):
             buf = self._render_buffer(small)
             self.pane_target.set_image(buf, img_hw=(H, W))
             self._set_status(
-                "Draw exclusion zones now if you need them, then "
-                "'1. Fetch Reference' or '2. Model && Correct'.")
+                self.tr("Draw exclusion zones now if you need them, then "
+                "'1. Fetch Reference' or '2. Model && Correct'."))
         except Exception as e:
             _log(f"could not show the source image: {_brief(e)}")
 
@@ -6312,12 +6305,11 @@ class SurveyGradientDialog(QDialog):
         """Exclusions change the model, so the current result is stale."""
         n = len(self.pane_target.polygons)
         self.lbl_zones.setText("" if not n else
-                               f"{n} exclusion zone{'s' if n != 1 else ''}")
+                               (self.tr("{0} exclusion zone").format(n) if n == 1
+                                else self.tr("{0} exclusion zones").format(n)))
         if self._result is not None and not self._result.get("preview_only"):
             self._set_status(
-                f"{n} exclusion zone(s) drawn — re-run '2. Model && "
-                f"Correct' so they take effect on the sampling and the "
-                f"dust-mote refinement.")
+                self.tr("{0} exclusion zone(s) drawn — re-run '2. Model && Correct' so they take effect on the sampling and the dust-mote refinement.").format(n))
 
     # ---- apply ----------------------------------------------------------
     def _sync_push_button(self, *_):
@@ -6330,9 +6322,11 @@ class SurveyGradientDialog(QDialog):
         mode = modes[idx] if 0 <= idx < len(modes) else ""
         name = self.tabs.tabText(idx)
         tip = _PUSH_TIPS.get(mode, "")
+        if tip:
+            tip = QCoreApplication.translate("SurveyGradient", tip)
         btn.setToolTip(
-            f"Acts on the tab you are on, which is '{name}'.\n\n{tip}"
-            if tip else f"Push '{name}' out as its own document.")
+            self.tr("Acts on the tab you are on, which is '{0}'.\n\n{1}").format(name, tip)
+            if tip else self.tr("Push '{0}' out as its own document.").format(name))
 
     def _push_current_view(self):
         """The corner button: push whichever view is on screen."""
@@ -6368,25 +6362,25 @@ class SurveyGradientDialog(QDialog):
         import os
         if self._result is None:
             QMessageBox.information(
-                self, "Nothing to push",
-                "Run '1. Fetch Reference' or '2. Model && Correct' "
-                "first.")
+                self, self.tr("Nothing to push"),
+                self.tr("Run '1. Fetch Reference' or '2. Model && Correct' "
+                "first."))
             return
         if self._result.get("preview_only") and mode != "Reference":
             QMessageBox.information(
-                self, "Nothing to push",
-                "Only the reference has been fetched so far, so there "
+                self, self.tr("Nothing to push"),
+                self.tr("Only the reference has been fetched so far, so there "
                 "is no gradient and no modelled background yet. Run "
-                "'2. Model && Correct' first.")
+                "'2. Model && Correct' first."))
             return
 
         mw = self._main
         dm = getattr(mw, "docman", None) or getattr(mw, "doc_manager", None)
         if dm is None or not hasattr(dm, "open_array"):
             QMessageBox.warning(
-                self, "No document manager",
-                "Could not reach the document manager from here, so "
-                "there is nowhere to put the new document.")
+                self, self.tr("No document manager"),
+                self.tr("Could not reach the document manager from here, so "
+                "there is nowhere to put the new document."))
             return
 
         # The snapshot, never the live document -- same reason Apply
@@ -6512,8 +6506,8 @@ class SurveyGradientDialog(QDialog):
             _buf = getattr(self, "_preview_buf", None)
             if _buf is None:
                 QMessageBox.information(
-                    self, "Nothing to push",
-                    "The point map has not been drawn yet.")
+                    self, self.tr("Nothing to push"),
+                    self.tr("The point map has not been drawn yet."))
                 return
             arr = (np.asarray(_buf, dtype=np.float32) / 255.0)
             full_grid = False
@@ -6566,7 +6560,7 @@ class SurveyGradientDialog(QDialog):
         try:
             _newdoc = dm.open_array(arr, metadata=meta, title=title)
         except Exception as e:
-            QMessageBox.critical(self, "Push failed", str(e))
+            QMessageBox.critical(self, self.tr("Push failed"), str(e))
             return
         # open_array registers the document, which the MDI answers by
         # spawning a subwindow; this raises and focuses the one that
@@ -6582,7 +6576,7 @@ class SurveyGradientDialog(QDialog):
             except Exception:
                 pass
         _log(f"pushed '{title}' shape={arr.shape} — {what}")
-        self._set_status(f"Pushed '{title}' — {what}.")
+        self._set_status(self.tr("Pushed '{0}' — {1}.").format(title, what))
         return _newdoc
 
     def _do_apply(self):
@@ -6633,7 +6627,7 @@ class SurveyGradientDialog(QDialog):
             self.doc.apply_edit(out.astype(np.float32, copy=False),
                                 step_name=step, metadata=meta)
         except Exception as e:
-            QMessageBox.critical(self, "Apply failed", str(e))
+            QMessageBox.critical(self, self.tr("Apply failed"), str(e))
             return
 
         mw = self._main
@@ -6642,52 +6636,52 @@ class SurveyGradientDialog(QDialog):
                 mw._log(f"[SRGC] {step} coverage={self._result['coverage']*100:.1f}%")
             except Exception:
                 pass
-        self._set_status("Applied.")
+        self._set_status(self.tr("Applied."))
 
 
 # Each push is a different kind of object and the tooltip is where that
 # gets said before the click, not after. Keyed by _TAB_MODES.
 _PUSH_TIPS = {
     "Corrected": (
-        "Push the corrected image out as a NEW document, at full\n"
+        QT_TRANSLATE_NOOP("SurveyGradient", "Push the corrected image out as a NEW document, at full\n"
         "resolution and the current strength — the same pixels Apply\n"
         "would commit, but leaving this document untouched.\n\n"
         "With Before ticked you get the uncorrected snapshot instead,\n"
-        "so you can keep both and blink them."),
+        "so you can keep both and blink them.")),
     "Reference": (
-        "Push the fetched reference out as a new document.\n\n"
+        QT_TRANSLATE_NOOP("SurveyGradient", "Push the fetched reference out as a new document.\n\n"
         "It is on the WORK grid, not your resolution, and it arrives\n"
         "in the survey's own units — so if those fall outside 0-1 it\n"
         "is rescaled by its own range and the range is recorded in\n"
         "the metadata. The fit absorbs any linear scale, so nothing\n"
-        "the correction used is lost."),
+        "the correction used is lost.")),
     "Gradient removed": (
-        "Push the subtracted surface out as a new document, at full\n"
+        QT_TRANSLATE_NOOP("SurveyGradient", "Push the subtracted surface out as a new document, at full\n"
         "resolution and in your image's units.\n\n"
         "Your median is added back, because the gradient is\n"
         "median-subtracted and half of a zero-centred surface would\n"
         "sit below black. Subtract this document and restore the\n"
-        "median and you have redone the correction by hand."),
+        "median and you have redone the correction by hand.")),
     "Target background": (
-        "Push your modelled background out as a new document, at full\n"
+        QT_TRANSLATE_NOOP("SurveyGradient", "Push your modelled background out as a new document, at full\n"
         "resolution.\n\n"
         "This is the one surface that needs no adjusting: it is\n"
         "already in your units and at your sky level, so it goes out\n"
         "exactly as the model made it. ADBE's background document is\n"
-        "the same idea."),
+        "the same idea.")),
     "Reference background": (
-        "Push the reference's contribution out as a new document, at\n"
+        QT_TRANSLATE_NOOP("SurveyGradient", "Push the reference's contribution out as a new document, at\n"
         "full resolution.\n\n"
         "What you get is b·B_r — the term the fit subtracts — not\n"
         "the raw survey background, because that is in survey counts\n"
         "and means nothing beside a 0-1 frame. Its median is moved to\n"
-        "yours so it can be blinked against the target background."),
+        "yours so it can be blinked against the target background.")),
     "Sample points": (
-        "Push the point map out as a new document.\n\n"
+        QT_TRANSLATE_NOOP("SurveyGradient", "Push the point map out as a new document.\n\n"
         "This one is a PICTURE, not data: the green dots and the red\n"
         "veto tint are painted into the display render, so what you\n"
         "get is that render promoted to float at work-grid size. Good\n"
-        "for a record of what was sampled; not something to measure."),
+        "for a record of what was sampled; not something to measure.")),
 }
 
 _BG_LINEAR_GAIN = 0.5

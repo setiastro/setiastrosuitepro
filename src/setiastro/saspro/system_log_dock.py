@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QCoreApplication
 from PyQt6.QtGui import (
     QColor, QFont, QTextCharFormat, QTextCursor, QGuiApplication
 )
@@ -16,6 +16,10 @@ from PyQt6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLineEdit, QCheckBox, QLabel
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("SystemLogDock", text)
 
 # ---------------------------------------------------------------------------
 # ANSI → QColor map (standard 8 + bright 8)
@@ -98,7 +102,7 @@ class SystemLogDock(QDockWidget):
     MAX_BLOCKS = 5_000
 
     def __init__(self, parent=None):
-        super().__init__("System Log", parent)
+        super().__init__(_tr("System Log"), parent)
         self.setObjectName("SystemLogDock")
         self.setAllowedAreas(
             Qt.DockWidgetArea.BottomDockWidgetArea
@@ -119,17 +123,17 @@ class SystemLogDock(QDockWidget):
 
         # search
         self._search = QLineEdit(root)
-        self._search.setPlaceholderText("Search…")
+        self._search.setPlaceholderText(self.tr("Search…"))
         self._search.setClearButtonEnabled(True)
         self._search.setMaximumWidth(220)
         self._search.textChanged.connect(self._on_search)
         tb.addWidget(self._search)
 
         # level filters
-        tb.addWidget(QLabel("Show:", root))
-        self._chk_info  = QCheckBox("Info",  root)
-        self._chk_warn  = QCheckBox("Warn",  root)
-        self._chk_error = QCheckBox("Error", root)
+        tb.addWidget(QLabel(self.tr("Show:"), root))
+        self._chk_info  = QCheckBox(self.tr("Info"),  root)
+        self._chk_warn  = QCheckBox(self.tr("Warn"),  root)
+        self._chk_error = QCheckBox(self.tr("Error"), root)
         for chk in (self._chk_info, self._chk_warn, self._chk_error):
             chk.setChecked(True)
             chk.toggled.connect(self._rebuild_visible)
@@ -138,8 +142,8 @@ class SystemLogDock(QDockWidget):
         tb.addStretch(1)
 
         # buttons
-        self._btn_copy  = QPushButton("Copy All", root)
-        self._btn_clear = QPushButton("Clear",    root)
+        self._btn_copy  = QPushButton(self.tr("Copy All"), root)
+        self._btn_clear = QPushButton(self.tr("Clear"),    root)
         self._btn_copy.clicked.connect(self._copy_all)
         self._btn_clear.clicked.connect(self._clear)
         tb.addWidget(self._btn_copy)

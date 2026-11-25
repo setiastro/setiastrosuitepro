@@ -34,6 +34,10 @@ if TYPE_CHECKING:
     from PyQt6.QtWidgets import QApplication, QMdiArea
 
 
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("CommonUtilities", text)
+
+
 # ---------------------------------------------------------------------------
 # Version and Build Info (should be imported from main module)
 # ---------------------------------------------------------------------------
@@ -56,7 +60,7 @@ def get_build_timestamp() -> str:
 
     if BUILD_TIMESTAMP == "dev":
         # No generated build_info → running from local source checkout
-        return "Running locally from source code"
+        return _tr("Running locally from source code")
     return BUILD_TIMESTAMP
 
 def supporter_title_suffix() -> str:
@@ -137,7 +141,7 @@ class LicenseViewer(QDialog):
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 view.setPlainText(fh.read())
         except OSError as e:
-            view.setPlainText(f"Could not read {path}\n\n{e}")
+            view.setPlainText(self.tr("Could not read {0}\n\n{1}").format(path, e))
         lay.addWidget(view, 1)
 
         row = QHBoxLayout()
@@ -274,7 +278,7 @@ class AboutDialog(QDialog):
         else:
             # If someone passed the raw sentinel from the main module
             if build_timestamp == "dev":
-                build_timestamp = "Running locally from source code"
+                build_timestamp = self.tr("Running locally from source code")
 
         layout = QVBoxLayout()
 
@@ -519,6 +523,183 @@ _strip_ui_decorations = strip_ui_decorations
 # Crash/Exception Handlers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Crash report (the Unhandled Exception box). The report stays in English
+# whatever the UI language: it is read by the developer, like the logs.
+# ---------------------------------------------------------------------------
+
+REPORT_EMAIL = "frank@setiastro.com"
+# Longer mailto: links get cut off or refused by some Windows mail programs;
+# the full report always goes to the clipboard as well.
+_MAILTO_MAX = 1800
+
+
+def _app_version_line() -> str:
+    try:
+        from setiastro.saspro._generated.build_info import APP_VERSION, BUILD_TIMESTAMP
+        return f"{APP_VERSION} (built {BUILD_TIMESTAMP})"
+    except Exception:
+        pass
+    return get_version()
+
+
+def _redact_home(text: str) -> str:
+    """The user's home folder as ~, so a pasted report doesn't carry their account name."""
+    import re
+    home = os.path.expanduser("~")
+    if not home or home == "~" or len(home) < 4:
+        return text
+    variants = {home, home.replace("\\", "/"), home.replace("/", "\\"),
+                home.replace("\\", "\\\\")}          # as repr() writes it in messages
+    flags = re.IGNORECASE if sys.platform.startswith("win") else 0
+    for h in sorted(variants, key=len, reverse=True):
+        text = re.sub(re.escape(h), "~", text, flags=flags)
+    return text
+
+
+def _environment_lines() -> list:
+    import platform
+    lines = [f"SASpro: {_app_version_line()}"]
+    try:
+        lines.append(f"OS: {platform.platform()} ({platform.machine()})")
+    except Exception:
+        pass
+    lines.append(f"Python: {platform.python_version()}"
+                 + (" (installer build)" if getattr(sys, "frozen", False) else ""))
+    try:
+        from PyQt6.QtCore import QT_VERSION_STR, PYQT_VERSION_STR
+        lines.append(f"Qt: {QT_VERSION_STR}, PyQt6 {PYQT_VERSION_STR}")
+    except Exception:
+        pass
+    np_mod = sys.modules.get("numpy")
+    if np_mod is not None:
+        lines.append(f"numpy: {getattr(np_mod, '__version__', '?')}")
+    # Only what is already loaded: importing torch here could take seconds or fail.
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            parts = [f"torch {torch.__version__}"]
+            if getattr(torch.version, "cuda", None):
+                parts.append(f"CUDA {torch.version.cuda}"
+                             + ("" if torch.cuda.is_available() else " (no GPU found)"))
+            elif getattr(torch.version, "hip", None):
+                parts.append(f"ROCm {torch.version.hip}")
+            if "torch_directml" in sys.modules:
+                parts.append("DirectML")
+            lines.append("GPU: " + ", ".join(parts))
+        except Exception:
+            pass
+    return lines
+
+
+def _report_parts(head: str, details: str, thread: str):
+    """(versions + the error, traceback), home folder redacted."""
+    top = "\n".join(["SASpro crash report", *_environment_lines(),
+                     f"Thread: {thread}", "", head])
+    return _redact_home(top), _redact_home((details or "").rstrip())
+
+
+def build_crash_report(head: str, details: str, thread: str = "main") -> str:
+    """Versions, the error and its traceback, as one block of text to paste or email."""
+    top, tb = _report_parts(head, details, thread)
+    return f"{top}\n\n{tb}"
+
+
+def crash_mailto_url(head: str, details: str, thread: str = "main") -> str:
+    """mailto: link with the report as the body, short enough for any mail
+    program. If the report is too long the start of the traceback is cut; the
+    versions, the error and the innermost frames are kept."""
+    from urllib.parse import quote
+    top, tb = _report_parts(head, details, thread)
+    subject = _redact_home(f"SASpro crash: {head.splitlines()[0] if head else ''}")[:120]
+    intro = ("What were you doing when this happened?\n\n\n\n"
+             "---- crash report ----\n")
+    cut_note = ("(Part of the report was cut to fit an email link. "
+                "The full report is on your clipboard: paste it here.)\n")
+
+    def url_for(body: str) -> str:
+        body = body.replace("\r\n", "\n").replace("\n", "\r\n")
+        return (f"mailto:{REPORT_EMAIL}?subject={quote(subject, safe='')}"
+                f"&body={quote(body, safe='')}")
+
+    url = url_for(f"{intro}{top}\n\n{tb}")
+    if len(url) <= _MAILTO_MAX:
+        return url
+    tb_lines = tb.splitlines()
+    keep = len(tb_lines)
+    while keep > 0:
+        keep = keep // 2 if keep > 8 else keep - 1
+        url = url_for(f"{intro}{cut_note}{top}\n\n...\n" + "\n".join(tb_lines[-keep:] if keep else []))
+        if len(url) <= _MAILTO_MAX:
+            return url
+    body = intro + cut_note + top          # a huge error message: cut it too
+    while len(url_for(body)) > _MAILTO_MAX and len(body) > len(intro) + len(cut_note):
+        body = body[: max(len(intro) + len(cut_note), int(len(body) * 0.8))]
+    return url_for(body)
+
+
+def show_crash_box(parent, title: str, head: str, details: str, thread: str = "main") -> None:
+    """The Unhandled Exception box: says SASpro is still running and makes the
+    error easy to report -- Email Report opens the user's mail program with the
+    report filled in, Copy Report puts it on the clipboard. Neither closes the
+    box. Nothing is sent by SASpro itself."""
+    from PyQt6.QtCore import QUrl
+    from PyQt6.QtGui import QDesktopServices, QGuiApplication
+
+    def tr(text):
+        return QCoreApplication.translate("CrashHandler", text)
+
+    report = build_crash_report(head, details, thread)
+    m = QMessageBox(parent)
+    m.setIcon(QMessageBox.Icon.Critical)
+    m.setWindowTitle(title)
+    m.setText(head)
+    m.setInformativeText(tr(
+        "SASpro is still running, so you can keep working and save your images.\n\n"
+        "To report this, Email Report opens your email program with the report "
+        "filled in, addressed to {0}. Copy Report puts it on the clipboard for "
+        "webmail or a forum post. The details are below and in saspro.log."
+    ).format(REPORT_EMAIL))
+    m.setDetailedText(report)
+
+    b_mail = m.addButton(tr("Email Report…"), QMessageBox.ButtonRole.ActionRole)
+    b_copy = m.addButton(tr("Copy Report"), QMessageBox.ButtonRole.ActionRole)
+    b_close = m.addButton(QMessageBox.StandardButton.Close)
+    m.setDefaultButton(b_close)
+    m.setEscapeButton(b_close)
+    # QMessageBox closes on any button; take these two off its button box so
+    # the box stays up (copy, then email, then read the details...).
+    for b in (b_mail, b_copy):
+        try:
+            b.clicked.disconnect()
+        except Exception:
+            pass
+    b_mail.setToolTip(tr(
+        "Opens a new email to {0} in your email program, with the report filled in.\n"
+        "The full report is also copied to the clipboard. You choose whether to send it."
+    ).format(REPORT_EMAIL))
+    b_copy.setToolTip(tr("Copy the report (versions, error and traceback) to the clipboard."))
+
+    def _copy():
+        QGuiApplication.clipboard().setText(report)
+        b_copy.setText(tr("Copied ✓"))
+
+    def _email():
+        QGuiApplication.clipboard().setText(report)
+        url = QUrl.fromEncoded(crash_mailto_url(head, details, thread).encode("ascii"))
+        if QDesktopServices.openUrl(url):
+            b_mail.setText(tr("Email Opened ✓"))
+        else:
+            QMessageBox.information(m, tr("Email Report"), tr(
+                "No email program is set up on this computer.\n\n"
+                "The report is on your clipboard: paste it into an email to {0}."
+            ).format(REPORT_EMAIL))
+
+    b_copy.clicked.connect(_copy)
+    b_mail.clicked.connect(_email)
+    m.exec()
+
+
 def install_crash_handlers(app: 'QApplication') -> None:
     import faulthandler
     import tempfile
@@ -579,19 +760,26 @@ def install_crash_handlers(app: 'QApplication') -> None:
         logging.exception("Failed to enable faulthandler")
 
     
-    def _show_dialog(title: str, head: str, details: str) -> None:
-        """Show error dialog marshaled to main thread."""
+    _open_heads: set = set()
+
+    def _show_dialog(title: str, head: str, details: str, thread: str = "main") -> None:
+        """Show the error box -- GUI-thread errors only."""
+        # Background errors stay with the code that runs them (already logged
+        # by the caller). Without this, a slot raising in a moveToThread worker
+        # would build the box on that worker thread.
+        if threading.current_thread() is not threading.main_thread():
+            return
+
         def _ui():
-            m = QMessageBox(app.activeWindow())
-            m.setIcon(QMessageBox.Icon.Critical)
-            m.setWindowTitle(title)
-            m.setText(head)
-            from PyQt6.QtCore import QCoreApplication
-            m.setInformativeText(QCoreApplication.translate("CrashHandler", "Details are available below and in saspro.log."))
-            if details:
-                m.setDetailedText(details)
-            m.setStandardButtons(QMessageBox.StandardButton.Ok)
-            m.exec()
+            # One box per error: an error raised while painting would
+            # otherwise stack a new box on every repaint.
+            if head in _open_heads:
+                return
+            _open_heads.add(head)
+            try:
+                show_crash_box(app.activeWindow(), title, head, details, thread)
+            finally:
+                _open_heads.discard(head)
         QTimer.singleShot(0, _ui)
 
     # 2) Any uncaught exception on the main thread
@@ -606,15 +794,11 @@ def install_crash_handlers(app: 'QApplication') -> None:
     
     sys.excepthook = _excepthook
     
-    # 3) Any uncaught exception in background threads (Py3.8+)
+    # 3) Any uncaught exception in background threads (Py3.8+): log only.
+    # The code running the thread owns its errors and fallbacks; no box.
     def _threadhook(args: threading.ExceptHookArgs):
         tb = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
         logging.error("Uncaught thread exception (%s):\n%s", args.thread.name, tb)
-        _show_dialog(
-            QCoreApplication.translate("CrashHandler", "Unhandled Thread Exception"),
-            f"{args.exc_type.__name__}: {args.exc_value}",
-            tb
-        )
     
     try:
         threading.excepthook = _threadhook  # type: ignore[attr-defined]

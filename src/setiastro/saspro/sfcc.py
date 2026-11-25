@@ -1175,6 +1175,8 @@ class SFCCDialog(QDialog):
        - get_metadata()  [optional]
        - get_header()    [preferred for WCS; else we look in metadata]
     """
+    # Named in the "plate solution looks wrong" prompt and its log lines.
+    _PLATE_CHECK_TOOL = "SPCC"
     def __init__(self, doc_manager, sasp_data_path, parent=None):
         super().__init__(parent)
         _force_mpl_no_tex()
@@ -1311,7 +1313,7 @@ class SFCCDialog(QDialog):
         layout = QVBoxLayout(self)
 
         row1 = QHBoxLayout(); layout.addLayout(row1)
-        self.fetch_stars_btn = QPushButton(self.tr("Step 1: Fetch Stars & Spectra from Current View"))
+        self.fetch_stars_btn = QPushButton(self.tr("Step 1: Fetch Stars && Spectra from Current View"))
         f = self.fetch_stars_btn.font(); f.setBold(True); self.fetch_stars_btn.setFont(f)
         self.fetch_stars_btn.clicked.connect(self.fetch_stars)
         row1.addWidget(self.fetch_stars_btn)
@@ -1359,11 +1361,11 @@ class SFCCDialog(QDialog):
         self.color_matrix_chk = QCheckBox(self.tr("3×3 Color Matrix Correction"))
         self.color_matrix_chk.setChecked(False)
         self.color_matrix_chk.setToolTip(
-            "After the standard per-channel SFCC correction, fits a 3×3 color\n"
+            self.tr("After the standard per-channel SFCC correction, fits a 3×3 color\n"
             "mixing matrix from the stellar photometry residuals.\n"
             "Corrects cross-channel bleed (e.g. R leaking into G) that\n"
             "per-channel scaling cannot fix.\n\n"
-            "Recommended for broadband RGB — not for narrowband/duoband."
+            "Recommended for broadband RGB — not for narrowband/duoband.")
         )
         row4.addWidget(self.color_matrix_chk)
         self.run_grad_btn = QPushButton(self.tr("Run Gradient Extraction (Beta)"))
@@ -1453,7 +1455,13 @@ class SFCCDialog(QDialog):
         # existing stuff...
         saved_star = QSettings().value("SFCC/WhiteReference", "")
         if saved_star:
-            idx = self.star_combo.findText(saved_star)
+            # Stored as the SED key (item data). Settings written before that
+            # hold the displayed text, which for Vega is translated.
+            idx = self.star_combo.findData(saved_star)
+            if idx == -1:
+                idx = self.star_combo.findText(saved_star)
+            if idx == -1 and "A0V" in str(saved_star):
+                idx = self.star_combo.findData("A0V")
             if idx != -1:
                 self.star_combo.setCurrentIndex(idx)
         use_gaia = s.value("SFCC/UseGaiaFallback", True, type=bool)
@@ -1556,7 +1564,7 @@ class SFCCDialog(QDialog):
 
     def save_lp_setting(self, _):  QSettings().setValue("SFCC/LPFilter", self.lp_filter_combo.currentText())
     def save_lp2_setting(self, _): QSettings().setValue("SFCC/LPFilter2", self.lp_filter_combo2.currentText())
-    def save_star_setting(self, _): QSettings().setValue("SFCC/WhiteReference", self.star_combo.currentText())
+    def save_star_setting(self, _): QSettings().setValue("SFCC/WhiteReference", self.star_combo.currentData() or self.star_combo.currentText())
     def save_r_filter_setting(self, _): QSettings().setValue("SFCC/RFilter", self.r_filter_combo.currentText())
     def save_g_filter_setting(self, _): QSettings().setValue("SFCC/GFilter", self.g_filter_combo.currentText())
     def save_b_filter_setting(self, _): QSettings().setValue("SFCC/BFilter", self.b_filter_combo.currentText())
@@ -1866,7 +1874,7 @@ class SFCCDialog(QDialog):
                     return _job.get_results()
                 tab = run_async_blocking(
                     _gaia_tap_query, parent=self, title="SFCC",
-                    label="Querying Gaia archive…", cancellable=False,
+                    label=self.tr("Querying Gaia archive…"), cancellable=False,
                 )
 
                 self._last_gaia_query_ok = True
@@ -2170,13 +2178,13 @@ class SFCCDialog(QDialog):
         total = len(missing_spectra)
 
         dlg = QProgressDialog(
-            f"Downloading Gaia XP spectra (0/{total})…\n"
-            f"Gaia archive may be slow — please wait.",
-            "Cancel",
+            self.tr("Downloading Gaia XP spectra (0/{0})…\n"
+                    "Gaia archive may be slow — please wait.").format(total),
+            self.tr("Cancel"),
             0, total,
             self,
         )
-        dlg.setWindowTitle("Gaia XP Spectra Download")
+        dlg.setWindowTitle(self.tr("Gaia XP Spectra Download"))
         dlg.setWindowModality(Qt.WindowModality.WindowModal)
         dlg.setMinimumDuration(0)
         dlg.setMinimumWidth(460)
@@ -2206,9 +2214,10 @@ class SFCCDialog(QDialog):
         def _on_progress(done, total_, msg):
             if _cancelled:
                 dlg.setLabelText(
-                    f"Cancelling… waiting for current batch to finish.\n"
-                    f"({done}/{total_} downloaded so far — please wait)\n\n"
-                    f"Please do not close this window."
+                    self.tr("Cancelling… waiting for current batch to finish.\n"
+                            "({0}/{1} downloaded so far — please wait)\n"
+                            "\n"
+                            "Please do not close this window.").format(done, total_)
                 )
             else:
                 dlg.setValue(done)
@@ -2230,9 +2239,9 @@ class SFCCDialog(QDialog):
             # Show it again and lock it down.
             dlg.setCancelButton(None)
             dlg.setLabelText(
-                "Cancelling… waiting for current batch to finish.\n"
+                self.tr("Cancelling… waiting for current batch to finish.\n"
                 "Please wait — this may take 1–3 minutes.\n\n"
-                "Please do not close this window."
+                "Please do not close this window.")
             )
             dlg.show()
             dlg.raise_()
@@ -2320,12 +2329,12 @@ class SFCCDialog(QDialog):
         missing_integrals = [sid for sid in ordered_unique if sid not in out]
         if not missing_integrals:
             if getattr(self, "count_label", None) is not None:
-                self.count_label.setText(f"Gaia XP: synthetic photometry cache hit ({len(out)} sources).")
+                self.count_label.setText(self.tr("Gaia XP: synthetic photometry cache hit ({0} sources).").format(len(out)))
             return out
         else:
             if getattr(self, "count_label", None) is not None:
                 self.count_label.setText(
-                    f"Gaia XP: cache miss for {len(missing_integrals)} sources — preparing spectra…"
+                    self.tr("Gaia XP: cache miss for {0} sources — preparing spectra…").format(len(missing_integrals))
                 )
 
 
@@ -2432,8 +2441,8 @@ class SFCCDialog(QDialog):
         self.current_header = hdr
 
         if self.current_header is None or self.current_image is None:
-            QMessageBox.warning(self, "No Plate Solution",
-                                "Please plate-solve the active document first.")
+            QMessageBox.warning(self, self.tr("No Plate Solution"),
+                                self.tr("Please plate-solve the active document first."))
             return
 
         # Pickles templates list (once)
@@ -2456,11 +2465,11 @@ class SFCCDialog(QDialog):
         try:
             self.initialize_wcs_from_header(self.current_header)
         except Exception:
-            QMessageBox.critical(self, "WCS Error", "Could not build a 2D WCS from header.")
+            QMessageBox.critical(self, self.tr("WCS Error"), self.tr("Could not build a 2D WCS from header."))
             return
 
         if not getattr(self, "wcs", None):
-            QMessageBox.critical(self, "WCS Error", "Could not build a 2D WCS from header.")
+            QMessageBox.critical(self, self.tr("WCS Error"), self.tr("Could not build a 2D WCS from header."))
             return
 
         wcs2 = self.wcs.celestial if hasattr(self.wcs, "celestial") else self.wcs
@@ -2486,7 +2495,7 @@ class SFCCDialog(QDialog):
         )
 
         if sources is None or sources.size == 0:
-            QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
+            QMessageBox.critical(self, self.tr("SEP Error"), self.tr("SEP found no sources."))
             return
 
         r_fluxrad, _ = sep.flux_radius(
@@ -2497,7 +2506,7 @@ class SFCCDialog(QDialog):
         mask = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
         sources = sources[mask]
         if sources.size == 0:
-            QMessageBox.critical(self, "SEP Error", "All SEP detections rejected by radius filter.")
+            QMessageBox.critical(self, self.tr("SEP Error"), self.tr("All SEP detections rejected by radius filter."))
             return
 
         _sfcc_status(self, f"SEP detected {sources.size:,} stars (σ={sep_sigma:.1f}) — converting to sky coords…")
@@ -2510,7 +2519,7 @@ class SFCCDialog(QDialog):
         try:
             sky_coords = wcs2.all_pix2world(np.column_stack([xs, ys]), 0)
         except Exception as e:
-            QMessageBox.critical(self, "WCS Error", str(e))
+            QMessageBox.critical(self, self.tr("WCS Error"), str(e))
             return
 
         valid_mask = (
@@ -2521,7 +2530,7 @@ class SFCCDialog(QDialog):
         sky_coords  = sky_coords[valid_mask]
 
         if sources.size == 0:
-            QMessageBox.critical(self, "WCS Error", "No valid sky coordinates after WCS conversion.")
+            QMessageBox.critical(self, self.tr("WCS Error"), self.tr("No valid sky coordinates after WCS conversion."))
             return
 
         # ── Step 3: Gaia bulk library positional match ─────────────────────
@@ -2550,6 +2559,18 @@ class SFCCDialog(QDialog):
                     QApplication.processEvents()
             except Exception as e:
                 print(f"[SPCC] Gaia bulk match failed: {e}")
+
+        # ── Step 3b: does the plate solution fit? A wrong one matches at chance
+        _sfcc_status(self, "Checking the plate solution against Gaia…")
+        QApplication.processEvents()
+        from setiastro.saspro.plate_solution_check import check_dialog_plate_solution
+        _ps = check_dialog_plate_solution(self, sky_coords, tool=self._PLATE_CHECK_TOOL,
+                                          log_tag=self._PLATE_CHECK_TOOL)
+        if _ps == "resolved":                  # re-solved: Step 1 again on the new WCS
+            return SFCCDialog.fetch_stars(self)
+        if _ps == "stop":
+            _sfcc_status(self, "Step 1 stopped: the plate solution looks wrong.")
+            return
 
         # ── Step 4: Build star_list from SEP + Gaia matches ───────────────
         for i in range(len(sources)):
@@ -2591,7 +2612,7 @@ class SFCCDialog(QDialog):
         try:
             sky_corners = wcs2.all_pix2world(pix_corners, 0)
         except Exception as e:
-            QMessageBox.critical(self, "WCS Error", str(e))
+            QMessageBox.critical(self, self.tr("WCS Error"), str(e))
             return
 
         center_sky  = SkyCoord(ra=float(sky_corners[0,0])*u.deg,
@@ -2616,7 +2637,7 @@ class SFCCDialog(QDialog):
                 radius=radius,
                 runner=lambda f, *a, **k: run_async_blocking(
                     f, *a, parent=self, title="SFCC",
-                    label="Querying SIMBAD…", cancellable=False, **k),
+                    label=self.tr("Querying SIMBAD…"), cancellable=False, **k),
                 status_cb=lambda m: _sfcc_status(self, m),
                 budget=self._simbad_budget,
                 attempts=2,
@@ -3079,28 +3100,28 @@ class SFCCDialog(QDialog):
         lp_filt2  = self.lp_filter_combo2.currentText()
 
         if not ref_sed_name:
-            QMessageBox.warning(self, "Error", "Select a reference spectral type (e.g. A0V).")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Select a reference spectral type (e.g. A0V)."))
             return
         if r_filt == "(None)" and g_filt == "(None)" and b_filt == "(None)":
-            QMessageBox.warning(self, "Error", "Pick at least one of R, G or B filters.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Pick at least one of R, G or B filters."))
             return
         if sens_name == "(None)":
-            QMessageBox.warning(self, "Error", "Select a sensor QE curve.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Select a sensor QE curve."))
             return
 
         doc = self.doc_manager.get_active_document()
         if doc is None or doc.image is None:
-            QMessageBox.critical(self, "Error", "No active document.")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("No active document."))
             return
 
         img = doc.image
         H, W = img.shape[:2]
         if img.ndim != 3 or img.shape[2] != 3:
-            QMessageBox.critical(self, "Error", "Active document must be RGB (3 channels).")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Active document must be RGB (3 channels)."))
             return
 
         if not getattr(self, "star_list", None):
-            QMessageBox.warning(self, "Error", "Run Step 1: Fetch Stars before running color calibration.")
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Run Step 1: Fetch Stars before running color calibration."))
             return
 
         # ── Float working space ───────────────────────────────────────────
@@ -3124,12 +3145,12 @@ class SFCCDialog(QDialog):
         )
 
         if sources is not None and sources.size > 300_000:
-            QMessageBox.warning(self, "Too many detections",
-                f"SEP found {sources.size:,} sources with σ={sep_sigma:.1f}.\n"
-                f"Increase the threshold and rerun.")
+            QMessageBox.warning(self, self.tr("Too many detections"),
+                self.tr("SEP found {0:,} sources with σ={1:.1f}.\n"
+                        "Increase the threshold and rerun.").format(sources.size, sep_sigma))
             return
         if sources is None or sources.size == 0:
-            QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
+            QMessageBox.critical(self, self.tr("SEP Error"), self.tr("SEP found no sources."))
             return
 
         _sfcc_status(self, f"SEP found {sources.size:,} sources (σ={sep_sigma:.1f}) — applying radius filter…")
@@ -3142,7 +3163,7 @@ class SFCCDialog(QDialog):
         mask = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
         sources = sources[mask]
         if sources.size == 0:
-            QMessageBox.critical(self, "SEP Error", "All SEP detections rejected by radius filter.")
+            QMessageBox.critical(self, self.tr("SEP Error"), self.tr("All SEP detections rejected by radius filter."))
             return
 
         # ── Match star_list → current SEP sources ─────────────────────────
@@ -3168,8 +3189,8 @@ class SFCCDialog(QDialog):
                 })
 
         if not raw_matches:
-            QMessageBox.warning(self, "No Matches",
-                "No catalog stars matched to SEP detections.")
+            QMessageBox.warning(self, self.tr("No Matches"),
+                self.tr("No catalog stars matched to SEP detections."))
             return
 
         # ── Cap to brightest 500 by SEP flux ──────────────────────────────
@@ -3313,10 +3334,10 @@ class SFCCDialog(QDialog):
         QApplication.processEvents()
 
         if n_total_matches == 0:
-            QMessageBox.warning(self, "No Stars with Spectra",
-                "No matched stars have a Gaia XP spectrum or Pickles template.\n\n"
+            QMessageBox.warning(self, self.tr("No Stars with Spectra"),
+                self.tr("No matched stars have a Gaia XP spectrum or Pickles template.\n\n"
                 "Try installing more Gaia XP library groups, or ensure\n"
-                "SIMBAD returned spectral types for this field.")
+                "SIMBAD returned spectral types for this field."))
             return
 
         # ── Step C: Parallel aperture photometry ──────────────────────────
@@ -3450,8 +3471,8 @@ class SFCCDialog(QDialog):
         diag_exp_BG  = np.asarray(diag_exp_BG,  dtype=np.float64)
 
         if diag_meas_RG.size == 0 or diag_meas_BG.size == 0:
-            QMessageBox.information(self, "No Valid Stars",
-                "No stars with valid measured vs expected ratios.")
+            QMessageBox.information(self, self.tr("No Valid Stars"),
+                self.tr("No stars with valid measured vs expected ratios."))
             return
 
         n_stars    = int(diag_meas_RG.size)
@@ -3640,16 +3661,18 @@ class SFCCDialog(QDialog):
         def pretty(coeff):
             return float(coeff[0] + coeff[1] + coeff[2])
 
-        QMessageBox.information(self, "SFCC Complete",
-            f"Applied SFCC using {n_stars} stars\n"
-            f"  Gaia XP spectra:   {n_used_xp}\n"
-            f"  Pickles templates: {n_used_pkl}\n"
-            f"  Model: {model_choice}\n"
+        QMessageBox.information(self, self.tr("SFCC Complete"),
+            self.tr("Applied SFCC using {0} stars\n"
+            "  Gaia XP spectra:   {1}\n"
+            "  Pickles templates: {2}\n"
+            "  Model: {3}\n"
             #f"  3×3 color matrix:  {'ON' if use_cm else 'OFF'}\n"
-            f"  R ratio @ x=1: {pretty(coeff_R):.4f}\n"
-            f"  B ratio @ x=1: {pretty(coeff_B):.4f}\n"
-            f"  Background neutralisation: "
-            f"{'ON' if self.neutralize_chk.isChecked() else 'OFF'}")
+            "  R ratio @ x=1: {4:.4f}\n"
+            "  B ratio @ x=1: {5:.4f}\n"
+            "  Background neutralisation: "
+            "{6}").format(n_stars, n_used_xp, n_used_pkl, model_choice,
+                          pretty(coeff_R), pretty(coeff_B),
+                          'ON' if self.neutralize_chk.isChecked() else 'OFF'))
 
         self.current_image = out_img
 
@@ -3658,17 +3681,17 @@ class SFCCDialog(QDialog):
         print("[SPCC-GRAD] start")
 
         if not getattr(self, "star_list", None):
-            QMessageBox.warning(self, "No Stars", "Fetch Stars first, then run SPCC.")
+            QMessageBox.warning(self, self.tr("No Stars"), self.tr("Fetch Stars first, then run SPCC."))
             return
 
         doc = self.doc_manager.get_active_document()
         if doc is None or doc.image is None:
-            QMessageBox.critical(self, "Error", "No active document.")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("No active document."))
             return
 
         img = doc.image
         if img.ndim != 3 or img.shape[2] != 3:
-            QMessageBox.critical(self, "Error", "Active document must be RGB.")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Active document must be RGB."))
             return
 
         is_u8 = (img.dtype == np.uint8)
@@ -3691,7 +3714,7 @@ class SFCCDialog(QDialog):
             data_sub, err, status_prefix="Gradient: detecting stars"
         )
         if sources is None or sources.size == 0:
-            QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
+            QMessageBox.critical(self, self.tr("SEP Error"), self.tr("SEP found no sources."))
             return
 
         r_fluxrad, _ = sep.flux_radius(
@@ -3702,7 +3725,7 @@ class SFCCDialog(QDialog):
         mask    = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
         sources = sources[mask]
         if sources.size == 0:
-            QMessageBox.critical(self, "SEP Error", "All SEP detections rejected by radius filter.")
+            QMessageBox.critical(self, self.tr("SEP Error"), self.tr("All SEP detections rejected by radius filter."))
             return
 
         _sfcc_status(self, f"Gradient: {sources.size:,} sources detected — matching to catalog…")
@@ -3717,8 +3740,8 @@ class SFCCDialog(QDialog):
         lp_filt2  = self.lp_filter_combo2.currentText()
 
         if sens_name == "(None)":
-            QMessageBox.warning(self, "Error",
-                "Select a sensor QE curve before running gradient extraction.")
+            QMessageBox.warning(self, self.tr("Error"),
+                self.tr("Select a sensor QE curve before running gradient extraction."))
             return
 
         wl_min, wl_max = 3000, 11000
@@ -3782,8 +3805,8 @@ class SFCCDialog(QDialog):
         QApplication.processEvents()
 
         if not raw_matches:
-            QMessageBox.warning(self, "No Matches",
-                "No catalog stars matched current SEP detections.")
+            QMessageBox.warning(self, self.tr("No Matches"),
+                self.tr("No catalog stars matched current SEP detections."))
             return
 
         # ── Gaia XP integrals (primary) ───────────────────────────────────
@@ -3940,12 +3963,14 @@ class SFCCDialog(QDialog):
               f"(XP={n_xp}, Pickles={n_pkl}, B-V={n_bv}, none={n_none})")
 
         if len(meas_rows) < 10:
-            QMessageBox.warning(self, "Too Few Stars",
-                f"Only {len(meas_rows)} valid stars for gradient fitting (need ≥ 10).\n\n"
-                f"  {n_xp} Gaia XP spectra\n"
-                f"  {n_pkl} Pickles templates\n"
-                f"  {n_none} no spectrum available\n\n"
-                "Try lowering Star detect σ, or install more Gaia XP library groups.")
+            QMessageBox.warning(self, self.tr("Too Few Stars"),
+                self.tr("Only {0} valid stars for gradient fitting (need ≥ 10).\n"
+                        "\n"
+                        "  {1} Gaia XP spectra\n"
+                        "  {2} Pickles templates\n"
+                        "  {3} no spectrum available\n"
+                        "\n"
+                        "Try lowering Star detect σ, or install more Gaia XP library groups.").format(len(meas_rows), n_xp, n_pkl, n_none))
             return
 
         # ── Build differential magnitude arrays ───────────────────────────
@@ -3981,8 +4006,8 @@ class SFCCDialog(QDialog):
         print(f"[SPCC-GRAD] after sigma clip: R={len(dmR)}, G={len(dmG)}, B={len(dmB)}")
 
         if len(dmR) < 5 or len(dmG) < 5 or len(dmB) < 5:
-            QMessageBox.warning(self, "Too Few Stars",
-                "Too few stars survived sigma clipping for gradient fitting.")
+            QMessageBox.warning(self, self.tr("Too Few Stars"),
+                self.tr("Too few stars survived sigma clipping for gradient fitting."))
             return
 
         # ── Fit surface ───────────────────────────────────────────────────
@@ -4096,15 +4121,18 @@ class SFCCDialog(QDialog):
             f"Gradient correction complete ✓  —  {mode}  ·  {len(meas_rows)} stars  ·  "
             f"peaks: R={peak_R:.3f} G={peak_G:.3f} B={peak_B:.3f} mag")
 
-        QMessageBox.information(self, "Gradient Correction Complete",
-            f"Spectrophotometric gradient removed.\n\n"
-            f"  Method:       {mode}\n"
-            f"  Stars used:   {len(meas_rows)}  ({n_xp} Gaia XP · {n_pkl} Pickles)\n\n"
-            f"  Peak gradient magnitude:\n"
-            f"    R: {peak_R:.3f} mag\n"
-            f"    G: {peak_G:.3f} mag\n"
-            f"    B: {peak_B:.3f} mag\n\n"
-            f"If the result looks overcorrected, try 'poly2' instead of '{mode}'.")
+        QMessageBox.information(self, self.tr("Gradient Correction Complete"),
+            self.tr("Spectrophotometric gradient removed.\n"
+                    "\n"
+                    "  Method:       {0}\n"
+                    "  Stars used:   {1}  ({2} Gaia XP · {3} Pickles)\n"
+                    "\n"
+                    "  Peak gradient magnitude:\n"
+                    "    R: {4:.3f} mag\n"
+                    "    G: {5:.3f} mag\n"
+                    "    B: {6:.3f} mag\n"
+                    "\n"
+                    "If the result looks overcorrected, try 'poly2' instead of '{7}'.").format(mode, len(meas_rows), n_xp, n_pkl, peak_R, peak_G, peak_B, mode))
         
     # ── Viewer, close ──────────────────────────────────────────────────
 
@@ -4239,7 +4267,7 @@ class _GaiaSpectraWorker(QThread):
         try:
             for i in range(0, total, self._batch_size):
                 if self._cancel_flag:
-                    self.progress.emit(stored, total, "Cancelled.")
+                    self.progress.emit(stored, total, self.tr("Cancelled."))
                     self.finished.emit(stored)
                     return
 
@@ -4248,8 +4276,8 @@ class _GaiaSpectraWorker(QThread):
 
                 self.progress.emit(
                     i, total,
-                    f"Downloading Gaia XP spectra {i+1}–{done_so_far} of {total}…\n"
-                    f"(Gaia archive may be slow — each batch can take 1–3 min)"
+                    self.tr("Downloading Gaia XP spectra {0}–{1} of {2}…\n"
+                            "(Gaia archive may be slow — each batch can take 1–3 min)").format(i+1, done_so_far, total)
                 )
 
                 try:
@@ -4262,7 +4290,7 @@ class _GaiaSpectraWorker(QThread):
                     # continue to next batch — partial results are fine
 
                 self.progress.emit(done_so_far, total,
-                    f"Batch complete ({done_so_far}/{total})…")
+                    self.tr("Batch complete ({0}/{1})…").format(done_so_far, total))
 
             self.finished.emit(stored)
 

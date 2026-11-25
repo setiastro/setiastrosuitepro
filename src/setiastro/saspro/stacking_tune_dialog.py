@@ -32,11 +32,15 @@ from __future__ import annotations
 
 import os
 
-from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QCoreApplication, QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("StackingTuneDialog", text)
 
 __all__ = [
     "LAST_FRAMES",
@@ -211,7 +215,7 @@ class StackingTuneDialog(QDialog):
     def __init__(self, parent=None, frame_shape=(3000, 4000), n_frames=24,
                  band_spinbox: QSpinBox | None = None, ram_cap_rows=None):
         super().__init__(parent)
-        self.setWindowTitle("Optimize stacking for this computer")
+        self.setWindowTitle(self.tr("Optimize stacking for this computer"))
         self.setMinimumSize(760, 620)
         self._band_spin = band_spinbox
         self._ram_cap = ram_cap_rows
@@ -234,12 +238,12 @@ class StackingTuneDialog(QDialog):
         self.h_spin.setValue(int(h0))
         self.w_spin.setValue(int(w0))
         size_row = QHBoxLayout()
-        size_row.addWidget(QLabel("H")); size_row.addWidget(self.h_spin)
-        size_row.addWidget(QLabel("W")); size_row.addWidget(self.w_spin)
+        size_row.addWidget(QLabel(self.tr("H"))); size_row.addWidget(self.h_spin)
+        size_row.addWidget(QLabel(self.tr("W"))); size_row.addWidget(self.w_spin)
         size_row.addStretch(1)
         from PyQt6.QtWidgets import QWidget
         size_w = QWidget(); size_w.setLayout(size_row)
-        form.addRow("Frame size:", size_w)
+        form.addRow(self.tr("Frame size:"), size_w)
 
         # If the caller can see real lights and they disagree with what is in
         # the boxes, say so rather than overriding — a remembered value was a
@@ -249,26 +253,26 @@ class StackingTuneDialog(QDialog):
         try:
             dh, dw = int(frame_shape[0]), int(frame_shape[1])
             if (dh, dw) != (3000, 4000) and (dh, dw) != (int(h0), int(w0)):
-                self.size_hint.setText(
-                    f"your loaded lights are {dw}x{dh} — tuning at a "
-                    f"different size will give a different answer"
-                )
+                self.size_hint.setText(self.tr(
+                    "your loaded lights are {0}x{1} — tuning at a "
+                    "different size will give a different answer"
+                ).format(dw, dh))
                 size_row.insertWidget(4, self.size_hint)
         except Exception:
             pass
 
         self.n_spin = QSpinBox(); self.n_spin.setRange(4, 256)
         self.n_spin.setValue(int(n0))
-        self.n_spin.setToolTip(
+        self.n_spin.setToolTip(self.tr(
             "Stack depth for the integration test. Use something close to a "
             "typical session; deeper stacks shift the band-height answer."
-        )
-        form.addRow("Frames in stack:", self.n_spin)
+        ))
+        form.addRow(self.tr("Frames in stack:"), self.n_spin)
 
-        self.cb_detect = QCheckBox("Star detection (registration workers)")
-        self.cb_band = QCheckBox("Integration band height (rows per pass)")
-        self.cb_warp = QCheckBox("Anti-ring warp: GPU or CPU")
-        self.cb_warp.setToolTip(
+        self.cb_detect = QCheckBox(self.tr("Star detection (registration workers)"))
+        self.cb_band = QCheckBox(self.tr("Integration band height (rows per pass)"))
+        self.cb_warp = QCheckBox(self.tr("Anti-ring warp: GPU or CPU"))
+        self.cb_warp.setToolTip(self.tr(
             "Finalize warps each frame in a pool of worker processes. One of "
             "them can use the GPU instead, so the question is whether the "
             "card beats a SINGLE worker at its share of the cores — not "
@@ -276,9 +280,9 @@ class StackingTuneDialog(QDialog):
             "Measured on a 3070 Ti beside a 36-core Xeon the two are within a "
             "few percent and the CPU keeps it. A strong card with few cores "
             "is the case where this turns on."
-        )
-        self.cb_debayer = QCheckBox("Bayer demosaic: GPU or CPU (OSC only)")
-        self.cb_debayer.setToolTip(
+        ))
+        self.cb_debayer = QCheckBox(self.tr("Bayer demosaic: GPU or CPU (OSC only)"))
+        self.cb_debayer.setToolTip(self.tr(
             "Normalization debayers every OSC frame. The numba RCD kernel is "
             "parallel, so one frame already uses every core — the question is "
             "whether the card beats ALL of them, not one worker.\n\n"
@@ -286,21 +290,21 @@ class StackingTuneDialog(QDialog):
             "machine: a strong CPU next to an older card keeps the demosaic "
             "on the CPU, while a modest CPU next to a recent card does not. "
             "Mono frames never debayer, so this changes nothing for them."
-        )
+        ))
         self.cb_detect.setChecked(bool(last.get("detect", True)))
         self.cb_band.setChecked(bool(last.get("band", True)))
         self.cb_warp.setChecked(bool(last.get("warp", True)))
         self.cb_debayer.setChecked(bool(last.get("debayer", True)))
-        form.addRow("Measure:", self.cb_detect)
+        form.addRow(self.tr("Measure:"), self.cb_detect)
         form.addRow("", self.cb_band)
         form.addRow("", self.cb_warp)
         form.addRow("", self.cb_debayer)
 
-        self.note = QLabel(
+        self.note = QLabel(self.tr(
             "Measures this machine rather than guessing. Takes a few minutes; "
             "the GPU will be busy. A configuration that overloads the card is "
             "abandoned automatically rather than left to thrash."
-        )
+        ))
         self.note.setWordWrap(True)
 
         self.log = QPlainTextEdit()
@@ -312,15 +316,15 @@ class StackingTuneDialog(QDialog):
         except Exception:
             pass
 
-        self.btn_run = QPushButton("Run")
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_apply = QPushButton("Save && Close")
-        self.btn_close = QPushButton("Close")
+        self.btn_run = QPushButton(self.tr("Run"))
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
+        self.btn_apply = QPushButton(self.tr("Save && Close"))
+        self.btn_close = QPushButton(self.tr("Close"))
         self.btn_apply.setDefault(True)
-        self.btn_apply.setToolTip(
+        self.btn_apply.setToolTip(self.tr(
             "Write the settings above. A Run already saves what it measured, "
             "so this is for keeping your own edits on top of it."
-        )
+        ))
         self.btn_cancel.setEnabled(False)
         btns = QHBoxLayout()
         btns.addStretch(1)
@@ -355,27 +359,27 @@ class StackingTuneDialog(QDialog):
     # was not run at, a backend that regresses in a driver update — all of
     # them need a way out that is not editing QSettings by hand.
     def _build_results(self):
-        box = QGroupBox("Settings — measured by Run, editable here")
+        box = QGroupBox(self.tr("Settings — measured by Run, editable here"))
         form = QFormLayout(box)
 
         self.cmb_detect = QComboBox()
         self.cmb_detect.addItem("GPU (torch)", True)
         self.cmb_detect.addItem("CPU (SEP)", False)
-        self.cmb_detect.setToolTip(
+        self.cmb_detect.setToolTip(self.tr(
             "Which star detector the registration solve pass uses.\n"
             "Writes stacking/align/gpu_detect."
-        )
-        form.addRow("Star detector:", self.cmb_detect)
+        ))
+        form.addRow(self.tr("Star detector:"), self.cmb_detect)
 
         self.spin_workers = QSpinBox()
         self.spin_workers.setRange(0, 64)
-        self.spin_workers.setSpecialValueText("Auto")
-        self.spin_workers.setToolTip(
+        self.spin_workers.setSpecialValueText(self.tr("Auto"))
+        self.spin_workers.setToolTip(self.tr(
             "Processes the solve pass may use. 0 = Auto.\n"
             "Each GPU worker carries its own CUDA context, so too many "
             "thrash the card instead of going faster.\n"
             "Writes stacking/align/workers."
-        )
+        ))
         self.lbl_workers = QLabel("")
         self.lbl_workers.setEnabled(False)
         wrow = QHBoxLayout()
@@ -383,36 +387,36 @@ class StackingTuneDialog(QDialog):
         wrow.addWidget(self.spin_workers)
         wrow.addWidget(self.lbl_workers, 1)
         ww = QWidget(); ww.setLayout(wrow)
-        form.addRow("Alignment workers:", ww)
+        form.addRow(self.tr("Alignment workers:"), ww)
 
         self.spin_rows = QSpinBox()
         self.spin_rows.setRange(1, 8192)
-        self.spin_rows.setToolTip(
+        self.spin_rows.setToolTip(self.tr(
             "Full-width rows handed to one rejection call during "
             "integration.\nWrites stacking/chunk_height."
-        )
-        form.addRow("Rows per pass:", self.spin_rows)
+        ))
+        form.addRow(self.tr("Rows per pass:"), self.spin_rows)
 
         self.cmb_warp = QComboBox()
         self.cmb_warp.addItem("CPU (OpenCV)", False)
         self.cmb_warp.addItem("GPU (torch)", True)
-        self.cmb_warp.setToolTip(
+        self.cmb_warp.setToolTip(self.tr(
             "Where the anti-ring warp runs during finalize.\n\n"
             "Finalize is a pool, and one GPU slot replaces one worker — so "
             "the card has to beat a single worker, not the whole pool. On a "
             "strong CPU it usually will not.\n"
             "Writes stacking/align/gpu_warp."
-        )
-        form.addRow("Anti-ring warp:", self.cmb_warp)
+        ))
+        form.addRow(self.tr("Anti-ring warp:"), self.cmb_warp)
 
         self.spin_slots = QSpinBox()
         self.spin_slots.setRange(1, 16)
-        self.spin_slots.setToolTip(
+        self.spin_slots.setToolTip(self.tr(
             "How many finalize workers may use the card at once. Each one "
             "holds its own CUDA context and working set; oversubscribing an "
             "8 GB card does not error on Windows, it pages over PCIe and "
             "hangs.\nWrites stacking/align/gpu_warp_slots."
-        )
+        ))
         self.lbl_slots = QLabel("")
         self.lbl_slots.setEnabled(False)
         srow = QHBoxLayout()
@@ -420,7 +424,7 @@ class StackingTuneDialog(QDialog):
         srow.addWidget(self.spin_slots)
         srow.addWidget(self.lbl_slots, 1)
         sw = QWidget(); sw.setLayout(srow)
-        form.addRow("GPU warp slots:", sw)
+        form.addRow(self.tr("GPU warp slots:"), sw)
 
         self.cmb_debayer = QComboBox()
         self.cmb_debayer.addItem("CPU (numba)", False)
@@ -431,17 +435,17 @@ class StackingTuneDialog(QDialog):
             _gpu_meths = gpu_debayer_methods_label()
         except Exception:
             _gpu_meths = "Only RCD runs"
-        self.cmb_debayer.setToolTip(
+        self.cmb_debayer.setToolTip(self.tr(
             "Where the Bayer demosaic runs during normalization.\n\n"
             "The CPU kernel is parallel and already uses every core for one "
             "frame, so the card has to beat the whole CPU — not one worker. "
-            f"{_gpu_meths} on the GPU; every other method falls back to "
+            "{0} on the GPU; every other method falls back to "
             "numba automatically.\n\n"
             "Optimize measures RCD and applies the verdict to every "
             "GPU-capable method.\n"
             "Writes stacking/debayer_gpu."
-        )
-        form.addRow("Bayer demosaic:", self.cmb_debayer)
+        ).format(_gpu_meths))
+        form.addRow(self.tr("Bayer demosaic:"), self.cmb_debayer)
 
         self.cmb_warp.currentIndexChanged.connect(self._warp_changed)
         self.cmb_detect.currentIndexChanged.connect(self._detect_changed)
@@ -450,7 +454,7 @@ class StackingTuneDialog(QDialog):
     def _warp_changed(self):
         on = bool(self.cmb_warp.currentData())
         self.spin_slots.setEnabled(on)
-        self.lbl_slots.setText("" if on else "(warp is on the CPU)")
+        self.lbl_slots.setText("" if on else self.tr("(warp is on the CPU)"))
 
     def _detect_changed(self):
         """Offer the worker count measured for THIS backend, not the winner's.
@@ -466,8 +470,9 @@ class StackingTuneDialog(QDialog):
             return
         nw, fps = got
         self.spin_workers.setValue(int(nw))
-        self.lbl_workers.setText(f"measured best for {key.upper()}: "
-                                 f"{nw} ({fps:.1f} frames/s)")
+        self.lbl_workers.setText(self.tr("measured best for {0}: "
+                                         "{1} ({2:.1f} frames/s)").format(
+                                             key.upper(), nw, fps))
 
     def _load_results(self):
         """Fill the controls from QSettings — the dialog is usable without a run."""
@@ -731,13 +736,13 @@ def install_optimize_button(parent_dialog, layout, band_spinbox=None,
     must still open if this fails).
     """
     try:
-        btn = QPushButton("Optimize…")
-        btn.setToolTip(
+        btn = QPushButton(_tr("Optimize…"))
+        btn.setToolTip(_tr(
             "Measure this computer and set the star-detection backend, the "
             "registration worker count, the rows per pass, whether the "
             "anti-ring warp uses the GPU, and whether the Bayer demosaic "
             "does."
-        )
+        ))
 
         def _open():
             shape = (3000, 4000)
@@ -793,8 +798,8 @@ def make_align_workers_row(parent, *, band_spinbox=None,
 
         spin = QSpinBox()
         spin.setRange(0, 64)
-        spin.setSpecialValueText("Auto")
-        spin.setToolTip(
+        spin.setSpecialValueText(_tr("Auto"))
+        spin.setToolTip(_tr(
             "Processes the star-alignment solve pass may use.\n\n"
             "Auto measures nothing: it uses the optimizer's result if you "
             "have run it, otherwise a value derived from your VRAM.\n\n"
@@ -803,7 +808,7 @@ def make_align_workers_row(parent, *, band_spinbox=None,
             "card instead of going faster — on an 8 GB card at 12 MP, 8 "
             "workers was the measured optimum and 16 wedged it outright. SEP "
             "is pure CPU and scales to the full core count."
-        )
+        ))
 
         hint = QLabel("")
         hint.setEnabled(False)
@@ -829,9 +834,9 @@ def make_align_workers_row(parent, *, band_spinbox=None,
         def _refresh():
             n, why, stale = _effective()
             if spin.value() == 0:
-                hint.setText(f"Auto → {n} ({why})" if n else "")
+                hint.setText(_tr("Auto → {0} ({1})").format(n, why) if n else "")
             elif stale:
-                hint.setText("measured on different hardware — re-run Optimize")
+                hint.setText(_tr("measured on different hardware — re-run Optimize"))
             else:
                 hint.setText("")
 

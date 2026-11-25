@@ -42,7 +42,7 @@ from astropy.wcs.utils import skycoord_to_pixel
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 
-from PyQt6.QtCore import Qt, QPoint, QEvent, QProcess, QSettings
+from PyQt6.QtCore import Qt, QPoint, QEvent, QProcess, QSettings, QCoreApplication
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QMovie, QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
@@ -54,7 +54,7 @@ from PyQt6.QtWidgets import (
 
 from setiastro.saspro import astroalign
 from setiastro.saspro.memory_utils import smart_zeros
-from setiastro.saspro.legacy.image_manager import load_image, save_image
+from setiastro.saspro.legacy.image_manager import load_image, save_image, _wcs_pc_to_cd
 from setiastro.saspro.blink_comparator_pro import CustomDoubleSpinBox, CustomSpinBox
 from setiastro.saspro.abe import (
     _generate_sample_points as abe_generate_sample_points,
@@ -72,6 +72,10 @@ from setiastro.saspro.star_alignment import qs_int, qs_float, qs_bool, ASTROMETR
 
 # Star refinement aims for this many stars per overlap ("Stars to detect")
 MOSAIC_STAR_TARGET = 200
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("MosaicMaster", text)
 
 _AA_LOCK = _threading.Lock()
 
@@ -381,8 +385,8 @@ def robust_api_request(method, url, data=None, files=None, prompt_on_failure=Fal
             if prompt_on_failure:
                 user_choice = QMessageBox.question(
                     None,
-                    "Invalid Response",
-                    f"{error_message}\nDo you want to start over?",
+                    _tr("Invalid Response"),
+                    _tr("Invalid JSON response from {0}.\nDo you want to start over?").format(url),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 )
                 if user_choice == QMessageBox.StandardButton.Yes:
@@ -398,8 +402,8 @@ def robust_api_request(method, url, data=None, files=None, prompt_on_failure=Fal
         if prompt_on_failure:
             user_choice = QMessageBox.question(
                 None,
-                "Network Error",
-                f"{error_message}\nDo you want to start over?",
+                _tr("Network Error"),
+                _tr("Network error when contacting {0}: {1}.\nDo you want to start over?").format(url, e),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             if user_choice == QMessageBox.StandardButton.Yes:
@@ -439,7 +443,7 @@ def generate_minimal_fits_header(image):
 class MosaicPreviewWindow(QDialog):
     def __init__(self, image_array, title="", parent=None, push_cb=None):
         super().__init__(parent)
-        self.setWindowTitle(title if title else "Preview")
+        self.setWindowTitle(title if title else self.tr("Preview"))
         self._push_cb = push_cb
 
         # Keep the original array around for re-stretch or reset
@@ -464,13 +468,13 @@ class MosaicPreviewWindow(QDialog):
         layout.addWidget(self.scroll_area)
 
         # 2) Label inside the scroll area
-        self.preview_label = QLabel("No image yet.")
+        self.preview_label = QLabel(self.tr("No image yet."))
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.preview_label)
         self.scroll_area.viewport().installEventFilter(self)
 
         # 3) Auto-Stretch Toggle
-        self.stretch_toggle = QCheckBox("Auto-Stretch for Display")
+        self.stretch_toggle = QCheckBox(self.tr("Auto-Stretch for Display"))
         self.stretch_toggle.setChecked(True)
         self.stretch_toggle.stateChanged.connect(self.update_display)
         layout.addWidget(self.stretch_toggle)
@@ -478,27 +482,27 @@ class MosaicPreviewWindow(QDialog):
         # 4) Button row (Zoom, Fit, etc.)
         button_layout = QHBoxLayout()
 
-        self.zoom_in_button = QPushButton("Zoom In")
+        self.zoom_in_button = QPushButton(self.tr("Zoom In"))
         self.zoom_in_button.clicked.connect(self.zoom_in)
         button_layout.addWidget(self.zoom_in_button)
 
-        self.zoom_out_button = QPushButton("Zoom Out")
+        self.zoom_out_button = QPushButton(self.tr("Zoom Out"))
         self.zoom_out_button.clicked.connect(self.zoom_out)
         button_layout.addWidget(self.zoom_out_button)
 
-        self.fit_button = QPushButton("Fit to Preview")
+        self.fit_button = QPushButton(self.tr("Fit to Preview"))
         self.fit_button.clicked.connect(self.fit_to_preview)
         button_layout.addWidget(self.fit_button)
 
-        self.autostretch_button = QPushButton("Reapply Stretch")
+        self.autostretch_button = QPushButton(self.tr("Reapply Stretch"))
         self.autostretch_button.clicked.connect(self.autostretch_image)
         button_layout.addWidget(self.autostretch_button)
 
-        self.push_btn = QPushButton("Push to New View")
+        self.push_btn = QPushButton(self.tr("Push to New View"))
         self.push_btn.clicked.connect(lambda: self._push_cb() if callable(self._push_cb) else None)
         button_layout.addWidget(self.push_btn)
 
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton(self.tr("Close"))
         close_btn.clicked.connect(self.close)
         button_layout.addWidget(close_btn)
 
@@ -733,7 +737,7 @@ class MosaicSettingsDialog(QDialog):
                    "mosaic/skew_max_tolerance"):
             if self.settings.contains(_k):
                 self.settings.remove(_k)        
-        self.setWindowTitle("Mosaic Master Settings")
+        self.setWindowTitle(self.tr("Mosaic Master Settings"))
         self.setMinimumWidth(400)
         self._build_ui()
 
@@ -760,7 +764,7 @@ class MosaicSettingsDialog(QDialog):
         root = QVBoxLayout(self)
 
         # ---------------- Seam blending (always applies) ----------------
-        blend_box = QGroupBox("Seam Blending")
+        blend_box = QGroupBox(self.tr("Seam Blending"))
         blend_form = QFormLayout(blend_box)
 
         saved_sharp = qs_float(self.settings, "mosaic/blend_sharp", 2.0)
@@ -768,14 +772,14 @@ class MosaicSettingsDialog(QDialog):
         self.blendSharpSlider.setRange(10, 60)      # value/10 -> 1.0 .. 6.0
         self.blendSharpSlider.setSingleStep(1)
         self.blendSharpSlider.setValue(int(round(saved_sharp * 10)))
-        self.blendSharpSlider.setToolTip(
+        self.blendSharpSlider.setToolTip(self.tr(
             "How sharply panels hand off across a seam.\n"
             "Low (1-2): wide, gradual blend -- hides large-scale brightness\n"
             "  differences, but needs good registration or stars can ghost.\n"
             "High (4-6): tight crossover near the seam midline -- safest when\n"
             "  panels disagree slightly, at the cost of visible gradient steps.\n"
             "Scale-free: same feel on thin and wide overlaps alike."
-        )
+        ))
         self.blendSharpValue = QLabel(f"{saved_sharp:.1f}")
         self.blendSharpValue.setMinimumWidth(28)
         self.blendSharpSlider.valueChanged.connect(
@@ -784,31 +788,31 @@ class MosaicSettingsDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(self.blendSharpSlider, 1)
         row.addWidget(self.blendSharpValue)
-        blend_form.addRow("Blend sharpness:", row)
+        blend_form.addRow(self.tr("Blend sharpness:"), row)
         root.addWidget(blend_box)
 
         # ---------------- Star alignment (only when it runs) ----------------
-        star_box = QGroupBox("Star Alignment")
-        star_box.setToolTip(
+        star_box = QGroupBox(self.tr("Star Alignment"))
+        star_box.setToolTip(self.tr(
             "Applies only to panels aligned on stars -- blind-solved or Seestar\n"
             "panels with no SIP. Panels with a SIP astrometric solution are\n"
-            "placed by WCS and ignore these.")
+            "placed by WCS and ignore these."))
         star_form = QFormLayout(star_box)
 
         self.starTargetSpin = self._ispin(
             20, 2000, qs_int(self.settings, "mosaic/star_target", MOSAIC_STAR_TARGET), 10)
-        self.starTargetSpin.setToolTip(
+        self.starTargetSpin.setToolTip(self.tr(
             "Star refinement detects stars in each overlap at the highest threshold that\n"
             "finds at least this many (100σ, 50σ, 25σ … 3σ), the same threshold on both\n"
-            "sides of the overlap. More stars: more matches, slower on rich fields.")
-        star_form.addRow("Stars to detect:", self.starTargetSpin)
+            "sides of the overlap. More stars: more matches, slower on rich fields."))
+        star_form.addRow(self.tr("Stars to detect:"), self.starTargetSpin)
 
         self.polyDegreeSpin = self._ispin(
             1, 6, qs_int(self.settings, "mosaic/poly_degree", 3))
-        self.polyDegreeSpin.setToolTip(
+        self.polyDegreeSpin.setToolTip(self.tr(
             "Degree of the polynomial-warp refinement, when that transform\n"
-            "mode is selected for a star-aligned panel.")
-        star_form.addRow("Polynomial degree:", self.polyDegreeSpin)
+            "mode is selected for a star-aligned panel."))
+        star_form.addRow(self.tr("Polynomial degree:"), self.polyDegreeSpin)
 
         root.addWidget(star_box)
 
@@ -1920,12 +1924,12 @@ class _ViewPickerDialog(QDialog):
 
     def __init__(self, entries, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Add from View")
+        self.setWindowTitle(self.tr("Add from View"))
         self.resize(480, 440)
         self._entries = entries
 
         v = QVBoxLayout(self)
-        v.addWidget(QLabel("Check the views to add to the mosaic:"))
+        v.addWidget(QLabel(self.tr("Check the views to add to the mosaic:")))
 
         self._list = QListWidget()
         for e in entries:
@@ -1937,7 +1941,7 @@ class _ViewPickerDialog(QDialog):
                 # every row matching a key, so one removal would take both.
                 it.setCheckState(Qt.CheckState.Unchecked)
                 it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-                it.setToolTip("Already added to this mosaic.")
+                it.setToolTip(self.tr("Already added to this mosaic."))
             else:
                 it.setCheckState(Qt.CheckState.Checked)
                 it.setToolTip(e["key"])
@@ -1945,12 +1949,12 @@ class _ViewPickerDialog(QDialog):
         v.addWidget(self._list, 1)
 
         row = QHBoxLayout()
-        b_all = QPushButton("All")
+        b_all = QPushButton(self.tr("All"))
         b_all.clicked.connect(lambda: self._set_all(True))
-        b_none = QPushButton("None")
+        b_none = QPushButton(self.tr("None"))
         b_none.clicked.connect(lambda: self._set_all(False))
-        b_wcs = QPushButton("Only solved")
-        b_wcs.setToolTip("Check only views that already carry a WCS.")
+        b_wcs = QPushButton(self.tr("Only solved"))
+        b_wcs.setToolTip(self.tr("Check only views that already carry a WCS."))
         b_wcs.clicked.connect(self._only_wcs)
         for b in (b_all, b_none, b_wcs):
             row.addWidget(b)
@@ -1987,7 +1991,7 @@ class _ViewPickerDialog(QDialog):
                              else Qt.CheckState.Unchecked)
 
     def _update_count(self):
-        self._count.setText(f"{len(self.selected_entries())} selected")
+        self._count.setText(self.tr("{0} selected").format(len(self.selected_entries())))
 
     def selected_entries(self):
         return [self._entries[i] for i, it in self._enabled_rows()
@@ -2009,7 +2013,7 @@ class MosaicMasterDialog(QDialog):
         else:
             self._list_open_docs_fn = list_open_docs_fn
 
-        self.setWindowTitle("Mosaic Master")
+        self.setWindowTitle(self.tr("Mosaic Master"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -2058,18 +2062,18 @@ class MosaicMasterDialog(QDialog):
         from setiastro.saspro.mosaic_master_ui import ModeCardButton
         from setiastro.saspro.resources import mosaic_panels_path, mosaic_robotic_path
         self.panelsModeBtn = ModeCardButton(
-            mosaic_panels_path, "Traditional Panels", "A few plate-solved panels", self)
-        self.panelsModeBtn.setToolTip(
+            mosaic_panels_path, self.tr("Traditional Panels"), self.tr("A few plate-solved panels"), self)
+        self.panelsModeBtn.setToolTip(self.tr(
             "A few finished panels, each placed on the sky by its plate solution\n"
-            "(solved when you build if needed), brightness-matched and blended.")
+            "(solved when you build if needed), brightness-matched and blended."))
         self.roboticModeBtn = ModeCardButton(
-            mosaic_robotic_path, "Robotic Mosaic", "Seestar and smart-telescope frames", self)
-        self.roboticModeBtn.setToolTip(
+            mosaic_robotic_path, self.tr("Robotic Mosaic"), self.tr("Seestar and smart-telescope frames"), self)
+        self.roboticModeBtn.setToolTip(self.tr(
             "Many short frames from a Seestar or other smart telescope (add the sub folder).\n"
             "Every frame is plate-solved against your Gaia catalogue, seeded by the\n"
             "pointing in its header, placed on one canvas by its own solution (so field\n"
             "rotation doesn't matter), and the frames are averaged. Solutions are\n"
-            "cached, so a rebuild doesn't solve again.")
+            "cached, so a rebuild doesn't solve again."))
         self._sourceGroup = QButtonGroup(self)
         self._sourceGroup.setExclusive(True)
         self._sourceGroup.addButton(self.panelsModeBtn)
@@ -2086,20 +2090,20 @@ class MosaicMasterDialog(QDialog):
         lv.addSpacing(4)
 
         head = QHBoxLayout()
-        head.addWidget(QLabel("<b>Panels</b>"))
+        head.addWidget(QLabel(self.tr("<b>Panels</b>")))
         head.addStretch(1)
-        self.addFilesBtn = QPushButton("+ Files…")
-        self.addFilesBtn.setToolTip("Add panel files (FITS, XISF, TIFF, …).\n"
-                                    "You can also drop files onto the list.")
+        self.addFilesBtn = QPushButton(self.tr("+ Files…"))
+        self.addFilesBtn.setToolTip(self.tr("Add panel files (FITS, XISF, TIFF, …).\n"
+                                            "You can also drop files onto the list."))
         self.addFilesBtn.clicked.connect(self.add_image)
-        self.addFolderBtn = QPushButton("+ Folder…")
-        self.addFolderBtn.setToolTip("Add every image file in a folder (e.g. a Seestar sub-frame folder).")
+        self.addFolderBtn = QPushButton(self.tr("+ Folder…"))
+        self.addFolderBtn.setToolTip(self.tr("Add every image file in a folder (e.g. a Seestar sub-frame folder)."))
         self.addFolderBtn.clicked.connect(self.add_folder)
-        self.addViewsBtn = QPushButton("+ Views…")
-        self.addViewsBtn.setToolTip("Add images that are open in SASpro.")
+        self.addViewsBtn = QPushButton(self.tr("+ Views…"))
+        self.addViewsBtn.setToolTip(self.tr("Add images that are open in SASpro."))
         self.addViewsBtn.clicked.connect(self.add_image_from_view)
-        self.removeBtn = QPushButton("Remove")
-        self.removeBtn.setToolTip("Remove the selected panels (Delete).")
+        self.removeBtn = QPushButton(self.tr("Remove"))
+        self.removeBtn.setToolTip(self.tr("Remove the selected panels (Delete)."))
         self.removeBtn.clicked.connect(self.remove_selected)
         for b in (self.addFilesBtn, self.addFolderBtn, self.addViewsBtn, self.removeBtn):
             head.addWidget(b)
@@ -2110,8 +2114,8 @@ class MosaicMasterDialog(QDialog):
         self.panel_table.cellClicked.connect(self._on_panel_cell_clicked)
         self.panel_table.cellDoubleClicked.connect(lambda _r, _c: self.preview_selected())
         self.panel_table.itemSelectionChanged.connect(self._on_table_selection)
-        self.panel_table.setToolTip("Double-click a panel to preview it. Click the ★ column "
-                                    "to choose the reference panel.")
+        self.panel_table.setToolTip(self.tr("Double-click a panel to preview it. Click the ★ column "
+                                            "to choose the reference panel."))
         QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self.panel_table,
                   activated=self.remove_selected)
         lv.addWidget(self.panel_table, 1)
@@ -2123,10 +2127,10 @@ class MosaicMasterDialog(QDialog):
 
 
         self.brightnessCombo = QComboBox()
-        self.brightnessCombo.addItem("Off", "off")
-        self.brightnessCombo.addItem("Standard", "standard")
-        self.brightnessCombo.addItem("Advanced — all overlaps at once", "advanced")
-        self.brightnessCombo.setToolTip(
+        self.brightnessCombo.addItem(self.tr("Off"), "off")
+        self.brightnessCombo.addItem(self.tr("Standard"), "standard")
+        self.brightnessCombo.addItem(self.tr("Advanced — all overlaps at once"), "advanced")
+        self.brightnessCombo.setToolTip(self.tr(
             "How panel brightness is matched.\n\n"
             "Standard: each panel's sky level is matched to the reference, then each\n"
             "panel is fitted to the mosaic built so far, one after another.\n\n"
@@ -2134,7 +2138,7 @@ class MosaicMasterDialog(QDialog):
             "gain and a smooth background tilt per panel. Errors don't chain from panel\n"
             "to panel and different nights' gradients line up. Builds twice: slower,\n"
             "and needs temporary disk space about the size of the panels.\n\n"
-            "Off: panels are blended as they are.")
+            "Off: panels are blended as they are."))
         _bright_default = ("advanced" if qs_bool(s, "mosaic/advanced_match", False)
                            else "standard")
         self._set_combo_data(self.brightnessCombo,
@@ -2143,33 +2147,33 @@ class MosaicMasterDialog(QDialog):
             lambda _i: self._persist("mosaic/brightness", self.brightnessCombo.currentData()))
 
         self.reprojectModeCombo = QComboBox()
-        self.reprojectModeCombo.addItems([
-            "Exact — SIP-aware remap (recommended)",
-            "Fast — Homography (Global H)",
-        ])
-        self.reprojectModeCombo.setToolTip(
+        # Data = the English key that is persisted and tested; the label is translated.
+        self.reprojectModeCombo.addItem(self.tr("Exact — SIP-aware remap (recommended)"),
+                                        "Exact — SIP-aware remap (recommended)")
+        self.reprojectModeCombo.addItem(self.tr("Fast — Homography (Global H)"),
+                                        "Fast — Homography (Global H)")
+        self.reprojectModeCombo.setToolTip(self.tr(
             "How each panel is warped onto the mosaic's sky grid.\n\n"
             "Exact: per-pixel inverse WCS, honours SIP distortion, Lanczos resampling.\n"
             "Fast: one projective transform per panel; exact only without SIP, and\n"
-            "with SIP it can double stars near the edges.")
+            "with SIP it can double stars near the edges."))
         _mode = s.value("mosaic/reproject_mode", "Exact — SIP-aware remap (recommended)", type=str)
-        if self.reprojectModeCombo.findText(_mode) < 0:
-            _mode = "Exact — SIP-aware remap (recommended)"
-        self.reprojectModeCombo.setCurrentText(_mode)
-        self.reprojectModeCombo.currentTextChanged.connect(self._on_reproject_mode_changed)
+        self.reprojectModeCombo.setCurrentIndex(max(0, self.reprojectModeCombo.findData(_mode)))
+        self.reprojectModeCombo.currentIndexChanged.connect(
+            lambda _i: self._on_reproject_mode_changed(self.reprojectModeCombo.currentData()))
 
         self.starRefineCombo = QComboBox()
-        self.starRefineCombo.addItem("Affine (recommended)", "Affine Transform")
-        self.starRefineCombo.addItem("Off — WCS placement only", "off")
-        self.starRefineCombo.addItem("Partial affine", "Partial Affine Transform")
-        self.starRefineCombo.addItem("Homography", "Homography Transform")
-        self.starRefineCombo.addItem("Polynomial warp", "Polynomial Warp Based Transform")
-        self.starRefineCombo.setToolTip(
+        self.starRefineCombo.addItem(self.tr("Affine (recommended)"), "Affine Transform")
+        self.starRefineCombo.addItem(self.tr("Off — WCS placement only"), "off")
+        self.starRefineCombo.addItem(self.tr("Partial affine"), "Partial Affine Transform")
+        self.starRefineCombo.addItem(self.tr("Homography"), "Homography Transform")
+        self.starRefineCombo.addItem(self.tr("Polynomial warp"), "Polynomial Warp Based Transform")
+        self.starRefineCombo.setToolTip(self.tr(
             "After a panel is placed by its plate solution, its stars can be matched\n"
             "to the mosaic in the overlap for a final correction.\n\n"
             "Panels with SIP distortion are always placed by WCS alone: their\n"
             "plate solution is more accurate than one global star fit.\n"
-            "Off: every panel by WCS alone (use when overlaps are small).")
+            "Off: every panel by WCS alone (use when overlaps are small)."))
         _refine_default = "off" if qs_bool(s, "mosaic/wcs_only", False) else "Affine Transform"
         self._set_combo_data(self.starRefineCombo,
                              str(s.value("mosaic/star_refine", _refine_default)))
@@ -2181,19 +2185,19 @@ class MosaicMasterDialog(QDialog):
         self.blendSharpSlider = QSlider(Qt.Orientation.Horizontal)
         self.blendSharpSlider.setRange(10, 60)          # value / 10 -> 1.0 .. 6.0
         self.blendSharpSlider.setValue(int(round(qs_float(s, "mosaic/blend_sharp", 2.0) * 10)))
-        self.blendSharpSlider.setToolTip(
+        self.blendSharpSlider.setToolTip(self.tr(
             "How sharply panels hand off across a seam.\n"
             "Soft: wide, gradual blend; hides small brightness differences, but needs\n"
             "good registration or stars can ghost.\n"
             "Sharp: tight crossover near the middle of the overlap; safest when panels\n"
-            "disagree slightly, at the cost of a visible step.")
+            "disagree slightly, at the cost of a visible step."))
         self.blendSharpValue = QLabel(f"{self.blendSharpSlider.value() / 10:.1f}")
         self.blendSharpValue.setMinimumWidth(26)
         self.blendSharpSlider.valueChanged.connect(self._on_blend_changed)
         seam_row = QHBoxLayout()
-        seam_row.addWidget(QLabel("soft"))
+        seam_row.addWidget(QLabel(self.tr("soft")))
         seam_row.addWidget(self.blendSharpSlider, 1)
-        seam_row.addWidget(QLabel("sharp"))
+        seam_row.addWidget(QLabel(self.tr("sharp")))
         seam_row.addSpacing(6)
         seam_row.addWidget(self.blendSharpValue)
 
@@ -2201,23 +2205,23 @@ class MosaicMasterDialog(QDialog):
             lb = QLabel(text)
             lb.setToolTip(tip)
             return lb
-        og.addWidget(_lab("Brightness", self.brightnessCombo.toolTip()), 0, 0)
+        og.addWidget(_lab(self.tr("Brightness"), self.brightnessCombo.toolTip()), 0, 0)
         og.addWidget(self.brightnessCombo, 0, 1)
-        og.addWidget(_lab("Seams", self.blendSharpSlider.toolTip()), 0, 2)
+        og.addWidget(_lab(self.tr("Seams"), self.blendSharpSlider.toolTip()), 0, 2)
         og.addLayout(seam_row, 0, 3)
-        self.reprojectModeLabel = _lab("Placement", self.reprojectModeCombo.toolTip())
+        self.reprojectModeLabel = _lab(self.tr("Placement"), self.reprojectModeCombo.toolTip())
         og.addWidget(self.reprojectModeLabel, 1, 0)
         og.addWidget(self.reprojectModeCombo, 1, 1)
-        self.starRefineLabel = _lab("Star refine", self.starRefineCombo.toolTip())
+        self.starRefineLabel = _lab(self.tr("Star refine"), self.starRefineCombo.toolTip())
         og.addWidget(self.starRefineLabel, 1, 2)
         og.addWidget(self.starRefineCombo, 1, 3)
-        self.seestarRejectCheck = QCheckBox("Reject satellites and other outliers")
-        self.seestarRejectCheck.setToolTip(
+        self.seestarRejectCheck = QCheckBox(self.tr("Reject satellites and other outliers"))
+        self.seestarRejectCheck.setToolTip(self.tr(
             "Keeps each spot's three brightest and one faintest samples aside while the\n"
             "frames are stacked, then tests them against the other frames at that spot\n"
             "and takes out the ones that don't belong (satellite and aircraft trails,\n"
             "hot pixels, cosmic rays). Ordinary samples are never trimmed. Needs at least\n"
-            "4 frames over a spot; costs almost no extra time.")
+            "4 frames over a spot; costs almost no extra time."))
         self.seestarRejectCheck.setChecked(qs_bool(s, "mosaic/seestar_reject", True))
         self.seestarRejectCheck.toggled.connect(
             lambda on: self._persist("mosaic/seestar_reject", bool(on)))
@@ -2232,14 +2236,14 @@ class MosaicMasterDialog(QDialog):
         lv.addWidget(self.optHint)
 
         # ── Preparation (collapsed) ────────────────────────────────────────
-        self._prepGroup = CollapsibleGroup("Preparation — crop, colour, plate solving",
+        self._prepGroup = CollapsibleGroup(self.tr("Preparation — crop, colour, plate solving"),
                                            self, collapsed=True)
         pf = self._prepGroup.content_layout()
 
-        self.cropEachCheckBox = QCheckBox("Crop every panel")
-        self.cropEachCheckBox.setToolTip(
+        self.cropEachCheckBox = QCheckBox(self.tr("Crop every panel"))
+        self.cropEachCheckBox.setToolTip(self.tr(
             "Cut the same pixel margins off every panel before anything else.\n"
-            "An existing plate solution is shifted with the crop, so it stays valid.")
+            "An existing plate solution is shifted with the crop, so it stays valid."))
         self.cropEachCheckBox.setChecked(qs_bool(s, "mosaic/crop_each", False))
 
         def _margin_spin(key, tip):
@@ -2251,10 +2255,10 @@ class MosaicMasterDialog(QDialog):
             sb.setMaximumWidth(90)
             sb.setToolTip(tip)
             return sb
-        self.cropLeftSpin = _margin_spin("mosaic/crop_left", "Pixels removed from the left edge of every panel.")
-        self.cropRightSpin = _margin_spin("mosaic/crop_right", "Pixels removed from the right edge of every panel.")
-        self.cropTopSpin = _margin_spin("mosaic/crop_top", "Pixels removed from the top edge of every panel.")
-        self.cropBottomSpin = _margin_spin("mosaic/crop_bottom", "Pixels removed from the bottom edge of every panel.")
+        self.cropLeftSpin = _margin_spin("mosaic/crop_left", self.tr("Pixels removed from the left edge of every panel."))
+        self.cropRightSpin = _margin_spin("mosaic/crop_right", self.tr("Pixels removed from the right edge of every panel."))
+        self.cropTopSpin = _margin_spin("mosaic/crop_top", self.tr("Pixels removed from the top edge of every panel."))
+        self.cropBottomSpin = _margin_spin("mosaic/crop_bottom", self.tr("Pixels removed from the bottom edge of every panel."))
         crop_w = QWidget()
         cr = QHBoxLayout(crop_w)
         cr.setContentsMargins(0, 0, 0, 0)
@@ -2281,8 +2285,8 @@ class MosaicMasterDialog(QDialog):
             sp.valueChanged.connect(lambda _v: _persist_crop())
         _sync_crop(self.cropEachCheckBox.isChecked())
 
-        self.srgcEachCheckBox = QCheckBox("Survey gradient correction (SRGC) - Much Slower")
-        self.srgcEachCheckBox.setToolTip(
+        self.srgcEachCheckBox = QCheckBox(self.tr("Survey gradient correction (SRGC) - Much Slower"))
+        self.srgcEachCheckBox.setToolTip(self.tr(
             "Survey Reference Gradient Correction on every panel after it is\n"
             "plate-solved. Fetches a public survey cutout for that field and\n"
             "subtracts only the additive gradient the survey does not explain.\n"
@@ -2290,7 +2294,7 @@ class MosaicMasterDialog(QDialog):
             "Robotic Mosaic: every frame is corrected on its own, against ONE\n"
             "survey reference fetched for the whole mosaic area -- each frame's\n"
             "light-pollution and moon gradient turns with the field rotation,\n"
-            "so it is taken out before the frames are stacked.")
+            "so it is taken out before the frames are stacked."))
         self.srgcEachCheckBox.setChecked(
             qs_bool(s, "mosaic/srgc_each", qs_bool(s, "mosaic/adbe_each", False)))
         self.srgcSurveyCombo = QComboBox()
@@ -2305,17 +2309,17 @@ class MosaicMasterDialog(QDialog):
         except Exception as e:
             self.srgcSurveyCombo.addItem("DSS2 colour (red / synth / blue) — all sky")
             print(f"[Mosaic] SRGC survey list unavailable: {e}")
-        self.srgcSurveyCombo.setToolTip("Which public survey feeds the reference.\n"
-                                        "DSS2 colour is all-sky. NSNS options are northern only.")
+        self.srgcSurveyCombo.setToolTip(self.tr("Which public survey feeds the reference.\n"
+                                                "DSS2 colour is all-sky. NSNS options are northern only."))
         self.srgcSurveyCombo.currentTextChanged.connect(
             lambda name: self._persist("mosaic/srgc_survey", str(name)))
-        self.srgcViewRefBtn = QPushButton("View reference…")
-        self.srgcViewRefBtn.setToolTip(
+        self.srgcViewRefBtn = QPushButton(self.tr("View reference…"))
+        self.srgcViewRefBtn.setToolTip(self.tr(
             "Fetch the chosen survey over the whole area the frames cover and show it,\n"
             "with every frame's outline drawn on it -- to check the survey covers the\n"
             "field and shows the sky you expect before building. Frames not solved yet\n"
             "are placed from their header pointing. A Robotic build reuses this\n"
-            "reference when it covers every solved frame.")
+            "reference when it covers every solved frame."))
         self.srgcViewRefBtn.clicked.connect(self._srgc_view_reference)
 
         def _sync_srgc(on):
@@ -2332,50 +2336,50 @@ class MosaicMasterDialog(QDialog):
         sr.addWidget(self.srgcViewRefBtn)
         pf.addRow(srgc_w)
 
-        self.forceBlindCheckBox = QCheckBox("Re-solve every panel (ignore existing plate solutions)")
-        self.forceBlindCheckBox.setToolTip(
+        self.forceBlindCheckBox = QCheckBox(self.tr("Re-solve every panel (ignore existing plate solutions)"))
+        self.forceBlindCheckBox.setToolTip(self.tr(
             "Solve every panel again, ignoring a plate solution that is already there.\n"
-            "The in-house Gaia blind solver runs first; Astrometry.net only if it fails.")
+            "The in-house Gaia blind solver runs first; Astrometry.net only if it fails."))
         self.forceBlindCheckBox.toggled.connect(lambda _on: self._refresh_panels())
         pf.addRow(self.forceBlindCheckBox)
         lv.addWidget(self._prepGroup)
 
         # ── Star alignment details (collapsed) ─────────────────────────────
-        self._starGroup = CollapsibleGroup("Star alignment details", self, collapsed=True)
+        self._starGroup = CollapsibleGroup(self.tr("Star alignment details"), self, collapsed=True)
         sf = self._starGroup.content_layout()
         self.starTargetSpin = QSpinBox(); self.starTargetSpin.setRange(20, 2000)
         self.starTargetSpin.setSingleStep(10)
         self.starTargetSpin.setValue(qs_int(s, "mosaic/star_target", MOSAIC_STAR_TARGET))
-        self.starTargetSpin.setToolTip(
+        self.starTargetSpin.setToolTip(self.tr(
             "Star refinement detects stars in each overlap at the highest threshold that\n"
             "finds at least this many (100σ, 50σ, 25σ … 3σ), the same threshold on both\n"
-            "sides of the overlap. More stars: more matches, slower on rich fields.")
+            "sides of the overlap. More stars: more matches, slower on rich fields."))
         self.polyDegreeSpin = QSpinBox(); self.polyDegreeSpin.setRange(1, 6)
         self.polyDegreeSpin.setValue(qs_int(s, "mosaic/poly_degree", 3))
-        self.polyDegreeSpin.setToolTip("Degree of the polynomial-warp refinement (Star refine: Polynomial warp).")
+        self.polyDegreeSpin.setToolTip(self.tr("Degree of the polynomial-warp refinement (Star refine: Polynomial warp)."))
         for sp, key in ((self.starTargetSpin, "mosaic/star_target"),
                         (self.polyDegreeSpin, "mosaic/poly_degree")):
             sp.setKeyboardTracking(False)
             sp.valueChanged.connect(lambda v, k=key: self._persist(k, v))
-        sf.addRow("Stars to detect:", self.starTargetSpin)
-        sf.addRow("Polynomial degree:", self.polyDegreeSpin)
-        self._starGroup.setToolTip("Used only for Traditional Panels refined on stars (Star refine),\n"
-                                   "for panels without SIP distortion.")
+        sf.addRow(self.tr("Stars to detect:"), self.starTargetSpin)
+        sf.addRow(self.tr("Polynomial degree:"), self.polyDegreeSpin)
+        self._starGroup.setToolTip(self.tr("Used only for Traditional Panels refined on stars (Star refine),\n"
+                                           "for panels without SIP distortion."))
         lv.addWidget(self._starGroup)
 
         # ── Output (collapsed) ─────────────────────────────────────────────
-        self._outGroup = CollapsibleGroup("Output", self, collapsed=True)
+        self._outGroup = CollapsibleGroup(self.tr("Output"), self, collapsed=True)
         of = self._outGroup.content_layout()
-        self.gaiaSolveCheckBox = QCheckBox("Plate solve the finished mosaic (in-house Gaia DR3)")
-        self.gaiaSolveCheckBox.setToolTip(
+        self.gaiaSolveCheckBox = QCheckBox(self.tr("Plate solve the finished mosaic (in-house Gaia DR3)"))
+        self.gaiaSolveCheckBox.setToolTip(self.tr(
             "Re-solve the finished mosaic against the local Gaia DR3 catalogue and\n"
             "attach that solution, tied to stars from every panel, instead of the\n"
-            "reference panel's. Falls back to the geometric solution if it fails.")
+            "reference panel's. Falls back to the geometric solution if it fails."))
         self.gaiaSolveCheckBox.setChecked(qs_bool(s, "mosaic/gaia_solve_final", True))
         self.gaiaSolveCheckBox.toggled.connect(
             lambda on: self._persist("mosaic/gaia_solve_final", bool(on)))
         of.addRow(self.gaiaSolveCheckBox)
-        self.autostretchPreviewCheck = QCheckBox("Auto-stretch the full preview (data stays linear)")
+        self.autostretchPreviewCheck = QCheckBox(self.tr("Auto-stretch the full preview (data stays linear)"))
         self.autostretchPreviewCheck.setChecked(qs_bool(s, "mosaic/autostretch_preview", True))
         self.autostretchPreviewCheck.toggled.connect(
             lambda on: self._persist("mosaic/autostretch_preview", bool(on)))
@@ -2388,21 +2392,21 @@ class MosaicMasterDialog(QDialog):
         rv = QVBoxLayout(right)
         rv.setContentsMargins(6, 0, 0, 0)
         top = QHBoxLayout()
-        self.mapTitle = QLabel("<b>Sky map</b>")
+        self.mapTitle = QLabel(self.tr("<b>Sky map</b>"))
         top.addWidget(self.mapTitle)
         top.addStretch(1)
-        self.overlayCheck = QCheckBox("Panel map")
+        self.overlayCheck = QCheckBox(self.tr("Panel map"))
         self.overlayCheck.setChecked(True)
-        self.overlayCheck.setToolTip("Show each panel's outline, gain and seam quality on the mosaic.")
+        self.overlayCheck.setToolTip(self.tr("Show each panel's outline, gain and seam quality on the mosaic."))
         self.overlayCheck.hide()
         top.addWidget(self.overlayCheck)
-        self.mapToggleBtn = QPushButton("Sky map")
-        self.mapToggleBtn.setToolTip("Switch between the finished mosaic and the panels' sky map.")
+        self.mapToggleBtn = QPushButton(self.tr("Sky map"))
+        self.mapToggleBtn.setToolTip(self.tr("Switch between the finished mosaic and the panels' sky map."))
         self.mapToggleBtn.hide()
         self.mapToggleBtn.clicked.connect(self._toggle_map_mode)
         top.addWidget(self.mapToggleBtn)
-        self.fullPreviewBtn = QPushButton("Full Preview…")
-        self.fullPreviewBtn.setToolTip("Open the finished mosaic in a zoomable window.")
+        self.fullPreviewBtn = QPushButton(self.tr("Full Preview…"))
+        self.fullPreviewBtn.setToolTip(self.tr("Open the finished mosaic in a zoomable window."))
         self.fullPreviewBtn.clicked.connect(self._open_full_preview)
         self.fullPreviewBtn.hide()
         top.addWidget(self.fullPreviewBtn)
@@ -2421,7 +2425,7 @@ class MosaicMasterDialog(QDialog):
         # ══ bottom bar ════════════════════════════════════════════════════
         bar = QHBoxLayout()
         bar.addWidget(make_help_button("mosaic_master", self))
-        self.status_label = QLabel("Add panels to begin.")
+        self.status_label = QLabel(self.tr("Add panels to begin."))
         # plate_solver's _set_status_ui looks for a child QLabel with exactly
         # this objectName to route the solver's progress into this window.
         self.status_label.setObjectName("status_label")
@@ -2439,18 +2443,18 @@ class MosaicMasterDialog(QDialog):
         # The next step is the coloured button: Build until there is a mosaic,
         # then Push to New View (green); Build turns plain and says Rebuild, and
         # turns blue again once the panels or the mode change.
-        self.openViewBtn = QPushButton("Push to New View  ⇪")
+        self.openViewBtn = QPushButton(self.tr("Push to New View  ⇪"))
         self.openViewBtn.setMinimumHeight(34)
         self.openViewBtn.setMinimumWidth(170)
-        self.openViewBtn.setToolTip("Open the finished mosaic in SASpro as a new image\n"
-                                    "(linear, with its plate solution). This window stays open.")
+        self.openViewBtn.setToolTip(self.tr("Open the finished mosaic in SASpro as a new image\n"
+                                            "(linear, with its plate solution). This window stays open."))
         self.openViewBtn.clicked.connect(self._open_result_as_view)
         bar.addWidget(self.openViewBtn)
-        self.buildBtn = QPushButton("Build Mosaic  ▶")
+        self.buildBtn = QPushButton(self.tr("Build Mosaic  ▶"))
         self.buildBtn.setMinimumHeight(34)
         self.buildBtn.setMinimumWidth(170)
-        self.buildBtn.setToolTip("Solve any panel without a plate solution, then place,\n"
-                                 "match and blend all panels into the mosaic.")
+        self.buildBtn.setToolTip(self.tr("Solve any panel without a plate solution, then place,\n"
+                                         "match and blend all panels into the mosaic."))
         self.buildBtn.clicked.connect(self._on_build)
         bar.addWidget(self.buildBtn)
         root.addLayout(bar)
@@ -2503,8 +2507,8 @@ class MosaicMasterDialog(QDialog):
     def _on_source_changed(self, *_):
         seestar = self._opt_seestar()
         self._persist("mosaic/panel_source", self._source_mode())
-        tip = ("Not used for Seestar frames: each is placed by its own plate solution "
-               "and the frames are averaged.")
+        tip = self.tr("Not used for Seestar frames: each is placed by its own plate solution "
+                      "and the frames are averaged.")
         for w in (self.reprojectModeCombo, self.reprojectModeLabel,
                   self.starRefineCombo, self.starRefineLabel, self.brightnessCombo,
                   self.blendSharpSlider):
@@ -2516,14 +2520,14 @@ class MosaicMasterDialog(QDialog):
         self.reprojectModeCombo.setToolTip(tip if seestar else self.reprojectModeLabel.toolTip())
         if getattr(self, "panel_table", None) is not None:
             self.panel_table.placeholder = (
-                "Drop Seestar / smart-telescope frames here\nor use + Folder for the sub folder\n\n"
-                "Every frame is plate-solved and placed on the sky." if seestar else
-                "Drop panel files here\nor use + Files / + Views\n\n"
-                "Linear, plate-solved panels work best.")
+                self.tr("Drop Seestar / smart-telescope frames here\nor use + Folder for the sub folder\n\n"
+                        "Every frame is plate-solved and placed on the sky.") if seestar else
+                self.tr("Drop panel files here\nor use + Files / + Views\n\n"
+                        "Linear, plate-solved panels work best."))
             self.panel_table.viewport().update()
         if getattr(self, "map", None) is not None:
-            self.map.empty_text = ("Frames appear here as footprints on the sky,\n"
-                                   "from the pointing in their headers." if seestar else None)
+            self.map.empty_text = (self.tr("Frames appear here as footprints on the sky,\n"
+                                           "from the pointing in their headers.") if seestar else None)
             self.map.update()
         if getattr(self, "panel_table", None) is not None:
             self._refresh_panels()
@@ -2562,7 +2566,7 @@ class MosaicMasterDialog(QDialog):
         push_next = has and not getattr(self, "_result_stale", False)
         self.openViewBtn.setStyleSheet(self._BTN_PUSH if has else self._BTN_PLAIN)
         self.buildBtn.setStyleSheet(self._BTN_PLAIN if push_next else self._BTN_BUILD)
-        self.buildBtn.setText("Rebuild Mosaic  ↻" if has else "Build Mosaic  ▶")
+        self.buildBtn.setText(self.tr("Rebuild Mosaic  ↻") if has else self.tr("Build Mosaic  ▶"))
         self.openViewBtn.setDefault(push_next)
         self.buildBtn.setDefault(not push_next)
 
@@ -2577,7 +2581,7 @@ class MosaicMasterDialog(QDialog):
             w.setEnabled(not on)
         self.buildBtn.setEnabled(not on)
         if on:
-            self.buildBtn.setText("Building…")
+            self.buildBtn.setText(self.tr("Building…"))
             self.openViewBtn.setEnabled(False)
         else:
             # only a build that produced a mosaic (_show_result) clears "stale"
@@ -2588,7 +2592,7 @@ class MosaicMasterDialog(QDialog):
         if getattr(self, "_building", False):
             return
         if not self.loaded_images:
-            self.status_label.setText("Add panels first.")
+            self.status_label.setText(self.tr("Add panels first."))
             return
         self._building = True
         self._build_report = None
@@ -2597,7 +2601,7 @@ class MosaicMasterDialog(QDialog):
             self.align_images()
         except Exception as e:
             traceback.print_exc()
-            QMessageBox.critical(self, "Mosaic Master", f"The build failed:\n{e}")
+            QMessageBox.critical(self, self.tr("Mosaic Master"), self.tr("The build failed:\n{0}").format(e))
         finally:
             self._building = False
             self._set_building(False)
@@ -2774,17 +2778,17 @@ class MosaicMasterDialog(QDialog):
                     warns = []
                     if med_mad and inf["mad"] > 0 and len(mads) > 1 and (
                             inf["mad"] > 8 * med_mad or inf["mad"] < med_mad / 8):
-                        warns.append("Its tone scale is very different from the other panels: "
-                                     "one may be stretched and the others linear. Seams won't match.")
+                        warns.append(self.tr("Its tone scale is very different from the other panels: "
+                                             "one may be stretched and the others linear. Seams won't match."))
                     if med_scale and inf.get("scale") and len(scales) > 1 and \
                             abs(inf["scale"] / med_scale - 1.0) > 0.10:
-                        warns.append(f"Pixel scale {inf['scale']:.2f}″ differs from the others "
-                                     f"({med_scale:.2f}″).")
+                        warns.append(self.tr("Pixel scale {0:.2f}″ differs from the others "
+                                             "({1:.2f}″).").format(inf['scale'], med_scale))
                     n_warn += bool(warns)
                     notes = [str(it.get("path", "")), f"{W} × {H} px"]
                     if inf["valid_frac"] < 0.995:
-                        notes.append(f"{100 * (1 - inf['valid_frac']):.0f}% of this frame is empty "
-                                     f"(is it a mosaic itself?)")
+                        notes.append(self.tr("{0:.0f}% of this frame is empty "
+                                             "(is it a mosaic itself?)").format(100 * (1 - inf['valid_frac'])))
                     cells = [None] * len(_PT.COLS)
                     cells[_PT.COL_IDX] = QTableWidgetItem(str(r + 1))
                     nm = QTableWidgetItem(("⚠ " if warns else "") + self._item_label(it))
@@ -2796,43 +2800,43 @@ class MosaicMasterDialog(QDialog):
                     cells[_PT.COL_NAME] = nm
                     state = it.get("solve_state")
                     if seestar and state == "failed":
-                        sv = QTableWidgetItem("✗ Not solved")
+                        sv = QTableWidgetItem(self.tr("✗ Not solved"))
                         sv.setForeground(QColor(235, 90, 80))
                         if it.get("failed_cached"):
-                            sv.setToolTip(f"Plate solving failed in an earlier build: "
-                                          f"{it.get('solve_error', '')}\n"
-                                          "It isn't tried again, and the frame is left out of the "
-                                          "mosaic.\nTurn on Re-solve every panel (Preparation) "
-                                          "to try it again.")
+                            sv.setToolTip(self.tr("Plate solving failed in an earlier build: "
+                                                  "{0}\n"
+                                                  "It isn't tried again, and the frame is left out of the "
+                                                  "mosaic.\nTurn on Re-solve every panel (Preparation) "
+                                                  "to try it again.").format(it.get('solve_error', '')))
                         else:
-                            sv.setToolTip(f"Plate solving failed: {it.get('solve_error', '')}\n"
-                                          "This frame is left out of the mosaic.")
+                            sv.setToolTip(self.tr("Plate solving failed: {0}\n"
+                                                  "This frame is left out of the mosaic.").format(it.get('solve_error', '')))
                     elif seestar and state == "solving":
-                        sv = QTableWidgetItem("Solving…")
+                        sv = QTableWidgetItem(self.tr("Solving…"))
                         sv.setForeground(blue)
                     elif seestar and it.get("wcs") is not None and not force:
-                        sv = QTableWidgetItem("✓ Solved (cached)" if state == "cached" else "✓ Solved")
+                        sv = QTableWidgetItem(self.tr("✓ Solved (cached)") if state == "cached" else self.tr("✓ Solved"))
                         sv.setForeground(green)
-                        sv.setToolTip("Plate solution " + ("from the cache of an earlier build."
-                                                           if state == "cached" else "found."))
+                        sv.setToolTip(self.tr("Plate solution from the cache of an earlier build.")
+                                      if state == "cached" else self.tr("Plate solution found."))
                     elif seestar:
-                        sv = QTableWidgetItem("Solved at build")
+                        sv = QTableWidgetItem(self.tr("Solved at build"))
                         sv.setForeground(blue)
-                        sv.setToolTip("Plate-solved when you build, seeded by the pointing in the header.")
+                        sv.setToolTip(self.tr("Plate-solved when you build, seeded by the pointing in the header."))
                     elif force:
-                        sv = QTableWidgetItem("Re-solve at build")
+                        sv = QTableWidgetItem(self.tr("Re-solve at build"))
                         sv.setForeground(blue)
-                        sv.setToolTip("Re-solve every panel is on (Preparation).")
+                        sv.setToolTip(self.tr("Re-solve every panel is on (Preparation)."))
                     elif it.get("wcs") is not None:
-                        sv = QTableWidgetItem("✓ Solved (SIP)" if inf["sip"] else "✓ Solved")
+                        sv = QTableWidgetItem(self.tr("✓ Solved (SIP)") if inf["sip"] else self.tr("✓ Solved"))
                         sv.setForeground(green)
-                        sv.setToolTip("Has a plate solution" + (" with SIP distortion: placed by WCS, "
-                                      "not star-refined." if inf["sip"] else "."))
+                        sv.setToolTip(self.tr("Has a plate solution with SIP distortion: placed by WCS, "
+                                              "not star-refined.") if inf["sip"] else self.tr("Has a plate solution."))
                     else:
-                        sv = QTableWidgetItem("Solved at build")
+                        sv = QTableWidgetItem(self.tr("Solved at build"))
                         sv.setForeground(blue)
-                        sv.setToolTip("No plate solution yet. The in-house Gaia blind solver runs\n"
-                                      "when you build; Astrometry.net only if that fails.")
+                        sv.setToolTip(self.tr("No plate solution yet. The in-house Gaia blind solver runs\n"
+                                              "when you build; Astrometry.net only if that fails."))
                     cells[_PT.COL_SOLVE] = sv
                     cells[_PT.COL_SCALE] = QTableWidgetItem(
                         f"{inf['scale']:.2f}″" if inf.get("scale") else "—")
@@ -2840,13 +2844,23 @@ class MosaicMasterDialog(QDialog):
                     rf.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     rf.setForeground(QColor(255, 215, 0) if (r == ref and not seestar) else grey)
                     if seestar:
-                        rf.setToolTip("Seestar mosaics need no reference frame: the canvas is "
-                                      "laid out north up from the plate solutions.")
+                        rf.setToolTip(self.tr("Seestar mosaics need no reference frame: the canvas is "
+                                              "laid out north up from the plate solutions."))
                     if not seestar:
-                        rf.setToolTip(("Reference panel (pinned): " if (r == ref and pinned) else
-                                   "Reference panel (automatic): " if r == ref else "Click to make this the reference: ")
-                                      + "it defines the mosaic's sky frame and sky level.\n"
-                                        "Automatic choice: the plate-solved panel with the most real data.")
+                        # One whole sentence per state; the old prefix + shared
+                        # lowercase tail could not be translated as a sentence.
+                        if r == ref and pinned:
+                            rf.setToolTip(self.tr(
+                                "Reference panel (pinned): it defines the mosaic's sky frame and sky level.\n"
+                                "Automatic choice: the plate-solved panel with the most real data."))
+                        elif r == ref:
+                            rf.setToolTip(self.tr(
+                                "Reference panel (automatic): it defines the mosaic's sky frame and sky level.\n"
+                                "Automatic choice: the plate-solved panel with the most real data."))
+                        else:
+                            rf.setToolTip(self.tr(
+                                "Click to make this the reference: it defines the mosaic's sky frame and sky level.\n"
+                                "Automatic choice: the plate-solved panel with the most real data."))
                     cells[_PT.COL_REF] = rf
                     for col, cell in enumerate(cells):
                         t.setItem(r, col, cell)
@@ -2861,18 +2875,20 @@ class MosaicMasterDialog(QDialog):
         if seestar:
             n_ok = sum(1 for it in items if it.get("wcs") is not None)
             n_bad = sum(1 for it in items if it.get("solve_state") == "failed")
-            hint.append(f"Seestar: {len(items)} frames, {n_ok} plate-solved"
-                        + (f", {n_bad} failed" if n_bad else "")
-                        + ". Each frame is placed by its own plate solution and the frames are averaged.")
+            hint.append(self.tr("Seestar: {0} frames, {1} plate-solved").format(len(items), n_ok)
+                        + (self.tr(", {0} failed").format(n_bad) if n_bad else "")
+                        + self.tr(". Each frame is placed by its own plate solution and the frames are averaged."))
         else:
             sip_note = getattr(self, "_sip_note", "")
             if sip_note:
                 hint.append(sip_note)
             n_uns = sum(1 for it in items if it.get("wcs") is None)
             if n_uns and not force:
-                hint.append(f"{n_uns} panel{'s' if n_uns != 1 else ''} will be plate-solved when you build.")
+                hint.append((self.tr("{0} panel will be plate-solved when you build.") if n_uns == 1
+                             else self.tr("{0} panels will be plate-solved when you build.")).format(n_uns))
         if n_warn and not seestar:
-            hint.append(f"⚠ {n_warn} panel{'s' if n_warn != 1 else ''} with a warning (hover the name).")
+            hint.append((self.tr("⚠ {0} panel with a warning (hover the name).") if n_warn == 1
+                         else self.tr("⚠ {0} panels with a warning (hover the name).")).format(n_warn))
         self.optHint.setText("  ".join(hint))
         self.optHint.setVisible(bool(hint))
         self.buildBtn.setEnabled(len(items) >= 1 and not getattr(self, "_building", False))
@@ -2937,14 +2953,14 @@ class MosaicMasterDialog(QDialog):
                 W, H = inf["size"]
                 tip = (f"{i + 1}. {self._item_label(it)}\n{W} × {H} px"
                        + (f", {inf['scale']:.2f}″/px" if inf.get("scale") else "")
-                       + ("\nSIP distortion: placed by WCS" if inf.get("sip") else "")
-                       + ("\nReference panel" if i == ref else ""))
+                       + (self.tr("\nSIP distortion: placed by WCS") if inf.get("sip") else "")
+                       + (self.tr("\nReference panel") if i == ref else ""))
                 if seestar:
                     st = it.get("solve_state")
                     tip = (f"{i + 1}. {self._item_label(it)}\n"
-                           + ("position from the header only (not solved yet)" if inf.get("approx")
-                              else "plate-solved" + (" (cached)" if st == "cached" else ""))
-                           + (f"\nsolve failed: {it.get('solve_error', '')}" if st == "failed" else ""))
+                           + (self.tr("position from the header only (not solved yet)") if inf.get("approx")
+                              else self.tr("plate-solved") + (self.tr(" (cached)") if st == "cached" else ""))
+                           + (self.tr("\nsolve failed: {0}").format(it.get('solve_error', '')) if st == "failed" else ""))
                 panels.append({"idx": i, "name": self._item_label(it),
                                "poly": np.column_stack([x[g], y[g]]),
                                "ref": (i == ref) and not seestar,
@@ -2954,10 +2970,10 @@ class MosaicMasterDialog(QDialog):
         n_uns = len(infos) - len(fps)
         if seestar:
             n_appr = sum(1 for d in panels if d["approx"])
-            note = (f"{n_appr} placed from the header pointing (dashed) until solved"
+            note = (self.tr("{0} placed from the header pointing (dashed) until solved").format(n_appr)
                     if n_appr else "")
         else:
-            note = (f"{n_uns} not plate-solved yet" if n_uns else "")
+            note = (self.tr("{0} not plate-solved yet").format(n_uns) if n_uns else "")
         self.map.set_plan(panels, note, frame, dense=seestar)
 
     def _on_panel_cell_clicked(self, row, col):
@@ -2970,9 +2986,9 @@ class MosaicMasterDialog(QDialog):
             x.pop("pinned_ref", None)
         if not was:
             it["pinned_ref"] = True
-            self.status_label.setText(f"Reference panel: {self._item_label(it)} (pinned).")
+            self.status_label.setText(self.tr("Reference panel: {0} (pinned).").format(self._item_label(it)))
         else:
-            self.status_label.setText("Reference panel: automatic.")
+            self.status_label.setText(self.tr("Reference panel: automatic."))
         self._refresh_panels()
 
     def _on_table_selection(self):
@@ -3103,13 +3119,13 @@ class MosaicMasterDialog(QDialog):
             eta = (n - n_done) / rate if rate > 0 else 0
             progress.setValue(n_done)
             if n_done == 0 and nw:
-                progress.setLabelText(f"Plate solving {n} frames on {nw} worker processes…\n"
-                                      f"Starting the workers: the first solutions take about "
-                                      f"20 s ({now - t0:.0f} s so far).")
+                progress.setLabelText(self.tr("Plate solving {0} frames on {1} worker processes…\n"
+                                              "Starting the workers: the first solutions take about "
+                                              "20 s ({2:.0f} s so far).").format(n, nw, now - t0))
             else:
-                progress.setLabelText(f"Plate solving frames… {n_done}/{n}"
-                                      + (f" ({n_fail} failed)" if n_fail else "")
-                                      + (f" · about {eta / 60:.1f} min left" if n_done >= 3 else ""))
+                progress.setLabelText(self.tr("Plate solving frames… {0}/{1}").format(n_done, n)
+                                      + (self.tr(" ({0} failed)").format(n_fail) if n_fail else "")
+                                      + (self.tr(" · about {0:.1f} min left").format(eta / 60) if n_done >= 3 else ""))
             QApplication.processEvents()
         _ui.last = 0.0
         _ui.cost = 0.0
@@ -3202,8 +3218,8 @@ class MosaicMasterDialog(QDialog):
         items = list(self.loaded_images)
         if not items:
             return
-        progress = QProgressDialog("Plate solving frames…", "Cancel", 0, len(items), self)
-        progress.setWindowTitle("Mosaic Master — Seestar")
+        progress = QProgressDialog(self.tr("Plate solving frames…"), self.tr("Cancel"), 0, len(items), self)
+        progress.setWindowTitle(self.tr("Mosaic Master — Seestar"))
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setAutoClose(False)
         progress.setAutoReset(False)
@@ -3237,16 +3253,16 @@ class MosaicMasterDialog(QDialog):
                         continue
                 todo.append(it)
             if todo and not self._seestar_solve(todo, cache, progress, pool):
-                self.status_label.setText("Cancelled.")
+                self.status_label.setText(self.tr("Cancelled."))
                 return
             solved = [it for it in items if it.get("wcs") is not None
                       and it.get("solve_state") != "failed"]
             n_fail = sum(1 for it in items if it.get("solve_state") == "failed")
             if not solved:
-                QMessageBox.warning(self, "Mosaic Master",
-                                    "No frame could be plate-solved, so nothing can be placed.\n"
-                                    "Check that your Gaia catalogue is installed (Settings → "
-                                    "Gaia DR3 Library) and that the frames show stars.")
+                QMessageBox.warning(self, self.tr("Mosaic Master"),
+                                    self.tr("No frame could be plate-solved, so nothing can be placed.\n"
+                                            "Check that your Gaia catalogue is installed (Settings → "
+                                            "Gaia DR3 Library) and that the frames show stars."))
                 return
 
             # 2) the canvas around every solved frame
@@ -3275,7 +3291,7 @@ class MosaicMasterDialog(QDialog):
             try:
                 cw, (Hc, Wc) = sm.make_canvas([it["wcs"] for it in solved], shapes)
             except Exception as e:
-                QMessageBox.warning(self, "Mosaic Master", f"Could not lay out the mosaic:\n{e}")
+                QMessageBox.warning(self, self.tr("Mosaic Master"), self.tr("Could not lay out the mosaic:\n{0}").format(e))
                 return
             Hms = [sm.frame_homography(it["wcs"], sh, cw) for it, sh in zip(solved, shapes)]
             boxes = [sm.canvas_bbox(h, sh, (Hc, Wc)) for h, sh in zip(Hms, shapes)]
@@ -3308,17 +3324,17 @@ class MosaicMasterDialog(QDialog):
                     srgc_ref = self._srgc_area_reference([it["wcs"] for it in solved], shapes,
                                                          progress)
                 except InterruptedError:
-                    self.status_label.setText("Cancelled.")
+                    self.status_label.setText(self.tr("Cancelled."))
                     return
                 except Exception as e:
                     print(f"[Mosaic] SRGC reference unavailable: {e}")
                     ans = QMessageBox.question(
-                        self, "Mosaic Master",
-                        f"The survey reference for SRGC could not be fetched:\n{e}\n\n"
-                        "Build without SRGC?")
+                        self, self.tr("Mosaic Master"),
+                        self.tr("The survey reference for SRGC could not be fetched:\n{0}\n\n"
+                                "Build without SRGC?").format(e))
                     if ans != QMessageBox.StandardButton.Yes:
-                        self.status_label.setText("Not built: the SRGC survey reference "
-                                                  "is unavailable.")
+                        self.status_label.setText(self.tr("Not built: the SRGC survey reference "
+                                                          "is unavailable."))
                         return
                 if srgc_ref is not None:
                     srgc_kw = dict(work_long_side=sp["work_long_side"], degree=sp["degree"],
@@ -3398,7 +3414,7 @@ class MosaicMasterDialog(QDialog):
                                 fut_i.cancel()
                                 for f in window.values():
                                     f.cancel()
-                                self.status_label.setText("Cancelled.")
+                                self.status_label.setText(self.tr("Cancelled."))
                                 return
                         # One frame that can't be read or prepared is left out;
                         # it used to fail the whole build. A dead pool still does.
@@ -3439,12 +3455,12 @@ class MosaicMasterDialog(QDialog):
                             free_slots.append(slot_of.pop(i))
                         k_done += 1
                         progress.setValue(k_done)
-                        progress.setLabelText(f"Stacking… frame {i + 1}/{len(solved)}")
+                        progress.setLabelText(self.tr("Stacking… frame {0}/{1}").format(i + 1, len(solved)))
                         QApplication.processEvents()
                         if progress.wasCanceled():
                             for f in window.values():
                                 f.cancel()
-                            self.status_label.setText("Cancelled.")
+                            self.status_label.setText(self.tr("Cancelled."))
                             return
                 finally:
                     if ex is not pool:
@@ -3468,8 +3484,8 @@ class MosaicMasterDialog(QDialog):
                                    f"stacked ({next(iter(skipped.values()))})")
             stacked = [it for k, it in enumerate(solved) if k not in skipped]
 
-            progress.setLabelText("Taking out satellites and other outliers…" if clip
-                                  else "Finishing…")
+            progress.setLabelText(self.tr("Taking out satellites and other outliers…") if clip
+                                  else self.tr("Finishing…"))
             QApplication.processEvents()
 
             def _finish():
@@ -3521,22 +3537,23 @@ class MosaicMasterDialog(QDialog):
                              "frames": frames}}
             rej = ""
             if clip:
-                rej = (f", {100.0 * stack.rejected / max(stack.considered, 1):.2f}% of samples "
-                       f"rejected as outliers")
+                rej = self.tr(", {0:.2f}% of samples "
+                              "rejected as outliers").format(100.0 * stack.rejected / max(stack.considered, 1))
             self._show_result(self._run_live(self._autostretch_if_requested, self.final_mosaic,
                                              self.autostretchPreviewCheck.isChecked()),
-                              "Seestar Mosaic")
+                              self.tr("Seestar Mosaic"))
             self.status_label.setText(
-                f"Seestar mosaic ready — {len(stacked)} frames"
-                + (f" ({n_fail} not solved, left out)" if n_fail else "")
-                + (f" ({len(skipped)} could not be read, left out — see the log)"
+                self.tr("Seestar mosaic ready — {0} frames").format(len(stacked))
+                + (self.tr(" ({0} not solved, left out)").format(n_fail) if n_fail else "")
+                + (self.tr(" ({0} could not be read, left out — see the log)").format(len(skipped))
                    if skipped else "")
-                + (f", SRGC on {srgc_ok}" if srgc_ref is not None else "")
-                + (f" ({sum(1 for k in srgc_bad if k not in skipped)} left uncorrected — "
-                   f"see the log)" if srgc_ref is not None
+                + (self.tr(", SRGC on {0}").format(srgc_ok) if srgc_ref is not None else "")
+                + (self.tr(" ({0} left uncorrected — "
+                           "see the log)").format(sum(1 for k in srgc_bad if k not in skipped))
+                   if srgc_ref is not None
                    and any(k not in skipped for k in srgc_bad) else "")
-                + f", {Wc}×{Hc} px, up to {int(N.max())} frames deep{rej}. "
-                  "Plate-solved: the mosaic carries its WCS.")
+                + self.tr(", {0}×{1} px, up to {2} frames deep{3}. "
+                          "Plate-solved: the mosaic carries its WCS.").format(Wc, Hc, int(N.max()), rej))
         finally:
             if _sg_debug is not None:
                 import setiastro.saspro.survey_gradient as _sg
@@ -3581,28 +3598,30 @@ class MosaicMasterDialog(QDialog):
         sigma = rep.get("sigma")
         names = [d.get("name", "") for d in panels]
         for k, d in enumerate(panels):
-            lines = [f"{k + 1}. {d.get('name', '')}" + ("  (reference)" if d.get("ref") else "")]
+            lines = [f"{k + 1}. {d.get('name', '')}" + (self.tr("  (reference)") if d.get("ref") else "")]
             if d.get("align"):
-                lines.append(f"Placement: {d['align']}")
+                lines.append(self.tr("Placement: {0}").format(d['align']))
             if d.get("gain") is not None:
-                lines.append(f"Brightness: gain ×{d['gain']:.4f}, offset {d.get('offset', 0.0):+.3g}")
+                lines.append(self.tr("Brightness: gain ×{0:.4f}, offset {1:+.3g}").format(
+                    d['gain'], d.get('offset', 0.0)))
             d["tip"] = "\n".join(lines)
         for sm in seams:
             i, j = sm.get("i"), sm.get("j")
             a_ = names[i] if i is not None and 0 <= i < len(names) else "?"
-            b_ = (names[j] if j is not None and 0 <= j < len(names) else "mosaic so far")
-            lines = [f"Seam {a_} / {b_}"]
+            b_ = (names[j] if j is not None and 0 <= j < len(names) else self.tr("mosaic so far"))
+            lines = [self.tr("Seam {0} / {1}").format(a_, b_)]
             if sm.get("before") is not None and sm.get("after") is not None:
-                lines.append(f"Brightness difference: {sm['before']:.3g} before, {sm['after']:.3g} after matching")
+                lines.append(self.tr("Brightness difference: {0:.3g} before, {1:.3g} after matching").format(
+                    sm['before'], sm['after']))
                 if sigma:
-                    lines.append(f"= {sm['after'] / sigma:.2f}× the sky noise per pixel")
+                    lines.append(self.tr("= {0:.2f}× the sky noise per pixel").format(sm['after'] / sigma))
             sm["tip"] = "\n".join(lines)
         self.map.set_result(qimg, (W, H), panels, seams, sigma, coverage=rep.get("coverage"))
         self._result_display = display_image
         self._result_title = title
-        self.mapTitle.setText("<b>Result</b>")
+        self.mapTitle.setText(self.tr("<b>Result</b>"))
         self.overlayCheck.setVisible(bool(panels) or rep.get("coverage") is not None)
-        self.mapToggleBtn.setText("Sky map")
+        self.mapToggleBtn.setText(self.tr("Sky map"))
         self.mapToggleBtn.show()
         self.fullPreviewBtn.show()
         self._result_stale = False
@@ -3611,31 +3630,31 @@ class MosaicMasterDialog(QDialog):
     def _toggle_map_mode(self):
         if self.map.mode() == "result":
             self.map.show_plan()
-            self.mapTitle.setText("<b>Sky map</b>")
-            self.mapToggleBtn.setText("Result")
+            self.mapTitle.setText(self.tr("<b>Sky map</b>"))
+            self.mapToggleBtn.setText(self.tr("Result"))
             self.overlayCheck.hide()
         elif self.map.has_result():
             self.map.show_result()
-            self.mapTitle.setText("<b>Result</b>")
-            self.mapToggleBtn.setText("Sky map")
+            self.mapTitle.setText(self.tr("<b>Result</b>"))
+            self.mapToggleBtn.setText(self.tr("Sky map"))
             _rep = getattr(self, "_build_report", None) or {}
             self.overlayCheck.setVisible(bool(_rep.get("panels")) or _rep.get("coverage") is not None)
 
     def _open_full_preview(self):
         if self._result_display is None:
             return
-        MosaicPreviewWindow(self._result_display, title=getattr(self, "_result_title", "Mosaic"),
+        MosaicPreviewWindow(self._result_display, title=getattr(self, "_result_title", self.tr("Mosaic")),
                             parent=self, push_cb=self._open_result_as_view).show()
 
     def _open_result_as_view(self):
         fin = self.finalize_mosaic()
         if fin is None:
-            self.status_label.setText("No mosaic yet: build one first.")
+            self.status_label.setText(self.tr("No mosaic yet: build one first."))
             return
         img, meta = fin
         dm = self._docman
         if dm is None:
-            QMessageBox.warning(self, "Mosaic Master", "No document manager is available.")
+            QMessageBox.warning(self, self.tr("Mosaic Master"), self.tr("No document manager is available."))
             return
         try:
             title = self._proposed_mosaic_title()
@@ -3648,9 +3667,9 @@ class MosaicMasterDialog(QDialog):
             parent = self.parent()
             if parent and hasattr(parent, "_spawn_subwindow_for"):
                 parent._spawn_subwindow_for(newdoc)
-            self.status_label.setText("Opened the mosaic as a new view.")
+            self.status_label.setText(self.tr("Opened the mosaic as a new view."))
         except Exception as e:
-            QMessageBox.critical(self, "Mosaic Master", f"Could not open the mosaic:\n{e}")
+            QMessageBox.critical(self, self.tr("Mosaic Master"), self.tr("Could not open the mosaic:\n{0}").format(e))
 
     @staticmethod
     def _wcs_has_sip(w):
@@ -3682,11 +3701,11 @@ class MosaicMasterDialog(QDialog):
         n_sip = sum(1 for it in solved if self._wcs_has_sip(it["wcs"]))
         frac = n_sip / len(solved)
         if frac >= 0.8:
-            self._sip_note = (f"{n_sip} of {len(solved)} panels carry SIP distortion: "
-                              f"WCS placement is more accurate than star refinement.")
+            self._sip_note = self.tr("{0} of {1} panels carry SIP distortion: "
+                                     "WCS placement is more accurate than star refinement.").format(n_sip, len(solved))
         elif n_sip:
-            self._sip_note = (f"{n_sip} of {len(solved)} panels carry SIP distortion; "
-                              f"those are always placed by WCS.")
+            self._sip_note = self.tr("{0} of {1} panels carry SIP distortion; "
+                                     "those are always placed by WCS.").format(n_sip, len(solved))
         else:
             self._sip_note = ""
         if not getattr(self, "_starrefine_user_touched", False):
@@ -3826,7 +3845,7 @@ class MosaicMasterDialog(QDialog):
         recs = adv["recs"]
         if len(recs) < 2:
             return True
-        if not _tick(text=f"Advanced matching: solving {len(recs)} panels together…"):
+        if not _tick(text=self.tr("Advanced matching: solving {0} panels together…").format(len(recs))):
             return False
         params, n_pairs, seams = solve_global_panel_match(recs, self._ref_bg, ref=0)
         if n_pairs == 0:
@@ -3841,8 +3860,8 @@ class MosaicMasterDialog(QDialog):
         self.final_mosaic.fill(0.0)
         self.weight_mosaic.fill(0.0)
         for k, rec in enumerate(recs):
-            if not _tick(text=f"Advanced matching: rebuilding with panel "
-                              f"{k + 1}/{len(recs)} ({rec['name']})"):
+            if not _tick(text=self.tr("Advanced matching: rebuilding with panel "
+                                      "{0}/{1} ({2})").format(k + 1, len(recs), rec['name'])):
                 return False
             img = _adv_load(rec["img_path"], mmap=False)
             cov = _adv_load(rec["cov_path"], mmap=False)
@@ -4190,6 +4209,10 @@ class MosaicMasterDialog(QDialog):
         dstm = np.zeros((H, W), np.float32) if want_mask else None
         mask_f = (np.ascontiguousarray(src_mask.astype(np.float32))
                   if want_mask else None)
+        # src_img[..., c] is a strided view; cv2 copied the whole channel on
+        # every per-tile remap. Contiguous planes once instead (same output).
+        planes = ([np.ascontiguousarray(src_img[..., c]) for c in range(nch)]
+                  if is_color else None)
 
         box = self._dst_footprint_bbox(src_img.shape, src_wcs, dst_wcs, (H, W))
         if box is None:
@@ -4214,11 +4237,31 @@ class MosaicMasterDialog(QDialog):
                    max(1, -(-(bx1 - bx0) // tile)))
         done_tiles = 0
 
+        # The per-pixel chain (dst pixel -> world -> src pixel, plus the round
+        # trip below) is solved exactly on a node grid and interpolated in
+        # between -- same helpers, same self-check and per-pixel fallback as
+        # star_alignment.wcs_reproject_align. Round-trip validation: a diverged
+        # solve that happens to land inside the frame still fails to map back to
+        # the sky we asked for; forward SIP is a plain polynomial evaluation.
+        from setiastro.saspro.star_alignment import (
+            _wcs_grid_map, _wcs_grid_tile, _wcs_pix_chain)
+
         with warnings.catch_warnings():
             # Residual non-convergence at the footprint edge is expected and is
             # handled by the validation below, not by hoping it doesn't happen.
             warnings.filterwarnings("ignore", message=".*all_world2pix.*")
             warnings.filterwarnings("ignore", message=".*failed to converge.*")
+
+            # dst is linear now, so wcs_pix2world is exact and cheap
+            try:
+                grid = _wcs_grid_map(dst_wcs.wcs_pix2world, src_wcs, box, tol_deg)
+                print(f"[Mosaic] map grid {grid['step']}px: {grid['n_nodes']} nodes, "
+                      f"max cell-centre error {grid['max_err']:.1e} px, "
+                      f"{int(grid['cell_bad'].sum())}/{grid['cell_bad'].size} "
+                      f"cells solved per pixel")
+            except Exception as e:
+                print(f"[Mosaic] map grid unavailable ({e}); solving every pixel.")
+                grid = None
 
             for y0 in range(by0, by1, tile):
                 y1 = min(y0 + tile, by1)
@@ -4230,32 +4273,28 @@ class MosaicMasterDialog(QDialog):
                     ww = x1 - x0
                     xs = np.arange(x0, x1, dtype=np.float64)[None, :]
 
-                    Xd = np.broadcast_to(xs, (hh, ww))
-                    Yd = np.broadcast_to(ys, (hh, ww))
+                    rt_bad = np.zeros((hh, ww), bool)
+                    if grid is not None:
+                        mx64, my64, exact = _wcs_grid_tile(grid, x0, x1, y0, y1)
+                    else:
+                        mx64 = np.empty((hh, ww), np.float64)
+                        my64 = np.empty((hh, ww), np.float64)
+                        exact = np.ones((hh, ww), bool)
+                    if exact.any():
+                        sx, sy, rtb = _wcs_pix_chain(
+                            dst_wcs.wcs_pix2world, src_wcs,
+                            np.broadcast_to(xs, (hh, ww))[exact],
+                            np.broadcast_to(ys, (hh, ww))[exact], tol_deg)
+                        mx64[exact] = sx
+                        my64[exact] = sy
+                        rt_bad[exact] = rtb
 
-                    # dst is linear now, so wcs_pix2world is exact and cheap
-                    ra, dec = dst_wcs.wcs_pix2world(Xd.ravel(), Yd.ravel(), 0)
-                    sx, sy = src_wcs.all_world2pix(ra, dec, 0)   # iterative SIP inverse
-
-                    mapx = sx.reshape(hh, ww).astype(np.float32)
-                    mapy = sy.reshape(hh, ww).astype(np.float32)
+                    mapx = mx64.astype(np.float32)
+                    mapy = my64.astype(np.float32)
 
                     bad = ~(np.isfinite(mapx) & np.isfinite(mapy))
                     bad |= (mapx < -1.0) | (mapx > sw) | (mapy < -1.0) | (mapy > sh)
-
-                    # Round-trip validation: a diverged solve that happens to land
-                    # inside the frame still fails to map back to the sky we asked
-                    # for. Forward SIP is a plain polynomial evaluation — no
-                    # iteration, no divergence.
-                    ok = ~bad
-                    if ok.any():
-                        rx = np.where(ok, mapx, 0.0).astype(np.float64).ravel()
-                        ry = np.where(ok, mapy, 0.0).astype(np.float64).ravel()
-                        ra2, dec2 = src_wcs.all_pix2world(rx, ry, 0)
-                        dra = ((ra2 - ra + 180.0) % 360.0 - 180.0) * np.cos(np.radians(dec))
-                        err = np.hypot(dra, dec2 - dec).reshape(hh, ww)
-                        bad |= ~np.isfinite(err)
-                        bad |= (err > tol_deg)
+                    bad |= rt_bad
 
                     if bad.any():
                         rejected += int(bad.sum())
@@ -4265,7 +4304,7 @@ class MosaicMasterDialog(QDialog):
                     if is_color:
                         for c in range(nch):
                             dst[y0:y1, x0:x1, c] = cv2.remap(
-                                src_img[..., c], mapx, mapy,
+                                planes[c], mapx, mapy,
                                 interpolation=cv2.INTER_LANCZOS4,
                                 borderMode=cv2.BORDER_CONSTANT, borderValue=float(bv[c]))
                     else:
@@ -4404,13 +4443,13 @@ class MosaicMasterDialog(QDialog):
     def openSettings(self):
         dlg = MosaicSettingsDialog(self.settings, self)
         if dlg.exec():
-            self.status_label.setText("Mosaic settings updated.")
+            self.status_label.setText(self.tr("Mosaic settings updated."))
 
     # ---------- Add / Remove ----------
     def add_image(self):
         start = str(self.settings.value("mosaic/last_dir", "") or "")
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Add Panels", start,
+            self, self.tr("Add Panels"), start,
             "Images (*.png *.jpg *.jpeg *.tif *.tiff *.fits *.fit *.fts *.fz *.xisf "
             "*.cr2 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef)")
         if paths:
@@ -4434,10 +4473,10 @@ class MosaicMasterDialog(QDialog):
                         have.add(str(path))
                         added += 1
                         if added % 25 == 0:
-                            self.status_label.setText(f"Adding frames… {added}")
+                            self.status_label.setText(self.tr("Adding frames… {0}").format(added))
                             QApplication.processEvents()
                         continue
-                self.status_label.setText(f"Loading {os.path.basename(path)}…")
+                self.status_label.setText(self.tr("Loading {0}…").format(os.path.basename(path)))
                 QApplication.processEvents()
                 try:
                     arr, header, bitdepth, ismono = load_image(path)
@@ -4467,16 +4506,16 @@ class MosaicMasterDialog(QDialog):
         self._refresh_panels()
         if added:
             self._mark_result_stale()
-        msg = f"{len(self.loaded_images)} panels loaded"
+        msg = self.tr("{0} panels loaded").format(len(self.loaded_images))
         if added:
-            msg += f" ({added} added)"
+            msg += self.tr(" ({0} added)").format(added)
         if failed:
-            msg += f". Could not read: {', '.join(failed[:4])}" + ("…" if len(failed) > 4 else "")
+            msg += self.tr(". Could not read: {0}").format(', '.join(failed[:4])) + ("…" if len(failed) > 4 else "")
         self.status_label.setText(msg + ".")
 
     def add_folder(self):
         start = str(self.settings.value("mosaic/last_dir", "") or "")
-        d = QFileDialog.getExistingDirectory(self, "Add a Folder of Frames", start)
+        d = QFileDialog.getExistingDirectory(self, self.tr("Add a Folder of Frames"), start)
         if not d:
             return
         self._persist("mosaic/last_dir", d)
@@ -4484,7 +4523,7 @@ class MosaicMasterDialog(QDialog):
         paths = sorted(os.path.join(d, f) for f in os.listdir(d)
                        if f.lower().endswith(exts) and os.path.isfile(os.path.join(d, f)))
         if not paths:
-            self.status_label.setText("No image files in that folder.")
+            self.status_label.setText(self.tr("No image files in that folder."))
             return
         self._add_paths(paths)
 
@@ -4541,8 +4580,8 @@ class MosaicMasterDialog(QDialog):
     def add_image_from_view(self):
         entries = self._collect_view_candidates()
         if not entries:
-            QMessageBox.information(self, "Add from View",
-                                    "No views with image data are open.")
+            QMessageBox.information(self, self.tr("Add from View"),
+                                    self.tr("No views with image data are open."))
             return
 
         dlg = _ViewPickerDialog(entries, parent=self)
@@ -4573,8 +4612,9 @@ class MosaicMasterDialog(QDialog):
             self._mark_result_stale()
         n_solved = sum(1 for e in chosen if e["wcs"] is not None)
         self.status_label.setText(
-            f"{len(self.loaded_images)} panels loaded "
-            f"({len(chosen)} added, {n_solved} already plate-solved).")
+            self.tr("{0} panels loaded "
+                    "({1} added, {2} already plate-solved).").format(
+                len(self.loaded_images), len(chosen), n_solved))
 
     def _item_label(self, item: dict) -> str:
         # 1) explicit display label wins
@@ -4592,7 +4632,7 @@ class MosaicMasterDialog(QDialog):
         rows = sorted({i.row() for i in self.panel_table.selectionModel().selectedRows()},
                       reverse=True)
         if not rows:
-            self.status_label.setText("Select the panels to remove.")
+            self.status_label.setText(self.tr("Select the panels to remove."))
             return
         for r in rows:
             if 0 <= r < len(self.loaded_images):
@@ -4604,18 +4644,19 @@ class MosaicMasterDialog(QDialog):
 
     def update_status(self):
         c = len(self.loaded_images)
-        self.status_label.setText(f"{c} panel{'s' if c != 1 else ''} loaded."
-                                  if c else "Add panels to begin.")
+        self.status_label.setText((self.tr("{0} panel loaded.") if c == 1
+                                   else self.tr("{0} panels loaded.")).format(c)
+                                  if c else self.tr("Add panels to begin."))
 
     # ---------- Preview ----------
     def preview_selected(self):
         rows = sorted({i.row() for i in self.panel_table.selectionModel().selectedRows()})
         if not rows or not (0 <= rows[0] < len(self.loaded_images)):
-            self.status_label.setText("Select a panel to preview.")
+            self.status_label.setText(self.tr("Select a panel to preview."))
             return
         d = self.loaded_images[rows[0]]
         if not self._ensure_loaded(d):
-            self.status_label.setText(f"Could not read {self._item_label(d)}.")
+            self.status_label.setText(self.tr("Could not read {0}.").format(self._item_label(d)))
             return
         disp = self._autostretch_if_requested(d["image"])
         MosaicPreviewWindow(disp, title=self._item_label(d), parent=self).show()
@@ -4845,11 +4886,11 @@ class MosaicMasterDialog(QDialog):
         ref_wcs, (h, w) = sm.srgc_area_grid(wcs_list, shapes, wls)
         channels = list(SURVEYS[survey].get("channels") or [])
         info = {}
-        last = [f"Fetching the {survey} reference for the whole area ({w}×{h} px)…"]
+        last = [self.tr("Fetching the {0} reference for the whole area ({1}×{2} px)…").format(survey, w, h)]
         print(f"[Mosaic] SRGC: one {survey} reference for {len(wcs_list)} frames, {w}×{h} px")
 
         def _cb(m):
-            last[0] = f"Survey reference: {m}"
+            last[0] = self.tr("Survey reference: {0}").format(m)
 
         def _fetch():
             reset_dead_hosts()
@@ -4902,12 +4943,12 @@ class MosaicMasterDialog(QDialog):
                 frames.append((ap[0], ap[1], True))
         if not frames:
             QMessageBox.information(
-                self, "SRGC reference",
-                "No frame has a sky position yet. Plate-solve the frames (Build does it),\n"
-                "or add frames whose headers carry RA/DEC and a pixel scale.")
+                self, self.tr("SRGC reference"),
+                self.tr("No frame has a sky position yet. Plate-solve the frames (Build does it),\n"
+                        "or add frames whose headers carry RA/DEC and a pixel scale."))
             return
-        progress = QProgressDialog("Fetching the survey reference…", "Cancel", 0, 0, self)
-        progress.setWindowTitle("SRGC reference")
+        progress = QProgressDialog(self.tr("Fetching the survey reference…"), self.tr("Cancel"), 0, 0, self)
+        progress.setWindowTitle(self.tr("SRGC reference"))
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
         progress.show()
@@ -4918,8 +4959,8 @@ class MosaicMasterDialog(QDialog):
         except InterruptedError:
             return
         except Exception as e:
-            QMessageBox.warning(self, "SRGC reference",
-                                f"Could not fetch the survey reference:\n{e}")
+            QMessageBox.warning(self, self.tr("SRGC reference"),
+                                self.tr("Could not fetch the survey reference:\n{0}").format(e))
             return
         finally:
             try:
@@ -4928,8 +4969,8 @@ class MosaicMasterDialog(QDialog):
                 pass
         disp = self._srgc_reference_display(ref, frames)
         n_ap = sum(1 for f in frames if f[2])
-        title = (f"SRGC reference — {ref['survey']} — {len(frames)} frames"
-                 + (f" (orange: {n_ap} placed from the header pointing)" if n_ap else ""))
+        title = (self.tr("SRGC reference — {0} — {1} frames").format(ref['survey'], len(frames))
+                 + (self.tr(" (orange: {0} placed from the header pointing)").format(n_ap) if n_ap else ""))
         win = MosaicPreviewWindow(disp, title=title, parent=self)
         win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         try:
@@ -5039,9 +5080,9 @@ class MosaicMasterDialog(QDialog):
         targets = [it for it in self.loaded_images if it.get("wcs") is not None]
         if not targets:
             QMessageBox.warning(
-                self, "Mosaic Master",
-                "SRGC is checked, but no panel has a usable plate solution.\n"
-                "Solve the panels first, or uncheck SRGC.")
+                self, self.tr("Mosaic Master"),
+                self.tr("SRGC is checked, but no panel has a usable plate solution.\n"
+                        "Solve the panels first, or uncheck SRGC."))
             return True
 
         skipped = len(self.loaded_images) - len(targets)
@@ -5061,8 +5102,8 @@ class MosaicMasterDialog(QDialog):
         n = len(targets)
         own_progress = None
         if tick is None:
-            own_progress = QProgressDialog("SRGC on panels...", "Cancel", 0, n, self)
-            own_progress.setWindowTitle("Mosaic Master")
+            own_progress = QProgressDialog(self.tr("SRGC on panels..."), self.tr("Cancel"), 0, n, self)
+            own_progress.setWindowTitle(self.tr("Mosaic Master"))
             own_progress.setWindowModality(Qt.WindowModality.WindowModal)
             own_progress.setAutoClose(False)
             own_progress.setAutoReset(False)
@@ -5083,12 +5124,12 @@ class MosaicMasterDialog(QDialog):
         failures = []
         try:
             if not tick(0, f"SRGC 0/{n}..."):
-                self.status_label.setText("Cancelled.")
+                self.status_label.setText(self.tr("Cancelled."))
                 return False
             for i, item in enumerate(targets):
                 label = self._item_label(item)
                 if not tick(i, f"SRGC {i + 1}/{n}: {label}"):
-                    self.status_label.setText("Cancelled.")
+                    self.status_label.setText(self.tr("Cancelled."))
                     return False
 
                 def _cb(msg, _label=label, _tick=tick):
@@ -5103,7 +5144,8 @@ class MosaicMasterDialog(QDialog):
                 except Exception as e:
                     failures.append(f"{label}: {e}")
                     print(f"[Mosaic] SRGC failed for {label}: {e}")
-            tick(n, f"SRGC done ({n} panel{'s' if n != 1 else ''}).")
+            tick(n, (self.tr("SRGC done ({0} panel).") if n == 1
+                     else self.tr("SRGC done ({0} panels).")).format(n))
         finally:
             if own_progress is not None:
                 try:
@@ -5118,11 +5160,11 @@ class MosaicMasterDialog(QDialog):
             shown = "\n".join(failures[:8])
             extra = ""
             if len(failures) > 8:
-                extra = f"\n… and {len(failures) - 8} more."
+                extra = self.tr("\n… and {0} more.").format(len(failures) - 8)
             QMessageBox.warning(
-                self, "Mosaic Master",
-                "SRGC failed on some panels. Those panels keep their pixels "
-                "from before SRGC, and the mosaic will continue.\n\n"
+                self, self.tr("Mosaic Master"),
+                self.tr("SRGC failed on some panels. Those panels keep their pixels "
+                        "from before SRGC, and the mosaic will continue.\n\n")
                 + shown + extra)
         return True
 
@@ -5139,7 +5181,7 @@ class MosaicMasterDialog(QDialog):
             if any("_src_image" in it for it in self.loaded_images):
                 self._restore_panel_sources()
                 self._sync_list_labels()
-                self.status_label.setText(f"{len(self.loaded_images)} images loaded.")
+                self.status_label.setText(self.tr("{0} images loaded.").format(len(self.loaded_images)))
             return True
 
         left = int(self.cropLeftSpin.value())
@@ -5148,9 +5190,9 @@ class MosaicMasterDialog(QDialog):
         bottom = int(self.cropBottomSpin.value())
         if left == right == top == bottom == 0:
             QMessageBox.warning(
-                self, "Mosaic Master",
-                "Crop each image is checked, but every margin is 0.\n"
-                "Set how many pixels to remove from each edge, or uncheck the option.")
+                self, self.tr("Mosaic Master"),
+                self.tr("Crop each image is checked, but every margin is 0.\n"
+                        "Set how many pixels to remove from each edge, or uncheck the option."))
             return False
 
         too_small = []
@@ -5161,16 +5203,16 @@ class MosaicMasterDialog(QDialog):
                 too_small.append(f"{self._item_label(item)} ({w}×{h})")
         if too_small:
             QMessageBox.warning(
-                self, "Mosaic Master",
-                "Those margins would leave less than 32 pixels on:\n\n"
+                self, self.tr("Mosaic Master"),
+                self.tr("Those margins would leave less than 32 pixels on:\n\n")
                 + "\n".join(too_small))
             return False
 
         self._stash_panel_sources()
 
         n = len(self.loaded_images)
-        progress = QProgressDialog("Preparing panels...", "Cancel", 0, max(1, n), self)
-        progress.setWindowTitle("Mosaic Master")
+        progress = QProgressDialog(self.tr("Preparing panels..."), self.tr("Cancel"), 0, max(1, n), self)
+        progress.setWindowTitle(self.tr("Mosaic Master"))
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setAutoClose(False)
         progress.setAutoReset(False)
@@ -5182,7 +5224,7 @@ class MosaicMasterDialog(QDialog):
         def _cancelled():
             self._restore_panel_sources()
             self._sync_list_labels()
-            self.status_label.setText("Cancelled.")
+            self.status_label.setText(self.tr("Cancelled."))
             return False
 
         try:
@@ -5190,8 +5232,8 @@ class MosaicMasterDialog(QDialog):
                 if progress.wasCanceled():
                     return _cancelled()
                 label = self._item_label(item)
-                progress.setLabelText(f"Cropping {step}/{n}: {label}")
-                self.status_label.setText(f"Cropping {label}...")
+                progress.setLabelText(self.tr("Cropping {0}/{1}: {2}").format(step, n, label))
+                self.status_label.setText(self.tr("Cropping {0}...").format(label))
                 progress.setValue(step)
                 QApplication.processEvents()
                 img, header, wcs = self._crop_panel(
@@ -5206,10 +5248,10 @@ class MosaicMasterDialog(QDialog):
         except Exception as e:
             self._restore_panel_sources()
             self._sync_list_labels()
-            self.status_label.setText("Panel preparation failed.")
+            self.status_label.setText(self.tr("Panel preparation failed."))
             QMessageBox.critical(
-                self, "Mosaic Master",
-                f"Could not prepare the panels:\n{e}")
+                self, self.tr("Mosaic Master"),
+                self.tr("Could not prepare the panels:\n{0}").format(e))
             return False
         finally:
             try:
@@ -5225,7 +5267,7 @@ class MosaicMasterDialog(QDialog):
     # ---------- Align (Entry Point) ----------
     def align_images(self):
         if len(self.loaded_images) == 0:
-            QMessageBox.warning(self, "Align", "No images to align.")
+            QMessageBox.warning(self, self.tr("Align"), self.tr("No images to align."))
             return
 
         # Seestar frames: plate solve every frame, place by WCS, average.
@@ -5236,8 +5278,8 @@ class MosaicMasterDialog(QDialog):
         # Frames added header-only (Seestar mode) need their pixels here.
         for it in self.loaded_images:
             if it.get("image") is None and not self._ensure_loaded(it):
-                QMessageBox.warning(self, "Mosaic Master",
-                                    f"Could not read {self._item_label(it)}.")
+                QMessageBox.warning(self, self.tr("Mosaic Master"),
+                                    self.tr("Could not read {0}.").format(self._item_label(it)))
                 return
 
         # Crop first. SRGC needs a WCS, so it runs after plate solving below.
@@ -5260,8 +5302,8 @@ class MosaicMasterDialog(QDialog):
         #sasprogress dialog. Re-ranged per phase; _tick() also pumps the
         # event loop so Cancel stays responsive during long panels.
         # ------------------------------------------------------------
-        progress = QProgressDialog("Preparing...", "Cancel", 0, 1, self)
-        progress.setWindowTitle("Mosaic Master")
+        progress = QProgressDialog(self.tr("Preparing..."), self.tr("Cancel"), 0, 1, self)
+        progress.setWindowTitle(self.tr("Mosaic Master"))
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setAutoClose(False)
         progress.setAutoReset(False)
@@ -5302,15 +5344,15 @@ class MosaicMasterDialog(QDialog):
 
         if images_to_process:
             progress.setRange(0, len(images_to_process))
-            _tick(0, f"Plate solving 0/{len(images_to_process)}...")
+            _tick(0, self.tr("Plate solving 0/{0}...").format(len(images_to_process)))
 
         self._solve_cancel_event().clear()
         for _i_solve, item in enumerate(images_to_process):
             if not _tick(_i_solve,
-                         f"Plate solving {_i_solve + 1}/{len(images_to_process)}: "
-                         f"{self._item_label(item)}"):
+                         self.tr("Plate solving {0}/{1}: "
+                                 "{2}").format(_i_solve + 1, len(images_to_process), self._item_label(item))):
                 _finish()
-                self.status_label.setText("Cancelled.")
+                self.status_label.setText(self.tr("Cancelled."))
                 return
 
             # In-house Gaia blind solve, then Astrometry.net if that fails.
@@ -5320,7 +5362,7 @@ class MosaicMasterDialog(QDialog):
             solved_header = self.perform_blind_solve(item)
             if solved_header is _SOLVE_CANCELLED:
                 _finish()
-                self.status_label.setText("Cancelled.")
+                self.status_label.setText(self.tr("Cancelled."))
                 return
             if solved_header is not None and item.get("wcs") is None:
                 try:
@@ -5356,7 +5398,7 @@ class MosaicMasterDialog(QDialog):
             _finish()
             return
 
-        _tick(text="Ordering panels...")
+        _tick(text=self.tr("Ordering panels..."))
         wcs_items = self._order_panels(wcs_items)
 
         # Panels must be at different sky positions. A degenerate WCS (one that
@@ -5380,11 +5422,11 @@ class MosaicMasterDialog(QDialog):
             if spread < 1e-4:
                 _finish()
                 QMessageBox.warning(
-                    self, "Mosaic Master",
-                    "All panels report the same sky position, so the mosaic "
-                    "would collapse onto one panel.\n\n"
-                    "Their WCS parsed but carries no real astrometric solution. "
-                    "Re-plate-solve the panels and try again.")
+                    self, self.tr("Mosaic Master"),
+                    self.tr("All panels report the same sky position, so the mosaic "
+                            "would collapse onto one panel.\n\n"
+                            "Their WCS parsed but carries no real astrometric solution. "
+                            "Re-plate-solve the panels and try again."))
                 return        
         # ------------------------------------------------------------
         # 3) Establish mosaic WCS + output bounding box
@@ -5453,20 +5495,20 @@ class MosaicMasterDialog(QDialog):
                     lo_names = [nm for nm, mv in mads if mv > 0 and mv < med_mad / 3.0]
                     hi_names = [nm for nm, mv in mads if mv > med_mad * 3.0]
                     detail = "\n".join(f"    {nm}: MAD={mv:.4g}" for nm, mv in mads)
-                    msg = (
+                    msg = self.tr(
                         "Looks like you've mixed linear and stretched panels.\n\n"
                         "These panels are on very different tone scales "
-                        f"(pixel spread differs by {mad_ratio:.0f}×), which usually "
+                        "(pixel spread differs by {0:.0f}×), which usually "
                         "means one was stretched and the others are still linear. "
                         "Normalization can't blend across that — the seams won't "
                         "match.\n\n"
                         "Normally every panel should be either all linear, or all "
                         "stretched the same way.\n\n"
-                        f"{detail}\n\n"
+                        "{1}\n\n"
                         "Continue anyway?"
-                    )
+                    ).format(mad_ratio, detail)
                     reply = QMessageBox.warning(
-                        self, "Mixed Panel Scales", msg,
+                        self, self.tr("Mixed Panel Scales"), msg,
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                         QMessageBox.StandardButton.No,
                     )
@@ -5474,7 +5516,7 @@ class MosaicMasterDialog(QDialog):
                         # _finish() here too -- this early return used to leave
                         # the progress dialog and spinner running forever.
                         _finish()
-                        self.status_label.setText("Cancelled — mixed panel scales.")
+                        self.status_label.setText(self.tr("Cancelled — mixed panel scales."))
                         return
 
         # Pedestal added before warping so the valid-pixel footprint survives
@@ -5557,9 +5599,9 @@ class MosaicMasterDialog(QDialog):
             _base = idx * SUBSTEPS
             _name = self._item_label(itm)
 
-            if not _tick(_base, f"Panel {idx + 1}/{n_panels} — reprojecting {_name}"):
+            if not _tick(_base, self.tr("Panel {0}/{1} — reprojecting {2}").format(idx + 1, n_panels, _name)):
                 _finish()
-                self.status_label.setText("Cancelled.")
+                self.status_label.setText(self.tr("Cancelled."))
                 return
 
             img_lin = arr.astype(np.float32, copy=False)
@@ -5623,7 +5665,7 @@ class MosaicMasterDialog(QDialog):
             border_ped = np.asarray(fv, np.float64) + PED
 
             # --- Reprojection mode ---
-            mode = self.reprojectModeCombo.currentText()
+            mode = self.reprojectModeCombo.currentData() or ""
 
             if mode.startswith("Fast — Homography"):
                 reprojected, cov_warp = self._warp_via_wcs_homography(
@@ -5641,8 +5683,8 @@ class MosaicMasterDialog(QDialog):
                     img_ped, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width),
                     tile=512, src_mask=src_valid, border_value=border_ped,
                     progress_cb=lambda f, b=_base, i=idx, nm=_name: _tick(
-                        b + f, f"Panel {i + 1}/{n_panels} — reprojecting {nm} "
-                               f"({f * 100:.0f}%)")
+                        b + f, self.tr("Panel {0}/{1} — reprojecting {2} "
+                                       "({3:.0f}%)").format(i + 1, n_panels, nm, f * 100))
                 )
                 reprojected = self._polish_reprojected(
                     reprojected.astype(np.float32, copy=False))
@@ -5660,7 +5702,7 @@ class MosaicMasterDialog(QDialog):
                 reprojected if reprojected.ndim == 2 else reprojected[..., 0], PED, cov_r
             )
 
-            _tick(_base + 1, f"Panel {idx + 1}/{n_panels} — aligning {_name}")
+            _tick(_base + 1, self.tr("Panel {0}/{1} — aligning {2}").format(idx + 1, n_panels, _name))
 
             # --- Optional star alignment/refinement -------------------------
             # SIP panels are placed by WCS alone: a global affine can't match a
@@ -5675,12 +5717,12 @@ class MosaicMasterDialog(QDialog):
 
             panel_gain = panel_offset = seam_rec = None
             if skip_star_align:
-                align_note = ("WCS placement (SIP distortion)" if panel_has_sip
-                              else "WCS placement (star refine off)")
+                align_note = (self.tr("WCS placement (SIP distortion)") if panel_has_sip
+                              else self.tr("WCS placement (star refine off)"))
                 aligned = reprojected
             else:
                 if first_image:
-                    align_note = "reference panel"
+                    align_note = self.tr("reference panel")
                     aligned = reprojected
                 else:
                     transform_method = self._opt_transform()
@@ -5691,7 +5733,7 @@ class MosaicMasterDialog(QDialog):
                     mos_now = np.nan_to_num(mos_now, nan=0.0, posinf=0.0, neginf=0.0)
                     mosaic_gray = mos_now if mos_now.ndim == 2 else np.mean(mos_now, axis=-1)
 
-                    self.status_label.setText("Computing affine transform with astroalign...")
+                    self.status_label.setText(self.tr("Computing affine transform with astroalign..."))
                     QApplication.processEvents()
 
                     # Star-match only in the overlap. Feeding the whole canvas
@@ -5703,7 +5745,7 @@ class MosaicMasterDialog(QDialog):
                         print(f"[Mosaic] {self._item_label(itm)}: overlap "
                               f"{n_ov_stars}px too small for star alignment, "
                               f"WCS placement only.")
-                        align_note = "WCS placement (overlap too small for star matching)"
+                        align_note = self.tr("WCS placement (overlap too small for star matching)")
                         transform_matrix = np.eye(2, 3, dtype=np.float32)
                     else:
                         ys, xs = np.nonzero(ov)
@@ -5717,12 +5759,12 @@ class MosaicMasterDialog(QDialog):
                         try:
                             transform_obj, (src_pts, dst_pts) = _aa_find_transform_with_backoff(tgt, ref)
                             transform_matrix = transform_obj.params[0:2, :].astype(np.float32)
-                            align_note = f"stars ({len(src_pts)} matched)"
+                            align_note = self.tr("stars ({0} matched)").format(len(src_pts))
                         except Exception as e:
                             print(f"[Mosaic] astroalign fallback on {self._item_label(itm)}: "
                                   f"{type(e).__name__}: {e}")
-                            self.status_label.setText(f"Astroalign failed: {e}. Using identity transform.")
-                            align_note = "WCS placement (star matching failed)"
+                            self.status_label.setText(self.tr("Astroalign failed: {0}. Using identity transform.").format(e))
+                            align_note = self.tr("WCS placement (star matching failed)")
                             transform_matrix = np.eye(2, 3, dtype=np.float32)
 
                     affine_aligned = cv2.warpAffine(
@@ -5738,19 +5780,20 @@ class MosaicMasterDialog(QDialog):
                         borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
 
                     if transform_method in ["Homography Transform", "Polynomial Warp Based Transform"]:
-                        self.status_label.setText(f"Starting refined alignment using {transform_method}...")
+                        self.status_label.setText(self.tr("Starting refined alignment using {0}...").format(transform_method))
                         QApplication.processEvents()
                         refined_result = self.refined_alignment(
                             affine_aligned, mosaic_gray, method=transform_method,
                             extra_mask=cov_warp, valid=cov_r)
                         if refined_result is not None:
                             aligned, best_inliers2, cov_warp = refined_result
-                            align_note += f", {transform_method.split()[0].lower()} refinement ({best_inliers2} inliers)"
+                            align_note += self.tr(", {0} refinement ({1} inliers)").format(
+                                transform_method.split()[0].lower(), best_inliers2)
                             self.status_label.setText(
-                                f"Refined alignment succeeded with {best_inliers2} inliers.")
+                                self.tr("Refined alignment succeeded with {0} inliers.").format(best_inliers2))
                         else:
                             self.status_label.setText(
-                                "Refined alignment failed; falling back to affine alignment.")
+                                self.tr("Refined alignment failed; falling back to affine alignment."))
 
             # If mosaic is color but aligned is mono, expand for accumulation only
             if is_color and aligned.ndim == 2:
@@ -5787,7 +5830,7 @@ class MosaicMasterDialog(QDialog):
                     shutil.rmtree(adv["dir"], ignore_errors=True)
                     adv = None
 
-            _tick(_base + 2, f"Panel {idx + 1}/{n_panels} — matching brightness ({_name})")
+            _tick(_base + 2, self.tr("Panel {0}/{1} — matching brightness ({2})").format(idx + 1, n_panels, _name))
 
             # --- overlap refinement: solve mosaic ≈ a*panel + b where they share sky ---
             if use_bg_match and not first_image:
@@ -5852,7 +5895,7 @@ class MosaicMasterDialog(QDialog):
                         np.ascontiguousarray(smooth_mask[y0_:y1_, x0_:x1_]))
                 adv["recs"].append(adv_rec)
 
-            _tick(_base + 3, f"Panel {idx + 1}/{n_panels} — blending {_name}")
+            _tick(_base + 3, self.tr("Panel {0}/{1} — blending {2}").format(idx + 1, n_panels, _name))
 
             # --- Accumulate ---
             if is_color:
@@ -5877,13 +5920,13 @@ class MosaicMasterDialog(QDialog):
             # "overlap 0 px" against an all-zero weight map.
             first_image = False
 
-            _tick(_base + SUBSTEPS, f"Panel {idx + 1}/{n_panels} done — {_name}")
+            _tick(_base + SUBSTEPS, self.tr("Panel {0}/{1} done — {2}").format(idx + 1, n_panels, _name))
 
         if adv is not None:
             try:
                 if not self._adv_rematch(adv, is_color, _tick):
                     _finish()
-                    self.status_label.setText("Cancelled.")
+                    self.status_label.setText(self.tr("Cancelled."))
                     return
             except Exception as e:
                 traceback.print_exc()
@@ -5894,7 +5937,7 @@ class MosaicMasterDialog(QDialog):
                 gc.collect()
                 shutil.rmtree(adv["dir"], ignore_errors=True)
 
-        _tick(n_panels * SUBSTEPS, "Normalizing accumulated mosaic...")
+        _tick(n_panels * SUBSTEPS, self.tr("Normalizing accumulated mosaic..."))
 
         # ------------------------------------------------------------
         # 7) Final blend
@@ -5909,7 +5952,7 @@ class MosaicMasterDialog(QDialog):
             nz = (self.weight_mosaic > 0)
             self.final_mosaic[nz] = self.final_mosaic[nz] / np.maximum(self.weight_mosaic[nz], 1e-12)
 
-        self.status_label.setText("Mosaic built. De-normalizing mosaic...")
+        self.status_label.setText(self.tr("Mosaic built. De-normalizing mosaic..."))
         QApplication.processEvents()
 
         # ------------------------------------------------------------
@@ -5928,27 +5971,27 @@ class MosaicMasterDialog(QDialog):
         # catalogue-tied solution, not the geometric one it was built from.
         gaia_ok = False
         if getattr(self, "gaiaSolveCheckBox", None) and self.gaiaSolveCheckBox.isChecked():
-            _tick(n_panels * SUBSTEPS + 1, "Plate solving the finished mosaic…")
+            _tick(n_panels * SUBSTEPS + 1, self.tr("Plate solving the finished mosaic…"))
             gaia_ok = self._gaia_solve_final_mosaic(
                 say=lambda m: _tick(text=m))
 
-        self.status_label.setText("Final Mosaic Ready.")
+        self.status_label.setText(self.tr("Final Mosaic Ready."))
         QApplication.processEvents()
 
         display_image = (np.stack([self.final_mosaic] * 3, axis=-1)
                         if self.final_mosaic.ndim == 2 else self.final_mosaic)
         display_image = self._autostretch_if_requested(display_image)
 
-        _tick(n_panels * SUBSTEPS + 1, "Final Mosaic Ready.")
+        _tick(n_panels * SUBSTEPS + 1, self.tr("Final Mosaic Ready."))
         _finish()
 
         self._show_result(display_image,
-                          "Final Mosaic (WCS-only)" if wcs_only else "Final Mosaic")
+                          self.tr("Final Mosaic (WCS-only)") if wcs_only else self.tr("Final Mosaic"))
 
         self.status_label.setText(
-            f"Final mosaic ready — {n_panels} panels, "
-            f"{mosaic_width}×{mosaic_height}"
-            + (", plate solved against Gaia DR3." if gaia_ok else "."))
+            self.tr("Final mosaic ready — {0} panels, "
+                    "{1}×{2}").format(n_panels, mosaic_width, mosaic_height)
+            + (self.tr(", plate solved against Gaia DR3.") if gaia_ok else "."))
 
       
     # ---------- Final plate solve (in-house Gaia DR3) ----------
@@ -6999,7 +7042,7 @@ class MosaicMasterDialog(QDialog):
         """
         print("\n--- Starting Refined Alignment ---")
         poly_degree = qs_int(self.settings, "mosaic/poly_degree", 3)
-        self.status_label.setText("Refinement: Converting images to grayscale...")
+        self.status_label.setText(self.tr("Refinement: Converting images to grayscale..."))
         QApplication.processEvents()
         
         # Convert images to grayscale
@@ -7015,7 +7058,7 @@ class MosaicMasterDialog(QDialog):
         print("Grayscale conversion done.")
         
         # Compute overlap mask
-        self.status_label.setText("Refinement: Computing overlap mask...")
+        self.status_label.setText(self.tr("Refinement: Computing overlap mask..."))
         QApplication.processEvents()
         overlap_mask = (mosaic_gray > 0) & (affine_aligned_gray > 0)
         if valid is not None:
@@ -7026,7 +7069,7 @@ class MosaicMasterDialog(QDialog):
         # Detect stars. Pass the overlap as the statistics mask too -- the
         # zeroed-out remainder of the canvas would otherwise dominate the
         # sigma-clipped background and wreck the detection threshold.
-        self.status_label.setText("Refinement: Detecting stars in mosaic and affine-aligned images...")
+        self.status_label.setText(self.tr("Refinement: Detecting stars in mosaic and affine-aligned images..."))
         QApplication.processEvents()
         # Increase max_stars to 50 for debugging purposes.
         # Both sides at ONE threshold, the lower of the two each would pick on
@@ -7056,36 +7099,37 @@ class MosaicMasterDialog(QDialog):
         for s in new_stars_aligned:
             print(f"({s[0]:.2f}, {s[1]:.2f}) flux: {s[2]:.2f}")
 
-        self.status_label.setText(f"Refinement: Detected {len(mosaic_stars_masked)} mosaic stars and {len(new_stars_aligned)} new stars.")
+        self.status_label.setText(self.tr("Refinement: Detected {0} mosaic stars and {1} new stars.").format(
+            len(mosaic_stars_masked), len(new_stars_aligned)))
         QApplication.processEvents()
 
         if len(mosaic_stars_masked) < 4 or len(new_stars_aligned) < 4:
-            self.status_label.setText("Refinement: Not enough stars detected in candidate region.")
+            self.status_label.setText(self.tr("Refinement: Not enough stars detected in candidate region."))
             return None
 
         # Match stars using position and flux.
-        self.status_label.setText("Refinement: Matching stars...")
+        self.status_label.setText(self.tr("Refinement: Matching stars..."))
         QApplication.processEvents()
         # For debugging, you might try a higher threshold.
         matches = self.match_stars(new_stars_aligned, mosaic_stars_masked, distance_thresh=10.0, flux_thresh=1.0)
         print(f"Matched stars: {len(matches)}")
-        self.status_label.setText(f"Refinement: {len(matches)} matches found.")
+        self.status_label.setText(self.tr("Refinement: {0} matches found.").format(len(matches)))
         if len(matches) < 4:
-            self.status_label.setText("Refinement: Not enough matched stars for refined transform.")
+            self.status_label.setText(self.tr("Refinement: Not enough matched stars for refined transform."))
             return None
 
         src_pts = np.float32([match[0][:2] for match in matches]).reshape(-1, 1, 2)
         dst_pts = np.float32([match[1][:2] for match in matches]).reshape(-1, 1, 2)
 
         if method == "Homography Transform":
-            self.status_label.setText("Refinement: Computing homography transform...")
+            self.status_label.setText(self.tr("Refinement: Computing homography transform..."))
             QApplication.processEvents()
             H_refined, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
             inliers = int(np.count_nonzero(mask)) if mask is not None else 0
-            self.status_label.setText(f"Refinement: Homography computed with {inliers} inliers. Warping image...")
+            self.status_label.setText(self.tr("Refinement: Homography computed with {0} inliers. Warping image...").format(inliers))
             QApplication.processEvents()
             if H_refined is None:
-                self.status_label.setText("Refinement: Homography estimation failed.")
+                self.status_label.setText(self.tr("Refinement: Homography estimation failed."))
                 return None
             warped_image = cv2.warpPerspective(affine_aligned, H_refined,
                                                 (affine_aligned.shape[1], affine_aligned.shape[0]),
@@ -7099,7 +7143,7 @@ class MosaicMasterDialog(QDialog):
                     borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
             return (warped_image, inliers, warped_mask)
         elif method == "Polynomial Warp Based Transform":
-            self.status_label.setText("Refinement: Computing Polynomial Warp based transform...")
+            self.status_label.setText(self.tr("Refinement: Computing Polynomial Warp based transform..."))
             QApplication.processEvents()
             # Extract control points from matches.
             src_pts = np.float32([match[0][:2] for match in matches])
@@ -7114,13 +7158,13 @@ class MosaicMasterDialog(QDialog):
                         degree=poly_degree, status_label=self.status_label,
                         interpolation=cv2.INTER_LINEAR)
                 inliers = len(matches)
-                self.status_label.setText(f"Refinement: Polynomial Warp warp applied with {inliers} matched points.")
+                self.status_label.setText(self.tr("Refinement: Polynomial Warp applied with {0} matched points.").format(inliers))
                 return (warped_image, inliers, warped_mask)
             except Exception as e:
-                self.status_label.setText(f"Refinement: Polynomial Warp warp failed: {e}")
+                self.status_label.setText(self.tr("Refinement: Polynomial Warp failed: {0}").format(e))
                 return None
         else:
-            self.status_label.setText("Refinement: Unexpected transformation method.")
+            self.status_label.setText(self.tr("Refinement: Unexpected transformation method."))
             return None
 
     @staticmethod
@@ -7163,7 +7207,7 @@ class MosaicMasterDialog(QDialog):
 
         # Build the design matrix for the control points.
         if status_label is not None:
-            status_label.setText("Polynomial warp: Building design matrix for control points...")
+            status_label.setText(_tr("Polynomial warp: Building design matrix for control points..."))
             QApplication.processEvents()
         X = build_design_matrix(src_pts, degree)
         
@@ -7172,7 +7216,7 @@ class MosaicMasterDialog(QDialog):
         V = dst_pts[:, 1]
         
         if status_label is not None:
-            status_label.setText("Polynomial warp: Solving for polynomial coefficients...")
+            status_label.setText(_tr("Polynomial warp: Solving for polynomial coefficients..."))
             QApplication.processEvents()
         
         # Solve the least-squares problem.
@@ -7180,7 +7224,7 @@ class MosaicMasterDialog(QDialog):
         coeffs_v, _, _, _ = np.linalg.lstsq(X, V, rcond=None)
         
         if status_label is not None:
-            status_label.setText("Polynomial warp: Computing full mapping for image...")
+            status_label.setText(_tr("Polynomial warp: Computing full mapping for image..."))
             QApplication.processEvents()
         
         # Build a full grid of coordinates.
@@ -7197,14 +7241,14 @@ class MosaicMasterDialog(QDialog):
         map_v = np.dot(X_full, coeffs_v).reshape(h, w).astype(np.float32)
         
         if status_label is not None:
-            status_label.setText("Polynomial warp: Full mapping computed. Remapping image...")
+            status_label.setText(_tr("Polynomial warp: Full mapping computed. Remapping image..."))
             QApplication.processEvents()
         
         # Remap the image.
         warped = cv2.remap(image, map_u, map_v, interpolation=interpolation, borderMode=cv2.BORDER_CONSTANT)
         
         if status_label is not None:
-            status_label.setText("Polynomial warp: Image warped.")
+            status_label.setText(_tr("Polynomial warp: Image warped."))
             QApplication.processEvents()
         
         return warped
@@ -7419,8 +7463,8 @@ class MosaicMasterDialog(QDialog):
 
         print(f"Detected Bounding Box (X={min_x} to {max_x}, Y={min_y} to {max_y})")
         print(f"Calculated Mosaic Size: Width={width}, Height={height}")
-        self.status_label.setText(f"Detected Bounding Box: X={min_x} to {max_x}, Y={min_y} to {max_y}")
-        self.status_label.setText(f"Calculated Mosaic Size: Width={width}, Height={height}")
+        self.status_label.setText(self.tr("Detected Bounding Box: X={0} to {1}, Y={2} to {3}").format(min_x, max_x, min_y, max_y))
+        self.status_label.setText(self.tr("Calculated Mosaic Size: Width={0}, Height={1}").format(width, height))
         QApplication.processEvents()
 
         return int(np.floor(min_x)), int(np.floor(min_y)), int(np.ceil(max_x)), int(np.ceil(max_y))
@@ -7709,7 +7753,9 @@ class MosaicMasterDialog(QDialog):
                             del hdr[key]
                         except Exception:
                             pass
-                src = solved_header if isinstance(solved_header, Header) else Header(solved_header)
+                src = (solved_header.copy() if isinstance(solved_header, Header)
+                       else Header(solved_header))
+                _wcs_pc_to_cd(src)            # PixInsight reads CD, never PC
                 for key in src.keys():
                     if not self._is_wcs_card(key):
                         continue
@@ -7749,7 +7795,7 @@ class MosaicMasterDialog(QDialog):
         Returns a usable header, or None so the caller can try Astrometry.net.
         """
         label = self._item_label(item)
-        self._set_solve_status(f"Blind solving {label} with the in-house solver...")
+        self._set_solve_status(self.tr("Blind solving {0} with the in-house solver...").format(label))
         try:
             from setiastro.saspro.plate_solver import (
                 _solve_with_GAIA_threaded, _status_popup_close,
@@ -7801,7 +7847,7 @@ class MosaicMasterDialog(QDialog):
         item["header"] = res
         self._store_solved_header(item, res)
         print(f"[Mosaic] {label} solved with the in-house blind solver.")
-        self._set_solve_status(f"Blind solved {label} with the in-house solver.")
+        self._set_solve_status(self.tr("Blind solved {0} with the in-house solver.").format(label))
         return res
 
     def perform_blind_solve(self, item):
@@ -7820,8 +7866,8 @@ class MosaicMasterDialog(QDialog):
         if self._solve_was_cancelled():
             return _SOLVE_CANCELLED
         self._set_solve_status(
-            f"In-house blind solve failed for {self._item_label(item)}. "
-            "Falling back to Astrometry.net...")
+            self.tr("In-house blind solve failed for {0}. "
+                    "Falling back to Astrometry.net...").format(self._item_label(item)))
         return self._blind_solve_astrometry(item)
 
     def _blind_solve_astrometry(self, item):
@@ -7833,28 +7879,28 @@ class MosaicMasterDialog(QDialog):
         bend the new pointing.
         """
         while True:
-            self._set_solve_status("Status: Logging in to Astrometry.net...")
+            self._set_solve_status(self.tr("Status: Logging in to Astrometry.net..."))
             QApplication.processEvents()
             api_key = self._get_astrometry_api_key()
             if not api_key:
-                api_key, ok = QInputDialog.getText(self, "Enter API Key", "Please enter your Astrometry.net API key:")
+                api_key, ok = QInputDialog.getText(self, self.tr("Enter API Key"), self.tr("Please enter your Astrometry.net API key:"))
                 if ok and api_key:
                     self.settings.setValue("api/astrometry_key", api_key)
                     self.settings.sync()
                 else:
-                    QMessageBox.warning(self, "API Key Required", "Blind solve canceled (no API key).")
+                    QMessageBox.warning(self, self.tr("API Key Required"), self.tr("Blind solve canceled (no API key)."))
                     return None
 
             session_key = self.login_to_astrometry(api_key)
             if session_key is None:
-                if QMessageBox.question(self, "Login Failed",
-                                        "Could not log in to Astrometry.net. Try again?",
+                if QMessageBox.question(self, self.tr("Login Failed"),
+                                        self.tr("Could not log in to Astrometry.net. Try again?"),
                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                     continue
                 else:
                     return None
 
-            self._set_solve_status("Status: Uploading image to Astrometry.net...")
+            self._set_solve_status(self.tr("Status: Uploading image to Astrometry.net..."))
 
             # Upload the file itself only when it is still the image we solved.
             # A crop, a view, or a non-FITS source has to go up as a temp FITS
@@ -7868,30 +7914,30 @@ class MosaicMasterDialog(QDialog):
                 if self._solve_was_cancelled():
                     return _SOLVE_CANCELLED
                 if not subid:
-                    if QMessageBox.question(self, "Upload Failed",
-                                            "Image upload failed or no subid returned. Try again?",
+                    if QMessageBox.question(self, self.tr("Upload Failed"),
+                                            self.tr("Image upload failed or no subid returned. Try again?"),
                                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                         continue
                     return None
 
-                self._set_solve_status("Status: Waiting for job ID...")
+                self._set_solve_status(self.tr("Status: Waiting for job ID..."))
                 job_id = self.poll_submission_status(subid)
                 if job_id is _SOLVE_CANCELLED:
                     return _SOLVE_CANCELLED
                 if not job_id:
-                    if QMessageBox.question(self, "Blind Solve Failed",
-                                            "Failed to retrieve job ID from Astrometry.net. Try again?",
+                    if QMessageBox.question(self, self.tr("Blind Solve Failed"),
+                                            self.tr("Failed to retrieve job ID from Astrometry.net. Try again?"),
                                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                         continue
                     return None
 
-                self._set_solve_status("Status: Retrieving calibration data...")
+                self._set_solve_status(self.tr("Status: Retrieving calibration data..."))
                 calibration_data = self.poll_calibration_data(job_id)
                 if calibration_data is _SOLVE_CANCELLED:
                     return _SOLVE_CANCELLED
                 if not calibration_data:
-                    if QMessageBox.question(self, "Blind Solve Failed",
-                                            "Calibration data did not arrive from Astrometry.net. Try again?",
+                    if QMessageBox.question(self, self.tr("Blind Solve Failed"),
+                                            self.tr("Calibration data did not arrive from Astrometry.net. Try again?"),
                                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                         continue
                     return None
@@ -7941,7 +7987,7 @@ class MosaicMasterDialog(QDialog):
         if response and response.get("status") == "success":
             return response["session"]
         print("Login failed after multiple attempts.")
-        QMessageBox.critical(self, "Login Failed", "Could not log in to Astrometry.net. Check your API key or internet connection.")
+        QMessageBox.critical(self, self.tr("Login Failed"), self.tr("Could not log in to Astrometry.net. Check your API key or internet connection."))
         return None
 
     def upload_image_to_astrometry(self, image_path, session_key):
@@ -7959,7 +8005,7 @@ class MosaicMasterDialog(QDialog):
             response = robust_api_request("POST", url, data=data, files=files)
         if response and response.get("status") == "success":
             return response["subid"]
-        QMessageBox.critical(self, "Upload Failed", "Image upload failed after multiple attempts.")
+        QMessageBox.critical(self, self.tr("Upload Failed"), self.tr("Image upload failed after multiple attempts."))
         return None
 
     def poll_submission_status(self, subid):
@@ -7977,7 +8023,7 @@ class MosaicMasterDialog(QDialog):
             non_blocking_sleep(10)
             if self._solve_was_cancelled():
                 return _SOLVE_CANCELLED
-        QMessageBox.critical(self, "Blind Solve Failed", "Failed to retrieve job ID from Astrometry.net after multiple attempts.")
+        QMessageBox.critical(self, self.tr("Blind Solve Failed"), self.tr("Failed to retrieve job ID from Astrometry.net after multiple attempts."))
         return None
 
     def poll_calibration_data(self, job_id):
@@ -7994,7 +8040,7 @@ class MosaicMasterDialog(QDialog):
             non_blocking_sleep(10)
             if self._solve_was_cancelled():
                 return _SOLVE_CANCELLED
-        QMessageBox.critical(self, "Blind Solve Failed", "Calibration data did not complete in the expected timeframe.")
+        QMessageBox.critical(self, self.tr("Blind Solve Failed"), self.tr("Calibration data did not complete in the expected timeframe."))
         return None
 
     def construct_wcs_header(self, calibration_data, image_shape):

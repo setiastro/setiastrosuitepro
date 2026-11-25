@@ -37,7 +37,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from astroquery.vizier import Vizier
 
-from PyQt6.QtCore import Qt, QRect, QEvent, QPointF, QRectF, QTimer, QSettings
+from PyQt6.QtCore import Qt, QRect, QEvent, QPointF, QRectF, QTimer, QSettings, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTabWidget, QWidget,
     QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout,QComboBox, QGraphicsPathItem, QGraphicsEllipseItem,
@@ -74,6 +74,10 @@ import traceback
 from setiastro.saspro import photometry_aavso as aav
 
 import webbrowser
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("MagnitudeTool", text)
 
 
 def _run_in_subprocess(timeout_s: float, target, *args, **kwargs):
@@ -983,7 +987,7 @@ def _compute_zero_points_mono(matches, img_f, band="L", clip_sigma=2.5):
             "Mono": {
                 "x": x, "y": y, "kept": keep_mono.tolist(),
                 "zp": float(np.median(zps)) if zps.size else None,
-                "title": f"Mono: {magkey} vs m_inst (y = x + ZP)",
+                "title": _tr("Mono: {0} vs m_inst (y = x + ZP)").format(magkey),
             }
         }
     }
@@ -1061,11 +1065,11 @@ def _compute_zero_points(matches, img_f, clip_sigma=2.5):
         "used_matches": used,
         "plot": {
             "R": {"x": xR, "y": yR, "kept": keep_R.tolist(), "zp": ZP_R,
-                  "title": "Red channel: Rmag vs m_inst (y = x + ZP_R)"},
+                  "title": _tr("Red channel: Rmag vs m_inst (y = x + ZP_R)")},
             "G": {"x": xG, "y": yG, "kept": keep_G.tolist(), "zp": ZP_G,
-                  "title": "Green channel: Vmag vs m_inst (y = x + ZP_G)"},
+                  "title": _tr("Green channel: Vmag vs m_inst (y = x + ZP_G)")},
             "B": {"x": xB, "y": yB, "kept": keep_B.tolist(), "zp": ZP_B,
-                  "title": "Blue channel: Bmag vs m_inst (y = x + ZP_B)"},
+                  "title": _tr("Blue channel: Bmag vs m_inst (y = x + ZP_B)")},
         },
     }
 
@@ -1117,15 +1121,15 @@ def _mu_from_flux(flux: float, area_asec2: float, zp: Optional[float]) -> Option
 # ---------------------------- SQM/Bortle helpers ----------------------------
 
 _BORTLE_BINS = [
-    (1, 21.99, 99.0,  "Excellent (B1)"),
-    (2, 21.89, 21.99, "Typical Dark (B2)"),
-    (3, 21.69, 21.89, "Rural (B3)"),
-    (4, 20.49, 21.69, "Rural/Suburban (B4)"),
-    (5, 19.50, 20.49, "Suburban (B5)"),
-    (6, 18.94, 19.50, "Bright Suburban (B6)"),
-    (7, 18.38, 18.94, "Suburban/Urban (B7)"),
-    (8, 17.80, 18.38, "City (B8)"),
-    (9, -99.0, 17.80, "Inner City (B9)"),
+    (1, 21.99, 99.0,  QT_TRANSLATE_NOOP("MagnitudeTool", "Excellent (B1)")),
+    (2, 21.89, 21.99, QT_TRANSLATE_NOOP("MagnitudeTool", "Typical Dark (B2)")),
+    (3, 21.69, 21.89, QT_TRANSLATE_NOOP("MagnitudeTool", "Rural (B3)")),
+    (4, 20.49, 21.69, QT_TRANSLATE_NOOP("MagnitudeTool", "Rural/Suburban (B4)")),
+    (5, 19.50, 20.49, QT_TRANSLATE_NOOP("MagnitudeTool", "Suburban (B5)")),
+    (6, 18.94, 19.50, QT_TRANSLATE_NOOP("MagnitudeTool", "Bright Suburban (B6)")),
+    (7, 18.38, 18.94, QT_TRANSLATE_NOOP("MagnitudeTool", "Suburban/Urban (B7)")),
+    (8, 17.80, 18.38, QT_TRANSLATE_NOOP("MagnitudeTool", "City (B8)")),
+    (9, -99.0, 17.80, QT_TRANSLATE_NOOP("MagnitudeTool", "Inner City (B9)")),
 ]
 
 def _bortle_from_sqm(mu_mag_arcsec2: Optional[float]) -> Optional[dict]:
@@ -1196,7 +1200,7 @@ def _is_narrowband_like(header) -> bool:
 class _RegionManagerDialog(QDialog):
     def __init__(self, parent, lib):
         super().__init__(parent)
-        self.setWindowTitle("Saved Regions")
+        self.setWindowTitle(self.tr("Saved Regions"))
         self.setModal(True)
         self._lib = lib
         self.selected_name = None
@@ -1212,7 +1216,7 @@ class _RegionManagerDialog(QDialog):
         v.addWidget(self._list)
 
         row = QHBoxLayout()
-        b_load = QPushButton("Load"); b_del = QPushButton("Delete"); b_close = QPushButton("Close")
+        b_load = QPushButton(self.tr("Load")); b_del = QPushButton(self.tr("Delete")); b_close = QPushButton(self.tr("Close"))
         b_load.clicked.connect(self._accept)
         b_del.clicked.connect(self._delete)
         b_close.clicked.connect(self.reject)
@@ -1234,7 +1238,7 @@ class _RegionManagerDialog(QDialog):
         n = self._current_name()
         if not n:
             return
-        if QMessageBox.question(self, "Delete", f"Delete region '{n}'?",
+        if QMessageBox.question(self, self.tr("Delete"), self.tr("Delete region '{0}'?").format(n),
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                                 ) == QMessageBox.StandardButton.Yes:
             self._lib.remove(n)
@@ -1270,8 +1274,8 @@ class _ResultsDialog(QDialog):
 
         # Copy to clipboard button — useful for observatory logs
         btn_row = QHBoxLayout()
-        btn_copy = QPushButton("Copy to Clipboard", self)
-        btn_close = QPushButton("Close", self)
+        btn_copy = QPushButton(self.tr("Copy to Clipboard"), self)
+        btn_close = QPushButton(self.tr("Close"), self)
         btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(text))
         btn_close.clicked.connect(self.close)
         btn_row.addWidget(btn_copy)
@@ -1290,7 +1294,7 @@ class ZeroPointPlotsDialog(QDialog):
     """
     def __init__(self, parent, plots: dict):
         super().__init__(parent)
-        self.setWindowTitle("Zero Point Graphs")
+        self.setWindowTitle(self.tr("Zero Point Graphs"))
         self.resize(900, 700)
 
         root = QVBoxLayout(self)
@@ -1318,17 +1322,17 @@ class ZeroPointPlotsDialog(QDialog):
                 km = np.asarray(kept, dtype=bool)
                 # rejected first so kept points draw on top
                 ax.scatter(xa[~km], ya[~km], s=16, alpha=0.5, color="red",
-                           label=f"clipped ({int((~km).sum())})", zorder=2)
+                           label=self.tr("clipped ({0})").format(int((~km).sum())), zorder=2)
                 ax.scatter(xa[km], ya[km], s=16, alpha=0.8, color="C0",
-                           label=f"fit ({int(km.sum())})", zorder=3)
+                           label=self.tr("fit ({0})").format(int(km.sum())), zorder=3)
                 ax.legend(fontsize=8, loc="upper left")
             else:
                 # older payloads without a mask — behave as before
                 ax.scatter(xa, ya, s=16, alpha=0.8, color="C0")
 
             ax.set_title(title)
-            ax.set_xlabel("Instrumental magnitude  m_inst = -2.5 log10(flux)")
-            ax.set_ylabel("Catalog magnitude  m_cat (SIMBAD)")
+            ax.set_xlabel(self.tr("Instrumental magnitude  m_inst = -2.5 log10(flux)"))
+            ax.set_ylabel(self.tr("Catalog magnitude  m_cat (SIMBAD)"))
 
             # reference line for your model
             if zp is not None and len(x) > 0:
@@ -1338,9 +1342,9 @@ class ZeroPointPlotsDialog(QDialog):
             ax.grid(True, alpha=0.25)
 
             lay.addWidget(canvas)
-            tabs.addTab(w, name)
+            tabs.addTab(w, self.tr("Mono") if name == "Mono" else name)
 
-        btn_close = QPushButton("Close", self)
+        btn_close = QPushButton(self.tr("Close"), self)
         btn_close.clicked.connect(self.close)
         root.addWidget(btn_close)
         
@@ -1360,7 +1364,7 @@ class _AavsoBatchDialog(QDialog):
  
     def __init__(self, parent, rows):
         super().__init__(parent)
-        self.setWindowTitle("AAVSO Submission Batch")
+        self.setWindowTitle(self.tr("AAVSO Submission Batch"))
         self.resize(900, 420)
         self._rows = rows           # shared list[(AavsoRow, ra, dec)] (mutated in place)
  
@@ -1374,13 +1378,13 @@ class _AavsoBatchDialog(QDialog):
         self._reload()
  
         btns = QHBoxLayout()
-        self.btn_del = QPushButton("Delete Selected")
+        self.btn_del = QPushButton(self.tr("Delete Selected"))
         self.btn_del.clicked.connect(self._delete_selected)
-        self.btn_clear = QPushButton("Clear Batch")
+        self.btn_clear = QPushButton(self.tr("Clear Batch"))
         self.btn_clear.clicked.connect(self._clear)
-        self.btn_export = QPushButton("Export AAVSO File…")
+        self.btn_export = QPushButton(self.tr("Export AAVSO File…"))
         self.btn_export.clicked.connect(self._export)
-        self.btn_close = QPushButton("Close")
+        self.btn_close = QPushButton(self.tr("Close"))
         self.btn_close.clicked.connect(self.accept)
         btns.addWidget(self.btn_del)
         btns.addWidget(self.btn_clear)
@@ -1414,21 +1418,21 @@ class _AavsoBatchDialog(QDialog):
  
     def _export(self):
         if not self._rows:
-            QMessageBox.information(self, "Export", "Batch is empty.")
+            QMessageBox.information(self, self.tr("Export"), self.tr("Batch is empty."))
             return
         names = {r.name for (r, _ra, _dec) in self._rows}
         if len(names) > 1:
             QMessageBox.warning(
-                self, "Multiple Targets",
-                "This batch mixes STARIDs: " + ", ".join(sorted(names)) +
-                ".\nAAVSO Extended files are per-target. Export one target at a time "
-                "(delete the others first).")
+                self, self.tr("Multiple Targets"),
+                self.tr("This batch mixes STARIDs: {0}"
+                        ".\nAAVSO Extended files are per-target. Export one target at a time "
+                        "(delete the others first).").format(", ".join(sorted(names))))
             return
  
         settings = QSettings()
         prev = settings.value("AAVSO/observer_code", "", type=str)
-        code, ok = QInputDialog.getText(self, "Observer Code",
-                                        "AAVSO observer code:", text=prev)
+        code, ok = QInputDialog.getText(self, self.tr("Observer Code"),
+                                        self.tr("AAVSO observer code:"), text=prev)
         if not ok or not code.strip():
             return
         code = code.strip().upper()
@@ -1439,10 +1443,10 @@ class _AavsoBatchDialog(QDialog):
         try:
             text = aav.format_aavso_extended(rows_only, obscode=code, ra_deg=ra, dec_deg=dec)
         except Exception as e:
-            QMessageBox.critical(self, "Export", f"Could not format file:\n{e}")
+            QMessageBox.critical(self, self.tr("Export"), self.tr("Could not format file:\n{0}").format(e))
             return
  
-        path, _ = QFileDialog.getSaveFileName(self, "Save AAVSO File", "",
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("Save AAVSO File"), "",
                                               "Text files (*.txt *.dat *.csv)")
         if not path:
             return
@@ -1450,14 +1454,14 @@ class _AavsoBatchDialog(QDialog):
             with open(path, "w") as f:
                 f.write(text)
         except Exception as e:
-            QMessageBox.critical(self, "Export", f"Failed to write file:\n{e}")
+            QMessageBox.critical(self, self.tr("Export"), self.tr("Failed to write file:\n{0}").format(e))
             return
  
         msg = QMessageBox(self)
-        msg.setWindowTitle("Export AAVSO")
-        msg.setText(f"Wrote {len(rows_only)} row(s) →\n{path}\n\nOpen the AAVSO WebObs upload page now?")
-        yes = msg.addButton("Open WebObs", QMessageBox.ButtonRole.AcceptRole)
-        msg.addButton("Close", QMessageBox.ButtonRole.RejectRole)
+        msg.setWindowTitle(self.tr("Export AAVSO"))
+        msg.setText(self.tr("Wrote {0} row(s) →\n{1}\n\nOpen the AAVSO WebObs upload page now?").format(len(rows_only), path))
+        yes = msg.addButton(self.tr("Open WebObs"), QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton(self.tr("Close"), QMessageBox.ButtonRole.RejectRole)
         msg.exec()
         if msg.clickedButton() == yes:
             webbrowser.open("https://apps.aavso.org/v2/data/submit/photometry/")
@@ -1492,7 +1496,7 @@ class MagnitudeRegionDialog(QDialog):
             try: self.setWindowIcon(icon)
             except Exception: pass
 
-        self.setWindowTitle("Magnitude Tool — Select Target Region")
+        self.setWindowTitle(self.tr("Magnitude Tool — Select Target Region"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -1535,7 +1539,7 @@ class MagnitudeRegionDialog(QDialog):
         self.view.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
         # --- layout ---
         v = QVBoxLayout(self)
-        self.lbl = QLabel("Draw a Target region (Box/Ellipse/Freehand). Background will be auto-selected (gold).")
+        self.lbl = QLabel(self.tr("Draw a Target region (Box/Ellipse/Freehand). Background will be auto-selected (gold)."))
 
         self.lbl.setWordWrap(True)
         v.addWidget(self.lbl)
@@ -1547,21 +1551,21 @@ class MagnitudeRegionDialog(QDialog):
         # Auto-star controls (only meaningful in 'Star (auto)' mode)
         self._auto_ctl = QWidget()
         _ar = QHBoxLayout(self._auto_ctl); _ar.setContentsMargins(0, 0, 0, 0)
-        _ar.addWidget(QLabel("Capture:"))
+        _ar.addWidget(QLabel(self.tr("Capture:")))
         self.spin_capture = QDoubleSpinBox()
         self.spin_capture.setRange(90.0, 99.9)
         self.spin_capture.setSingleStep(0.5)
         self.spin_capture.setDecimals(1)
         self.spin_capture.setValue(99.0)
         self.spin_capture.setSuffix(" %")
-        self.spin_capture.setToolTip(
+        self.spin_capture.setToolTip(self.tr(
             "Fraction of the star's total flux the aperture should enclose.\n"
             "The half-flux radius (HFR) alone captures only ~50%; this scales the\n"
             "ellipse out along the measured curve-of-growth so the magnitude\n"
-            "reflects (nearly) the full integrated flux.")
+            "reflects (nearly) the full integrated flux."))
         _ar.addWidget(self.spin_capture)
-        self.chk_circular = QCheckBox("Circular")
-        self.chk_circular.setToolTip("Ignore the measured eccentricity and use a circular aperture.")
+        self.chk_circular = QCheckBox(self.tr("Circular"))
+        self.chk_circular.setToolTip(self.tr("Ignore the measured eccentricity and use a circular aperture."))
         _ar.addWidget(self.chk_circular)
         _ar.addStretch(1)
         v.insertWidget(2, self._auto_ctl)
@@ -1570,10 +1574,10 @@ class MagnitudeRegionDialog(QDialog):
         v.addWidget(self.view, 1)
 
         btn_row = QHBoxLayout()
-        self.btn_apply = QPushButton("Use Target")
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_find_bg = QPushButton("Find Background")
-        self.btn_toggle = QPushButton("Disable Auto-Stretch" if self.auto_stretch else "Enable Auto-Stretch")
+        self.btn_apply = QPushButton(self.tr("Use Target"))
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
+        self.btn_find_bg = QPushButton(self.tr("Find Background"))
+        self.btn_toggle = QPushButton(self.tr("Disable Auto-Stretch") if self.auto_stretch else self.tr("Enable Auto-Stretch"))
 
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_cancel)
@@ -1584,10 +1588,10 @@ class MagnitudeRegionDialog(QDialog):
         from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
         zoom_row = QHBoxLayout()
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
         self.btn_zoom_100 = themed_toolbtn("zoom-original", "1:1")
-        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", "Fit")
+        self.btn_zoom_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit"))
 
         zoom_row.addWidget(self.btn_zoom_out)
         zoom_row.addWidget(self.btn_zoom_in)
@@ -1730,14 +1734,14 @@ class MagnitudeRegionDialog(QDialog):
         if hasattr(self, "_auto_ctl"):
             self._auto_ctl.setVisible(is_auto)
         if is_auto:
-            self.lbl.setText(
+            self.lbl.setText(self.tr(
                 "Click a star's core to auto-fit an aperture ellipse "
                 "(centroid + HFR + eccentricity). Set Capture% for the flux "
-                "fraction to enclose, then Use Target.")
+                "fraction to enclose, then Use Target."))
         else:
-            self.lbl.setText(
+            self.lbl.setText(self.tr(
                 "Draw a Target region (Box/Ellipse/Freehand). Background will "
-                "be auto-selected (gold).")
+                "be auto-selected (gold)."))
 
     def _display_rgb01(self, img_rgb01: np.ndarray) -> np.ndarray:
         # preview-only stretch
@@ -1772,7 +1776,7 @@ class MagnitudeRegionDialog(QDialog):
         try:
             img = self._doc_image_float01()
         except Exception as e:
-            QMessageBox.warning(self, "No Image", str(e))
+            QMessageBox.warning(self, self.tr("No Image"), str(e))
             self.close()
             return
 
@@ -1820,7 +1824,7 @@ class MagnitudeRegionDialog(QDialog):
         view_state = self._capture_view_state() if self._user_zoomed else None
 
         self.auto_stretch = not self.auto_stretch
-        self.btn_toggle.setText("Disable Auto-Stretch" if self.auto_stretch else "Enable Auto-Stretch")
+        self.btn_toggle.setText(self.tr("Disable Auto-Stretch") if self.auto_stretch else self.tr("Enable Auto-Stretch"))
 
         # reload image but keep zoom/pan if user zoomed
         self._load_image(preserve_view_state=view_state, keep_overlays=True)
@@ -1876,7 +1880,7 @@ class MagnitudeRegionDialog(QDialog):
             x, y, w, h = auto_rect_box(img, box=box, margin=100)
             # (or auto_rect_50x50(img) if you want fixed behavior)
         except Exception as e:
-            QMessageBox.warning(self, "Background", str(e))
+            QMessageBox.warning(self, self.tr("Background"), str(e))
             return
 
         if self.bg_item:
@@ -1998,7 +2002,7 @@ class MagnitudeRegionDialog(QDialog):
                 if mode in ("Box", "Ellipse"):
                     self.target_rect_scene = QRectF(self._origin_scene, cur).normalized()
                     if self.target_rect_scene.width() < 10 or self.target_rect_scene.height() < 10:
-                        QMessageBox.warning(self, "Selection Too Small", "Please draw a larger target selection.")
+                        QMessageBox.warning(self, self.tr("Selection Too Small"), self.tr("Please draw a larger target selection."))
                         self._clear_target_items()
                         return True
 
@@ -2011,7 +2015,7 @@ class MagnitudeRegionDialog(QDialog):
                 else:  # Freehand
                     # close path and finalize
                     if self._path.elementCount() < 10:
-                        QMessageBox.warning(self, "Selection Too Small", "Freehand selection too small.")
+                        QMessageBox.warning(self, self.tr("Selection Too Small"), self.tr("Freehand selection too small."))
                         self._clear_target_items()
                         return True
                     self._path.closeSubpath()
@@ -2191,7 +2195,7 @@ class MagnitudeRegionDialog(QDialog):
         try:
             gray = self._auto_gray_linear()
         except Exception as e:
-            QMessageBox.warning(self, "Auto Star", str(e))
+            QMessageBox.warning(self, self.tr("Auto Star"), str(e))
             return
         H, W = gray.shape[:2]
         cx = float(np.clip(scene_pt.x(), 0, W - 1))
@@ -2202,19 +2206,19 @@ class MagnitudeRegionDialog(QDialog):
         try:
             res = self._auto_detect_star_at(gray, cx, cy, capfrac, circular)
         except Exception as e:
-            QMessageBox.warning(self, "Auto Star", f"Detection failed:\n{e}")
+            QMessageBox.warning(self, self.tr("Auto Star"), self.tr("Detection failed:\n{0}").format(e))
             return
         if res is None:
             QMessageBox.information(
-                self, "Auto Star",
-                "No star found near the click. Click closer to the star's core, "
-                "or adjust Capture% and try again.")
+                self, self.tr("Auto Star"),
+                self.tr("No star found near the click. Click closer to the star's core, "
+                        "or adjust Capture% and try again."))
             return
 
         Cx, Cy, A, B, theta, hfr, ecc, r_cap = res
         mask = self._rotated_ellipse_mask(H, W, Cx, Cy, A, B, theta)
         if int(mask.sum()) < 9:
-            QMessageBox.warning(self, "Auto Star", "Detected aperture is too small.")
+            QMessageBox.warning(self, self.tr("Auto Star"), self.tr("Detected aperture is too small."))
             return
         verts = self._rotated_ellipse_verts(Cx, Cy, A, B, theta, n=160)
 
@@ -2225,15 +2229,16 @@ class MagnitudeRegionDialog(QDialog):
         path = QPainterPath(); path.addPolygon(poly); path.closeSubpath()
         self._auto_ellipse_item = self.scene.addPath(path, self._pen_final)
 
-        self.lbl.setText(
-            f"Auto star @ ({Cx:.1f}, {Cy:.1f}) - HFR {hfr:.2f}px, ecc {ecc:.2f}, "
-            f"aperture r~={r_cap:.1f}px (~{capfrac*100:.1f}% flux, {int(mask.sum())} px). "
-            f"Re-click or adjust Capture% if needed, then Use Target.")
+        self.lbl.setText(self.tr(
+            "Auto star @ ({0:.1f}, {1:.1f}) - HFR {2:.2f}px, ecc {3:.2f}, "
+            "aperture r~={4:.1f}px (~{5:.1f}% flux, {6} px). "
+            "Re-click or adjust Capture% if needed, then Use Target.").format(
+            Cx, Cy, hfr, ecc, r_cap, capfrac * 100, int(mask.sum())))
 
     def _on_use_target(self):
         mask = self._target_mask()
         if mask is None or int(mask.sum()) < 25:
-            QMessageBox.warning(self, "No Target", "Draw a target selection first.")
+            QMessageBox.warning(self, self.tr("No Target"), self.tr("Draw a target selection first."))
             return
 
         # background is whatever is drawn (gold); if missing, recompute
@@ -2269,10 +2274,10 @@ class MagnitudeRegionDialog(QDialog):
             # convenience: update label if present
             if hasattr(parent, "lbl_info"):
                 parent.lbl_info.setText(
-                    f"Target set: {int(mask.sum())} px"
+                    self.tr("Target set: {0} px").format(int(mask.sum()))
                     + (f"  (bbox x={bbox.x()}, y={bbox.y()}, w={bbox.width()}, h={bbox.height()})" if not bbox.isNull() else "")
                     + "\n"
-                    f"Background(auto): x={bgq.x()}, y={bgq.y()}, w={bgq.width()}, h={bgq.height()}"
+                    + self.tr("Background(auto): x={0}, y={1}, w={2}, h={3}").format(bgq.x(), bgq.y(), bgq.width(), bgq.height())
                 )
 
         self.close()
@@ -2336,7 +2341,7 @@ class FullImageAnnotatedDialog(QDialog):
                  bg_rect: QRect, target_opacity: float = 0.35,
                  qualifying_bgs=None):
         super().__init__(parent)
-        self.setWindowTitle("Full Image — Target & Background Annotated")
+        self.setWindowTitle(self.tr("Full Image — Target & Background Annotated"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -2360,7 +2365,7 @@ class FullImageAnnotatedDialog(QDialog):
         # controls row
         ctrl = QHBoxLayout()
 
-        ctrl.addWidget(QLabel("Target opacity:"))
+        ctrl.addWidget(QLabel(self.tr("Target opacity:")))
         self._spn_opacity = QDoubleSpinBox()
         self._spn_opacity.setRange(0.0, 1.0)
         self._spn_opacity.setSingleStep(0.05)
@@ -2368,22 +2373,22 @@ class FullImageAnnotatedDialog(QDialog):
         self._spn_opacity.setValue(target_opacity)
         self._spn_opacity.valueChanged.connect(self._on_opacity_changed)
         ctrl.addWidget(self._spn_opacity)
-        self._btn_qual = QPushButton("Show Qualifying Backgrounds")
+        self._btn_qual = QPushButton(self.tr("Show Qualifying Backgrounds"))
         self._btn_qual.setCheckable(True)
         self._btn_qual.setEnabled(bool(self._qualifying_bgs))
         self._btn_qual.toggled.connect(self._on_toggle_qual)
         ctrl.addWidget(self._btn_qual)        
         ctrl.addStretch(1)
 
-        self._btn_save = QPushButton("Save Image…")
+        self._btn_save = QPushButton(self.tr("Save Image…"))
         self._btn_save.clicked.connect(self._on_save)
         ctrl.addWidget(self._btn_save)
 
-        self._btn_copy = QPushButton("Copy to Clipboard")
+        self._btn_copy = QPushButton(self.tr("Copy to Clipboard"))
         self._btn_copy.clicked.connect(self._on_copy)
         ctrl.addWidget(self._btn_copy)
 
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.close)
         ctrl.addWidget(btn_close)
         lay.addLayout(ctrl)
@@ -2405,7 +2410,7 @@ class FullImageAnnotatedDialog(QDialog):
 
         # zoom buttons
         zoom_row = QHBoxLayout()
-        for label, factor in [("Zoom In", 1.25), ("Zoom Out", 0.8), ("Fit", None), ("1:1", 0.0)]:
+        for label, factor in [(self.tr("Zoom In"), 1.25), (self.tr("Zoom Out"), 0.8), (self.tr("Fit"), None), ("1:1", 0.0)]:
             b = QPushButton(label)
             if factor is None:
                 b.clicked.connect(self._fit)
@@ -2422,12 +2427,12 @@ class FullImageAnnotatedDialog(QDialog):
     def _on_copy(self):
         QApplication.clipboard().setPixmap(self._annotated_pix)
         # brief visual feedback
-        self._btn_copy.setText("Copied!")
+        self._btn_copy.setText(self.tr("Copied!"))
         QTimer.singleShot(1500, self._reset_copy_btn)
 
     def _reset_copy_btn(self):
         try:
-            self._btn_copy.setText("Copy to Clipboard")
+            self._btn_copy.setText(self.tr("Copy to Clipboard"))
         except RuntimeError:
             pass        
 
@@ -2463,7 +2468,7 @@ class FullImageAnnotatedDialog(QDialog):
             painter.drawText(
                 self._bg_rect.left() + 4,
                 self._bg_rect.top() - 6,
-                "Background"
+                self.tr("Background")
             )
 
             # draw target bounding box outline in red
@@ -2478,7 +2483,7 @@ class FullImageAnnotatedDialog(QDialog):
                     painter.setPen(pen2)
                     painter.drawRect(QRect(x0, y0, x1 - x0, y1 - y0))
                     painter.setPen(QColor(255, 80, 80))
-                    painter.drawText(x0 + 4, y0 - 6, "Target")
+                    painter.drawText(x0 + 4, y0 - 6, self.tr("Target"))
 
             painter.end()
 
@@ -2516,8 +2521,8 @@ class FullImageAnnotatedDialog(QDialog):
     def _on_toggle_qual(self, checked: bool):
         self._show_qual_bg = bool(checked)
         self._btn_qual.setText(
-            "Hide Qualifying Backgrounds" if self._show_qual_bg
-            else "Show Qualifying Backgrounds"
+            self.tr("Hide Qualifying Backgrounds") if self._show_qual_bg
+            else self.tr("Show Qualifying Backgrounds")
         )
         self._annotated_pix = self._build_pixmap()
         self._pix_item.setPixmap(self._annotated_pix)
@@ -2537,15 +2542,15 @@ class FullImageAnnotatedDialog(QDialog):
     def _on_save(self):
         from PyQt6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Annotated Image", "magnitude_annotated.png",
+            self, self.tr("Save Annotated Image"), "magnitude_annotated.png",
             "PNG Image (*.png);;TIFF Image (*.tiff *.tif);;All Files (*)"
         )
         if not path:
             return
         if self._annotated_pix.save(path):
-            QMessageBox.information(self, "Saved", f"Saved to:\n{path}")
+            QMessageBox.information(self, self.tr("Saved"), self.tr("Saved to:\n{0}").format(path))
         else:
-            QMessageBox.warning(self, "Save Failed", f"Could not save to:\n{path}")
+            QMessageBox.warning(self, self.tr("Save Failed"), self.tr("Could not save to:\n{0}").format(path))
 
 class MagnitudeToolDialog(QDialog):
     """
@@ -2562,7 +2567,7 @@ class MagnitudeToolDialog(QDialog):
     """
     def __init__(self, doc_manager, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Magnitude / Surface Brightness")
+        self.setWindowTitle(self.tr("Magnitude / Surface Brightness"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -2609,42 +2614,42 @@ class MagnitudeToolDialog(QDialog):
         # ========================= LEFT COLUMN =============================
  
         # --- Workflow (Steps 1–4, in order, with their inline helpers) ---
-        wf_group = QGroupBox("Workflow")
+        wf_group = QGroupBox(self.tr("Workflow"))
         wf = QVBoxLayout(wf_group)
  
-        self.btn_fetch = QPushButton("Step 1:  Fetch Catalog Stars  (needs WCS)")
+        self.btn_fetch = QPushButton(self.tr("Step 1:  Fetch Catalog Stars  (needs WCS)"))
         self.btn_fetch.clicked.connect(self.fetch_stars_from_active_doc)
         wf.addWidget(self.btn_fetch)
  
-        self.btn_zp = QPushButton("Step 2:  Compute Zero Points")
+        self.btn_zp = QPushButton(self.tr("Step 2:  Compute Zero Points"))
         self.btn_zp.clicked.connect(self.compute_zero_points)
         wf.addWidget(self.btn_zp)
  
-        self.btn_zp_plot = QPushButton("Show ZP Graphs…")
+        self.btn_zp_plot = QPushButton(self.tr("Show ZP Graphs…"))
         self.btn_zp_plot.clicked.connect(self.show_zp_graphs)
         self.btn_zp_plot.setEnabled(False)
         wf.addWidget(self.btn_zp_plot)
  
         wf.addSpacing(8)
  
-        self.btn_pick = QPushButton("Step 3:  Pick Target Region…")
+        self.btn_pick = QPushButton(self.tr("Step 3:  Pick Target Region…"))
         self.btn_pick.clicked.connect(self.open_region_picker)
         wf.addWidget(self.btn_pick)
  
         find_row = QHBoxLayout()
         self.txt_find_name = QLineEdit()
-        self.txt_find_name.setPlaceholderText("…or find a star by name (e.g. IRAS 17382-5308)")
+        self.txt_find_name.setPlaceholderText(self.tr("…or find a star by name (e.g. IRAS 17382-5308)"))
         self.txt_find_name.returnPressed.connect(self.find_star_by_name)
-        self.btn_find_name = QPushButton("Go to Star")
+        self.btn_find_name = QPushButton(self.tr("Go to Star"))
         self.btn_find_name.clicked.connect(self.find_star_by_name)
         find_row.addWidget(self.txt_find_name, 1)
         find_row.addWidget(self.btn_find_name)
         wf.addLayout(find_row)
  
         region_row = QHBoxLayout()
-        self.btn_save_region = QPushButton("Save Region…")
+        self.btn_save_region = QPushButton(self.tr("Save Region…"))
         self.btn_save_region.clicked.connect(self.save_region_to_library)
-        self.btn_load_region = QPushButton("Load Region…")
+        self.btn_load_region = QPushButton(self.tr("Load Region…"))
         self.btn_load_region.clicked.connect(self.load_region_from_library)
         region_row.addWidget(self.btn_save_region)
         region_row.addWidget(self.btn_load_region)
@@ -2652,29 +2657,29 @@ class MagnitudeToolDialog(QDialog):
  
         wf.addSpacing(8)
  
-        self.btn_measure = QPushButton("Step 4:  Measure Object Region")
+        self.btn_measure = QPushButton(self.tr("Step 4:  Measure Object Region"))
         self.btn_measure.clicked.connect(self.measure_object_region)
         wf.addWidget(self.btn_measure)
  
         left.addWidget(wf_group)
  
         # --- Photometry settings ---
-        box = QGroupBox("Photometry Settings")
+        box = QGroupBox(self.tr("Photometry Settings"))
         form = QFormLayout(box)
  
         self.band_combo = QComboBox()
         self.band_combo.addItems(["L", "R", "G", "B"])
         self.band_combo.setCurrentText("L")
-        form.addRow("Mono/L band", self.band_combo)
+        form.addRow(self.tr("Mono/L band"), self.band_combo)
  
-        self.band_hint = QLabel("Mapping: L→V, R→R, G→V, B→B (SIMBAD provides B/V/R).")
+        self.band_hint = QLabel(self.tr("Mapping: L→V, R→R, G→V, B→B (SIMBAD provides B/V/R)."))
         self.band_hint.setWordWrap(True)
         form.addRow("", self.band_hint)
  
         self.sep_sigma = QSpinBox()
         self.sep_sigma.setRange(2, 50)
         self.sep_sigma.setValue(5)
-        self.sep_sigma.setToolTip(
+        self.sep_sigma.setToolTip(self.tr(
             "Detection threshold for SEP source extraction, in multiples of the "
             "background noise (σ above background).\n\n"
             "Only pixels brighter than this many σ are treated as sources. This sets "
@@ -2683,14 +2688,14 @@ class MagnitudeToolDialog(QDialog):
             "Lower = detects fainter stars (more matches, but more noise and spurious "
             "detections); higher = only bright, clean stars. Raise toward 8–10 for "
             "noisy data or crowded fields with many false detections; 5 suits most stacks."
-        )
-        form.addRow("SEP detect σ", self.sep_sigma)
+        ))
+        form.addRow(self.tr("SEP detect σ"), self.sep_sigma)
  
         self.clip_sigma = QDoubleSpinBox()
         self.clip_sigma.setRange(1.0, 10.0)
         self.clip_sigma.setSingleStep(0.5)
         self.clip_sigma.setValue(2.5)
-        self.clip_sigma.setToolTip(
+        self.clip_sigma.setToolTip(self.tr(
             "Sigma-clip threshold for rejecting outlier stars when deriving the "
             "photometric zero point.\n\n"
             "Each matched star gives one ZP estimate (m_cat − m_inst); stars whose "
@@ -2699,15 +2704,15 @@ class MagnitudeToolDialog(QDialog):
             "Lower = more aggressive rejection (cleaner fit, fewer stars); "
             "higher = keeps more stars. 2.5 is a good default; drop toward 2.0 for "
             "crowded or blended fields, raise toward 3.0 if too few stars survive."
-        )
-        form.addRow("ZP sigma-clip", self.clip_sigma)
+        ))
+        form.addRow(self.tr("ZP sigma-clip"), self.clip_sigma)
  
         self.sys_floor_spin = QDoubleSpinBox()
         self.sys_floor_spin.setRange(0.0, 1.0)
         self.sys_floor_spin.setDecimals(3)
         self.sys_floor_spin.setSingleStep(0.01)
         self.sys_floor_spin.setValue(float(getattr(self, "sys_floor_mag", 0.10) or 0.0))
-        self.sys_floor_spin.setToolTip(
+        self.sys_floor_spin.setToolTip(self.tr(
             "Systematic uncertainty floor, in magnitudes, added in quadrature to the "
             "statistical error: total σ = √(σ_stat² + σ_sys²).\n\n"
             "This is a conservative catch-all for effects not captured by photon/"
@@ -2716,14 +2721,14 @@ class MagnitudeToolDialog(QDialog):
             "The reported ± value is 3× the combined σ (total 3σ). 0.10 mag is a "
             "defensible default for calibrated narrowband surface photometry; raise it "
             "if you know your calibration is less certain, lower only with justification."
-        )
-        form.addRow("Systematic floor (mag)", self.sys_floor_spin)
+        ))
+        form.addRow(self.tr("Systematic floor (mag)"), self.sys_floor_spin)
  
         self.bg_box_size = QSpinBox()
         self.bg_box_size.setRange(10, 300)
         self.bg_box_size.setSingleStep(5)
         self.bg_box_size.setValue(50)
-        self.bg_box_size.setToolTip(
+        self.bg_box_size.setToolTip(self.tr(
             "Side length, in pixels, of the automatically-placed background sampling "
             "box (the box is square).\n\n"
             "The tool searches for the darkest, most source-free region of this size "
@@ -2732,18 +2737,18 @@ class MagnitudeToolDialog(QDialog):
             "Larger = more pixels, lower background noise (σ ∝ 1/√area), but harder to "
             "fit into a clean gap in a crowded or nebulosity-filled field; smaller = "
             "fits tight gaps but noisier. 50 px is a good balance for most fields."
-        )
-        form.addRow("Auto background box (px)", self.bg_box_size)
+        ))
+        form.addRow(self.tr("Auto background box (px)"), self.bg_box_size)
  
-        hint = QLabel(
+        hint = QLabel(self.tr(
             "Popup reports total 3σ: sqrt(stat² + sys_floor²). "
             "sys_floor is a conservative calibration-mismatch term (surface photometry). "
             "AAVSO rows export the 1σ statistical error only."
-        )
+        ))
         hint.setWordWrap(True)
         form.addRow("", hint)
  
-        self.chk_verify_bg = QCheckBox("Verify against 4-quadrant backgrounds")
+        self.chk_verify_bg = QCheckBox(self.tr("Verify against 4-quadrant backgrounds"))
         self.chk_verify_bg.setChecked(False)
         form.addRow("", self.chk_verify_bg)
  
@@ -2753,10 +2758,10 @@ class MagnitudeToolDialog(QDialog):
         # ========================= RIGHT COLUMN ============================
  
         # --- ROI preview (fills available vertical space) ---
-        roi_group = QGroupBox("ROI Preview")
+        roi_group = QGroupBox(self.tr("ROI Preview"))
         roi_v = QVBoxLayout(roi_group)
  
-        self.roi_preview = QLabel("No target selected.")
+        self.roi_preview = QLabel(self.tr("No target selected."))
         self.roi_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.roi_preview.setMinimumSize(240, 240)
         self.roi_preview.setStyleSheet("border: 1px solid #444;")
@@ -2769,58 +2774,56 @@ class MagnitudeToolDialog(QDialog):
         self.roi_opacity.setDecimals(2)
         self.roi_opacity.setValue(0.25)
         self.roi_opacity.valueChanged.connect(self._update_roi_preview)
-        roi_form.addRow("Overlay opacity", self.roi_opacity)
+        roi_form.addRow(self.tr("Overlay opacity"), self.roi_opacity)
  
         self.roi_pad = QSpinBox()
         self.roi_pad.setRange(0, 200)
         self.roi_pad.setSingleStep(5)
         self.roi_pad.setValue(20)
         self.roi_pad.valueChanged.connect(self._update_roi_preview)
-        roi_form.addRow("ROI padding (px)", self.roi_pad)
+        roi_form.addRow(self.tr("ROI padding (px)"), self.roi_pad)
         roi_v.addLayout(roi_form)
  
-        self.btn_full_view = QPushButton("Full Image View…")
+        self.btn_full_view = QPushButton(self.tr("Full Image View…"))
         self.btn_full_view.clicked.connect(self._open_full_image_view)
         roi_v.addWidget(self.btn_full_view)
  
         right.addWidget(roi_group, 1)
  
         # --- AAVSO submission ---
-        aavso_group = QGroupBox("AAVSO Submission")
+        aavso_group = QGroupBox(self.tr("AAVSO Submission"))
         av = QVBoxLayout(aavso_group)
  
-        self.btn_identify = QPushButton("Identify Target…")
+        self.btn_identify = QPushButton(self.tr("Identify Target…"))
         self.btn_identify.clicked.connect(self.identify_target)
         av.addWidget(self.btn_identify)
  
-        self.btn_add_batch = QPushButton("Add Measurement → AAVSO Batch")
+        self.btn_add_batch = QPushButton(self.tr("Add Measurement → AAVSO Batch"))
         self.btn_add_batch.clicked.connect(self.add_last_measurement_to_batch)
         av.addWidget(self.btn_add_batch)
  
-        self.btn_aavso = QPushButton("AAVSO Batch…")
+        self.btn_aavso = QPushButton(self.tr("AAVSO Batch…"))
         self.btn_aavso.clicked.connect(self.open_aavso_batch)
         av.addWidget(self.btn_aavso)
  
         right.addWidget(aavso_group)
  
         # ========================= BOTTOM (full width) =====================
-        self.lbl_info = QLabel("No stars fetched yet.")
+        self.lbl_info = QLabel(self.tr("No stars fetched yet."))
         self.lbl_info.setWordWrap(True)
         self.lbl_info.setStyleSheet("color: #9aa0a6;")
         root.addWidget(self.lbl_info)
  
         bottom = QHBoxLayout()
         bottom.addStretch(1)
-        self.btn_clear_all = QPushButton("Clear All")
+        self.btn_clear_all = QPushButton(self.tr("Clear All"))
         self.btn_clear_all.clicked.connect(self.clear_all)
         bottom.addWidget(self.btn_clear_all)
-        self.btn_close = QPushButton("Close")
+        self.btn_close = QPushButton(self.tr("Close"))
         self.btn_close.clicked.connect(self.reject)
         bottom.addWidget(self.btn_close)
         bottom.addStretch(1)
-        bottom = QHBoxLayout()
-        bottom.addStretch(1)
-        bottom.addWidget(make_help_button("magnitude_tool", self))        
+        bottom.addWidget(make_help_button("magnitude_tool", self))
         root.addLayout(bottom)
  
         self._refresh_aavso_button()
@@ -2828,13 +2831,13 @@ class MagnitudeToolDialog(QDialog):
 
     def _open_full_image_view(self):
         if self.object_mask is None:
-            QMessageBox.information(self, "No Target", "Pick a target region first.")
+            QMessageBox.information(self, self.tr("No Target"), self.tr("Pick a target region first."))
             return
 
         try:
             disp = self._doc_image_rgb01_for_display()
         except Exception as e:
-            QMessageBox.warning(self, "No Image", str(e))
+            QMessageBox.warning(self, self.tr("No Image"), str(e))
             return
 
         img_rgb8 = np.ascontiguousarray(
@@ -2874,12 +2877,12 @@ class MagnitudeToolDialog(QDialog):
 
     def save_region_to_library(self):
         if self.object_mask is None or np.count_nonzero(self.object_mask) < 25:
-            QMessageBox.information(self, "No Region", "Draw or load a target region first.")
+            QMessageBox.information(self, self.tr("No Region"), self.tr("Draw or load a target region first."))
             return
         _img, hdr, _doc = self._get_active_image_and_header()
         wcs, pixscale = _build_wcs_and_pixscale(hdr)
         if wcs is None:
-            QMessageBox.warning(self, "No WCS", "Storing a region needs a plate-solved (WCS) image.")
+            QMessageBox.warning(self, self.tr("No WCS"), self.tr("Storing a region needs a plate-solved (WCS) image."))
             return
 
         geom = getattr(self, "object_geometry", None)
@@ -2895,7 +2898,7 @@ class MagnitudeToolDialog(QDialog):
                 [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], per_edge=16)
 
         obj_default = _header_str(hdr, "OBJECT")
-        name, ok = QInputDialog.getText(self, "Save Region", "Region name:",
+        name, ok = QInputDialog.getText(self, self.tr("Save Region"), self.tr("Region name:"),
                                         text=(obj_default or ""))
         if not ok or not name.strip():
             return
@@ -2906,28 +2909,28 @@ class MagnitudeToolDialog(QDialog):
         lib = mreg.RegionLibrary()
         if lib.get(name) is not None:
             if QMessageBox.question(
-                self, "Overwrite", f"Region '{name}' already exists. Overwrite?",
+                self, self.tr("Overwrite"), self.tr("Region '{0}' already exists. Overwrite?").format(name),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             ) != QMessageBox.StandardButton.Yes:
                 return
         lib.add(region, overwrite=True)
 
         ctr = (f"RA={region.ra_center:.5f}, Dec={region.dec_center:.5f}"
-               if region.ra_center is not None else "center N/A")
-        QMessageBox.information(self, "Saved", f"Saved region '{name}'.\n{ctr}\n\n{lib.path}")
+               if region.ra_center is not None else self.tr("center N/A"))
+        QMessageBox.information(self, self.tr("Saved"), self.tr("Saved region '{0}'.\n{1}\n\n{2}").format(name, ctr, lib.path))
 
     def load_region_from_library(self):
         img, hdr, _doc = self._get_active_image_and_header()
         if img is None:
-            QMessageBox.warning(self, "No Image", "Open an image first.")
+            QMessageBox.warning(self, self.tr("No Image"), self.tr("Open an image first."))
             return
         wcs, _pixscale = _build_wcs_and_pixscale(hdr)
         if wcs is None:
-            QMessageBox.warning(self, "No WCS", "Recalling a region needs a plate-solved (WCS) image.")
+            QMessageBox.warning(self, self.tr("No WCS"), self.tr("Recalling a region needs a plate-solved (WCS) image."))
             return
         lib = mreg.RegionLibrary()
         if not lib.names():
-            QMessageBox.information(self, "Library Empty", "No saved regions yet.")
+            QMessageBox.information(self, self.tr("Library Empty"), self.tr("No saved regions yet."))
             return
 
         dlg = _RegionManagerDialog(self, lib)
@@ -2941,16 +2944,16 @@ class MagnitudeToolDialog(QDialog):
         mask, px = mreg.region_to_mask(region, H, W, wcs)
         if np.count_nonzero(mask) < 25:
             QMessageBox.warning(
-                self, "Off-Field",
-                "The recalled region projects to <25 px on this image "
-                "(different field, or region off-frame).")
+                self, self.tr("Off-Field"),
+                self.tr("The recalled region projects to <25 px on this image "
+                        "(different field, or region off-frame)."))
             return
 
         self.set_object_mask(mask, geometry={"kind": region.kind, "verts_px": px})
         ctr = (f"RA={region.ra_center:.5f}, Dec={region.dec_center:.5f}"
                if region.ra_center is not None else "")
         self.lbl_info.setText(
-            f"Loaded region '{region.name}' ({int(np.count_nonzero(mask))} px). {ctr}")
+            self.tr("Loaded region '{0}' ({1} px). {2}").format(region.name, int(np.count_nonzero(mask)), ctr))
 
     # --- external wiring (from your ROI tool) ---
     def clear_all(self):
@@ -2960,8 +2963,8 @@ class MagnitudeToolDialog(QDialog):
           - any cached catalog stars stored in the active document metadata
         """
         if QMessageBox.question(
-            self, "Clear All",
-            "Clear all cached stars, zero points, and regions for this image?",
+            self, self.tr("Clear All"),
+            self.tr("Clear all cached stars, zero points, and regions for this image?"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         ) != QMessageBox.StandardButton.Yes:
             return        
@@ -2984,7 +2987,7 @@ class MagnitudeToolDialog(QDialog):
         except Exception:
             pass
 
-        self.lbl_info.setText("Cleared. No stars fetched yet.")
+        self.lbl_info.setText(self.tr("Cleared. No stars fetched yet."))
 
         # ---- clear cached metadata on the active document ----
         img, hdr, doc = self._get_active_image_and_header()
@@ -3024,7 +3027,7 @@ class MagnitudeToolDialog(QDialog):
     def show_zp_graphs(self):
             p = self.last_zp.get("plot") if isinstance(self.last_zp, dict) else None
             if not p:
-                QMessageBox.information(self, "ZP Graphs", "Compute zero points first.")
+                QMessageBox.information(self, self.tr("ZP Graphs"), self.tr("Compute zero points first."))
                 return
             dlg = ZeroPointPlotsDialog(self, p)
             dlg.setWindowFlag(Qt.WindowType.Window, True)
@@ -3056,12 +3059,12 @@ class MagnitudeToolDialog(QDialog):
         self.band_combo.setEnabled(not is_rgb)
 
         if is_rgb:
-            self.band_hint.setText(
+            self.band_hint.setText(self.tr(
                 "RGB image detected: fixed mapping is used: "
                 "R→Rmag, G→Vmag, B→Bmag. (Mono/L band selector disabled.)"
-            )
+            ))
         else:
-            self.band_hint.setText("Mapping: L→V, R→R, G→V, B→B (SIMBAD provides B/V/R).")
+            self.band_hint.setText(self.tr("Mapping: L→V, R→R, G→V, B→B (SIMBAD provides B/V/R)."))
 
     def _doc_image_rgb01_for_display(self) -> np.ndarray:
         """
@@ -3117,7 +3120,7 @@ class MagnitudeToolDialog(QDialog):
             return ""
         _, pixscale = _build_wcs_and_pixscale(hdr)
         if not (pixscale and pixscale > 0):
-            return "\nBackground robustness: N/A (no pixscale from WCS).\n"
+            return self.tr("\nBackground robustness: N/A (no pixscale from WCS).\n")
 
         mode = (self.last_zp.get("mode") or ("mono" if img_f.ndim == 2 else "rgb"))
         try:
@@ -3157,7 +3160,7 @@ class MagnitudeToolDialog(QDialog):
         results = [(lbl, mreg.measure_mu(img_f, obj_mask, bm, pixscale, zp_state, sys_floor, mode))
                    for (lbl, bm) in rows]
 
-        lines = ["", "Background robustness (object µ vs background placement):"]
+        lines = ["", self.tr("Background robustness (object µ vs background placement):")]
         if mode == "mono":
             prim = next((r["mu"] for l, r in results if l == "Primary" and r), None)
             prim3 = next((r["mu_3"] for l, r in results if l == "Primary" and r), None)
@@ -3174,12 +3177,12 @@ class MagnitudeToolDialog(QDialog):
             if len(vals) >= 2 and prim is not None:
                 maxdev = max(abs(v - prim) for v in vals)
                 spread = max(vals) - min(vals)
-                tail = f"   |   Primary total 3σ = ±{prim3:.3f} mag" if prim3 else ""
-                lines.append(f"  Spread (max−min) = {spread:.3f} mag{tail}")
+                tail = self.tr("   |   Primary total 3σ = ±{0:.3f} mag").format(prim3) if prim3 else ""
+                lines.append(self.tr("  Spread (max−min) = {0:.3f} mag{1}").format(spread, tail))
                 if prim3:
-                    verdict = "ROBUST" if maxdev <= prim3 else "SENSITIVE"
-                    lines.append(f"  → {verdict}: max |Δµ| = {maxdev:.3f} mag "
-                                 f"= {maxdev / prim3:.2f}× the 3σ envelope.")
+                    verdict = self.tr("ROBUST") if maxdev <= prim3 else self.tr("SENSITIVE")
+                    lines.append(self.tr("  → {0}: max |Δµ| = {1:.3f} mag "
+                                         "= {2:.2f}× the 3σ envelope.").format(verdict, maxdev, maxdev / prim3))
         else:
             chan = ["R", "G", "B"]
             for lbl, r in results:
@@ -3198,7 +3201,7 @@ class MagnitudeToolDialog(QDialog):
                         spread = max(cvals) - min(cvals)
                         env = p3[c] if p3 else None
                         extra = f"  (3σ ±{env:.3f}, {maxdev / env:.2f}×)" if env else ""
-                        lines.append(f"  {chan[c]}: spread {spread:.3f}, max|Δ| {maxdev:.3f}{extra}")
+                        lines.append(self.tr("  {0}: spread {1:.3f}, max|Δ| {2:.3f}{3}").format(chan[c], spread, maxdev, extra))
         return "\n".join(lines) + "\n"
 
     def _update_roi_preview(self):
@@ -3210,26 +3213,26 @@ class MagnitudeToolDialog(QDialog):
 
         img, _hdr, _doc = self._get_active_image_and_header()
         if img is None or self.object_mask is None:
-            self.roi_preview.setText("No target selected.")
+            self.roi_preview.setText(self.tr("No target selected."))
             self.roi_preview.setPixmap(QPixmap())
             return
 
         try:
             disp = self._doc_image_rgb01_for_display()
         except Exception:
-            self.roi_preview.setText("No image.")
+            self.roi_preview.setText(self.tr("No image."))
             self.roi_preview.setPixmap(QPixmap())
             return
 
         mask = np.asarray(self.object_mask, dtype=bool)
         H, W = disp.shape[:2]
         if mask.shape != (H, W):
-            self.roi_preview.setText("ROI mask size mismatch.")
+            self.roi_preview.setText(self.tr("ROI mask size mismatch."))
             self.roi_preview.setPixmap(QPixmap())
             return
 
         if np.count_nonzero(mask) < 10:
-            self.roi_preview.setText("ROI too small.")
+            self.roi_preview.setText(self.tr("ROI too small."))
             self.roi_preview.setPixmap(QPixmap())
             return
 
@@ -3300,7 +3303,7 @@ class MagnitudeToolDialog(QDialog):
         self._update_band_controls()
         img, hdr, doc = self._get_active_image_and_header()
         if img is None or hdr is None:
-            QMessageBox.warning(self, "No Data", "Active document must have an image and WCS header.")
+            QMessageBox.warning(self, self.tr("No Data"), self.tr("Active document must have an image and WCS header."))
             return
 
         meta = getattr(doc, "metadata", {}) or {}
@@ -3322,7 +3325,7 @@ class MagnitudeToolDialog(QDialog):
             simbad_stars = []
             simbad_reason = ""
             try:
-                self.lbl_info.setText("Augmenting with SIMBAD (subprocess)…")
+                self.lbl_info.setText(self.tr("Augmenting with SIMBAD (subprocess)…"))
                 QApplication.processEvents()
                 simbad_stars = self._fetch_simbad_stars_and_cache(img, hdr, doc) or []
                 if not simbad_stars:
@@ -3337,7 +3340,7 @@ class MagnitudeToolDialog(QDialog):
             xp_stars = []
             xp_reason = ""
             try:
-                self.lbl_info.setText("Loading local Gaia XP library…")
+                self.lbl_info.setText(self.tr("Loading local Gaia XP library…"))
                 QApplication.processEvents()
                 xp_stars = self._fetch_local_gaia_stars_and_cache(img, hdr, doc) or []
                 if not xp_stars:
@@ -3372,7 +3375,7 @@ class MagnitudeToolDialog(QDialog):
             apass_reason = ""
             if len(merged) < 20:
                 try:
-                    self.lbl_info.setText("Last-resort APASS (VizieR)…")
+                    self.lbl_info.setText(self.tr("Last-resort APASS (VizieR)…"))
                     QApplication.processEvents()
                     apass_stars = self._fetch_apass_stars_and_cache(img, hdr, doc) or []
                     if not apass_stars:
@@ -3404,30 +3407,30 @@ class MagnitudeToolDialog(QDialog):
             else:
                 # Same failure popup as before, updated to reflect the new
                 # tier order (XP primary, SIMBAD augment, APASS last-resort).
-                self.lbl_info.setText("Catalog unavailable — no stars fetched.")
+                self.lbl_info.setText(self.tr("Catalog unavailable — no stars fetched."))
                 lines = [
-                    "No catalog stars could be retrieved for this field.",
+                    self.tr("No catalog stars could be retrieved for this field."),
                     "",
-                    f"• Local Gaia XP (primary):  {xp_reason or 'not available'}",
-                    f"• SIMBAD (augment):  {simbad_reason or 'failed'}",
-                    f"• APASS (last-resort):  {apass_reason or 'not attempted'}",
-                    "• No cached stars were available for this image.",
+                    self.tr("• Local Gaia XP (primary):  {0}").format(xp_reason or self.tr('not available')),
+                    self.tr("• SIMBAD (augment):  {0}").format(simbad_reason or self.tr('failed')),
+                    self.tr("• APASS (last-resort):  {0}").format(apass_reason or self.tr('not attempted')),
+                    self.tr("• No cached stars were available for this image."),
                     "",
                 ]
                 all_reasons = (xp_reason + simbad_reason + apass_reason).lower()
                 if any(t in all_reasons for t in ("down", "unreachable", "timed out")):
-                    lines.append(
+                    lines.append(self.tr(
                         "Online catalogs look like transient outages rather than "
-                        "a problem with your image. Try again in a few minutes.")
+                        "a problem with your image. Try again in a few minutes."))
                 else:
-                    lines.append("Try a wider field or verify the WCS/plate solution.")
+                    lines.append(self.tr("Try a wider field or verify the WCS/plate solution."))
                 if "not installed" in xp_reason.lower() or "no local gaia" in xp_reason.lower():
                     lines.append("")
-                    lines.append(
+                    lines.append(self.tr(
                         "Tip: install the Gaia XP library — it's now the primary "
                         "catalog source and works fully offline, unaffected by "
-                        "VizieR or SIMBAD outages.")
-                QMessageBox.information(self, "Catalog Unavailable", "\n".join(lines))
+                        "VizieR or SIMBAD outages."))
+                QMessageBox.information(self, self.tr("Catalog Unavailable"), "\n".join(lines))
                 return
                 
         # WCS / pixscale
@@ -3437,7 +3440,7 @@ class MagnitudeToolDialog(QDialog):
         ps = f"{self.pixscale:.3f} arcsec/px" if self.pixscale else "N/A"
         cat = str((getattr(doc, "metadata", {}) or {}).get("SFCC_catalog") or cached_catalog or "Unknown")
 
-        self.lbl_info.setText(f"Loaded {n} catalog stars ({cat}). Pixscale: {ps}")
+        self.lbl_info.setText(self.tr("Loaded {0} catalog stars ({1}). Pixscale: {2}").format(n, cat, ps))
 
 
 
@@ -3445,10 +3448,10 @@ class MagnitudeToolDialog(QDialog):
         self._update_band_controls()
         img, hdr, doc = self._get_active_image_and_header()
         if img is None or hdr is None:
-            QMessageBox.warning(self, "No Data", "Active document must have an image and WCS header.")
+            QMessageBox.warning(self, self.tr("No Data"), self.tr("Active document must have an image and WCS header."))
             return
         if not self.star_list:
-            QMessageBox.warning(self, "No Stars", "Fetch stars first.")
+            QMessageBox.warning(self, self.tr("No Stars"), self.tr("Fetch stars first."))
             return
 
         img_f = _to_float_image(img)
@@ -3456,21 +3459,21 @@ class MagnitudeToolDialog(QDialog):
             gray = img_f.astype(np.float32)
         else:
             gray = np.mean(img_f, axis=2).astype(np.float32)
-        self.lbl_info.setText("Detecting sources with SEP…")
+        self.lbl_info.setText(self.tr("Detecting sources with SEP…"))
         QApplication.processEvents()
         sources = _detect_sources(gray, sigma=float(self.sep_sigma.value()))
         if sources.size == 0:
-            QMessageBox.warning(self, "SEP", "SEP found no sources.")
+            QMessageBox.warning(self, "SEP", self.tr("SEP found no sources."))
             return
 
         # --- Auto-size aperture/annulus from scene FWHM ---
         fwhm = _estimate_fwhm_from_sources(sources)
         if fwhm is not None:
             self.lbl_info.setText(
-                f"Scene FWHM ≈ {fwhm:.2f} px (median) — per-star apertures will be used for ZP."
+                self.tr("Scene FWHM ≈ {0:.2f} px (median) — per-star apertures will be used for ZP.").format(fwhm)
             )
         else:
-            self.lbl_info.setText("FWHM estimation failed; per-star radii from SEP axes will still be used.")
+            self.lbl_info.setText(self.tr("FWHM estimation failed; per-star radii from SEP axes will still be used."))
         QApplication.processEvents()
 
         for r in (3.0, 6.0, 12.0, 24.0):
@@ -3479,13 +3482,13 @@ class MagnitudeToolDialog(QDialog):
                 break
 
         if not matches:
-            QMessageBox.warning(self, "No Matches",
+            QMessageBox.warning(self, self.tr("No Matches"), self.tr(
                 "No catalog stars matched SEP detections.\n\n"
                 "Likely causes:\n"
                 "• Cached star list from different crop/scale\n"
                 "• WCS header doesn't match this pixel grid\n"
                 "• Solve is offset/rotated beyond match tolerance\n"
-            )
+            ))
             return
 
         # --- warn if match quality is suspiciously low ---
@@ -3507,22 +3510,22 @@ class MagnitudeToolDialog(QDialog):
         warn = ((n_cat >= 20) and (frac_cat < 0.15)) or (n_m < 12)
 
         if warn:
-            msg = (
+            msg = self.tr(
                 "Low catalog↔source match rate.\n\n"
-                f"Catalog stars: {n_cat}\n"
-                f"Matched:       {n_m}\n"
-                f"Matched/Catalog: {frac_cat*100:.1f}%\n\n"
+                "Catalog stars: {0}\n"
+                "Matched:       {1}\n"
+                "Matched/Catalog: {2:.1f}%\n\n"
                 # informational only:
-                f"(SEP sources: {n_src}, Matched/Sources: {frac_src*100:.1f}% — informational)\n\n"
+                "(SEP sources: {3}, Matched/Sources: {4:.1f}% — informational)\n\n"
                 "This can mean the WCS header does not match the current pixel grid "
                 "(crop/resize/CRPIX shift), or cached stars were generated from a different image.\n\n"
                 "Recommended:\n"
                 "• Re-solve (or blind-solve) THIS exact image/crop.\n"
                 "• Then re-run Step 1 and Step 2.\n\n"
                 "If the image is noisy, consider raising SEP detect σ to reduce non-stellar detections."
-            )
-            QMessageBox.warning(self, "WCS / Match Warning", msg)
-        self.lbl_info.setText(f"Matched {len(matches)} stars. Measuring apertures…")
+            ).format(n_cat, n_m, frac_cat * 100, n_src, frac_src * 100)
+            QMessageBox.warning(self, self.tr("WCS / Match Warning"), msg)
+        self.lbl_info.setText(self.tr("Matched {0} stars. Measuring apertures…").format(len(matches)))
         QApplication.processEvents()
         stats = _nearest_dist_stats(self.star_list, sources)
         print("nearest dist stats:", stats)
@@ -3534,12 +3537,12 @@ class MagnitudeToolDialog(QDialog):
         crowd_frac, n_crowded, n_crowd_total = _crowding_fraction(matches)
         self._last_crowd_note = ""
         if crowd_frac >= 0.25 and n_crowd_total >= 10:
-            self._last_crowd_note = (
-                f"Dense field: {crowd_frac*100:.0f}% of stars "
-                f"({n_crowded}/{n_crowd_total}) have a neighbor inside their "
-                f"background annulus — ZP and faint-end photometry may be "
-                f"affected by crowding."
-            )
+            self._last_crowd_note = self.tr(
+                "Dense field: {0:.0f}% of stars "
+                "({1}/{2}) have a neighbor inside their "
+                "background annulus — ZP and faint-end photometry may be "
+                "affected by crowding."
+            ).format(crowd_frac * 100, n_crowded, n_crowd_total)
 
         band = self.band_combo.currentText().strip().upper()
 
@@ -3555,9 +3558,10 @@ class MagnitudeToolDialog(QDialog):
 
             _crowd = getattr(self, "_last_crowd_note", "")
             self.lbl_info.setText(
-                "Zero point (mono):\n"
-                f"  Band={zp.get('band')}  (catalog {zp.get('magkey')})\n"
-                f"  ZP={zp.get('ZP')} (n={zp.get('n')}, σ={zp.get('std')})"
+                self.tr("Zero point (mono):\n"
+                        "  Band={0}  (catalog {1})\n"
+                        "  ZP={2} (n={3}, σ={4})").format(zp.get('band'), zp.get('magkey'), zp.get('ZP'),
+                                                         zp.get('n'), zp.get('std'))
                 + (f"\n\n⚠ {_crowd}" if _crowd else "")
             )
         else:
@@ -3571,20 +3575,23 @@ class MagnitudeToolDialog(QDialog):
 
             _crowd = getattr(self, "_last_crowd_note", "")
             self.lbl_info.setText(
-                "Zero points (median ± SEM):\n"
-                f"  ZP_R={zp['ZP_R']} (n={zp['n_R']}, scatter={zp['std_R']}, sem={zp['sem_R']})\n"
-                f"  ZP_G={zp['ZP_G']} (n={zp['n_G']}, scatter={zp['std_G']}, sem={zp['sem_G']})\n"
-                f"  ZP_B={zp['ZP_B']} (n={zp['n_B']}, scatter={zp['std_B']}, sem={zp['sem_B']})"
+                self.tr("Zero points (median ± SEM):\n"
+                        "  ZP_R={0} (n={1}, scatter={2}, sem={3})\n"
+                        "  ZP_G={4} (n={5}, scatter={6}, sem={7})\n"
+                        "  ZP_B={8} (n={9}, scatter={10}, sem={11})").format(
+                    zp['ZP_R'], zp['n_R'], zp['std_R'], zp['sem_R'],
+                    zp['ZP_G'], zp['n_G'], zp['std_G'], zp['sem_G'],
+                    zp['ZP_B'], zp['n_B'], zp['std_B'], zp['sem_B'])
                 + (f"\n\n⚠ {_crowd}" if _crowd else "")
             )
 
     def measure_object_region(self):
         img, hdr, doc = self._get_active_image_and_header()
         if img is None:
-            QMessageBox.warning(self, "No Data", "No active image.")
+            QMessageBox.warning(self, self.tr("No Data"), self.tr("No active image."))
             return
         if not self.last_zp:
-            QMessageBox.warning(self, "No ZP", "Compute zero points first.")
+            QMessageBox.warning(self, self.tr("No ZP"), self.tr("Compute zero points first."))
             return
 
         img_f = _to_float_image(img)
@@ -3631,10 +3638,10 @@ class MagnitudeToolDialog(QDialog):
             obj_mask = rect_to_mask(self.object_rect)
 
         if obj_mask is None or np.count_nonzero(obj_mask) < 25:
-            QMessageBox.information(self, "No Regions", "Pick a target region first.")
+            QMessageBox.information(self, self.tr("No Regions"), self.tr("Pick a target region first."))
             return
         if obj_mask.shape != (H, W):
-            QMessageBox.warning(self, "Mask Mismatch", "Object mask size does not match the active image.")
+            QMessageBox.warning(self, self.tr("Mask Mismatch"), self.tr("Object mask size does not match the active image."))
             return
 
         # ---------------- choose background mask ----------------
@@ -3659,10 +3666,10 @@ class MagnitudeToolDialog(QDialog):
                 bg_mask = None
 
         if bg_mask is None or np.count_nonzero(bg_mask) < 25:
-            QMessageBox.warning(self, "Background", "Background region is missing or too small.")
+            QMessageBox.warning(self, self.tr("Background"), self.tr("Background region is missing or too small."))
             return
         if bg_mask.shape != (H, W):
-            QMessageBox.warning(self, "Mask Mismatch", "Background mask size does not match the active image.")
+            QMessageBox.warning(self, self.tr("Mask Mismatch"), self.tr("Background mask size does not match the active image."))
             return
 
         # ---------------- compute sums/areas via masks ----------------
@@ -3672,7 +3679,7 @@ class MagnitudeToolDialog(QDialog):
         obj_area = _mask_area(obj_mask)
         bkg_area = _mask_area(bg_mask)
         if obj_area <= 0 or bkg_area <= 0:
-            QMessageBox.warning(self, "Bad Regions", "Object or background region has zero area.")
+            QMessageBox.warning(self, self.tr("Bad Regions"), self.tr("Object or background region has zero area."))
             return
 
         # background scaled to object area
@@ -3682,7 +3689,7 @@ class MagnitudeToolDialog(QDialog):
         # ---------------- flux uncertainty from background sigma ----------------
         sigma_bg = sigma_from_mask(img_f, bg_mask)
         if sigma_bg is None:
-            QMessageBox.warning(self, "Background", "Background stats failed.")
+            QMessageBox.warning(self, self.tr("Background"), self.tr("Background stats failed."))
             return
 
         if img_f.ndim == 2:
@@ -3751,32 +3758,34 @@ class MagnitudeToolDialog(QDialog):
             m_3 = total_3sigma(m_stat)
             mu_3 = total_3sigma(mu_stat)
 
-            msg = (
+            msg = self.tr(
                 "Object region photometry (background-subtracted):\n"
-                f"  Net flux: {fmt_sci(net_f)}   (flux σ: {fmt_sci(flux_err)})\n"
-                f"  Object area: {obj_area} px   Background area: {bkg_area} px\n"
-                f"  Systematic floor (included): ±{sys_floor:.3f} mag\n\n"
-                f"Integrated magnitude ({band}, catalog {magkey}):\n"
-                f"  m = {fmt(m)} ± {fmt(m_3)}  (total 3σ)\n\n"
-            )
+                "  Net flux: {0}   (flux σ: {1})\n"
+                "  Object area: {2} px   Background area: {3} px\n"
+                "  Systematic floor (included): ±{4:.3f} mag\n\n"
+                "Integrated magnitude ({5}, catalog {6}):\n"
+                "  m = {7} ± {8}  (total 3σ)\n\n"
+            ).format(fmt_sci(net_f), fmt_sci(flux_err), obj_area, bkg_area, sys_floor,
+                     band, magkey, fmt(m), fmt(m_3))
 
             if pix_area_asec2 is not None:
-                msg += f"  Background μ (mag/arcsec²): {fmt(mu_bg)}\n"
+                msg += self.tr("  Background μ (mag/arcsec²): {0}\n").format(fmt(mu_bg))
                 if _is_narrowband_like(hdr):
-                    msg += "  Estimated Bortle: N/A (narrowband-like filter detected)\n"
+                    msg += self.tr("  Estimated Bortle: N/A (narrowband-like filter detected)\n")
                 else:
                     if bortle_info is not None:
-                        msg += f"  Estimated Bortle: {bortle_info['label']} (μ≈{bortle_info['mu']:.2f})\n"
+                        msg += self.tr("  Estimated Bortle: {0} (μ≈{1:.2f})\n").format(
+                            _tr(bortle_info['label']), bortle_info['mu'])
                     else:
-                        msg += "  Estimated Bortle: N/A\n"
+                        msg += self.tr("  Estimated Bortle: N/A\n")
             msg += "\n"
             if area_asec2 is not None:
-                msg += (
-                    f"Surface brightness (mag/arcsec²)  [area={area_asec2:.3f} arcsec²]:\n"
-                    f"  μ = {fmt(mu)} ± {fmt(mu_3)}  (total 3σ)\n"
-                )
+                msg += self.tr(
+                    "Surface brightness (mag/arcsec²)  [area={0:.3f} arcsec²]:\n"
+                    "  μ = {1} ± {2}  (total 3σ)\n"
+                ).format(area_asec2, fmt(mu), fmt(mu_3))
             else:
-                msg += "Surface brightness: N/A (no pixscale from WCS)\n"
+                msg += self.tr("Surface brightness: N/A (no pixscale from WCS)\n")
             msg += self._background_robustness_text(img_f, obj_mask, hdr, bg_mask)
             self._record_measurement(
                 mode="mono",
@@ -3785,7 +3794,7 @@ class MagnitudeToolDialog(QDialog):
                 mono_band=band, hdr=hdr,
             )
 
-            dlg = _ResultsDialog(self, "Magnitude Results", msg)
+            dlg = _ResultsDialog(self, self.tr("Magnitude Results"), msg)
             dlg.show()
             dlg.raise_()
             return
@@ -3845,41 +3854,45 @@ class MagnitudeToolDialog(QDialog):
         if not _is_narrowband_like(hdr):
             bortle_info = _bortle_from_sqm(mu_bg_G)
 
-        msg = (
+        msg = self.tr(
             "Object region photometry (background-subtracted):\n"
-            f"  Net flux (R,G,B): {fmt_sci(netR)}, {fmt_sci(netG)}, {fmt_sci(netB)}\n"
-            f"  Flux σ   (R,G,B): {fmt_sci(errR)}, {fmt_sci(errG)}, {fmt_sci(errB)}\n"
-            f"  Object area: {obj_area} px   Background area: {bkg_area} px\n"
-            f"  Systematic floor (included): ±{sys_floor:.3f} mag\n\n"
+            "  Net flux (R,G,B): {0}, {1}, {2}\n"
+            "  Flux σ   (R,G,B): {3}, {4}, {5}\n"
+            "  Object area: {6} px   Background area: {7} px\n"
+            "  Systematic floor (included): ±{8:.3f} mag\n\n"
             "Integrated magnitude (total 3σ):\n"
-            f"  m_R = {fmt(mR)} ± {fmt(mR_3)}\n"
-            f"  m_G = {fmt(mG)} ± {fmt(mG_3)}\n"
-            f"  m_B = {fmt(mB)} ± {fmt(mB_3)}\n\n"
-        )
+            "  m_R = {9} ± {10}\n"
+            "  m_G = {11} ± {12}\n"
+            "  m_B = {13} ± {14}\n\n"
+        ).format(fmt_sci(netR), fmt_sci(netG), fmt_sci(netB),
+                 fmt_sci(errR), fmt_sci(errG), fmt_sci(errB),
+                 obj_area, bkg_area, sys_floor,
+                 fmt(mR), fmt(mR_3), fmt(mG), fmt(mG_3), fmt(mB), fmt(mB_3))
 
         if pix_area_asec2 is not None:
-            msg += (
-                f"Background surface brightness (mag/arcsec²):\n"
-                f"  μ_bg_R = {fmt(mu_bg_R)}   μ_bg_G = {fmt(mu_bg_G)}   μ_bg_B = {fmt(mu_bg_B)}\n"
-            )
+            msg += self.tr(
+                "Background surface brightness (mag/arcsec²):\n"
+                "  μ_bg_R = {0}   μ_bg_G = {1}   μ_bg_B = {2}\n"
+            ).format(fmt(mu_bg_R), fmt(mu_bg_G), fmt(mu_bg_B))
             if _is_narrowband_like(hdr):
-                msg += "  Estimated Bortle: N/A (narrowband-like filter detected)\n\n"
+                msg += self.tr("  Estimated Bortle: N/A (narrowband-like filter detected)\n\n")
             else:
                 if bortle_info is not None:
-                    msg += f"  Estimated Bortle (from GREEN): {bortle_info['label']} (μ≈{bortle_info['mu']:.2f})\n\n"
+                    msg += self.tr("  Estimated Bortle (from GREEN): {0} (μ≈{1:.2f})\n\n").format(
+                        _tr(bortle_info['label']), bortle_info['mu'])
                 else:
-                    msg += "  Estimated Bortle (from GREEN): N/A\n\n"
+                    msg += self.tr("  Estimated Bortle (from GREEN): N/A\n\n")
 
 
         if area_asec2 is not None:
-            msg += (
-                f"Surface brightness (mag/arcsec²)  [area={area_asec2:.3f} arcsec²] (total 3σ):\n"
-                f"  μ_R = {fmt(muR)} ± {fmt(muR_3)}\n"
-                f"  μ_G = {fmt(muG)} ± {fmt(muG_3)}\n"
-                f"  μ_B = {fmt(muB)} ± {fmt(muB_3)}\n"
-            )
+            msg += self.tr(
+                "Surface brightness (mag/arcsec²)  [area={0:.3f} arcsec²] (total 3σ):\n"
+                "  μ_R = {1} ± {2}\n"
+                "  μ_G = {3} ± {4}\n"
+                "  μ_B = {5} ± {6}\n"
+            ).format(area_asec2, fmt(muR), fmt(muR_3), fmt(muG), fmt(muG_3), fmt(muB), fmt(muB_3))
         else:
-            msg += "Surface brightness: N/A (no pixscale from WCS)\n"
+            msg += self.tr("Surface brightness: N/A (no pixscale from WCS)\n")
         msg += self._background_robustness_text(img_f, obj_mask, hdr, bg_mask)
         self._record_measurement(
             mode="rgb",
@@ -3891,7 +3904,7 @@ class MagnitudeToolDialog(QDialog):
             hdr=hdr,
         )
 
-        dlg = _ResultsDialog(self, "Magnitude Results", msg)
+        dlg = _ResultsDialog(self, self.tr("Magnitude Results"), msg)
         dlg.show()
         dlg.raise_()
 
@@ -4023,7 +4036,7 @@ class MagnitudeToolDialog(QDialog):
         if not lib or not lib.installed_bands():
             raise RuntimeError("No local Gaia XP library is installed.")
 
-        self.lbl_info.setText("Matching field against local Gaia XP library…")
+        self.lbl_info.setText(self.tr("Matching field against local Gaia XP library…"))
         QApplication.processEvents()
 
         step = max(1, int(min(H, W) / 200))
@@ -4057,9 +4070,9 @@ class MagnitudeToolDialog(QDialog):
         T_B, T_V, T_R = _johnson_bvr_passbands_on_gaia_grid(wl_nm)
         T_G = self._gaia_g_passband_on_grid(wl_nm)   # for anchoring only
 
-        self.lbl_info.setText(
-            f"Synthesizing calibrated B/V/R from {len(source_ids):,} "
-            f"local Gaia XP spectra…")
+        self.lbl_info.setText(self.tr(
+            "Synthesizing calibrated B/V/R from {0:,} "
+            "local Gaia XP spectra…").format(len(source_ids)))
         QApplication.processEvents()
 
         stars = []
@@ -4136,7 +4149,7 @@ class MagnitudeToolDialog(QDialog):
         center = SkyCoord(sky[0,0]*u.deg, sky[0,1]*u.deg)
         radius = center.separation(SkyCoord(sky[1:,0]*u.deg, sky[1:,1]*u.deg)).max() * 1.05
 
-        self.lbl_info.setText("Querying APASS (VizieR)…")
+        self.lbl_info.setText(self.tr("Querying APASS (VizieR)…"))
         QApplication.processEvents()
 
         # Its own client, on whichever VizieR mirror is answering, failing
@@ -4281,7 +4294,7 @@ class MagnitudeToolDialog(QDialog):
 
         # status text (safe; no astroquery here)
         try:
-            self.lbl_info.setText("Querying SIMBAD (in-process)…")
+            self.lbl_info.setText(self.tr("Querying SIMBAD (in-process)…"))
             QApplication.processEvents()
         except Exception:
             pass
@@ -4354,10 +4367,10 @@ class MagnitudeToolDialog(QDialog):
                 # Attempt count is derived, not hardcoded: the schedule
                 # shrinks when cds_health already knows CDS is down.
                 _n = len(_sleeps) + 1
-                self.lbl_info.setText(
-                    f"SIMBAD attempt {attempt}/{_n} failed "
-                    f"({first_line}) — retrying in {int(wait_s)}s…"
-                )
+                self.lbl_info.setText(self.tr(
+                    "SIMBAD attempt {0}/{1} failed "
+                    "({2}) — retrying in {3}s…"
+                ).format(attempt, _n, first_line, int(wait_s)))
                 QApplication.processEvents()
             except Exception:
                 pass
@@ -4375,7 +4388,7 @@ class MagnitudeToolDialog(QDialog):
             _sleeps = (2,)
             try:
                 self.lbl_info.setText(
-                    f"{cds_health.status_text()} — trying VizieR mirror…")
+                    self.tr("{0} — trying VizieR mirror…").format(cds_health.status_text()))
                 QApplication.processEvents()
             except Exception:
                 pass
@@ -4615,18 +4628,18 @@ class MagnitudeToolDialog(QDialog):
             return
         w = self._wcs_or_build()
         if w is None:
-            QMessageBox.warning(self, "Find Star",
-                                "Need a WCS. Fetch catalog stars (Step 1) first, or plate-solve the image.")
+            QMessageBox.warning(self, self.tr("Find Star"),
+                                self.tr("Need a WCS. Fetch catalog stars (Step 1) first, or plate-solve the image."))
             return
-        self.lbl_info.setText(f"Resolving '{name}' via SIMBAD…")
+        self.lbl_info.setText(self.tr("Resolving '{0}' via SIMBAD…").format(name))
         QApplication.processEvents()
         try:
             radec = aav.resolve_name_to_radec(name)
         except Exception as e:
-            QMessageBox.critical(self, "Find Star", f"Name resolver failed:\n{e}")
+            QMessageBox.critical(self, self.tr("Find Star"), self.tr("Name resolver failed:\n{0}").format(e))
             return
         if radec is None:
-            QMessageBox.information(self, "Find Star", f"Could not resolve '{name}'.")
+            QMessageBox.information(self, self.tr("Find Star"), self.tr("Could not resolve '{0}'.").format(name))
             return
     
         ra, dec = radec
@@ -4636,12 +4649,12 @@ class MagnitudeToolDialog(QDialog):
             x, y = w.all_world2pix(ra, dec, 0)
             x, y = float(x), float(y)
         except Exception as e:
-            QMessageBox.warning(self, "Find Star", f"Could not project to pixels:\n{e}")
+            QMessageBox.warning(self, self.tr("Find Star"), self.tr("Could not project to pixels:\n{0}").format(e))
             return
         if not (0 <= x < W and 0 <= y < H):
             QMessageBox.information(
-                self, "Find Star",
-                f"'{name}' resolves to RA={ra:.5f}, Dec={dec:.5f}, which is OUTSIDE this image.")
+                self, self.tr("Find Star"),
+                self.tr("'{0}' resolves to RA={1:.5f}, Dec={2:.5f}, which is OUTSIDE this image.").format(name, ra, dec))
             return
     
         self._target_name = name          # remember the user's chosen designation
@@ -4650,7 +4663,7 @@ class MagnitudeToolDialog(QDialog):
         # and reports the pixel for a manual click.
         self._pending_seed_xy = (x, y)
         self.open_region_picker()
-        self.lbl_info.setText(f"'{name}' → pixel ({x:.0f}, {y:.0f}). Auto-fitting star…")
+        self.lbl_info.setText(self.tr("'{0}' → pixel ({1:.0f}, {2:.0f}). Auto-fitting star…").format(name, x, y))
     
     
     def identify_target(self):
@@ -4658,20 +4671,20 @@ class MagnitudeToolDialog(QDialog):
         designation. Sets self._target_name for AAVSO export."""
         radec = self._target_centroid_radec()
         if radec is None:
-            QMessageBox.warning(self, "Identify Target",
-                                "Pick/measure a target region first (need a target and a WCS).")
+            QMessageBox.warning(self, self.tr("Identify Target"),
+                                self.tr("Pick/measure a target region first (need a target and a WCS)."))
             return
         ra, dec = radec
-        self.lbl_info.setText("Querying SIMBAD…")
+        self.lbl_info.setText(self.tr("Querying SIMBAD…"))
         QApplication.processEvents()
         try:
             info = aav.identify_object(ra, dec, radius_arcsec=5.0)
         except Exception as e:
-            QMessageBox.critical(self, "SIMBAD Error", f"Could not reach SIMBAD:\n{e}")
+            QMessageBox.critical(self, self.tr("SIMBAD Error"), self.tr("Could not reach SIMBAD:\n{0}").format(e))
             return
         if not info or not info.get("main_id"):
-            QMessageBox.information(self, "Identify Target",
-                                f"No SIMBAD object within 5″ of RA={ra:.5f}, Dec={dec:.5f}.")
+            QMessageBox.information(self, self.tr("Identify Target"),
+                                self.tr("No SIMBAD object within 5″ of RA={0:.5f}, Dec={1:.5f}.").format(ra, dec))
             return
     
         main_id = info["main_id"]
@@ -4688,15 +4701,15 @@ class MagnitudeToolDialog(QDialog):
         vmag = info.get("vmag")
         lines = [
             f"SIMBAD ID:   {main_id}",
-            f"Object type: {info.get('otype') or 'n/a'}",
+            self.tr("Object type: {0}").format(info.get('otype') or 'n/a'),
             f"V mag:       {vmag:.3f}" if vmag is not None else "V mag:       n/a",
-            f"Offset:      {off:.2f}″" if off is not None else "Offset:      n/a",
+            self.tr("Offset:      {0:.2f}″").format(off) if off is not None else self.tr("Offset:      n/a"),
         ]
         if vsx:
-            lines.append(f"VSX / AAVSO: {vsx}   ← will be used as STARID")
+            lines.append(self.tr("VSX / AAVSO: {0}   ← will be used as STARID").format(vsx))
         else:
-            lines.append("VSX / AAVSO: not found (SIMBAD ID will be used as STARID)")
-        QMessageBox.information(self, "Identify Target", "\n".join(lines))
+            lines.append(self.tr("VSX / AAVSO: not found (SIMBAD ID will be used as STARID)"))
+        QMessageBox.information(self, self.tr("Identify Target"), "\n".join(lines))
     
     
     def _suggest_check_star(self):
@@ -4755,14 +4768,14 @@ class MagnitudeToolDialog(QDialog):
         """Turn the last measurement into AAVSO rows and append to the batch."""
         lm = getattr(self, "_last_measurement", None)
         if not lm:
-            QMessageBox.information(self, "AAVSO", "Measure a region first (Step 4).")
+            QMessageBox.information(self, "AAVSO", self.tr("Measure a region first (Step 4)."))
             return
         if lm.get("radec") is None:
-            QMessageBox.warning(self, "AAVSO", "No target coordinates (need a WCS). Fetch stars / plate-solve first.")
+            QMessageBox.warning(self, "AAVSO", self.tr("No target coordinates (need a WCS). Fetch stars / plate-solve first."))
             return
         if lm.get("jd") is None:
-            jd, ok = QInputDialog.getDouble(self, "Observation Date",
-                                            "No DATE-OBS in header. Enter Julian Date (mid-exposure):",
+            jd, ok = QInputDialog.getDouble(self, self.tr("Observation Date"),
+                                            self.tr("No DATE-OBS in header. Enter Julian Date (mid-exposure):"),
                                             decimals=5)
             if not ok:
                 return
@@ -4774,8 +4787,8 @@ class MagnitudeToolDialog(QDialog):
         if not self._target_name:
             self.identify_target()          # sets self._target_name (VSX / SIMBAD id)
         star_id, ok = QInputDialog.getText(
-            self, "Target Name (STARID)",
-            "AAVSO STARID for this target:",
+            self, self.tr("Target Name (STARID)"),
+            self.tr("AAVSO STARID for this target:"),
             text=(self._target_name or ""),
         )
         if not ok or not star_id.strip():
@@ -4791,12 +4804,12 @@ class MagnitudeToolDialog(QDialog):
             if sug is not None:
                 kname, kmag, kstar = sug
             kname_in, ok = QInputDialog.getText(
-                self, "Check Star", "Check-star designation (KNAME):",
+                self, self.tr("Check Star"), self.tr("Check-star designation (KNAME):"),
                 text=(kname or ""))
             if not ok or not kname_in.strip():
                 return
             kmag_in, ok = QInputDialog.getDouble(
-                self, "Check Star Magnitude", f"Catalog magnitude for {kname_in.strip()}:",
+                self, self.tr("Check Star Magnitude"), self.tr("Catalog magnitude for {0}:").format(kname_in.strip()),
                 value=float(kmag) if kmag is not None else 0.0, decimals=3)
             if not ok:
                 return
@@ -4805,8 +4818,8 @@ class MagnitudeToolDialog(QDialog):
     
         amass = lm.get("amass")
         if amass is None:
-            amass_in, ok = QInputDialog.getDouble(self, "Airmass",
-                                                "No airmass derivable from header. Enter airmass (or Cancel for na):",
+            amass_in, ok = QInputDialog.getDouble(self, self.tr("Airmass"),
+                                                self.tr("No airmass derivable from header. Enter airmass (or Cancel for na):"),
                                                 value=1.0, min=1.0, max=40.0, decimals=3)
             amass = float(amass_in) if ok else None
     
@@ -4832,8 +4845,8 @@ class MagnitudeToolDialog(QDialog):
             self._aavso_rows.append((r, ra, dec))
         self._refresh_aavso_button()
         QMessageBox.information(self, "AAVSO",
-                            f"Added {len(rows)} row(s) for {star_id}. Batch now has "
-                            f"{len(self._aavso_rows)} row(s).")
+                            self.tr("Added {0} row(s) for {1}. Batch now has "
+                                    "{2} row(s).").format(len(rows), star_id, len(self._aavso_rows)))
     
     
     def _resolve_mono_filter(self, lm):
@@ -4854,12 +4867,12 @@ class MagnitudeToolDialog(QDialog):
         if raw:
             prefix = f"FITS FILTER = {raw!r}\n"
         else:
-            prefix = "No FILTER card found in the header.\n"
+            prefix = self.tr("No FILTER card found in the header.\n")
         if conf == "none" and raw:
-            prefix += ("This looks narrowband or non-standard for AAVSO photometry — "
-                    "choose the closest valid band, or Cancel.\n")
+            prefix += self.tr("This looks narrowband or non-standard for AAVSO photometry — "
+                              "choose the closest valid band, or Cancel.\n")
         filt, ok = QInputDialog.getItem(
-            self, "AAVSO Filter", prefix + "AAVSO filter code:",
+            self, self.tr("AAVSO Filter"), prefix + self.tr("AAVSO filter code:"),
             choices, choices.index(default), True)   # editable
         if not ok or not filt.strip():
             return None
@@ -4869,13 +4882,13 @@ class MagnitudeToolDialog(QDialog):
     def _refresh_aavso_button(self):
         n = len(getattr(self, "_aavso_rows", []))
         if hasattr(self, "btn_aavso"):
-            self.btn_aavso.setText(f"AAVSO Batch… ({n})")
+            self.btn_aavso.setText(self.tr("AAVSO Batch… ({0})").format(n))
             self.btn_aavso.setEnabled(n > 0)
     
     
     def open_aavso_batch(self):
         if not self._aavso_rows:
-            QMessageBox.information(self, "AAVSO Batch", "No measurements in the batch yet.")
+            QMessageBox.information(self, self.tr("AAVSO Batch"), self.tr("No measurements in the batch yet."))
             return
         dlg = _AavsoBatchDialog(self, self._aavso_rows)
         dlg.exec()

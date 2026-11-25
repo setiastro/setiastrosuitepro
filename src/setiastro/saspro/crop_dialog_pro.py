@@ -1014,7 +1014,7 @@ class OverlapPanel(QWidget):
 
         # ── header ──────────────────────────────────────────────────────────
         hdr = QHBoxLayout()
-        self.lbl_title = QLabel("<b>Multi-Image Overlap</b>")
+        self.lbl_title = QLabel(self.tr("<b>Multi-Image Overlap</b>"))
         hdr.addWidget(self.lbl_title)
         hdr.addStretch(1)
         root.addLayout(hdr)
@@ -1024,7 +1024,7 @@ class OverlapPanel(QWidget):
 
         # ── blend mode ──────────────────────────────────────────────────────
         blend_row = QHBoxLayout()
-        blend_row.addWidget(QLabel("Blend:"))
+        blend_row.addWidget(QLabel(self.tr("Blend:")))
         self.cmb_blend = QComboBox()
         self.cmb_blend.addItems(_BLEND_MODES)
         self.cmb_blend.setCurrentText("Screen")
@@ -1032,12 +1032,12 @@ class OverlapPanel(QWidget):
         root.addLayout(blend_row)
 
         # ── colorize toggle ─────────────────────────────────────────────────
-        self.chk_colorize = QCheckBox("Colorize images (blue / red / green / …)")
+        self.chk_colorize = QCheckBox(self.tr("Colorize images (blue / red / green / …)"))
         self.chk_colorize.setChecked(False)
         self.chk_colorize.setToolTip(
-            "Tint each image a distinct hue before blending.\n"
+            self.tr("Tint each image a distinct hue before blending.\n"
             "Overlap regions converge toward white/grey; frame edges\n"
-            "show their assigned color — makes coverage gaps obvious."
+            "show their assigned color — makes coverage gaps obvious.")
         )
         root.addWidget(self.chk_colorize)
 
@@ -1054,14 +1054,14 @@ class OverlapPanel(QWidget):
         root.addWidget(self.scroll, 1)
 
         # ── action buttons ──────────────────────────────────────────────────
-        self.btn_refresh = QPushButton("Refresh Image List")
-        self.btn_apply   = QPushButton("Apply Composite Preview")
+        self.btn_refresh = QPushButton(self.tr("Refresh Image List"))
+        self.btn_apply   = QPushButton(self.tr("Apply Composite Preview"))
         self.btn_apply.setCheckable(True)
         self.btn_apply.setToolTip(
-            "Toggle composite preview on the canvas.\n"
-            "The crop rectangle and Apply/Batch buttons still work normally."
+            self.tr("Toggle composite preview on the canvas.\n"
+            "The crop rectangle and Apply/Batch buttons still work normally.")
         )
-        self.btn_clear   = QPushButton("Back to Single Image")
+        self.btn_clear   = QPushButton(self.tr("Back to Single Image"))
         self.btn_clear.setEnabled(False)
 
         root.addWidget(self.btn_refresh)
@@ -1307,7 +1307,7 @@ class OverlapPanel(QWidget):
                     or meta.get("file_path")
                     or getattr(doc, "title", None)
                     or getattr(doc, "filename", None)
-                    or "Untitled"
+                    or self.tr("Untitled")
                 )
                 # if file_path, show just the basename
                 if title and os.path.sep in title:
@@ -1335,14 +1335,14 @@ class OverlapPanel(QWidget):
         self._composite_mode = bool(checked)
         self.btn_clear.setEnabled(self._composite_mode)
         self.btn_apply.setText(
-            "✓ Composite Active" if self._composite_mode else "Apply Composite Preview"
+            self.tr("✓ Composite Active") if self._composite_mode else self.tr("Apply Composite Preview")
         )
         self.composite_changed.emit()
 
     def _on_clear(self):
         self._composite_mode = False
         self.btn_apply.setChecked(False)
-        self.btn_apply.setText("Apply Composite Preview")
+        self.btn_apply.setText(self.tr("Apply Composite Preview"))
         self.btn_clear.setEnabled(False)
         self.composite_changed.emit()
 
@@ -1529,9 +1529,9 @@ class CropDialogPro(QDialog):
         self.btn_overlap     = QPushButton(self.tr("⊞ Multi-Image Overlap"))
         self.btn_overlap.setCheckable(True)
         self.btn_overlap.setToolTip(
-            "Open the multi-image overlap panel.\n"
+            self.tr("Open the multi-image overlap panel.\n"
             "Select which open images to composite together so you can\n"
-            "find the best shared crop region before applying."
+            "find the best shared crop region before applying.")
         )
         self.btn_close = QToolButton(); self.btn_close.setText(self.tr("Close"))
         # PI-style "new instance" grip (far left): drag to the canvas to mint a
@@ -1959,9 +1959,9 @@ class CropDialogPro(QDialog):
 
     def _on_ar_changed(self, txt: str):
         if not self._rect_item: return
-        if txt == "Free":
+        if txt in (self.tr("Free"), "Free"):
             ar = None
-        elif txt == "Original":
+        elif txt in (self.tr("Original"), "Original"):
             ar = self._orig_w / self._orig_h
         else:
             a, b = map(float, txt.split(":")); ar = a / b

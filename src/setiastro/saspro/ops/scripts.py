@@ -922,9 +922,18 @@ class ScriptManager(QObject):
 
         mod = importlib.util.module_from_spec(spec)
 
-        # Import module first (so SCRIPT_ID / metadata exists)
+        # Import module first (so SCRIPT_ID / metadata exists).
+        # A script that calls sys.exit()/exit() at import ("PyTorch is not
+        # installed" -> sys.exit(1)) raises SystemExit, which `except Exception`
+        # lets through. Scripts load while the main window is being built, so
+        # that closed SASpro before it ever appeared. Skip it like any other
+        # script that fails to import.
         try:
             spec.loader.exec_module(mod)  # type: ignore
+        except SystemExit as e:
+            self._log(f"[Scripts] {path.name} called sys.exit({e.code!r}) while loading; "
+                      f"skipped. A script must not exit when it is imported.")
+            return None
         except Exception:
             self._log(f"[Scripts] Error importing {path.name}:\n{traceback.format_exc()}")
             return None
@@ -1041,7 +1050,7 @@ class ScriptManager(QObject):
                 pass
 
         # "Pin Script to Canvas" submenu (grouped)
-        pin_root = menu_scripts.addMenu("Pin Script to Canvas")
+        pin_root = menu_scripts.addMenu(self.tr("Pin Script to Canvas"))
         pin_group_menus: dict[str, Any] = {}
 
         # group -> submenu for run items
@@ -1114,12 +1123,15 @@ class ScriptManager(QObject):
 
                 act_pin = QAction(entry.name, self.app)
                 act_pin.setIcon(QIcon(icons.SCRIPT))  # NEW
+                # Same name as the run action: Command Search listed every
+                # script twice, and this one pins instead of running.
+                act_pin.setProperty("cmdp_exclude", True)
                 act_pin.triggered.connect(lambda _=False, c=cmdid: _pin_to_canvas(c))
                 pin_menu.addAction(act_pin)
 
         # If there are no pinnable scripts, disable the pin root nicely
         if pin_root.actions() == []:
-            a = pin_root.addAction("No scripts to pin")
+            a = pin_root.addAction(self.tr("No scripts to pin"))
             a.setEnabled(False)
 
 
@@ -1148,12 +1160,25 @@ class ScriptManager(QObject):
             self._log(f"[Scripts] Running '{entry.name}' ({entry.path.name}) on_base={on_base}")
             entry.run(ctx)  # type: ignore
             self._log(f"[Scripts] Finished '{entry.name}'")
+        except SystemExit as e:
+            # sys.exit()/exit() ends the script, not SASpro: uncaught, a
+            # SystemExit leaving a Qt slot exits the whole process.
+            code = e.code
+            if code is None or code == 0:
+                self._log(f"[Scripts] '{entry.name}' ended with sys.exit()")
+            else:
+                self._log(f"[Scripts] '{entry.name}' ended with sys.exit({code!r})")
+                try:
+                    QMessageBox.warning(self.app, self.tr("Script Stopped"),
+                                        self.tr("{0} stopped:\n\n{1}").format(entry.name, code))
+                except Exception:
+                    pass
         except Exception as e:
             tb = traceback.format_exc()
             self._log(f"[Scripts] ERROR in '{entry.name}':\n{tb}")
             try:
-                QMessageBox.critical(self.app, "Script Error",
-                                     f"{entry.name} failed:\n\n{e}")
+                QMessageBox.critical(self.app, self.tr("Script Error"),
+                                     self.tr("{0} failed:\n\n{1}").format(entry.name, e))
             except Exception:
                 pass
 
@@ -1636,21 +1661,20 @@ def run(ctx):
         try:
             if created and not skipped:
                 QMessageBox.information(
-                    self.app, "Sample Scripts Created",
-                    "Created sample scripts:\n\n" + "\n".join(created) +
-                    "\n\nReload Scripts to see them."
+                    self.app, self.tr("Sample Scripts Created"),
+                    self.tr("Created sample scripts:\n\n{0}\n\nReload Scripts to see them.").format(
+                        "\n".join(created))
                 )
             elif created and skipped:
                 QMessageBox.information(
-                    self.app, "Sample Scripts Created",
-                    "Created:\n" + "\n".join(created) +
-                    "\n\nAlready existed:\n" + "\n".join(skipped) +
-                    "\n\nReload Scripts to see new ones."
+                    self.app, self.tr("Sample Scripts Created"),
+                    self.tr("Created:\n{0}\n\nAlready existed:\n{1}\n\nReload Scripts to see new ones.").format(
+                        "\n".join(created), "\n".join(skipped))
                 )
             else:
                 QMessageBox.information(
-                    self.app, "Sample Scripts",
-                    "All sample scripts already exist:\n\n" + "\n".join(skipped)
+                    self.app, self.tr("Sample Scripts"),
+                    self.tr("All sample scripts already exist:\n\n{0}").format("\n".join(skipped))
                 )
         except Exception:
             pass

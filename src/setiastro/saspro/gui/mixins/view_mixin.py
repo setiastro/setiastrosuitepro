@@ -595,7 +595,7 @@ class ViewMixin:
         
         cur = float(self.settings.value("display/target", 0.30, type=float))
         val, ok = QInputDialog.getDouble(
-            self, "Target Median", "Target (0.01 - 0.90):", cur, 0.01, 0.90, 3
+            self, self.tr("Target Median"), self.tr("Target (0.01 - 0.90):"), cur, 0.01, 0.90, 3
         )
         if not ok:
             return
@@ -617,7 +617,7 @@ class ViewMixin:
         
         cur = float(self.settings.value("display/sigma", 5.0, type=float))
         val, ok = QInputDialog.getDouble(
-            self, "Sigma", "Sigma (0.5 - 20.0):", cur, 0.5, 20.0, 2
+            self, self.tr("Sigma"), self.tr("Sigma (0.5 - 20.0):"), cur, 0.5, 20.0, 2
         )
         if not ok:
             return

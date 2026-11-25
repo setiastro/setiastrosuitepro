@@ -1123,7 +1123,7 @@ class PixelMathDialogPro(QDialog):
 
 
         # First item = active view
-        active_item = QListWidgetItem("img (active)")
+        active_item = QListWidgetItem(self.tr("img (active)"))
         active_item.setData(Qt.ItemDataRole.UserRole, "img")   # ← stash the real name
         active_item.setToolTip(self.tr("img (active)"))
         self.vars_list.addItem(active_item)
@@ -1236,6 +1236,7 @@ class PixelMathDialogPro(QDialog):
         self._tgt_group = QActionGroup(self); self._tgt_group.setExclusive(True)
         for label, val in ((self.tr("0.18 (soft)"), 0.18), (self.tr("0.25 (default)"), 0.25), (self.tr("0.35 (brighter)"), 0.35)):
             a = tgt_menu.addAction(label)
+            a.setData(val)   # the label is translated; _refresh_target_checks reads this
             a.setCheckable(True)
             a.setChecked(abs(self._as_target - val) < 1e-6)
             self._tgt_group.addAction(a)
@@ -1246,6 +1247,7 @@ class PixelMathDialogPro(QDialog):
         self._sig_group = QActionGroup(self); self._sig_group.setExclusive(True)
         for label, val in ((self.tr("σ=2.5"), 2.5), (self.tr("σ=3 (default)"), 3.0), (self.tr("σ=4 (deeper black)"), 4.0)):
             a = sig_menu.addAction(label)
+            a.setData(val)   # the label is translated; _refresh_sigma_checks reads this
             a.setCheckable(True)
             a.setChecked(abs(self._as_sigma - val) < 1e-6)
             self._sig_group.addAction(a)
@@ -1286,15 +1288,12 @@ class PixelMathDialogPro(QDialog):
         # tiny helpers for radio menus
         def _refresh_target_checks():
             for a in self._tgt_group.actions():
-                txt = a.text()  # "0.18 (soft)" / "0.25 (default)" / "0.35 (brighter)"
-                v = 0.18 if txt.startswith("0.18") else 0.25 if txt.startswith("0.25") else 0.35
+                v = float(a.data())  # 0.18 / 0.25 / 0.35 (set at creation; the text is translated)
                 a.setChecked(abs(self._as_target - v) < 1e-6)
 
         def _refresh_sigma_checks():
             for a in self._sig_group.actions():
-                # texts are "σ=2.5", "σ=3 (default)", "σ=4 (deeper black)"
-                tail = a.text().split("=", 1)[-1].strip().split()[0]  # "2.5" / "3" / "4"
-                v = float(tail)
+                v = float(a.data())  # 2.5 / 3.0 / 4.0 (set at creation; the text is translated)
                 a.setChecked(abs(self._as_sigma - v) < 1e-6)
 
         # API used by the actions above
@@ -1841,8 +1840,8 @@ class PixelMathDialogPro(QDialog):
             "      A = med(img)",
             "      B = avg(img, other)",
             "      B / A",
-            self.tr("  • The last line is the returned result and must be an"),
-            self.tr("    expression (e.g. B / A), not an assignment (C = B / A)."),
+            self.tr("  • The last line is the returned result and must be an\n"
+                    "    expression (e.g. B / A), not an assignment (C = B / A)."),
             self.tr("Output: Overwrite active or Create new view."),
             "",
             self.tr("Functions:")
@@ -1930,6 +1929,6 @@ class PixelMathDialogPro(QDialog):
         except Exception as e:
             msg = str(e)
             if "name '" in msg and "' is not defined" in msg:
-                msg += self.tr("\n\nTip: use the identifier shown beside Variables (e.g. 'andromeda_png'), ")
-                msg += self.tr("or just type the raw title; it will be auto-mapped.")
-            QMessageBox.critical(self, "Pixel Math", f"Failed:\n{msg}")
+                msg += self.tr("\n\nTip: use the identifier shown beside Variables (e.g. 'andromeda_png'), "
+                               "or just type the raw title; it will be auto-mapped.")
+            QMessageBox.critical(self, self.tr("Pixel Math"), self.tr("Failed:\n{0}").format(msg))

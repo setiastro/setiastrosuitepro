@@ -487,7 +487,7 @@ class HistogramTransformDialogPro(QDialog):
 
         self.document = document
         if self.document is None or getattr(self.document, "image", None) is None:
-            QMessageBox.information(self, "No image", "Open an image first.")
+            QMessageBox.information(self, self.tr("No image"), self.tr("Open an image first."))
             self.close()
             return
 
@@ -549,16 +549,16 @@ class HistogramTransformDialogPro(QDialog):
         left_host.setFixedWidth(360)
 
         # controls group
-        gb = QGroupBox("Histogram Transform", self)
+        gb = QGroupBox(self.tr("Histogram Transform"), self)
         gl = QGridLayout(gb)
 
-        self.cb_live = QCheckBox("Live preview", self)
+        self.cb_live = QCheckBox(self.tr("Live preview"), self)
         self.cb_live.setChecked(True)
         gl.addWidget(self.cb_live, 0, 0, 1, 2)
-        gl.addWidget(QLabel("Channel:"), 1, 0)
+        gl.addWidget(QLabel(self.tr("Channel:")), 1, 0)
         self.cb_channel = QComboBox(self)
-        self.cb_channel.addItem("L (Luminance)", "L")
-        self.cb_channel.addItem("K (Brightness / RGB linked)", "K")
+        self.cb_channel.addItem(self.tr("L (Luminance)"), "L")
+        self.cb_channel.addItem(self.tr("K (Brightness / RGB linked)"), "K")
         self.cb_channel.addItem("R", "R")
         self.cb_channel.addItem("G", "G")
         self.cb_channel.addItem("B", "B")
@@ -594,16 +594,17 @@ class HistogramTransformDialogPro(QDialog):
             s.sliderReleased.connect(self._schedule)     # ensure final recompute when user lets go
 
         self.cb_live.toggled.connect(self._schedule)
-        gl.addWidget(QLabel("Black point:"), 2, 0); gl.addWidget(self.sl_black, 2, 1); gl.addWidget(self.sp_black, 2, 2)
-        gl.addWidget(QLabel("Midtones:"),    3, 0); gl.addWidget(self.sl_mid,   3, 1); gl.addWidget(self.sp_mid,   3, 2)
-        gl.addWidget(QLabel("White point:"), 4, 0); gl.addWidget(self.sl_white, 4, 1); gl.addWidget(self.sp_white, 4, 2)
+        gl.addWidget(QLabel(self.tr("Black point:")), 2, 0); gl.addWidget(self.sl_black, 2, 1); gl.addWidget(self.sp_black, 2, 2)
+        gl.addWidget(QLabel(self.tr("Midtones:")),    3, 0); gl.addWidget(self.sl_mid,   3, 1); gl.addWidget(self.sp_mid,   3, 2)
+        gl.addWidget(QLabel(self.tr("White point:")), 4, 0); gl.addWidget(self.sl_white, 4, 1); gl.addWidget(self.sp_white, 4, 2)
 
-        self.lbl_clip = QLabel("Clipped: low 0 (0.00%) | high 0 (0.00%)", self)
+        self.lbl_clip = QLabel(
+            self.tr("Clipped: low {0} ({1:.2f}%) | high {2} ({3:.2f}%)").format(0, 0.0, 0, 0.0), self)
         self.lbl_clip.setStyleSheet("color:#aaa;")
         gl.addWidget(self.lbl_clip, 5, 0, 1, 3)
         left.addWidget(gb)
         # min/max stats label
-        self.lbl_minmax = QLabel("Min: —   Max: —", self)
+        self.lbl_minmax = QLabel(self.tr("Min: —   Max: —"), self)
         self.lbl_minmax.setStyleSheet("color:#aaa; font-size: 11px;")
         self.lbl_minmax.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left.addWidget(self.lbl_minmax)
@@ -617,9 +618,9 @@ class HistogramTransformDialogPro(QDialog):
 
         # buttons
         brow = QHBoxLayout()
-        self.btn_apply = QPushButton("Apply", self)
-        self.btn_new = QPushButton("Apply as New", self)
-        self.btn_reset = QPushButton("Reset", self)
+        self.btn_apply = QPushButton(self.tr("Apply"), self)
+        self.btn_new = QPushButton(self.tr("Apply as New"), self)
+        self.btn_reset = QPushButton(self.tr("Reset"), self)
         brow.addWidget(self.btn_apply)
         brow.addWidget(self.btn_new)
         brow.addWidget(self.btn_reset)
@@ -665,9 +666,9 @@ class HistogramTransformDialogPro(QDialog):
         right = QVBoxLayout()
 
         zrow = QHBoxLayout()
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_zoom_in  = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_fit      = themed_toolbtn("zoom-fit-best", "Fit")
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_zoom_in  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_fit      = themed_toolbtn("zoom-fit-best", self.tr("Fit"))
         zrow.addWidget(self.btn_zoom_out)
         zrow.addWidget(self.btn_zoom_in)
         zrow.addWidget(self.btn_fit)
@@ -751,7 +752,7 @@ class HistogramTransformDialogPro(QDialog):
                     self.cb_channel.blockSignals(False)
 
                 self.cb_channel.setEnabled(False)
-                self.cb_channel.setToolTip("Mono image: channel selection disabled (L only).")
+                self.cb_channel.setToolTip(self.tr("Mono image: channel selection disabled (L only)."))
             else:
                 self.cb_channel.setEnabled(True)
                 self.cb_channel.setToolTip("")
@@ -766,6 +767,20 @@ class HistogramTransformDialogPro(QDialog):
             QTimer.singleShot(0, self._restore_ui_state)
 
     def closeEvent(self, e):
+        self._close_teardown()
+        super().closeEvent(e)
+
+    def done(self, r):
+        # Esc / reject() / accept() end a QDialog through done(), which never
+        # delivers closeEvent: without this they skipped the teardown and the
+        # dialog kept its full-size buffers until collected. Runs once.
+        self._close_teardown()
+        super().done(r)
+
+    def _close_teardown(self):
+        if getattr(self, "_close_torn_down", False):
+            return
+        self._close_torn_down = True
         try:
             self._save_ui_state()
         except Exception:
@@ -774,13 +789,20 @@ class HistogramTransformDialogPro(QDialog):
             self._release_memory()
         except Exception:
             pass
-        super().closeEvent(e)
 
     def _release_memory(self):
         """Drop full/preview image buffers and pixmap on close."""
         if getattr(self, "_memory_released", False):
             return
         self._memory_released = True
+        # A closed dialog is only deleted (WA_DeleteOnClose) when control gets
+        # back to the event loop it was closed in. If a modal loop runs first,
+        # the pending preview refresh still fires -- stop it here; _recompute
+        # also bails, for the 2 s post-Apply refresh, which has no handle.
+        try:
+            self._debounce.stop()
+        except Exception:
+            pass
 
         self._img = None
         self._base = None
@@ -1020,6 +1042,11 @@ class HistogramTransformDialogPro(QDialog):
         return mask[yi][:, xi]
 
     def _recompute(self):
+        # Closed already (see _release_memory): there is no image to preview.
+        # Running on would turn the released None into a 0-d NaN and fail with
+        # "IndexError: invalid index to scalar variable".
+        if getattr(self, "_memory_released", False) or getattr(self, "_preview_base", None) is None:
+            return
         b, m_abs, m_rel, w = self._sanitize_points()
 
         # update min/max stats label
@@ -1028,8 +1055,9 @@ class HistogramTransformDialogPro(QDialog):
             mn = float(img_flat.min())
             mx = float(img_flat.max())
             self.lbl_minmax.setText(
-                f"Min: {mn:.5f}  ({int(mn*65535)})   "
-                f"Max: {mx:.5f}  ({int(mx*65535)})"
+                self.tr("Min: {0:.5f}  ({1})   "
+                        "Max: {2:.5f}  ({3})").format(
+                    mn, int(mn*65535), mx, int(mx*65535))
             )
         except Exception:
             pass
@@ -1064,9 +1092,9 @@ class HistogramTransformDialogPro(QDialog):
             lo, hi, tot = clipping_stats_channel(self._preview_base, b, w, chan)
             plo = 100.0 * lo / max(1, tot)
             phi = 100.0 * hi / max(1, tot)
-            clip_txt = f"Clipped: low {lo} ({plo:.2f}%) | high {hi} ({phi:.2f}%)"
+            clip_txt = self.tr("Clipped: low {0} ({1:.2f}%) | high {2} ({3:.2f}%)").format(lo, plo, hi, phi)
             if self._active_mask_array() is not None:
-                clip_txt += "  [mask active]"
+                clip_txt += self.tr("  [mask active]")
             self.lbl_clip.setText(clip_txt)
         except Exception:
             pass
@@ -1077,9 +1105,10 @@ class HistogramTransformDialogPro(QDialog):
         self._base_pm = _to_pixmap(self._out)
         self._apply_zoom()
 
-        mask_note = "  [masked]" if self._active_mask_array() is not None else ""
+        mask_note = self.tr("  [masked]") if self._active_mask_array() is not None else ""
         self.lbl_status.setText(
-            f"Ch={chan}  Black={b:.5f}  Mid={m_abs:.5f}  White={w:.5f}{mask_note}"
+            self.tr("Ch={0}  Black={1:.5f}  Mid={2:.5f}  White={3:.5f}{4}").format(
+                chan, b, m_abs, w, mask_note)
         )
 
     # ---------- preview zoom/pan ----------
@@ -1228,7 +1257,7 @@ class HistogramTransformDialogPro(QDialog):
 
     def _apply_inplace(self):
         try:
-            self.lbl_status.setText("Processing full image…")
+            self.lbl_status.setText(self.tr("Processing full image…"))
             self.btn_apply.setEnabled(False)
             self.btn_new.setEnabled(False)
             self.btn_reset.setEnabled(False)
@@ -1245,7 +1274,7 @@ class HistogramTransformDialogPro(QDialog):
             self.btn_new.setEnabled(True)
             self.btn_reset.setEnabled(True)
             self.lbl_status.setText("")
-            QMessageBox.critical(self, "Levels", str(e))
+            QMessageBox.critical(self, self.tr("Levels"), str(e))
             return
 
         try:
@@ -1278,7 +1307,7 @@ class HistogramTransformDialogPro(QDialog):
             self.btn_new.setEnabled(True)
             self.btn_reset.setEnabled(True)
             self.lbl_status.setText("")
-            QMessageBox.critical(self, "Levels", f"Failed to apply:\n{e}")
+            QMessageBox.critical(self, self.tr("Levels"), self.tr("Failed to apply:\n{0}").format(e))
             return
 
         # Reload base image + cached hist0, KEEP UI OPEN.
@@ -1296,20 +1325,20 @@ class HistogramTransformDialogPro(QDialog):
         self.btn_apply.setEnabled(True)
         self.btn_new.setEnabled(True)
         self.btn_reset.setEnabled(True)
-        self.lbl_status.setText("Finished and applied to the active document.")
+        self.lbl_status.setText(self.tr("Finished and applied to the active document."))
         QTimer.singleShot(2000, self._recompute)
 
     def _apply_new(self):
         mw = self.parent()
         dm = getattr(mw, "docman", None) or getattr(mw, "doc_manager", None)
         if dm is None:
-            QMessageBox.warning(self, "Histogram Transform", "DocManager not available.")
+            QMessageBox.warning(self, self.tr("Histogram Transform"), self.tr("DocManager not available."))
             return
 
         try:
             result = self._apply_result_fullres()
         except Exception as e:
-            QMessageBox.critical(self, "Histogram Transform", str(e))
+            QMessageBox.critical(self, self.tr("Histogram Transform"), str(e))
             return
 
         title = "Histogram Transform"
@@ -1324,7 +1353,7 @@ class HistogramTransformDialogPro(QDialog):
             if hasattr(mw, "_spawn_subwindow_for"):
                 mw._spawn_subwindow_for(doc)
         except Exception as e:
-            QMessageBox.critical(self, "Histogram Transform", f"Failed to open new view:\n{e}")
+            QMessageBox.critical(self, self.tr("Histogram Transform"), self.tr("Failed to open new view:\n{0}").format(e))
 
     def _reset(self):
         # reset numeric controls

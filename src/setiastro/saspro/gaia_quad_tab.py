@@ -68,7 +68,7 @@ class QuadBuildWorker(QThread):
         if source is None:
             self.all_done.emit(0, len(self._layers))
             for d in self._layers:
-                self.layer_done.emit(d.index, False, "No Gaia catalogue installed.")
+                self.layer_done.emit(d.index, False, self.tr("No Gaia catalogue installed."))
             return
 
         built = failed = 0
@@ -82,8 +82,7 @@ class QuadBuildWorker(QThread):
                     failed += 1
                     self.layer_done.emit(
                         d.index, False,
-                        f"Needs stars to G ≤ {d.gmag_limit:.1f}; the installed "
-                        f"catalogue only reaches G ≤ {source.depth():.1f}.")
+                        self.tr("Needs stars to G ≤ {0:.1f}; the installed catalogue only reaches G ≤ {1:.1f}.").format(d.gmag_limit, source.depth()))
                     continue
                 try:
                     stats = build_layer(
@@ -139,8 +138,8 @@ class _QuadRowWidget(QFrame):
 
         self._chk = QCheckBox()
         self._chk.setChecked(d.recommended)
-        self._chk.setToolTip("Include this layer when you press "
-                             "“Build Selected”.")
+        self._chk.setToolTip(self.tr("Include this layer when you press "
+                             "“Build Selected”."))
         # Qt draws an unstyled indicator through the stylesheet engine as soon
         # as any ancestor carries a stylesheet -- and this row sets one. On a
         # dark background that indicator comes out invisible, so the box has
@@ -172,17 +171,18 @@ class _QuadRowWidget(QFrame):
         t.setStyleSheet("font-weight:bold; font-size:13px; color:#e0e0ff; border:none;")
         trow.addWidget(t)
         if d.recommended:
-            b = QLabel("Recommended")
+            b = QLabel(self.tr("Recommended"))
             b.setStyleSheet("font-size:10px; color:#44cc88; font-weight:bold; "
                             "border:1px solid #44cc88; border-radius:3px; padding:1px 5px;")
             trow.addWidget(b)
         trow.addStretch()
         info.addLayout(trow)
 
-        desc = QLabel(f"Solves {d.field_label}  ·  needs stars to G ≤ "
-                      f"{d.gmag_limit:.1f}  ·  about {d.est_quads:,} quads, "
-                      f"{fmt_size(d.est_bytes)}"
-                      + (f"  ·  builds in {d.build_note}" if d.build_note else ""))
+        desc = QLabel(self.tr("Solves {0}  ·  needs stars to G ≤ "
+                              "{1:.1f}  ·  about {2:,} quads, "
+                              "{3}").format(d.field_label, d.gmag_limit, d.est_quads,
+                                            fmt_size(d.est_bytes))
+                      + (self.tr("  ·  builds in {0}").format(d.build_note) if d.build_note else ""))
         desc.setStyleSheet("font-size:11px; color:#888; border:none;")
         desc.setWordWrap(True)
         info.addWidget(desc)
@@ -212,11 +212,11 @@ class _QuadRowWidget(QFrame):
 
         br = QHBoxLayout()
         br.setSpacing(6)
-        self._btn_build = QPushButton("Build")
+        self._btn_build = QPushButton(self.tr("Build"))
         self._btn_build.setFixedWidth(80)
         self._btn_build.setStyleSheet(self._style("#224488", "#3366cc"))
         self._btn_build.clicked.connect(lambda: self.build_requested.emit(d.index))
-        self._btn_remove = QPushButton("Remove")
+        self._btn_remove = QPushButton(self.tr("Remove"))
         self._btn_remove.setFixedWidth(80)
         self._btn_remove.setStyleSheet(self._style("#442222", "#883333"))
         self._btn_remove.clicked.connect(lambda: self.remove_requested.emit(d.index))
@@ -244,22 +244,20 @@ class _QuadRowWidget(QFrame):
             # header is the truth.
             if hdr:
                 self._stats.setText(
-                    f"Built  ·  {hdr['n_quads']:,} quads from "
-                    f"{hdr['n_stars']:,} stars  ·  {fmt_size(size)} on disk"
-                    f"  ·  epoch {hdr['epoch']:.1f}")
+                    self.tr("Built  ·  {0:,} quads from {1:,} stars  ·  {2} on disk  ·  epoch {3:.1f}").format(hdr['n_quads'], hdr['n_stars'], fmt_size(size), hdr['epoch']))
             else:
-                self._stats.setText(f"Built  ·  {fmt_size(size)} on disk"
-                                    if size else "Built")
-            self._btn_build.setText("Rebuild")
+                self._stats.setText(self.tr("Built  ·  {0} on disk").format(fmt_size(size))
+                                    if size else self.tr("Built"))
+            self._btn_build.setText(self.tr("Rebuild"))
             self._btn_build.setEnabled(buildable)
             self._btn_remove.setVisible(True)
         else:
             self._btn_remove.setVisible(False)
-            self._btn_build.setText("Build")
+            self._btn_build.setText(self.tr("Build"))
             self._btn_build.setEnabled(buildable)
             if buildable:
                 self._dot.setStyleSheet("color:#555; font-size:14px;")
-                self._stats.setText("Not built")
+                self._stats.setText(self.tr("Not built"))
             else:
                 self._dot.setStyleSheet("color:#aa4444; font-size:14px;")
                 self._stats.setText(detail)
@@ -303,14 +301,14 @@ class BlindSolveIndexTab(QWidget):
         root.setSpacing(8)
 
         info = QLabel(
-            "Blind solving finds the field from the star pattern alone — no RA/Dec, "
+            self.tr("Blind solving finds the field from the star pattern alone — no RA/Dec, "
             "no field of view, no hints. These index layers are <b>built locally "
             "from the Gaia data you already downloaded</b>; nothing extra comes off "
             "the wire.<br><br>"
             "A layer is tied to one angular scale and solves fields from about 2.5× "
             "to 8× its quad size, so the layers overlap. Build the Recommended set "
             "and you cover roughly 20′ to 25° fields — everything most imaging rigs "
-            "produce — from the Bright (G&nbsp;&lt;&nbsp;17) astrometric tier alone."
+            "produce — from the Bright (G&nbsp;&lt;&nbsp;17) astrometric tier alone.")
         )
         info.setWordWrap(True)
         info.setStyleSheet("color:#778; font-size:11px; margin-bottom:4px;")
@@ -322,16 +320,16 @@ class BlindSolveIndexTab(QWidget):
         root.addWidget(self._src_lbl)
 
         drow = QHBoxLayout()
-        drow.addWidget(QLabel("Index folder:"))
+        drow.addWidget(QLabel(self.tr("Index folder:")))
         self._dir_lbl = QLabel("")
         self._dir_lbl.setStyleSheet("color:#6688aa; font-size:11px; font-family:monospace;")
         self._dir_lbl.setWordWrap(True)
         drow.addWidget(self._dir_lbl, stretch=1)
-        b_change = QPushButton("Change Location…")
+        b_change = QPushButton(self.tr("Change Location…"))
         b_change.setFixedWidth(130)
         b_change.clicked.connect(self._change_location)
         drow.addWidget(b_change)
-        b_open = QPushButton("Open Folder")
+        b_open = QPushButton(self.tr("Open Folder"))
         b_open.setFixedWidth(100)
         b_open.clicked.connect(self._open_folder)
         drow.addWidget(b_open)
@@ -355,18 +353,18 @@ class BlindSolveIndexTab(QWidget):
         root.addWidget(scroll, stretch=1)
 
         brow = QHBoxLayout()
-        brow.addWidget(QLabel("Reader processes:"))
+        brow.addWidget(QLabel(self.tr("Reader processes:")))
         self._spin_workers = QSpinBox()
         self._spin_workers.setRange(1, 16)
         self._spin_workers.setValue(_default_workers())
         self._spin_workers.setToolTip(
-            "Parallel readers for the catalogue scan.\n\n"
+            self.tr("Parallel readers for the catalogue scan.\n\n"
             "Reading the Gaia tables is about half the build time, and each\n"
             "worker reduces its own slice before anything is handed back, so\n"
             "extra readers cost little memory. Threads were measured to be\n"
             "SLOWER than one reader (the GIL is held while sqlite builds row\n"
             "tuples), so these are processes.\n\n"
-            "Set to 1 if your drive is the bottleneck rather than the CPU.")
+            "Set to 1 if your drive is the bottleneck rather than the CPU."))
         self._spin_workers.valueChanged.connect(self._save_workers)
         brow.addWidget(self._spin_workers)
         brow.addSpacing(12)
@@ -374,11 +372,11 @@ class BlindSolveIndexTab(QWidget):
         self._status.setStyleSheet("color:#668; font-size:11px;")
         self._status.setWordWrap(True)
         brow.addWidget(self._status, stretch=1)
-        self._btn_all = QPushButton("Build Selected")
+        self._btn_all = QPushButton(self.tr("Build Selected"))
         self._btn_all.setFixedWidth(130)
         self._btn_all.clicked.connect(self._build_selected)
         brow.addWidget(self._btn_all)
-        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel = QPushButton(self.tr("Cancel"))
         self._btn_cancel.setFixedWidth(90)
         self._btn_cancel.setVisible(False)
         self._btn_cancel.clicked.connect(self._cancel)
@@ -414,14 +412,13 @@ class BlindSolveIndexTab(QWidget):
         depth = info.depth
         if depth <= 0:
             self._src_lbl.setText(
-                "<span style='color:#cc8844;'>No Gaia catalogue installed. "
+                self.tr("<span style='color:#cc8844;'>No Gaia catalogue installed. "
                 "Install the <b>Bright (G &lt; 17)</b> tier on the Astrometry tab "
-                "— that single tier covers every Recommended layer here.</span>")
+                "— that single tier covers every Recommended layer here.</span>"))
         else:
             n_ok = sum(1 for x in QUAD_LAYER_DEFS if depth >= x.gmag_limit - 1e-6)
             self._src_lbl.setText(
-                f"Source: {info.detail}  ·  {n_ok} of {len(QUAD_LAYER_DEFS)} "
-                f"layers buildable")
+                self.tr("Source: {0}  ·  {1} of {2} layers buildable").format(info.detail, n_ok, len(QUAD_LAYER_DEFS)))
 
         built = 0
         tot_quads = tot_stars = tot_bytes = 0
@@ -430,9 +427,9 @@ class BlindSolveIndexTab(QWidget):
             is_built = p.exists()
             built += is_built
             can = depth >= x.gmag_limit - 1e-6
-            detail = (f"Needs stars to G ≤ {x.gmag_limit:.1f} — install a deeper "
-                      f"tier (have G ≤ {depth:.1f})" if depth > 0 else
-                      "No Gaia catalogue installed")
+            detail = (self.tr("Needs stars to G ≤ {0:.1f} — install a deeper "
+                              "tier (have G ≤ {1:.1f})").format(x.gmag_limit, depth) if depth > 0 else
+                      self.tr("No Gaia catalogue installed"))
             size = p.stat().st_size if is_built else 0
             # The header read here is the one the row already needs, so the
             # totals cost nothing extra.
@@ -446,37 +443,37 @@ class BlindSolveIndexTab(QWidget):
 
         if built:
             self._status.setText(
-                f"{built}/{len(QUAD_LAYER_DEFS)} layers built  ·  "
-                f"{tot_quads:,} quads from {tot_stars:,} index stars  ·  "
-                f"{fmt_size(tot_bytes)} on disk  ·  blind solving is active")
+                self.tr("{0}/{1} layers built  ·  {2:,} quads from {3:,} index stars  ·  {4} on disk  ·  blind solving is active").format(built, len(QUAD_LAYER_DEFS), tot_quads, tot_stars, fmt_size(tot_bytes)))
         else:
             self._status.setText(
-                f"0/{len(QUAD_LAYER_DEFS)} layers built  ·  blind solving is "
-                f"unavailable until at least one layer is built")
+                self.tr("0/{0} layers built  ·  blind solving is unavailable until at least one layer is built").format(len(QUAD_LAYER_DEFS)))
 
     # ── build ────────────────────────────────────────────────────────────
 
     def _build_selected(self):
         want = [d for d in QUAD_LAYER_DEFS if self._rows[d.index].selected]
         if not want:
-            QMessageBox.information(self, "Blind Solve Index",
-                                    "Tick at least one layer to build.")
+            QMessageBox.information(self, self.tr("Blind Solve Index"),
+                                    self.tr("Tick at least one layer to build."))
             return
         self._start([d.index for d in want])
 
     def _start(self, indices: List[int]):
         if self._worker is not None and self._worker.isRunning():
-            QMessageBox.warning(self, "Blind Solve Index",
-                                "A build is already running.")
+            QMessageBox.warning(self, self.tr("Blind Solve Index"),
+                                self.tr("A build is already running."))
             return
         defs = [d for d in QUAD_LAYER_DEFS if d.index in set(indices)]
         heavy = [d for d in defs if d.warning]
         if heavy:
             names = "\n".join(f"  • {d.label}: {d.warning}" for d in heavy)
             if QMessageBox.question(
-                    self, "Long build",
-                    f"These layers take a long time and a lot of memory:\n\n{names}\n\n"
-                    f"Continue?",
+                    self, self.tr("Long build"),
+                    self.tr("These layers take a long time and a lot of memory:\n"
+                            "\n"
+                            "{0}\n"
+                            "\n"
+                            "Continue?").format(names),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                 return
@@ -488,7 +485,7 @@ class BlindSolveIndexTab(QWidget):
             self._rows[d.index].set_busy(True)
         self._btn_all.setEnabled(False)
         self._btn_cancel.setVisible(True)
-        self._status.setText(f"Building {len(defs)} layer(s)…")
+        self._status.setText(self.tr("Building {0} layer(s)…").format(len(defs)))
 
         self._worker = QuadBuildWorker(defs, out, astro, xp,
                                        workers=nw, parent=None)
@@ -508,7 +505,7 @@ class BlindSolveIndexTab(QWidget):
         if row is not None:
             row.set_busy(False)
         if not ok:
-            self._status.setText(f"Layer {index} failed: {msg}")
+            self._status.setText(self.tr("Layer {0} failed: {1}").format(index, msg))
 
     def _finish(self):
         for r in self._rows.values():
@@ -524,19 +521,23 @@ class BlindSolveIndexTab(QWidget):
 
     def _on_all_done(self, built: int, failed: int):
         self._finish()
-        self._status.setText(
-            f"Built {built} layer(s)" + (f", {failed} failed" if failed else "")
-            + ".  Blind solving will now be tried automatically when an image "
-              "has no usable RA/Dec.")
+        if failed:
+            self._status.setText(
+                self.tr("Built {0} layer(s), {1} failed.  Blind solving will now be tried "
+                        "automatically when an image has no usable RA/Dec.").format(built, failed))
+        else:
+            self._status.setText(
+                self.tr("Built {0} layer(s).  Blind solving will now be tried "
+                        "automatically when an image has no usable RA/Dec.").format(built))
 
     def _on_cancelled(self):
         self._finish()
-        self._status.setText("Build cancelled. Layers already finished are usable.")
+        self._status.setText(self.tr("Build cancelled. Layers already finished are usable."))
 
     def _cancel(self):
         if self._worker is not None:
             self._worker.cancel()
-            self._status.setText("Cancelling…")
+            self._status.setText(self.tr("Cancelling…"))
 
     # ── housekeeping ─────────────────────────────────────────────────────
 
@@ -547,9 +548,10 @@ class BlindSolveIndexTab(QWidget):
         if not p.exists():
             return
         if QMessageBox.question(
-                self, "Remove Layer",
-                f"Delete {d.label}?\n\n{fmt_size(p.stat().st_size)} will be freed. "
-                f"You can rebuild it at any time from the Gaia data you already have.",
+                self, self.tr("Remove Layer"),
+                self.tr("Delete {0}?\n"
+                        "\n"
+                        "{1} will be freed. You can rebuild it at any time from the Gaia data you already have.").format(d.label, fmt_size(p.stat().st_size)),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -559,19 +561,19 @@ class BlindSolveIndexTab(QWidget):
         try:
             p.unlink()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Could not delete {p.name}:\n{e}")
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Could not delete {0}:\n{1}").format(p.name, e))
         refresh_quad_library()
         self.refresh()
         self.library_changed.emit()
 
     def _change_location(self):
         if self._worker is not None and self._worker.isRunning():
-            QMessageBox.warning(self, "Blind Solve Index",
-                                "Wait for the build to finish first.")
+            QMessageBox.warning(self, self.tr("Blind Solve Index"),
+                                self.tr("Wait for the build to finish first."))
             return
         cur = get_quad_library_dir()
         chosen = QFileDialog.getExistingDirectory(
-            self, "Choose Blind Solve Index Folder", str(cur))
+            self, self.tr("Choose Blind Solve Index Folder"), str(cur))
         if not chosen:
             return
         dest = Path(chosen)
@@ -581,10 +583,10 @@ class BlindSolveIndexTab(QWidget):
         move = False
         if present:
             move = QMessageBox.question(
-                self, "Move Existing Layers",
-                f"Move {len(present)} built layer(s) to the new folder?\n\n"
-                f"Choosing No just points SASpro at the new folder and leaves the "
-                f"files where they are.",
+                self, self.tr("Move Existing Layers"),
+                self.tr("Move {0} built layer(s) to the new folder?\n"
+                        "\n"
+                        "Choosing No just points SASpro at the new folder and leaves the files where they are.").format(len(present)),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             ) == QMessageBox.StandardButton.Yes
 
@@ -596,12 +598,12 @@ class BlindSolveIndexTab(QWidget):
         if move:
             dest.mkdir(parents=True, exist_ok=True)
             for fn in present:
-                self._status.setText(f"Moving {fn}…")
+                self._status.setText(self.tr("Moving {0}…").format(fn))
                 QApplication.processEvents()
                 try:
                     shutil.move(str(cur / fn), str(dest / fn))
                 except Exception as e:
-                    QMessageBox.warning(self, "Move Failed", f"{fn}:\n{e}")
+                    QMessageBox.warning(self, self.tr("Move Failed"), f"{fn}:\n{e}")
                     break
         refresh_quad_library()
         self.refresh()

@@ -40,8 +40,8 @@ _SUPPORTED = {
     "Comet Lower-Trim (30%)",
     "Comet Percentile (40th)",
     "Simple Average (No Rejection)",
-    "Weighted Windsorized Sigma Clipping",
-    "Windsorized Sigma Clipping",   # <<< NEW (unweighted)
+    "Weighted Winsorized Sigma Clipping",
+    "Winsorized Sigma Clipping",   # <<< NEW (unweighted)
     "Kappa-Sigma Clipping",
     "Trimmed Mean",
     "Extreme Studentized Deviate (ESD)",
@@ -1975,7 +1975,7 @@ def _torch_reduce_tile_impl(
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
-        if algo_name == "Windsorized Sigma Clipping":
+        if algo_name == "Winsorized Sigma Clipping":
             # True Winsorized sigma clipping (APP/PI-parity):
             # robust winsorized center/scale, one rejection pass, then average
             # of the SURVIVORS only (rejected pixels are excluded, not
@@ -2070,7 +2070,7 @@ def _torch_reduce_tile_impl(
                              collapse_rej_channels=collapse_rej_channels)
 
 
-        if algo == "Weighted Windsorized Sigma Clipping":
+        if algo == "Weighted Winsorized Sigma Clipping":
             # True Winsorized sigma clipping (APP/PI-parity), weighted average.
             # See _winsorized_center_scale for why sigma must be measured on
             # the winsorized stack: the old code measured std on raw data, so

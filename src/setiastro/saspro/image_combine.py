@@ -252,7 +252,7 @@ class ImageCombineDialog(QDialog):
     """
     def __init__(self, main_window):
         super().__init__(main_window)
-        self.setWindowTitle("Image Combine")
+        self.setWindowTitle(self.tr("Image Combine"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -289,30 +289,30 @@ class ImageCombineDialog(QDialog):
 
         frm = QFormLayout()
         self.cbA = QComboBox(); self.cbB = QComboBox()
-        frm.addRow("Source A:", self.cbA)
-        frm.addRow("Source B:", self.cbB)
+        frm.addRow(self.tr("Source A:"), self.cbA)
+        frm.addRow(self.tr("Source B:"), self.cbB)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Mode:"))
+        row.addWidget(QLabel(self.tr("Mode:")))
         self.cbMode = QComboBox()
         self.cbMode.addItems(["Average","Add","Subtract","Blend","Multiply","Divide","Screen","Overlay","Difference"])
         row.addWidget(self.cbMode, 1)
-        row.addWidget(QLabel("Opacity:"))
+        row.addWidget(QLabel(self.tr("Opacity:")))
         self.slAlpha = QSlider(Qt.Orientation.Horizontal); self.slAlpha.setRange(0,100); self.slAlpha.setValue(100)
         row.addWidget(self.slAlpha, 2)
         frm.addRow(row)
 
         # luma-only
-        self.chkLuma = QCheckBox("Combine luminance only (keep A’s color)")
+        self.chkLuma = QCheckBox(self.tr("Combine luminance only (keep A’s color)"))
         frm.addRow(self.chkLuma)
 
         # mask overlay
         mrow = QHBoxLayout()
-        self.chkOverlay = QCheckBox("Show mask overlay")
-        self.chkInvert  = QCheckBox("Invert mask")
+        self.chkOverlay = QCheckBox(self.tr("Show mask overlay"))
+        self.chkInvert  = QCheckBox(self.tr("Invert mask"))
         mrow.addWidget(self.chkOverlay)
         mrow.addWidget(self.chkInvert)
-        mrow.addWidget(QLabel("Overlay opacity:"))
+        mrow.addWidget(QLabel(self.tr("Overlay opacity:")))
         self.slOverlay = QSlider(Qt.Orientation.Horizontal); self.slOverlay.setRange(5,95); self.slOverlay.setValue(40)
         mrow.addWidget(self.slOverlay, 1)
         frm.addRow(mrow)
@@ -327,9 +327,9 @@ class ImageCombineDialog(QDialog):
         # zoom (themed)
         zrow = QHBoxLayout()
 
-        btnOut = themed_toolbtn("zoom-out", "Zoom Out")
-        btnFit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
-        btnIn  = themed_toolbtn("zoom-in", "Zoom In")
+        btnOut = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        btnFit = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
+        btnIn  = themed_toolbtn("zoom-in", self.tr("Zoom In"))
 
         btnOut.clicked.connect(self._zoom_out)
         btnIn .clicked.connect(self._zoom_in)
@@ -348,8 +348,8 @@ class ImageCombineDialog(QDialog):
 
         # buttons
         btns = QDialogButtonBox()
-        self.btnApply = btns.addButton("Apply", QDialogButtonBox.ButtonRole.AcceptRole)
-        self.btnClose = btns.addButton("Close", QDialogButtonBox.ButtonRole.RejectRole)
+        self.btnApply = btns.addButton(self.tr("Apply"), QDialogButtonBox.ButtonRole.AcceptRole)
+        self.btnClose = btns.addButton(self.tr("Close"), QDialogButtonBox.ButtonRole.RejectRole)
         self.btnClose.clicked.connect(self.reject)
         self.btnApply.clicked.connect(self._commit)
         root.addWidget(btns)
@@ -569,11 +569,11 @@ class ImageCombineDialog(QDialog):
         imgA = getattr(A, "image", None); imgB = getattr(B, "image", None)
         if imgA is None or imgB is None: return
         if imgA.shape[:2] != imgB.shape[:2]:
-            self.lbl.setText("Images must be the same size.")
+            self.lbl.setText(self.tr("Images must be the same size."))
             return
         luma = self.chkLuma.isChecked()
         if luma and (imgA.ndim != 3 or imgA.shape[2] != 3):
-            self.lbl.setText("Luminance mode requires RGB A."); return
+            self.lbl.setText(self.tr("Luminance mode requires RGB A.")); return
 
         H, W = imgA.shape[:2]
         self._full_hw = (H, W)
@@ -594,7 +594,7 @@ class ImageCombineDialog(QDialog):
 
     def _on_preview_ready(self, res: dict):
         if "error" in res:
-            self.lbl.setText(f"Error: {res['error']}")
+            self.lbl.setText(self.tr("Error: {0}").format(res['error']))
             return
         w, h = res["pw"], res["ph"]
         self._proxies = {(id(res["imgA"]), w, h): (res["imgA"], res["pa"]),
@@ -617,7 +617,7 @@ class ImageCombineDialog(QDialog):
         imgA = getattr(A, "image", None); imgB = getattr(B, "image", None)
         if imgA is None or imgB is None: return
         if imgA.shape[:2] != imgB.shape[:2]:
-            QMessageBox.warning(self, "Image Combine", "Image sizes must match."); return
+            QMessageBox.warning(self, self.tr("Image Combine"), self.tr("Image sizes must match.")); return
 
         thr = _CombineJob(_combine_full_job, dict(
             imgA=imgA, imgB=imgB, mode=self.cbMode.currentText(),
@@ -683,7 +683,7 @@ class ImageCombineDialog(QDialog):
                     logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
         except Exception as e:
-            QMessageBox.critical(self, "Image Combine", f"Failed:\n{e}")
+            QMessageBox.critical(self, self.tr("Image Combine"), self.tr("Failed:\n{0}").format(e))
             
     # ---------- zoom/pan ----------
     def _apply_zoom(self):

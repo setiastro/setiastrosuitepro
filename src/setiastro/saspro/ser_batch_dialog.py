@@ -45,7 +45,7 @@ def _is_video(path: str) -> bool:
 class _AnchorPickerDialog(QDialog):
     def __init__(self, parent, ref_img01: np.ndarray):
         super().__init__(parent)
-        self.setWindowTitle("Set Surface Anchor — Shift+drag a patch on the reference frame")
+        self.setWindowTitle(self.tr("Set Surface Anchor — Shift+drag a patch on the reference frame"))
         self.setModal(True)
         self.resize(900, 700)
 
@@ -64,8 +64,8 @@ class _AnchorPickerDialog(QDialog):
         outer.setSpacing(6)
 
         hint = QLabel(
-            "Shift+drag a patch on the reference frame to define the surface anchor.\n"
-            "Choose a high-contrast area (crater rim, sunspot, etc.) present in all batch files.",
+            self.tr("Shift+drag a patch on the reference frame to define the surface anchor.\n"
+                    "Choose a high-contrast area (crater rim, sunspot, etc.) present in all batch files."),
             self
         )
         hint.setWordWrap(True)
@@ -87,20 +87,20 @@ class _AnchorPickerDialog(QDialog):
         zoom_row = QHBoxLayout()
         self.btn_zo  = QPushButton("–", self)
         self.btn_zi  = QPushButton("+", self)
-        self.btn_fit = QPushButton("Fit", self)
+        self.btn_fit = QPushButton(self.tr("Fit"), self)
         self.btn_100 = QPushButton("1:1", self)
         for b in (self.btn_zo, self.btn_zi, self.btn_fit, self.btn_100):
             b.setFixedWidth(44)
             zoom_row.addWidget(b)
         zoom_row.addStretch(1)
-        self.lbl_anchor_status = QLabel("No anchor set — Shift+drag to define", self)
+        self.lbl_anchor_status = QLabel(self.tr("No anchor set — Shift+drag to define"), self)
         self.lbl_anchor_status.setStyleSheet("color:#c66;")
         zoom_row.addWidget(self.lbl_anchor_status)
         outer.addLayout(zoom_row, 0)
 
         btns = QHBoxLayout()
-        self.btn_ok     = QPushButton("OK", self)
-        self.btn_cancel = QPushButton("Cancel", self)
+        self.btn_ok     = QPushButton(self.tr("OK"), self)
+        self.btn_cancel = QPushButton(self.tr("Cancel"), self)
         self.btn_ok.setEnabled(False)
         btns.addStretch(1)
         btns.addWidget(self.btn_ok)
@@ -226,7 +226,7 @@ class _AnchorPickerDialog(QDialog):
                     if rw >= 16 and rh >= 16:
                         self._anchor = (left, top, rw, rh)
                         self.lbl_anchor_status.setText(
-                            f"Anchor: x={left}, y={top}, w={rw}, h={rh}"
+                            self.tr("Anchor: x={0}, y={1}, w={2}, h={3}").format(left, top, rw, rh)
                         )
                         self.lbl_anchor_status.setStyleSheet("color:#4a4;")
                         self.btn_ok.setEnabled(True)
@@ -376,7 +376,7 @@ class SERBatchDialog(QDialog):
         bayer_pattern: Optional[str],
     ):
         super().__init__(parent)
-        self.setWindowTitle("Batch Planetary Stacker")
+        self.setWindowTitle(self.tr("Batch Planetary Stacker"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -406,7 +406,7 @@ class SERBatchDialog(QDialog):
         outer.setSpacing(8)
 
         # ── File list ──────────────────────────────────────────────────────
-        gbF = QGroupBox("Input Files  (SER / AVI / MP4 / MOV / MKV only)", self)
+        gbF = QGroupBox(self.tr("Input Files  (SER / AVI / MP4 / MOV / MKV only)"), self)
         vF  = QVBoxLayout(gbF)
 
         self.lst = QListWidget(self)
@@ -415,9 +415,9 @@ class SERBatchDialog(QDialog):
         vF.addWidget(self.lst, 1)
 
         file_btns = QHBoxLayout()
-        self.btn_add    = QPushButton("Add Files…", self)
-        self.btn_remove = QPushButton("Remove Selected", self)
-        self.btn_clear  = QPushButton("Clear All", self)
+        self.btn_add    = QPushButton(self.tr("Add Files…"), self)
+        self.btn_remove = QPushButton(self.tr("Remove Selected"), self)
+        self.btn_clear  = QPushButton(self.tr("Clear All"), self)
         file_btns.addWidget(self.btn_add)
         file_btns.addWidget(self.btn_remove)
         file_btns.addWidget(self.btn_clear)
@@ -426,43 +426,43 @@ class SERBatchDialog(QDialog):
         outer.addWidget(gbF, 1)
 
         # ── Settings summary + drizzle override ───────────────────────────
-        gbS = QGroupBox("Stacking Settings  (inherited from viewer)", self)
+        gbS = QGroupBox(self.tr("Stacking Settings  (inherited from viewer)"), self)
         fS  = QFormLayout(gbS)
 
-        fS.addRow("Track mode:", QLabel(self._track_mode.capitalize(), self))
+        fS.addRow(self.tr("Track mode:"), QLabel(self._track_mode.capitalize(), self))
 
         kp = self._base_cfg_kw.get("keep_percent", 20.0)
-        fS.addRow("Keep %:", QLabel(f"{kp:.1f}%", self))
+        fS.addRow(self.tr("Keep %:"), QLabel(f"{kp:.1f}%", self))
 
-        roi_str = str(self._roi) if self._roi else "(full frame)"
+        roi_str = str(self._roi) if self._roi else self.tr("(full frame)")
         fS.addRow("ROI:", QLabel(roi_str, self))
 
         if self._track_mode == "surface":
             anc_str = (str(self._surface_anchor) if self._surface_anchor
-                       else "⚠️ Not set — will be picked from first file")
+                       else self.tr("⚠️ Not set — will be picked from first file"))
             self.lbl_anchor = QLabel(anc_str, self)
             self.lbl_anchor.setStyleSheet(
                 "color:#4a4;" if self._surface_anchor else "color:#c66;"
             )
-            fS.addRow("Surface anchor:", self.lbl_anchor)
+            fS.addRow(self.tr("Surface anchor:"), self.lbl_anchor)
 
         # Drizzle is the one setting users commonly want to change per batch
         self.cmb_drizzle = QComboBox(self)
         self.cmb_drizzle.addItems(["Off (1×)", "1.5×", "2×"])
-        self.cmb_drizzle.setToolTip(
+        self.cmb_drizzle.setToolTip(self.tr(
             "Drizzle scale for stacking.\n"
             "1.5× ≈ 2.25× compute cost, 2× ≈ 4× compute cost."
-        )
-        fS.addRow("Drizzle:", self.cmb_drizzle)
+        ))
+        fS.addRow(self.tr("Drizzle:"), self.cmb_drizzle)
 
         outer.addWidget(gbS, 0)
 
         # ── Output folder ──────────────────────────────────────────────────
-        gbO = QGroupBox("Output", self)
+        gbO = QGroupBox(self.tr("Output"), self)
         hO  = QHBoxLayout(gbO)
-        self.lbl_out = QLabel("(not set)", self)
+        self.lbl_out = QLabel(self.tr("(not set)"), self)
         self.lbl_out.setStyleSheet("color:#888;")
-        self.btn_out = QPushButton("Choose Folder…", self)
+        self.btn_out = QPushButton(self.tr("Choose Folder…"), self)
         hO.addWidget(self.lbl_out, 1)
         hO.addWidget(self.btn_out, 0)
         outer.addWidget(gbO, 0)
@@ -485,7 +485,7 @@ class SERBatchDialog(QDialog):
         outer.addWidget(self.lbl_phase, 0)
 
         # ── Log ────────────────────────────────────────────────────────────
-        gbL = QGroupBox("Log", self)
+        gbL = QGroupBox(self.tr("Log"), self)
         vL  = QVBoxLayout(gbL)
         self.log = QTextEdit(self)
         self.log.setReadOnly(True)
@@ -495,9 +495,9 @@ class SERBatchDialog(QDialog):
 
         # ── Action buttons ─────────────────────────────────────────────────
         act = QHBoxLayout()
-        self.btn_run    = QPushButton("▶  Run Batch", self)
-        self.btn_cancel = QPushButton("Cancel", self)
-        self.btn_close  = QPushButton("Close", self)
+        self.btn_run    = QPushButton(self.tr("▶  Run Batch"), self)
+        self.btn_cancel = QPushButton(self.tr("Cancel"), self)
+        self.btn_close  = QPushButton(self.tr("Close"), self)
         self.btn_run.setEnabled(False)
         self.btn_cancel.setEnabled(False)
         act.addWidget(self.btn_run)
@@ -549,7 +549,7 @@ class SERBatchDialog(QDialog):
         last_dir = settings.value("BatchStacker/last_open_dir", "", type=str) or ""
 
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select Video Files", last_dir,
+            self, self.tr("Select Video Files"), last_dir,
             "Planetary Videos (*.ser *.avi *.mp4 *.mov *.mkv);;All Files (*)"
         )
         if paths:
@@ -572,7 +572,7 @@ class SERBatchDialog(QDialog):
         self._update_run_button()
 
     def _on_choose_out(self):
-        d = QFileDialog.getExistingDirectory(self, "Choose Output Folder", self._out_dir or "")
+        d = QFileDialog.getExistingDirectory(self, self.tr("Choose Output Folder"), self._out_dir or "")
         if d:
             self._out_dir = d
             self.lbl_out.setText(d)
@@ -601,7 +601,7 @@ class SERBatchDialog(QDialog):
             finally:
                 src.close()
         except Exception as e:
-            QMessageBox.critical(self, "Batch", f"Could not open first file for anchor:\n{e}")
+            QMessageBox.critical(self, self.tr("Batch"), self.tr("Could not open first file for anchor:\n{0}").format(e))
             return False
 
         ref = img[..., 0] if img.ndim == 3 else img
@@ -668,7 +668,7 @@ class SERBatchDialog(QDialog):
         self.prog_file.setRange(0, 100)
         self.prog_file.setValue(0)
         self.prog_file.setVisible(True)
-        self.lbl_overall.setText(f"0 / {n} files done")
+        self.lbl_overall.setText(self.tr("0 / {0} files done").format(n))
         self.lbl_phase.setText("")
         self._log(f"Starting batch: {n} file(s) → {self._out_dir}")
 
@@ -734,7 +734,7 @@ class SERBatchDialog(QDialog):
             if self.lst.item(r) and self.lst.item(r).text().startswith("✅")
         )
         self.prog_overall.setValue(done)
-        self.lbl_overall.setText(f"{done} / {len(self._files)} files done")
+        self.lbl_overall.setText(self.tr("{0} / {1} files done").format(done, len(self._files)))
         self._log(f"  ✅ Saved → {out_path}")
 
     def _on_file_failed(self, i: int, msg: str):
@@ -763,15 +763,15 @@ class SERBatchDialog(QDialog):
         )
         fail_count = len(self._files) - done_count
         self.lbl_overall.setText(
-            f"Batch complete: {done_count} succeeded, {fail_count} failed"
+            self.tr("Batch complete: {0} succeeded, {1} failed").format(done_count, fail_count)
         )
         self._log(f"Batch complete. {done_count}/{len(self._files)} succeeded → {self._out_dir}")
 
         if done_count > 0:
             QMessageBox.information(
-                self, "Batch Complete",
-                f"{done_count} stack(s) saved to:\n{self._out_dir}"
-                + (f"\n\n{fail_count} file(s) failed — see log." if fail_count else "")
+                self, self.tr("Batch Complete"),
+                self.tr("{0} stack(s) saved to:\n{1}").format(done_count, self._out_dir)
+                + (self.tr("\n\n{0} file(s) failed — see log.").format(fail_count) if fail_count else "")
             )
 
     def _log(self, s: str):

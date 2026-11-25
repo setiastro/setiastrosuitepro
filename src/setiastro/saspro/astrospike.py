@@ -120,7 +120,7 @@ class AstroSpikeDialog(AstroSpikeWindow):
         if icon_path:
             self.setWindowIcon(QIcon(icon_path))
         
-        self.setWindowTitle("AstroSpike - Star Diffraction Spikes")
+        self.setWindowTitle(self.tr("AstroSpike - Star Diffraction Spikes"))
         
         # Enable window frame with title bar and control buttons
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.Window)

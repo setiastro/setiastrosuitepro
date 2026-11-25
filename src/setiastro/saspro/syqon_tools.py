@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import numpy as np
-from PyQt6.QtCore import Qt, QSettings, QUrl, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QSettings, QUrl, QThread, QTimer, pyqtSignal, QCoreApplication
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QStackedWidget, QWidget, QFormLayout, QGroupBox, QMessageBox,
@@ -31,6 +31,10 @@ from setiastro.saspro.remove_stars import (
     _start_syqon_thread,
 )
 from setiastro.saspro.resources import starnet_path, get_icons
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("SyQonTools", text)
 
 
 class _WorkerCloseGuardMixin:
@@ -60,9 +64,9 @@ class _WorkerCloseGuardMixin:
             return True
         reply = QMessageBox.question(
             self,
-            f"{self._WORKER_LABEL} Running",
-            f"{self._WORKER_LABEL} is still processing.\n\n"
-            "Cancel it and close? (May take a moment to finish the current tile.)",
+            self.tr("{0} Running").format(self._WORKER_LABEL),
+            self.tr("{0} is still processing.\n\n"
+            "Cancel it and close? (May take a moment to finish the current tile.)").format(self._WORKER_LABEL),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -140,7 +144,7 @@ class SyQonToolsDialog(QDialog):
         self.docman = docman
         self.get_active_doc = get_active_doc_callable
 
-        self.setWindowTitle("SyQon Tools")
+        self.setWindowTitle(self.tr("SyQon Tools"))
         self.setMinimumSize(640, 520)
         if icon is not None:
             self.setWindowIcon(icon)
@@ -150,14 +154,14 @@ class SyQonToolsDialog(QDialog):
         lay = QVBoxLayout(self)
 
         top = QHBoxLayout()
-        top.addWidget(QLabel("Tool family:"))
+        top.addWidget(QLabel(self.tr("Tool family:")))
         self.cmb_family = QComboBox(self)
         # Studio is the consolidated path (single SyQon neural CLI). The legacy
         # per-tool families below it are retained for backward compatibility.
-        self.cmb_family.addItem("Studio (all models)", userData="studio")
-        self.cmb_family.addItem("Starless (legacy)", userData="starless")
-        self.cmb_family.addItem("Denoise (legacy)", userData="denoise")
-        self.cmb_family.addItem("Sharpening (legacy)", userData="sharpening")
+        self.cmb_family.addItem(self.tr("Studio (all models)"), userData="studio")
+        self.cmb_family.addItem(self.tr("Starless (legacy)"), userData="starless")
+        self.cmb_family.addItem(self.tr("Denoise (legacy)"), userData="denoise")
+        self.cmb_family.addItem(self.tr("Sharpening (legacy)"), userData="sharpening")
         top.addWidget(self.cmb_family, 1)
         lay.addLayout(top)
 
@@ -179,8 +183,8 @@ class SyQonToolsDialog(QDialog):
         self.stack.addWidget(self.page_sharpen)
 
         btns = QHBoxLayout()
-        self.btn_launch = QPushButton("Open Tool", self)
-        self.btn_close = QPushButton("Close", self)
+        self.btn_launch = QPushButton(self.tr("Open Tool"), self)
+        self.btn_close = QPushButton(self.tr("Close"), self)
         self.btn_launch.clicked.connect(self._launch_selected_tool)
         self.btn_close.clicked.connect(self.reject)
         btns.addStretch(1)
@@ -240,23 +244,23 @@ class SyQonToolsDialog(QDialog):
         if key == "studio":
             self.stack.setCurrentWidget(self.page_studio)
             self.btn_launch.setVisible(True)
-            self.btn_launch.setText("Process")
+            self.btn_launch.setText(self.tr("Process"))
         elif key == "starless":
             self.stack.setCurrentWidget(self.page_starless)
             self.btn_launch.setVisible(False)
         elif key == "denoise":
             self.stack.setCurrentWidget(self.page_denoise)
             self.btn_launch.setVisible(True)
-            self.btn_launch.setText("Process")
+            self.btn_launch.setText(self.tr("Process"))
         else:
             self.stack.setCurrentWidget(self.page_sharpen)
             self.btn_launch.setVisible(True)
-            self.btn_launch.setText("Process")
+            self.btn_launch.setText(self.tr("Process"))
 
     def _launch_selected_tool(self):
         doc = self.get_active_doc()
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.information(self, "SyQon Tools", "No active image.")
+            QMessageBox.information(self, self.tr("SyQon Tools"), self.tr("No active image."))
             return
 
         key = self.cmb_family.currentData()
@@ -460,20 +464,20 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         form = QFormLayout(box)
 
         self.cmb_model = QComboBox(self)
-        self.cmb_model.addItem("Prism Mini (free)", userData="prism_mini")
-        self.cmb_model.addItem("Prism Deep (paid)", userData="prism_deep")
+        self.cmb_model.addItem(self.tr("Prism Mini (free)"), userData="prism_mini")
+        self.cmb_model.addItem(self.tr("Prism Deep (paid)"), userData="prism_deep")
         self.cmb_model.currentIndexChanged.connect(self._on_model_changed)
-        form.addRow("Model:", self.cmb_model)
+        form.addRow(self.tr("Model:"), self.cmb_model)
 
         self.lbl_model_path = QLabel("", self)
         self.lbl_model_path.setWordWrap(True)
-        form.addRow("Installed model path:", self.lbl_model_path)
+        form.addRow(self.tr("Installed model path:"), self.lbl_model_path)
 
         btn_row = QHBoxLayout()
-        self.btn_buy = QPushButton("Get Model Here...", self)
-        self.btn_install = QPushButton("Install Downloaded Model...", self)
-        self.btn_remove = QPushButton("Remove Model", self)
-        self.btn_clear_cache = QPushButton("Clear AI Cache", self)
+        self.btn_buy = QPushButton(self.tr("Get Model Here..."), self)
+        self.btn_install = QPushButton(self.tr("Install Downloaded Model..."), self)
+        self.btn_remove = QPushButton(self.tr("Remove Model"), self)
+        self.btn_clear_cache = QPushButton(self.tr("Clear AI Cache"), self)
 
         self.btn_buy.clicked.connect(self._open_buy_page)
         self.btn_install.clicked.connect(self._install_model)
@@ -484,7 +488,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         btn_row.addWidget(self.btn_install)
         btn_row.addWidget(self.btn_remove)
         btn_row.addWidget(self.btn_clear_cache)
-        self.chk_live_preview = QCheckBox("Live tile preview (slower)", self)
+        self.chk_live_preview = QCheckBox(self.tr("Live tile preview (slower)"), self)
         self.chk_live_preview.setChecked(False)
         lay.addWidget(self.chk_live_preview)
 
@@ -501,12 +505,12 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         self.spin_tile = QSpinBox(self)
         self.spin_tile.setRange(128, 2048)
         self.spin_tile.setValue(int(self.settings.value("syqon/prism_tile_size", 512)))
-        form.addRow("Tile size:", self.spin_tile)
+        form.addRow(self.tr("Tile size:"), self.spin_tile)
 
         self.spin_overlap = QSpinBox(self)
         self.spin_overlap.setRange(16, 512)
         self.spin_overlap.setValue(int(self.settings.value("syqon/prism_overlap", 64)))
-        form.addRow("Overlap:", self.spin_overlap)
+        form.addRow(self.tr("Overlap:"), self.spin_overlap)
 
         # --- NEW: edge padding (for tile context) ---
         self.spin_pad = QSpinBox(self)
@@ -514,17 +518,17 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         # default: at least overlap, with a little cushion (old behavior)
         default_pad = max(int(self.settings.value("syqon/prism_overlap", 64)), 32)
         self.spin_pad.setValue(int(self.settings.value("syqon/prism_pad", default_pad)))
-        form.addRow("Edge pad (px):", self.spin_pad)
+        form.addRow(self.tr("Edge pad (px):"), self.spin_pad)
 
-        pad_help = QLabel(
+        pad_help = QLabel(self.tr(
             "Pads edges before tiling (reflect) to prevent border artifacts.\n"
             "Typical: overlap or overlap+32. 0 disables padding."
-        )
+        ))
         pad_help.setWordWrap(True)
         pad_help.setStyleSheet("color:#888;")
         form.addRow("", pad_help)
 
-        self.chk_mtf = QCheckBox("Apply temporary stretch for model (recommended)", self)
+        self.chk_mtf = QCheckBox(self.tr("Apply temporary stretch for model (recommended)"), self)
         self.chk_mtf.setChecked(bool(self.settings.value("syqon/prism_use_mtf", True, type=bool)))
         form.addRow("", self.chk_mtf)
 
@@ -533,7 +537,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         self.spin_mtf_median.setSingleStep(0.01)
         self.spin_mtf_median.setDecimals(3)
         self.spin_mtf_median.setValue(float(self.settings.value("syqon/prism_mtf_target_median", 0.10)))
-        form.addRow("Temp stretch target median:", self.spin_mtf_median)
+        form.addRow(self.tr("Temp stretch target median:"), self.spin_mtf_median)
         saved_strength = float(self.settings.value("syqon/prism_strength", 0.85))
 
         self.sld_strength = QSlider(Qt.Orientation.Horizontal, self)
@@ -574,11 +578,11 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         strength_lay.addWidget(self.sld_strength, 1)
         strength_lay.addWidget(self.spin_strength)
 
-        form.addRow("Strength:", strength_row)
+        form.addRow(self.tr("Strength:"), strength_row)
 
         self.chk_mtf.toggled.connect(lambda on: self.spin_mtf_median.setEnabled(bool(on)))
         self.spin_mtf_median.setEnabled(self.chk_mtf.isChecked())
-        self.chk_amp = QCheckBox("Use AMP (mixed precision)", self)
+        self.chk_amp = QCheckBox(self.tr("Use AMP (mixed precision)"), self)
         self.chk_amp.setChecked(bool(self.settings.value("syqon/prism_use_amp", False, type=bool)))
         form.addRow("", self.chk_amp)
 
@@ -588,14 +592,14 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         self.pbar.setValue(0)
         self.pbar.setVisible(False)
         lay.addWidget(self.pbar)
-        info = QLabel(
+        info = QLabel(self.tr(
             "Prism Mini and Prism Deep use SyQon’s denoise models. "
             "Install the downloaded model file here after obtaining it from SyQon."
-        )
+        ))
         info.setWordWrap(True)
         lay.addWidget(info)
         lay.addStretch(1)
-        self.btn_cancel = QPushButton("Cancel", self)
+        self.btn_cancel = QPushButton(self.tr("Cancel"), self)
         self.btn_cancel.setVisible(False)
         self.btn_cancel.clicked.connect(self._cancel_processing)
         lay.addWidget(self.btn_cancel)
@@ -618,8 +622,8 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
             drag_row.setContentsMargins(0, 0, 0, 0)
             self.preset_drag_handle = PresetDragHandle(
                 "syqontools", self.get_preset, icon=_grip_icon,
-                tooltip="Drag to the canvas to create a SyQon Prism (Denoise) shortcut.\n"
-                        "Drop directly on an image to apply it headlessly.",
+                tooltip=self.tr("Drag to the canvas to create a SyQon Prism (Denoise) shortcut.\n"
+                        "Drop directly on an image to apply it headlessly."),
                 parent=self,
             )
             drag_row.addWidget(self.preset_drag_handle)
@@ -705,7 +709,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
             if self.preview_win is None:
                 self.preview_win = SyQonLivePreviewWindow(
                     parent=self,
-                    title="SyQon Prism Live Preview",
+                    title=self.tr("SyQon Prism Live Preview"),
                     icon=self.window().windowIcon(),
                 )
                 self.preview_win.finished.connect(
@@ -734,7 +738,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         if thr is not None and thr.isRunning():
             thr.cancel()
             self.btn_cancel.setEnabled(False)
-            self.lbl_status.setText("Cancelling… finishing current tile.")
+            self.lbl_status.setText(self.tr("Cancelling… finishing current tile."))
 
     def model_kind(self) -> str:
         return str(self.cmb_model.currentData() or "prism_mini")
@@ -762,26 +766,26 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         if installed_path is not None:
             self.lbl_model_path.setText(str(installed_path))
         else:
-            self.lbl_model_path.setText("Not installed")
+            self.lbl_model_path.setText(self.tr("Not installed"))
             self.settings.remove(self._installed_model_settings_key())
 
         if mk == "prism_deep":
-            expected = "the Prism Deep model file named prism_sas395.pt"
+            expected = self.tr("the Prism Deep model file named prism_sas395.pt")
         else:
-            expected = "the Prism Mini model file"
+            expected = self.tr("the Prism Mini model file")
 
         if installed_path is not None:
-            msg = "Ready (Prism model installed)."
+            msg = self.tr("Ready (Prism model installed).")
             if src_path:
-                msg += f"\nLast installed from: {src_path}"
+                msg += self.tr("\nLast installed from: {0}").format(src_path)
             self.lbl_status.setText(msg)
             self.btn_remove.setEnabled(True)
         else:
-            self.lbl_status.setText(
+            self.lbl_status.setText(self.tr(
                 "Prism model is not installed.\n\n"
                 "1) Click 'Get Model Here...' to obtain it from SyQon.\n"
                 "2) Click 'Install Downloaded Model...' and select:\n"
-                f"   {expected}"
+                "   {0}").format(expected)
             )
             self.btn_remove.setEnabled(False)
 
@@ -820,7 +824,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
             QMessageBox.information(
                 self,
                 "SyQon Prism",
-                "The purchase/download URL is not configured yet."
+                self.tr("The purchase/download URL is not configured yet.")
             )
             return
         QDesktopServices.openUrl(QUrl(url))
@@ -829,15 +833,15 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         mk = self.model_kind()
 
         if mk == "prism_deep":
-            expected_desc = "Prism Deep model file"
+            dlg_title = self.tr("Select Prism Deep model file")
             required_name = "prism_sas395.pt"
         else:
-            expected_desc = "Prism Mini model file"
+            dlg_title = self.tr("Select Prism Mini model file")
             required_name = None
 
         src_path, _ = QFileDialog.getOpenFileName(
             self,
-            f"Select {expected_desc}",
+            dlg_title,
             "",
             "PyTorch model (*.pt);;All Files (*)"
         )
@@ -846,7 +850,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
 
         src = Path(src_path)
         if not src.exists():
-            QMessageBox.warning(self, "SyQon Prism", "Selected file does not exist.")
+            QMessageBox.warning(self, "SyQon Prism", self.tr("Selected file does not exist."))
             return
 
         # Prism Deep: only accept the exact required filename
@@ -854,9 +858,9 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
             QMessageBox.warning(
                 self,
                 "SyQon Prism",
-                f"Invalid Prism Deep model selected.\n\n"
-                f"Expected filename:\n{required_name}\n\n"
-                f"Selected filename:\n{src.name}"
+                self.tr("Invalid Prism Deep model selected.\n\n"
+                "Expected filename:\n{0}\n\n"
+                "Selected filename:\n{1}").format(required_name, src.name)
             )
             return
 
@@ -869,7 +873,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
             import shutil
             shutil.copy2(str(src), str(dst))
         except Exception as e:
-            QMessageBox.critical(self, "SyQon Prism", f"Failed to install model:\n{e}")
+            QMessageBox.critical(self, "SyQon Prism", self.tr("Failed to install model:\n{0}").format(e))
             self._refresh_state()
             return
 
@@ -890,8 +894,8 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
 
         reply = QMessageBox.question(
             self,
-            "Remove Model",
-            "Remove the installed Prism model from disk?",
+            self.tr("Remove Model"),
+            self.tr("Remove the installed Prism model from disk?"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -949,7 +953,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
 
         if err == "__cancelled__":
             self._set_busy(False)
-            self.lbl_status.setText("Cancelled.")
+            self.lbl_status.setText(self.tr("Cancelled."))
             self.proc_thr = None
             self._refresh_state()
             return
@@ -1059,17 +1063,17 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
 
         self.proc_thr = None
         self._set_busy(False)
-        self.lbl_status.setText("Complete!")
+        self.lbl_status.setText(self.tr("Complete!"))
         self._refresh_state()
 
 
     def process_document(self, doc, main):
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "SyQon Prism", "No active image.")
+            QMessageBox.warning(self, "SyQon Prism", self.tr("No active image."))
             return
 
         if not self._have_model():
-            QMessageBox.warning(self, "SyQon Prism", "Model is not installed. Install it first.")
+            QMessageBox.warning(self, "SyQon Prism", self.tr("Model is not installed. Install it first."))
             return
 
         self.doc = doc
@@ -1118,7 +1122,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
 
         installed = self._installed_model_path()
         if installed is None:
-            QMessageBox.warning(self, "SyQon Prism", "Model is not installed. Install it first.")
+            QMessageBox.warning(self, "SyQon Prism", self.tr("Model is not installed. Install it first."))
             self._set_busy(False)
             self._refresh_state()
             return
@@ -1127,7 +1131,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
 
 
         self._set_busy(True)
-        self.lbl_status.setText("Processing...")
+        self.lbl_status.setText(self.tr("Processing..."))
 
         try:
             if self.proc_thr is not None and self.proc_thr.isRunning():
@@ -1173,15 +1177,15 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         if errors:
             QMessageBox.warning(
                 self,
-                "SyQon Tools",
-                "AI cache clear completed with some issues:\n\n" + "\n".join(errors)
+                self.tr("SyQon Tools"),
+                self.tr("AI cache clear completed with some issues:\n\n{0}").format("\n".join(errors))
             )
             return
 
         QMessageBox.information(
             self,
-            "SyQon Tools",
-            "AI cache cleared.\n\nNext Prism or Axiom run will take longer because models must reload."
+            self.tr("SyQon Tools"),
+            self.tr("AI cache cleared.\n\nNext Prism or Axiom run will take longer because models must reload.")
         )
 
     def closeEvent(self, ev):
@@ -1233,8 +1237,8 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
  
         # Mode selector — chooses which model triplet to use for processing
         self.cmb_mode = QComboBox(self)
-        self.cmb_mode.addItem("Natural",    userData="classic")
-        self.cmb_mode.addItem("Defined", userData="aesthetics")
+        self.cmb_mode.addItem(self.tr("Natural"),    userData="classic")
+        self.cmb_mode.addItem(self.tr("Defined"), userData="aesthetics")
         saved_mode = str(self.settings.value("syqon/parallax_mode", "classic", type=str) or "classic").lower()
         idx = self.cmb_mode.findData(saved_mode)
         if idx >= 0:
@@ -1242,7 +1246,7 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
         self.cmb_mode.currentIndexChanged.connect(
             lambda *_: self.settings.setValue("syqon/parallax_mode", self.mode())
         )
-        form.addRow("Mode:", self.cmb_mode)
+        form.addRow(self.tr("Mode:"), self.cmb_mode)
 
         # Six install rows in a 2-column grid: Classic left, Aesthetics right
         from PyQt6.QtWidgets import QGridLayout
@@ -1266,11 +1270,11 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
             status_lbl.setStyleSheet(
                 "color: #2ed573; font-weight: bold;" if installed else "color: #ff6b6b; font-weight: bold;"
             )
-            status_lbl.setToolTip(saved if installed else "Not installed")
+            status_lbl.setToolTip(saved if installed else self.tr("Not installed"))
             setattr(self, attr_lbl, status_lbl)
 
-            btn_i = QPushButton("Install…", self)
-            btn_r = QPushButton("Remove", self)
+            btn_i = QPushButton(self.tr("Install…"), self)
+            btn_r = QPushButton(self.tr("Remove"), self)
             btn_i.setFixedWidth(72)
             btn_r.setFixedWidth(62)
             btn_i.clicked.connect(self._make_install_fn(setting_key, status_lbl, canonical_name))
@@ -1286,18 +1290,18 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
             return row_w
 
         classic_rows = [
-            ("_correction_lbl",       "Correction",     "syqon/parallax_correction_path",             "parallax_correction.pth"),
-            ("_star_reduce_lbl",      "Star reduction", "syqon/parallax_star_reduce_path",            "parallax_star_reduction.pth"),
-            ("_sharpen_lbl",          "Sharpen",        "syqon/parallax_sharpen_path",                "parallax_sharpen.pth"),
+            ("_correction_lbl",       self.tr("Correction"),     "syqon/parallax_correction_path",             "parallax_correction.pth"),
+            ("_star_reduce_lbl",      self.tr("Star reduction"), "syqon/parallax_star_reduce_path",            "parallax_star_reduction.pth"),
+            ("_sharpen_lbl",          self.tr("Sharpen"),        "syqon/parallax_sharpen_path",                "parallax_sharpen.pth"),
         ]
         aesth_rows = [
-            ("_correction_aesth_lbl", "Correction",     "syqon/parallax_correction_aesthetics_path",  "parallax_correction_aesthetics.pth"),
-            ("_star_reduce_aesth_lbl","Star reduction", "syqon/parallax_star_reduce_aesthetics_path", "parallax_star_reduction_aesthetics.pth"),
-            ("_sharpen_aesth_lbl",    "Sharpen",        "syqon/parallax_sharpen_aesthetics_path",     "parallax_sharpen_aesthetics.pth"),
+            ("_correction_aesth_lbl", self.tr("Correction"),     "syqon/parallax_correction_aesthetics_path",  "parallax_correction_aesthetics.pth"),
+            ("_star_reduce_aesth_lbl",self.tr("Star reduction"), "syqon/parallax_star_reduce_aesthetics_path", "parallax_star_reduction_aesthetics.pth"),
+            ("_sharpen_aesth_lbl",    self.tr("Sharpen"),        "syqon/parallax_sharpen_aesthetics_path",     "parallax_sharpen_aesthetics.pth"),
         ]
 
-        grid.addWidget(_hdr("Natural models"),    0, 0)
-        grid.addWidget(_hdr("Defined models"), 0, 1)
+        grid.addWidget(_hdr(self.tr("Natural models")),    0, 0)
+        grid.addWidget(_hdr(self.tr("Defined models")), 0, 1)
         for i, (c, a) in enumerate(zip(classic_rows, aesth_rows), start=1):
             grid.addWidget(_build_row(*c), i, 0)
             grid.addWidget(_build_row(*a), i, 1)
@@ -1309,9 +1313,9 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
  
         # Get Models Here + Clear AI Cache row
         ar = QHBoxLayout()
-        self.btn_buy = QPushButton("Get Models Here…", self)
+        self.btn_buy = QPushButton(self.tr("Get Models Here…"), self)
         self.btn_buy.clicked.connect(self._open_buy_page)
-        self.btn_clear_cache = QPushButton("Clear AI Cache", self)
+        self.btn_clear_cache = QPushButton(self.tr("Clear AI Cache"), self)
         self.btn_clear_cache.clicked.connect(self._clear_ai_cache)
         ar.addWidget(self.btn_buy)
         ar.addWidget(self.btn_clear_cache)
@@ -1330,27 +1334,27 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
         stages_lay.setContentsMargins(0, 0, 0, 0)
         stages_lay.setSpacing(16)
  
-        self.chk_correction = QCheckBox("Aberration correction", self)
+        self.chk_correction = QCheckBox(self.tr("Aberration correction"), self)
         self.chk_correction.setChecked(bool(self.settings.value("syqon/parallax_correct", True, type=bool)))
         stages_lay.addWidget(self.chk_correction)
- 
-        star_lbl = QLabel("Star reduction (0=off, 1–10):", self)
+
+        star_lbl = QLabel(self.tr("Star reduction (0=off, 1–10):"), self)
         self.spin_star = QSpinBox(self)
         self.spin_star.setRange(0, 10)
         self.spin_star.setValue(int(self.settings.value("syqon/parallax_star_level", 3)))
         self.spin_star.setFixedWidth(60)
-        self.spin_star.setToolTip(
+        self.spin_star.setToolTip(self.tr(
             "0 = disabled\n"
             "1–6 = direct model strength\n"
             "7–10 = hybrid neural-morphological star reduction (model run at "
             "safe level 5, plus escalating morphological erosion of flagged "
             "star cores; 10 = stars nearly removed)"
-        )
+        ))
         stages_lay.addWidget(star_lbl)
         stages_lay.addWidget(self.spin_star)
         stages_lay.addStretch(1)
- 
-        form.addRow("Stages:", stages_row)
+
+        form.addRow(self.tr("Stages:"), stages_row)
  
         # Sharpen strength — slider + spinbox on same row like Prism's Strength
         saved_sharpen = float(self.settings.value("syqon/parallax_sharpen_alpha", 0.7))
@@ -1364,13 +1368,13 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
         self.spin_sharpen.setSingleStep(0.01)
         self.spin_sharpen.setDecimals(2)
         self.spin_sharpen.setValue(saved_sharpen)
-        self.spin_sharpen.setToolTip(
+        self.spin_sharpen.setToolTip(self.tr(
             "0% = off, 100% = full model-strength sharpen, 200% = double "
             "strength.\n"
             "Above 100% extrapolates beyond the model's output (more "
             "aggressive; higher risk of clipping/halos in highlights and "
             "shadows — result is still clamped to [0,1])."
-        )
+        ))
         self.spin_sharpen.setFixedWidth(62)
  
         self._syncing_sharpen = False
@@ -1397,63 +1401,63 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
         sharpen_lay.addWidget(self.sld_sharpen, 1)
         sharpen_lay.addWidget(self.spin_sharpen)
  
-        form.addRow("Sharpen strength:", sharpen_row)
- 
+        form.addRow(self.tr("Sharpen strength:"), sharpen_row)
+
         # Tiling
         self.spin_tile = QSpinBox(self)
         self.spin_tile.setRange(128, 2048)
         self.spin_tile.setValue(int(self.settings.value("syqon/parallax_tile", 512)))
-        form.addRow("Tile size:", self.spin_tile)
- 
+        form.addRow(self.tr("Tile size:"), self.spin_tile)
+
         self.spin_overlap = QSpinBox(self)
         self.spin_overlap.setRange(8, 512)
         self.spin_overlap.setValue(int(self.settings.value("syqon/parallax_overlap", 64)))
-        form.addRow("Overlap:", self.spin_overlap)
- 
+        form.addRow(self.tr("Overlap:"), self.spin_overlap)
+
         self.spin_pad = QSpinBox(self)
         self.spin_pad.setRange(0, 2048)
         self.spin_pad.setValue(int(self.settings.value("syqon/parallax_pad", 96)))
-        form.addRow("Edge pad (px):", self.spin_pad)
+        form.addRow(self.tr("Edge pad (px):"), self.spin_pad)
 
         self.cmb_batch = QComboBox(self)
         for label in ("Auto", "1", "2", "4", "8"):
-            self.cmb_batch.addItem(label, userData=label)
+            self.cmb_batch.addItem(self.tr("Auto") if label == "Auto" else label, userData=label)
         saved_batch = str(self.settings.value("syqon/parallax_batch_size", "Auto", type=str) or "Auto")
         bidx = self.cmb_batch.findData(saved_batch)
         if bidx >= 0:
             self.cmb_batch.setCurrentIndex(bidx)
-        self.cmb_batch.setToolTip(
+        self.cmb_batch.setToolTip(self.tr(
             "Number of tiles fed to the model per forward pass.\n"
             "Auto — chosen from tile size + GPU VRAM (recommended).\n"
             "Higher = faster on native GPUs (CUDA/MPS/XPU) with enough VRAM,\n"
             "but can OOM if tile size and image are large.\n"
             "CPU always runs at 1; DirectML is capped at 2."
-        )
-        form.addRow("Batch size:", self.cmb_batch)
+        ))
+        form.addRow(self.tr("Batch size:"), self.cmb_batch)
 
-        pad_help = QLabel("Pads edges before tiling (reflect) to prevent border artifacts.\nTypical: overlap or overlap+32. 0 disables padding.")
+        pad_help = QLabel(self.tr("Pads edges before tiling (reflect) to prevent border artifacts.\nTypical: overlap or overlap+32. 0 disables padding."))
         pad_help.setWordWrap(True)
         pad_help.setStyleSheet("color:#888;")
         form.addRow("", pad_help)
- 
+
         # Stretch
-        self.chk_mtf = QCheckBox("Apply temporary stretch for model (recommended)", self)
+        self.chk_mtf = QCheckBox(self.tr("Apply temporary stretch for model (recommended)"), self)
         self.chk_mtf.setChecked(bool(self.settings.value("syqon/parallax_use_mtf", True, type=bool)))
         form.addRow("", self.chk_mtf)
- 
+
         self.spin_mtf = QDoubleSpinBox(self)
         self.spin_mtf.setRange(0.01, 0.50)
         self.spin_mtf.setSingleStep(0.01)
         self.spin_mtf.setDecimals(3)
         self.spin_mtf.setValue(float(self.settings.value("syqon/parallax_mtf_target", 0.15)))
-        form.addRow("Temp stretch target median:", self.spin_mtf)
- 
-        self.chk_mtf_linked = QCheckBox("Linked stretch (preserves star colors — use if already color calibrated)", self)
+        form.addRow(self.tr("Temp stretch target median:"), self.spin_mtf)
+
+        self.chk_mtf_linked = QCheckBox(self.tr("Linked stretch (preserves star colors — use if already color calibrated)"), self)
         self.chk_mtf_linked.setChecked(bool(self.settings.value("syqon/parallax_mtf_linked", False, type=bool)))
-        self.chk_mtf_linked.setToolTip(
+        self.chk_mtf_linked.setToolTip(self.tr(
             "Unlinked stretch applies independent per-channel blackpoint which can shift star colors.\n"
             "Linked stretch uses one combined stretch for all channels, preserving star colors."
-        )
+        ))
         form.addRow("", self.chk_mtf_linked)
  
         self.chk_mtf.toggled.connect(lambda on: (self.spin_mtf.setEnabled(bool(on)), self.chk_mtf_linked.setEnabled(bool(on))))
@@ -1471,7 +1475,7 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
         lay.addStretch(1)
  
         # Cancel button
-        self.btn_cancel = QPushButton("Cancel", self)
+        self.btn_cancel = QPushButton(self.tr("Cancel"), self)
         self.btn_cancel.setVisible(False)
         self.btn_cancel.clicked.connect(self._cancel)
         lay.addWidget(self.btn_cancel)
@@ -1488,8 +1492,8 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
             drag_row.setContentsMargins(0, 0, 0, 0)
             self.preset_drag_handle = PresetDragHandle(
                 "syqontools", self.get_preset, icon=_grip_icon,
-                tooltip="Drag to the canvas to create a SyQon Parallax (Sharpen) shortcut.\n"
-                        "Drop directly on an image to apply it headlessly.",
+                tooltip=self.tr("Drag to the canvas to create a SyQon Parallax (Sharpen) shortcut.\n"
+                        "Drop directly on an image to apply it headlessly."),
                 parent=self,
             )
             drag_row.addWidget(self.preset_drag_handle)
@@ -1595,22 +1599,22 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
     def _make_install_fn(self, setting_key: str, status_lbl: QLabel, canonical_name: str):
         # Derive display name from canonical_name for the label
         names = {
-            "parallax_correction.pth":    "Correction model",
-            "parallax_star_reduction.pth":"Star reduction model",
-            "parallax_sharpen.pth":       "Sharpen model",
+            "parallax_correction.pth":    self.tr("Correction model"),
+            "parallax_star_reduction.pth":self.tr("Star reduction model"),
+            "parallax_sharpen.pth":       self.tr("Sharpen model"),
         }
         display = names.get(canonical_name, canonical_name)
- 
+
         def _fn():
             path, _ = QFileDialog.getOpenFileName(
-                self, "Select Parallax Model File", "",
+                self, self.tr("Select Parallax Model File"), "",
                 "PyTorch model (*.pth *.pt);;All Files (*)"
             )
             if not path:
                 return
             src = Path(path)
             if not src.exists():
-                QMessageBox.warning(self, "Parallax", "Selected file does not exist.")
+                QMessageBox.warning(self, "Parallax", self.tr("Selected file does not exist."))
                 return
             from setiastro.saspro.syqon_paths import syqon_family_dir
             dst = syqon_family_dir("sharpen") / canonical_name
@@ -1618,22 +1622,22 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
                 import shutil
                 shutil.copy2(str(src), str(dst))
             except Exception as e:
-                QMessageBox.critical(self, "Parallax", f"Failed to install model:\n{e}")
+                QMessageBox.critical(self, "Parallax", self.tr("Failed to install model:\n{0}").format(e))
                 return
             self.settings.setValue(setting_key, str(dst))
             status_lbl.setText("✔  " + display)
             status_lbl.setStyleSheet("color: #2ed573; font-weight: bold;")
             status_lbl.setToolTip(str(dst))
-            self.lbl_status.setText(display + " installed.")
+            self.lbl_status.setText(self.tr("{0} installed.").format(display))
         return _fn
- 
+
     def _make_remove_fn(self, setting_key: str, status_lbl: QLabel, display: str):
         def _fn():
             p = str(self.settings.value(setting_key, "", type=str) or "")
             if not p:
                 return
             reply = QMessageBox.question(
-                self, "Remove Model", f"Remove the installed {display} from disk?",
+                self, self.tr("Remove Model"), self.tr("Remove the installed {0} from disk?").format(display),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -1646,21 +1650,21 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
             self.settings.remove(setting_key)
             status_lbl.setText("✘  " + display)
             status_lbl.setStyleSheet("color: #ff6b6b; font-weight: bold;")
-            status_lbl.setToolTip("Not installed")
-            self.lbl_status.setText(display + " removed.")
+            status_lbl.setToolTip(self.tr("Not installed"))
+            self.lbl_status.setText(self.tr("{0} removed.").format(display))
         return _fn
- 
+
     def _open_buy_page(self):
         QDesktopServices.openUrl(QUrl(_SYQON_PARALLAX_BUY_URL))
- 
+
     def _clear_ai_cache(self):
         try:
             from setiastro.saspro.sharpen_engines.syqon_parallax_engine import clear_parallax_models_cache
             clear_parallax_models_cache(aggressive=True, status_cb=print)
         except Exception as e:
-            QMessageBox.warning(self, "Parallax", f"Cache clear issue:\n{e}")
+            QMessageBox.warning(self, "Parallax", self.tr("Cache clear issue:\n{0}").format(e))
             return
-        QMessageBox.information(self, "Parallax", "AI cache cleared.")
+        QMessageBox.information(self, "Parallax", self.tr("AI cache cleared."))
  
     def _model_path(self, key: str) -> str | None:
         p = str(self.settings.value(key, "", type=str) or "")
@@ -1691,21 +1695,21 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
         if thr is not None and thr.isRunning():
             thr.cancel()
             self.btn_cancel.setEnabled(False)
-            self.lbl_status.setText("Cancelling…")
- 
+            self.lbl_status.setText(self.tr("Cancelling…"))
+
     # ------------------------------------------------------------------
     # Callbacks
     # ------------------------------------------------------------------
- 
+
     def _on_progress(self, pct: int, stage: str):
         self.pbar.setValue(int(pct))
         if stage:
             self.lbl_status.setText(stage)
- 
+
     def _on_finished(self, result_s, info: dict, err: str):
         if err == "__cancelled__":
             self._set_busy(False)
-            self.lbl_status.setText("Cancelled.")
+            self.lbl_status.setText(self.tr("Cancelled."))
             self.proc_thr = None
             return
         if err:
@@ -1787,37 +1791,37 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
                 }
             }
             self.doc.apply_edit(final, metadata=meta, step_name="Parallax")
-            self.lbl_status.setText("Complete!")
+            self.lbl_status.setText(self.tr("Complete!"))
         except Exception as e:
-            QMessageBox.critical(self, "SyQon Parallax", f"Failed to apply result:\n{e}")
+            QMessageBox.critical(self, "SyQon Parallax", self.tr("Failed to apply result:\n{0}").format(e))
         finally:
             self._set_busy(False)
             self.proc_thr = None
- 
+
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
- 
+
     def process_document(self, doc, main):
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "SyQon Parallax", "No active image.")
+            QMessageBox.warning(self, "SyQon Parallax", self.tr("No active image."))
             return
- 
+
         do_correct    = bool(self.chk_correction.isChecked())
         star_level    = int(self.spin_star.value())
         sharpen_alpha = float(self.spin_sharpen.value())
- 
+
         if not do_correct and star_level == 0 and sharpen_alpha <= 0.0:
-            QMessageBox.warning(self, "SyQon Parallax", "Enable at least one processing stage.")
+            QMessageBox.warning(self, "SyQon Parallax", self.tr("Enable at least one processing stage."))
             return
         if do_correct and self.correction_model_path() is None:
-            QMessageBox.warning(self, "SyQon Parallax", "Correction model not installed.")
+            QMessageBox.warning(self, "SyQon Parallax", self.tr("Correction model not installed."))
             return
         if star_level > 0 and self.star_reduce_model_path() is None:
-            QMessageBox.warning(self, "SyQon Parallax", "Star reduction model not installed.")
+            QMessageBox.warning(self, "SyQon Parallax", self.tr("Star reduction model not installed."))
             return
         if sharpen_alpha > 0.0 and self.sharpen_model_path() is None:
-            QMessageBox.warning(self, "SyQon Parallax", "Sharpen model not installed.")
+            QMessageBox.warning(self, "SyQon Parallax", self.tr("Sharpen model not installed."))
             return
  
         self.doc  = doc
@@ -1872,8 +1876,8 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
             self._mtf_linked = False
  
         self._set_busy(True)
-        self.lbl_status.setText("Processing…")
- 
+        self.lbl_status.setText(self.tr("Processing…"))
+
         if self.proc_thr is not None and self.proc_thr.isRunning():
             self.proc_thr.cancel()
             self.proc_thr.wait(200)
@@ -1953,7 +1957,7 @@ class _SyQonParallaxProcessThread(QThread):
                     use_gpu=True, prefer_dml=True,
                     mode=self.mode,
                     batch_size=self.batch_size,
-                    progress_cb=_cb(f"[{s}/{n}] Aberration Correction"),
+                    progress_cb=_cb(self.tr("[{0}/{1}] Aberration Correction").format(s, n)),
                 )
                 info["correction"] = inf
  
@@ -1965,7 +1969,7 @@ class _SyQonParallaxProcessThread(QThread):
                     use_gpu=True, prefer_dml=True,
                     mode=self.mode,
                     batch_size=self.batch_size,
-                    progress_cb=_cb(f"[{s}/{n}] Star Reduction L{self.star_level}"),
+                    progress_cb=_cb(self.tr("[{0}/{1}] Star Reduction L{2}").format(s, n, self.star_level)),
                 )
                 info["star_reduce"] = inf
  
@@ -1977,7 +1981,7 @@ class _SyQonParallaxProcessThread(QThread):
                     use_gpu=True, prefer_dml=True,
                     mode=self.mode,
                     batch_size=self.batch_size,
-                    progress_cb=_cb(f"[{s}/{n}] Sharpening α={self.sharpen_alpha:.2f}"),
+                    progress_cb=_cb(self.tr("[{0}/{1}] Sharpening α={2:.2f}").format(s, n, self.sharpen_alpha)),
                 )
                 info["sharpen"] = inf
  
@@ -2204,7 +2208,7 @@ def run_syqon_tools_via_preset(main, doc, preset: dict | None = None):
     family = str(preset.get("family", "denoise") or "denoise").strip().lower()
 
     if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.information(main, "SyQon Tools", "No active image.")
+        QMessageBox.information(main, _tr("SyQon Tools"), _tr("No active image."))
         return
 
     if family == "studio":
@@ -2281,20 +2285,20 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
     # Validate model paths
     if do_correct and _installed("correction") is None:
         QMessageBox.warning(main, "SyQon Parallax",
-                            f"Correction model ({mode}) not installed. Install it from the SyQon Tools hub.")
+                            _tr("Correction model ({0}) not installed. Install it from the SyQon Tools hub.").format(mode))
         return
     if star_level > 0 and _installed("star_reduce") is None:
         QMessageBox.warning(main, "SyQon Parallax",
-                            f"Star reduction model ({mode}) not installed. Install it from the SyQon Tools hub.")
+                            _tr("Star reduction model ({0}) not installed. Install it from the SyQon Tools hub.").format(mode))
         return
     if sharpen_alpha > 0.0 and _installed("sharpen") is None:
         QMessageBox.warning(main, "SyQon Parallax",
-                            f"Sharpen model ({mode}) not installed. Install it from the SyQon Tools hub.")
+                            _tr("Sharpen model ({0}) not installed. Install it from the SyQon Tools hub.").format(mode))
         return
- 
+
     if not do_correct and star_level == 0 and sharpen_alpha <= 0.0:
         QMessageBox.warning(main, "SyQon Parallax",
-                            "No stages enabled in preset. Enable at least one.")
+                            _tr("No stages enabled in preset. Enable at least one."))
         return
  
     # Prepare image
@@ -2326,7 +2330,7 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
         mtf_params = None
         x_for_net  = xrgb
  
-    dlg = _ProcDialog(main, title="SyQon Parallax Progress")
+    dlg = _ProcDialog(main, title=_tr("SyQon Parallax Progress"))
     dlg.append_text("Starting SyQon Parallax…\\n")
  
     # Build thread
@@ -2468,8 +2472,8 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
         exe = find_studio_cli(settings) or ""
     if not exe or not os.path.isfile(exe):
         QMessageBox.warning(main, "SyQon Studio",
-                            "SyQon Studio CLI not found. Open SyQon Tools → Studio and "
-                            "click Locate… to select syqon-cli first.")
+                            _tr("SyQon Studio CLI not found. Open SyQon Tools → Studio and "
+                            "click Locate… to select syqon-cli first."))
         return
 
     # Parallax needs at least one stage.
@@ -2479,7 +2483,7 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
         bool(preset.get("studio_px_deblur", True)),
     )):
         QMessageBox.warning(main, "SyQon Studio",
-                            "Parallax needs at least one stage enabled.")
+                            _tr("Parallax needs at least one stage enabled."))
         return
 
     # The image exactly as the document holds it, as the Studio page sends it:
@@ -2520,7 +2524,7 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
         # The editor takes no --stars-output; the worker finds its layer.
         want_secondary = True
 
-    dlg = _ProcDialog(main, title="SyQon Studio Progress")
+    dlg = _ProcDialog(main, title=_tr("SyQon Studio Progress"))
     dlg.append_text(f"Starting SyQon Studio ({mid})…\n")
 
     hdr_in, wcs_in = studio_input_headers(doc)
@@ -2640,7 +2644,7 @@ def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
             model_path = _canon
     if model_path is None:
         QMessageBox.warning(main, "SyQon Prism",
-            f"Model ({model_kind}) is not installed. Install it first from the SyQon Tools hub.")
+            _tr("Model ({0}) is not installed. Install it first from the SyQon Tools hub.").format(model_kind))
         return
 
     src = np.asarray(doc.image).astype(np.float32, copy=False)
@@ -2668,7 +2672,7 @@ def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
         mtf_params = None
         x_for_net = xrgb
 
-    dlg = _ProcDialog(main, title="SyQon Prism Progress")
+    dlg = _ProcDialog(main, title=_tr("SyQon Prism Progress"))
     dlg.append_text("Starting SyQon Prism…\n")
 
     thr = _SyQonPrismProcessThread(

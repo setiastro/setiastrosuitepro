@@ -588,7 +588,7 @@ class HistogramDialog(QDialog):
             chan = img if img.ndim == 2 else img[..., 0]
             chans = [chan]
             self.stats_table.setColumnCount(1)
-            self.stats_table.setHorizontalHeaderLabels(["Gray"])
+            self.stats_table.setHorizontalHeaderLabels([self.tr("Gray")])
 
         eps = 1e-6  # tolerance for "exactly 0/1" after float ops
 
@@ -690,17 +690,17 @@ class HistogramDialog(QDialog):
         else:
             chan = img if img.ndim == 2 else img[..., 0]
             chans = [chan]
-            col_names = ["Gray"]
+            col_names = [self.tr("Gray")]
 
         row_defs = [
-            ("Min", "min"),
-            ("Max", "max"),
-            ("Mean", "mean"),
-            ("Median", "median"),
-            ("StdDev", "std"),
-            ("Variance", "var"),
-            ("MAD", "mad"),
-            ("IQR (p75-p25)", "iqr"),
+            (self.tr("Min"), "min"),
+            (self.tr("Max"), "max"),
+            (self.tr("Mean"), "mean"),
+            (self.tr("Median"), "median"),
+            (self.tr("StdDev"), "std"),
+            (self.tr("Variance"), "var"),
+            (self.tr("MAD"), "mad"),
+            (self.tr("IQR (p75-p25)"), "iqr"),
             ("p0.1", "p0.1"),
             ("p1", "p1"),
             ("p5", "p5"),
@@ -710,8 +710,8 @@ class HistogramDialog(QDialog):
             ("p95", "p95"),
             ("p99", "p99"),
             ("p99.9", "p99.9"),
-            ("Low Clipped (<=0)", "lowclip"),
-            ("High Clipped (>=TrueMax)", "highclip"),
+            (self.tr("Low Clipped (<=0)"), "lowclip"),
+            (self.tr("High Clipped (>=TrueMax)"), "highclip"),
         ]
 
         tbl.setRowCount(len(row_defs))

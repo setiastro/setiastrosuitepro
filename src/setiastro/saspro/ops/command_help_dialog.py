@@ -602,7 +602,7 @@ class CommandHelpDialog(QDialog):
     """
     def __init__(self, parent=None, editor=None):
         super().__init__(parent)
-        self.setWindowTitle("Command Help (Scriptable / Headless Ops)")
+        self.setWindowTitle(self.tr("Command Help (Scriptable / Headless Ops)"))
         self.resize(980, 620)
         self.editor = editor  # optional CodeEditor to insert examples
 
@@ -611,8 +611,8 @@ class CommandHelpDialog(QDialog):
         # ---- top search bar ----
         top = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search commands… (id, name, group, alias)")
-        top.addWidget(QLabel("Search:"))
+        self.search.setPlaceholderText(self.tr("Search commands… (id, name, group, alias)"))
+        top.addWidget(QLabel(self.tr("Search:")))
         top.addWidget(self.search, 1)
         root.addLayout(top)
 
@@ -637,9 +637,9 @@ class CommandHelpDialog(QDialog):
         right.addWidget(self.detail, 1)
 
         btnrow = QHBoxLayout()
-        self.btn_copy_md = QPushButton("Copy Markdown")
-        self.btn_insert_ex = QPushButton("Insert First Example")
-        self.btn_close = QPushButton("Close")
+        self.btn_copy_md = QPushButton(self.tr("Copy Markdown"))
+        self.btn_insert_ex = QPushButton(self.tr("Insert First Example"))
+        self.btn_close = QPushButton(self.tr("Close"))
         btnrow.addWidget(self.btn_copy_md)
         btnrow.addWidget(self.btn_insert_ex)
         btnrow.addStretch(1)
@@ -674,22 +674,22 @@ class CommandHelpDialog(QDialog):
 
         # ---- synthetic doc item: Available Libraries ----
         synth_items = [
-            ("Docs · Scripting Quickstart", "__script_quickstart__",
+            (self.tr("Docs · Scripting Quickstart"), "__script_quickstart__",
             "quickstart run(ctx) main(ctx) script entrypoint samples"),
 
-            ("Docs · Script Context (ctx) API", "__ctx_help__",
+            (self.tr("Docs · Script Context (ctx) API"), "__ctx_help__",
             "ctx api context get_image set_image run_command log base_document "
             "list_views list_view_names get_document get_image_for set_image_for activate_view "
             "open_new_document "
             "load_image save_image open_image write_image "
             "file io disk batch fits tiff png jpg exr xisf"),
 
-            ("Docs · Document & Image Objects", "__object_model__",
+            (self.tr("Docs · Document & Image Objects"), "__object_model__",
             "object model document image ndarray numpy array attributes methods "
             "metadata display_name uid apply_edit changed rename ImageDocument "
             "doc image dtype shape roi wrapper base_document parent_doc"),
 
-            ("Docs · Available Libraries", "__available_libs__",
+            (self.tr("Docs · Available Libraries"), "__available_libs__",
             "available libraries libs imports bundled installed"),
         ]
 
@@ -718,7 +718,7 @@ class CommandHelpDialog(QDialog):
         if self.listw.count():
             self.listw.setCurrentRow(0)
         else:
-            self.detail.setText("No matches.")
+            self.detail.setText(self.tr("No matches."))
 
     def show_selected(self, item: QListWidgetItem | None, _prev=None):
         if item is None:

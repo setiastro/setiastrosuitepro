@@ -67,7 +67,7 @@ class _NBNWorker(QThread):
                 self.job.params,
                 progress_cb=cb,
             )
-            self.progress.emit(99, "Rendering Preview...")
+            self.progress.emit(99, self.tr("Rendering Preview..."))
             self.done.emit(out, self.job.step_name)
 
         except Exception:
@@ -89,7 +89,7 @@ class NarrowbandNormalization(QWidget):
             pass    
 
         self.doc_manager = doc_manager
-        self.setWindowTitle("Narrowband Normalization")
+        self.setWindowTitle(self.tr("Narrowband Normalization"))
 
         # raw channels (float32 [0..1])
         self.ha: np.ndarray | None = None
@@ -156,9 +156,9 @@ class NarrowbandNormalization(QWidget):
         # Column A: loaders
         colA.addWidget(self.grp_import)
 
-        colA.addWidget(QLabel("<b>Load channels</b>"))
+        colA.addWidget(QLabel(self.tr("<b>Load channels</b>")))
 
-        self.grp_nb = QGroupBox("Narrowband channels", self)
+        self.grp_nb = QGroupBox(self.tr("Narrowband channels"), self)
         nbv = QVBoxLayout(self.grp_nb); nbv.setSpacing(4)
         for btn, lab in (
             (self.btn_ha, self.lbl_ha),
@@ -168,7 +168,7 @@ class NarrowbandNormalization(QWidget):
             nbv.addWidget(btn)
             nbv.addWidget(lab)
 
-        self.grp_osc = QGroupBox("OSC extractions", self)
+        self.grp_osc = QGroupBox(self.tr("OSC extractions"), self)
         oscv = QVBoxLayout(self.grp_osc); oscv.setSpacing(4)
         for btn, lab in (
             (self.btn_osc1, self.lbl_osc1),
@@ -188,7 +188,7 @@ class NarrowbandNormalization(QWidget):
         # Column B: normalization + actions
         colB.addWidget(self.grp_norm)
 
-        actions = QGroupBox("Actions", self)
+        actions = QGroupBox(self.tr("Actions"), self)
         actv = QVBoxLayout(actions); actv.setSpacing(6)
         for b in (self.btn_clear, self.btn_preview, self.btn_apply, self.btn_push):
             b.setMinimumHeight(28)
@@ -212,9 +212,9 @@ class NarrowbandNormalization(QWidget):
         tools = QHBoxLayout()
         tools.setSpacing(6)
 
-        self.btn_zoom_in = themed_toolbtn("zoom-in", "Zoom In")
-        self.btn_zoom_out = themed_toolbtn("zoom-out", "Zoom Out")
-        self.btn_fit = themed_toolbtn("zoom-fit-best", "Fit to Preview")
+        self.btn_zoom_in = themed_toolbtn("zoom-in", self.tr("Zoom In"))
+        self.btn_zoom_out = themed_toolbtn("zoom-out", self.tr("Zoom Out"))
+        self.btn_fit = themed_toolbtn("zoom-fit-best", self.tr("Fit to Preview"))
 
         self.btn_zoom_in.clicked.connect(lambda: self._zoom_at(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom_at(0.8))
@@ -263,7 +263,7 @@ class NarrowbandNormalization(QWidget):
         root.addWidget(right_host, 1)
 
         # ---------------- FOOTER ----------------
-        self.lbl_credits = QLabel(
+        self.lbl_credits = QLabel(self.tr(
             """
             <div style="text-align:center;">
             <span style="font-size:12px; color:#b8b8b8;">
@@ -275,7 +275,7 @@ class NarrowbandNormalization(QWidget):
             </span>
             </div>
             """
-        )
+        ))
         self.lbl_credits.setTextFormat(Qt.TextFormat.RichText)
         self.lbl_credits.setOpenExternalLinks(True)
         self.lbl_credits.setWordWrap(True)
@@ -297,54 +297,54 @@ class NarrowbandNormalization(QWidget):
 
     def _init_widgets(self):
         # -------- Import mapped RGB (Perfect Palette / existing composites) --------
-        self.grp_import = QGroupBox("Import mapped RGB view", self)
+        self.grp_import = QGroupBox(self.tr("Import mapped RGB view"), self)
         impv = QVBoxLayout(self.grp_import)
         impv.setSpacing(6)
 
         # Use themed buttons for consistency
-        self.btn_imp_sho = QPushButton("Load SHO View…", self)
-        self.btn_imp_hso = QPushButton("Load HSO View…", self)
-        self.btn_imp_hos = QPushButton("Load HOS View…", self)
-        self.btn_imp_hoo = QPushButton("Load HOO View…", self)
+        self.btn_imp_sho = QPushButton(self.tr("Load SHO View…"), self)
+        self.btn_imp_hso = QPushButton(self.tr("Load HSO View…"), self)
+        self.btn_imp_hos = QPushButton(self.tr("Load HOS View…"), self)
+        self.btn_imp_hoo = QPushButton(self.tr("Load HOO View…"), self)
 
         for b in (self.btn_imp_sho, self.btn_imp_hso, self.btn_imp_hos, self.btn_imp_hoo):
             b.setMinimumHeight(28)
             impv.addWidget(b)
 
         # -------- Channel load buttons + labels --------
-        self.btn_ha = QPushButton("Load Ha…", self)
-        self.btn_oiii = QPushButton("Load OIII…", self)
-        self.btn_sii = QPushButton("Load SII…", self)
-        self.btn_osc1 = QPushButton("Load OSC1 (Ha/OIII)…", self)
-        self.btn_osc2 = QPushButton("Load OSC2 (SII/OIII)…", self)
+        self.btn_ha = QPushButton(self.tr("Load Ha…"), self)
+        self.btn_oiii = QPushButton(self.tr("Load OIII…"), self)
+        self.btn_sii = QPushButton(self.tr("Load SII…"), self)
+        self.btn_osc1 = QPushButton(self.tr("Load OSC1 (Ha/OIII)…"), self)
+        self.btn_osc2 = QPushButton(self.tr("Load OSC2 (SII/OIII)…"), self)
 
-        self.lbl_ha = QLabel("No Ha loaded.", self)
-        self.lbl_oiii = QLabel("No OIII loaded.", self)
-        self.lbl_sii = QLabel("No SII loaded.", self)
-        self.lbl_osc1 = QLabel("No OSC1 loaded.", self)
-        self.lbl_osc2 = QLabel("No OSC2 loaded.", self)
+        self.lbl_ha = QLabel(self.tr("No {0} loaded.").format("Ha"), self)
+        self.lbl_oiii = QLabel(self.tr("No {0} loaded.").format("OIII"), self)
+        self.lbl_sii = QLabel(self.tr("No {0} loaded.").format("SII"), self)
+        self.lbl_osc1 = QLabel(self.tr("No {0} loaded.").format("OSC1"), self)
+        self.lbl_osc2 = QLabel(self.tr("No {0} loaded.").format("OSC2"), self)
 
         # -------- Actions --------
-        self.btn_clear = QPushButton("Clear", self)
-        self.btn_preview = QPushButton("Preview", self)
-        self.btn_apply = QPushButton("Apply to Current View", self)
-        self.btn_push = QPushButton("Push as New View", self)
+        self.btn_clear = QPushButton(self.tr("Clear"), self)
+        self.btn_preview = QPushButton(self.tr("Preview"), self)
+        self.btn_apply = QPushButton(self.tr("Apply to Current View"), self)
+        self.btn_push = QPushButton(self.tr("Push as New View"), self)
 
         # -------- Preview options --------
-        self.chk_preview_autostretch = QCheckBox("Autostretch preview", self)
+        self.chk_preview_autostretch = QCheckBox(self.tr("Autostretch preview"), self)
         self.chk_preview_autostretch.setChecked(False)
 
         # -------- Normalization controls (built in helper) --------
         self.grp_norm, self._norm_form = self._build_norm_group()
 
         # -------- Extras groups referenced by _refresh_visibility --------
-        self.grp_hoo_extras = QGroupBox("HOO Extras", self)
+        self.grp_hoo_extras = QGroupBox(self.tr("HOO Extras"), self)
         self.grp_hoo_extras.setLayout(QVBoxLayout())
-        self.grp_hoo_extras.layout().addWidget(QLabel("Reserved for future HOO-specific options.", self))
+        self.grp_hoo_extras.layout().addWidget(QLabel(self.tr("Reserved for future HOO-specific options."), self))
 
-        self.grp_sho_extras = QGroupBox("SHO / HSO / HOS Extras", self)
+        self.grp_sho_extras = QGroupBox(self.tr("SHO / HSO / HOS Extras"), self)
         self.grp_sho_extras.setLayout(QVBoxLayout())
-        self.grp_sho_extras.layout().addWidget(QLabel("Reserved for future SHO-family options.", self))
+        self.grp_sho_extras.layout().addWidget(QLabel(self.tr("Reserved for future SHO-family options."), self))
 
         for lab in (self.lbl_ha, self.lbl_oiii, self.lbl_sii, self.lbl_osc1, self.lbl_osc2):
             lab.setWordWrap(False)
@@ -367,7 +367,7 @@ class NarrowbandNormalization(QWidget):
             pass
 
     def _build_norm_group(self) -> tuple[QGroupBox, QFormLayout]:
-        grp = QGroupBox("Normalization", self)
+        grp = QGroupBox(self.tr("Normalization"), self)
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
@@ -383,24 +383,24 @@ class NarrowbandNormalization(QWidget):
         self.cmb_engine = QComboBox(self)
         self.cmb_engine.addItems([
             "V2 — v2.23",
-            "V1 — legacy PixelMath",
+            self.tr("V1 — legacy PixelMath"),
         ])
-        self.cmb_engine.setToolTip(
+        self.cmb_engine.setToolTip(self.tr(
             "V2 is NarrowbandNormalizationV2 (v2.23).\n"
             "V1 is the original PixelMath port.\n\n"
             "Each engine has its own parameters; switching changes which\n"
             "controls below are available."
-        )
+        ))
 
         # Scenario / mode / lightness
         self.cmb_scenario = QComboBox(self)
         self.cmb_scenario.addItems(["SHO", "HSO", "HOS", "HOO"])
 
         self.cmb_mode = QComboBox(self)
-        self.cmb_mode.addItems(["Non-linear (Mode=1)", "Linear (Mode=0)"])
+        self.cmb_mode.addItems([self.tr("Non-linear (Mode=1)"), self.tr("Linear (Mode=0)")])
 
         self.cmb_lightness = QComboBox(self)
-        self.cmb_lightness.addItems(["Off (0)", "Original (1)", "Ha (2)", "SII (3)", "OIII (4)"])
+        self.cmb_lightness.addItems([self.tr("Off (0)"), self.tr("Original (1)"), "Ha (2)", "SII (3)", "OIII (4)"])
 
         # ==================== V1 (legacy) controls ====================
         # Blackpoint: [0..1] step 0.01
@@ -439,19 +439,19 @@ class NarrowbandNormalization(QWidget):
 
         # Blend Mode (V1, HOO only)
         self.cmb_blendmode = QComboBox(self)
-        self.cmb_blendmode.addItems(["Screen", "Add", "Linear Dodge", "Normal"])
+        self.cmb_blendmode.addItems([self.tr("Screen"), self.tr("Add"), self.tr("Linear Dodge"), self.tr("Normal")])
 
         # ==================== V2 controls ====================
         # Background equalization — maps to NBNParams.bgn. This is the
         # engine's own per-channel pedestal equalization, NOT the same thing
         # as the gradient-descent background neutralization post-step below.
-        self.chk_v2_bgn = QCheckBox("Background equalization (engine)", self)
+        self.chk_v2_bgn = QCheckBox(self.tr("Background equalization (engine)"), self)
         self.chk_v2_bgn.setChecked(True)
-        self.chk_v2_bgn.setToolTip(
+        self.chk_v2_bgn.setToolTip(self.tr(
             "Equalizes each channel's sky pedestal to their common mean\n"
             "before normalization (Bill's BGN step). Distinct from the\n"
             "∇-descent Background Neutralization post-step further down."
-        )
+        ))
 
         # Background noise: MAD units above the measured sky level
         self.row_v2_bgnoise, self.spin_v2_bgnoise, self.sld_v2_bgnoise = self._slider_spin_row(
@@ -472,19 +472,19 @@ class NarrowbandNormalization(QWidget):
 
         self.cmb_v2_lumhold = QComboBox(self)
         self.cmb_v2_lumhold.addItems(["Off", "Preserve", "Red", "Green", "Blue"])
-        self.cmb_v2_lumhold.setToolTip(
+        self.cmb_v2_lumhold.setToolTip(self.tr(
             "Rescale RGB so Rec.709 luma matches a chosen source.\n"
             "'Preserve' holds the pre-normalization luma; the channel\n"
             "options drive luma from that single normalized channel."
-        )
+        ))
 
         # OSC HOO synthetic green (HOO only)
-        self.chk_v2_osc = QCheckBox("OSC HOO (synthetic green)", self)
+        self.chk_v2_osc = QCheckBox(self.tr("OSC HOO (synthetic green)"), self)
         self.chk_v2_osc.setChecked(False)
-        self.chk_v2_osc.setToolTip(
+        self.chk_v2_osc.setToolTip(self.tr(
             "For one-shot-colour HOO data: build the green channel by\n"
             "blending rather than reusing OIII directly."
-        )
+        ))
 
         self.cmb_v2_blendmode = QComboBox(self)
         self.cmb_v2_blendmode.addItems(["Mode 1", "Mode 2", "Mode 3"])
@@ -493,59 +493,59 @@ class NarrowbandNormalization(QWidget):
             lo=0.0, hi=1.0, step=0.01, val=0.5, decimals=3
         )
 
-        self.chk_v2_showbg = QCheckBox("Show background map (diagnostic)", self)
+        self.chk_v2_showbg = QCheckBox(self.tr("Show background map (diagnostic)"), self)
         self.chk_v2_showbg.setChecked(False)
-        self.chk_v2_showbg.setToolTip(
+        self.chk_v2_showbg.setToolTip(self.tr(
             "Paints everything at or below the computed sky level white.\n"
             "Use it to check the Background Noise setting, then turn it off.\n"
             "SCNR and the BN post-step are skipped while this is on."
-        )
+        ))
 
         # ==================== shared post-steps ====================
-        self.chk_scnr = QCheckBox("SCNR (reduce green cast)", self)
+        self.chk_scnr = QCheckBox(self.tr("SCNR (reduce green cast)"), self)
         self.chk_scnr.setChecked(True)
 
         self.row_scnr_amount, self.spin_scnr_amount, self.sld_scnr_amount = self._slider_spin_row(
             lo=0.0, hi=1.0, step=0.01, val=0.80, decimals=2
         )
-        self.chk_scnr_preserve = QCheckBox("Preserve luminance", self)
+        self.chk_scnr_preserve = QCheckBox(self.tr("Preserve luminance"), self)
         self.chk_scnr_preserve.setChecked(True)
 
-        self.chk_linear_fit = QCheckBox("Linear Fit (highest signal)", self)
+        self.chk_linear_fit = QCheckBox(self.tr("Linear Fit (highest signal)"), self)
         self.chk_linear_fit.setChecked(False)
 
-        self.chk_bg_neutral = QCheckBox("Background Neutralization (∇-descent)", self)
+        self.chk_bg_neutral = QCheckBox(self.tr("Background Neutralization (∇-descent)"), self)
         self.chk_bg_neutral.setChecked(True)
-        self.chk_bg_neutral.setToolTip(
+        self.chk_bg_neutral.setToolTip(self.tr(
             "Post-process step applied to the finished RGB result.\n"
             "With the V2 engine this runs IN ADDITION to the engine's own\n"
             "background equalization — you usually want one or the other."
-        )
+        ))
 
         # ---------------- Layout ----------------
-        form.addRow("Engine:", self.cmb_engine)
-        form.addRow("Scenario:", self.cmb_scenario)
-        form.addRow("Mode:", self.cmb_mode)
-        form.addRow("Lightness:", self.cmb_lightness)
+        form.addRow(self.tr("Engine:"), self.cmb_engine)
+        form.addRow(self.tr("Scenario:"), self.cmb_scenario)
+        form.addRow(self.tr("Mode:"), self.cmb_mode)
+        form.addRow(self.tr("Lightness:"), self.cmb_lightness)
 
         # V1 labels
-        self._lbl_blackpoint = QLabel("Blackpoint\n(Min → Med):", self)
+        self._lbl_blackpoint = QLabel(self.tr("Blackpoint\n(Min → Med):"), self)
         self._lbl_blackpoint.setWordWrap(True)
-        self._lbl_blackpoint.setToolTip(
+        self._lbl_blackpoint.setToolTip(self.tr(
             "Controls the blackpoint reference M used by the normalization.\n\n"
             "M = min + Blackpoint × (median − min)\n"
             "• 0.0 = use Min\n"
             "• 1.0 = use Median\n\n"
             "Higher values lift the baseline (brighter background); lower values preserve darker blacks."
-        )
-        self._lbl_hlrecover  = QLabel("HL Recover:", self)
-        self._lbl_hlreduct   = QLabel("HL Reduction:", self)
-        self._lbl_brightness = QLabel("Brightness:", self)
-        self._lbl_blendmode  = QLabel("Blend Mode:", self)
-        self._lbl_hablend    = QLabel("Ha Blend:", self)
-        self._lbl_oiiiboost  = QLabel("OIII Boost:", self)
-        self._lbl_siiboost   = QLabel("SII Boost:", self)
-        self._lbl_oiiiboost2 = QLabel("OIII Boost:", self)
+        ))
+        self._lbl_hlrecover  = QLabel(self.tr("HL Recover:"), self)
+        self._lbl_hlreduct   = QLabel(self.tr("HL Reduction:"), self)
+        self._lbl_brightness = QLabel(self.tr("Brightness:"), self)
+        self._lbl_blendmode  = QLabel(self.tr("Blend Mode:"), self)
+        self._lbl_hablend    = QLabel(self.tr("Ha Blend:"), self)
+        self._lbl_oiiiboost  = QLabel(self.tr("OIII Boost:"), self)
+        self._lbl_siiboost   = QLabel(self.tr("SII Boost:"), self)
+        self._lbl_oiiiboost2 = QLabel(self.tr("OIII Boost:"), self)
 
         form.addRow(self._lbl_blackpoint, self.row_blackpoint)
         form.addRow(self._lbl_hlrecover,  self.row_hlrecover)
@@ -559,17 +559,17 @@ class NarrowbandNormalization(QWidget):
         form.addRow(self._lbl_oiiiboost2, self.row_oiii_sho)
 
         # V2 labels + rows
-        self._lbl_v2_bgnoise  = QLabel("Background Noise:", self)
-        self._lbl_v2_bgnoise.setToolTip(
+        self._lbl_v2_bgnoise  = QLabel(self.tr("Background Noise:"), self)
+        self._lbl_v2_bgnoise.setToolTip(self.tr(
             "Sky pedestal height, in MAD units above the measured background.\n"
             "Raise it if the background still shows colour mottling."
-        )
-        self._lbl_v2_red      = QLabel("Red Boost:", self)
-        self._lbl_v2_green    = QLabel("Green Boost:", self)
-        self._lbl_v2_blue     = QLabel("Blue Boost:", self)
-        self._lbl_v2_lumhold  = QLabel("Luminance Hold:", self)
-        self._lbl_v2_blendmode = QLabel("OSC Blend Mode:", self)
-        self._lbl_v2_blendamt = QLabel("OSC Blend Amount:", self)
+        ))
+        self._lbl_v2_red      = QLabel(self.tr("Red Boost:"), self)
+        self._lbl_v2_green    = QLabel(self.tr("Green Boost:"), self)
+        self._lbl_v2_blue     = QLabel(self.tr("Blue Boost:"), self)
+        self._lbl_v2_lumhold  = QLabel(self.tr("Luminance Hold:"), self)
+        self._lbl_v2_blendmode = QLabel(self.tr("OSC Blend Mode:"), self)
+        self._lbl_v2_blendamt = QLabel(self.tr("OSC Blend Amount:"), self)
 
         form.addRow("", self.chk_v2_bgn)
         form.addRow(self._lbl_v2_bgnoise,  self.row_v2_bgnoise)
@@ -584,7 +584,7 @@ class NarrowbandNormalization(QWidget):
 
         # Shared post-steps
         form.addRow("", self.chk_scnr)
-        self._lbl_scnr_amount = QLabel("SCNR Amount:", self)
+        self._lbl_scnr_amount = QLabel(self.tr("SCNR Amount:"), self)
         form.addRow(self._lbl_scnr_amount, self.row_scnr_amount)
         form.addRow("", self.chk_scnr_preserve)
         form.addRow("", self.chk_linear_fit)
@@ -717,7 +717,7 @@ class NarrowbandNormalization(QWidget):
     def _schedule_preview(self):
         """Call this on ANY UI change that should recompute preview."""
         self._calc_seq += 1
-        self.status.setText("Updating preview...")
+        self.status.setText(self.tr("Updating preview..."))
         self._debounce.start()
 
     def _dbg(self, msg: str):
@@ -778,11 +778,11 @@ class NarrowbandNormalization(QWidget):
         try:
             ha, oo, si = self._prepared_channels()
             if ha is None and oo is None and si is None:
-                self.status.setText("Load channels to preview.")
+                self.status.setText(self.tr("Load channels to preview."))
                 return
         except Exception as e:
             print(f"[NBN] _prepared_channels failed:\n{traceback.format_exc()}")
-            self._safe_set_status(f"Preview error: {e}")
+            self._safe_set_status(self.tr("Preview error: {0}").format(e))
             return
 
         def on_done(out: np.ndarray, step_name: str):
@@ -797,7 +797,7 @@ class NarrowbandNormalization(QWidget):
             qimg = self._to_qimage(disp)
             first = (self._base_pm is None)
             self._set_preview_image(qimg, fit=first, preserve_view=True)
-            self.status.setText("Done (100%)")
+            self.status.setText(self.tr("Done (100%)"))
 
         def on_fail(err: str):
             # Don't spam modal dialogs for "missing channels" type errors.
@@ -814,8 +814,8 @@ class NarrowbandNormalization(QWidget):
                 self._safe_set_status(last)
                 return
             print(f"[NBN] preview failed:\n{err}")
-            QMessageBox.critical(self, "Narrowband Normalization", err)
-            self._safe_set_status("Preview failed.")
+            QMessageBox.critical(self, self.tr("Narrowband Normalization"), err)
+            self._safe_set_status(self.tr("Preview failed."))
 
         self._start_job(
             downsample=True,
@@ -891,7 +891,7 @@ class NarrowbandNormalization(QWidget):
         scen = self._scenario()
         if scen == "HOO":
             if ha is None or oo is None:
-                return False, "Load Ha + OIII to preview HOO."
+                return False, self.tr("Load Ha + OIII to preview HOO.")
             return True, ""
         else:
             missing = []
@@ -899,7 +899,7 @@ class NarrowbandNormalization(QWidget):
             if oo is None: missing.append("OIII")
             if si is None: missing.append("SII")
             if missing:
-                return False, f"Load {', '.join(missing)} to preview {scen}."
+                return False, self.tr("Load {0} to preview {1}.").format(', '.join(missing), scen)
             return True, ""
 
 
@@ -980,9 +980,9 @@ class NarrowbandNormalization(QWidget):
         show_row(self.cmb_lightness, (not v2) and (mode == 1))
         if (not v2) and (mode == 1):
             if is_hoo:
-                self._set_lightness_items(["Off (0)", "Original (1)", "Ha (2)", "OIII (3)"])
+                self._set_lightness_items([self.tr("Off (0)"), self.tr("Original (1)"), "Ha (2)", "OIII (3)"])
             else:
-                self._set_lightness_items(["Off (0)", "Original (1)", "Ha (2)", "SII (3)", "OIII (4)"])
+                self._set_lightness_items([self.tr("Off (0)"), self.tr("Original (1)"), "Ha (2)", "SII (3)", "OIII (4)"])
 
         # ---- V2-only rows ----
         showbg = v2 and self.chk_v2_showbg.isChecked()
@@ -1102,14 +1102,14 @@ class NarrowbandNormalization(QWidget):
             lab.setToolTip(full)  # full path/view name accessible on hover
             lab.setStyleSheet("color:#2a7; font-weight:600; margin-left:8px;")
         else:
-            lab.setText(f"No {which} loaded.")
+            lab.setText(self.tr("No {0} loaded.").format(which))
             lab.setToolTip("")
             lab.setStyleSheet("color:#888; margin-left:8px;")
 
 
     def _load_channel(self, which: str):
         src, ok = QInputDialog.getItem(
-            self, f"Load {which}", "Source:", ["From View", "From File"], 0, False
+            self, self.tr("Load {0}").format(which), self.tr("Source:"), ["From View", "From File"], 0, False
         )
         if not ok:
             return
@@ -1134,7 +1134,7 @@ class NarrowbandNormalization(QWidget):
 
         setattr(self, which.lower(), self._as_float01(img))
         self._set_status_label(which, label)
-        self.status.setText(f"{which} loaded ({'mono' if img.ndim==2 else 'RGB'}) shape={img.shape}")
+        self.status.setText(self.tr("{0} loaded ({1}) shape={2}").format(which, self.tr("mono") if img.ndim==2 else 'RGB', img.shape))
 
         self._schedule_preview()
 
@@ -1150,12 +1150,12 @@ class NarrowbandNormalization(QWidget):
 
         views = self._list_open_views()
         if not views:
-            QMessageBox.warning(self, "No Views", "No open image views were found.")
+            QMessageBox.warning(self, self.tr("No Views"), self.tr("No open image views were found."))
             return
 
         labels = [lab for lab, _ in views]
         choice, ok = QInputDialog.getItem(
-            self, f"Select {scenario} View", "Choose a mapped RGB view:", labels, 0, False
+            self, self.tr("Select {0} View").format(scenario), self.tr("Choose a mapped RGB view:"), labels, 0, False
         )
         if not ok or not choice:
             return
@@ -1163,21 +1163,21 @@ class NarrowbandNormalization(QWidget):
         sw = dict(views)[choice]
         doc = getattr(sw, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "Empty View", "Selected view has no image.")
+            QMessageBox.warning(self, self.tr("Empty View"), self.tr("Selected view has no image."))
             return
 
         img = doc.image
         if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
             QMessageBox.warning(
-                self, "Not RGB",
-                "That view is mono. Import requires an RGB mapped composite (3-channel)."
+                self, self.tr("Not RGB"),
+                self.tr("That view is mono. Import requires an RGB mapped composite (3-channel).")
             )
             return
 
         if img.ndim != 3 or img.shape[2] != 3:
             QMessageBox.warning(
-                self, "Unsupported Shape",
-                f"Expected RGB (H,W,3). Got {img.shape}."
+                self, self.tr("Unsupported Shape"),
+                self.tr("Expected RGB (H,W,3). Got {0}.").format(img.shape)
             )
             return
 
@@ -1215,7 +1215,7 @@ class NarrowbandNormalization(QWidget):
             self._set_status_label("OIII", f"{map_txt}")
             self._set_status_label("SII",  f"{map_txt}")
 
-        self.status.setText(f"Imported mapped {scenario} view → channels loaded.")
+        self.status.setText(self.tr("Imported mapped {0} view → channels loaded.").format(scenario))
         self._schedule_preview()
 
 
@@ -1267,12 +1267,12 @@ class NarrowbandNormalization(QWidget):
     def _load_from_view(self, which):
         views = self._list_open_views()
         if not views:
-            QMessageBox.warning(self, "No Views", "No open image views were found.")
+            QMessageBox.warning(self, self.tr("No Views"), self.tr("No open image views were found."))
             return None
 
         labels = [lab for lab, _ in views]
         choice, ok = QInputDialog.getItem(
-            self, f"Select View for {which}", "Choose a view (by name):", labels, 0, False
+            self, self.tr("Select View for {0}").format(which), self.tr("Choose a view (by name):"), labels, 0, False
         )
         if not ok or not choice:
             return None
@@ -1280,7 +1280,7 @@ class NarrowbandNormalization(QWidget):
         sw = dict(views)[choice]
         doc = getattr(sw, "document", None)
         if doc is None or getattr(doc, "image", None) is None:
-            QMessageBox.warning(self, "Empty View", "Selected view has no image.")
+            QMessageBox.warning(self, self.tr("Empty View"), self.tr("Selected view has no image."))
             return None
 
         img = doc.image
@@ -1289,18 +1289,18 @@ class NarrowbandNormalization(QWidget):
         bit_depth = meta.get("bit_depth", "Unknown")
         is_mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
         path = meta.get("file_path", None)
-        return img, header, bit_depth, is_mono, path, f"From View: {choice}", doc
+        return img, header, bit_depth, is_mono, path, self.tr("From View: {0}").format(choice), doc
 
     def _load_from_file(self, which):
         filt = "Images (*.png *.tif *.tiff *.fits *.fit *.xisf)"
-        path, _ = QFileDialog.getOpenFileName(self, f"Select {which} File", "", filt)
+        path, _ = QFileDialog.getOpenFileName(self, self.tr("Select {0} File").format(which), "", filt)
         if not path:
             return None
         img, header, bit_depth, is_mono = legacy_load_image(path)
         if img is None:
-            QMessageBox.critical(self, "Load Error", f"Could not load {os.path.basename(path)}")
+            QMessageBox.critical(self, self.tr("Load Error"), self.tr("Could not load {0}").format(os.path.basename(path)))
             return None
-        label = f"From File: {os.path.basename(path)}"
+        label = self.tr("From File: {0}").format(os.path.basename(path))
         return img, header, bit_depth, is_mono, path, label, None
 
     # ---------------- channel prep ----------------
@@ -1365,19 +1365,22 @@ class NarrowbandNormalization(QWidget):
             ref_h, ref_w = ref.shape[:2]
 
             if not self._dim_mismatch_accepted:
-                msg = (
+                msg = self.tr(
                     "The loaded channels have different image dimensions.\n\n"
-                    f"• Ha:   {None if ha is None else ha.shape}\n"
-                    f"• OIII: {None if oo is None else oo.shape}\n"
-                    f"• SII:  {None if si is None else si.shape}\n\n"
-                    f"SASpro can resize (warp) the channels to match the reference frame:\n"
-                    f"• Reference: {ref_name}\n"
-                    f"• Target size: ({ref_w} × {ref_h})\n\n"
+                    "• Ha:   {0}\n"
+                    "• OIII: {1}\n"
+                    "• SII:  {2}\n\n"
+                    "SASpro can resize (warp) the channels to match the reference frame:\n"
+                    "• Reference: {3}\n"
+                    "• Target size: ({4} × {5})\n\n"
                     "Proceed and resize mismatched channels?"
-                )
+                ).format(None if ha is None else ha.shape,
+                         None if oo is None else oo.shape,
+                         None if si is None else si.shape,
+                         ref_name, ref_w, ref_h)
                 ret = QMessageBox.question(
                     self,
-                    "Channel Size Mismatch",
+                    self.tr("Channel Size Mismatch"),
                     msg,
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.Yes
@@ -1497,9 +1500,9 @@ class NarrowbandNormalization(QWidget):
             return
 
         if downsample and s < 0.999:
-            self._set_busy(True, f"Computing preview… (downsample {s:.2f}×)")
+            self._set_busy(True, self.tr("Computing preview… (downsample {0:.2f}×)").format(s))
         else:
-            self._set_busy(True, "Computing…")
+            self._set_busy(True, self.tr("Computing…"))
 
         def _done(out, _step):
             if seq != self._calc_seq:
@@ -1518,8 +1521,8 @@ class NarrowbandNormalization(QWidget):
                     on_fail(err)
                 else:
                     print(f"[NBN] job failed:\n{err}")
-                    QMessageBox.critical(self, "Narrowband Normalization", err)
-                    self._safe_set_status("Failed.")
+                    QMessageBox.critical(self, self.tr("Narrowband Normalization"), err)
+                    self._safe_set_status(self.tr("Failed."))
             finally:
                 self._set_busy(False)
 
@@ -1641,7 +1644,7 @@ class NarrowbandNormalization(QWidget):
                 else:
                     print(f"[NBN] worker failed:\n{err}")
                     if self._ui_alive():
-                        QMessageBox.critical(self, "Narrowband Normalization", err)
+                        QMessageBox.critical(self, self.tr("Narrowband Normalization"), err)
             finally:
                 try:
                     w.progress.disconnect()
@@ -1696,7 +1699,7 @@ class NarrowbandNormalization(QWidget):
 
         first = (self._base_pm is None)
         self._set_preview_image(self._to_qimage(disp), fit=first, preserve_view=True)
-        self.status.setText(f"Preview updated ({self.cmb_scenario.currentText()}).")
+        self.status.setText(self.tr("Preview updated ({0}).").format(self.cmb_scenario.currentText()))
 
 
     def _capture_view_state(self):
@@ -1842,7 +1845,7 @@ class NarrowbandNormalization(QWidget):
         self.preview.clear()
         for which in ("Ha", "OIII", "SII", "OSC1", "OSC2"):
             self._set_status_label(which, None)
-        self.status.setText("Cleared all loaded channels.")
+        self.status.setText(self.tr("Cleared all loaded channels."))
 
     def _resolve_target_doc(self):
         """
@@ -1870,15 +1873,15 @@ class NarrowbandNormalization(QWidget):
     def _apply_to_current_view(self):
         if self._use_v2() and self.chk_v2_showbg.isChecked():
             QMessageBox.information(
-                self, "Background Map",
-                "The background map is a diagnostic view.\n"
-                "Turn off 'Show background map' before applying."
+                self, self.tr("Background Map"),
+                self.tr("The background map is a diagnostic view.\n"
+                        "Turn off 'Show background map' before applying.")
             )
             return
 
         doc = self._resolve_target_doc()
         if doc is None:
-            QMessageBox.information(self, "No Active Doc", "Couldn't find an active document; pushing to new view instead.")
+            QMessageBox.information(self, self.tr("No Active Doc"), self.tr("Couldn't find an active document; pushing to new view instead."))
             self._push_result()
             return
 
@@ -1901,10 +1904,10 @@ class NarrowbandNormalization(QWidget):
                 else:
                     doc.image = out2
 
-                self.status.setText("Applied normalization to current view.")
+                self.status.setText(self.tr("Applied normalization to current view."))
             except Exception as e:
                 print(f"[NBN] apply failed:\n{traceback.format_exc()}")
-                QMessageBox.critical(self, "Apply Error", f"Failed to apply:\n{e}")
+                QMessageBox.critical(self, self.tr("Apply Error"), self.tr("Failed to apply:\n{0}").format(e))
 
 
         self._start_job(
@@ -1924,7 +1927,7 @@ class NarrowbandNormalization(QWidget):
     def _push_result(self):
         dm = self._get_doc_manager()
         if dm is None:
-            QMessageBox.warning(self, "DocManager Missing", "DocManager not found; can't push to a new view.")
+            QMessageBox.warning(self, self.tr("DocManager Missing"), self.tr("DocManager not found; can't push to a new view."))
             return
 
         engine = "V2" if self._use_v2() else "V1"
@@ -1947,10 +1950,10 @@ class NarrowbandNormalization(QWidget):
                 else:
                     raise RuntimeError("DocManager lacks open_array/create_document")
 
-                self.status.setText("Opened result in a new view.")
+                self.status.setText(self.tr("Opened result in a new view."))
             except Exception as e:
                 print(f"[NBN] push failed:\n{traceback.format_exc()}")
-                QMessageBox.critical(self, "Push Error", f"Failed to open new view:\n{e}")
+                QMessageBox.critical(self, self.tr("Push Error"), self.tr("Failed to open new view:\n{0}").format(e))
 
         self._start_job(
             downsample=False,                 # FULL RES

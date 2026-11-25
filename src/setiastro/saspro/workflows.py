@@ -7,16 +7,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, QMimeData, QSize, QTimer
-from PyQt6.QtGui import QAction, QBrush, QColor, QCursor, QDrag, QIcon
+from PyQt6.QtCore import Qt, QMimeData, QSize, QTimer, QCoreApplication, QT_TRANSLATE_NOOP
+from PyQt6.QtGui import QAction, QBrush, QColor, QCursor, QDrag, QIcon, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -27,10 +29,10 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSplitter,
+    QStackedWidget,
     QStyleOptionViewItem,
     QStyledItemDelegate,
     QTextEdit,
-    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -38,6 +40,12 @@ from PyQt6.QtWidgets import (
     QInputDialog,
 )
 from setiastro.saspro.help_support import make_help_button
+
+
+def _tr(text: str) -> str:
+    return QCoreApplication.translate("Workflows", text)
+
+
 WORKFLOW_MIME = "application/x-saspro-workflow-command"
 WORKFLOW_SCHEMA_VERSION = 3   # v3: explicit links between lanes
 
@@ -144,16 +152,22 @@ class WorkflowLink:
     The step `src` hands its result either to the start of lane `dst_lane` (a
     branch) or to the step `dst` part-way down another lane (a join). Exactly
     one of `dst` / `dst_lane` is set. Steps in the same lane are never linked:
-    the lane order already connects them.
+    the lane order already connects them. `label` is the name the graph shows
+    on it; empty shows the input/output tags it carries.
     """
     src: str
     dst: str = ""
     dst_lane: str = ""
+    label: str = ""
 
     def to_dict(self) -> dict:
         if self.dst:
-            return {"from": self.src, "to": self.dst}
-        return {"from": self.src, "to_lane": self.dst_lane}
+            data = {"from": self.src, "to": self.dst}
+        else:
+            data = {"from": self.src, "to_lane": self.dst_lane}
+        if self.label:
+            data["label"] = self.label
+        return data
 
     @classmethod
     def from_dict(cls, data) -> Optional["WorkflowLink"]:
@@ -164,7 +178,8 @@ class WorkflowLink:
         lane = str(data.get("to_lane") or "")
         if not src or not (dst or lane.strip()):
             return None
-        return cls(src=src, dst=dst, dst_lane="" if dst else lane)
+        label = " ".join(str(data.get("label") or "").split())
+        return cls(src=src, dst=dst, dst_lane="" if dst else lane, label=label)
 
 
 @dataclass
@@ -271,26 +286,46 @@ class WorkflowActionInfo:
     action: QAction
 
 
+class WorkflowCatalog(dict):
+    """command id -> WorkflowActionInfo.
+
+    Some tools answer to more than one id (cosmicclarity / cosmic_clarity), but
+    an action carries only one, so a step saved under the other still has to
+    find its name and icon.
+    """
+
+    def get(self, key, default=None):
+        info = super().get(key)
+        if info is None:
+            from setiastro.saspro.command_ids import normalize_command_id
+            info = super().get(normalize_command_id(key))
+        return default if info is None else info
+
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
 
 def _clean_action_text(text: str) -> str:
+    """A tool's menu text as a name: no mnemonic, no trailing "..."."""
     if not text:
         return ""
-    return text.replace("&", "").strip()
+    text = text.replace("&", "").strip()
+    for dots in ("...", "…"):
+        text = text.removesuffix(dots).rstrip()
+    return text
 
 
 def _format_preset_value(v) -> str:
     if isinstance(v, bool):
-        return "on" if v else "off"
+        return _tr("on") if v else _tr("off")
     if isinstance(v, float):
         # terse: drop trailing zeros, keep it short
         return f"{v:g}"
     if isinstance(v, (list, tuple)):
-        return f"[{len(v)} items]"
+        return _tr("[{0} items]").format(len(v))
     if isinstance(v, dict):
-        return f"{{{len(v)} keys}}"
+        return _tr("{{{0} keys}}").format(len(v))
     s = str(v)
     return s if len(s) <= 40 else s[:37] + "…"
 
@@ -311,7 +346,7 @@ def _summarize_preset(preset: dict, max_rows: int = 8) -> str:
     tail = len(items) - max_rows
     body = "; ".join(rows)
     if tail > 0:
-        body += f"; <i>+{tail} more…</i>"
+        body += _tr("; <i>+{0} more…</i>").format(tail)
     return body
 
 
@@ -426,11 +461,11 @@ def _discover_script_categories(main) -> Dict[str, List[WorkflowActionInfo]]:
 
         if isinstance(act, QAction):
             icon = act.icon()
-            status_tip = act.statusTip() or act.toolTip() or f"Run script: {name}"
+            status_tip = act.statusTip() or act.toolTip() or _tr("Run script: {0}").format(name)
             bound_action = act
         else:
             icon = QIcon()
-            status_tip = f"Run script: {name}"
+            status_tip = _tr("Run script: {0}").format(name)
             bound_action = QAction(name, main)
             bound_action.setProperty("command_id", command_id)
             bound_action.setToolTip(status_tip)
@@ -465,7 +500,11 @@ def _discover_toolbar_categories(main) -> Dict[str, List[WorkflowActionInfo]]:
         except Exception:
             tb_name = "Other"
 
-        if tb_name == "Hidden":
+        if tb_name == "Hidden" or tb.objectName() == "Hidden":
+            continue
+        # Essentials repeats tools of the full toolbars; their category stays
+        # the full toolbar's (Functions, Tools...), never "Essentials".
+        if getattr(tb, "is_essentials", False):
             continue
 
         items: List[WorkflowActionInfo] = []
@@ -503,67 +542,150 @@ def _discover_toolbar_categories(main) -> Dict[str, List[WorkflowActionInfo]]:
     return categories
 
 
+def _canned_color(name: str, description: str, first_steps: List[WorkflowStep]) -> WorkflowDefinition:
+    """A linear color image from ADBE on: finish the linear work, take the stars off,
+    stretch each half, put them back. first_steps get to that color image."""
+    main, starless, stars, combine = "Main", "Starless", "Stars Only", "Combine"
+    for step in first_steps:
+        step.lane = main
+    steps = first_steps + [
+        WorkflowStep(command_id="abe", lane=main,
+                     note="Remove gradients while the image is still linear."),
+        WorkflowStep(command_id="background_neutral", lane=main,
+                     note="Neutralize the background."),
+        WorkflowStep(command_id="white_balance", lane=main,
+                     note="Balance the color before stretching."),
+        WorkflowStep(command_id="cosmic_clarity", preset={"mode": "sharpen"}, lane=main,
+                     note="Sharpen while the image is still linear."),
+        WorkflowStep(command_id="cosmic_clarity", preset={"mode": "denoise"}, lane=main,
+                     note="Reduce noise after sharpening. Less is more."),
+        WorkflowStep(command_id="remove_stars", lane=main,
+                     note="Remove the stars and keep both results: the starless image and the "
+                          "stars-only image."),
+        WorkflowStep(kind="split", lane=main, outputs=["starless", "stars only"],
+                     note="You now have two images. Each one has its own lane from here."),
+
+        WorkflowStep(command_id="stat_stretch", lane=starless, inputs=["starless"],
+                     note="Stretch the starless image to non-linear."),
+        WorkflowStep(command_id="curves", lane=starless,
+                     note="Adjust the contrast."),
+        WorkflowStep(command_id="selective_color", lane=starless,
+                     note="Adjust individual colors."),
+        WorkflowStep(command_id="texture_clarity", lane=starless, outputs=["finished starless"],
+                     note="Bring out fine texture and local contrast."),
+
+        WorkflowStep(command_id="star_stretch", lane=stars,
+                     inputs=["stars only"], outputs=["stretched stars"],
+                     note="Stretch the stars on their own, so they stay small and keep their color."),
+
+        WorkflowStep(command_id="add_stars", lane=combine,
+                     inputs=["finished starless", "stretched stars"],
+                     note="Put the stretched stars back into the finished starless image."),
+    ]
+    head = {lane: next(s for s in steps if s.lane == lane) for lane in (starless, stars, combine)}
+    return WorkflowDefinition(
+        name=name,
+        description=description,
+        lanes=[main, starless, stars, combine],
+        steps=steps,
+        # Read like columns on a page: the starless and star halves start at the
+        # top, beside Main, so the flow is no taller than Main. Left to itself the
+        # graph would start them below Split and stack everything. Add Stars sits
+        # a row clear of the starless half: a link into the very next row would
+        # widen that gap in every lane, Main included.
+        graph_rows={head[starless].id: 0, head[stars].id: 0,
+                    head[combine].id: sum(s.lane == starless for s in steps) + 1},
+    )
+
+
+def _canned_osc() -> WorkflowDefinition:
+    return _canned_color(
+        "Beginner OSC Workflow",
+        "One-shot color, from the stacked master to the finished image. "
+        "The starless image and the stars are stretched separately, then combined.",
+        [WorkflowStep(command_id="crop", note="Crop away the stacking edges first.")],
+    )
+
+
+def _canned_mono_rgb() -> WorkflowDefinition:
+    return _canned_color(
+        "Beginner Mono RGB Workflow",
+        "Mono red, green and blue, from the stacked filter masters to the finished image. "
+        "The starless image and the stars are stretched separately, then combined.",
+        [
+            WorkflowStep(command_id="crop",
+                         note="Crop away the stacking edges. R, G and B need the same crop: "
+                              "Batch Crop (all open) does them all at once."),
+            WorkflowStep(kind="note",
+                         note="Do not add L now: the image is still linear. Combine R, G and B only. "
+                              "An LRGB workflow adds L later, once the image is non-linear after "
+                              "Statistical Stretch."),
+            WorkflowStep(command_id="rgb_combine",
+                         note="Combine the R, G and B masters into one color image, with Luminance left "
+                              "empty. Work on that image from here."),
+        ],
+    )
+
+
+def _canned_mono_narrowband() -> WorkflowDefinition:
+    """Every filter gets the same linear prep; the starless and star halves then each join."""
+    filters = ["Ha", "OIII", "SII"]
+    starless, stars, combine = "Starless", "Stars Only", "Combine"
+    steps: List[WorkflowStep] = []
+    for f in filters:
+        if f == filters[0]:
+            crop_note = ("Crop away the stacking edges. Every filter needs the same crop: "
+                         "Batch Crop (all open) does them all at once.")
+        else:
+            crop_note = (f"Use the same crop as {filters[0]}. "
+                         "Skip this if Batch Crop (all open) already did it.")
+        steps += [
+            WorkflowStep(command_id="crop", lane=f, note=crop_note),
+            WorkflowStep(command_id="abe", lane=f,
+                         note=f"Remove gradients from {f} while it is still linear."),
+            WorkflowStep(command_id="cosmic_clarity", preset={"mode": "sharpen"}, lane=f,
+                         note=f"Sharpen {f} while it is still linear."),
+            WorkflowStep(command_id="cosmic_clarity", preset={"mode": "denoise"}, lane=f,
+                         note=f"Reduce the noise in {f} after sharpening. Less is more."),
+            WorkflowStep(command_id="remove_stars", lane=f, outputs=[f"{f} starless", f"{f} stars"],
+                         note=f"Remove the stars from {f} and keep both results: the starless image "
+                              "and the stars-only image."),
+        ]
+    steps += [
+        WorkflowStep(command_id="ppp", lane=starless,
+                     inputs=[f"{f} starless" for f in filters],
+                     note="Load the starless masters and pick a palette. They are still linear, so leave "
+                          "Linear input on."),
+        WorkflowStep(command_id="curves", lane=starless,
+                     note="Adjust the contrast."),
+        WorkflowStep(command_id="selective_color", lane=starless,
+                     note="Adjust individual colors."),
+        WorkflowStep(command_id="texture_clarity", lane=starless, outputs=["finished starless"],
+                     note="Bring out fine texture and local contrast."),
+
+        WorkflowStep(command_id="nbtorgb", lane=stars,
+                     inputs=[f"{f} stars" for f in filters], outputs=["RGB stars"],
+                     note="Combine the stars-only masters into natural-looking RGB stars. "
+                          "The star stretch is built in."),
+
+        WorkflowStep(command_id="add_stars", lane=combine,
+                     inputs=["finished starless", "RGB stars"],
+                     note="Put the RGB stars back into the finished starless image."),
+    ]
+    return WorkflowDefinition(
+        name="Beginner Mono Narrowband Workflow",
+        description="Mono narrowband, from the stacked filter masters to the finished image. Each filter "
+                    "has its own lane. Remove the SII lane if you only have Ha and OIII.",
+        lanes=filters + [starless, stars, combine],
+        steps=steps,
+    )
+
+
 def _default_canned_workflows() -> List[WorkflowDefinition]:
     return [
-        WorkflowDefinition(
-            name="Beginner OSC Workflow",
-            description="A beginner-friendly basic deep sky OSC workflow.",
-            lanes=["main"],
-            steps=[
-                WorkflowStep(command_id="crop", note="Crop away stacking edges first.", lane="main"),
-                WorkflowStep(command_id="pedestal", note="Remove the blank pedestal space below the minimum value in your image.", lane="main"),
-                WorkflowStep(command_id="abe", note="Remove gradients while the image is still linear.", lane="main"),
-                WorkflowStep(command_id="background_neutral", note="Neutralize the background.", lane="main"),
-                WorkflowStep(command_id="white_balance", note="Balance color before stretching.", lane="main"),
-                WorkflowStep(command_id="cosmicclarity", note="Apply sharpening then noise reduction.", lane="main"),
-                WorkflowStep(command_id="stat_stretch", note="Stretch to non-linear.", lane="main"),
-                WorkflowStep(command_id="curves", note="Adjust the contrast.", lane="main"),
-                WorkflowStep(command_id="clahe", note="Boost the image depth slightly.", lane="main"),
-                WorkflowStep(command_id="save_as", note="Save your result.", lane="main"),
-            ],
-        ),
-        WorkflowDefinition(
-            name="Beginner Mono RGB Workflow",
-            description="Simple starter workflow for mono RGB channel processing.",
-            lanes=["main"],
-            steps=[
-                WorkflowStep(command_id="crop", note="Crop away stacking edges first.", lane="main"),
-                WorkflowStep(command_id="pedestal", note="Remove the blank pedestal space below the minimum value in your image.", lane="main"),
-                WorkflowStep(command_id="linear_fit", note="Match the RGB channels before combining.", lane="main"),
-                WorkflowStep(command_id="rgb_combine", note="Combine the mono R, G, and B channels into a color image.", lane="main"),
-                WorkflowStep(command_id="background_neutral", note="Neutralize the background before color balancing.", lane="main"),
-                WorkflowStep(command_id="white_balance", note="Apply white balance to set the color balance.", lane="main"),
-                WorkflowStep(command_id="cosmicclarity", note="Apply denoise and/or sharpening with Cosmic Clarity.", lane="main"),
-                WorkflowStep(command_id="stat_stretch", note="Stretch the image to non-linear.", lane="main"),
-                WorkflowStep(command_id="curves", note="Refine contrast and color.", lane="main"),
-                WorkflowStep(command_id="clahe", note="Enhance local contrast if needed.", lane="main"),
-                WorkflowStep(command_id="save_as", note="Save your result.", lane="main"),
-            ],
-        ),
-        WorkflowDefinition(
-            name="Beginner Mono Narrowband Workflow",
-            description="Simple starter workflow for mono narrowband processing with separate starless / stars lanes.",
-            lanes=["main", "starless", "stars", "merge"],
-            steps=[
-                WorkflowStep(command_id="crop", note="Crop away stacking edges first.", lane="main", outputs=["cropped"]),
-                WorkflowStep(command_id="pedestal", note="Remove the blank pedestal space below the minimum value in your image.", lane="main", inputs=["cropped"], outputs=["pedestal_fixed"]),
-                WorkflowStep(command_id="linear_fit", note="Match channels before combining if needed.", lane="main", inputs=["pedestal_fixed"], outputs=["aligned_channels"]),
-                WorkflowStep(command_id="cosmicclarity", note="Optional: light denoise and/or sharpening before star removal. Less is more.", lane="main", inputs=["aligned_channels"], outputs=["prepped_channels"]),
-                WorkflowStep(kind="split", note="Split processing into starless and stars-only paths after Remove Stars.", lane="main", outputs=["starless", "stars_only"]),
-                WorkflowStep(command_id="remove_stars", note="Remove stars for each master and keep both outputs.", lane="main", inputs=["prepped_channels"], outputs=["starless", "stars_only"]),
-                WorkflowStep(kind="note", note="Use your starless masters in this lane.", lane="starless"),
-                WorkflowStep(command_id="ppp", note="Build the palette and color image with Perfect Palette Picker.", lane="starless", inputs=["starless"], outputs=["palette_starless"]),
-                WorkflowStep(command_id="cosmicclarity", note="Optional cleanup on the starless color image.", lane="starless", inputs=["palette_starless"], outputs=["starless_cc"]),
-                WorkflowStep(command_id="curves", note="Refine contrast and color.", lane="starless", inputs=["starless_cc"], outputs=["starless_curved"]),
-                WorkflowStep(command_id="clahe", note="Enhance local contrast if needed.", lane="starless", inputs=["starless_curved"], outputs=["starless_final"]),
-                WorkflowStep(kind="note", note="Use your stars-only masters in this lane.", lane="stars"),
-                WorkflowStep(command_id="nbtorgb", note="Combine your stars-only images into an RGB stars master.", lane="stars", inputs=["stars_only"], outputs=["rgb_stars"]),
-                WorkflowStep(command_id="cosmicclarity", note="Optional cleanup on the stars image.", lane="stars", inputs=["rgb_stars"], outputs=["stars_final"]),
-                WorkflowStep(kind="merge", note="Merge the starless and stars-only results back together.", lane="merge", inputs=["starless_final", "stars_final"], outputs=["merged"]),
-                WorkflowStep(command_id="add_stars", note="Combine your stars and your starless image.", lane="merge", inputs=["starless_final", "stars_final"], outputs=["final"]),
-                WorkflowStep(command_id="save_as", note="Save your result.", lane="merge", inputs=["final"]),
-            ],
-        ),
+        _canned_osc(),
+        _canned_mono_rgb(),
+        _canned_mono_narrowband(),
         WorkflowDefinition(
             name="Cosmic Clarity Cleanup",
             description="Basic sharpening / denoise workflow.",
@@ -571,7 +693,7 @@ def _default_canned_workflows() -> List[WorkflowDefinition]:
             steps=[
                 WorkflowStep(command_id="crop", note="Optional crop first.", lane="main"),
                 WorkflowStep(command_id="abe", note="Optional gradient cleanup.", lane="main"),
-                WorkflowStep(command_id="cosmicclarity", note="Run Cosmic Clarity.", lane="main"),
+                WorkflowStep(command_id="cosmic_clarity", note="Run Cosmic Clarity.", lane="main"),
                 WorkflowStep(command_id="curves", note="Refine the result.", lane="main"),
                 WorkflowStep(command_id="save_as", note="Save your result.", lane="main"),
             ],
@@ -828,10 +950,10 @@ class WorkflowLaneList(QListWidget):
         item = self.itemAt(event.pos())
         menu = QMenu(self)
 
-        act_note = menu.addAction("Add Note Step")
-        act_split = menu.addAction("Add Split Marker")
-        act_merge = menu.addAction("Add Merge Marker")
-        act_choice = menu.addAction("Add Choice Group")
+        act_note = menu.addAction(self.tr("Add Note Step"))
+        act_split = menu.addAction(self.tr("Add Split Marker"))
+        act_merge = menu.addAction(self.tr("Add Merge Marker"))
+        act_choice = menu.addAction(self.tr("Add Choice Group"))
 
         act_rename = None
         act_edit_preset = None
@@ -841,18 +963,18 @@ class WorkflowLaneList(QListWidget):
         if item is not None:
             self.setCurrentItem(item)
             menu.addSeparator()
-            act_rename = menu.addAction("Rename…")
+            act_rename = menu.addAction(self.tr("Rename…"))
             _kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "action")
             _cid = str(item.data(Qt.ItemDataRole.UserRole + 1) or "")
             if _kind == "choice":
-                act_add_alt = menu.addAction("Add Alternative…")
+                act_add_alt = menu.addAction(self.tr("Add Alternative…"))
             elif _kind == "action" and _cid:
-                act_edit_preset = menu.addAction("Edit Preset…")
-                act_add_alt = menu.addAction("Add Alternative…")
+                act_edit_preset = menu.addAction(self.tr("Edit Preset…"))
+                act_add_alt = menu.addAction(self.tr("Add Alternative…"))
                 alts = normalize_workflow_alternatives(item.data(Qt.ItemDataRole.UserRole + 10))
                 if alts:
-                    menu_remove_alt = menu.addMenu("Remove Alternative")
-                    menu_edit_alt = menu.addMenu("Edit Alternative Preset")
+                    menu_remove_alt = menu.addMenu(self.tr("Remove Alternative"))
+                    menu_edit_alt = menu.addMenu(self.tr("Edit Alternative Preset"))
                     catalog = self._dialog.catalog
                     for idx, alt in enumerate(alts):
                         label = _choice_label(alt.command_id, alt.preset, alt.label_override, catalog)
@@ -861,9 +983,9 @@ class WorkflowLaneList(QListWidget):
                         act_ed = menu_edit_alt.addAction(label)
                         act_ed.setData(idx)
             menu.addSeparator()
-            act_edit_note = menu.addAction("Edit Note")
-            act_edit_ios = menu.addAction("Edit Inputs / Outputs")
-            act_remove = menu.addAction("Remove Step")
+            act_edit_note = menu.addAction(self.tr("Edit Note"))
+            act_edit_ios = menu.addAction(self.tr("Edit Inputs / Outputs"))
+            act_remove = menu.addAction(self.tr("Remove Step"))
         else:
             act_edit_note = None
             act_edit_ios = None
@@ -960,18 +1082,18 @@ def _choice_label(command_id: str, preset: dict, label_override: str, catalog) -
     except Exception:
         info = None
     text = (getattr(info, "text", "") or "") if info is not None else ""
-    return text or command_id or "Action"
+    return text or command_id or _tr("Action")
 
 
 def format_workflow_step_label(step: WorkflowStep, catalog) -> str:
     if step.kind == "note":
-        return "📝 Note"
+        return _tr("📝 Note")
     if step.kind == "split":
-        return "⇢ Split"
+        return _tr("⇢ Split")
     if step.kind == "merge":
-        return "⇠ Merge"
+        return _tr("⇠ Merge")
     if step.kind == "choice":
-        name = str(step.label_override or "").strip() or "Choice"
+        name = str(step.label_override or "").strip() or _tr("Choice")
         return f"▾ {name}"
     base = _choice_label(step.command_id, step.preset, step.label_override, catalog)
     text = f"◆ {base}" if step.preset else base
@@ -1031,10 +1153,10 @@ def normalize_workflow_steps(steps: List[WorkflowStep]) -> List[WorkflowStep]:
 
 
 LINK_DROP_REASONS = {
-    "missing": "That step no longer exists.",
-    "same_lane": "Those steps are in the same lane; the lane order already connects them.",
-    "loop": "That link would loop back on itself.",
-    "duplicate": "Those steps are already linked.",
+    "missing": QT_TRANSLATE_NOOP("Workflows", "That step no longer exists."),
+    "same_lane": QT_TRANSLATE_NOOP("Workflows", "Those steps are in the same lane; the lane order already connects them."),
+    "loop": QT_TRANSLATE_NOOP("Workflows", "That link would loop back on itself."),
+    "duplicate": QT_TRANSLATE_NOOP("Workflows", "Those steps are already linked."),
 }
 
 
@@ -1118,7 +1240,7 @@ def normalize_workflow_links(
             drop(link, "loop")
             continue
         keys.add(key)
-        out.append(WorkflowLink(src=src, dst=dst, dst_lane=dst_lane))
+        out.append(WorkflowLink(src=src, dst=dst, dst_lane=dst_lane, label=link.label))
         if target is not None:
             succ.setdefault(src, set()).add(target)
     return out
@@ -1208,21 +1330,24 @@ def workflow_link_lines(wf: "WorkflowDefinition", step_id: str, catalog) -> List
     def name(s: WorkflowStep) -> str:
         return html.escape(f"{format_workflow_step_label(s, catalog)} ({s.lane})")
 
+    def called(link: WorkflowLink) -> str:
+        return _tr(" as <i>{0}</i>").format(html.escape(link.label)) if link.label else ""
+
     takes, sends = [], []
     for link in wf.links or []:
         if link.src == step_id:
             if link.dst in by_id:
-                sends.append(name(by_id[link.dst]))
+                sends.append(name(by_id[link.dst]) + called(link))
             elif link.dst_lane:
-                sends.append(html.escape(f"start of lane {link.dst_lane}"))
+                sends.append(html.escape(_tr("start of lane {0}").format(link.dst_lane)) + called(link))
         target = link.dst or head.get(link.dst_lane, "")
         if target == step_id and link.src in by_id:
-            takes.append(name(by_id[link.src]))
+            takes.append(name(by_id[link.src]) + called(link))
     lines = []
     if takes:
-        lines.append(f"<b>Takes input from:</b> {', '.join(takes)}")
+        lines.append(_tr("<b>Takes input from:</b> {0}").format(', '.join(takes)))
     if sends:
-        lines.append(f"<b>Sends result to:</b> {', '.join(sends)}")
+        lines.append(_tr("<b>Sends result to:</b> {0}").format(', '.join(sends)))
     return lines
 
 
@@ -1369,7 +1494,7 @@ def open_choice_group(parent, main, lst, step: WorkflowStep, catalog) -> bool:
             children.append(child)
     entries = choice_group_entries(children, catalog)
     if not entries:
-        QMessageBox.information(parent, "Choice", "This choice has no alternatives yet.")
+        QMessageBox.information(parent, _tr("Choice"), _tr("This choice has no alternatives yet."))
         return False
     picked = prompt_workflow_choice(parent, entries)
     if picked is None:
@@ -1411,16 +1536,16 @@ def open_workflow_command(parent, main, command_id: str, preset: Optional[dict])
                 return True
             except Exception as e:
                 QMessageBox.critical(
-                    parent, "Step Failed",
-                    f"Error opening seeded step:\n\n{command_id}\n\n{e}",
+                    parent, _tr("Step Failed"),
+                    _tr("Error opening seeded step:\n\n{0}\n\n{1}").format(command_id, e),
                 )
                 return False
 
     action = _find_action_by_command_id(main, command_id)
     if action is None:
         QMessageBox.warning(
-            parent, "Action Not Found",
-            f"Could not find QAction for command_id:\n{command_id}",
+            parent, _tr("Action Not Found"),
+            _tr("Could not find QAction for command_id:\n{0}").format(command_id),
         )
         return False
     try:
@@ -1428,8 +1553,8 @@ def open_workflow_command(parent, main, command_id: str, preset: Optional[dict])
         return True
     except Exception as e:
         QMessageBox.critical(
-            parent, "Step Failed",
-            f"Error while opening workflow step:\n\n{command_id}\n\n{e}",
+            parent, _tr("Step Failed"),
+            _tr("Error while opening workflow step:\n\n{0}\n\n{1}").format(command_id, e),
         )
         return False
 
@@ -1441,7 +1566,7 @@ def prompt_workflow_choice(parent, choices: List[tuple]):
     if len(choices) == 1:
         return choices[0]
     menu = QMenu(parent)
-    header = menu.addAction("Choose a tool")
+    header = menu.addAction(_tr("Choose a tool"))
     header.setEnabled(False)
     for command_id, preset, label in choices:
         act = menu.addAction(label or command_id)
@@ -1459,15 +1584,15 @@ def prompt_workflow_choice(parent, choices: List[tuple]):
 def pick_catalog_command(parent, catalog: Dict[str, "WorkflowActionInfo"]) -> Optional[str]:
     """Searchable catalog picker. Returns a command id, or None if cancelled."""
     if not catalog:
-        QMessageBox.information(parent, "Add Alternative", "No tools are available in the catalog.")
+        QMessageBox.information(parent, _tr("Add Alternative"), _tr("No tools are available in the catalog."))
         return None
 
     dlg = QDialog(parent)
-    dlg.setWindowTitle("Add Alternative")
+    dlg.setWindowTitle(_tr("Add Alternative"))
     dlg.resize(440, 520)
     lay = QVBoxLayout(dlg)
     search = QLineEdit(dlg)
-    search.setPlaceholderText("Search tools...")
+    search.setPlaceholderText(_tr("Search tools..."))
     lay.addWidget(search)
     lst = QListWidget(dlg)
     lay.addWidget(lst, 1)
@@ -1520,8 +1645,12 @@ def pick_catalog_command(parent, catalog: Dict[str, "WorkflowActionInfo"]) -> Op
 
 
 # -----------------------------------------------------------------------------
-# Graph window plumbing (shared by the editor and the mini runner)
+# The two views, graph and list (shared by the editor and the mini runner)
 # -----------------------------------------------------------------------------
+
+# The themes draw a checked button almost like an unchecked one.
+_CHECKED_STYLE = "QPushButton:checked { background: palette(highlight); color: palette(highlighted-text); }"
+
 
 def _settings_flag(value) -> bool:
     """QSettings hands bools back as bools or as 'true'/'false', depending on the backend."""
@@ -1531,16 +1660,15 @@ def _settings_flag(value) -> bool:
 
 
 class _WorkflowGraphHost:
-    """What workflow_graph.WorkflowGraphWindow needs from a workflow dialog.
+    """The two views of a workflow dialog: the graph (the default) and the lane lists.
 
-    The lane lists stay the live state: selection and completion live on their
-    items, so the graph reads them and selects through them. That way every
-    existing step command (rename, presets, alternatives, remove, open, ...)
-    works unchanged when it is started from the graph.
+    The lane lists stay the live state in both views: selection and completion
+    live on their items, so the graph reads them and selects through them. That
+    way every existing step command (rename, presets, alternatives, remove,
+    open, ...) works unchanged when it is started from the graph.
 
-    The graph lives in its own window, made on first use. It is rebuilt only
-    while it is showing, and it reopens with the dialog if it was open when
-    the dialog last closed.
+    The graph is rebuilt only while it is showing. Each dialog reopens in the
+    view it was last used in.
     """
 
     graph_editable = False
@@ -1550,64 +1678,80 @@ class _WorkflowGraphHost:
         raise NotImplementedError
 
     def _graph_init(self):
-        self._graph = None                 # workflow_graph.WorkflowGraphWindow
+        self._graph = None                 # workflow_graph.WorkflowGraphPanel
         self._graph_dirty = True
         self._graph_flush_queued = False
-        self._graph_details_queued = False
 
-    def _make_graph_button(self) -> QPushButton:
-        btn = QPushButton("Graph View", self)
-        btn.setToolTip("Show this workflow as a graph in its own window: lanes, branches, "
-                       "joins and progress at a glance (Ctrl+G)")
-        btn.setShortcut("Ctrl+G")
-        btn.clicked.connect(lambda _c=False: self.open_graph_window())
-        return btn
+    def _build_views(self, list_page: QWidget) -> QStackedWidget:
+        """Stack the graph and list_page. Without a graph the list is the only view."""
+        self.view_stack = QStackedWidget(self)
+        self._list_page = list_page
+        try:
+            from setiastro.saspro.workflow_graph import WorkflowGraphPanel
+            self._graph = WorkflowGraphPanel(self, editable=self.graph_editable, parent=self.view_stack)
+            self.view_stack.addWidget(self._graph)
+        except Exception as e:
+            self._graph = None
+            print(f"[WorkflowAssistant] The graph view could not be created: {e}")
+        self.view_stack.addWidget(list_page)
+        return self.view_stack
 
-    def open_graph_window(self) -> bool:
-        if self._graph is None:
+    def _make_view_switch(self) -> QWidget:
+        box = QWidget(self)
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        group = QButtonGroup(box)
+        self.btn_view_graph = QPushButton(self.tr("Graph View"), box)
+        self.btn_view_graph.setToolTip(self.tr("Show the workflow as a flowchart: lanes, branches, joins and "
+                                       "progress at a glance (Ctrl+G)"))
+        self.btn_view_list = QPushButton(self.tr("List View"), box)
+        self.btn_view_list.setToolTip(self.tr("Show the workflow as one plain list of steps per lane (Ctrl+G)"))
+        for btn, mode in ((self.btn_view_graph, "graph"), (self.btn_view_list, "list")):
+            btn.setCheckable(True)
+            btn.setStyleSheet(_CHECKED_STYLE)
+            btn.clicked.connect(lambda _c=False, m=mode: self.set_view_mode(m))
+            group.addButton(btn)
+            lay.addWidget(btn)
+        QShortcut(QKeySequence("Ctrl+G"), self).activated.connect(self._toggle_view_mode)
+        return box
+
+    def view_mode(self) -> str:
+        return "list" if self.view_stack.currentWidget() is self._list_page else "graph"
+
+    def set_view_mode(self, mode: str, remember: bool = True):
+        graph = mode != "list" and self._graph is not None
+        self.view_stack.setCurrentWidget(self._graph if graph else self._list_page)
+        self.btn_view_graph.setChecked(graph)
+        self.btn_view_list.setChecked(not graph)
+        if remember and self.settings is not None:
             try:
-                from setiastro.saspro.workflow_graph import WorkflowGraphWindow
-                self._graph = WorkflowGraphWindow(self, editable=self.graph_editable, parent=self)
-            except Exception as e:
-                QMessageBox.warning(self, "Graph View", f"The graph view could not be opened:\n{e}")
-                return False
-            self._graph.sync_palette(getattr(self, "tool_tree", None))
-        win = self._graph
-        if win.isMinimized():
-            win.showNormal()
-        else:
-            win.show()
-        win.raise_()
-        win.activateWindow()
-        return True
+                self.settings.setValue(f"{self._GRAPH_SETTINGS_PREFIX}/view_mode", "graph" if graph else "list")
+            except Exception:
+                pass
+
+    def _toggle_view_mode(self):
+        self.set_view_mode("list" if self.view_mode() == "graph" else "graph")
+
+    def _restore_view_mode(self):
+        self.btn_view_graph.setEnabled(self._graph is not None)
+        mode = "graph"
+        if self.settings is not None:
+            try:
+                mode = str(self.settings.value(f"{self._GRAPH_SETTINGS_PREFIX}/view_mode", "graph"))
+            except Exception:
+                pass
+        self.set_view_mode(mode, remember=False)
+
+    def _no_default_buttons(self):
+        """Enter belongs to the graph (open the step) and the text fields, not to the
+        first button in the dialog."""
+        for btn in self.findChildren(QPushButton):
+            btn.setAutoDefault(False)
+            btn.setDefault(False)
 
     def _graph_visible(self) -> bool:
-        return self._graph is not None and self._graph.isVisible() and not self._graph.isMinimized()
-
-    def showEvent(self, ev):
-        super().showEvent(ev)
-        if ev.spontaneous() or self.settings is None:
-            return
-        try:
-            reopen = _settings_flag(self.settings.value(f"{self._GRAPH_SETTINGS_PREFIX}/graph_open", False))
-        except Exception:
-            reopen = False
-        if reopen and not self._graph_visible():
-            QTimer.singleShot(0, self.open_graph_window)
-
-    def hideEvent(self, ev):
-        # Close and Esc both land here. A child window does not hide with its
-        # parent, so take the graph down too and remember whether it was up.
-        if not ev.spontaneous():
-            was_open = self._graph_visible()
-            if self.settings is not None:
-                try:
-                    self.settings.setValue(f"{self._GRAPH_SETTINGS_PREFIX}/graph_open", was_open)
-                except Exception:
-                    pass
-            if self._graph is not None:
-                self._graph.hide()
-        super().hideEvent(ev)
+        return self._graph is not None and self._graph.isVisible()
 
     def graph_refresh(self):
         """Rebuild the graph soon. Several calls in a row rebuild once."""
@@ -1625,22 +1769,10 @@ class _WorkflowGraphHost:
             self._graph.rebuild()
         else:
             self._graph.restyle()
-        self._graph_sync_details()
 
     def _graph_restyle(self):
         if self._graph_visible() and not self._graph_dirty:
             self._graph.restyle()
-        # Some callers restyle first and fill in the details after, so copy
-        # the details once the current event is done.
-        if self._graph_visible() and not self._graph_details_queued:
-            self._graph_details_queued = True
-            QTimer.singleShot(0, self._graph_sync_details)
-
-    def _graph_sync_details(self):
-        self._graph_details_queued = False
-        lbl = getattr(self, "lbl_step_info", None)
-        if self._graph_visible() and lbl is not None:
-            self._graph.set_details(lbl.text())
 
     def _graph_request_fit(self):
         if self._graph is not None:
@@ -1692,18 +1824,6 @@ class _WorkflowGraphHost:
         if self.graph_select(step_id):
             self._run_selected_step()
 
-    def graph_open_current(self):
-        self._run_selected_step()
-
-    def graph_complete_current(self):
-        self._graph_complete_selected()
-
-    def graph_prev(self):
-        self._prev_step()
-
-    def graph_next(self):
-        self._next_step()
-
     def graph_add_tool(self, command_id: str):
         pass
 
@@ -1713,8 +1833,8 @@ class _WorkflowGraphHost:
     def graph_node_menu(self, menu: QMenu, step_id: str):
         if not self.graph_select(step_id):
             return
-        menu.addAction("Open Step", self._run_selected_step)
-        menu.addAction("Mark Complete", self._graph_complete_selected)
+        menu.addAction(self.tr("Open Step"), self._run_selected_step)
+        menu.addAction(self.tr("Mark Complete"), self._graph_complete_selected)
 
     def graph_lane_menu(self, menu: QMenu, lane: str):
         pass
@@ -1722,7 +1842,10 @@ class _WorkflowGraphHost:
     def graph_canvas_menu(self, menu: QMenu):
         pass
 
-    def graph_link_menu(self, menu: QMenu, link: WorkflowLink):
+    def graph_link_menu(self, menu: QMenu, link: WorkflowLink, shown: str = ""):
+        pass
+
+    def graph_name_link(self, link: WorkflowLink, shown: str = ""):
         pass
 
     def graph_set_row(self, step_id: str, row: Optional[int]):
@@ -1740,11 +1863,11 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         self.settings = _main_settings(main)
         self.workflows_dir = _workflows_dir(main)
 
-        self.setWindowTitle("Workflow Assistant")
-        self.resize(1450, 820)
+        self.setWindowTitle(self.tr("Workflow Assistant"))
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
 
         self.current_workflow = WorkflowDefinition(name="Untitled Workflow")
-        self.catalog: Dict[str, WorkflowActionInfo] = {}
+        self.catalog: Dict[str, WorkflowActionInfo] = WorkflowCatalog()
         self.canned_workflows = _default_canned_workflows()
 
         self.lane_lists: Dict[str, WorkflowLaneList] = {}
@@ -1769,62 +1892,112 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        root.addWidget(splitter, 1)
+        # ---------------- Top: the workflow and its view ----------------
+        top = QHBoxLayout()
+        self.edt_name = QLineEdit(self)
+        self.edt_name.setPlaceholderText(self.tr("Workflow name"))
+        self.edt_name.setMinimumWidth(160)
+        self.edt_name.setMaximumWidth(420)
+        self.edt_name.textChanged.connect(self._on_name_changed)
+
+        self.btn_canned = QPushButton(self.tr("Canned Workflows"), self)
+        self.btn_canned.setToolTip(self.tr("Start from a ready-made workflow. It replaces the current one."))
+        canned_menu = QMenu(self.btn_canned)
+        for wf in self.canned_workflows:
+            act = canned_menu.addAction(wf.name)
+            act.triggered.connect(lambda checked=False, wf=wf: self.load_workflow_definition(wf))
+        self.btn_canned.setMenu(canned_menu)
+
+        self.btn_new = QPushButton(self.tr("New"), self)
+        self.btn_load = QPushButton(self.tr("Load..."), self)
+        self.btn_save = QPushButton(self.tr("Save"), self)
+        self.btn_save_as = QPushButton(self.tr("Save As..."), self)
+        self.btn_new.clicked.connect(self._new_workflow)
+        self.btn_load.clicked.connect(self._load_workflow)
+        self.btn_save.clicked.connect(self._save_workflow)
+        self.btn_save_as.clicked.connect(self._save_workflow_as)
+
+        self.btn_run_mini = QPushButton(self.tr("Run Workflow"), self)
+        self.btn_run_mini.setStatusTip(self.tr("Open the compact runner for this workflow"))
+        self.btn_run_mini.clicked.connect(self._open_mini_runner)
+
+        top.addWidget(self.edt_name, 1)
+        for w in (self.btn_canned, self.btn_new, self.btn_load, self.btn_save, self.btn_save_as):
+            top.addWidget(w)
+        top.addStretch(1)
+        top.addWidget(self._make_view_switch())
+        top.addSpacing(12)
+        top.addWidget(self.btn_run_mini)
+        top.addWidget(make_help_button("workflow_assistant", self))
+        root.addLayout(top)
+
+        self.main_split = QSplitter(Qt.Orientation.Horizontal, self)
+        root.addWidget(self.main_split, 1)
 
         # ---------------- Left: tool catalog ----------------
-        left = QWidget(self)
-        left_lay = QVBoxLayout(left)
+        self.palette_panel = QWidget(self)
+        left_lay = QVBoxLayout(self.palette_panel)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(4)
 
         self.edt_search = QLineEdit(self)
-        self.edt_search.setPlaceholderText("Search tools...")
+        self.edt_search.setPlaceholderText(self.tr("Search tools..."))
+        self.edt_search.setClearButtonEnabled(True)
         self.edt_search.textChanged.connect(self._refilter_catalog)
         left_lay.addWidget(self.edt_search)
 
         self.tool_tree = WorkflowToolTree(self)
+        self.tool_tree.setToolTip(self.tr("Drag a tool onto a lane, or double-click to add it"))
         self.tool_tree.itemDoubleClicked.connect(self._on_tool_double_clicked)
         left_lay.addWidget(self.tool_tree, 1)
 
-        splitter.addWidget(left)
+        self.btn_add_selected = QPushButton(self.tr("Add Selected Tool"), self)
+        self.btn_add_selected.clicked.connect(self._add_selected_tool)
+        left_lay.addWidget(self.btn_add_selected)
 
-        # ---------------- Right: lane editor ----------------
-        right = QWidget(self)
-        right_lay = QVBoxLayout(right)
+        self.main_split.addWidget(self.palette_panel)
 
-        form = QFormLayout()
-        self.edt_name = QLineEdit(self)
-        self.edt_name.setPlaceholderText("Workflow name")
-        self.edt_name.textChanged.connect(self._on_name_changed)
+        # ---------------- Centre: the graph, or the lane lists ----------------
+        center = QWidget(self)
+        center_lay = QVBoxLayout(center)
+        center_lay.setContentsMargins(0, 0, 0, 0)
+        center_lay.setSpacing(4)
 
-        self.edt_description = QTextEdit(self)
-        self.edt_description.setPlaceholderText("Workflow description")
-        self.edt_description.setFixedHeight(72)
-        self.edt_description.textChanged.connect(self._on_description_changed)
+        strip = QHBoxLayout()
+        self.btn_tools = QPushButton(self.tr("Hide Tools"), self)
+        self.btn_tools.setToolTip(self.tr("Show or hide the tool list on the left"))
+        self.btn_tools.clicked.connect(
+            lambda _c=False: self._set_palette_visible(self.palette_panel.isHidden()))
 
-        form.addRow("Name:", self.edt_name)
-        form.addRow("Description:", self.edt_description)
-        right_lay.addLayout(form)
-
-        # lane controls
-        lane_row = QHBoxLayout()
-        self.btn_add_lane = QPushButton("Add Lane", self)
-        self.btn_rename_lane = QPushButton("Rename Lane", self)
-        self.btn_remove_lane = QPushButton("Remove Lane", self)
-
+        self.btn_add_lane = QPushButton(self.tr("Add Lane"), self)
+        self.btn_rename_lane = QPushButton(self.tr("Rename Lane"), self)
+        self.btn_remove_lane = QPushButton(self.tr("Remove Lane"), self)
         self.btn_add_lane.clicked.connect(self._add_lane)
         self.btn_rename_lane.clicked.connect(self._rename_current_lane)
         self.btn_remove_lane.clicked.connect(self._remove_current_lane)
 
-        lane_row.addWidget(self.btn_add_lane)
-        lane_row.addWidget(self.btn_rename_lane)
-        lane_row.addWidget(self.btn_remove_lane)
-        lane_row.addStretch(1)
-        self.btn_graph = self._make_graph_button()
-        lane_row.addWidget(self.btn_graph)
-        right_lay.addLayout(lane_row)
+        self.btn_add_step = QPushButton(self.tr("Add Step"), self)
+        self.btn_add_step.setToolTip(self.tr("Add a note, a choice, or a split or merge marker to the current lane"))
+        step_menu = QMenu(self.btn_add_step)
+        step_menu.addAction(self.tr("Note"), lambda: self.add_special_step("note"))
+        step_menu.addAction(self.tr("Choice…"), lambda: self._add_choice_group())
+        step_menu.addAction(self.tr("Split Marker"), lambda: self.add_special_step("split"))
+        step_menu.addAction(self.tr("Merge Marker"), lambda: self.add_special_step("merge"))
+        self.btn_add_step.setMenu(step_menu)
 
-        # scrollable lanes
+        self.btn_clear = QPushButton(self.tr("Clear Workflow"), self)
+        self.btn_clear.clicked.connect(self._clear_workflow)
+
+        for w in (self.btn_tools, self.btn_add_lane, self.btn_rename_lane, self.btn_remove_lane,
+                  self.btn_add_step):
+            strip.addWidget(w)
+        strip.addStretch(1)
+        strip.addWidget(self.btn_clear)
+        center_lay.addLayout(strip)
+
         self.lanes_scroll = QScrollArea(self)
         self.lanes_scroll.setWidgetResizable(True)
         self.lanes_host = QWidget(self)
@@ -1832,128 +2005,84 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         self.lanes_layout.setContentsMargins(4, 4, 4, 4)
         self.lanes_layout.setSpacing(10)
         self.lanes_scroll.setWidget(self.lanes_host)
+        center_lay.addWidget(self._build_views(self.lanes_scroll), 1)
 
-        self.lbl_step_info = QLabel("Select a step to view details.", self)
+        self.main_split.addWidget(center)
+
+        # ---------------- Right: description, step details, step commands ----------------
+        side = QWidget(self)
+        side_lay = QVBoxLayout(side)
+        side_lay.setContentsMargins(0, 0, 0, 0)
+        side_lay.setSpacing(6)
+
+        self.edt_description = QTextEdit(self)
+        self.edt_description.setPlaceholderText(self.tr("Workflow description"))
+        self.edt_description.setFixedHeight(84)
+        self.edt_description.textChanged.connect(self._on_description_changed)
+        side_lay.addWidget(self.edt_description)
+
+        self.lbl_step_info = QLabel(self.tr("Select a step to view details."), self)
         self.lbl_step_info.setWordWrap(True)
-        self.lbl_step_info.setFrameShape(QFrame.Shape.StyledPanel)
-        self.lbl_step_info.setMinimumHeight(96)
+        self.lbl_step_info.setContentsMargins(8, 6, 8, 6)
         self.lbl_step_info.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-
-        # The details panel scrolls instead of growing, and the user decides
-        # how much height it takes from the lanes above it.
+        self.lbl_step_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         info_scroll = QScrollArea(self)
         info_scroll.setWidgetResizable(True)
-        info_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        info_scroll.setFrameShape(QFrame.Shape.StyledPanel)
         info_scroll.setWidget(self.lbl_step_info)
-        self.view_split = QSplitter(Qt.Orientation.Vertical, self)
-        self.view_split.addWidget(self.lanes_scroll)
-        self.view_split.addWidget(info_scroll)
-        self.view_split.setChildrenCollapsible(False)
-        self.view_split.setStretchFactor(0, 1)
-        self.view_split.setStretchFactor(1, 0)
-        self.view_split.setSizes([620, 150])
-        right_lay.addWidget(self.view_split, 1)
+        side_lay.addWidget(info_scroll, 1)
 
-        # edit buttons
-        row1 = QHBoxLayout()
-        self.btn_add_selected = QPushButton("Add Selected Tool", self)
-        self.btn_add_note = QPushButton("Add Note", self)
-        self.btn_add_choice = QPushButton("Add Choice", self)
-        self.btn_add_split = QPushButton("Add Split", self)
-        self.btn_add_merge = QPushButton("Add Merge", self)
-        self.btn_remove = QPushButton("Remove Step", self)
-        self.btn_note = QPushButton("Edit Note", self)
-        self.btn_io = QPushButton("Edit Inputs / Outputs", self)
-        self.btn_clear = QPushButton("Clear Workflow", self)
+        self.btn_note = QPushButton(self.tr("Edit Note"), self)
+        self.btn_io = QPushButton(self.tr("Inputs / Outputs"), self)
+        self.btn_rename = QPushButton(self.tr("Rename Step"), self)
+        self.btn_remove = QPushButton(self.tr("Remove Step"), self)
+        self.btn_prev = QPushButton(self.tr("◀  Previous"), self)
+        self.btn_next = QPushButton(self.tr("Next  ▶"), self)
+        self.btn_run = QPushButton(self.tr("Open Step"), self)
+        self.btn_done = QPushButton(self.tr("✓  Mark Complete"), self)
+        self.btn_reset_progress = QPushButton(self.tr("Reset Progress"), self)
 
-        self.btn_add_selected.clicked.connect(self._add_selected_tool)
-        self.btn_add_note.clicked.connect(lambda: self.add_special_step("note"))
-        self.btn_add_choice.clicked.connect(lambda: self._add_choice_group())
-        self.btn_add_split.clicked.connect(lambda: self.add_special_step("split"))
-        self.btn_add_merge.clicked.connect(lambda: self.add_special_step("merge"))
-        self.btn_remove.clicked.connect(self._remove_selected_step)
         self.btn_note.clicked.connect(self._edit_selected_step_note)
         self.btn_io.clicked.connect(self._edit_selected_step_io)
-        self.btn_clear.clicked.connect(self._clear_workflow)
-
-        for w in (
-            self.btn_add_selected,
-            self.btn_add_note,
-            self.btn_add_choice,
-            self.btn_add_split,
-            self.btn_add_merge,
-            self.btn_remove,
-            self.btn_note,
-            self.btn_io,
-            self.btn_clear,
-        ):
-            row1.addWidget(w)
-        row1.addStretch(1)
-        right_lay.addLayout(row1)
-
-        # run buttons
-        row2 = QHBoxLayout()
-        self.btn_prev = QPushButton("Previous Step", self)
-        self.btn_run = QPushButton("Open Step", self)
-        self.btn_done = QPushButton("Mark Complete", self)
-        self.btn_next = QPushButton("Next Step", self)
-        self.btn_reset_progress = QPushButton("Reset Progress", self)
-
+        self.btn_rename.clicked.connect(self._rename_selected_step)
+        self.btn_remove.clicked.connect(self._remove_selected_step)
         self.btn_prev.clicked.connect(self._prev_step)
+        self.btn_next.clicked.connect(self._next_step)
         self.btn_run.clicked.connect(self._run_selected_step)
         self.btn_done.clicked.connect(self._mark_selected_complete)
-        self.btn_next.clicked.connect(self._next_step)
         self.btn_reset_progress.clicked.connect(self._reset_progress)
 
-        row2.addWidget(self.btn_prev)
-        row2.addWidget(self.btn_run)
-        row2.addWidget(self.btn_done)
-        row2.addWidget(self.btn_next)
-        row2.addWidget(self.btn_reset_progress)
-        row2.addStretch(1)
-        right_lay.addLayout(row2)
+        for rows in (
+            ((self.btn_note, self.btn_io), (self.btn_rename, self.btn_remove)),
+            ((self.btn_prev, self.btn_next), (self.btn_run, self.btn_done)),
+        ):
+            grid = QGridLayout()
+            grid.setSpacing(6)
+            for r, row in enumerate(rows):
+                for c, btn in enumerate(row):
+                    grid.addWidget(btn, r, c)
+            side_lay.addLayout(grid)
+            side_lay.addSpacing(4)
+        side_lay.addWidget(self.btn_reset_progress)
 
-        splitter.addWidget(right)
-        splitter.setSizes([370, 1080])
+        self.main_split.addWidget(side)
+        for i, stretch in enumerate((0, 1, 0)):
+            self.main_split.setStretchFactor(i, stretch)
+        self.main_split.setCollapsible(1, False)
+        self.main_split.setSizes([230, 1080, 290])
 
-        # bottom file/canned actions
-        bottom = QHBoxLayout()
+        self._no_default_buttons()
+        self._restore_view_mode()
 
-        self.btn_new = QPushButton("New", self)
-        self.btn_load = QPushButton("Load...", self)
-        self.btn_save = QPushButton("Save", self)
-        self.btn_save_as = QPushButton("Save As...", self)
+    def _set_palette_visible(self, on: bool):
+        self.palette_panel.setVisible(on)
+        self.btn_tools.setText(self.tr("Hide Tools") if on else self.tr("Show Tools"))
+        if self.settings is not None:
+            try:
+                self.settings.setValue("workflow_dialog/tools_hidden", not on)
+            except Exception:
+                pass
 
-        self.btn_canned = QToolButton(self)
-        self.btn_canned.setText("Add Canned Workflow")
-        self.btn_canned.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        canned_menu = QMenu(self.btn_canned)
-        for wf in self.canned_workflows:
-            act = canned_menu.addAction(wf.name)
-            act.triggered.connect(lambda checked=False, wf=wf: self.load_workflow_definition(wf))
-        self.btn_canned.setMenu(canned_menu)
-
-        self.btn_new.clicked.connect(self._new_workflow)
-        self.btn_load.clicked.connect(self._load_workflow)
-        self.btn_save.clicked.connect(self._save_workflow)
-        self.btn_save_as.clicked.connect(self._save_workflow_as)
-
-        bottom.addWidget(self.btn_new)
-        bottom.addWidget(self.btn_load)
-        bottom.addWidget(self.btn_save)
-        bottom.addWidget(self.btn_save_as)
-        bottom.addSpacing(16)
-        self.btn_run_mini = QPushButton("Run Workflow", self)
-        self.btn_run_mini.setStatusTip("Open the compact runner for this workflow")
-        self.btn_run_mini.clicked.connect(self._open_mini_runner)
-
-        bottom.addWidget(self.btn_canned)
-        bottom.addSpacing(16)
-        bottom.addWidget(self.btn_run_mini)
-        bottom.addStretch(1)
-        bottom.addWidget(make_help_button("workflow_assistant", self))
-
-        root.addLayout(bottom)
     # ------------------------------------------------------------------
     # Catalog
     # ------------------------------------------------------------------
@@ -2142,7 +2271,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
                 break
 
         if self.current_lane_name is None:
-            self.lbl_step_info.setText("Select a step to view details.")
+            self.lbl_step_info.setText(self.tr("Select a step to view details."))
 
         self._refresh_step_visuals()
 
@@ -2238,11 +2367,14 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
             ],
             schema_version=wf.schema_version,
             links=[
-                WorkflowLink(src=l.src, dst=l.dst, dst_lane=l.dst_lane)
+                WorkflowLink(src=l.src, dst=l.dst, dst_lane=l.dst_lane, label=l.label)
                 for l in workflow_links(wf)
             ],
             graph_rows=dict(getattr(wf, "graph_rows", None) or {}),
         )
+        # A loaded workflow starts with nothing completed. Progress is kept by step
+        # id, so loading the same one twice would otherwise keep its checkmarks.
+        self._clear_lane_widgets()
         self._graph_request_fit()
         self.refresh_workflow_view()
 
@@ -2314,7 +2446,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
     def _update_selected_step_info(self):
         item = self._current_item()
         if item is None:
-            self.lbl_step_info.setText("Select a step to view details.")
+            self.lbl_step_info.setText(self.tr("Select a step to view details."))
             return
 
         kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "action")
@@ -2329,38 +2461,38 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
             title = info.text if info else cid
             tip = info.status_tip if info else ""
         elif kind == "note":
-            title = "Note Step"
-            tip = "Instruction-only step; no tool is launched."
+            title = self.tr("Note Step")
+            tip = self.tr("Instruction-only step; no tool is launched.")
         elif kind == "split":
-            title = "Split Marker"
-            tip = "Use this to indicate a branch point into multiple lanes."
+            title = self.tr("Split Marker")
+            tip = self.tr("Use this to indicate a branch point into multiple lanes.")
         elif kind == "choice":
-            title = str(item.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or "Choice"
-            tip = "Choice group. Open it to pick one of the tools listed under it."
+            title = str(item.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or self.tr("Choice")
+            tip = self.tr("Choice group. Open it to pick one of the tools listed under it.")
         else:
-            title = "Merge Marker"
-            tip = "Use this to indicate a merge point where lanes come back together."
+            title = self.tr("Merge Marker")
+            tip = self.tr("Use this to indicate a merge point where lanes come back together.")
 
         parts = [f"<b>{title}</b>"]
         if self.current_lane_name:
-            parts.append(f"<b>Lane:</b> {self.current_lane_name}")
+            parts.append(self.tr("<b>Lane:</b> {0}").format(self.current_lane_name))
         if tip:
             parts.append(tip)
         if note:
-            parts.append(f"<br><b>Note:</b> {note}")
+            parts.append(self.tr("<br><b>Note:</b> {0}").format(note))
         if inputs:
-            parts.append(f"<br><b>Inputs:</b> {', '.join(inputs)}")
+            parts.append(self.tr("<br><b>Inputs:</b> {0}").format(', '.join(inputs)))
         if outputs:
-            parts.append(f"<br><b>Outputs:</b> {', '.join(outputs)}")
+            parts.append(self.tr("<br><b>Outputs:</b> {0}").format(', '.join(outputs)))
 
         preset = item.data(Qt.ItemDataRole.UserRole + 8)
         if isinstance(preset, dict) and preset:
-            parts.append(f"<br><b>Preset:</b> {_summarize_preset(preset)}")
+            parts.append(self.tr("<br><b>Preset:</b> {0}").format(_summarize_preset(preset)))
 
         alts = normalize_workflow_alternatives(item.data(Qt.ItemDataRole.UserRole + 10))
         if alts:
             names = [_choice_label(a.command_id, a.preset, a.label_override, self.catalog) for a in alts]
-            parts.append(f"<br><b>Alternatives:</b> {', '.join(names)}")
+            parts.append(self.tr("<br><b>Alternatives:</b> {0}").format(', '.join(names)))
 
         lst = self._current_list()
         parent_id = str(item.data(Qt.ItemDataRole.UserRole + 11) or "")
@@ -2368,9 +2500,9 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
             for i in range(lst.count()):
                 other = lst.item(i)
                 if str(other.data(Qt.ItemDataRole.UserRole) or "") == parent_id:
-                    group_name = str(other.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or "Choice"
+                    group_name = str(other.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or self.tr("Choice")
                     completed = bool(other.data(Qt.ItemDataRole.UserRole + 7))
-                    parts.append(f"<br><b>Part of:</b> {group_name}")
+                    parts.append(self.tr("<br><b>Part of:</b> {0}").format(group_name))
                     break
         if kind == "choice" and lst is not None:
             sid = str(item.data(Qt.ItemDataRole.UserRole) or "")
@@ -2382,13 +2514,14 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
                 child = unpack_workflow_step_item(other, self.current_lane_name or "main")
                 choice_names.append(format_workflow_step_label(child, self.catalog))
             if choice_names:
-                parts.append(f"<br><b>Choices:</b> {', '.join(choice_names)}")
+                parts.append(self.tr("<br><b>Choices:</b> {0}").format(', '.join(choice_names)))
 
         top_id = parent_id or str(item.data(Qt.ItemDataRole.UserRole) or "")
         for line in workflow_link_lines(self.current_workflow, top_id, self.catalog):
             parts.append(f"<br>{line}")
 
-        parts.append(f"<br><b>Status:</b> {'Completed' if completed else 'Not completed'}")
+        parts.append(self.tr("<br><b>Status:</b> {0}").format(
+            self.tr("Completed") if completed else self.tr("Not completed")))
 
         self.lbl_step_info.setText("<br>".join(parts))
 
@@ -2414,7 +2547,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         info = self.catalog.get(command_id)
         _catalog_text = info.text if info else ""
         _name = str(name or "").strip()
-        if _name and _name != _catalog_text:
+        if _name and _clean_action_text(_name) != _catalog_text:
             step.label_override = _name
         elif step.preset:
             _lbl = _derive_step_label(command_id, step.preset, self.catalog)
@@ -2455,12 +2588,12 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         return {}
 
     def _add_choice_group(self, lane_name: Optional[str] = None):
-        name, ok = QInputDialog.getText(self, "Add Choice", "Choice name:")
+        name, ok = QInputDialog.getText(self, self.tr("Add Choice"), self.tr("Choice name:"))
         if not ok:
             return
         name = name.strip()
         if not name:
-            QMessageBox.warning(self, "Add Choice", "Give the choice a name.")
+            QMessageBox.warning(self, self.tr("Add Choice"), self.tr("Give the choice a name."))
             return
         lane_name = lane_name or self.current_lane_name or (self.current_workflow.lanes[0] if self.current_workflow.lanes else "main")
         if lane_name not in self.current_workflow.lanes:
@@ -2504,16 +2637,17 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
 
     def _on_tool_double_clicked(self, item: QTreeWidgetItem):
         cid = item.data(0, Qt.ItemDataRole.UserRole)
-        if cid:
+        if not cid:
+            return
+        if self.view_mode() == "graph":
+            self.graph_add_tool(str(cid))
+        else:
             self.add_step_by_command_id(str(cid), **self._new_tool_placement())
 
     def _add_selected_tool(self):
         item = self.tool_tree.currentItem()
-        if item is None:
-            return
-        cid = item.data(0, Qt.ItemDataRole.UserRole)
-        if cid:
-            self.add_step_by_command_id(str(cid), **self._new_tool_placement())
+        if item is not None:
+            self._on_tool_double_clicked(item)
 
     def _remove_selected_step(self):
         lst = self._current_list()
@@ -2557,11 +2691,11 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         current = str(item.data(Qt.ItemDataRole.UserRole + 9) or "")
         kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "")
         text, ok = QInputDialog.getText(
-            self, "Rename Step", "Display label (blank = default):", text=current)
+            self, self.tr("Rename Step"), self.tr("Display label (blank = default):"), text=current)
         if not ok:
             return
         if kind == "choice" and not text.strip():
-            QMessageBox.warning(self, "Rename Step", "A choice needs a name.")
+            QMessageBox.warning(self, self.tr("Rename Step"), self.tr("A choice needs a name."))
             return
         item.setData(Qt.ItemDataRole.UserRole + 9, text.strip())
         # rebuild the visible label from model so the ◆/✓ prefixes stay correct
@@ -2580,7 +2714,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         try:
             from setiastro.saspro.shortcuts import _open_preset_editor_for_command
         except Exception:
-            QMessageBox.information(self, "Edit Preset", "No preset editor is available.")
+            QMessageBox.information(self, self.tr("Edit Preset"), self.tr("No preset editor is available."))
             return
         result = _open_preset_editor_for_command(self, cid, current)
         if result is None:
@@ -2595,7 +2729,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         if item is None:
             return
         current = str(item.data(Qt.ItemDataRole.UserRole + 2) or "")
-        text, ok = QInputDialog.getMultiLineText(self, "Edit Step Note", "Note:", current)
+        text, ok = QInputDialog.getMultiLineText(self, self.tr("Edit Step Note"), self.tr("Note:"), current)
         if not ok:
             return
         item.setData(Qt.ItemDataRole.UserRole + 2, text)
@@ -2612,8 +2746,8 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
 
         inputs_text, ok1 = QInputDialog.getText(
             self,
-            "Edit Inputs",
-            "Inputs (comma-separated):",
+            self.tr("Edit Inputs"),
+            self.tr("Inputs (comma-separated):"),
             text=current_inputs,
         )
         if not ok1:
@@ -2621,8 +2755,8 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
 
         outputs_text, ok2 = QInputDialog.getText(
             self,
-            "Edit Outputs",
-            "Outputs (comma-separated):",
+            self.tr("Edit Outputs"),
+            self.tr("Outputs (comma-separated):"),
             text=current_outputs,
         )
         if not ok2:
@@ -2640,7 +2774,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         any_steps = any(lst.count() > 0 for lst in self.lane_lists.values())
         if not any_steps:
             return
-        if QMessageBox.question(self, "Clear Workflow", "Remove all steps from the current workflow?") != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, self.tr("Clear Workflow"), self.tr("Remove all steps from the current workflow?")) != QMessageBox.StandardButton.Yes:
             return
 
         self.current_workflow.steps.clear()
@@ -2662,14 +2796,14 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
     # ------------------------------------------------------------------
 
     def _add_lane(self):
-        name, ok = QInputDialog.getText(self, "Add Lane", "Lane name:", text="new_lane")
+        name, ok = QInputDialog.getText(self, self.tr("Add Lane"), self.tr("Lane name:"), text="new_lane")
         if not ok:
             return
         name = name.strip()
         if not name:
             return
         if name in self.current_workflow.lanes:
-            QMessageBox.warning(self, "Lane Exists", f"A lane named '{name}' already exists.")
+            QMessageBox.warning(self, self.tr("Lane Exists"), self.tr("A lane named '{0}' already exists.").format(name))
             return
 
         self.current_workflow.lanes.append(name)
@@ -2695,15 +2829,21 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         combo = QComboBox(dlg)
         for lane in lanes:
             n = counts[lane]
-            combo.addItem(f"{lane}   ({'empty' if n == 0 else f'{n} step' + ('s' if n != 1 else '')})", lane)
+            if n == 0:
+                lane_label = self.tr("{0}   (empty)").format(lane)
+            elif n == 1:
+                lane_label = self.tr("{0}   ({1} step)").format(lane, n)
+            else:
+                lane_label = self.tr("{0}   ({1} steps)").format(lane, n)
+            combo.addItem(lane_label, lane)
         start = self.current_lane_name if self.current_lane_name in lanes else lanes[0]
         combo.setCurrentIndex(lanes.index(start))
-        form.addRow("Lane:", combo)
+        form.addRow(self.tr("Lane:"), combo)
         edt = None
         if rename:
             edt = QLineEdit(start, dlg)
             combo.currentIndexChanged.connect(lambda i: (edt.setText(lanes[i]), edt.selectAll()))
-            form.addRow("New name:", edt)
+            form.addRow(self.tr("New name:"), edt)
             edt.selectAll()
             edt.setFocus()
         btns = QDialogButtonBox(
@@ -2722,7 +2862,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         if len(self.current_workflow.lanes) == 1:
             self._rename_lane(self.current_workflow.lanes[0])
             return
-        picked = self._ask_lane("Rename Lane", "Rename", rename=True)
+        picked = self._ask_lane(self.tr("Rename Lane"), self.tr("Rename"), rename=True)
         if picked is not None:
             self._apply_lane_rename(*picked)
 
@@ -2730,7 +2870,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         """Rename a known lane (graph header, lane menu): ask only for the new name."""
         if lane_name not in self.current_workflow.lanes:
             return
-        name, ok = QInputDialog.getText(self, "Rename Lane", "New lane name:", text=lane_name)
+        name, ok = QInputDialog.getText(self, self.tr("Rename Lane"), self.tr("New lane name:"), text=lane_name)
         if ok:
             self._apply_lane_rename(lane_name, name)
 
@@ -2739,7 +2879,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         if not name or name == lane_name:
             return
         if name in self.current_workflow.lanes:
-            QMessageBox.warning(self, "Lane Exists", f"A lane named '{name}' already exists.")
+            QMessageBox.warning(self, self.tr("Lane Exists"), self.tr("A lane named '{0}' already exists.").format(name))
             return
 
         self.sync_steps_from_ui()
@@ -2758,9 +2898,9 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
     def _remove_current_lane(self):
         """Remove Lane button: ask which lane."""
         if len(self.current_workflow.lanes) <= 1:
-            QMessageBox.warning(self, "Cannot Remove", "A workflow must have at least one lane.")
+            QMessageBox.warning(self, self.tr("Cannot Remove"), self.tr("A workflow must have at least one lane."))
             return
-        picked = self._ask_lane("Remove Lane", "Remove…")
+        picked = self._ask_lane(self.tr("Remove Lane"), self.tr("Remove…"))
         if picked is not None:
             self._remove_lane(picked[0])
 
@@ -2769,15 +2909,16 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         if lane_name not in self.current_workflow.lanes:
             return
         if len(self.current_workflow.lanes) <= 1:
-            QMessageBox.warning(self, "Cannot Remove", "A workflow must have at least one lane.")
+            QMessageBox.warning(self, self.tr("Cannot Remove"), self.tr("A workflow must have at least one lane."))
             return
 
         self.sync_steps_from_ui()
         n = sum(1 for s in self.current_workflow.steps if s.lane == lane_name)
         if n and QMessageBox.question(
             self,
-            "Remove Lane",
-            f"Remove lane '{lane_name}' and its {n} step{'s' if n != 1 else ''}?",
+            self.tr("Remove Lane"),
+            (self.tr("Remove lane '{0}' and its {1} step?") if n == 1
+             else self.tr("Remove lane '{0}' and its {1} steps?")).format(lane_name, n),
         ) != QMessageBox.StandardButton.Yes:
             return
 
@@ -2794,7 +2935,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
     def _load_workflow(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Load Workflow",
+            self.tr("Load Workflow"),
             str(self.workflows_dir),
             "Workflow Files (*.json)",
         )
@@ -2805,7 +2946,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             wf = WorkflowDefinition.from_dict(data)
         except Exception as e:
-            QMessageBox.critical(self, "Load Failed", f"Could not load workflow:\n\n{e}")
+            QMessageBox.critical(self, self.tr("Load Failed"), self.tr("Could not load workflow:\n\n{0}").format(e))
             return
 
         self.load_workflow_definition(wf)
@@ -2813,7 +2954,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
     def _save_workflow(self):
         name = self.edt_name.text().strip()
         if not name:
-            QMessageBox.warning(self, "Missing Name", "Please give the workflow a name first.")
+            QMessageBox.warning(self, self.tr("Missing Name"), self.tr("Please give the workflow a name first."))
             return
 
         safe = "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in name).strip() or "workflow"
@@ -2826,7 +2967,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
 
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Workflow As",
+            self.tr("Save Workflow As"),
             str(self.workflows_dir / f"{safe}.json"),
             "Workflow Files (*.json)",
         )
@@ -2852,10 +2993,10 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
                 encoding="utf-8",
             )
         except Exception as e:
-            QMessageBox.critical(self, "Save Failed", f"Could not save workflow:\n\n{e}")
+            QMessageBox.critical(self, self.tr("Save Failed"), self.tr("Could not save workflow:\n\n{0}").format(e))
             return
 
-        QMessageBox.information(self, "Workflow Saved", f"Saved workflow to:\n{path}")
+        QMessageBox.information(self, self.tr("Workflow Saved"), self.tr("Saved workflow to:\n{0}").format(path))
 
     # ------------------------------------------------------------------
     # Running / progress
@@ -2877,14 +3018,14 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         if kind != "action":
             QMessageBox.information(
                 self,
-                "Instruction Step",
-                "This step is a note/split/merge marker and does not launch a tool.",
+                self.tr("Instruction Step"),
+                self.tr("This step is a note/split/merge marker and does not launch a tool."),
             )
             return
 
         choices = workflow_step_choices(step, self.catalog)
         if not choices:
-            QMessageBox.warning(self, "No Command", "This step has no command ID.")
+            QMessageBox.warning(self, self.tr("No Command"), self.tr("This step has no command ID."))
             return
         picked = prompt_workflow_choice(self, choices)
         if picked is None:
@@ -2966,7 +3107,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         try:
             from setiastro.saspro.shortcuts import _open_preset_editor_for_command
         except Exception:
-            QMessageBox.information(self, "Edit Preset", "No preset editor is available.")
+            QMessageBox.information(self, self.tr("Edit Preset"), self.tr("No preset editor is available."))
             return
         result = _open_preset_editor_for_command(self, alt.command_id, dict(alt.preset or {}))
         if result is None:
@@ -3080,68 +3221,90 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         item, step = self._step_from_current_item()
         if step is None:
             return
-        menu.addAction("Open Step", self._run_selected_step)
-        menu.addAction("Mark Complete", self._mark_selected_complete)
+        menu.addAction(self.tr("Open Step"), self._run_selected_step)
+        menu.addAction(self.tr("Mark Complete"), self._mark_selected_complete)
         menu.addSeparator()
-        menu.addAction("Rename…", self._rename_selected_step)
+        menu.addAction(self.tr("Rename…"), self._rename_selected_step)
         if step.kind == "choice":
-            menu.addAction("Add Alternative…", self._add_alternative_to_selected)
+            menu.addAction(self.tr("Add Alternative…"), self._add_alternative_to_selected)
         elif step.kind == "action" and step.command_id:
-            menu.addAction("Edit Preset…", self._edit_selected_step_preset)
-            menu.addAction("Add Alternative…", self._add_alternative_to_selected)
+            menu.addAction(self.tr("Edit Preset…"), self._edit_selected_step_preset)
+            menu.addAction(self.tr("Add Alternative…"), self._add_alternative_to_selected)
             if step.alternatives:
-                rm = menu.addMenu("Remove Alternative")
-                ed = menu.addMenu("Edit Alternative Preset")
+                rm = menu.addMenu(self.tr("Remove Alternative"))
+                ed = menu.addMenu(self.tr("Edit Alternative Preset"))
                 for idx, alt in enumerate(step.alternatives):
                     label = _choice_label(alt.command_id, alt.preset, alt.label_override, self.catalog)
                     rm.addAction(label, lambda _c=False, i=idx: self._remove_alternative_at(i))
                     ed.addAction(label, lambda _c=False, i=idx: self._edit_alternative_preset(i))
-        menu.addAction("Edit Note…", self._edit_selected_step_note)
-        menu.addAction("Edit Inputs / Outputs…", self._edit_selected_step_io)
+        menu.addAction(self.tr("Edit Note…"), self._edit_selected_step_note)
+        menu.addAction(self.tr("Edit Inputs / Outputs…"), self._edit_selected_step_io)
 
         menu.addSeparator()
         top_id = step.parent_id or step.id
-        menu.addAction("Branch Into New Lane…",
+        menu.addAction(self.tr("Branch Into New Lane…"),
                        lambda _c=False: self.graph_branch_new_lane(top_id))
         if top_id in self.current_workflow.graph_rows:
-            menu.addAction("Auto Position", lambda _c=False: self.graph_set_row(top_id, None))
+            menu.addAction(self.tr("Auto Position"), lambda _c=False: self.graph_set_row(top_id, None))
         own = [l for l in self.current_workflow.links or [] if top_id in (l.src, l.dst)]
         if own:
-            sub = menu.addMenu("Remove Link")
+            sub = menu.addMenu(self.tr("Remove Link"))
             for link in own:
                 sub.addAction(self._graph_link_text(link),
                               lambda _c=False, l=link: self.graph_unlink(l))
         menu.addSeparator()
-        menu.addAction("Remove Step", self._remove_selected_step)
+        menu.addAction(self.tr("Remove Step"), self._remove_selected_step)
 
     def _graph_link_text(self, link: WorkflowLink) -> str:
         src = self._graph_step_title(link.src)
-        dst = self._graph_step_title(link.dst) if link.dst else f"lane {link.dst_lane}"
+        dst = self._graph_step_title(link.dst) if link.dst else self.tr("lane {0}").format(link.dst_lane)
         return f"{src}  →  {dst}"
 
     def graph_lane_menu(self, menu: QMenu, lane: str):
         lanes = self.current_workflow.lanes
         idx = lanes.index(lane) if lane in lanes else -1
-        menu.addAction("Add Note", lambda _c=False: self.add_special_step("note", lane_name=lane))
-        menu.addAction("Add Choice…", lambda _c=False: self._add_choice_group(lane))
-        menu.addAction("Add Split Marker", lambda _c=False: self.add_special_step("split", lane_name=lane))
-        menu.addAction("Add Merge Marker", lambda _c=False: self.add_special_step("merge", lane_name=lane))
+        menu.addAction(self.tr("Add Note"), lambda _c=False: self.add_special_step("note", lane_name=lane))
+        menu.addAction(self.tr("Add Choice…"), lambda _c=False: self._add_choice_group(lane))
+        menu.addAction(self.tr("Add Split Marker"), lambda _c=False: self.add_special_step("split", lane_name=lane))
+        menu.addAction(self.tr("Add Merge Marker"), lambda _c=False: self.add_special_step("merge", lane_name=lane))
         menu.addSeparator()
-        menu.addAction("Rename Lane…", lambda _c=False: self._rename_lane(lane))
-        act = menu.addAction("Move Lane Left", lambda _c=False: self.graph_move_lane(lane, -1))
+        menu.addAction(self.tr("Rename Lane…"), lambda _c=False: self._rename_lane(lane))
+        act = menu.addAction(self.tr("Move Lane Left"), lambda _c=False: self.graph_move_lane(lane, -1))
         act.setEnabled(idx > 0)
-        act = menu.addAction("Move Lane Right", lambda _c=False: self.graph_move_lane(lane, +1))
+        act = menu.addAction(self.tr("Move Lane Right"), lambda _c=False: self.graph_move_lane(lane, +1))
         act.setEnabled(0 <= idx < len(lanes) - 1)
         menu.addSeparator()
-        menu.addAction("Remove Lane…", lambda _c=False: self._remove_lane(lane))
+        menu.addAction(self.tr("Remove Lane…"), lambda _c=False: self._remove_lane(lane))
 
     def graph_canvas_menu(self, menu: QMenu):
-        menu.addAction("Add Lane…", self._add_lane)
+        menu.addAction(self.tr("Add Lane…"), self._add_lane)
         if normalize_graph_rows(self.current_workflow.graph_rows, self.current_workflow.steps):
-            menu.addAction("Auto Position All Steps", lambda _c=False: self.graph_reset_rows())
+            menu.addAction(self.tr("Auto Position All Steps"), lambda _c=False: self.graph_reset_rows())
 
-    def graph_link_menu(self, menu: QMenu, link: WorkflowLink):
-        menu.addAction("Remove Link", lambda _c=False: self.graph_unlink(link))
+    def graph_link_menu(self, menu: QMenu, link: WorkflowLink, shown: str = ""):
+        menu.addAction(self.tr("Rename Link…") if (link.label or shown) else self.tr("Name Link…"),
+                       lambda _c=False: self.graph_name_link(link, shown))
+        menu.addSeparator()
+        menu.addAction(self.tr("Remove Link"), lambda _c=False: self.graph_unlink(link))
+
+    def graph_name_link(self, link: WorkflowLink, shown: str = ""):
+        """The name on a link. `shown` is what it shows now; blank goes back to the
+        input/output tags it carries."""
+        key = (link.src, link.dst, link.dst_lane)
+        target = next((l for l in self.current_workflow.links or []
+                       if (l.src, l.dst, l.dst_lane) == key), None)
+        if target is None:
+            return
+        text, ok = QInputDialog.getText(self, self.tr("Name Link"), self.tr("Name shown on the link (blank = default):"),
+                                        text=target.label or shown)
+        if not ok:
+            return
+        text = " ".join(text.split())
+        if text == target.label or (not target.label and text == shown):
+            return
+        target.label = text
+        self.graph_refresh()
+        self._update_selected_step_info()
 
     def graph_set_row(self, step_id: str, row: Optional[int]):
         """Pin a step to a graph row, or (None) give it back its automatic row."""
@@ -3236,8 +3399,9 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         if dropped:
             n = len(dropped)
             why = {r for _l, r in dropped}
-            text = "now in the same lane" if why == {"same_lane"} else "it would no longer make sense"
-            self._graph_hint(f"Removed {n} link{'s' if n > 1 else ''}: {text}.")
+            text = self.tr("now in the same lane") if why == {"same_lane"} else self.tr("it would no longer make sense")
+            self._graph_hint((self.tr("Removed {0} links: {1}.") if n > 1
+                              else self.tr("Removed {0} link: {1}.")).format(n, text))
 
     def graph_link(self, src: str, dst: str = "", dst_lane: str = "") -> str:
         """Add a branch (dst_lane) or a join (dst). Returns why it was refused, or ""."""
@@ -3248,7 +3412,8 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         links = normalize_workflow_links(list(wf.links or []) + [new], wf.steps, wf.lanes, dropped)
         for link, reason in dropped:
             if link is new:
-                return LINK_DROP_REASONS.get(reason, "That link is not allowed.")
+                msg = LINK_DROP_REASONS.get(reason)
+                return _tr(msg) if msg else self.tr("That link is not allowed.")
         wf.links = links
         self.graph_refresh()
         self._update_selected_step_info()
@@ -3269,7 +3434,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         if src is None:
             return
         src = next((s for s in wf.steps if s.id == src.parent_id), src)
-        name, ok = QInputDialog.getText(self, "Branch Into New Lane", "New lane name:",
+        name, ok = QInputDialog.getText(self, self.tr("Branch Into New Lane"), self.tr("New lane name:"),
                                         text=self._unique_lane_name("branch"))
         if not ok:
             return
@@ -3277,7 +3442,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         if not name:
             return
         if name in wf.lanes:
-            QMessageBox.warning(self, "Lane Exists", f"A lane named '{name}' already exists.")
+            QMessageBox.warning(self, self.tr("Lane Exists"), self.tr("A lane named '{0}' already exists.").format(name))
             return
         at = len(wf.lanes)
         if not at_end and src.lane in wf.lanes:
@@ -3285,7 +3450,7 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         wf.lanes.insert(at, name)
         wf.links = list(wf.links or []) + [WorkflowLink(src=src.id, dst_lane=name)]
         self.refresh_workflow_view(select_id=src.id)
-        self._graph_hint(f"Drag tools onto lane '{name}' to fill the branch.")
+        self._graph_hint(self.tr("Drag tools onto lane '{0}' to fill the branch.").format(name))
 
     def graph_move_lane(self, lane: str, delta: int):
         self.sync_steps_from_ui()
@@ -3312,6 +3477,12 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
     # ------------------------------------------------------------------
     # Geometry persistence
     # ------------------------------------------------------------------
+
+    def reject(self):
+        # Esc lands here without a closeEvent (Qt 6.3+), so save here as well.
+        self._save_geometry()
+        self._autosave_session()
+        super().reject()
 
     def closeEvent(self, event):
         self._save_geometry()
@@ -3359,24 +3530,73 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         self.load_workflow_definition(wf)
 
     def _restore_geometry(self):
-        if self.settings is None:
+        # The old list layout saved its size under workflow_dialog/geometry. The
+        # graph needs more room than that, so it is not reused.
+        placed = False
+        if self.settings is not None:
+            try:
+                g = self.settings.value("workflow_dialog/window_geometry")
+                placed = bool(g) and bool(self.restoreGeometry(g))
+                s = self.settings.value("workflow_dialog/main_split")
+                if s:
+                    self.main_split.restoreState(s)
+                if _settings_flag(self.settings.value("workflow_dialog/tools_hidden", False)):
+                    self._set_palette_visible(False)
+            except Exception:
+                pass
+        if not placed:
+            self._place_first_time()
+        else:
+            self._keep_on_screen()
+
+    # The first-open size: it fits a 1080p screen (1920x1032 after the taskbar)
+    # with its title bar, so a workflow laid out in it looks the same on a 1440p
+    # or 4K screen as on 1080p. The six-lane narrowband flow fits it at 75%.
+    FIRST_SIZE = (1700, 900)
+
+    def _screen_for_placement(self):
+        return (self.main.screen() if isinstance(self.main, QWidget) else None) or self.screen()
+
+    def _place_first_time(self):
+        """Nothing saved yet: FIRST_SIZE, or less of a smaller screen, centred on
+        the main window's screen."""
+        screen = self._screen_for_placement()
+        if screen is None:
+            self.resize(1450, 820)
             return
-        try:
-            g = self.settings.value("workflow_dialog/geometry")
-            if g:
-                self.restoreGeometry(g)
-            s = self.settings.value("workflow_dialog/view_split")
-            if s:
-                self.view_split.restoreState(s)
-        except Exception:
-            pass
+        avail = screen.availableGeometry()
+        w = min(self.FIRST_SIZE[0], int(avail.width() * 0.9))
+        h = min(self.FIRST_SIZE[1], int(avail.height() * 0.88))
+        self.resize(w, h)
+        self.move(avail.center().x() - w // 2, avail.center().y() - h // 2)
+
+    def _keep_on_screen(self):
+        """A size saved on a bigger screen (or before a resolution change) is cut
+        down to the screen the dialog is on now, title bar included."""
+        screen = self.screen() or self._screen_for_placement()
+        if screen is None or self.windowState() & (Qt.WindowState.WindowMaximized
+                                                    | Qt.WindowState.WindowFullScreen):
+            return
+        avail = screen.availableGeometry()
+        # Before the first show there is no frame yet: allow for a title bar.
+        extra_h = max(32, self.frameGeometry().height() - self.height())
+        extra_w = max(8, self.frameGeometry().width() - self.width())
+        w = min(self.width(), avail.width() - extra_w)
+        h = min(self.height(), avail.height() - extra_h)
+        if (w, h) != (self.width(), self.height()):
+            self.resize(w, h)
+        fg = self.frameGeometry()
+        x = max(avail.left(), min(fg.left(), avail.right() - fg.width() + 1))
+        y = max(avail.top(), min(fg.top(), avail.bottom() - fg.height() + 1))
+        if (x, y) != (fg.left(), fg.top()):
+            self.move(x, y)
 
     def _save_geometry(self):
         if self.settings is None:
             return
         try:
-            self.settings.setValue("workflow_dialog/geometry", self.saveGeometry())
-            self.settings.setValue("workflow_dialog/view_split", self.view_split.saveState())
+            self.settings.setValue("workflow_dialog/window_geometry", self.saveGeometry())
+            self.settings.setValue("workflow_dialog/main_split", self.main_split.saveState())
         except Exception:
             pass
 
@@ -3441,8 +3661,11 @@ class MiniWorkflowDialog(_WorkflowGraphHost, QDialog):
         self.current_lane_name: Optional[str] = None
         self._graph_init()
 
-        self.setWindowTitle(f"Running: {workflow.name}")
-        self.resize(860, 560)
+        self.setWindowTitle(self.tr("Running: {0}").format(workflow.name))
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+        screen = (main.screen() if isinstance(main, QWidget) else None) or self.screen()
+        room = screen.availableGeometry().size() if screen is not None else QSize(1280, 960)
+        self.resize(min(1000, int(room.width() * 0.9)), min(760, int(room.height() * 0.88)))
 
         self._build_ui()
         self._populate()
@@ -3462,8 +3685,7 @@ class MiniWorkflowDialog(_WorkflowGraphHost, QDialog):
         self.lbl_title = QLabel(self.workflow.name, self)
         self.lbl_title.setStyleSheet("font-size: 13px; font-weight: 700; padding: 2px 0;")
         title_row.addWidget(self.lbl_title, 1)
-        self.btn_graph = self._make_graph_button()
-        title_row.addWidget(self.btn_graph)
+        title_row.addWidget(self._make_view_switch())
         root.addLayout(title_row)
 
         # Scrollable lanes area
@@ -3474,23 +3696,33 @@ class MiniWorkflowDialog(_WorkflowGraphHost, QDialog):
         self.lanes_layout.setContentsMargins(4, 4, 4, 4)
         self.lanes_layout.setSpacing(8)
         self.lanes_scroll.setWidget(self.lanes_host)
-        root.addWidget(self.lanes_scroll, 1)
 
-        # Step detail label
-        self.lbl_step_info = QLabel("Select a step to view details.", self)
+        # Step details scroll in a panel of their own, so a long note does not
+        # change the graph's height (and refit it) on every step.
+        self.lbl_step_info = QLabel(self.tr("Select a step to view details."), self)
         self.lbl_step_info.setWordWrap(True)
-        self.lbl_step_info.setFrameShape(QFrame.Shape.StyledPanel)
-        self.lbl_step_info.setMinimumHeight(72)
+        self.lbl_step_info.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.lbl_step_info.setContentsMargins(6, 4, 6, 4)
-        root.addWidget(self.lbl_step_info)
+        info_scroll = QScrollArea(self)
+        info_scroll.setWidgetResizable(True)
+        info_scroll.setFrameShape(QFrame.Shape.StyledPanel)
+        info_scroll.setWidget(self.lbl_step_info)
+        self.view_split = QSplitter(Qt.Orientation.Vertical, self)
+        self.view_split.addWidget(self._build_views(self.lanes_scroll))
+        self.view_split.addWidget(info_scroll)
+        self.view_split.setChildrenCollapsible(False)
+        self.view_split.setStretchFactor(0, 1)
+        self.view_split.setStretchFactor(1, 0)
+        self.view_split.setSizes([600, 116])
+        root.addWidget(self.view_split, 1)
 
         # Navigation buttons
         nav = QHBoxLayout()
-        self.btn_prev = QPushButton("◀  Previous", self)
-        self.btn_run = QPushButton("Open Step", self)
-        self.btn_done = QPushButton("✓  Mark Complete", self)
-        self.btn_next = QPushButton("Next  ▶", self)
-        self.btn_reset = QPushButton("Reset Progress", self)
+        self.btn_prev = QPushButton(self.tr("◀  Previous"), self)
+        self.btn_run = QPushButton(self.tr("Open Step"), self)
+        self.btn_done = QPushButton(self.tr("✓  Mark Complete"), self)
+        self.btn_next = QPushButton(self.tr("Next  ▶"), self)
+        self.btn_reset = QPushButton(self.tr("Reset Progress"), self)
 
         self.btn_prev.setMinimumWidth(100)
         self.btn_run.setMinimumWidth(110)
@@ -3514,6 +3746,9 @@ class MiniWorkflowDialog(_WorkflowGraphHost, QDialog):
         nav.addSpacing(8)
         nav.addWidget(make_help_button("workflow_assistant", self))
         root.addLayout(nav)
+
+        self._no_default_buttons()
+        self._restore_view_mode()
 
     # ------------------------------------------------------------------
     # Populate lanes from workflow
@@ -3661,7 +3896,7 @@ class MiniWorkflowDialog(_WorkflowGraphHost, QDialog):
     def _update_info(self):
         item = self._current_item()
         if item is None:
-            self.lbl_step_info.setText("Select a step to view details.")
+            self.lbl_step_info.setText(self.tr("Select a step to view details."))
             return
 
         kind      = str(item.data(Qt.ItemDataRole.UserRole + 4) or "action")
@@ -3676,38 +3911,38 @@ class MiniWorkflowDialog(_WorkflowGraphHost, QDialog):
             title = info.text if info else cid
             tip   = (info.status_tip if info else "") or ""
         elif kind == "note":
-            title = "Note Step"
-            tip   = "Instruction-only step; no tool is launched."
+            title = self.tr("Note Step")
+            tip   = self.tr("Instruction-only step; no tool is launched.")
         elif kind == "split":
-            title = "Split Marker"
-            tip   = "Branch point — processing continues in multiple lanes."
+            title = self.tr("Split Marker")
+            tip   = self.tr("Branch point — processing continues in multiple lanes.")
         elif kind == "choice":
-            title = str(item.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or "Choice"
-            tip   = "Choice group. Open it to pick one of the tools listed under it."
+            title = str(item.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or self.tr("Choice")
+            tip   = self.tr("Choice group. Open it to pick one of the tools listed under it.")
         else:
-            title = "Merge Marker"
-            tip   = "Merge point — lanes come back together here."
+            title = self.tr("Merge Marker")
+            tip   = self.tr("Merge point — lanes come back together here.")
 
         parts = [f"<b>{title}</b>"]
         if self.current_lane_name:
-            parts.append(f"<b>Lane:</b> {self.current_lane_name}")
+            parts.append(self.tr("<b>Lane:</b> {0}").format(self.current_lane_name))
         if tip:
             parts.append(tip)
         if note:
-            parts.append(f"<br><b>Note:</b> {note}")
+            parts.append(self.tr("<br><b>Note:</b> {0}").format(note))
         if inputs:
-            parts.append(f"<b>Inputs:</b> {', '.join(inputs)}")
+            parts.append(self.tr("<b>Inputs:</b> {0}").format(', '.join(inputs)))
         if outputs:
-            parts.append(f"<b>Outputs:</b> {', '.join(outputs)}")
+            parts.append(self.tr("<b>Outputs:</b> {0}").format(', '.join(outputs)))
 
         preset = item.data(Qt.ItemDataRole.UserRole + 8)
         if isinstance(preset, dict) and preset:
-            parts.append(f"<b>Preset:</b> {_summarize_preset(preset)}")
+            parts.append(self.tr("<b>Preset:</b> {0}").format(_summarize_preset(preset)))
 
         alts = normalize_workflow_alternatives(item.data(Qt.ItemDataRole.UserRole + 10))
         if alts:
             names = [_choice_label(a.command_id, a.preset, a.label_override, self.catalog) for a in alts]
-            parts.append(f"<b>Alternatives:</b> {', '.join(names)}")
+            parts.append(self.tr("<b>Alternatives:</b> {0}").format(', '.join(names)))
 
         lst = self._current_list()
         parent_id = str(item.data(Qt.ItemDataRole.UserRole + 11) or "")
@@ -3715,9 +3950,9 @@ class MiniWorkflowDialog(_WorkflowGraphHost, QDialog):
             for i in range(lst.count()):
                 other = lst.item(i)
                 if str(other.data(Qt.ItemDataRole.UserRole) or "") == parent_id:
-                    group_name = str(other.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or "Choice"
+                    group_name = str(other.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or self.tr("Choice")
                     completed = bool(other.data(Qt.ItemDataRole.UserRole + 7))
-                    parts.append(f"<b>Part of:</b> {group_name}")
+                    parts.append(self.tr("<b>Part of:</b> {0}").format(group_name))
                     break
         if kind == "choice" and lst is not None:
             sid = str(item.data(Qt.ItemDataRole.UserRole) or "")
@@ -3729,12 +3964,13 @@ class MiniWorkflowDialog(_WorkflowGraphHost, QDialog):
                 child = unpack_workflow_step_item(other, self.current_lane_name or "main")
                 choice_names.append(format_workflow_step_label(child, self.catalog))
             if choice_names:
-                parts.append(f"<b>Choices:</b> {', '.join(choice_names)}")
+                parts.append(self.tr("<b>Choices:</b> {0}").format(', '.join(choice_names)))
 
         top_id = parent_id or str(item.data(Qt.ItemDataRole.UserRole) or "")
         parts.extend(workflow_link_lines(self.workflow, top_id, self.catalog))
 
-        parts.append(f"<b>Status:</b> {'✓ Completed' if completed else 'Not completed'}")
+        parts.append(self.tr("<b>Status:</b> {0}").format(
+            self.tr("✓ Completed") if completed else self.tr("Not completed")))
 
         self.lbl_step_info.setText("<br>".join(parts))
 
@@ -3802,13 +4038,13 @@ class MiniWorkflowDialog(_WorkflowGraphHost, QDialog):
             return
         if kind != "action":
             note = str(item.data(Qt.ItemDataRole.UserRole + 2) or "")
-            msg  = note if note else "This step is a marker — no tool to launch."
-            QMessageBox.information(self, "Instruction Step", msg)
+            msg  = note if note else self.tr("This step is a marker — no tool to launch.")
+            QMessageBox.information(self, self.tr("Instruction Step"), msg)
             return
 
         choices = workflow_step_choices(step, self.catalog)
         if not choices:
-            QMessageBox.warning(self, "No Command", "This step has no command ID.")
+            QMessageBox.warning(self, self.tr("No Command"), self.tr("This step has no command ID."))
             return
         picked = prompt_workflow_choice(self, choices)
         if picked is None:
@@ -3878,6 +4114,9 @@ class MiniWorkflowDialog(_WorkflowGraphHost, QDialog):
             g = self.settings.value("mini_workflow_dialog/geometry")
             if g:
                 self.restoreGeometry(g)
+            s = self.settings.value("mini_workflow_dialog/view_split")
+            if s:
+                self.view_split.restoreState(s)
         except Exception:
             pass
 
@@ -3886,6 +4125,7 @@ class MiniWorkflowDialog(_WorkflowGraphHost, QDialog):
             return
         try:
             self.settings.setValue("mini_workflow_dialog/geometry", self.saveGeometry())
+            self.settings.setValue("mini_workflow_dialog/view_split", self.view_split.saveState())
         except Exception:
             pass
 
@@ -3917,20 +4157,20 @@ def show_mini_workflow_dialog(main):
     from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout, QLabel, QComboBox
 
     picker = QDialog(main)
-    picker.setWindowTitle("Run Workflow")
+    picker.setWindowTitle(_tr("Run Workflow"))
     lay = QVBoxLayout(picker)
 
-    lay.addWidget(QLabel("No workflow is currently loaded.\nChoose how to get started:"))
+    lay.addWidget(QLabel(_tr("No workflow is currently loaded.\nChoose how to get started:")))
 
     combo = QComboBox(picker)
-    combo.addItem("Open Workflow Assistant (build or edit)")
+    combo.addItem(_tr("Open Workflow Assistant (build or edit)"))
     for wf in _default_canned_workflows():
-        combo.addItem(f"Canned: {wf.name}", userData=wf)
+        combo.addItem(_tr("Canned: {0}").format(wf.name), userData=wf)
 
     wf_dir = _workflows_dir(main)
     saved_paths = sorted(wf_dir.glob("*.json"))
     for p in saved_paths:
-        combo.addItem(f"Saved: {p.stem}", userData=p)
+        combo.addItem(_tr("Saved: {0}").format(p.stem), userData=p)
 
     lay.addWidget(combo)
 
@@ -3962,7 +4202,7 @@ def show_mini_workflow_dialog(main):
             )
         except Exception as e:
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.critical(main, "Load Failed", f"Could not load workflow:\n\n{e}")
+            QMessageBox.critical(main, _tr("Load Failed"), _tr("Could not load workflow:\n\n{0}").format(e))
             return
     else:
         return
@@ -3971,7 +4211,7 @@ def show_mini_workflow_dialog(main):
     categories = _discover_toolbar_categories(main)
     for cat_name, items in _discover_script_categories(main).items():
         categories.setdefault(cat_name, []).extend(items)
-    catalog: Dict[str, WorkflowActionInfo] = {}
+    catalog: Dict[str, WorkflowActionInfo] = WorkflowCatalog()
     for items in categories.values():
         for info in items:
             catalog[info.command_id] = info

@@ -371,19 +371,13 @@ def _gpu_has_room(torch, device, need_bytes, status_cb=None) -> bool:
 # Methods this module implements. Anything else returns None so the Numba
 # kernel handles it.
 #
-# "bilinear" and "edge" are deliberately NOT here. Their numba kernels
-# (_bilinear_interpolate_numba, _edge_aware_interpolate_numba) fill holes by
-# averaging the non-zero neighbours of the array they are concurrently writing
-# into, so each pixel's average is contaminated by neighbours already filled
-# earlier in the same pass. The result is order-dependent by construction and
-# cannot be reproduced by a gather, which is the only form a vectorized or GPU
-# implementation can take. Measured against an order-independent gather over
-# the same samples: 67% of pixels differ, up to 0.17 absolute. Rather than
-# ship a GPU path that disagrees with the CPU path, these decline and fall
-# back to numba. (RCD, VNG and AHD all build from the immutable mosaic and are
-# order-independent -- hence portable. VNG is the one still unported: its
+# "bilinear" and "edge" are not here. Until 2026-11 their numba kernels filled
+# holes from the array they were concurrently writing into, so the result was
+# order-dependent and no gather could reproduce it. Both now read the immutable
+# mosaic (see _bilinear_from_mosaic / _edge_aware_from_mosaic in numba_utils)
+# and could be ported like the rest; nobody has yet. VNG is also unported: its
 # gradient terms are table-driven per Bayer phase, which is a data-dependent
-# gather rather than a stencil.)
+# gather rather than a stencil.
 GPU_DEBAYER_METHODS = ("rcd", "ahd")
 
 
