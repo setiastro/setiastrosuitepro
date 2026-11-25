@@ -8722,6 +8722,9 @@ class StackingSuiteDialog(QDialog):
         self.light_files = {}
         self.master_files = {}
         self.master_sizes = {}
+        # _norm_path_key(master) -> "dark" / "flat", set where each is added:
+        # the key cannot tell them apart (see _master_kind_of_key).
+        self.master_kinds = {}
 
         # Layout & tabs
         layout = QVBoxLayout(self)
@@ -13712,12 +13715,28 @@ class StackingSuiteDialog(QDialog):
 
     _DARK_MASTER_KEY_RX = re.compile(r"^\s*(?:[\d.]+s|Unknowns?)\s*\(")
 
-    def _master_kind_of_key(self, key) -> str | None:
-        """'dark' or 'flat' for a master_files key; None for the bias."""
+    def _note_master_kind(self, path, kind: str) -> None:
+        kinds = getattr(self, "master_kinds", None)
+        if kinds is None:
+            kinds = self.master_kinds = {}
+        if path:
+            kinds[_norm_path_key(path)] = kind
+
+    def _master_kind_of_key(self, key, path=None) -> str | None:
+        """'dark' or 'flat' for a master_files entry; None for the bias.
+        The kind recorded when it was added wins: a flat whose filter is
+        'Unknown' is keyed 'Unknown (WxH) [night]', which the dark pattern
+        (a dark of unknown exposure) also matches."""
         k = str(key or "")
         if k == "Bias":
             return None
+        kind = (getattr(self, "master_kinds", None) or {}).get(_norm_path_key(path)) if path else None
+        if kind:
+            return kind
         return "dark" if self._DARK_MASTER_KEY_RX.match(k) else "flat"
+
+    def _is_master_dark_path(self, path) -> bool:
+        return bool(path) and (getattr(self, "master_kinds", None) or {}).get(_norm_path_key(path)) == "dark"
 
     def _master_snapshot(self) -> dict:
         """Every loaded master dark and flat, each header read once:
@@ -13726,7 +13745,7 @@ class StackingSuiteDialog(QDialog):
         for key, path in list((getattr(self, "master_files", None) or {}).items()):
             if not isinstance(path, str) or not path:
                 continue
-            kind = self._master_kind_of_key(key)
+            kind = self._master_kind_of_key(key, path)
             if kind is None:
                 continue
             n = _norm_path_key(path)
@@ -19369,6 +19388,8 @@ class StackingSuiteDialog(QDialog):
 
         candidates = []
         for key, path in self.master_files.items():
+            if self._is_master_dark_path(path):
+                continue
             if is_master_flat_key(key, filter_name=ftoken, image_size=image_size):
                 candidates.append((key, path))
         if not candidates:
@@ -19955,6 +19976,7 @@ class StackingSuiteDialog(QDialog):
                     key = f"{exposure_text} ({image_size}){temp_suffix}{gain_suffix}"
                     self.master_files[key] = file_path
                     self.master_sizes[file_path] = image_size
+                    self._note_master_kind(file_path, "dark")
                 elif file_type.upper() == "FLAT":
                     # Derive the session from the header we already loaded: a
                     # master flat carries the acquisition time of its *raw*
@@ -19976,6 +19998,7 @@ class StackingSuiteDialog(QDialog):
                     )
                     self.master_files[key] = file_path
                     self.master_sizes[file_path] = image_size
+                    self._note_master_kind(file_path, "flat")
 
                 # Extract additional metadata from header.
                 sensor_temp = header.get("CCD-TEMP", "N/A")
@@ -20689,6 +20712,7 @@ class StackingSuiteDialog(QDialog):
         if full_key not in self.master_files:
             self.master_files[full_key] = master_dark_path
         self.master_sizes[master_dark_path] = size
+        self._note_master_kind(master_dark_path, "dark")
 
         # ✅ Update UI Tree
         existing_items = self.master_dark_tree.findItems(
@@ -21787,6 +21811,7 @@ class StackingSuiteDialog(QDialog):
             f"{filter_name} ({size}) [{session}]{gain_suffix}", master_flat_path
         )
         self.master_files[key] = master_flat_path
+        self._note_master_kind(master_flat_path, "flat")
 
         existing_items = self.master_flat_tree.findItems(filter_name, Qt.MatchFlag.MatchExactly, 0)
         if existing_items:
@@ -22129,6 +22154,8 @@ class StackingSuiteDialog(QDialog):
         exact = []
         for mk, mp in self.master_files.items():
             mk = str(mk)
+            if self._is_master_dark_path(mp):
+                continue
             if any(mk.startswith(p) for p in prefixes) and mp not in exact:
                 exact.append(mp)
 
