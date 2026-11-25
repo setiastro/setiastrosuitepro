@@ -63919,6 +63919,78 @@ The aligned files remain in the output directory; you can import them manually.<
       <source>Open Image with Workflow Assistant</source>
       <translation>Відкрити зображення в Помічнику робочого процесу</translation>
     </message>
+    <message>
+      <source>Blink frames</source>
+      <translation>Блінк кадрів</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>Налаштувати…</translation>
+    </message>
+    <message>
+      <source>Add or remove tiles</source>
+      <translation>Додати або прибрати плитки</translation>
+    </message>
+    <message>
+      <source>Remove from Start Panel</source>
+      <translation>Прибрати зі стартової панелі</translation>
+    </message>
+    <message>
+      <source>Customize Start Panel</source>
+      <translation>Налаштування стартової панелі</translation>
+    </message>
+    <message>
+      <source>Choose up to {0} tools for the Start Panel. Drag them into the order you want.</source>
+      <translation>Виберіть до {0} інструментів для стартової панелі. Перетягніть їх у потрібному порядку.</translation>
+    </message>
+    <message>
+      <source>All tools</source>
+      <translation>Усі інструменти</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Пошук</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>Додати</translation>
+    </message>
+    <message>
+      <source>On the Start Panel</source>
+      <translation>На стартовій панелі</translation>
+    </message>
+    <message>
+      <source>{0} of {1}</source>
+      <translation>{0} з {1}</translation>
+    </message>
+    <message>
+      <source>The Start Panel is full. Remove a tool to add another.</source>
+      <translation>Стартова панель заповнена. Приберіть інструмент, щоб додати інший.</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>Перемістити вгору</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>Перемістити вниз</translation>
+    </message>
+    <message>
+      <source>Remove</source>
+      <translation>Прибрати</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>Скинути до стандартних</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>OK</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Скасувати</translation>
+    </message>
   </context>
   <context>
     <name>StatisticsDialog</name>

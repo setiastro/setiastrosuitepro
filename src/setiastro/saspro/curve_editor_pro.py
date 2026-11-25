@@ -3028,8 +3028,8 @@ class CurvesDialogPro(QDialog):
             self._pending_sig = None
             self._refresh_bg_status()
             return
-        # already computing this exact signature
-        if (self._bg_worker is not None and self._bg_worker.isRunning()
+        # already computing this exact signature (held until its finished slot)
+        if (self._bg_worker is not None
                 and self._bg_worker_sig == sig):
             self._refresh_bg_status()
             return
@@ -3041,8 +3041,13 @@ class CurvesDialogPro(QDialog):
     def _maybe_start_pending(self):
         if self._pending_sig is None or self._full_img is None:
             return
-        # one worker at a time; we'll re-check when the current one finishes
-        if self._bg_worker is not None and self._bg_worker.isRunning():
+        # One worker at a time, held until its OWN finished slot has run, not
+        # merely until isRunning() goes False. isRunning() drops before the
+        # queued finished is delivered (Windows defers posted events while mouse
+        # input is pending), so a curve drag could start worker B in that gap;
+        # A's finished then deleteLater()'d B mid-run: qFatal "QThread: Destroyed
+        # while thread is still running", SASpro gone, crash log empty.
+        if self._bg_worker is not None:
             return
         sig = self._pending_sig
         luts = self._pending_luts
@@ -3063,6 +3068,8 @@ class CurvesDialogPro(QDialog):
     def _on_bg_finished(self):
         # Drop completed worker references and Qt resources.
         worker = self._bg_worker
+        if worker is not None and worker.isRunning():
+            return      # not the worker that finished: never delete a running QThread
         self._bg_worker = None
         self._bg_worker_sig = None
         if worker is not None:

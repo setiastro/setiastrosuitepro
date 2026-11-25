@@ -62809,6 +62809,78 @@ The aligned files remain in the output directory; you can import them manually.<
       <source>Open Image with Workflow Assistant</source>
       <translation>ワークフローアシスタントで画像を開く</translation>
     </message>
+    <message>
+      <source>Blink frames</source>
+      <translation>フレームをブリンク</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>カスタマイズ…</translation>
+    </message>
+    <message>
+      <source>Add or remove tiles</source>
+      <translation>タイルの追加と削除</translation>
+    </message>
+    <message>
+      <source>Remove from Start Panel</source>
+      <translation>スタートパネルから削除</translation>
+    </message>
+    <message>
+      <source>Customize Start Panel</source>
+      <translation>スタートパネルのカスタマイズ</translation>
+    </message>
+    <message>
+      <source>Choose up to {0} tools for the Start Panel. Drag them into the order you want.</source>
+      <translation>スタートパネルに置くツールを最大 {0} 個選んでください。ドラッグして好きな順番に並べ替えられます。</translation>
+    </message>
+    <message>
+      <source>All tools</source>
+      <translation>すべてのツール</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>検索</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>追加</translation>
+    </message>
+    <message>
+      <source>On the Start Panel</source>
+      <translation>スタートパネル上</translation>
+    </message>
+    <message>
+      <source>{0} of {1}</source>
+      <translation>{1} 中 {0}</translation>
+    </message>
+    <message>
+      <source>The Start Panel is full. Remove a tool to add another.</source>
+      <translation>スタートパネルがいっぱいです。別のツールを追加するには、どれかを削除してください。</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>上へ移動</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>下へ移動</translation>
+    </message>
+    <message>
+      <source>Remove</source>
+      <translation>削除</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>デフォルトにリセット</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>OK</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>キャンセル</translation>
+    </message>
   </context>
   <context>
     <name>StatusLogDock</name>

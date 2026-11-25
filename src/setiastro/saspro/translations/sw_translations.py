@@ -17590,3 +17590,31 @@ _ADDITIONS_2026_11_25_BANDING = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
     TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_START_TILES = {
+    'StartPanel': {
+        'Workflow Assistant': 'Msaidizi wa Mtiririko wa Kazi',
+        'Blink frames': 'Blink fremu',
+        'Customize…': 'Geuza kukufaa…',
+        'Add or remove tiles': 'Ongeza au ondoa vigae',
+        'Remove from Start Panel': 'Ondoa kwenye Paneli ya Kuanza',
+        'Customize Start Panel': 'Geuza kukufaa Paneli ya Kuanza',
+        'Choose up to {0} tools for the Start Panel. Drag them into the order you want.': 'Chagua hadi zana {0} za Paneli ya Kuanza. Ziburute kwa mpangilio unaotaka.',
+        'All tools': 'Zana zote',
+        'Search': 'Tafuta',
+        'Add': 'Ongeza',
+        'On the Start Panel': 'Kwenye Paneli ya Kuanza',
+        '{0} of {1}': '{0} kati ya {1}',
+        'The Start Panel is full. Remove a tool to add another.': 'Paneli ya Kuanza imejaa. Ondoa zana moja ili kuongeza nyingine.',
+        'Move Up': 'Sogeza Juu',
+        'Move Down': 'Sogeza Chini',
+        'Remove': 'Ondoa',
+        'Reset to Defaults': 'Weka upya kwa Chaguo-msingi',
+        'OK': 'Sawa',
+        'Cancel': 'Ghairi',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

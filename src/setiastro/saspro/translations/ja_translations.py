@@ -17480,3 +17480,31 @@ _ADDITIONS_2026_11_25_BANDING = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
     TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_START_TILES = {
+    'StartPanel': {
+        'Workflow Assistant': 'ワークフローアシスタント',
+        'Blink frames': 'フレームをブリンク',
+        'Customize…': 'カスタマイズ…',
+        'Add or remove tiles': 'タイルの追加と削除',
+        'Remove from Start Panel': 'スタートパネルから削除',
+        'Customize Start Panel': 'スタートパネルのカスタマイズ',
+        'Choose up to {0} tools for the Start Panel. Drag them into the order you want.': 'スタートパネルに置くツールを最大 {0} 個選んでください。ドラッグして好きな順番に並べ替えられます。',
+        'All tools': 'すべてのツール',
+        'Search': '検索',
+        'Add': '追加',
+        'On the Start Panel': 'スタートパネル上',
+        '{0} of {1}': '{1} 中 {0}',
+        'The Start Panel is full. Remove a tool to add another.': 'スタートパネルがいっぱいです。別のツールを追加するには、どれかを削除してください。',
+        'Move Up': '上へ移動',
+        'Move Down': '下へ移動',
+        'Remove': '削除',
+        'Reset to Defaults': 'デフォルトにリセット',
+        'OK': 'OK',
+        'Cancel': 'キャンセル',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

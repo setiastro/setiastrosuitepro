@@ -61891,6 +61891,78 @@ The aligned files remain in the output directory; you can import them manually.<
       <source>Open Image with Workflow Assistant</source>
       <translation>Открыть изображение в Помощнике рабочего процесса</translation>
     </message>
+    <message>
+      <source>Blink frames</source>
+      <translation>Мигание кадров</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>Настроить…</translation>
+    </message>
+    <message>
+      <source>Add or remove tiles</source>
+      <translation>Добавить или убрать плитки</translation>
+    </message>
+    <message>
+      <source>Remove from Start Panel</source>
+      <translation>Убрать со стартовой панели</translation>
+    </message>
+    <message>
+      <source>Customize Start Panel</source>
+      <translation>Настройка стартовой панели</translation>
+    </message>
+    <message>
+      <source>Choose up to {0} tools for the Start Panel. Drag them into the order you want.</source>
+      <translation>Выберите до {0} инструментов для стартовой панели. Перетащите их в нужном порядке.</translation>
+    </message>
+    <message>
+      <source>All tools</source>
+      <translation>Все инструменты</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Поиск</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>Добавить</translation>
+    </message>
+    <message>
+      <source>On the Start Panel</source>
+      <translation>На стартовой панели</translation>
+    </message>
+    <message>
+      <source>{0} of {1}</source>
+      <translation>{0} из {1}</translation>
+    </message>
+    <message>
+      <source>The Start Panel is full. Remove a tool to add another.</source>
+      <translation>Стартовая панель заполнена. Уберите инструмент, чтобы добавить другой.</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>Вверх</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>Вниз</translation>
+    </message>
+    <message>
+      <source>Remove</source>
+      <translation>Убрать</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>Сбросить по умолчанию</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>OK</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Отмена</translation>
+    </message>
   </context>
   <context>
     <name>StatusLogDock</name>

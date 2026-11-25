@@ -17827,3 +17827,31 @@ _ADDITIONS_2026_11_25_BANDING = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
     TRANSLATIONS_UK.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_START_TILES = {
+    'StartPanel': {
+        'Workflow Assistant': 'Помічник робочого процесу',
+        'Blink frames': 'Блінк кадрів',
+        'Customize…': 'Налаштувати…',
+        'Add or remove tiles': 'Додати або прибрати плитки',
+        'Remove from Start Panel': 'Прибрати зі стартової панелі',
+        'Customize Start Panel': 'Налаштування стартової панелі',
+        'Choose up to {0} tools for the Start Panel. Drag them into the order you want.': 'Виберіть до {0} інструментів для стартової панелі. Перетягніть їх у потрібному порядку.',
+        'All tools': 'Усі інструменти',
+        'Search': 'Пошук',
+        'Add': 'Додати',
+        'On the Start Panel': 'На стартовій панелі',
+        '{0} of {1}': '{0} з {1}',
+        'The Start Panel is full. Remove a tool to add another.': 'Стартова панель заповнена. Приберіть інструмент, щоб додати інший.',
+        'Move Up': 'Перемістити вгору',
+        'Move Down': 'Перемістити вниз',
+        'Remove': 'Прибрати',
+        'Reset to Defaults': 'Скинути до стандартних',
+        'OK': 'OK',
+        'Cancel': 'Скасувати',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
+    TRANSLATIONS_UK.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

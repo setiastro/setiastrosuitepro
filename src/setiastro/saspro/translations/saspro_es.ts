@@ -64009,6 +64009,78 @@ Los archivos alineados permanecen en el directorio de salida; puede importarlos 
       <source>Open Image with Workflow Assistant</source>
       <translation>Abrir imagen con el Asistente de flujo de trabajo</translation>
     </message>
+    <message>
+      <source>Blink frames</source>
+      <translation>Blink de tomas</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>Personalizar…</translation>
+    </message>
+    <message>
+      <source>Add or remove tiles</source>
+      <translation>Añadir o quitar mosaicos</translation>
+    </message>
+    <message>
+      <source>Remove from Start Panel</source>
+      <translation>Quitar del panel de inicio</translation>
+    </message>
+    <message>
+      <source>Customize Start Panel</source>
+      <translation>Personalizar el panel de inicio</translation>
+    </message>
+    <message>
+      <source>Choose up to {0} tools for the Start Panel. Drag them into the order you want.</source>
+      <translation>Elija hasta {0} herramientas para el panel de inicio. Arrástrelas en el orden que desee.</translation>
+    </message>
+    <message>
+      <source>All tools</source>
+      <translation>Todas las herramientas</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Buscar</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>Añadir</translation>
+    </message>
+    <message>
+      <source>On the Start Panel</source>
+      <translation>En el panel de inicio</translation>
+    </message>
+    <message>
+      <source>{0} of {1}</source>
+      <translation>{0} de {1}</translation>
+    </message>
+    <message>
+      <source>The Start Panel is full. Remove a tool to add another.</source>
+      <translation>El panel de inicio está lleno. Quite una herramienta para añadir otra.</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>Mover Arriba</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>Mover Abajo</translation>
+    </message>
+    <message>
+      <source>Remove</source>
+      <translation>Quitar</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>Restablecer valores por defecto</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>OK</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Cancelar</translation>
+    </message>
   </context>
   <context>
     <name>StatusLogDock</name>

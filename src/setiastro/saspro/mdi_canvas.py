@@ -45,7 +45,8 @@ toward one and the bounds extend past it -- and never shrinks on its own,
 because a canvas that collapsed whenever you tidied up would make the
 scrollbars jump. Tile and Cascade reset it deliberately, and since both
 reposition every view they are also the way back from a view dragged off
-into the dark.
+into the dark. What it remembers is that growth, not the viewport: the
+visible area is only a floor, and it follows the window back down.
 
 Verified against QMdiArea before building on it: subwindow moves are never
 clamped by Qt in any direction, setViewportMargins is honoured (so the
@@ -77,6 +78,7 @@ class CanvasController(QObject):
         self.mdi = mdi
         self._offset = QPoint(0, 0)
         self._size = QSize(1, 1)          # canvas size; origin is always 0,0
+        self._grown = QSize(0, 0)         # the part of it growth claimed
         self._home_shift = QPoint(0, 0)   # room inserted at the home corner
         self._layer = None                # the chip overlay
         self._layer_provider = None
@@ -221,34 +223,65 @@ class CanvasController(QObject):
         self._suspend += 1
         try:
             self._make_room_at_home()
-            vp = self._viewport_size()
-            need_w = self._offset.x() + vp.width()
-            need_h = self._offset.y() + vp.height()
-            content = self.content_rect()
-            if not content.isNull():
-                # The margin is headroom for the NEXT drag, so it applies
-                # only where the content has actually reached the edge.
-                # Adding it unconditionally would pin the canvas at
-                # content+margin forever and leave the scrollbars up even
-                # after a Tile had brought everything back inside.
-                # Strictly past, not merely touching: reset_bounds shrinks
-                # the canvas to exactly content+1, and >= would regrow it by
-                # the margin on the very next refresh -- scrollbars that
-                # never go away after a tidy.
-                if content.right() + 1 > self._size.width():
-                    need_w = max(need_w, content.right() + self.GROW_MARGIN)
-                if content.bottom() + 1 > self._size.height():
-                    need_h = max(need_h, content.bottom() + self.GROW_MARGIN)
-            # Grow only. A canvas that shrank whenever you tidied up would
-            # make the scrollbars jump; Tile and Cascade reset it.
-            self._size = QSize(max(self._size.width(), int(need_w)),
-                               max(self._size.height(), int(need_h)))
-            self._clamp_offset()
-            self._sync_layer()
-            self._sync_scrollbars()
+            # Showing or hiding a scrollbar resizes the viewport, and the
+            # viewport is the canvas's floor, so settle that here: the
+            # resize it causes arrives while we are suspended and would be
+            # dropped.
+            for _ in range(3):
+                vp = self._viewport_size()
+                self._fit_canvas(vp)
+                self._clamp_offset()
+                self._sync_layer()
+                self._sync_scrollbars()
+                if self._viewport_size() == vp:
+                    break
         finally:
             self._suspend -= 1
         self.canvasChanged.emit()
+
+    def _fit_canvas(self, vp: QSize):
+        """Size the canvas from three things, only one of them remembered.
+
+        * The visible area (offset + viewport): a floor that follows the
+          viewport down as well as up. It used to be kept, so a viewport
+          that had ever been bigger -- before un-maximizing, before a panel
+          opened, or before the window was laid out at all -- left
+          scrollbars on an empty workspace, and their own 12 px then kept
+          each other up (2.0.0 report).
+        * Everything on the canvas, at exactly its extent, so a view or
+          chip the viewport has shrunk past stays reachable.
+        * Growth: room added past content pushed over the edge. This is
+          the part that never shrinks on its own -- a canvas that shrank
+          whenever you tidied up would make the scrollbars jump. Tile and
+          Cascade reset it.
+        """
+        floor_w = self._offset.x() + vp.width()
+        floor_h = self._offset.y() + vp.height()
+        gw, gh = self._grown.width(), self._grown.height()
+        fit_w = fit_h = 0
+        content = self.content_rect()
+        if not content.isNull():
+            fit_w, fit_h = content.right() + 1, content.bottom() + 1
+            # The margin is headroom for the NEXT drag, so it applies
+            # only where the content has actually reached the edge.
+            # Adding it unconditionally would pin the canvas at
+            # content+margin forever and leave the scrollbars up even
+            # after a Tile had brought everything back inside.
+            # Strictly past, not merely touching: reset_bounds shrinks
+            # the canvas to exactly content+1, and >= would regrow it by
+            # the margin on the very next refresh -- scrollbars that
+            # never go away after a tidy.
+            # The edge is the canvas's OR the viewport's, whichever is
+            # further. Against the size alone, the 640x480 it has before
+            # the window is laid out put every desktop shortcut right of
+            # x=640 "past the edge" at startup.
+            if fit_w > max(self._size.width(), floor_w):
+                gw = max(gw, content.right() + self.GROW_MARGIN)
+            if fit_h > max(self._size.height(), floor_h):
+                gh = max(gh, content.bottom() + self.GROW_MARGIN)
+        self._grown = QSize(int(gw), int(gh))
+        self._size = QSize(int(max(gw, floor_w, fit_w)),
+                           int(max(gh, floor_h, fit_h)))
 
     def _make_room_at_home(self):
         """Grow the canvas under a view dragged past the home corner.
@@ -293,6 +326,9 @@ class CanvasController(QObject):
         if not (dx or dy):
             return
         self._size = QSize(self._size.width() + dx, self._size.height() + dy)
+        # Inserted room is growth: it stays until a tidy-up.
+        self._grown = QSize(self._size.width() if dx else self._grown.width(),
+                            self._size.height() if dy else self._grown.height())
         self._offset += QPoint(dx, dy)
         self._home_shift += QPoint(dx, dy)
         self._move_chips(dx, dy)
@@ -346,6 +382,7 @@ class CanvasController(QObject):
         self._suspend += 1
         try:
             self._return_chips_home()
+            self._grown = QSize(0, 0)
             vp = self._viewport_size()
             content = self.content_rect()
             w = self._offset.x() + vp.width()

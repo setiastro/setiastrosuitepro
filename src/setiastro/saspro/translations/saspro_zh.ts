@@ -62994,6 +62994,78 @@ The aligned files remain in the output directory; you can import them manually.<
       <source>Open Image with Workflow Assistant</source>
       <translation>使用工作流助手打开图像</translation>
     </message>
+    <message>
+      <source>Blink frames</source>
+      <translation>闪烁比对帧</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>自定义…</translation>
+    </message>
+    <message>
+      <source>Add or remove tiles</source>
+      <translation>添加或移除磁贴</translation>
+    </message>
+    <message>
+      <source>Remove from Start Panel</source>
+      <translation>从开始面板中移除</translation>
+    </message>
+    <message>
+      <source>Customize Start Panel</source>
+      <translation>自定义开始面板</translation>
+    </message>
+    <message>
+      <source>Choose up to {0} tools for the Start Panel. Drag them into the order you want.</source>
+      <translation>为开始面板选择最多 {0} 个工具。拖动它们以调整顺序。</translation>
+    </message>
+    <message>
+      <source>All tools</source>
+      <translation>所有工具</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>搜索</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>添加</translation>
+    </message>
+    <message>
+      <source>On the Start Panel</source>
+      <translation>开始面板上</translation>
+    </message>
+    <message>
+      <source>{0} of {1}</source>
+      <translation>{0} / {1}</translation>
+    </message>
+    <message>
+      <source>The Start Panel is full. Remove a tool to add another.</source>
+      <translation>开始面板已满。请先移除一个工具再添加。</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>上移</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>下移</translation>
+    </message>
+    <message>
+      <source>Remove</source>
+      <translation>移除</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>重置为默认值</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>确定</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>取消</translation>
+    </message>
   </context>
   <context>
     <name>StatusLogDock</name>

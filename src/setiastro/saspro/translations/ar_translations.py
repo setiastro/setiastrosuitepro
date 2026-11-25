@@ -17790,3 +17790,31 @@ _ADDITIONS_2026_11_25_BANDING = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
     TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_START_TILES = {
+    'StartPanel': {
+        'Workflow Assistant': 'مساعد سير العمل',
+        'Blink frames': 'وميض الإطارات',
+        'Customize…': 'تخصيص…',
+        'Add or remove tiles': 'إضافة المربعات أو إزالتها',
+        'Remove from Start Panel': 'إزالة من لوحة البدء',
+        'Customize Start Panel': 'تخصيص لوحة البدء',
+        'Choose up to {0} tools for the Start Panel. Drag them into the order you want.': 'اختر حتى {0} أدوات للوحة البدء. اسحبها لترتيبها كما تريد.',
+        'All tools': 'كل الأدوات',
+        'Search': 'بحث',
+        'Add': 'إضافة',
+        'On the Start Panel': 'في لوحة البدء',
+        '{0} of {1}': '{0} من {1}',
+        'The Start Panel is full. Remove a tool to add another.': 'لوحة البدء ممتلئة. أزل أداة لإضافة أخرى.',
+        'Move Up': 'نقل لأعلى',
+        'Move Down': 'نقل لأسفل',
+        'Remove': 'إزالة',
+        'Reset to Defaults': 'إعادة تعيين للافتراضيات',
+        'OK': 'موافق',
+        'Cancel': 'إلغاء',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

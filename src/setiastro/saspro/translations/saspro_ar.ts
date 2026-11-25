@@ -63846,6 +63846,82 @@ The aligned files remain in the output directory; you can import them manually.<
       <source>Open Image with Workflow Assistant</source>
       <translation>فتح الصورة باستخدام مساعد سير العمل</translation>
     </message>
+    <message>
+      <source>Workflow Assistant</source>
+      <translation>مساعد سير العمل</translation>
+    </message>
+    <message>
+      <source>Blink frames</source>
+      <translation>وميض الإطارات</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>تخصيص…</translation>
+    </message>
+    <message>
+      <source>Add or remove tiles</source>
+      <translation>إضافة المربعات أو إزالتها</translation>
+    </message>
+    <message>
+      <source>Remove from Start Panel</source>
+      <translation>إزالة من لوحة البدء</translation>
+    </message>
+    <message>
+      <source>Customize Start Panel</source>
+      <translation>تخصيص لوحة البدء</translation>
+    </message>
+    <message>
+      <source>Choose up to {0} tools for the Start Panel. Drag them into the order you want.</source>
+      <translation>اختر حتى {0} أدوات للوحة البدء. اسحبها لترتيبها كما تريد.</translation>
+    </message>
+    <message>
+      <source>All tools</source>
+      <translation>كل الأدوات</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>بحث</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>إضافة</translation>
+    </message>
+    <message>
+      <source>On the Start Panel</source>
+      <translation>في لوحة البدء</translation>
+    </message>
+    <message>
+      <source>{0} of {1}</source>
+      <translation>{0} من {1}</translation>
+    </message>
+    <message>
+      <source>The Start Panel is full. Remove a tool to add another.</source>
+      <translation>لوحة البدء ممتلئة. أزل أداة لإضافة أخرى.</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>نقل لأعلى</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>نقل لأسفل</translation>
+    </message>
+    <message>
+      <source>Remove</source>
+      <translation>إزالة</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>إعادة تعيين للافتراضيات</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>موافق</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>إلغاء</translation>
+    </message>
   </context>
   <context>
     <name>StatusLogDock</name>

@@ -62724,6 +62724,78 @@ The aligned files remain in the output directory; you can import them manually.<
       <source>Open Image with Workflow Assistant</source>
       <translation>वर्कफ़्लो सहायक के साथ छवि खोलें</translation>
     </message>
+    <message>
+      <source>Blink frames</source>
+      <translation>फ़्रेम ब्लिंक करें</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>अनुकूलित करें…</translation>
+    </message>
+    <message>
+      <source>Add or remove tiles</source>
+      <translation>टाइल जोड़ें या हटाएँ</translation>
+    </message>
+    <message>
+      <source>Remove from Start Panel</source>
+      <translation>प्रारंभ पैनल से हटाएँ</translation>
+    </message>
+    <message>
+      <source>Customize Start Panel</source>
+      <translation>प्रारंभ पैनल अनुकूलित करें</translation>
+    </message>
+    <message>
+      <source>Choose up to {0} tools for the Start Panel. Drag them into the order you want.</source>
+      <translation>प्रारंभ पैनल के लिए अधिकतम {0} उपकरण चुनें। उन्हें अपने मनचाहे क्रम में खींचें।</translation>
+    </message>
+    <message>
+      <source>All tools</source>
+      <translation>सभी उपकरण</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>खोजें</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>जोड़ें</translation>
+    </message>
+    <message>
+      <source>On the Start Panel</source>
+      <translation>प्रारंभ पैनल पर</translation>
+    </message>
+    <message>
+      <source>{0} of {1}</source>
+      <translation>{1} में से {0}</translation>
+    </message>
+    <message>
+      <source>The Start Panel is full. Remove a tool to add another.</source>
+      <translation>प्रारंभ पैनल भरा हुआ है। दूसरा जोड़ने के लिए कोई उपकरण हटाएँ।</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>ऊपर ले जाएं</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>नीचे ले जाएं</translation>
+    </message>
+    <message>
+      <source>Remove</source>
+      <translation>हटाएँ</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>डिफ़ॉल्ट पर रीसेट करें</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>ठीक है</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>रद्द करें</translation>
+    </message>
   </context>
   <context>
     <name>StatusLogDock</name>

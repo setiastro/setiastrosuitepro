@@ -17555,3 +17555,31 @@ _ADDITIONS_2026_11_25_BANDING = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
     TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_START_TILES = {
+    'StartPanel': {
+        'Workflow Assistant': '工作流助手',
+        'Blink frames': '闪烁比对帧',
+        'Customize…': '自定义…',
+        'Add or remove tiles': '添加或移除磁贴',
+        'Remove from Start Panel': '从开始面板中移除',
+        'Customize Start Panel': '自定义开始面板',
+        'Choose up to {0} tools for the Start Panel. Drag them into the order you want.': '为开始面板选择最多 {0} 个工具。拖动它们以调整顺序。',
+        'All tools': '所有工具',
+        'Search': '搜索',
+        'Add': '添加',
+        'On the Start Panel': '开始面板上',
+        '{0} of {1}': '{0} / {1}',
+        'The Start Panel is full. Remove a tool to add another.': '开始面板已满。请先移除一个工具再添加。',
+        'Move Up': '上移',
+        'Move Down': '下移',
+        'Remove': '移除',
+        'Reset to Defaults': '重置为默认值',
+        'OK': '确定',
+        'Cancel': '取消',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

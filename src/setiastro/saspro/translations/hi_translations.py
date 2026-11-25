@@ -17481,3 +17481,31 @@ _ADDITIONS_2026_11_25_BANDING = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
     TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_START_TILES = {
+    'StartPanel': {
+        'Workflow Assistant': 'वर्कफ़्लो सहायक',
+        'Blink frames': 'फ़्रेम ब्लिंक करें',
+        'Customize…': 'अनुकूलित करें…',
+        'Add or remove tiles': 'टाइल जोड़ें या हटाएँ',
+        'Remove from Start Panel': 'प्रारंभ पैनल से हटाएँ',
+        'Customize Start Panel': 'प्रारंभ पैनल अनुकूलित करें',
+        'Choose up to {0} tools for the Start Panel. Drag them into the order you want.': 'प्रारंभ पैनल के लिए अधिकतम {0} उपकरण चुनें। उन्हें अपने मनचाहे क्रम में खींचें।',
+        'All tools': 'सभी उपकरण',
+        'Search': 'खोजें',
+        'Add': 'जोड़ें',
+        'On the Start Panel': 'प्रारंभ पैनल पर',
+        '{0} of {1}': '{1} में से {0}',
+        'The Start Panel is full. Remove a tool to add another.': 'प्रारंभ पैनल भरा हुआ है। दूसरा जोड़ने के लिए कोई उपकरण हटाएँ।',
+        'Move Up': 'ऊपर ले जाएं',
+        'Move Down': 'नीचे ले जाएं',
+        'Remove': 'हटाएँ',
+        'Reset to Defaults': 'डिफ़ॉल्ट पर रीसेट करें',
+        'OK': 'ठीक है',
+        'Cancel': 'रद्द करें',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

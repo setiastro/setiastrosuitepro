@@ -1,10 +1,17 @@
 # src/setiastro/saspro/start_panel.py
 # SetiAstro Suite Pro  ·  Franklin Marek  ·  www.setiastro.com
 """
-The start panel: what an empty workspace offers. Open, process, plan, a stacker
-for each kind of imaging (deep sky, smart telescope, planetary), and the last
-twelve images as thumbnails in a row that scrolls sideways (or, with none yet,
-a way in for someone new). It goes when an image opens and comes back when the last one closes.
+The start panel: what an empty workspace offers. Open, process, blink, plan, a
+stacker for each kind of imaging (deep sky, smart telescope, planetary), and the
+last twelve images as thumbnails in a row that scrolls sideways (or, with none
+yet, a way in for someone new). It goes when an image opens and comes back when
+the last one closes.
+
+The tiles are those until someone changes them: Customize… (the dashed tile,
+while there is room for another, else the link at the bottom, or a tile's
+right-click) puts any tool on, up to eight, in any order. Saved as command ids;
+never changed, it follows SASpro's own choice, so a later version's new default
+tile reaches everyone who kept theirs.
 
 It never covers a desktop shortcut, the setup reminder or the First Steps card:
 it moves aside, then drops its second half, then stays away. The ✕ closes it for
@@ -25,6 +32,7 @@ drive that isn't there.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import queue
@@ -36,9 +44,10 @@ from PyQt6.QtCore import (QCoreApplication, QEvent, QObject, QPoint, QPointF, QR
                           QRectF, QSize, QStandardPaths, Qt, QTimer, QUrl, pyqtSignal)
 from PyQt6.QtGui import (QColor, QDesktopServices, QFontMetrics, QIcon, QImage,
                          QImageReader, QKeySequence, QPainter, QPainterPath, QPen, QPixmap)
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout,
-                             QLabel, QPushButton, QScrollArea, QStyle, QStyleOptionButton,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog,
+                             QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+                             QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
+                             QScrollArea, QStyle, QStyleOptionButton, QVBoxLayout, QWidget)
 
 STARTUP_KEY = "ui/start_panel"                   # show on startup
 RELEASES_URL = "https://github.com/setiastro/setiastrosuitepro/releases/latest"
@@ -47,8 +56,16 @@ TUTORIAL_URL = "https://youtu.be/zBUOZl2OgaY"     # the welcome window's beginne
 RECENTS = 12                     # shown, in a row that scrolls sideways
 PROJECTS = 10                    # in the popup; File > Open Recent Projects has the rest
 THUMB = QSize(184, 112)          # logical size; the files hold twice that
-WIDTH = 840
+WIDTH = 1020                     # four tiles across, the English text whole
+COLUMNS = 4
+FOUR_ACROSS = 880                # narrower than this, three across
 GAP = 10                         # kept clear around shortcuts and cards
+TILES_KEY = "ui/start_panel_tiles"   # JSON list of tile ids; not there = DEFAULT_TILES
+MAX_TILES = 8
+# Command ids (ToolbarMixin's reg(...)), and "sp." for the two tiles that ask
+# which tool first.
+DEFAULT_TILES = ("open", "workflows", "blink", "whats_in_my_sky",
+                 "sp.deep_sky", "sp.mosaics", "planetary_stacker")
 LINEAR_MEDIAN = 0.08             # as first_steps_tour: below this, unstretched
 
 
@@ -71,6 +88,11 @@ QPushButton#sp_tile[main="true"] { border: none;
 QPushButton#sp_tile[main="true"]:hover, QPushButton#sp_tile[main="true"]:focus {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4455cc, stop:1 #6677ee); }
 QPushButton#sp_tile[main="true"] #sp_tile_s { color: #cfd6ff; }
+QPushButton#sp_tile:disabled { background-color: #161628; border-color: #262644; }
+#sp_tile_t:disabled, #sp_tile_s:disabled { color: #5c5c80; }
+QPushButton#sp_tile_add { background: transparent; border: none; border-radius: 9px; }
+QPushButton#sp_tile_add:hover, QPushButton#sp_tile_add:focus { background-color: #1b1b34; }
+QPushButton#sp_tile_add #sp_tile_t { color: #aab4f0; }
 QPushButton#sp_proj { background: transparent; border: none; border-radius: 7px; }
 QPushButton#sp_proj:hover, QPushButton#sp_proj:focus { background-color: #25254a; }
 #sp_proj_more { color: #8fa0ff; font-size: 13px; background: transparent; }
@@ -338,6 +360,27 @@ def _link(text, slot) -> QPushButton:
     return b
 
 
+def _plain(text: str) -> str:
+    """A menu entry's text as a tile's title: no mnemonic, no trailing dots."""
+    t = (text or "").replace("&&", "\x00").replace("&", "").replace("\x00", "&").strip()
+    for end in ("...", "…"):
+        if t.endswith(end):
+            t = t[:-len(end)].rstrip()
+    return t
+
+
+def _plus_icon() -> QIcon:
+    pm = QPixmap(112, 112)                       # drawn at 28, four times finer
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QPen(QColor("#8f9be0"), 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    p.drawLine(56, 24, 56, 88)
+    p.drawLine(24, 56, 88, 56)
+    p.end()
+    return QIcon(pm)
+
+
 class _Check(QCheckBox):
     """The theme's own box all but vanishes on the panel, which is dark in every
     theme. The style sheet draws this one, except the tick: that takes a file."""
@@ -412,6 +455,8 @@ class _Tile(QPushButton):
         col.setSpacing(1)
         col.addStretch(1)
         for text, name in ((title, "sp_tile_t"), (sub, "sp_tile_s")):
+            if not text:                         # a tool with no status tip
+                continue
             lab = _label(text, name)
             lab.setMinimumWidth(1)               # the tile's width decides
             self._texts.append((lab, text))
@@ -425,14 +470,54 @@ class _Tile(QPushButton):
             row.addWidget(chev)
             self._room += 14 + 12
         self.clicked.connect(lambda: slot())
+        self._action = None
+
+    def follow(self, action):
+        """Enabled while `action` is."""
+        self._action = action
+        action.changed.connect(self._follow)
+        self._follow()
+
+    def _follow(self):
+        try:
+            on = self._action.isEnabled()
+        except RuntimeError:                     # deleted (a script reloaded)
+            return
+        if on != self.isEnabled():
+            self.setEnabled(on)
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         room = self.width() - self._room
+        cut = False
         for lab, text in self._texts:
             lab.ensurePolished()
-            lab.setText(QFontMetrics(lab.font()).elidedText(
-                text, Qt.TextElideMode.ElideRight, max(1, room)))
+            shown = QFontMetrics(lab.font()).elidedText(
+                text, Qt.TextElideMode.ElideRight, max(1, room))
+            lab.setText(shown)
+            cut = cut or shown != text
+        # Translated, some don't fit: the whole of it on hover.
+        self.setToolTip("\n".join(t for _lab, t in self._texts) if cut else "")
+
+
+class _AddTile(_Tile):
+    """In the first empty place: a dashed outline and Customize…."""
+
+    def __init__(self, slot):
+        super().__init__(_plus_icon(), _t("Customize…"), _t("Add or remove tiles"), slot)
+        self.setObjectName("sp_tile_add")
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        lit = self.underMouse() or self.hasFocus()
+        pen = QPen(QColor("#5f6fd8" if lit else "#4a4a86"), 1.3)
+        pen.setDashPattern([4.0, 3.0])
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.65, 0.65, -0.65, -0.65), 9, 9)
+        p.end()
 
 
 class _Popup(QFrame):
@@ -685,6 +770,175 @@ class _RecentStrip(QScrollArea):
         ev.accept()
 
 
+class _CustomizeDialog(QDialog):
+    """Start panel > Customize…: which tools have tiles, in what order, up to
+    MAX_TILES. `choices`: (id, icon, title, subtitle) for every tool there can
+    be a tile for, A to Z."""
+
+    def __init__(self, current, choices, parent):
+        super().__init__(parent)
+        self.setWindowTitle(_t("Customize Start Panel"))
+        self._choices = {cid: (icon, title, sub) for cid, icon, title, sub in choices}
+        self._az = [c[0] for c in choices]
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(_t("Choose up to {0} tools for the Start Panel. "
+                                "Drag them into the order you want.").format(MAX_TILES)))
+        cols = QHBoxLayout()
+        cols.setSpacing(16)
+        lay.addLayout(cols, 1)
+
+        left = QVBoxLayout()
+        left.addWidget(QLabel(_t("All tools")))
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(_t("Search"))
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._fill_all)
+        left.addWidget(self.search)
+        self.all = self._list()
+        self.all.itemDoubleClicked.connect(lambda _it: self._add())
+        left.addWidget(self.all, 1)
+        self.add_btn = QPushButton(_t("Add"))
+        self.add_btn.clicked.connect(self._add)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(self.add_btn)
+        left.addLayout(row)
+        cols.addLayout(left, 1)
+
+        right = QVBoxLayout()
+        head = QHBoxLayout()
+        head.addWidget(QLabel(_t("On the Start Panel")))
+        head.addStretch(1)
+        self.count = QLabel()
+        head.addWidget(self.count)
+        right.addLayout(head)
+        self.on = self._list()
+        self.on.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.on.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.on.itemDoubleClicked.connect(lambda _it: self._remove())
+        self.on.model().rowsMoved.connect(lambda *_a: self._sync())
+        right.addWidget(self.on, 1)
+        self.full = QLabel(_t("The Start Panel is full. Remove a tool to add another."))
+        self.full.setWordWrap(True)
+        right.addWidget(self.full)
+        row = QHBoxLayout()
+        self.up_btn = QPushButton(_t("Move Up"))
+        self.up_btn.clicked.connect(lambda: self._move(-1))
+        self.down_btn = QPushButton(_t("Move Down"))
+        self.down_btn.clicked.connect(lambda: self._move(1))
+        self.remove_btn = QPushButton(_t("Remove"))
+        self.remove_btn.clicked.connect(self._remove)
+        for b in (self.up_btn, self.down_btn):
+            row.addWidget(b)
+        row.addStretch(1)
+        row.addWidget(self.remove_btn)
+        right.addLayout(row)
+        cols.addLayout(right, 1)
+
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.RestoreDefaults
+                               | QDialogButtonBox.StandardButton.Ok
+                               | QDialogButtonBox.StandardButton.Cancel)
+        # Qt's own words for these are never translated in SASpro.
+        for which, text in ((QDialogButtonBox.StandardButton.RestoreDefaults, _t("Reset to Defaults")),
+                            (QDialogButtonBox.StandardButton.Ok, _t("OK")),
+                            (QDialogButtonBox.StandardButton.Cancel, _t("Cancel"))):
+            box.button(which).setText(text)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        box.button(QDialogButtonBox.StandardButton.RestoreDefaults).clicked.connect(self._defaults)
+        lay.addWidget(box)
+
+        for cid in current:
+            self._append(cid)
+        self.all.currentRowChanged.connect(lambda _r: self._sync())
+        self.on.currentRowChanged.connect(lambda _r: self._sync())
+        self._fill_all()
+        self.resize(760, 500)
+
+    @staticmethod
+    def _list() -> QListWidget:
+        w = QListWidget()
+        w.setIconSize(QSize(20, 20))
+        w.setUniformItemSizes(True)
+        return w
+
+    def _item(self, cid) -> QListWidgetItem:
+        icon, title, sub = self._choices[cid]
+        it = QListWidgetItem(icon, title)
+        it.setData(Qt.ItemDataRole.UserRole, cid)
+        if sub:
+            it.setToolTip(sub)
+        return it
+
+    def _append(self, cid):
+        if cid in self._choices and cid not in self.ids() and self.on.count() < MAX_TILES:
+            self.on.addItem(self._item(cid))
+
+    def ids(self) -> list:
+        return [self.on.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.on.count())]
+
+    def _fill_all(self):
+        """Every tool not on the panel whose name or description has the search text."""
+        keep = self.all.currentItem().data(Qt.ItemDataRole.UserRole) if self.all.currentItem() else None
+        words = self.search.text().casefold().split()
+        on = set(self.ids())
+        self.all.clear()
+        for cid in self._az:
+            if cid in on:
+                continue
+            _icon, title, sub = self._choices[cid]
+            hay = f"{title} {sub} {cid}".casefold()
+            if all(w in hay for w in words):
+                it = self._item(cid)
+                self.all.addItem(it)
+                if cid == keep:
+                    self.all.setCurrentItem(it)
+        if self.all.currentItem() is None and self.all.count():
+            self.all.setCurrentRow(0)
+        self._sync()
+
+    def _sync(self):
+        n = self.on.count()
+        room = n < MAX_TILES
+        self.count.setText(_t("{0} of {1}").format(n, MAX_TILES))
+        self.full.setVisible(not room)
+        self.add_btn.setEnabled(room and self.all.currentItem() is not None)
+        r = self.on.currentRow()
+        self.remove_btn.setEnabled(r >= 0)
+        self.up_btn.setEnabled(r > 0)
+        self.down_btn.setEnabled(0 <= r < n - 1)
+
+    def _add(self):
+        it = self.all.currentItem()
+        if it is None or self.on.count() >= MAX_TILES:
+            return
+        self._append(it.data(Qt.ItemDataRole.UserRole))
+        self.on.setCurrentRow(self.on.count() - 1)
+        self._fill_all()
+
+    def _remove(self):
+        r = self.on.currentRow()
+        if r < 0:
+            return
+        self.on.takeItem(r)
+        self.on.setCurrentRow(min(r, self.on.count() - 1))
+        self._fill_all()
+
+    def _move(self, step):
+        r = self.on.currentRow()
+        if not (0 <= r + step < self.on.count()):
+            return
+        it = self.on.takeItem(r)
+        self.on.insertItem(r + step, it)
+        self.on.setCurrentRow(r + step)
+
+    def _defaults(self):
+        self.on.clear()
+        for cid in DEFAULT_TILES:
+            self._append(cid)
+        self._fill_all()
+
+
 # ── the panel ───────────────────────────────────────────────────────────────
 
 class StartPanel(QFrame):
@@ -754,48 +1008,20 @@ class StartPanel(QFrame):
         head.addWidget(x)
         root.addLayout(head)
 
-        grid = QGridLayout()
-        grid.setSpacing(10)
-        self._tiles = []                         # (QAction, its tile)
-        # The second row: one stacker for each kind of imaging.
-        for act, title, sub in (
-                ("act_open", _t("Open images…"), _t("FITS, XISF, TIFF, RAW, PNG, JPEG")),
-                ("act_workflows", _t("Process step by step"),
-                 _t("Open Image with Workflow Assistant")),
-                ("act_whats_in_my_sky", _t("Plan tonight"), _t("What's In My Sky")),
-                ("deep_sky", _t("Deep-Sky Stacking"), _t("Quick Stack or Stacking Suite")),
-                ("mosaics", _t("Deep-Sky Mosaics"), _t("Traditional Panels or Robotic")),
-                ("act_planetary_stacker", _t("Planetary Stacking"),
-                 _t("Moon, Sun and planets from video"))):
-            if act == "deep_sky":                # asks which of the two
-                a, slot = None, self._choose_deep_sky
-                icon = mw.act_stacking_suite.icon()
-            elif act == "mosaics":               # asks which mode of Mosaic Master
-                from setiastro.saspro.resources import mosaic_robotic_path
-                a, slot = None, self._choose_mosaic
-                icon = _card_icon(mosaic_robotic_path)
-            else:
-                a = getattr(mw, act, None)
-                if a is None:
-                    continue
-                slot, icon = a.trigger, a.icon()
-                if icon.isNull():                # Workflow Assistant has none
-                    icon = mw.act_function_bundles.icon()
-                if act == "act_workflows":
-                    slot = self._process_step_by_step
-            i = grid.count()
-            more = act in ("deep_sky", "mosaics")    # the choice comes in a popup
-            tile = _Tile(icon, title, sub, slot if more else self._runs(slot),
-                         main=(i == 0), more=more)
-            if act == "deep_sky":
-                self._deep_sky = tile
-            elif act == "mosaics":
-                self._mosaics = tile
-            self._tiles.append((a, tile))
-            grid.addWidget(tile, i // 3, i % 3)
-        for c in range(3):
-            grid.setColumnStretch(c, 1)
-        root.addLayout(grid)
+        # The tiles, filled by _build_tiles: four across, three on a narrow
+        # workspace (_place decides).
+        self._grid_box = QWidget()
+        self._grid_box.setObjectName("sp_grid")
+        self._grid_box.setStyleSheet("#sp_grid { background: transparent; }")
+        self._grid = QGridLayout(self._grid_box)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(10)
+        self._cols = COLUMNS
+        self._tile_widgets = []                  # in order, the dashed one last
+        self._tiles = []                         # (QAction or None, its tile)
+        self._tile_ids = []                      # the tools shown, in order
+        self._deep_sky = self._mosaics = None    # the popups' anchors
+        root.addWidget(self._grid_box)
 
         self._more = QWidget()                   # the half that goes when space is short
         self._more.setObjectName("sp_more")
@@ -811,12 +1037,208 @@ class StartPanel(QFrame):
                               "sp_s"))
         foot.addStretch(1)
         foot.setSpacing(16)
+        # With all eight places taken there is no dashed tile: Customize… is here.
+        self._customize_link = _link(_t("Customize…"), self._customize)
+        foot.addWidget(self._customize_link)
         self._project_link = _link(_t("Open a project…"), self._open_project)
         foot.addWidget(self._project_link)
         foot.addWidget(_link(_t("What's new"), self._runs(
             lambda: QDesktopServices.openUrl(QUrl(RELEASES_URL)))))
         root.addLayout(foot)
+        self._build_tiles()
         self._fill_more()
+
+    # ---- the tiles ----------------------------------------------------------
+    @staticmethod
+    def _named(cid):
+        """(title, subtitle) for the tiles SASpro starts with: what it does,
+        then the tool that does it. None for any other tool: that one shows its
+        own name and status tip."""
+        return {
+            "open": (_t("Open images…"), _t("FITS, XISF, TIFF, RAW, PNG, JPEG")),
+            "workflows": (_t("Process step by step"), _t("Workflow Assistant")),
+            "blink": (_t("Blink frames"), "Blink Comparator"),    # tool names stay English
+            "whats_in_my_sky": (_t("Plan tonight"), _t("What's In My Sky")),
+            "sp.deep_sky": (_t("Deep-Sky Stacking"), _t("Quick Stack or Stacking Suite")),
+            "sp.mosaics": (_t("Deep-Sky Mosaics"), _t("Traditional Panels or Robotic")),
+            "planetary_stacker": (_t("Planetary Stacking"),
+                                  _t("Moon, Sun and planets from video")),
+        }.get(cid)
+
+    def _action_for(self, cid):
+        mw = self._mw
+        a = (getattr(getattr(mw, "shortcuts", None), "registry", None) or {}).get(cid)
+        if a is None:
+            try:
+                a = mw._find_action_by_cid(cid)
+            except Exception:
+                a = None
+        try:
+            if a is not None:
+                a.text()
+        except RuntimeError:                     # deleted (a script reloaded)
+            return None
+        return a
+
+    def _tile_spec(self, cid, a=None):
+        """(action or None, icon, title, subtitle, slot, asks first) for a tile
+        id; None if this SASpro has no such tool (a script since deleted)."""
+        mw = self._mw
+        named = self._named(cid)
+        if cid == "sp.deep_sky":                 # asks which of the two
+            return None, mw.act_stacking_suite.icon(), *named, self._choose_deep_sky, True
+        if cid == "sp.mosaics":                  # asks which mode of Mosaic Master
+            from setiastro.saspro.resources import mosaic_robotic_path
+            return None, _card_icon(mosaic_robotic_path), *named, self._choose_mosaic, True
+        a = a or self._action_for(cid)
+        if a is None or a is getattr(mw, "act_start_panel", None):
+            return None
+        icon = a.icon()
+        if icon.isNull() and cid == "workflows":     # Workflow Assistant has none
+            icon = mw.act_function_bundles.icon()
+        if named:
+            title, sub = named
+        else:
+            title, sub = _plain(a.text()), (a.statusTip() or "").strip()
+            if sub == title:
+                sub = ""
+        slot = self._process_step_by_step if cid == "workflows" else a.trigger
+        return a, icon, title, sub, self._runs(slot), False
+
+    def _saved_tiles(self) -> list:
+        raw = self._mw.settings.value(TILES_KEY, None)
+        if raw is None or raw == "":
+            return list(DEFAULT_TILES)
+        try:
+            ids = json.loads(raw) if isinstance(raw, str) else list(raw)
+        except Exception:
+            return list(DEFAULT_TILES)
+        out = []
+        for cid in ids:
+            if isinstance(cid, str) and cid and cid not in out:
+                out.append(cid)
+        return out
+
+    def set_tiles(self, ids):
+        """Save the tiles chosen (command ids, in order) and show them. The
+        default list saves as nothing, so it keeps following SASpro's."""
+        out = []
+        for cid in ids:
+            if cid and cid not in out:
+                out.append(str(cid))
+        out = out[:MAX_TILES]
+        s = self._mw.settings
+        if out == list(DEFAULT_TILES):
+            s.remove(TILES_KEY)
+        else:
+            s.setValue(TILES_KEY, json.dumps(out))
+        self._build_tiles()
+        self._placed_for = None                  # the size can differ
+        self._settle.start()
+
+    def _build_tiles(self):
+        for w in self._tile_widgets:
+            w.hide()
+            w.deleteLater()
+        self._tile_widgets, self._tiles, self._tile_ids = [], [], []
+        self._deep_sky = self._mosaics = None
+        for cid in self._saved_tiles():
+            if len(self._tile_ids) >= MAX_TILES:
+                break
+            spec = self._tile_spec(cid)
+            if spec is None:
+                continue
+            a, icon, title, sub, slot, more = spec
+            tile = _Tile(icon, title, sub, slot, main=not self._tile_ids, more=more)
+            if a is not None:
+                tile.follow(a)
+            if cid == "sp.deep_sky":
+                self._deep_sky = tile
+            elif cid == "sp.mosaics":
+                self._mosaics = tile
+            self._menu_on(tile, cid)
+            self._tile_ids.append(cid)
+            self._tiles.append((a, tile))
+            self._tile_widgets.append(tile)
+        room = len(self._tile_ids) < MAX_TILES
+        if room:
+            add = _AddTile(self._customize)
+            self._menu_on(add, None)
+            self._tile_widgets.append(add)
+        self._customize_link.setVisible(not room)
+        self._lay_out_tiles(self._cols)
+        # Added to a visible panel, they stay hidden until the next event loop
+        # pass, and a layout measures hidden widgets as nothing.
+        for w in self._tile_widgets:
+            w.show()
+
+    def _lay_out_tiles(self, cols):
+        self._cols = cols
+        g = self._grid
+        while g.count():
+            g.takeAt(0)
+        for i, w in enumerate(self._tile_widgets):
+            g.addWidget(w, i // cols, i % cols)
+        for c in range(COLUMNS):
+            g.setColumnStretch(c, 1 if c < cols else 0)
+
+    def _menu_on(self, tile, cid):
+        tile.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tile.customContextMenuRequested.connect(
+            lambda pos, t=tile, c=cid: self._tile_menu(t, c, pos))
+
+    def _tile_menu(self, tile, cid, pos):
+        """A tile's right-click: Remove from Start Panel, Customize…."""
+        menu = QMenu(self._mw)
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        if cid is not None:
+            menu.addAction(_t("Remove from Start Panel")).triggered.connect(
+                lambda: self.set_tiles([c for c in self._tile_ids if c != cid]))
+        menu.addAction(_t("Customize…")).triggered.connect(self._customize)
+        menu.popup(tile.mapToGlobal(pos))
+
+    def _tool_choices(self) -> list:
+        """(id, icon, title, subtitle), A to Z, for every tool there can be a
+        tile for: the two that ask first, every registered command and every
+        other menu or toolbar entry with an id. Not switches (Display-Stretch,
+        the docks): a tile runs something."""
+        mw = self._mw
+        found = {}
+        for cid, a in (getattr(getattr(mw, "shortcuts", None), "registry", None) or {}).items():
+            found.setdefault(str(cid), a)
+        try:
+            listed = mw._collect_all_qactions()
+        except Exception:
+            listed = []
+        for a in listed:
+            cid = a.property("command_id") or a.objectName()
+            if cid:
+                found.setdefault(str(cid), a)
+        out, seen = [], set()
+        for cid in ("sp.deep_sky", "sp.mosaics"):
+            spec = self._tile_spec(cid)
+            out.append((cid, spec[1], spec[2], spec[3]))
+        for cid, a in found.items():
+            try:
+                if (id(a) in seen or a.isSeparator() or a.isCheckable()
+                        or a.menu() is not None or a.property("cmdp_exclude")):
+                    continue
+            except RuntimeError:
+                continue
+            spec = self._tile_spec(cid, a)
+            if spec is None or not spec[2]:
+                continue
+            seen.add(id(a))
+            out.append((cid, spec[1], spec[2], spec[3]))
+        out.sort(key=lambda c: c[2].casefold())
+        return out
+
+    def _customize(self):
+        """Customize…: which tools, in what order. The panel stays up."""
+        dlg = _CustomizeDialog(self._tile_ids, self._tool_choices(), self._mw)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dlg.accepted.connect(lambda: self.set_tiles(dlg.ids()))
+        dlg.open()
 
     def _run(self, slot):
         """Something chosen here. Put up over open images, the panel has done
@@ -1093,8 +1515,12 @@ class StartPanel(QFrame):
             # while hidden behind images ("New to SASpro?" became a row of
             # thumbnails, or back), the panel came up at its old height with
             # its rows run together.
-            for w in (self._more, *self._more.findChildren(QWidget)):
-                w.updateGeometry()
+            cols = COLUMNS if width >= FOUR_ACROSS else COLUMNS - 1
+            if cols != self._cols:
+                self._lay_out_tiles(cols)
+            for box in (self._grid_box, self._more):
+                for w in (box, *box.findChildren(QWidget)):
+                    w.updateGeometry()
             for full in (True, False):
                 self._more.setVisible(full)
                 if full and self._strip is not None:

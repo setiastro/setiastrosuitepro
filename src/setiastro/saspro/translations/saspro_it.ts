@@ -66819,6 +66819,78 @@ I file allineati restano nella cartella di output; puoi importarli manualmente.<
       <source>Open Image with Workflow Assistant</source>
       <translation>Apri immagine con l'Assistente flusso di lavoro</translation>
     </message>
+    <message>
+      <source>Blink frames</source>
+      <translation>Blink dei frame</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>Personalizza…</translation>
+    </message>
+    <message>
+      <source>Add or remove tiles</source>
+      <translation>Aggiungi o rimuovi riquadri</translation>
+    </message>
+    <message>
+      <source>Remove from Start Panel</source>
+      <translation>Rimuovi dal pannello iniziale</translation>
+    </message>
+    <message>
+      <source>Customize Start Panel</source>
+      <translation>Personalizza il pannello iniziale</translation>
+    </message>
+    <message>
+      <source>Choose up to {0} tools for the Start Panel. Drag them into the order you want.</source>
+      <translation>Scegli fino a {0} strumenti per il pannello iniziale. Trascinali nell'ordine che preferisci.</translation>
+    </message>
+    <message>
+      <source>All tools</source>
+      <translation>Tutti gli strumenti</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Cerca</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>Aggiungi</translation>
+    </message>
+    <message>
+      <source>On the Start Panel</source>
+      <translation>Nel pannello iniziale</translation>
+    </message>
+    <message>
+      <source>{0} of {1}</source>
+      <translation>{0} di {1}</translation>
+    </message>
+    <message>
+      <source>The Start Panel is full. Remove a tool to add another.</source>
+      <translation>Il pannello iniziale è pieno. Rimuovi uno strumento per aggiungerne un altro.</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>Sposta Su</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>Sposta Giù</translation>
+    </message>
+    <message>
+      <source>Remove</source>
+      <translation>Rimuovi</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>Reimposta Predefiniti</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>OK</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Annulla</translation>
+    </message>
   </context>
   <context>
     <name>StellarAlignmentDialog</name>

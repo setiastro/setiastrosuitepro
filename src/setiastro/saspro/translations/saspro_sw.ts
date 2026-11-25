@@ -63186,6 +63186,78 @@ Faili zilizopangiliwa zinabaki kwenye saraka ya matokeo; unaweza kuziingiza mwen
       <source>Open Image with Workflow Assistant</source>
       <translation>Fungua Picha kwa Msaidizi wa Mtiririko wa Kazi</translation>
     </message>
+    <message>
+      <source>Blink frames</source>
+      <translation>Blink fremu</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>Geuza kukufaa…</translation>
+    </message>
+    <message>
+      <source>Add or remove tiles</source>
+      <translation>Ongeza au ondoa vigae</translation>
+    </message>
+    <message>
+      <source>Remove from Start Panel</source>
+      <translation>Ondoa kwenye Paneli ya Kuanza</translation>
+    </message>
+    <message>
+      <source>Customize Start Panel</source>
+      <translation>Geuza kukufaa Paneli ya Kuanza</translation>
+    </message>
+    <message>
+      <source>Choose up to {0} tools for the Start Panel. Drag them into the order you want.</source>
+      <translation>Chagua hadi zana {0} za Paneli ya Kuanza. Ziburute kwa mpangilio unaotaka.</translation>
+    </message>
+    <message>
+      <source>All tools</source>
+      <translation>Zana zote</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Tafuta</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>Ongeza</translation>
+    </message>
+    <message>
+      <source>On the Start Panel</source>
+      <translation>Kwenye Paneli ya Kuanza</translation>
+    </message>
+    <message>
+      <source>{0} of {1}</source>
+      <translation>{0} kati ya {1}</translation>
+    </message>
+    <message>
+      <source>The Start Panel is full. Remove a tool to add another.</source>
+      <translation>Paneli ya Kuanza imejaa. Ondoa zana moja ili kuongeza nyingine.</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>Sogeza Juu</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>Sogeza Chini</translation>
+    </message>
+    <message>
+      <source>Remove</source>
+      <translation>Ondoa</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>Weka upya kwa Chaguo-msingi</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>Sawa</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Ghairi</translation>
+    </message>
   </context>
   <context>
     <name>StatusLogDock</name>
