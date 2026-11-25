@@ -19,6 +19,7 @@ from astropy.wcs.utils import proj_plane_pixel_scales
 import cv2
 import numpy as np
 from scipy import ndimage as ndi
+from scipy.special import ndtri
 import sep
 
 from . import astroalign
@@ -34,8 +35,8 @@ class StackOptions:
     pixfrac: float = 0.      # zero selects automatic width
     kernel: str = "Square"
     align_colors: bool = True
-    primary: float = 5.
-    adjacent: float = 4.
+    primary: float | None = None
+    adjacent: float | None = None
     iterations: int = 7
     minimum: int = 3
     kappa: float = 1.1
@@ -47,6 +48,17 @@ class StackOptions:
     protect_stars: bool = True
     luminance: bool = False
     save_iterations: bool = False
+
+    @property
+    def blot_thresholds(self) -> tuple[float, float] | None:
+        if self.primary is None and self.adjacent is None:
+            return None
+        # A caller overriding just one threshold keeps the other manual default.
+        primary = 5. if self.primary is None else self.primary
+        adjacent = 4. if self.adjacent is None else self.adjacent
+        if not all(math.isfinite(v) and v > 0 for v in (primary, adjacent)):
+            raise ValueError("Blot SNR thresholds must be finite and positive.")
+        return primary, adjacent
 
 
 def read_detector(path):
@@ -193,16 +205,26 @@ def robust_stats(values):
     return float(median), float(1.4826 * np.median(np.abs(values - median)))
 
 
-def median_model(cache, check):
+def median_model(cache, check, *, automatic):
     frames, channels, _, h, w = cache.shape
     model = np.empty((channels, 2, h, w), np.float32)
     rows = max(1, (32 << 20) // (frames * w * 8))
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", "All-NaN slice encountered", RuntimeWarning)
-        for y in range(0, h, rows):
-            check()
-            tile = cache[:, :, :, y:y+rows]
-            model[:, :, y:y+rows] = np.nanmedian(tile, axis=0)
+        for c in range(channels):
+            for y in range(0, h, rows):
+                check()
+                science = cache[:, c, 0, y:y+rows]
+                center, noise = model[c, :, y:y+rows]
+                center[:] = np.nanmedian(science, axis=0)
+                if automatic:
+                    count = np.count_nonzero(np.isfinite(science), axis=0)
+                    center[count < 2] = np.nan
+                    noise[:] = 1.4826 * np.nanmedian(np.abs(science - center), axis=0)
+                    # With just two exposures use the detector residual noise alone.
+                    noise[count == 2] = 0.
+                else:
+                    noise[:] = np.nanmedian(cache[:, c, 1, y:y+rows], axis=0)
     return model
 
 
@@ -226,13 +248,29 @@ def blot(model, error, matrix, shape, scale):
     return result
 
 
-def detector_flags(data, pattern, models, matrices, scale, options):
+def detector_flags(data, pattern, models, matrices, scale, options, log=lambda message: None):
     primary, adjacent = [], []
+    thresholds = options.blot_thresholds
     for c, ((model, error), matrix) in enumerate(zip(models, matrices)):
         native, valid = channel_data(data, pattern, c)
         predicted, sigma = blot(model, error, matrix, native.shape, scale)
         valid &= np.isfinite(predicted)
-        if valid.any():
+        n = np.count_nonzero(valid)
+        if n == 0:
+            primary.append(valid)
+            adjacent.append(valid)
+            continue
+        if thresholds is None:
+            offset, floor = robust_stats(native[valid] - predicted[valid])
+            predicted += offset
+            sigma = np.maximum(sigma, floor)
+            # Allow at most half an expected upper-tail Gaussian crossing per channel.
+            primary_snr = max(3., -ndtri(.5 / n))
+            adjacent_snr = .8 * primary_snr
+            log(f"Blot channel {c+1}: residual noise {floor:.6g}, "
+                f"primary {primary_snr:.2f} sigma, adjacent {adjacent_snr:.2f} sigma")
+        else:
+            primary_snr, adjacent_snr = thresholds
             predicted += np.median(native[valid]) - np.median(predicted[valid])
         # Missing neighbors contribute zero gradient. Evaluate the same color model
         # at all native sites, including adjacent sites of a different CFA color.
@@ -243,14 +281,14 @@ def detector_flags(data, pattern, models, matrices, scale, options):
             diff = np.moveaxis(diff, axis, 0)
             np.maximum(grad[1:], diff, out=grad[1:])
             np.maximum(grad[:-1], diff, out=grad[:-1])
-        residual = np.abs(native - predicted)
+        residual = native - predicted
         sigma = np.maximum(sigma, np.finfo(np.float32).eps * np.abs(native))
-        primary.append(valid & (residual > 1.2 * derivative + options.primary * sigma))
-        adjacent.append(valid & (residual > .7 * derivative + options.adjacent * sigma))
+        primary.append(valid & (residual > 1.2 * derivative + primary_snr * sigma))
+        adjacent.append(valid & (residual > .7 * derivative + adjacent_snr * sigma))
     if pattern is not None:
         neighbors = ndi.maximum_filter(np.logical_or.reduce(primary), size=3)
-        return [p | (a & neighbors) for p, a in zip(primary, adjacent)]
-    return [p | (a & ndi.maximum_filter(p, size=3)) for p, a in zip(primary, adjacent)]
+        return [a & neighbors for a in adjacent]
+    return [a & ndi.maximum_filter(p, size=3) for p, a in zip(primary, adjacent)]
 
 
 def stars(plane, valid):
@@ -330,6 +368,7 @@ def stack(paths, reference, output, options, calibration=None, log=print, check=
     paths = [Path(p).resolve() for p in paths]
     reference = Path(reference).resolve()
     output = Path(output).resolve()
+    thresholds = options.blot_thresholds
     if reference not in paths or len(set(paths)) != len(paths) or len(paths) < 3:
         raise ValueError("Select at least three distinct detector lights, including the reference.")
     if output in paths or (output.exists() and any(output.samefile(p) for p in paths)):
@@ -367,7 +406,9 @@ def stack(paths, reference, output, options, calibration=None, log=print, check=
     header["NCOMBINE"] = (len(frames), "Number of registered detector exposures")
     header["BLOTSTK"] = (True, "Detector-space blot stack")
     header.add_history(f"Drizzle {options.kernel}, scale {scale:.6g}, widths {widths[:channels]}")
-    header.add_history(f"Blot SNR {options.primary:g}/{options.adjacent:g}, {len(frames)} registered lights")
+    snr = "automatic" if thresholds is None else f"{thresholds[0]:g}/{thresholds[1]:g}"
+    header.add_history(f"Blot SNR {snr}, {len(frames)} registered lights")
+    log(f"Blot SNR {snr} (bright outliers only)")
     log(f"Drizzle grid {shape[1]} x {shape[0]}, scale {scale:.4g}, widths {widths[:channels]}")
     cache_shape = (len(frames), channels, 2, *shape)
     size = math.prod(cache_shape) * 4
@@ -430,14 +471,15 @@ def _stack_registered(frames, reference, scale, widths, cache, header,
             cache[j, c, 0] = np.where(good, sci - sky[j, c], np.nan)
             cache[j, c, 1] = np.where(good, noise[j, c], np.nan)
         log(f"First drizzle {j+1}/{count}: {path.name}")
-    model = median_model(cache, check)
+    model = median_model(cache, check, automatic=options.blot_thresholds is None)
     seed = np.zeros((channels, h, w), np.float32)
     total = np.zeros_like(seed)
     ref_sky = sky[next(j for j, f in enumerate(frames) if f[0] == reference)]
     for j, (path, matrices, frame_fwhm) in enumerate(frames):
         check()
         data, _, pattern = read_detector(path)
-        flags = detector_flags(data, pattern, model, matrices, scale, options)
+        flags = detector_flags(data, pattern, model, matrices, scale, options,
+                               log=lambda message: log(f"{path.name}: {message}"))
         for c, matrix in enumerate(matrices):
             check()
             plane, valid = channel_data(data, pattern, c)

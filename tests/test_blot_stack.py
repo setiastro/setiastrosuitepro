@@ -13,7 +13,7 @@ import pytest
 
 from setiastro.saspro.blot_spcc import SpectralCalibration
 from setiastro.saspro.blot_stack import (
-    StackOptions, blot, detector_flags, sampling_geometry, stack,
+    StackOptions, blot, detector_flags, median_model, sampling_geometry, stack,
 )
 from setiastro.saspro.gaia_database import WL_GRID
 
@@ -24,8 +24,10 @@ def test_detector_thresholds_and_background():
     raw = model + 12.
     raw[12, 15:17] += [7., 4.8]
     raw[20, 15] += 4.8
+    raw[20, 20] -= 10.
     error = np.ones_like(model)
-    flags, = detector_flags(raw[None], None, [(model, error)], [np.eye(3)], 1., StackOptions())
+    flags, = detector_flags(raw[None], None, [(model, error)], [np.eye(3)], 1.,
+                            StackOptions(primary=5., adjacent=4.))
     assert np.array_equal(np.argwhere(flags), [[12, 15], [12, 16]])
     # Bilinear blot must renormalize over surviving coverage.
     model[:] = 4.
@@ -34,6 +36,34 @@ def test_detector_thresholds_and_background():
     transform[0, 2] = .5
     pred, _ = blot(model, error, transform, raw.shape, 1.)
     assert pred[8, 8] == pytest.approx(4.)
+
+
+def test_blot_noise_by_coverage():
+    cache = np.full((3, 1, 2, 1, 4), np.nan, np.float32)
+    cache[:, 0, 0, 0] = [[np.nan, 2, 2, 2], [np.nan, np.nan, 6, 6], [np.nan, np.nan, np.nan, 4]]
+    cache[:, 0, 1, 0] = np.where(np.isfinite(cache[:, 0, 0, 0]), 9., np.nan)
+    (center, noise), = median_model(cache, lambda: None, automatic=True)
+    np.testing.assert_allclose(center[0], [np.nan, np.nan, 4., 4.])
+    np.testing.assert_allclose(noise[0], [np.nan, np.nan, 0., 2.*1.4826])
+    (center, noise), = median_model(cache, lambda: None, automatic=False)
+    np.testing.assert_allclose(center[0], [np.nan, 2., 4., 4.])
+    np.testing.assert_allclose(noise[0], [np.nan, 9., 9., 9.])
+
+
+def test_auto_blot_uses_residual_floor_and_sample_count():
+    # The repeating residuals have median zero and MAD one.
+    raw = np.tile(np.array([19., 20., 21.], np.float32), (100, 40))
+    raw[30, 30:32] = (30., 25.5)
+    raw[50, 50] = 25.5
+    raw[60, 60] = 8.
+    zero = np.zeros_like(raw)
+    flags, = detector_flags(raw[None], None, [(zero, zero)], [np.eye(3)], 1., StackOptions())
+    assert np.array_equal(np.argwhere(flags), [[30, 30], [30, 31]])
+    # A smaller footprint reaches the three-sigma minimum, so 5.5 is now a primary.
+    small = raw[48:53, 48:54]
+    flags, = detector_flags(small[None], None, [(zero[:5, :6], zero[:5, :6])],
+                            [np.eye(3)], 1., StackOptions())
+    assert np.array_equal(np.argwhere(flags), [[2, 2]])
 
 
 def test_automatic_sampling():
@@ -102,6 +132,8 @@ def test_full_chain(tmp_path):
     assert any("aperture drift R/G" in m for m in messages)
     assert not list(tmp_path.glob(".blot-*"))
     product, hdr = fits.getdata(out, header=True)
+    assert "Blot SNR automatic" in str(hdr["HISTORY"])
+    assert any("light0.fit: Blot channel 1: residual noise" in m for m in messages)
     assert product.shape == (3, 220, 220)
     assert np.isfinite(product).all()
     assert "BAYERPAT" not in hdr
@@ -145,7 +177,8 @@ def test_missing_coverage_excludes_both_sides_of_mm():
     np.testing.assert_allclose(refine(seed, cache, *args), baseline)
 
 
-def test_gui_stack_action(tmp_path, monkeypatch):
+@pytest.mark.parametrize("manual", [False, True])
+def test_gui_stack_action(tmp_path, monkeypatch, manual):
     from PyQt6.QtCore import QCoreApplication, QEventLoop, QSettings, QTimer
     from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox, QPushButton
     from setiastro.saspro.blot_stack_dialog import BlotStackDialog
@@ -169,6 +202,15 @@ def test_gui_stack_action(tmp_path, monkeypatch):
         visited.append(dialog.reference.currentData())
         dialog.spcc.setChecked(False)
         dialog.controls["align_colors"].setChecked(False)
+        override = dialog.controls["manual_snr"]
+        primary, adjacent = dialog.controls["primary"], dialog.controls["adjacent"]
+        assert not override.isChecked() and not primary.isEnabled() and not adjacent.isEnabled()
+        override.setChecked(True)
+        assert primary.isEnabled() and adjacent.isEnabled()
+        assert (primary.value(), adjacent.value()) == (5., 4.)
+        primary.setValue(6.5)
+        adjacent.setValue(3.5)
+        override.setChecked(manual)
         dialog.controls["iterations"].setValue(1)
         dialog.run_button.click()
         if dialog.worker is not None:
@@ -184,6 +226,11 @@ def test_gui_stack_action(tmp_path, monkeypatch):
         assert visited == [str(paths[2])]
         assert not errors
         assert fits.getdata(output).shape == (3, 176, 176)
+        history = str(fits.getheader(output)["HISTORY"])
+        assert ("Blot SNR 6.5/3.5" if manual else "Blot SNR automatic") in history
+        settings = QSettings(str(tmp_path/"settings.ini"), QSettings.Format.IniFormat)
+        assert settings.value("blot/primary", type=float) == 6.5
+        assert settings.value("blot/adjacent", type=float) == 3.5
     finally:
         suite.close()
         suite.deleteLater()
@@ -210,5 +257,5 @@ def test_scaled_sip_and_cfa_neighbors():
     model[:, 1] = 1.
     raw = np.full((1, 24, 24), 8., np.float32)
     raw[0, 10, 10:12] += (6., 4.5)
-    flags = detector_flags(raw, pattern, model, [np.eye(3)]*3, 1., StackOptions())
+    flags = detector_flags(raw, pattern, model, [np.eye(3)]*3, 1., StackOptions(primary=5.))
     assert np.array_equal(np.argwhere(flags), [[0, 10, 10], [1, 10, 11]])

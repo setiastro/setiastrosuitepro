@@ -72,8 +72,12 @@ class BlotStackDialog(QDialog):
         self._number(form, "sampling", "Input arcsec/pixel", 0., 0., 1000., 3).setSpecialValueText(self.tr("From reference"))
         self._number(form, "pixfrac", "Pixel fraction", 0., 0., 2., 3).setSpecialValueText(self.tr("Automatic"))
         self._combo(form, "kernel", "Drizzle kernel", ["Square", "Disk", "Gaussian", "Point"], "Square")
-        self._number(form, "primary", "Primary rejection SNR", 5., .1, 100., 1)
-        self._number(form, "adjacent", "Adjacent rejection SNR", 4., .1, 100., 1)
+        manual = self._check(form, "manual_snr", "Override automatic SNR", False)
+        primary = self._number(form, "primary", "Primary rejection SNR", 5., .1, 100., 1)
+        adjacent = self._number(form, "adjacent", "Adjacent rejection SNR", 4., .1, 100., 1)
+        for control in (primary, adjacent):
+            control.setEnabled(manual.isChecked())
+            manual.toggled.connect(control.setEnabled)
 
         form = self._tab("SPCC")
         self.spcc = self._check(form, "spcc", "Calibrate the clean RGB seed with Gaia XP", True)
@@ -216,6 +220,8 @@ class BlotStackDialog(QDialog):
         for key, value in values.items():
             self.settings.setValue("blot/"+key, value)
         self.settings.setValue("blot/catalog", self.catalog.text())
+        if not values["manual_snr"]:
+            values["primary"] = values["adjacent"] = None
         options = StackOptions(**{k: values[k] for k in StackOptions.__dataclass_fields__})
         self.log.clear()
         self.tabs.setEnabled(False)
