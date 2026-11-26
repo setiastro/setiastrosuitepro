@@ -7,6 +7,7 @@ import random
 import sys
 from PyQt6.QtCore import QByteArray
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import make_reset_button
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -430,6 +431,18 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
     }
 
     return prefs
+
+
+class _NoSavedSettings:
+    """A settings store with nothing saved: every read returns its default.
+    _align_prefs(_NoSavedSettings()) is the built-in alignment defaults,
+    which the Stellar Alignment and Star Registration Reset buttons restore."""
+
+    def value(self, key, default=None, type=None):
+        return default
+
+    def setValue(self, key, value):
+        pass
 
 # ---------- Shortcut / Headless integration ----------
 
@@ -1738,6 +1751,9 @@ class StellarAlignmentDialog(QDialog):
         self.btn_run = QPushButton(self.tr("Run Alignment"))
         self.btn_run.clicked.connect(self.run_alignment)
         run_row.addWidget(self.btn_run, 1)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        run_row.addWidget(self.btn_reset)
         run_row.addWidget(make_help_button("star_alignment", self))
         controls.addLayout(run_row)
 
@@ -2028,6 +2044,22 @@ class StellarAlignmentDialog(QDialog):
         s.setValue("stacking/align/det_sigma", float(self.xf_det_sigma.value()))
         s.setValue("stacking/align/method",
                    ("stellar", "wcs", "wcs_stellar")[self.xf_method.currentIndex()])
+
+    def _reset_to_factory(self):
+        """Method and transform settings back to the built-in defaults (what
+        _align_prefs reads with nothing saved). Source, target, the result
+        and its preview stretch are left alone. The keys are shared with the
+        Stacking Suite, so like any edit here they are saved on the next Run."""
+        if getattr(self, "_busy_off_gui", False):
+            return
+        p = _align_prefs(_NoSavedSettings())
+        self.xf_method.setCurrentIndex(0)           # stacking/align/method default: "stellar"
+        self.xf_model.setCurrentIndex(
+            {"affine": 0, "homography": 1, "poly3": 2, "poly4": 3}.get(p["model"], 0))
+        self.xf_maxcp.setValue(int(p["max_cp"]))
+        self.xf_downsample.setValue(int(p["downsample"]))
+        self.xf_h_reproj.setValue(float(p["h_reproj"]))
+        self.xf_det_sigma.setValue(float(p["det_sigma"]))
 
     # ------------------------
     # Source/Target loaders (File / Active View)
@@ -8003,6 +8035,9 @@ class StarRegistrationWindow(QWidget):
         main_layout.addWidget(self.view_output_group)
         start_row = QHBoxLayout()
         start_row.addWidget(self.start_button, 1)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        start_row.addWidget(self.btn_reset)
         start_row.addWidget(make_help_button("star_registration", self))
         main_layout.addWidget(self.progress_label)
         main_layout.addLayout(start_row)
@@ -8179,7 +8214,11 @@ class StarRegistrationWindow(QWidget):
         dialog opens. Also re-reads the Method key (stacking/align/method)
         and refreshes the enabled-fields gating accordingly.
         """
-        p = _align_prefs(QSettings())
+        self._adv_load_prefs(QSettings())
+
+    def _adv_load_prefs(self, settings):
+        """Fill the Advanced fields from `settings` (via _align_prefs)."""
+        p = _align_prefs(settings)
         _MODEL_TO_IDX = {"affine": 0, "homography": 1, "poly3": 2, "poly4": 3}
         self.cmb_adv_model.setCurrentIndex(_MODEL_TO_IDX.get(p["model"], 0))
         self.sp_adv_downsample.setValue(int(p["downsample"]))
@@ -8190,7 +8229,7 @@ class StarRegistrationWindow(QWidget):
         self.sp_adv_timeout.setValue(int(p["timeout_per_job_sec"]))
         self.sp_adv_minfwhm.setValue(float(p["min_fwhm"]))
         self.sp_adv_maxellip.setValue(float(p["max_ellipticity"]))
-        _saved_method = str(QSettings().value("stacking/align/method", "stellar")).lower()
+        _saved_method = str(settings.value("stacking/align/method", "stellar")).lower()
         self.cmb_adv_method.setCurrentIndex(
             {"stellar": 0, "wcs": 1, "wcs_stellar": 2}.get(_saved_method, 0)
         )
@@ -8198,6 +8237,24 @@ class StarRegistrationWindow(QWidget):
         self.cmb_adv_kernel.setCurrentIndex(
             _KERNEL_TO_IDX.get(str(p.get("kernel", "lanczos")).lower(), 0)
         )
+
+    def _reset_to_factory(self):
+        """Every setting back to its built-in default: the Advanced fields to
+        what _align_prefs reads with nothing saved, workers to Auto, view
+        output to Overwrite. The reference, targets and output folder are left
+        alone, and so is whether Advanced is expanded. Like any Advanced edit
+        the values reach the shared Stacking Suite keys on Start; the workers
+        box saves itself on change, as it always does."""
+        t = self.thread
+        try:
+            if t is not None and t.isRunning():
+                return
+        except RuntimeError:
+            pass
+        self._adv_load_prefs(_NoSavedSettings())
+        if getattr(self, "sp_adv_workers", None) is not None:
+            self.sp_adv_workers.setValue(0)         # 0 = Auto
+        self.radio_view_overwrite.setChecked(True)
 
     _ADV_IDX_TO_METHOD = ("stellar", "wcs", "wcs_stellar")
 

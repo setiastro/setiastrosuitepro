@@ -36,6 +36,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QLabel, QMessageBox, QPushButton,
     QSizePolicy, QSlider, QSplitter, QVBoxLayout, QWidget,
 )
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # ─────────────────────────────────────────────────────────────
 # Constants
@@ -671,6 +673,10 @@ class SatChromaTool(QDialog):
         self._apply_thread: Optional[QThread] = None
         self._apply_worker: Optional[_SatChromaApplyWorker] = None
         self._build_ui()
+        # Factory defaults for Reset: controls plus the hue curve. Live
+        # preview is a preview preference, so Reset leaves it alone.
+        self._factory = snapshot_controls(self, exclude=(self.chk_live,))
+        self._factory_points = self.canvas.get_points()
         self._restore_geometry()
 
         if document is not None and getattr(document, "image", None) is not None:
@@ -809,8 +815,11 @@ class SatChromaTool(QDialog):
         self.btn_apply.clicked.connect(self._apply)
         self.btn_cancel = QPushButton(self.tr("Cancel"))
         self.btn_cancel.clicked.connect(self.close)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         btn_row.addStretch(1)
         btn_row.addWidget(self.btn_apply)
+        btn_row.addWidget(self.btn_reset)
         btn_row.addWidget(self.btn_cancel)
         left_lay.addLayout(btn_row)
 
@@ -882,6 +891,13 @@ class SatChromaTool(QDialog):
     def _on_live_toggled(self, checked: bool):
         if checked:
             self._preview_timer.start()
+
+    def _reset_to_factory(self):
+        if self._apply_thread is not None:
+            return      # full-resolution Apply still running
+        restore_controls(self._factory)
+        self.canvas.set_points(self._factory_points)
+        self._on_changed()
 
     # ── LUT + processing ──────────────────────────────────────
 

@@ -24,6 +24,8 @@ from setiastro.saspro.widgets.image_utils import (
     to_float01 as _to_float01,
     extract_mask_from_document as _active_mask_array_from_doc
 )
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 _orphaned_workers: list = []  # keeps threads alive after dialog close
 
@@ -730,6 +732,9 @@ class WhiteBalanceDialog(QDialog):
         self.resize(900, 600)
 
         self._build_ui()
+        # Factory defaults, before _wire_events restores the saved matrix
+        # strength and Auto σ. The overlay autostretch is preview-only.
+        self._factory = snapshot_controls(self, exclude=(self.chk_autostretch_overlay,))
         self._wire_events()
 
         # default to Star-Based, like SASv2
@@ -913,8 +918,10 @@ class WhiteBalanceDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         self.btn_apply = QPushButton(self.tr("Apply"))
+        self.btn_reset = make_reset_button(self)
         self.btn_cancel = QPushButton(self.tr("Cancel"))
         btn_row.addWidget(self.btn_apply)
+        btn_row.addWidget(self.btn_reset)
         btn_row.addWidget(self.btn_cancel)
         self.main_layout.addLayout(btn_row)
 
@@ -973,6 +980,7 @@ class WhiteBalanceDialog(QDialog):
         self.type_combo.currentTextChanged.connect(self._update_mode_widgets)
         self.btn_cancel.clicked.connect(self.reject)
         self.btn_apply.clicked.connect(self._on_apply)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.thr_slider.valueChanged.connect(self._on_threshold_changed)
         self.chk_autostretch_overlay.toggled.connect(lambda _=None: self._debounce.start())
         self.auto_sigma_chk.toggled.connect(self._on_auto_sigma_toggled)
@@ -1040,6 +1048,11 @@ class WhiteBalanceDialog(QDialog):
             pass
         # Kick a fresh preview so the mode change is reflected right away.
         self._debounce.start()
+
+    def _reset_to_factory(self):
+        # the controls' own handlers re-save Auto σ / matrix strength and
+        # re-run star detection
+        restore_controls(self._factory)
 
     def _update_mode_widgets(self):
         t = self.type_combo.currentData()

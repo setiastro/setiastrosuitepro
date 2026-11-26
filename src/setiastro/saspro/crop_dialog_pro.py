@@ -26,6 +26,8 @@ from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.shortcuts import PresetDragHandle
 from setiastro.saspro.resources import get_icon_path
 from setiastro.saspro.thread_keeper import start_owned_thread
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 _ROTATION_CURSOR = None
 
@@ -1525,6 +1527,7 @@ class CropDialogPro(QDialog):
         self.btn_autostretch = QPushButton(self.tr("Toggle Autostretch"))
         self.btn_prev        = QPushButton(self.tr("Load Previous Crop"))
         self.btn_apply       = QPushButton(self.tr("Apply"))
+        self.btn_reset       = make_reset_button(self)
         self.btn_batch       = QPushButton(self.tr("Batch Crop (all open)"))
         self.btn_overlap     = QPushButton(self.tr("⊞ Multi-Image Overlap"))
         self.btn_overlap.setCheckable(True)
@@ -1552,7 +1555,7 @@ class CropDialogPro(QDialog):
             btn_row.addSpacing(10)
         except Exception:
             self.preset_drag_handle = None
-        for b in (self.btn_autostretch, self.btn_prev, self.btn_apply,
+        for b in (self.btn_autostretch, self.btn_prev, self.btn_apply, self.btn_reset,
                   self.btn_batch, self.btn_overlap, self.btn_close):
             btn_row.addWidget(b)
         # small in-app documentation button at the far right (across the dialog
@@ -1576,6 +1579,7 @@ class CropDialogPro(QDialog):
         self.btn_autostretch.clicked.connect(self._toggle_autostretch)
         self.btn_prev.clicked.connect(self._load_previous)
         self.btn_apply.clicked.connect(self._apply_one)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_batch.clicked.connect(self._apply_batch)
         self.btn_overlap.clicked.connect(self._toggle_overlap_panel)
         self.btn_close.clicked.connect(self.close)
@@ -1585,6 +1589,15 @@ class CropDialogPro(QDialog):
         self._update_margin_spin_ranges()
         self.resize(1100, 720)
         self._deferred_fit()
+        # Factory settings: aspect ratio and the overlap blend / colorize.
+        # The crop box itself (margins, angle) is the user's selection on this
+        # image and stays; so do the overlap image picks and preview toggles.
+        self._factory = snapshot_controls(self, exclude=(
+            self.sb_top, self.sb_right, self.sb_bottom, self.sb_left, self.sb_angle,
+            self.btn_overlap, self._overlap_panel.btn_apply, self._overlap_panel.scroll))
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
 
     # =========================================================================
     # Overlap panel integration

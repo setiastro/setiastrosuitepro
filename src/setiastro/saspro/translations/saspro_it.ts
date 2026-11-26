@@ -4923,6 +4923,10 @@ Gli strumenti aggiunti vengono tolti, quelli rimossi tornano e l'ordine torna qu
       <source>Reduce row or column banding across the whole image</source>
       <translation>Riduci il banding di righe o colonne su tutta l'immagine</translation>
     </message>
+    <message>
+      <source>All Analysis Tools</source>
+      <translation>Tutti gli strumenti di analisi</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -30270,6 +30274,30 @@ Calibrare solo i {2} nuovi frame e riutilizzare i frame calibrati esistenti per 
       <source>✓ same session</source>
       <translation>✓ stessa sessione</translation>
     </message>
+    <message>
+      <source>Reset</source>
+      <translation>Ripristina</translation>
+    </message>
+    <message>
+      <source>A stacking run is in progress. Reset is available once it has finished.</source>
+      <translation>È in corso uno stacking. Il ripristino sarà disponibile al termine.</translation>
+    </message>
+    <message>
+      <source>Reset Stacking Settings</source>
+      <translation>Ripristina impostazioni Stacking</translation>
+    </message>
+    <message>
+      <source>Reset every stacking setting to its factory default?
+
+This covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.
+
+Kept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.</source>
+      <translation>Ripristinare tutte le impostazioni di stacking ai valori di fabbrica?
+
+Riguarda questa finestra e le opzioni nelle schede di Stacking Suite: calibrazione, drizzle, MFDeconv, cometa, reiezione e tutto il resto.
+
+Vengono mantenuti: la cartella di stacking e gli altri percorsi, i frame caricati, i master e le relative scelte Dark/Flat, i set di registrazione e i frame di riferimento, i profili salvati e ciò che Ottimizza… ha misurato. Una tolleranza di raggruppamento viene mantenuta finché i frame sono raggruppati in base a essa.</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -40169,6 +40197,10 @@ Usa [ e ] per ridurre/aumentare la dimensione del pennello.</translation>
       <source>Zoom Out</source>
       <translation>Riduci</translation>
     </message>
+    <message>
+      <source>Reset every setting in this tool to its factory default</source>
+      <translation>Ripristina tutte le impostazioni di questo strumento ai valori di fabbrica</translation>
+    </message>
   </context>
   <context>
     <name>CommonUtilities</name>
@@ -44732,6 +44764,18 @@ Carta disegnata: una carta stellare vettoriale (SVG / PDF / PNG / nuova immagine
       <source>💡 You can undo and redo edits all the way back to the original using the History stack.</source>
       <translation>💡 Puoi annullare e ripetere le modifiche fino all'originale usando la pila della Cronologia.</translation>
     </message>
+    <message>
+      <source>💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.</source>
+      <translation>💡 Curioso delle scorciatoie da tastiera? C'è un riepilogo completo in Vista → Scorciatoie.</translation>
+    </message>
+    <message>
+      <source>💡 Batch convert files from one format to another with Tools → Header Mods &amp; Misc → Batch Converter.</source>
+      <translation>💡 Converti in batch i file da un formato all'altro con Strumenti → Modifica Header e Varie → Convertitore batch.</translation>
+    </message>
+    <message>
+      <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
+      <translation>💡 Il riepilogo icone in Vista → Scorciatoie mostra a colpo d'occhio ogni icona della barra strumenti con la sua funzione.</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -44894,6 +44938,10 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
       <translation>Dove i sub non si sovrappongono del tutto, uno stack ha bordi irregolari: bordi scuri o rumorosi, a volte strisce. Ritagliali per primi. Lo stretching, la rimozione del gradiente e la calibrazione del colore misurano tutta l'immagine, e quei bordi li falsano.
 
 Ritaglia si trova in Funzioni → Riparazione &amp; ritocco → Ritaglia. Trascina il riquadro dentro l'area pulita, poi fai clic su Applica.</translation>
+    </message>
+    <message>
+      <source>First Steps</source>
+      <translation>Primi passi</translation>
     </message>
   </context>
   <context>
@@ -56226,6 +56274,10 @@ Suggerimento: Doppia dà "corpo" alle nebulose anche dove la luminosità è più
       <source>Zoom Out</source>
       <translation>Riduci</translation>
     </message>
+    <message>
+      <source>Set Q back to {0:.2f} for every filter</source>
+      <translation>Riporta Q a {0:.2f} per tutti i filtri</translation>
+    </message>
   </context>
   <context>
     <name>QuadBuildWorker</name>
@@ -56785,6 +56837,10 @@ Master e frame trascinati su questa finestra, o aggiunti con i light, vengono sm
     <message>
       <source>✓ the only flat</source>
       <translation>✓ l'unico flat</translation>
+    </message>
+    <message>
+      <source>What Quick Stack will run on. A GPU is used when SASpro's hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.</source>
+      <translation>Su cosa verrà eseguito Quick Stack. Viene usata una GPU quando l'accelerazione hardware di SASpro può accedervi (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML o Apple Metal); "Usa accelerazione hardware se disponibile" nelle Impostazioni di stacking la disattiva.</translation>
     </message>
   </context>
   <context>
@@ -60385,6 +60441,12 @@ Verifica che lo strumento sia registrato nella barra degli strumenti di SASpro.<
     <message>
       <source>🔄 Invert Masked Region</source>
       <translation>🔄 Inverti regione mascherata</translation>
+    </message>
+    <message>
+      <source>Set the palette preset back to this mode's default.
+The Mode is kept: changing it re-masks the active image.</source>
+      <translation>Riporta il preset della palette al valore predefinito di questa modalità.
+La modalità resta invariata: cambiarla rigenera la maschera sull'immagine attiva.</translation>
     </message>
   </context>
   <context>
@@ -66819,6 +66881,78 @@ I file allineati restano nella cartella di output; puoi importarli manualmente.<
       <source>Open Image with Workflow Assistant</source>
       <translation>Apri immagine con l'Assistente flusso di lavoro</translation>
     </message>
+    <message>
+      <source>Blink frames</source>
+      <translation>Blink dei frame</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>Personalizza…</translation>
+    </message>
+    <message>
+      <source>Add or remove tiles</source>
+      <translation>Aggiungi o rimuovi riquadri</translation>
+    </message>
+    <message>
+      <source>Remove from Start Panel</source>
+      <translation>Rimuovi dal pannello iniziale</translation>
+    </message>
+    <message>
+      <source>Customize Start Panel</source>
+      <translation>Personalizza il pannello iniziale</translation>
+    </message>
+    <message>
+      <source>Choose up to {0} tools for the Start Panel. Drag them into the order you want.</source>
+      <translation>Scegli fino a {0} strumenti per il pannello iniziale. Trascinali nell'ordine che preferisci.</translation>
+    </message>
+    <message>
+      <source>All tools</source>
+      <translation>Tutti gli strumenti</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>Cerca</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>Aggiungi</translation>
+    </message>
+    <message>
+      <source>On the Start Panel</source>
+      <translation>Nel pannello iniziale</translation>
+    </message>
+    <message>
+      <source>{0} of {1}</source>
+      <translation>{0} di {1}</translation>
+    </message>
+    <message>
+      <source>The Start Panel is full. Remove a tool to add another.</source>
+      <translation>Il pannello iniziale è pieno. Rimuovi uno strumento per aggiungerne un altro.</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>Sposta Su</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>Sposta Giù</translation>
+    </message>
+    <message>
+      <source>Remove</source>
+      <translation>Rimuovi</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>Reimposta Predefiniti</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>OK</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>Annulla</translation>
+    </message>
   </context>
   <context>
     <name>StellarAlignmentDialog</name>
@@ -70725,6 +70859,10 @@ punti raggruppati e il modello, con i residui sotto.</translation>
     <message>
       <source>χ²_red (photometric errors) = {0:.2f} → errors × {1:.2f};  red-noise β = {2:.2f}</source>
       <translation>χ²_red (errori fotometrici) = {0:.2f} → errori × {1:.2f};  β rumore rosso = {2:.2f}</translation>
+    </message>
+    <message>
+      <source>Reset the Fit options to their factory defaults</source>
+      <translation>Ripristina le opzioni di fit ai valori di fabbrica</translation>
     </message>
   </context>
   <context>
@@ -76262,6 +76400,12 @@ Annullare e chiudere? (Potrebbe richiedere un momento per completare il riquadro
       <source>Writing temp image…</source>
       <translation>Scrittura immagine temporanea…</translation>
     </message>
+    <message>
+      <source>The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.
+{0}</source>
+      <translation>L'immagine è aperta in SyQon Studio. Elaborala lì e salva il risultato in questa cartella; SASpro lo importa da lì. Annulla mantiene l'immagine originale.
+{0}</translation>
+    </message>
   </context>
   <context>
     <name>_SyQonStudioHubPage</name>
@@ -76540,6 +76684,10 @@ Annullare e chiudere? (Potrebbe richiedere un momento per completare il riquadro
     <message>
       <source>✘  Could not validate: {0}</source>
       <translation>✘  Impossibile convalidare: {0}</translation>
+    </message>
+    <message>
+      <source>SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.</source>
+      <translation>SyQon Studio {0} non ha uno strumento da riga di comando (è arrivato con la 1.2), quindi SASpro apre l'immagine nell'app Studio. Elaborala lì e salvala; SASpro importa ciò che salvi.</translation>
     </message>
   </context>
   <context>

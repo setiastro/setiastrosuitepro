@@ -231,10 +231,14 @@ def open_hdr_composition_with_preset(main_window, preset: dict | None = None):
         dlg.setWindowIcon(QIcon(hdrcomposition_path))
     except Exception:
         pass
-    try:
-        dlg.apply_preset(preset)
-    except Exception:
-        pass
+    # Only a real preset seeds the controls. A plain menu open arrives with
+    # None (or the QAction's checked=False); applying that would load the
+    # defaults over the settings the dialog just restored, and save them.
+    if isinstance(preset, dict) and preset:
+        try:
+            dlg.apply_preset(preset)
+        except Exception:
+            pass
     dlg.resize(560, 520)
     dlg.show()
     return dlg

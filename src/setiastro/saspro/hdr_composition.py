@@ -23,6 +23,8 @@ from PyQt6.QtWidgets import (
 )
 
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 class HDRCompositionError(ValueError):
@@ -1124,6 +1126,9 @@ class HDRCompositionDialog(QDialog):
 
         buttons = QDialogButtonBox()
         self.btn_apply = buttons.addButton(self.tr("Apply"), QDialogButtonBox.ButtonRole.AcceptRole)
+        self.btn_reset = make_reset_button(self)
+        buttons.addButton(self.btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_close = buttons.addButton(self.tr("Close"), QDialogButtonBox.ButtonRole.RejectRole)
         self.btn_help = make_help_button("hdr_composition", self)
         buttons.addButton(self.btn_help, QDialogButtonBox.ButtonRole.ActionRole)
@@ -1156,6 +1161,9 @@ class HDRCompositionDialog(QDialog):
         self.btn_up.clicked.connect(lambda: self._move(-1))
         self.btn_down.clicked.connect(lambda: self._move(1))
 
+        # Factory defaults for Reset, before the saved values load. The view
+        # picker and the list of chosen views stay.
+        self._factory = snapshot_controls(self, exclude=(self.cb_available,))
         self._restore()
         self._refresh_available()
         for widget in (self.sp_threshold, self.sp_growth, self.sp_smooth):
@@ -1174,6 +1182,9 @@ class HDRCompositionDialog(QDialog):
             self.chk_mask.setChecked(s.value(self._k("open_mask"), False, type=bool))
         except Exception:
             pass
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)     # each control saves on change
 
     def _save(self):
         s = self._settings

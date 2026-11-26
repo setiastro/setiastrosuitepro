@@ -18,6 +18,8 @@ from setiastro.saspro.widgets.image_utils import (
     extract_mask_from_document as _active_mask_array_from_doc
 )
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _tr(text: str) -> str:
@@ -294,7 +296,8 @@ class RemoveGreenDialog(QDialog):
         row = QHBoxLayout()
         btn_apply = QPushButton(self.tr("Apply")); btn_apply.clicked.connect(self._apply)
         btn_cancel= QPushButton(self.tr("Cancel")); btn_cancel.clicked.connect(self.reject)
-        row.addStretch(1); row.addWidget(btn_apply); row.addWidget(btn_cancel)
+        btn_reset = make_reset_button(self); btn_reset.clicked.connect(self._reset_to_factory)
+        row.addStretch(1); row.addWidget(btn_apply); row.addWidget(btn_reset); row.addWidget(btn_cancel)
         lay.addLayout(row)
 
         # --- preset drag handle (grip) ---
@@ -327,6 +330,10 @@ class RemoveGreenDialog(QDialog):
             pass
 
         self.resize(460, 220)
+        self._factory = snapshot_controls(self)     # before any preset seeds the controls
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
 
     def set_amount(self, amt: float):
         try:

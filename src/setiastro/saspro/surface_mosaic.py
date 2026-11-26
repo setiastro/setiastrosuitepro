@@ -2081,6 +2081,8 @@ try:
         QPushButton, QLabel, QProgressBar, QCheckBox, QComboBox, QMessageBox,
         QDialog, QFormLayout, QSpinBox, QDoubleSpinBox, QDialogButtonBox, QGroupBox,
     )
+    from setiastro.saspro.widgets.factory_reset import (
+        make_reset_button, snapshot_controls, restore_controls)
     _HAVE_QT = True
 except Exception:  # pragma: no cover
     _HAVE_QT = False
@@ -2330,6 +2332,9 @@ if _HAVE_QT:
             self.btn_run = QPushButton(self.tr("Build Mosaic"))
             self.btn_run.clicked.connect(self._on_run)
             run_row.addWidget(self.btn_run)
+            self.btn_reset = make_reset_button(self)
+            self.btn_reset.clicked.connect(self._reset_to_factory)
+            run_row.addWidget(self.btn_reset)
             left.addLayout(run_row)
 
             # ---- right column: tile layout overview ----
@@ -2351,6 +2356,17 @@ if _HAVE_QT:
 
             self.resize(940, 620)
             self.refresh_views()
+            self._factory = snapshot_controls(self)
+            self._factory_adv = dict(self._adv)
+
+        def _reset_to_factory(self):
+            """Options and the Advanced parameters back to their defaults; the
+            chosen views are left alone."""
+            w = self._worker
+            if w is not None and w.isRunning():
+                return
+            restore_controls(self._factory)
+            self._adv = dict(self._factory_adv)
 
         # ---- views ----
         def refresh_views(self):

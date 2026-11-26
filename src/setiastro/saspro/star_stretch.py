@@ -16,6 +16,8 @@ from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
 from setiastro.saspro.shortcuts import PresetDragHandle
 from setiastro.saspro.resources import starstretch_path
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # --- use your Numba kernels; fall back to pure numpy SCNR if needed ----
 try:
@@ -236,8 +238,10 @@ class StarStretchDialog(QDialog):
         rowb = QHBoxLayout()
         self.btn_preview = QPushButton(self.tr("Preview"))
         self.btn_apply = QPushButton(self.tr("Apply to Document"))
+        self.btn_reset = make_reset_button(self)
         rowb.addWidget(self.btn_preview)
         rowb.addWidget(self.btn_apply)
+        rowb.addWidget(self.btn_reset)
         left.addLayout(rowb)
 
         # Spinner
@@ -305,6 +309,7 @@ class StarStretchDialog(QDialog):
         # so route the button through a lambda and keep interactive=True.
         self.btn_preview.clicked.connect(lambda: self._run_preview(True))
         self.btn_apply.clicked.connect(self._apply_to_doc)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.chk_scnr.toggled.connect(lambda _=False: self._on_any_control_changed())
         self.chk_auto.toggled.connect(self._on_auto_refresh_toggled)
 
@@ -313,6 +318,10 @@ class StarStretchDialog(QDialog):
         self._auto_timer.setSingleShot(True)
         self._auto_timer.setInterval(int(self._AUTO_REFRESH_MS))
         self._auto_timer.timeout.connect(self._auto_preview)
+
+        # Factory defaults, before the saved options load. Auto-refresh is a
+        # preview preference, like Stat Stretch's, so Reset leaves it alone.
+        self._factory = snapshot_controls(self, exclude=(self.chk_auto,))
 
         # Restore every user option from the last session (signals blocked
         # inside, so this cannot fire a handler or schedule a save)
@@ -428,6 +437,7 @@ class StarStretchDialog(QDialog):
         self._show_spinner(True)
         self.btn_preview.setEnabled(False)
         self.btn_apply.setEnabled(False)
+        self.btn_reset.setEnabled(False)
 
         self._thr = _StarStretchWorker(
             image=img,
@@ -475,6 +485,7 @@ class StarStretchDialog(QDialog):
         self._show_spinner(False)
         self.btn_preview.setEnabled(True)
         self.btn_apply.setEnabled(True)
+        self.btn_reset.setEnabled(True)
 
         # Apply was pressed before the preview landed.
         if self._apply_when_ready:
@@ -518,7 +529,12 @@ class StarStretchDialog(QDialog):
             return
 
         # We do have a preview → finish immediately
-        self._finish_apply()  
+        self._finish_apply()
+
+    def _reset_to_factory(self):
+        if self._busy:
+            return      # disabled with Apply while a worker runs
+        restore_controls(self._factory)
 
     def _star_stretch_params(self) -> dict:
         """Canonical preset — single source of truth for apply + the drag handle."""

@@ -52,6 +52,8 @@ from setiastro.saspro.widgets.image_utils import (
     extract_mask_resized as _mask_resized,
     blend_with_mask as _blend_with_mask,
 )
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _tr(text: str) -> str:
@@ -540,9 +542,12 @@ class BandingBlasterDialog(QDialog):
         self.btn_apply = QPushButton(self.tr("Apply"))
         self.btn_apply.setDefault(True)
         self.btn_apply.clicked.connect(self._apply)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_close = QPushButton(self.tr("Close"))
         self.btn_close.clicked.connect(self.reject)
         bottom.addWidget(self.btn_apply)
+        bottom.addWidget(self.btn_reset)
         bottom.addWidget(self.btn_close)
         lay.addLayout(bottom)
 
@@ -552,6 +557,14 @@ class BandingBlasterDialog(QDialog):
             sb.valueChanged.connect(lambda *_: self._on_controls_changed())
 
         self.resize(1000, 720)
+        # Factory defaults, before the opener seeds a preset. The before/after
+        # compare toolbar is view state and keeps its mode.
+        self._factory = snapshot_controls(self, exclude=(self._cmp.toolbar,))
+
+    def _reset_to_factory(self):
+        """Every setting back to its factory default; each control schedules
+        the (debounced) preview as for a user change."""
+        restore_controls(self._factory)
 
     def _sync_sigma_enabled(self):
         on = self.cb_protect.isChecked()

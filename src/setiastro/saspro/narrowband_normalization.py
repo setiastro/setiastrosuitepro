@@ -30,6 +30,8 @@ from setiastro.saspro.imageops.narrowband_normalization import normalize_narrowb
 from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # Real SCNR core (green / colour channel suppression)
 from setiastro.saspro.remove_green import _apply_scnr_rgb
@@ -125,6 +127,15 @@ class NarrowbandNormalization(QWidget):
         self._active_seq = 0        # seq of currently running worker (optional)
         self._worker = None         # current worker ref
         self._build_ui()
+        # Factory defaults for Reset (preview autostretch is view-only)
+        self._factory = snapshot_controls(self, exclude=(self.chk_preview_autostretch,))
+
+    def _reset_to_factory(self):
+        """Every normalization setting back to its factory default. Loaded
+        channels stay; the preview recomputes from the controls' signals."""
+        if not self.btn_reset.isEnabled():
+            return                  # a job is running (_set_busy)
+        restore_controls(self._factory)
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -190,7 +201,7 @@ class NarrowbandNormalization(QWidget):
 
         actions = QGroupBox(self.tr("Actions"), self)
         actv = QVBoxLayout(actions); actv.setSpacing(6)
-        for b in (self.btn_clear, self.btn_preview, self.btn_apply, self.btn_push):
+        for b in (self.btn_clear, self.btn_preview, self.btn_apply, self.btn_push, self.btn_reset):
             b.setMinimumHeight(28)
             actv.addWidget(b)
         colB.addWidget(actions)
@@ -329,6 +340,7 @@ class NarrowbandNormalization(QWidget):
         self.btn_preview = QPushButton(self.tr("Preview"), self)
         self.btn_apply = QPushButton(self.tr("Apply to Current View"), self)
         self.btn_push = QPushButton(self.tr("Push as New View"), self)
+        self.btn_reset = make_reset_button(self)
 
         # -------- Preview options --------
         self.chk_preview_autostretch = QCheckBox(self.tr("Autostretch preview"), self)
@@ -614,6 +626,7 @@ class NarrowbandNormalization(QWidget):
         self.btn_preview.clicked.connect(self._schedule_preview)  # debounced compute
         self.btn_apply.clicked.connect(self._apply_to_current_view)
         self.btn_push.clicked.connect(self._push_result)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
 
         # Structural changes -> re-evaluate which controls apply, then recompute
         self.cmb_engine.currentIndexChanged.connect(self._refresh_visibility)
@@ -1436,7 +1449,7 @@ class NarrowbandNormalization(QWidget):
     # ---------------- Single Launch Job Function -----------------------
     def _set_busy(self, busy: bool, msg: str = ""):
         # Optional UX: disable buttons while processing
-        for w in (self.btn_preview, self.btn_apply, self.btn_push, self.btn_clear,
+        for w in (self.btn_preview, self.btn_apply, self.btn_push, self.btn_clear, self.btn_reset,
                   self.btn_ha, self.btn_oiii, self.btn_sii, self.btn_osc1, self.btn_osc2):
             try:
                 w.setEnabled(not busy)

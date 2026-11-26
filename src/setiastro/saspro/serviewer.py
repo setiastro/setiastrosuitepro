@@ -23,6 +23,8 @@ from setiastro.saspro.ser_stack_config import SERStackConfig
 from setiastro.saspro.ser_stacker import stack_ser
 from setiastro.saspro.ser_stacker_dialog import SERStackerDialog
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 # Use your stretch functions for DISPLAY
 try:
     from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
@@ -461,6 +463,9 @@ class SERViewer(QDialog):
         from setiastro.saspro.help_support import make_help_button
         help_row = QHBoxLayout()
         help_row.addStretch(1)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        help_row.addWidget(self.btn_reset)
         help_row.addWidget(make_help_button("planetary_viewer", self))
         right.addLayout(help_row, 0)
 
@@ -500,6 +505,17 @@ class SERViewer(QDialog):
         self.chk_planet_norm.toggled.connect(self._refresh)
         self.resize(1200, 800)
         self._on_track_mode_changed()
+        # Reset leaves the frame scrubber, trim range, ROI (a box drawn on
+        # this clip) and the display-only preview controls alone.
+        self._factory = snapshot_controls(self, exclude=(
+            self.sld, self.spin_trim_start, self.spin_trim_end,
+            self.chk_roi, self.spin_x, self.spin_y, self.spin_w, self.spin_h,
+            self.chk_autostretch, self.sld_brightness, self.sld_gamma))
+
+    def _reset_to_factory(self):
+        if getattr(self, "_trim_thread", None) is not None:
+            return                                  # a trimmed SER is being written
+        restore_controls(self._factory)
 
 
     #-----qsettings

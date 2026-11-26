@@ -211,6 +211,8 @@ from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_r
 # --- Gaia XP fallback (optional) ---
 from setiastro.saspro.gaia_downloader import GaiaDownloader, HAS_GAIAXPY
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 from setiastro.saspro import cds_health
 
 import warnings
@@ -1206,6 +1208,9 @@ class SFCCDialog(QDialog):
         self._reload_hdu_lists()
         self.star_list = []
         self._build_ui()
+        # Factory state, before saved settings load. The curve library itself
+        # (custom filters / sensors) is user data and is never touched.
+        self._factory = snapshot_controls(self)
         self.load_settings()
 
         # persist combobox choices
@@ -1380,7 +1385,7 @@ class SFCCDialog(QDialog):
         row4.addWidget(QLabel(self.tr("Star detect σ:")))
         self.sep_thr_spin = QSpinBox()
         self.sep_thr_spin.setRange(2, 100)        # should be enough
-        self.sep_thr_spin.setValue(15)            # our current hardcoded value
+        self.sep_thr_spin.setValue(5)             # = load_settings' default, what users get
         self.sep_thr_spin.valueChanged.connect(self.save_sep_threshold_setting)
         row4.addWidget(self.sep_thr_spin)
 
@@ -1411,6 +1416,9 @@ class SFCCDialog(QDialog):
         row4.addStretch()
         self.btn_help = make_help_button("sfcc", self)
         row4.addWidget(self.btn_help)
+        self.factory_reset_btn = make_reset_button(self)
+        self.factory_reset_btn.clicked.connect(self._reset_to_factory)
+        row4.addWidget(self.factory_reset_btn)
         self.close_btn = QPushButton(self.tr("Close")); self.close_btn.clicked.connect(self.reject); row4.addWidget(self.close_btn)
 
         self.count_label = QLabel(""); layout.addWidget(self.count_label)
@@ -1491,6 +1499,10 @@ class SFCCDialog(QDialog):
 
     def save_sep_threshold_setting(self, v: int):
         QSettings().setValue("SFCC/SEPThreshold", int(v))
+
+    def _reset_to_factory(self):
+        # Every control saves itself on change, so the restore is also saved.
+        restore_controls(self._factory)
 
     # ── Auto-σ waterfall config / helpers ─────────────────────────────
     # Ladder of σ values tried from highest (strictest) to lowest.

@@ -40,6 +40,8 @@ from setiastro.saspro.imageops.diffuse_structure_mask import (
     suggest_diffuse_structure_settings,
 )
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _tr(text: str) -> str:
@@ -976,6 +978,29 @@ class MaskCreationDialog(QDialog):
         self.auto_push_on_ok = auto_push_on_ok
 
         self._build_ui()
+        # Factory settings, before a preset seeds them (seed_from_preset).
+        # Left alone: the drawing mode and the shapes (the user's selection),
+        # the display stretch, and the Gaia augment box (it loads its saved
+        # value while it is built, so _reset_to_factory sets it explicitly).
+        self._factory = snapshot_controls(self, exclude=(
+            self.free_btn, self.ellipse_btn, self.select_btn,
+            self.btn_disp_stretch, self._chk_gaia_augment))
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
+        self._chk_gaia_augment.setChecked(False)        # its QSettings default
+        # also when the box is greyed out here (already off, so no toggle):
+        # the saved preference is what the next solved image opens with
+        self._persist_gaia_augment(False)
+        self._star_thresh = float(self._spin_star_thresh.value())
+
+    def _persist_gaia_augment(self, on):
+        try:
+            from PyQt6.QtCore import QSettings
+            QSettings("SetiAstro", "SASpro").setValue(
+                "mask/gaia_augment", bool(on))
+        except Exception:
+            pass
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -1338,6 +1363,9 @@ class MaskCreationDialog(QDialog):
         # OK / Cancel
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self._accept_apply); btns.rejected.connect(self.reject)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        btns.addButton(self.btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
         bottom_row.addWidget(btns)
         layout.addLayout(bottom_row)
         
@@ -1404,21 +1432,18 @@ class MaskCreationDialog(QDialog):
         except Exception:
             pass
 
-        def _persist_augment(on):
-            try:
-                from PyQt6.QtCore import QSettings
-                QSettings("SetiAstro", "SASpro").setValue(
-                    "mask/gaia_augment", bool(on))
-            except Exception:
-                pass
-        self._chk_gaia_augment.toggled.connect(_persist_augment)
+        self._chk_gaia_augment.toggled.connect(self._persist_gaia_augment)
 
         # Availability gate — grey out with an explanatory tooltip when it
         # can't work, rather than failing silently or throwing at generate.
         gaia_ok, gaia_reason = self._check_gaia_augment_available()
         self._chk_gaia_augment.setEnabled(gaia_ok)
         if not gaia_ok:
+            # Off for this image only: quietly, so the toggle handler does not
+            # save False over the user's preference.
+            self._chk_gaia_augment.blockSignals(True)
             self._chk_gaia_augment.setChecked(False)
+            self._chk_gaia_augment.blockSignals(False)
             self._chk_gaia_augment.setToolTip(gaia_reason)
         else:
             self._chk_gaia_augment.setToolTip(

@@ -35,6 +35,8 @@ from PyQt6.QtWidgets import (
 
 from setiastro.saspro import exoplanet_transit as xfit
 from setiastro.saspro import exoplanet_photometry as xphot
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _tr(text: str) -> str:
@@ -424,6 +426,13 @@ class TransitFitDialog(QDialog):
         self.run_btn.setStyleSheet("font-weight: bold;")
         self.run_btn.clicked.connect(self._run_or_cancel)
         brow.addWidget(self.run_btn)
+        # Reset covers the Fit options; priors, limb darkening and the
+        # filter describe the target (archive / Claret lookups) and stay.
+        self._factory = snapshot_controls(g_f)
+        self.reset_btn = make_reset_button(self)
+        self.reset_btn.setToolTip(self.tr("Reset the Fit options to their factory defaults"))
+        self.reset_btn.clicked.connect(self._reset_to_factory)
+        brow.addWidget(self.reset_btn)
         self.aavso_btn = QPushButton(self.tr("AAVSO Report…"))
         self.aavso_btn.clicked.connect(self._export_aavso)
         self.csv_btn = QPushButton("CSV…")
@@ -777,6 +786,11 @@ class TransitFitDialog(QDialog):
             clip_sigma=self.clip.value(), mcmc_steps=self.steps.value(),
             exptime_s=float(self.ctx.get("exptime_s") or 0.0),
             use_beta=self.use_beta.isChecked())
+
+    def _reset_to_factory(self):
+        if self._worker is not None and self._worker.isRunning():
+            return                      # a fit is running
+        restore_controls(self._factory)
 
     def _run_or_cancel(self):
         if self._worker is not None and self._worker.isRunning():

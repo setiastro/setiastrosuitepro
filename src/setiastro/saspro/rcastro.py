@@ -30,6 +30,8 @@ from PyQt6.QtWidgets import (
     QLineEdit, QApplication, QScrollArea,
 )
 from PyQt6.QtGui import QFont
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _tr(text: str) -> str:
@@ -212,7 +214,91 @@ def _detect_cli_uses_device_flag(exe: str) -> bool:
         out = (r.stdout or "") + (r.stderr or "")
         return "--device" in out
     except Exception:
-        return True  # assume new on error    
+        return True  # assume new on error
+
+
+# ---------------------------------------------------------------------------
+# Compute devices (CLI 0.9.7+ --device designators)
+#
+# The valid ids depend on the machine: 'auto', 'gpu' (ONLY on a single-GPU
+# host), 'gpu0', 'gpu1', ... (one per GPU when there are several), 'cpu'. On a
+# multi-GPU host the CLI rejects 'gpu' as ambiguous, and it never accepted the
+# old provider names (dml/cuda/coreml). The bare `--json` products document we
+# already fetch carries the host's list under "devices" (README-DEVS.md s.13);
+# it is cached in rcastro/devices for the preset editor and headless runs.
+# ---------------------------------------------------------------------------
+_DEFAULT_DEVICE_IDS = ["auto", "gpu", "cpu"]
+
+
+def _devices_from_json(data) -> list[dict]:
+    """The 'devices' entries (dicts with an 'id') of an rc-astro --json document."""
+    devs = data.get("devices") if isinstance(data, dict) else None
+    if not isinstance(devs, list):
+        return []
+    return [d for d in devs if isinstance(d, dict) and str(d.get("id") or "").strip()]
+
+
+def _cached_devices() -> list[dict]:
+    try:
+        import json as _json
+        devs = _json.loads(str(QSettings().value("rcastro/devices", "") or "[]"))
+        return _devices_from_json({"devices": devs})
+    except Exception:
+        return []
+
+
+def _device_ids(devices: list[dict]) -> list[str]:
+    return [str(d["id"]).strip() for d in devices]
+
+
+def _resolve_device(token, ids: list[str]) -> str:
+    """The --device value to pass. Pre-0.9.7 provider names become 'gpu'; a 'gpu'
+    this host does not offer (several GPUs, or none) becomes 'auto', the CLI's
+    first-ranked GPU, else CPU. Anything else is passed through unchanged."""
+    t = str(token or "").strip().lower() or "auto"
+    if t in ("dml", "cuda", "coreml"):
+        t = "gpu"
+    if t == "gpu" and ids and "gpu" not in ids:
+        return "auto"
+    return t
+
+
+def _fill_device_combo(combo, devices: list[dict], current: str) -> str:
+    """Rebuild an engine combo from the host's device list (names as item tooltips)
+    and select `current`, resolved against it. Returns the selected id."""
+    ids = _device_ids(devices) or list(_DEFAULT_DEVICE_IDS)
+    sel = _resolve_device(current, _device_ids(devices))
+    combo.blockSignals(True)
+    try:
+        combo.clear()
+        combo.addItems(ids)
+        for i, d in enumerate(devices):
+            name = str(d.get("name") or "").strip()
+            if name:
+                combo.setItemData(i, name, Qt.ItemDataRole.ToolTipRole)
+    finally:
+        combo.blockSignals(False)
+    i = combo.findText(sel)
+    if i >= 0:
+        combo.setCurrentIndex(i)
+    else:
+        combo.setCurrentText(sel)
+    return sel
+
+
+def _devices_summary(devices: list[dict]) -> str:
+    """One line per GPU id with its card name, plus what 'auto' resolves to."""
+    lines = []
+    for d in devices:
+        did, name = str(d.get("id") or ""), str(d.get("name") or "").strip()
+        if d.get("kind") == "gpu" and name:
+            lines.append(f"{did} — {name}")
+    for d in devices:
+        if d.get("kind") == "auto" and d.get("device"):
+            name = str(d.get("name") or "").strip()
+            lines.append(_tr("auto → {0}").format(
+                f"{d['device']} ({name})" if name else str(d["device"])))
+    return "\n".join(lines)
 # ---------------------------------------------------------------------------
 # Worker — runs any rc-astro subprocess, streams stdout+stderr
 # ---------------------------------------------------------------------------
@@ -1054,7 +1140,25 @@ class RCAstroDialog(QDialog):
             pass
 
         self._build_ui()
+        # Factory state, before saved settings load. The licence tabs (email,
+        # key) are account data, not settings.
+        self._factory = snapshot_controls(
+            self, exclude=(self._lic_bxt, self._lic_sxt, self._lic_nxt))
         self._load_settings()
+
+    def _reset_to_factory(self):
+        w = self._worker
+        try:
+            if w is not None and w.isRunning():
+                return
+        except RuntimeError:
+            pass
+        restore_controls(self._factory)
+        # The engine combo is editable, so the restore set only its text;
+        # select the matching item too, as _load_settings does.
+        i = self.cmb_engine.findText(self.cmb_engine.currentText())
+        if i >= 0:
+            self.cmb_engine.setCurrentIndex(i)
 
     # ── Build UI ──────────────────────────────────────────────────────────────
 
@@ -1177,8 +1281,11 @@ class RCAstroDialog(QDialog):
         self.btn_run.clicked.connect(self._run)
         btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.close)
+        btn_reset = make_reset_button(self)
+        btn_reset.clicked.connect(self._reset_to_factory)
         btn_row.addWidget(self.btn_run)
         btn_row.addStretch(1)
+        btn_row.addWidget(btn_reset)
         btn_row.addWidget(btn_close)
         root.addLayout(btn_row)
 
@@ -1328,6 +1435,13 @@ class RCAstroDialog(QDialog):
             # absent (older CLI): both panels keep their legacy 2-item combo.
             try:
                 data = _probe_rcastro_json(exe)
+                # This host's compute devices: gpu0/gpu1/... when it has several GPUs.
+                devices = _devices_from_json(data)
+                if devices:
+                    import json as _json
+                    s.setValue("rcastro/devices", _json.dumps(devices))
+                    _fill_device_combo(self.cmb_engine, devices, self.cmb_engine.currentText())
+                    self.lbl_devices.setText(_devices_summary(devices))
                 products = (data or {}).get("products") if isinstance(data, dict) else None
                 bxt_versions = _ml_versions_for(products, "bxt")
                 nxt_versions = _ml_versions_for(products, "nxt")
@@ -1411,6 +1525,8 @@ class RCAstroDialog(QDialog):
         if raw_engine in ("dml", "coreml", "cuda"):
             raw_engine = "gpu"
             s.setValue("rcastro/engine", "gpu")
+        # 'gpu' is rejected on a multi-GPU host: select what will actually run
+        raw_engine = _resolve_device(raw_engine, _device_ids(_cached_devices()))
         idx = self.cmb_engine.findText(raw_engine)
         if idx >= 0:
             self.cmb_engine.setCurrentIndex(idx)
@@ -1504,7 +1620,7 @@ class RCAstroDialog(QDialog):
         self.tabs.setCurrentIndex(tab_idx)
 
         if "engine" in p:
-            eng = str(p["engine"])
+            eng = _resolve_device(p["engine"], _device_ids(_cached_devices()))
             i = self.cmb_engine.findText(eng)
             if i >= 0:
                 self.cmb_engine.setCurrentIndex(i)
@@ -1608,18 +1724,24 @@ class RCAstroDialog(QDialog):
         stars_path  = os.path.join(work_dir, f"input-{product}-stars.tif")
 
         # ── Build full command ────────────────────────────────────────────────
+        device = self.cmb_engine.currentText()
+        resolved = device
+        if self._device_flag() == "--device":
+            resolved = _resolve_device(device, _device_ids(_cached_devices()))
         cmd = [exe, "--no-banner", product, input_path]
         cmd += panel_args
-        cmd += [self._device_flag(), self.cmb_engine.currentText()]
+        cmd += [self._device_flag(), resolved]
         cmd += ["--depth", "32F"]
         if self.chk_overwrite.isChecked():
             cmd.append("--overwrite")
-        if self.cmb_engine.currentText() != "cpu" and self.chk_high_perf_gpu.isChecked():
+        if resolved != "cpu" and self.chk_high_perf_gpu.isChecked():
             _prefer_high_perf_gpu(exe)
         cmd += _host_args()
         # ── Progress dialog ───────────────────────────────────────────────────
         dlg = _ProgressDialog(self, self.tr("{0} — Processing").format(label))
         dlg.set_stage(self.tr("Launching {0}…").format(label))
+        if resolved != device:
+            dlg.append(f"Device '{device}' is not available on this computer; using '{resolved}'.\n")
         dlg.append("Command: " + " ".join(cmd) + "\n")
 
         worker = _RCAstroWorker(cmd, cwd=work_dir)
@@ -1855,9 +1977,9 @@ class RCAstroPresetDialog(QDialog):
         prod_form.addRow(self.tr("Product:"), self.cmb_product)
 
         self.cmb_engine = QComboBox()
-        self.cmb_engine.addItems(["auto", "gpu", "cpu"])
         self.cmb_engine.setEditable(True)
-        self.cmb_engine.setCurrentText(str(p.get("engine", "auto")))
+        # this host's device ids (gpu0/gpu1/... with several GPUs), cached by RC-Astro Tools
+        _fill_device_combo(self.cmb_engine, _cached_devices(), str(p.get("engine", "auto")))
         prod_form.addRow(self.tr("Engine:"), self.cmb_engine)
         outer.addLayout(prod_form)
 
@@ -2196,6 +2318,10 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
     # Determine correct flag for installed CLI version
     uses_device = bool(s.value("rcastro/uses_device_flag", True, type=bool))
     device_flag = "--device" if uses_device else "--engine"
+    requested = engine
+    if uses_device:
+        # old presets say 'dml'/'gpu'; this host may need 'auto' or a gpuN
+        engine = _resolve_device(engine, _device_ids(_cached_devices()))
 
     cmd = [exe, "--no-banner", product, input_path]
     cmd += args
@@ -2208,6 +2334,8 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
     # Show a simple non-blocking progress dialog
     dlg = _ProgressDialog(main, _tr("{0} — Processing").format(label))
     dlg.set_stage(_tr("Running {0} headlessly…").format(label))
+    if engine != requested:
+        dlg.append(f"Device '{requested}' is not available on this computer; using '{engine}'.\n")
     dlg.append("Command: " + " ".join(cmd) + "\n")
 
     worker = _RCAstroWorker(cmd, cwd=work_dir)

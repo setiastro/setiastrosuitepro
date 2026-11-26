@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtWidgets import QSizePolicy
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import snapshot_controls, restore_controls
 
 # ---------------------------------------------------------------------
 # Small helpers  (identical to SelectiveColor)
@@ -504,6 +505,10 @@ class SelectiveLuminanceCorrection(QDialog):
         self._adj_timer.timeout.connect(self._update_preview_pixmap)
 
         self.dd_preset.setCurrentText("Shadows")
+        # Factory defaults for Reset: before showEvent restores the saved UX
+        # state. Preview toggles and the imported mask (a picked view) stay.
+        self._factory = snapshot_controls(self, exclude=(
+            self.cb_small_preview, self.cb_live, self.cb_use_imported))
         self._recompute_mask_and_preview()
 
     # =================================================================
@@ -1649,65 +1654,14 @@ class SelectiveLuminanceCorrection(QDialog):
     def _reset_controls(self):
         """
         Full reset — called by the ↺ Reset button.
-        Resets everything including the luminance range back to Shadows.
+        Every setting back to what the dialog opened with (luminance range
+        back to Shadows); the snapshot is taken in __init__.
         """
+        restore_controls(self._factory)
+        # one refresh instead of the debounced ones the restore queued
         self._mask_timer.stop()
         self._adj_timer.stop()
-
-        self._syncing_lum = True
-        try:
-            self.dd_preset.blockSignals(True)
-            self.dd_preset.setCurrentText("Shadows")
-            self.dd_preset.blockSignals(False)
-            lo, hi = _LUM_PRESETS["Shadows"]
-            self.lum_wheel.setRange(lo, hi, notify=False)
-            for w, val in (
-                (self.sl_lo, int(round(lo * 255))), (self.ds_lo, lo),
-                (self.sl_hi, int(round(hi * 255))), (self.ds_hi, hi),
-            ):
-                w.blockSignals(True); w.setValue(val); w.blockSignals(False)
-        finally:
-            self._syncing_lum = False
-
-        def setv(w, val):
-            w.blockSignals(True)
-            if isinstance(w, (QDoubleSpinBox, QSpinBox)):
-                w.setValue(val)
-            elif isinstance(w, QCheckBox):
-                w.setChecked(bool(val))
-            elif isinstance(w, QComboBox):
-                idx = w.findText(val)
-                if idx >= 0: w.setCurrentIndex(idx)
-            elif isinstance(w, QSlider):
-                w.setValue(int(val))
-            w.blockSignals(False)
-
-        setv(self.ds_smooth, 0.05)
-        setv(self.cb_invert, False)
-        setv(self.cb_soft_mask, False)
-        setv(self.sb_blur, 0)
-        setv(self.cb_show_mask, False)
-
-        for sld, box in (
-            (self.sl_c,      self.ds_c),
-            (self.sl_m,      self.ds_m),
-            (self.sl_y,      self.ds_y),
-            (self.sl_r,      self.ds_r),
-            (self.sl_g,      self.ds_g),
-            (self.sl_b,      self.ds_b),
-            (self.sl_l,      self.ds_l),
-            (self.sl_s,      self.ds_s),
-            (self.sl_c2,     self.ds_c2),
-            (self.sl_chroma, self.ds_chroma),
-        ):
-            self._set_pair(sld, box, 0.0)
-
-        self.dd_color_mode.blockSignals(True)
-        self.dd_color_mode.setCurrentIndex(0)
-        self.dd_color_mode.blockSignals(False)
         self._update_color_mode_enabled()
-
-        self.ds_int.blockSignals(True); self.ds_int.setValue(1.0); self.ds_int.blockSignals(False)
         self.lum_wheel.setPickedLum(None)
         self._recompute_mask_and_preview()
 

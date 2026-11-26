@@ -6,6 +6,8 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QPushButton, QMessageBox, QCheckBox, QMdiSubWindow
 )
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 class CopyAstrometryDialog(QDialog):
     """
@@ -56,14 +58,21 @@ class CopyAstrometryDialog(QDialog):
         row = QHBoxLayout(); row.addStretch(1)
         self.btn_copy = QPushButton(self.tr("Copy"))
         self.btn_close = QPushButton(self.tr("Close"))
-        row.addWidget(self.btn_copy); row.addWidget(self.btn_close)
+        self.btn_reset = make_reset_button(self)
+        row.addWidget(self.btn_copy); row.addWidget(self.btn_reset); row.addWidget(self.btn_close)
         lay.addLayout(row)
 
         self.btn_copy.clicked.connect(self._do_copy)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_close.clicked.connect(self.close)
 
         self._candidates = []  # list[(doc, name, wcs_dict)]
+        # the source picker is not a setting
+        self._factory = snapshot_controls(self, exclude=(self.combo,))
         self._load_sources()
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
 
     # --- helpers --------------------------------------------------------
     def _doc_from_target(self, target):

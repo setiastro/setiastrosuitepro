@@ -362,7 +362,8 @@ class QuickStackDialog(QDialog):
         brow.addWidget(self.btn_cancel)
         self.lbl_engine = QLabel("")
         self.lbl_engine.setToolTip(self.tr(
-            "What Quick Stack will run on. An NVIDIA GPU is used when PyTorch can reach it; "
+            "What Quick Stack will run on. A GPU is used when SASpro's hardware acceleration can reach it "
+            "(NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "
             "\"Use hardware acceleration if available\" in Stacking Settings turns it off."))
         brow.addWidget(self.lbl_engine)
         brow.addStretch(1)

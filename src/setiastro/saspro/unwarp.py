@@ -75,6 +75,8 @@ except Exception:                       # pragma: no cover
     unwarp_path = None
 
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _tr(text: str) -> str:
@@ -699,6 +701,8 @@ class UnwarpDialog(QDialog):
         self._result = None               # (image, wcs, header, geom)
 
         self._build_ui()
+        # Factory = as built, before a preset seeds it (open_unwarp_dialog).
+        self._factory = snapshot_controls(self, exclude=(self._combo_src,))
         self._populate_sources(document)
 
     # ── UI ────────────────────────────────────────────────────────────────
@@ -798,6 +802,9 @@ class UnwarpDialog(QDialog):
         btns.addWidget(self._btn_save)
 
         btns.addStretch(1)
+        self._btn_reset = make_reset_button(self)
+        self._btn_reset.clicked.connect(self._reset_to_factory)
+        btns.addWidget(self._btn_reset)
         self._btn_cancel = QPushButton(self.tr("Cancel"))
         self._btn_cancel.setVisible(False)
         self._btn_cancel.clicked.connect(self._cancel)
@@ -873,6 +880,11 @@ class UnwarpDialog(QDialog):
                 except Exception:
                     pass
         self._refresh_info()
+
+    def _reset_to_factory(self):
+        if self._worker is not None:
+            return                      # an unwarp is running
+        restore_controls(self._factory)
 
     # ── main-window / doc-manager resolution ─────────────────────────────────
 
@@ -1033,7 +1045,7 @@ class UnwarpDialog(QDialog):
         self._btn_cancel.setVisible(busy)
         for b in (self._btn_apply, self._btn_new, self._btn_save,
                   self._btn_close, self._combo_src, self._combo_interp,
-                  self._chk_expand, self._chk_nan):
+                  self._chk_expand, self._chk_nan, self._btn_reset):
             b.setEnabled(not busy)
         if busy:
             self._bar.setValue(0)

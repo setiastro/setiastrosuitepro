@@ -15,6 +15,8 @@ from PyQt6.QtWidgets import (
 from PyQt6 import sip
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 import cv2
 
 
@@ -1820,9 +1822,11 @@ class PlanetProjectionDialog(QDialog):
         self.btn_stop = QPushButton(self.tr("Stop Wiggle"))
         self.btn_stop.setEnabled(False)
         self.btn_close = QPushButton(self.tr("Close"))
+        self.btn_reset = make_reset_button(self)
         btns.addWidget(self.btn_generate)
         btns.addWidget(self.btn_stop)
         btns.addStretch(1)
+        btns.addWidget(self.btn_reset)
         btns.addWidget(self.btn_close)
         outer.addLayout(btns)
 
@@ -1891,6 +1895,14 @@ class PlanetProjectionDialog(QDialog):
         self.btn_generate.clicked.connect(self._generate)
         self.btn_stop.clicked.connect(self._stop_wiggle)
         self.btn_close.clicked.connect(self.close)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+
+        # Factory defaults for Reset. The background image file (a path) and
+        # the reviewed disk (own "Reset disk detection" button) stay.
+        self._factory = snapshot_controls(self)
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
 
     def _apply_initial_layout_fix(self):
         # Re-run the same logic you already use (rings_box/ps_box visibility + adjustSize)

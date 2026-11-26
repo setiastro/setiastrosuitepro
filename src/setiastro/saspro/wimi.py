@@ -77,6 +77,8 @@ import numpy.ma as ma
 from matplotlib.patches import Circle
 from setiastro.saspro.plate_solver import plate_solve_doc_inplace, _active_doc_from_parent, _get_seed_mode, _set_seed_mode, _as_header
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 #################################
 # PyQt6 Imports
@@ -642,6 +644,8 @@ CATEGORY_TO_COLOR = {
     "Regions & Clouds":             QColor( 95, 158, 160),  # cadet blue
     "Errors & Artefacts":           QColor(128, 128, 128),  # gray
 }
+# the Legend dialog edits CATEGORY_TO_COLOR in place; WIMI's Reset restores this
+_CATEGORY_TO_COLOR_FACTORY = {k: QColor(v) for k, v in CATEGORY_TO_COLOR.items()}
 
 
 
@@ -2231,9 +2235,18 @@ class ThreeDSettingsDialog(QDialog):
         # OK / Cancel
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                 QDialogButtonBox.StandardButton.Cancel)
+        btn_reset = make_reset_button(self)
+        btns.addButton(btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
+        btn_reset.clicked.connect(self._reset_to_factory)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+        self._factory = snapshot_controls(self)
+        self._factory_color = QColor(self.custom_color)
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
+        self.custom_color = QColor(self._factory_color)
 
     def _choose_color(self):
         col = QColorDialog.getColor(self.custom_color, self, "Select Object Color")
@@ -2752,13 +2765,23 @@ class HRSettingsDialog(QDialog):
                 self.dist_range_cb.currentText() == "Custom"
             )
         )
+        self._factory = snapshot_controls(self)
+        self._factory_color = QColor(self.custom_color)
         self._load_settings()
         # ── OK / Cancel ───────────────────────────────────────────────────
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btn_reset = make_reset_button(self)
+        btns.addButton(btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
+        btn_reset.clicked.connect(self._reset_to_factory)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+    def _reset_to_factory(self):
+        # committed (and saved) by OK like any other change; Cancel discards it
+        restore_controls(self._factory)
+        self.custom_color = QColor(self._factory_color)
  
     def _load_settings(self):
         s = QSettings()
@@ -3992,6 +4015,10 @@ class WIMIDialog(QDialog):
         self.settings_button.clicked.connect(self.open_settings_dialog)
         button_layout.addWidget(self.settings_button)
 
+        self.reset_button = make_reset_button(self)
+        self.reset_button.clicked.connect(self._reset_to_factory)
+        button_layout.addWidget(self.reset_button)
+
         # Add the horizontal layout to the main layout or the desired parent layout
         left_panel.addLayout(button_layout)
         
@@ -4559,6 +4586,17 @@ class WIMIDialog(QDialog):
         # Initialize selected color and font with default values
         self.selected_color = QColor(Qt.GlobalColor.red)  # Default annotation color
         self.selected_font = QFont("Arial", 12)  # Default font for text annotations
+
+        # Factory state for Reset. Left out: the view / action toggles (Advanced
+        # Search panel, crosshair, visible-only filter) and the controls that
+        # read their saved value while being built (reset from their defaults).
+        self._factory = snapshot_controls(self, exclude=(
+            self.advanced_search_button, self.crosshair_button,
+            self.toggle_visible_objects_button,
+            self.augment_with_gaia_checkbox, self.mag_limit_checkbox,
+            self.mag_limit_spinbox, self.minor_ast_H_spin, self.minor_ast_max_spin,
+            self.minor_com_H_spin, self.minor_com_max_spin, self.minor_time_offset_spin))
+        self._factory_annot = (QColor(self.selected_color), QFont(self.selected_font))
 
         # "Show Object Names" label styling — font + colour, independent of
         # the annotation-tools font (which only affects added text). Drawn
@@ -10791,6 +10829,52 @@ class WIMIDialog(QDialog):
         s.setValue("wimi/marker_style", self.marker_style)
         self.main_preview.draw_query_results()
         dialog.accept()
+
+    def _reset_to_factory(self):
+        """Search, filter, marker and label settings back to what a new user
+        gets. The image and its solve, the search region, results, annotations,
+        the minor-body target and database, saved type lists and the window
+        layout stay. Searches run behind a modal progress dialog, so there is
+        no running job to guard against here."""
+        restore_controls(self._factory)
+        # Built from their saved value: factory = the defaults of those reads.
+        # The checkbox goes first so the limit change does not re-filter.
+        self.augment_with_gaia_checkbox.setChecked(False)
+        self.mag_limit_checkbox.setChecked(False)
+        self.mag_limit_spinbox.setValue(18.0)
+        for key, w, v in (("wimi/minor/asteroid_H_max", self.minor_ast_H_spin, 20.0),
+                          ("wimi/minor/asteroid_max", self.minor_ast_max_spin, 20000),
+                          ("wimi/minor/comet_H_max", self.minor_com_H_spin, 15.0),
+                          ("wimi/minor/comet_max", self.minor_com_max_spin, 5000),
+                          ("wimi/minor/time_offset_hours", self.minor_time_offset_spin, 0.0)):
+            w.setValue(v)
+            self.settings.setValue(key, w.value())   # otherwise saved only by a search
+        # every object type selected, as populate_object_tree builds it
+        blocker = QSignalBlocker(self.object_tree)
+        for li in self._iterate_leaf_items():
+            li.setCheckState(0, Qt.CheckState.Checked)
+        blocker.unblock()
+        self._update_parent_states()
+        # Settings dialog: max results, marker style, object-name label style
+        self.max_results = 100
+        self.marker_style = "Circle"
+        self.settings.setValue("wimi/max_results", self.max_results)
+        self.settings.setValue("wimi/marker_style", self.marker_style)
+        self.settings.remove("wimi/name_label_font")
+        self.settings.remove("wimi/name_label_color")
+        self.name_label_font, self.name_label_color = self._load_name_label_style()
+        # annotation tool colour / font, and the legend colours
+        self.selected_color = QColor(self._factory_annot[0])
+        self.selected_font = QFont(self._factory_annot[1])
+        CATEGORY_TO_COLOR.update({k: QColor(c) for k, c in _CATEGORY_TO_COLOR_FACTORY.items()})
+        lg = getattr(self, "_legend_dialog", None)
+        if lg is not None:
+            for cat, sw in lg.swatches.items():
+                sw.setStyleSheet(f"background-color: {CATEGORY_TO_COLOR[cat].name()}; border:1px solid #000;")
+        for obj in getattr(self, "results", None) or []:
+            if "category" in obj:
+                obj["color"] = CATEGORY_TO_COLOR.get(obj["category"], QColor(255, 255, 255))
+        self.main_preview.draw_query_results()
 
     def force_blind_solve(self):
         doc = self._doc_for_solver()

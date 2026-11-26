@@ -88,6 +88,7 @@ from .doc_manager import ImageDocument  # add this import
 from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
+from setiastro.saspro.widgets.factory_reset import snapshot_controls, restore_controls
 
 # ---------------------------- Display helpers ----------------------------
 
@@ -644,6 +645,8 @@ class FrequencySeperationTab(QWidget):
         self._source_doc = None  # Track the source document separately
         self._cuda_warmed_up = False
         self._build_ui()
+        # Factory defaults for Reset All (GPU toggle: the detected default)
+        self._factory = snapshot_controls(self)
 
     def showEvent(self, event):
         """Warm up CUDA on first show to avoid initialization delays during processing."""
@@ -1716,56 +1719,16 @@ class FrequencySeperationTab(QWidget):
 
     def _reset_to_defaults(self):
         """Reset all parameters to defaults and re-run separation."""
-        if self.image is None:
+        # not while a split / HF pass runs: its result would land on the reset layers
+        if thread_running(self.proc_thread) or thread_running(self.hf_thread):
             return
 
-        # Reset parameters to defaults
-        self.method = 'Gaussian'
-        self.radius = 10.0
-        self.tolerance = 50
-        self.sharpen_scale = 1.0
-        self.wavelet_level = 2
-        self.wavelet_boost = 1.2
-        self.denoise_strength = 3.0
+        # Parameters back to the factory defaults (the controls' own handlers
+        # update self.method / radius / ... and the value labels)
+        restore_controls(self._factory)
 
-        # Update UI controls to match defaults (block signals to avoid re-triggering)
-        self.method_combo.blockSignals(True)
-        self.method_combo.setCurrentText('Gaussian')
-        self.method_combo.blockSignals(False)
-        self._toggle_tol_enabled(False)
-
-        self.radius_slider.blockSignals(True)
-        self.radius_slider.setValue(50)  # maps to 10.0
-        self.radius_slider.blockSignals(False)
-        self.radius_label.setText(self.tr("Radius: {0:.2f}").format(10.0))
-
-        self.tol_slider.blockSignals(True)
-        self.tol_slider.setValue(50)
-        self.tol_slider.blockSignals(False)
-        self.tol_label.setText(self.tr("Tolerance: {0}%").format(50))
-
-        self.cb_scale.setChecked(True)
-        self.scale_slider.blockSignals(True)
-        self.scale_slider.setValue(100)
-        self.scale_slider.blockSignals(False)
-        self.scale_label.setText(self.tr("Sharpen Scale: {0:.2f}").format(1.0))
-
-        self.cb_wavelet.setChecked(True)
-        self.wavelet_level_slider.blockSignals(True)
-        self.wavelet_level_slider.setValue(2)
-        self.wavelet_level_slider.blockSignals(False)
-        self.wavelet_level_label.setText(self.tr("Wavelet Level: {0}").format(2))
-
-        self.wavelet_boost_slider.blockSignals(True)
-        self.wavelet_boost_slider.setValue(120)
-        self.wavelet_boost_slider.blockSignals(False)
-        self.wavelet_boost_label.setText(self.tr("Wavelet Boost: {0:.2f}").format(1.2))
-
-        self.cb_denoise.setChecked(False)
-        self.denoise_slider.blockSignals(True)
-        self.denoise_slider.setValue(30)
-        self.denoise_slider.blockSignals(False)
-        self.denoise_label.setText(self.tr("Denoise Strength: {0:.2f}").format(3.0))
+        if self.image is None:
+            return
 
         # Clear HF enhancement history
         self._hf_history.clear()

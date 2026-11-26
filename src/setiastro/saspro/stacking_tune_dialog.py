@@ -38,6 +38,8 @@ from PyQt6.QtWidgets import (
     QLabel, QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
+from setiastro.saspro.widgets.factory_reset import make_reset_button
+
 
 def _tr(text: str) -> str:
     return QCoreApplication.translate("StackingTuneDialog", text)
@@ -223,6 +225,9 @@ class StackingTuneDialog(QDialog):
         self._worker = None
         self._result = None
         self._measured = {}          # backend -> (workers, fps), from a Run
+        # For Reset: a first-time user's inputs are the caller's frame size
+        # and depth, with every measurement ticked (_load_last_inputs' default).
+        self._factory_inputs = (int(frame_shape[0]), int(frame_shape[1]), int(n_frames))
 
         # What was used last time wins over the caller's guess. Typing a
         # 46.8 MP sensor and a 64-frame depth once should be enough; the
@@ -325,12 +330,15 @@ class StackingTuneDialog(QDialog):
             "Write the settings above. A Run already saves what it measured, "
             "so this is for keeping your own edits on top of it."
         ))
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_cancel.setEnabled(False)
         btns = QHBoxLayout()
         btns.addStretch(1)
         btns.addWidget(self.btn_run)
         btns.addWidget(self.btn_cancel)
         btns.addWidget(self.btn_apply)
+        btns.addWidget(self.btn_reset)
         btns.addWidget(self.btn_close)
 
         self.results = self._build_results()
@@ -474,15 +482,16 @@ class StackingTuneDialog(QDialog):
                                          "{1} ({2:.1f} frames/s)").format(
                                              key.upper(), nw, fps))
 
-    def _load_results(self):
-        """Fill the controls from QSettings — the dialog is usable without a run."""
+    def _load_results(self, factory=False):
+        """Fill the controls from QSettings — the dialog is usable without a run.
+        factory=True fills in the defaults below instead (never measured)."""
         try:
             from PyQt6.QtCore import QSettings
             from setiastro.saspro import stacking_worker_tune as T
             s = QSettings()
 
             def _b(key, default):
-                v = s.value(key, default)
+                v = default if factory else s.value(key, default)
                 if isinstance(v, bool):
                     return v
                 if v in (None, ""):
@@ -490,7 +499,7 @@ class StackingTuneDialog(QDialog):
                 return str(v).strip().lower() not in ("0", "false", "no", "off")
 
             def _i(key, default):
-                v = s.value(key, default)
+                v = default if factory else s.value(key, default)
                 try:
                     return int(v)
                 except Exception:
@@ -552,6 +561,24 @@ class StackingTuneDialog(QDialog):
             self._append("Settings saved.")
         self.close()
 
+    def _reset_to_factory(self):
+        """Every input and setting back to a never-run optimizer's, saved at
+        once like a Run. Past measurements stay recorded: Auto still uses them."""
+        if self._thread is not None:
+            return
+        h, w, n = self._factory_inputs
+        self.h_spin.setValue(h)
+        self.w_spin.setValue(w)
+        self.n_spin.setValue(n)
+        self.size_hint.setText("")
+        for cb in (self.cb_detect, self.cb_band, self.cb_warp, self.cb_debayer):
+            cb.setChecked(True)
+        self._load_results(factory=True)
+        self._remember()
+        if self._apply_results():
+            self._append("")
+            self._append("Settings reset to their defaults.")
+
     # ── helpers ─────────────────────────────────────────────────────────────
     def _hw_line(self):
         try:
@@ -581,6 +608,7 @@ class StackingTuneDialog(QDialog):
         self.btn_cancel.setEnabled(True)
         self.btn_close.setEnabled(False)
         self.btn_apply.setEnabled(False)
+        self.btn_reset.setEnabled(False)
         self.results.setEnabled(False)
         for wdg in (self.h_spin, self.w_spin, self.n_spin,
                     self.cb_detect, self.cb_band, self.cb_warp,
@@ -625,6 +653,7 @@ class StackingTuneDialog(QDialog):
         self.btn_cancel.setEnabled(False)
         self.btn_close.setEnabled(True)
         self.btn_apply.setEnabled(True)
+        self.btn_reset.setEnabled(True)
         self.results.setEnabled(True)
         for wdg in (self.h_spin, self.w_spin, self.n_spin,
                     self.cb_detect, self.cb_band, self.cb_warp,

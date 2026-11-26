@@ -16,6 +16,8 @@ except Exception:
     load_image = None
 
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # Luminance machinery is shared with the standalone Recombine Luminance tool,
 # so the Advanced section here exposes exactly the same knobs and produces
@@ -305,14 +307,16 @@ class RGBCombinationDialogPro(QDialog):
 
         # ── buttons
         self.btn_combine = QPushButton(self.tr("Combine"))
+        self.btn_reset   = make_reset_button(self)
         self.btn_cancel  = QPushButton(self.tr("Cancel"))
         self.btn_cancel.clicked.connect(self.reject)
         self.btn_combine.clicked.connect(self._combine)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
 
         btns = QHBoxLayout()
         self.btn_help = make_help_button("rgb_combination", self)
         btns.addWidget(self.btn_help)
-        btns.addStretch(); btns.addWidget(self.btn_combine); btns.addWidget(self.btn_cancel)
+        btns.addStretch(); btns.addWidget(self.btn_combine); btns.addWidget(self.btn_reset); btns.addWidget(self.btn_cancel)
 
         # ── layout: two columns, so the luminance warning + advanced options
         # sit beside the source pickers instead of stacking the dialog to
@@ -345,6 +349,15 @@ class RGBCombinationDialogPro(QDialog):
         self._populate_views()
         self._refresh_mode()
         self._refresh_luminance_enabled()
+        # Factory settings: the L channel switch and the luminance options.
+        # The sources (views / files mode, the channel pickers, loaded files)
+        # and the Advanced disclosure are left alone.
+        self._factory = snapshot_controls(self, exclude=(
+            self.load_files_radio, self.use_views_radio,
+            self.cmb_r, self.cmb_g, self.cmb_b, self.cmb_l, self.btn_adv))
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
 
     # ── luminance UI construction ─────────────────────────────────────
 

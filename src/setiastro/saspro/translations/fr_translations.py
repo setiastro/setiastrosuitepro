@@ -17772,3 +17772,99 @@ _ADDITIONS_2026_11_25_BANDING = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
     TRANSLATIONS_FR.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_START_TILES = {
+    'StartPanel': {
+        'Workflow Assistant': 'Assistant de flux de travail',
+        'Blink frames': 'Blinker les images',
+        'Customize…': 'Personnaliser…',
+        'Add or remove tiles': 'Ajouter ou retirer des tuiles',
+        'Remove from Start Panel': 'Retirer du panneau de démarrage',
+        'Customize Start Panel': 'Personnaliser le panneau de démarrage',
+        'Choose up to {0} tools for the Start Panel. Drag them into the order you want.': "Choisissez jusqu'à {0} outils pour le panneau de démarrage. Faites-les glisser dans l'ordre souhaité.",
+        'All tools': 'Tous les outils',
+        'Search': 'Rechercher',
+        'Add': 'Ajouter',
+        'On the Start Panel': 'Sur le panneau de démarrage',
+        '{0} of {1}': '{0} sur {1}',
+        'The Start Panel is full. Remove a tool to add another.': 'Le panneau de démarrage est plein. Retirez un outil pour en ajouter un autre.',
+        'Move Up': 'Monter',
+        'Move Down': 'Descendre',
+        'Remove': 'Retirer',
+        'Reset to Defaults': 'Rétablir les valeurs par défaut',
+        'OK': 'OK',
+        'Cancel': 'Annuler',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
+    TRANSLATIONS_FR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_STUDIO_APP = {
+    '_SyQonStudioHubPage': {
+        'SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.': "SyQon Studio {0} n'a pas d'outil en ligne de commande (il est arrivé avec la 1.2) : SASpro ouvre donc l'image dans l'application Studio. Traitez-la dans Studio puis enregistrez-la ; SASpro importe ce que vous enregistrez.",
+    },
+    '_SyQonStudioCLIThread': {
+        'The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.\n{0}': "L'image est ouverte dans SyQon Studio. Traitez-la dans Studio et enregistrez le résultat dans ce dossier ; SASpro l'importe depuis celui-ci. Annuler conserve l'image d'origine.\n{0}",
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_STUDIO_APP.items():
+    TRANSLATIONS_FR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_QUICK_STACK_GPU = {
+    'QuickStackDialog': {
+        'What Quick Stack will run on. A GPU is used when SASpro\'s hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.': "Ce sur quoi Quick Stack va s'exécuter. Un GPU est utilisé lorsque l'accélération matérielle de SASpro peut y accéder (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML ou Apple Metal) ; « Utiliser l'accélération matérielle si disponible » dans les paramètres d'empilement le désactive.",
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_QUICK_STACK_GPU.items():
+    TRANSLATIONS_FR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-26: fewer top-level menus (What's In My... into Analysis, Header Mods
+# & Misc into Tools, Shortcuts into View, Scripts into Workflows); tour restyle.
+_ADDITIONS_2026_11_26_MENUS = {
+    'AstroSuiteProMainWindow': {
+        'All Analysis Tools': "Tous les outils d'analyse",
+    },
+    'FirstStepsTour': {
+        'First Steps': 'Premiers pas',
+    },
+    'FirstRunDialog': {
+        "💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.": '💡 Curieux des raccourcis clavier? Un aide-mémoire complet se trouve dans Vue → Raccourcis.',
+        '💡 Batch convert files from one format to another with Tools → Header Mods & Misc → Batch Converter.': "💡 Convertissez des fichiers d'un format à un autre avec Outils → Modifs En-tête et Divers → Convertisseur par lot.",
+        '💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.': "💡 L'aide-mémoire des icônes dans Vue → Raccourcis montre d'un coup d'œil chaque icône de la barre d'outils avec sa fonction.",
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_MENUS.items():
+    TRANSLATIONS_FR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_FACTORY_RESET = {
+    'Common': {
+        'Reset every setting in this tool to its factory default': "Réinitialiser tous les réglages de cet outil à leurs valeurs d'usine",
+    },
+    'StackingSuiteDialog': {
+        'Reset': 'Réinitialiser',
+        'A stacking run is in progress. Reset is available once it has finished.': "Un empilement est en cours. La réinitialisation sera disponible une fois qu'il sera terminé.",
+        'Reset Stacking Settings': "Réinitialiser les paramètres d'empilement",
+        "Reset every stacking setting to its factory default?\n\nThis covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.\n\nKept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.": "Réinitialiser tous les paramètres d'empilement à leurs valeurs d'usine?\n\nCela concerne cette fenêtre et les options des onglets de Stacking Suite: calibration, drizzle, MFDeconv, comète, rejet et tout le reste.\n\nConservés: le dossier d'empilement et les autres chemins, les images chargées, les masters et leurs choix Dark/Flat, les ensembles d'alignement et les images de référence, vos profils enregistrés, et ce qu'Optimiser… a mesuré. Une tolérance de regroupement est conservée tant que les images sont regroupées selon elle.",
+    },
+    'SLaPToolkitDialog': {
+        "Set the palette preset back to this mode's default.\nThe Mode is kept: changing it re-masks the active image.": "Remet le préréglage de palette à la valeur par défaut de ce mode.\nLe mode est conservé: le changer refait le masque de l'image active.",
+    },
+    'QPreviewDialog': {
+        'Set Q back to {0:.2f} for every filter': 'Remettre Q à {0:.2f} pour tous les filtres',
+    },
+    'TransitFitDialog': {
+        'Reset the Fit options to their factory defaults': "Réinitialiser les options d'ajustement à leurs valeurs d'usine",
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_FACTORY_RESET.items():
+    TRANSLATIONS_FR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

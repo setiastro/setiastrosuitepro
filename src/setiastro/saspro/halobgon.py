@@ -23,6 +23,7 @@ except Exception:
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
+from setiastro.saspro.widgets.factory_reset import snapshot_controls, restore_controls
 
 # =============================================================================
 # Helpers
@@ -425,6 +426,7 @@ class HaloBGonDialogPro(QDialog):
         # starts it at once instead).
         self._timer.start(0)
         self.resize(900, 620)
+        self._factory = snapshot_controls(self)   # before any preset seeds the controls
 
     def _debounce(self): self._timer.start(180)
 
@@ -644,8 +646,7 @@ class HaloBGonDialogPro(QDialog):
 
 
     def _reset(self):
-        self.sl.setValue(0)
-        self.cb_linear.setChecked(False)
+        restore_controls(self._factory)     # Reduction, Linear data, Apply to
         self._update_preview()
 
     def closeEvent(self, ev):

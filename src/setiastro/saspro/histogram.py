@@ -13,6 +13,8 @@ from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QPalette
 from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 def _to_float_preserve(img):
     if img is None: return None
@@ -56,6 +58,7 @@ class HistogramDialog(QDialog):
         self.sensor_max01 = 1.0
         self.sensor_native_max = None     # user ADU max (e.g., 65532)
         self.native_theoretical_max = None
+        self.sensor_max01_generic = None  # float / unknown depth: user max in 0..1
 
         # histogram cache
         self._bin_count       = 512
@@ -211,9 +214,17 @@ class HistogramDialog(QDialog):
 
         btn_close = QPushButton(self.tr("Close"), self)
         btn_close.clicked.connect(self.accept)
-        main_layout.addWidget(btn_close)
+        btn_reset = make_reset_button(self)
+        btn_reset.clicked.connect(self._reset_to_factory)
+        close_row = QHBoxLayout()
+        close_row.addWidget(btn_reset)
+        close_row.addWidget(btn_close, 1)
+        main_layout.addLayout(close_row)
 
         self.setLayout(main_layout)
+        # Factory display options (zoom, log X/Y). The sensor true-max is a
+        # measured camera value, not a display option, so Reset keeps it.
+        self._factory = snapshot_controls(self)
 
 
 
@@ -235,6 +246,9 @@ class HistogramDialog(QDialog):
     def _toggle_log_y(self, on: bool):
         self.log_y = bool(on)
         self._draw_histogram()
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
 
     # ---------- drawing ----------
     # ---------- drawing ----------
@@ -842,6 +856,14 @@ class HistogramDialog(QDialog):
                     self.sensor_native_max = float(val)
                 except Exception:
                     self.sensor_native_max = None
+        else:
+            # float / unknown depth: the normalized max saved by _prompt_sensor_max
+            val = self.settings.value("histogram/sensor_max01_generic", None)
+            if val is not None:
+                try:
+                    self.sensor_max01_generic = float(val)
+                except Exception:
+                    self.sensor_max01_generic = None
 
         self._recompute_effective_max01()
 
@@ -849,6 +871,8 @@ class HistogramDialog(QDialog):
         if self.native_theoretical_max and self.sensor_native_max:
             self.sensor_max01 = float(self.sensor_native_max) / float(self.native_theoretical_max)
             self.sensor_max01 = float(np.clip(self.sensor_max01, 1e-6, 1.0))
+        elif not self.native_theoretical_max and self.sensor_max01_generic:
+            self.sensor_max01 = float(np.clip(self.sensor_max01_generic, 1e-6, 1.0))
         else:
             self.sensor_max01 = 1.0
 
@@ -885,7 +909,7 @@ class HistogramDialog(QDialog):
                 6
             )
             if ok:
-                self.sensor_max01 = float(val)
+                self.sensor_max01_generic = float(val)     # applied by the recompute below
                 self.settings.setValue("histogram/sensor_max01_generic", float(val))
 
         self._recompute_effective_max01()

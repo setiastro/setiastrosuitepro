@@ -88,6 +88,8 @@ from setiastro.saspro.sfcc import (
     SFCCDialog,
 )
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _tr(text: str) -> str:
@@ -711,6 +713,7 @@ class NBExtractDialog(SFCCDialog):
             "neutralize_chk", "open_sasp_btn",
             "add_curve_btn", "remove_curve_btn", "star_combo",
             "btn_help",
+            "factory_reset_btn",    # SPCC's Reset; NBExtract has its own (nb_reset_btn)
         ]
         for attr in _sfcc_only:
             w = getattr(self, attr, None)
@@ -806,7 +809,7 @@ class NBExtractDialog(SFCCDialog):
         f = self.nb_calibrate_btn.font()
         f.setBold(True)
         self.nb_calibrate_btn.setFont(f)
-        self.nb_calibrate_btn.clicked.connect(self._calibrate_mixing_matrix)
+        self.nb_calibrate_btn.clicked.connect(lambda: self._nb_step(self._calibrate_mixing_matrix))
         row_act.addWidget(self.nb_calibrate_btn)
 
         self.nb_extract_btn = QPushButton(self.tr("Step 3: Extract Channels"))
@@ -814,8 +817,13 @@ class NBExtractDialog(SFCCDialog):
         f2.setBold(True)
         self.nb_extract_btn.setFont(f2)
         self.nb_extract_btn.setEnabled(False)
-        self.nb_extract_btn.clicked.connect(self._extract_channels)
+        self.nb_extract_btn.clicked.connect(lambda: self._nb_step(self._extract_channels))
         row_act.addWidget(self.nb_extract_btn)
+
+        # The inherited "Reset View/Close" only closes; this is the real Reset
+        self.nb_reset_btn = make_reset_button(self)
+        self.nb_reset_btn.clicked.connect(self._reset_to_factory)
+        row_act.addWidget(self.nb_reset_btn)
 
         self.nb_stretch_chk = QCheckBox(self.tr("Match output median to source"))
         self.nb_stretch_chk.setChecked(True)
@@ -949,8 +957,55 @@ class NBExtractDialog(SFCCDialog):
         # Remember which filter was last selected, too.
         self.nb_preset_combo.currentIndexChanged.connect(self._save_nb_settings)
 
+        # Factory defaults of this group, before any remembered value lands.
+        # The bandpass spinners follow the filter (see _reset_to_factory);
+        # the Custom line names are the user's own labels.
+        self._nb_factory = snapshot_controls(grp, exclude=(
+            self.nb_center1_spin, self.nb_center2_spin,
+            self.nb_bw1_spin, self.nb_bw2_spin, self.nb_custom_names_row))
+
         self._place_nb_help_button()
         self._on_preset_changed()
+
+    def _nb_step(self, fn):
+        """Run a Step with Reset disabled: the Steps pump events while they work."""
+        self.nb_reset_btn.setEnabled(False)
+        try:
+            return fn()
+        finally:
+            self.nb_reset_btn.setEnabled(True)
+
+    def _reset_to_factory(self):
+        """Every NBExtract setting back to its factory default.
+
+        Overrides SFCCDialog's: SPCC's filter / sensor / white-reference
+        choices are hidden here and are not NBExtract's to reset (they are
+        shared with SPCC through its settings).
+
+        Filter type, match-median, max stars and Q from the snapshot; the
+        bandpass is the factory filter's own (not its remembered one) and is
+        remembered as such, as a user edit is. Other filters' remembered
+        bandpasses and the Custom line names are kept.
+        """
+        if not self.nb_reset_btn.isEnabled():
+            return
+        restore_controls(self._nb_factory)
+        lines = FILTER_PRESETS.get(self.nb_preset_combo.currentText())
+        if lines and self.nb_preset_combo.currentText() != FILTER_PRESET_CUSTOM:
+            l1, l2 = lines
+            for spin, val in ((self.nb_center1_spin, LINE_CENTERS_NM[l1]),
+                              (self.nb_center2_spin, LINE_CENTERS_NM[l2]),
+                              (self.nb_bw1_spin, DEFAULT_BW_NM[l1]),
+                              (self.nb_bw2_spin, DEFAULT_BW_NM[l2])):
+                spin.setValue(val)
+        # Star detection is SFCC's, whose settings load inside its constructor:
+        # these are the defaults SFCCDialog.load_settings falls back to.
+        self.sep_thr_spin.setValue(5)
+        self.auto_sigma_chk.setChecked(True)
+        # Q is derived from the mixing matrix: with a calibration in hand its
+        # default is that auto value, before one it is 1.0 (the snapshot's).
+        if self._A_matrix is not None:
+            self._set_auto_q(self._A_matrix)
 
     def _place_nb_help_button(self):
         """
@@ -1154,7 +1209,7 @@ class NBExtractDialog(SFCCDialog):
 
     # ── fetch_stars override ──────────────────────────────────────────────────
     def fetch_stars(self):
-        super().fetch_stars()
+        self._nb_step(super().fetch_stars)
         if not getattr(self, "star_list", None):
             return
 

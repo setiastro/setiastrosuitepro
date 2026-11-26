@@ -92,6 +92,15 @@ def reset_backend():
     _RESOLVE_NOTE = "not resolved"
 
 
+def use_device(torch, dev) -> None:
+    """Detect on this device from now on: for a process that has already
+    picked its card (Quick Stack's GPU process), so that stars are found where
+    the frames are, whatever the default preference would pick."""
+    global _TORCH, _DEVICE, _RESOLVED, _RESOLVE_NOTE
+    _TORCH, _DEVICE, _RESOLVED = torch, dev, True
+    _RESOLVE_NOTE = f"set by the caller ({dev})"
+
+
 def _resolve():
     """
     Resolve (torch, device) once per process. Never raises: a failure here
@@ -225,8 +234,14 @@ def gpu_available() -> bool:
         return False
 
 
-def _inference_ctx(torch):
-    """no_grad/inference_mode that will not explode on older or DML builds."""
+def _inference_ctx(torch, dev=None):
+    """no_grad/inference_mode that will not explode on older or DML builds.
+
+    DirectML cannot take inference tensors ("Cannot set version_counter for
+    inference tensor" on the first op), so it gets no_grad: before this every
+    detection on DirectML failed and the caller fell back to SEP."""
+    if dev is not None and getattr(dev, "type", "") == "privateuseone":
+        return torch.no_grad()
     try:
         if getattr(torch, "inference_mode", None) is not None:
             _C = getattr(torch, "_C", None)
@@ -371,7 +386,7 @@ def detect_stars_full(
     halo = max(sep_r, half, 2) + 1
 
     try:
-        with _inference_ctx(torch):
+        with _inference_ctx(torch, dev):
             if on_device:
                 xt = a.detach().to(dev, dtype=torch.float32).reshape(1, 1, H, W)
             else:

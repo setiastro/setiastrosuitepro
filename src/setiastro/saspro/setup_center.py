@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 
-from PyQt6.QtCore import (QCoreApplication, QEvent, QPoint, QPointF, QRectF, QSize, Qt,
+from PyQt6.QtCore import (QCoreApplication, QEvent, QPoint, QRectF, QSize, Qt,
                           QTimer, QTranslator, QUrl, pyqtSignal)
 from PyQt6.QtGui import (QColor, QDesktopServices, QGuiApplication, QKeySequence,
                          QPainter, QPen, QPixmap)
@@ -32,6 +32,8 @@ from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFra
 from setiastro.saspro import workspace_layout
 from setiastro.saspro.setup_manager import (GAIA_SEEN_KEY, REMINDER_OFF_KEY, STEPS,
                                             setup_manager)
+from setiastro.saspro.widgets.theme_colors import (CARD_RADIUS, CONTROL_RADIUS, PALETTE_EVENTS,
+                                                   restyle, theme_colors)
 
 TUTORIAL_URL = "https://youtu.be/zBUOZl2OgaY"
 DISCORD_URL = "https://discord.gg/vvYH82C82f"
@@ -66,68 +68,74 @@ def in_language(code: str, context: str, text: str) -> str:
     return (t.translate(context, text) if t else "") or text
 
 
-# state -> colour
-_COLORS = {
-    "ok": QColor("#3dbf9f"), "warn": QColor("#e0a83c"), "todo": QColor("#8899ee"),
-    "blocked": QColor("#e0a83c"), "busy": QColor("#6f86ff"), "checking": QColor("#5a5a80"),
-}
+def _dot_color(state: str) -> QColor:
+    """Done and needs-attention keep their colours in every theme (deeper on a
+    light one, to read on it); the rest are the theme's own."""
+    c = theme_colors()
+    if state == "ok":
+        return QColor("#3dbf9f" if c.dark else "#24997c")
+    if state in ("warn", "blocked"):
+        return QColor("#e0a83c" if c.dark else "#b5751c")
+    return c.muted if state == "checking" else c.accent      # todo, busy
 
-_STYLE = """
-#SetupCenter { background-color: #13131f; }
-#sc_header { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0e0e20, stop:1 #1c1c38);
-             border-bottom: 2px solid #2e2e5a; }
-#sc_title { color: #ffffff; font-size: 20px; font-weight: 700; background: transparent; }
-#sc_sub { color: #8888bb; font-size: 12px; background: transparent; }
-#sc_version { color: #8888bb; font-size: 12px; background: transparent; }
-#sc_rail { background-color: #0f0f1b; border-right: 1px solid #222240; }
-#sc_row { background: transparent; border: none; border-radius: 8px; }
-#sc_row:hover, #sc_row:focus { background-color: #181830; }
-#sc_row[current="true"] { background-color: #20204a; }
-#sc_row_title { color: #dde0ff; font-size: 13px; font-weight: 600; background: transparent; }
-#sc_row_sub { color: #8888bb; font-size: 11px; background: transparent; }
-#sc_scroll, #sc_page { background-color: #13131f; border: none; }
-#sc_h1 { color: #ffffff; font-size: 21px; font-weight: 700; }
-#sc_lead { color: #c0c0dc; font-size: 13px; }
-#sc_small { color: #9a9abf; font-size: 12px; }
-#sc_label { color: #7788cc; font-size: 11px; font-weight: 700; }
-#sc_sign { color: #7788cc; font-size: 12px; font-style: italic; }
-#sc_panel { background-color: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 10px; }
-#sc_state { color: #ffffff; font-size: 15px; font-weight: 600; background: transparent; }
-#sc_detail { color: #aaaacc; font-size: 12px; background: transparent; }
-#sc_choice { background-color: #1a1a2e; border: 2px solid #2a2a4a; border-radius: 12px; }
-#sc_choice:hover, #sc_choice:focus { border-color: #5a5a9c; }
-#sc_choice[chosen="true"] { border-color: #6f86ff; background-color: #1f1f3f; }
-#sc_choice_title { color: #ffffff; font-size: 15px; font-weight: 700; background: transparent; }
-#sc_choice_body { color: #aaaacc; font-size: 12px; background: transparent; }
-#sc_footer { background-color: #0e0e1c; border-top: 1px solid #222240; }
-#sc_globe { font-size: 16px; background: transparent; }
-QComboBox#sc_lang { background-color: #1e1e40; color: #dde0ff; border: 1px solid #3a3a70;
-    border-radius: 7px; padding: 5px 24px 5px 10px; font-size: 12px; }
-QComboBox#sc_lang:hover, QComboBox#sc_lang:focus { border-color: #5566aa; }
-QComboBox#sc_lang::drop-down { subcontrol-origin: padding; subcontrol-position: center right;
-    width: 18px; border: none; }
-QComboBox#sc_lang QAbstractItemView { background-color: #1a1a2e; color: #dde0ff;
-    border: 1px solid #3a3a70; selection-background-color: #28285a; outline: none; }
-QPushButton#sc_primary { color: #ffffff; border: none; border-radius: 7px; padding: 9px 20px;
-    font-size: 13px; font-weight: 700;
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3344bb, stop:1 #5566dd); }
-QPushButton#sc_primary:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4455cc, stop:1 #6677ee); }
-QPushButton#sc_primary:disabled { background: #2a2a44; color: #77779a; }
-QPushButton#sc_plain { background-color: #1e1e40; color: #a9b8ff; border: 1px solid #3a3a70;
-    border-radius: 7px; padding: 8px 16px; font-size: 12px; font-weight: 600; }
-QPushButton#sc_plain:hover { background-color: #28285a; color: #ffffff; border-color: #5566aa; }
-QPushButton#sc_plain:disabled { color: #66668a; border-color: #2a2a4a; background-color: #171728; }
-QPushButton#sc_plain[chosen="true"] { border-color: #6f86ff; color: #ffffff; background-color: #28285a; }
-QPushButton#sc_link { background: transparent; border: none; color: #8fa0ff; font-size: 12px;
-    text-align: left; padding: 2px 0px; }
-QPushButton#sc_link:hover { color: #ffffff; text-decoration: underline; }
-QPushButton:focus { outline: none; }
-QPushButton#sc_plain:focus, QPushButton#sc_primary:focus { border: 1px solid #aab4ff; }
-QProgressBar { background-color: #0f0f1b; border: 1px solid #2a2a4a; border-radius: 5px; max-height: 8px; min-height: 8px; }
-QProgressBar::chunk { background-color: #6f86ff; border-radius: 4px; }
-QScrollBar:vertical { background: #1a1a2e; width: 8px; border-radius: 4px; }
-QScrollBar::handle:vertical { background: #3a3a6a; border-radius: 4px; min-height: 20px; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+
+def _style() -> str:
+    """Sizes here, colours from the theme (widgets/theme_colors.py), so it is
+    built again when the theme changes. One button at a time is in the
+    selection colour: the one to press next."""
+    c = {k: v.name() for k, v in vars(theme_colors()).items() if isinstance(v, QColor)}
+    r = CONTROL_RADIUS
+    return f"""
+#SetupCenter {{ background-color: {c['window']}; }}
+#sc_header {{ background-color: {c['window']}; border-bottom: 1px solid {c['line']}; }}
+#sc_title {{ color: {c['text']}; font-size: 20px; font-weight: 700; background: transparent; }}
+#sc_sub {{ color: {c['soft']}; font-size: 12px; background: transparent; }}
+#sc_version {{ color: {c['soft']}; font-size: 12px; background: transparent; }}
+#sc_rail {{ background-color: {c['raised']}; border-right: 1px solid {c['line']}; }}
+#sc_row {{ background: transparent; border: none; border-radius: {r}px; }}
+#sc_row:hover, #sc_row:focus {{ background-color: {c['hover']}; }}
+#sc_row[current="true"] {{ background-color: {c['selected']}; }}
+#sc_row_title {{ color: {c['text']}; font-size: 13px; font-weight: 600; background: transparent; }}
+#sc_row_sub {{ color: {c['soft']}; font-size: 11px; background: transparent; }}
+#sc_scroll, #sc_page {{ background-color: {c['window']}; border: none; }}
+#sc_h1 {{ color: {c['text']}; font-size: 21px; font-weight: 700; }}
+#sc_lead {{ color: {c['text']}; font-size: 13px; }}
+#sc_small {{ color: {c['soft']}; font-size: 12px; }}
+#sc_label {{ color: {c['soft']}; font-size: 11px; font-weight: 700; }}
+#sc_sign {{ color: {c['soft']}; font-size: 12px; font-style: italic; }}
+#sc_panel {{ background-color: {c['raised']}; border: 1px solid {c['line']}; border-radius: {CARD_RADIUS}px; }}
+#sc_state {{ color: {c['text']}; font-size: 15px; font-weight: 600; background: transparent; }}
+#sc_detail {{ color: {c['soft']}; font-size: 12px; background: transparent; }}
+#sc_choice {{ background-color: {c['raised']}; border: 2px solid {c['line']}; border-radius: {CARD_RADIUS}px; }}
+#sc_choice:hover, #sc_choice:focus {{ border-color: {c['border']}; }}
+#sc_choice[chosen="true"] {{ border-color: {c['accent']}; }}
+#sc_choice_title {{ color: {c['text']}; font-size: 15px; font-weight: 700; background: transparent; }}
+#sc_choice_body {{ color: {c['soft']}; font-size: 12px; background: transparent; }}
+#sc_footer {{ background-color: {c['window']}; border-top: 1px solid {c['line']}; }}
+#sc_globe {{ font-size: 16px; background: transparent; }}
+QPushButton#sc_primary {{ color: {c['on_accent']}; background-color: {c['accent']};
+    border: 1px solid {c['accent']}; border-radius: {r}px; padding: 8px 20px;
+    font-size: 13px; font-weight: 700; }}
+QPushButton#sc_primary:hover {{ background-color: {c['accent_hover']}; border-color: {c['accent_hover']}; }}
+QPushButton#sc_primary:focus {{ border-color: {c['on_accent_soft']}; outline: none; }}
+QPushButton#sc_primary:disabled {{ background-color: {c['raised']}; border-color: {c['line']}; color: {c['muted']}; }}
+QPushButton#sc_plain {{ background-color: {c['raised']}; color: {c['text']}; border: 1px solid {c['border']};
+    border-radius: {r}px; padding: 8px 16px; font-size: 12px; font-weight: 600; }}
+QPushButton#sc_plain:hover {{ background-color: {c['hover']}; }}
+QPushButton#sc_plain:focus {{ border-color: {c['accent']}; outline: none; }}
+QPushButton#sc_plain:disabled {{ color: {c['muted']}; border-color: {c['line']}; background-color: {c['window']}; }}
+QPushButton#sc_plain[chosen="true"] {{ border-color: {c['accent']}; background-color: {c['selected']}; }}
+QPushButton#sc_link {{ background: transparent; border: none; color: {c['link']}; font-size: 12px;
+    text-align: left; padding: 2px 0px; }}
+QPushButton#sc_link:hover, QPushButton#sc_link:focus {{ text-decoration: underline; outline: none; }}
+QProgressBar#sc_bar {{ background-color: {c['window']}; border: 1px solid {c['line']}; border-radius: 4px;
+    max-height: 8px; min-height: 8px; }}
+QProgressBar#sc_bar::chunk {{ background-color: {c['accent']}; border-radius: 3px; }}
+QScrollArea#sc_scroll QScrollBar:vertical {{ background: transparent; width: 8px; border: none; }}
+QScrollArea#sc_scroll QScrollBar::handle:vertical {{ background: {c['border']}; border-radius: 4px; min-height: 20px; }}
+QScrollArea#sc_scroll QScrollBar::add-line:vertical, QScrollArea#sc_scroll QScrollBar::sub-line:vertical {{ height: 0px; }}
+QScrollArea#sc_scroll QScrollBar::add-page:vertical, QScrollArea#sc_scroll QScrollBar::sub-page:vertical {{
+    background: transparent; }}
 """
 
 
@@ -159,10 +167,10 @@ class _Dot(QWidget):
     def paintEvent(self, _ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        c = _COLORS.get(self._state, _COLORS["todo"])
+        c = _dot_color(self._state)
         r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
         if self._state in ("busy", "checking"):
-            p.setPen(QPen(QColor("#2a2a4a"), 2.5))
+            p.setPen(QPen(theme_colors().line, 2.5))
             p.drawEllipse(r)
             p.setPen(QPen(c, 2.5))
             p.drawArc(r, int(-self._angle * 16), 100 * 16)
@@ -187,20 +195,6 @@ class _Dot(QWidget):
             p.setFont(f)
             mark = "!" if self._state in ("warn", "blocked") else (str(self._number) or "")
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, mark if mark != "0" else "")
-        p.end()
-
-
-class _Combo(QComboBox):
-    """The style sheet's drop-down has no arrow of its own: draw a chevron."""
-
-    def paintEvent(self, ev):
-        super().paintEvent(ev)
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor("#a9b8ff"), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                      Qt.PenJoinStyle.RoundJoin))
-        x, y = self.width() - 15.0, self.height() / 2.0
-        p.drawPolyline([QPointF(x - 4, y - 2), QPointF(x, y + 2), QPointF(x + 4, y - 2)])
         p.end()
 
 
@@ -334,14 +328,14 @@ def _layout_picture(kind: str, theme: str, second_window: bool) -> QPixmap:
         row(23, 8, right * .78, start=2)
         p.setBrush(work)
         p.drawRect(QRectF(13, 35, right - 26, h - 47))
-        p.setPen(QPen(QColor("#4a4a86"), 1))     # the start panel
-        p.setBrush(QColor("#14142a"))
-        p.drawRoundedRect(QRectF(right / 2 - 42, 50, 84, 46), 4, 4)
+        p.setPen(QPen(line, 1))                  # the start panel, in the window colour
+        p.setBrush(win)
+        p.drawRoundedRect(QRectF(right / 2 - 42, 50, 84, 46), 3, 3)
         p.setPen(Qt.PenStyle.NoPen)
-        for i in range(6):
-            p.setBrush(QColor("#4652cf" if i == 0 else "#2b2b52"))
+        for i in range(6):                       # the first tile in the selection colour
+            p.setBrush(QColor("#5f91e6") if i == 0 else line.darker(120))
             p.drawRoundedRect(QRectF(right / 2 - 36 + 25 * (i % 3), 56 + 11 * (i // 3), 22, 8), 2, 2)
-        p.setBrush(QColor("#3a3a66"))
+        p.setBrush(bar.lighter(130))
         for i in range(4):
             p.drawRoundedRect(QRectF(right / 2 - 36 + 18.6 * i, 80, 16, 11), 2, 2)
         for y in (43, 55, 67, 79):
@@ -446,6 +440,7 @@ class _StatePanel(QFrame):
         top.addLayout(col, 1)
         lay.addLayout(top)
         self.bar = QProgressBar()
+        self.bar.setObjectName("sc_bar")
         self.bar.setTextVisible(False)
         self.bar.hide()
         lay.addWidget(self.bar)
@@ -506,7 +501,7 @@ class SetupCenter(QDialog):
         self.setModal(False)
         self.setWindowTitle(_t("Welcome and Setup"))
         self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
-        self.setStyleSheet(_STYLE)
+        self.setStyleSheet(_style())
 
         # Pages, in order. Back from 1.x, the layout question opens instead of
         # the welcome; afterwards it stays available as its own page.
@@ -554,6 +549,11 @@ class SetupCenter(QDialog):
         self._mgr.finished.connect(self._on_job_finished)
         self._mgr.refresh()
         self._go(start if start in self._keys else self._keys[0])
+
+    def changeEvent(self, ev):
+        if ev.type() in PALETTE_EVENTS:          # the theme changed
+            restyle(self, _style())
+        super().changeEvent(ev)
 
     # ---- frame -----------------------------------------------------------
     def _build_header(self) -> QWidget:
@@ -616,7 +616,7 @@ class SetupCenter(QDialog):
         row.setSpacing(8)
         globe = QLabel("🌐")
         globe.setObjectName("sc_globe")
-        self._lang = _Combo()
+        self._lang = QComboBox()
         self._lang.setObjectName("sc_lang")
         self._lang.setCursor(Qt.CursorShape.PointingHandCursor)
         for code, name in get_available_languages().items():
@@ -1030,6 +1030,12 @@ class SetupCenter(QDialog):
     def _sync_gaia(self):
         item = self._mgr.items["gaia"]
         self._gaia.show_item(item)
+        # Bright while there is something to do here (as Install and Download
+        # are); once any set is in, Next is the bright one.
+        look = "sc_primary" if item.state in ("todo", "warn") else "sc_plain"
+        if self._gaia_btn.objectName() != look:
+            self._gaia_btn.setObjectName(look)
+            _restyle(self._gaia_btn)
         for key, lb in self._gaia_lines.items():
             n = item.extra.get(key)
             lb.setText(_t("{0} of {1} sets").format(*n) if n else "")
@@ -1347,17 +1353,21 @@ def offer_setup(parent, step: str, title: str, text: str, detail: str = "") -> b
 
 # ── the reminder ────────────────────────────────────────────────────────────
 
-_PILL_STYLE = """
-#SetupPill { background-color: #1a1a2e; border: 1px solid #3a3a6a; border-radius: 10px; }
-#sp_text { color: #ffffff; font-size: 13px; font-weight: 600; background: transparent; }
-#sp_sub { color: #aaaacc; font-size: 12px; background: transparent; }
-QPushButton#sp_go { color: #ffffff; border: none; border-radius: 6px; padding: 6px 14px; font-weight: 600;
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3344bb, stop:1 #5566dd); }
-QPushButton#sp_go:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4455cc, stop:1 #6677ee); }
-QPushButton#sp_x { background: transparent; border: none; color: #8888bb; font-size: 11px; padding: 2px 4px; }
-QPushButton#sp_x:hover { color: #ffffff; }
-QProgressBar { background-color: #0f0f1b; border: 1px solid #2a2a4a; border-radius: 4px; max-height: 6px; min-height: 6px; }
-QProgressBar::chunk { background-color: #6f86ff; border-radius: 3px; }
+def _pill_style() -> str:
+    """The setup window's look, in small."""
+    c = {k: v.name() for k, v in vars(theme_colors()).items() if isinstance(v, QColor)}
+    return f"""
+#SetupPill {{ background-color: {c['window']}; border: 1px solid {c['border']}; border-radius: {CARD_RADIUS}px; }}
+#sp_text {{ color: {c['text']}; font-size: 13px; font-weight: 600; background: transparent; }}
+#sp_sub {{ color: {c['soft']}; font-size: 12px; background: transparent; }}
+QPushButton#sp_go {{ color: {c['on_accent']}; background-color: {c['accent']}; border: none;
+    border-radius: {CONTROL_RADIUS}px; padding: 6px 14px; font-weight: 600; }}
+QPushButton#sp_go:hover {{ background-color: {c['accent_hover']}; }}
+QPushButton#sp_x {{ background: transparent; border: none; color: {c['muted']}; font-size: 11px; padding: 2px 4px; }}
+QPushButton#sp_x:hover {{ color: {c['text']}; }}
+QProgressBar#sp_bar {{ background-color: {c['raised']}; border: 1px solid {c['line']}; border-radius: 4px;
+    max-height: 6px; min-height: 6px; }}
+QProgressBar#sp_bar::chunk {{ background-color: {c['accent']}; border-radius: 3px; }}
 """
 
 
@@ -1368,7 +1378,7 @@ class SetupPill(QFrame):
     def __init__(self, main_window):
         super().__init__(main_window)
         self.setObjectName("SetupPill")
-        self.setStyleSheet(_PILL_STYLE)
+        self.setStyleSheet(_pill_style())
         self.setFixedWidth(330)
         self._mw = main_window
         self._mgr = setup_manager(main_window)
@@ -1384,6 +1394,7 @@ class SetupPill(QFrame):
         self._text = _label("", "sp_text")
         self._sub = _label("", "sp_sub")
         self._bar = QProgressBar()
+        self._bar.setObjectName("sp_bar")
         self._bar.setTextVisible(False)
         col.addWidget(self._text)
         col.addWidget(self._sub)
@@ -1469,6 +1480,11 @@ class SetupPill(QFrame):
         if not self.isVisible():
             self.show()
         self.raise_()
+
+    def changeEvent(self, ev):
+        if ev.type() in PALETTE_EVENTS:          # the theme changed
+            restyle(self, _pill_style())
+        super().changeEvent(ev)
 
     def _not_now(self):
         self._closed.add(self._showing)

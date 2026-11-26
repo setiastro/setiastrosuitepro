@@ -15,6 +15,7 @@ from PyQt6.QtGui import QIcon, QDesktopServices, QPixmap
 from setiastro.saspro.resources import starnet_path
 
 from setiastro.saspro.syqon_paths import syqon_prism_model_path
+from setiastro.saspro.widgets.factory_reset import make_reset_button
 from setiastro.saspro.denoise_engines.syqon_prism_engine import (
     prism_denoise_rgb01,
     clear_prism_models_cache,
@@ -187,8 +188,11 @@ class SyQonToolsDialog(QDialog):
         self.btn_close = QPushButton(self.tr("Close"), self)
         self.btn_launch.clicked.connect(self._launch_selected_tool)
         self.btn_close.clicked.connect(self.reject)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         btns.addStretch(1)
         btns.addWidget(self.btn_launch)
+        btns.addWidget(self.btn_reset)
         btns.addWidget(self.btn_close)
         lay.addLayout(btns)
 
@@ -227,6 +231,23 @@ class SyQonToolsDialog(QDialog):
         except Exception:
             pass
         
+    def _reset_to_factory(self):
+        """Every page that knows its factory settings goes back to them. The
+        tool-family choice is just which page is showing, so it stays."""
+        emb = getattr(self.page_starless, "_embedded_dlg", None)
+        pages = (self.page_studio, self.page_denoise, self.page_sharpen, emb)
+        for page in pages:
+            thr = getattr(page, "proc_thr", None)
+            try:
+                if thr is not None and thr.isRunning():
+                    return
+            except RuntimeError:
+                pass
+        for page in pages:
+            fn = getattr(page, "_reset_to_factory", None)
+            if callable(fn):
+                fn()
+
     def _maybe_embed_starless(self, *_):
         if self.cmb_family.currentData() != "starless":
             return
@@ -430,6 +451,14 @@ class _SyQonStarlessHubPage(QWidget):
 
 class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
     _WORKER_LABEL = "SyQon Prism Denoise"
+    # Factory settings: the fallbacks __init__ reads when nothing is saved,
+    # in the get_preset / seed_from_preset keys.
+    _FACTORY = {
+        "prism_model_kind": "prism_mini", "prism_tile_size": 512,
+        "prism_overlap": 64, "prism_pad": 64, "prism_strength": 0.85,
+        "prism_use_mtf": True, "prism_mtf_target_median": 0.10,
+        "prism_use_amp": False,
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -695,6 +724,23 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         self.spin_mtf_median.setEnabled(self.chk_mtf.isChecked())
 
         self._refresh_state()
+
+    def _reset_to_factory(self):
+        # Installed models and the live-preview toggle are left alone.
+        if self.proc_thr is not None and self.proc_thr.isRunning():
+            return
+        self.seed_from_preset(self._FACTORY)
+        self._save_settings()   # otherwise saved only on Process
+
+    def _save_settings(self):
+        self.settings.setValue("syqon/prism_tile_size", int(self.spin_tile.value()))
+        self.settings.setValue("syqon/prism_overlap", int(self.spin_overlap.value()))
+        self.settings.setValue("syqon/prism_use_amp", bool(self.chk_amp.isChecked()))
+        self.settings.setValue("syqon/prism_use_mtf", bool(self.chk_mtf.isChecked()))
+        self.settings.setValue("syqon/prism_pad", int(self.spin_pad.value()))
+        self.settings.setValue("syqon/prism_strength", float(self.spin_strength.value()))
+        self.settings.setValue("syqon/prism_mtf_target_median", float(self.spin_mtf_median.value()))
+        self.settings.setValue("syqon/prism_model_kind", self.model_kind())
 
     def _toggle_live_preview_window(self, on: bool):
             on = bool(on)
@@ -1079,14 +1125,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         self.doc = doc
         self.main = main
 
-        self.settings.setValue("syqon/prism_tile_size", int(self.spin_tile.value()))
-        self.settings.setValue("syqon/prism_overlap", int(self.spin_overlap.value()))
-        self.settings.setValue("syqon/prism_use_amp", bool(self.chk_amp.isChecked()))
-        self.settings.setValue("syqon/prism_use_mtf", bool(self.chk_mtf.isChecked()))
-        self.settings.setValue("syqon/prism_pad", int(self.spin_pad.value()))
-        self.settings.setValue("syqon/prism_strength", float(self.spin_strength.value()))
-        self.settings.setValue("syqon/prism_mtf_target_median", float(self.spin_mtf_median.value()))
-        self.settings.setValue("syqon/prism_model_kind", self.model_kind())
+        self._save_settings()
 
         src = np.asarray(self.doc.image).astype(np.float32, copy=False)
         orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
@@ -1203,6 +1242,15 @@ _SYQON_PARALLAX_BUY_URL = "https://syqon.it/parallax"
 
 class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
     _WORKER_LABEL = "SyQon Parallax"
+    # Factory settings: the fallbacks __init__ reads when nothing is saved,
+    # in the get_preset / seed_from_preset keys.
+    _FACTORY = {
+        "parallax_mode": "classic", "parallax_correct": True,
+        "parallax_star_level": 3, "parallax_sharpen_alpha": 0.7,
+        "parallax_tile_size": 512, "parallax_overlap": 64, "parallax_pad": 96,
+        "parallax_use_mtf": True, "parallax_mtf_target": 0.15,
+        "parallax_mtf_linked": False, "parallax_batch_size": "Auto",
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1576,6 +1624,27 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
         self.spin_mtf.setEnabled(en)
         self.chk_mtf_linked.setEnabled(en)
 
+    def _reset_to_factory(self):
+        # Installed models are left alone.
+        if self.proc_thr is not None and self.proc_thr.isRunning():
+            return
+        self.seed_from_preset(self._FACTORY)
+        self._save_settings()   # otherwise saved only on Process
+
+    def _save_settings(self):
+        s = self.settings
+        s.setValue("syqon/parallax_correct",       bool(self.chk_correction.isChecked()))
+        s.setValue("syqon/parallax_star_level",    int(self.spin_star.value()))
+        s.setValue("syqon/parallax_sharpen_alpha", float(self.spin_sharpen.value()))
+        s.setValue("syqon/parallax_tile",          int(self.spin_tile.value()))
+        s.setValue("syqon/parallax_overlap",       int(self.spin_overlap.value()))
+        s.setValue("syqon/parallax_pad",           int(self.spin_pad.value()))
+        s.setValue("syqon/parallax_use_mtf",       bool(self.chk_mtf.isChecked()))
+        s.setValue("syqon/parallax_mtf_target",    float(self.spin_mtf.value()))
+        s.setValue("syqon/parallax_mtf_linked",    bool(self.chk_mtf_linked.isChecked()))
+        s.setValue("syqon/parallax_mode",          self.mode())
+        s.setValue("syqon/parallax_batch_size",    str(self.cmb_batch.currentData() or "Auto"))
+
     def mode(self) -> str:
         try:
             return str(self.cmb_mode.currentData() or "classic").lower()
@@ -1827,18 +1896,9 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
         self.doc  = doc
         self.main = main
  
-        self.settings.setValue("syqon/parallax_correct",       do_correct)
-        self.settings.setValue("syqon/parallax_star_level",    star_level)
-        self.settings.setValue("syqon/parallax_sharpen_alpha", sharpen_alpha)
-        self.settings.setValue("syqon/parallax_tile",          int(self.spin_tile.value()))
-        self.settings.setValue("syqon/parallax_overlap",       int(self.spin_overlap.value()))
-        self.settings.setValue("syqon/parallax_pad",           int(self.spin_pad.value()))
-        self.settings.setValue("syqon/parallax_use_mtf",       bool(self.chk_mtf.isChecked()))
-        self.settings.setValue("syqon/parallax_mtf_target",    float(self.spin_mtf.value()))
+        self._save_settings()
         mode = self.mode()
-        self.settings.setValue("syqon/parallax_mode", mode)
-        batch_size = str(self.cmb_batch.currentData() or "Auto")
-        self.settings.setValue("syqon/parallax_batch_size", batch_size)        
+        batch_size = str(self.cmb_batch.currentData() or "Auto")        
  
         src = np.asarray(doc.image, dtype=np.float32)
         self._orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
@@ -2580,8 +2640,10 @@ def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
         if doc_in_unit_range:
             final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
 
+        # Studio before 1.2 ran in the app: the user chose what it did.
         step_name = {"prism": "Denoised", "parallax": "Sharpened",
-                     "axiom": "Stars Removed", "deep-gradient": "Gradient Removed"}.get(fam, "SyQon Studio")
+                     "axiom": "Stars Removed", "deep-gradient": "Gradient Removed"}.get(
+                         "" if info.get("mode") == "app" else fam, "SyQon Studio")
         meta = {
             "step_name": step_name,
             "command_id": "syqontools",

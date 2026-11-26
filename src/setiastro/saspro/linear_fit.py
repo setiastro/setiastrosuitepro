@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import (
     QPushButton, QGroupBox, QMessageBox, QGridLayout, QWidget, QProgressBar
 )
 from PyQt6.QtGui import QIcon
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _tr(text: str) -> str:
@@ -342,7 +344,12 @@ class LinearFitDialog(QDialog):
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self._go)
         btns.rejected.connect(self.reject)
+        btn_reset = make_reset_button(self)
+        btn_reset.clicked.connect(self._reset_to_factory)
+        btns.addButton(btn_reset, QDialogButtonBox.ButtonRole.ResetRole)
         v.addWidget(btns)
+        # Factory defaults for Reset; the mono reference view is left alone.
+        self._factory = snapshot_controls(self, exclude=(getattr(self, "combo_ref", None),))
 
         # Small pre-read medians for info (non-blocking)
         try:
@@ -353,6 +360,10 @@ class LinearFitDialog(QDialog):
                 self.status.setText(self.tr("Mono image selected. Choose a reference view."))
         except Exception:
             pass
+
+    def _reset_to_factory(self):
+        # the whole dialog is disabled while a fit runs, so no job guard needed
+        restore_controls(self._factory)
 
     def _linear_fit_params(self) -> dict:
         """

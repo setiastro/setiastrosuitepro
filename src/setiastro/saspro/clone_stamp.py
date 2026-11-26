@@ -17,6 +17,28 @@ from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_
 from setiastro.saspro.eraser_brush import EraserFillPicker, fill_dab_inplace, display_fill
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
+
+
+def _reset_eraser_fill(picker) -> None:
+    """The eraser fill back to its factory default: Black, grey swatch.
+    EraserFillPicker reads its remembered choice while it is built, so a
+    snapshot cannot see the default; these are the defaults its QSettings
+    reads fall back to. The choice is shared by Clone Stamp and Blemish
+    Blaster, as it is when the user changes it."""
+    if picker is None:
+        return
+    picker._color = QColor(128, 128, 128)          # KEY_COLOR default "#808080"
+    try:
+        QSettings().setValue(picker.KEY_COLOR, picker._color.name())
+    except Exception:
+        pass
+    picker._paint_swatch()
+    if picker.rb_black.isChecked():
+        picker._show_value()
+    else:
+        picker.rb_black.setChecked(True)            # its toggle handler saves KEY_FILL
 
 def _circle_mask(radius: int, feather: float) -> np.ndarray:
     """
@@ -303,6 +325,7 @@ class CloneStampDialogPro(QDialog):
         self.btn_undo = QPushButton(self.tr("Undo"))
         self.btn_redo = QPushButton(self.tr("Redo"))
         self.btn_apply = QPushButton(self.tr("Apply to Document"))
+        self.btn_reset = make_reset_button(self)
         self.btn_close = QPushButton(self.tr("Close"))
 
         self.btn_undo.setEnabled(False)
@@ -315,6 +338,7 @@ class CloneStampDialogPro(QDialog):
         bb.addWidget(self.btn_redo)
         bb.addSpacing(12)
         bb.addWidget(self.btn_apply)
+        bb.addWidget(self.btn_reset)
         bb.addWidget(self.btn_close)
 
         root = QHBoxLayout(self)
@@ -369,6 +393,7 @@ class CloneStampDialogPro(QDialog):
         self.btn_zoom_fit.clicked.connect(self._fit_view)
 
         self.btn_apply.clicked.connect(self._commit_to_doc)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_close.clicked.connect(self.reject)
         self.btn_undo.clicked.connect(self._undo_step)
         self.btn_redo.clicked.connect(self._redo_step)
@@ -410,6 +435,17 @@ class CloneStampDialogPro(QDialog):
         self._update_brush_preview()
         self._update_display_autostretch()
         self._fit_view()
+        # Factory brush settings. Left alone: the Clone/Eraser mode (the active
+        # tool), the preview stretch, and the eraser fill (reset explicitly).
+        self._factory = snapshot_controls(self, exclude=(
+            self.rb_clone, self.rb_eraser, self.eraser_fill,
+            self.cb_autostretch, self.s_target_median, self.cb_linked))
+
+    def _reset_to_factory(self):
+        if self._painting:
+            return
+        restore_controls(self._factory)
+        _reset_eraser_fill(self.eraser_fill)
 
     def _make_stretched_buffer(self, src: np.ndarray) -> np.ndarray:
         src = np.asarray(src, dtype=np.float32)

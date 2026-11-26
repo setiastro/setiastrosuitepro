@@ -35,6 +35,8 @@ from setiastro.saspro.legacy.numba_utils import (
 
 
 from setiastro.saspro.wcs_update import update_wcs_after_crop
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 import cv2
 import math
@@ -106,11 +108,18 @@ class RescaleDialog(QDialog):
             QDialogButtonBox.StandardButton.Cancel, self)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
+        btn_reset = make_reset_button(self)
+        btn_reset.clicked.connect(self._reset_to_factory)
+        bb.addButton(btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
         lay.addWidget(bb)
 
         self.cmb_method.currentIndexChanged.connect(self._on_method_changed)
         self.spn_factor.valueChanged.connect(self._update_summary)
         self._on_method_changed()
+        self._factory = snapshot_controls(self)
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
 
     def _on_method_changed(self):
         method = self.cmb_method.currentData()
@@ -291,6 +300,9 @@ class ResizeCanvasDialog(QDialog):
         )
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
+        btn_reset = make_reset_button(self)
+        btn_reset.clicked.connect(self._reset_to_factory)
+        bb.addButton(btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
         lay.addWidget(bb)
 
         # Signals
@@ -306,6 +318,13 @@ class ResizeCanvasDialog(QDialog):
         self._set_anchor("center")
         self._sync_units_mode()
         self._update_summary()
+        # New size defaults to the current image size, pinned to the centre.
+        self._factory = snapshot_controls(self)
+        self._factory_anchor = self._anchor
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
+        self._set_anchor(self._factory_anchor)   # the pin buttons set it on click only
 
     def _units(self) -> str:
         return str(self.cmb_units.currentData() or "px")

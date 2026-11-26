@@ -21,6 +21,8 @@ from setiastro.saspro.ser_stacker import analyze_ser, stack_ser, AnalyzeResult
 from setiastro.saspro.ser_stacker_dialog import _push_as_new_doc
 from setiastro.saspro.imageops.serloader import open_planetary_source
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 # ── Status sentinels ─────────────────────────────────────────────────────────
 _ST_PENDING = "pending"
 _ST_RUNNING = "running"
@@ -500,9 +502,11 @@ class SERBatchDialog(QDialog):
         self.btn_close  = QPushButton(self.tr("Close"), self)
         self.btn_run.setEnabled(False)
         self.btn_cancel.setEnabled(False)
+        self.btn_reset  = make_reset_button(self)
         act.addWidget(self.btn_run)
         act.addWidget(self.btn_cancel)
         act.addStretch(1)
+        act.addWidget(self.btn_reset)
         act.addWidget(self.btn_close)
 
         # Help button
@@ -519,6 +523,16 @@ class SERBatchDialog(QDialog):
         self.btn_run.clicked.connect(self._on_run)
         self.btn_cancel.clicked.connect(self._on_cancel)
         self.btn_close.clicked.connect(self.close)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        self._factory = snapshot_controls(self)
+
+    def _reset_to_factory(self):
+        """Drizzle back to Off (the rest is inherited from the viewer; the
+        files and output folder are left alone)."""
+        w = self._worker
+        if w is not None and w.isRunning():
+            return
+        restore_controls(self._factory)
 
     # ── File management ───────────────────────────────────────────────────────
     def _add_files(self, paths: List[str]):

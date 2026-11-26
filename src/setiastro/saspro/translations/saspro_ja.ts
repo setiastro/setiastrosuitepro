@@ -4707,6 +4707,10 @@ Tools you added are taken off, the ones you removed come back, and the order is 
       <source>Reduce row or column banding across the whole image</source>
       <translation>画像全体の行方向または列方向のバンディングを低減</translation>
     </message>
+    <message>
+      <source>All Analysis Tools</source>
+      <translation>すべての解析ツール</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -28216,6 +28220,30 @@ Calibrate only the {2} new frame(s) and reuse the existing calibrated frames for
       <source>✓ same session</source>
       <translation>✓ 同じセッション</translation>
     </message>
+    <message>
+      <source>Reset</source>
+      <translation>リセット</translation>
+    </message>
+    <message>
+      <source>A stacking run is in progress. Reset is available once it has finished.</source>
+      <translation>スタッキングを実行中です。終了後にリセットできます。</translation>
+    </message>
+    <message>
+      <source>Reset Stacking Settings</source>
+      <translation>スタッキング設定をリセット</translation>
+    </message>
+    <message>
+      <source>Reset every stacking setting to its factory default?
+
+This covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.
+
+Kept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.</source>
+      <translation>すべてのスタッキング設定を初期設定に戻しますか？
+
+対象はこのウィンドウと Stacking Suite の各タブのオプション（キャリブレーション、ドリズル、MFDeconv、彗星、リジェクションなど）です。
+
+保持されるもの：スタッキングフォルダーとその他のパス、読み込んだフレーム、マスターとその Dark/Flat の選択、位置合わせセットと基準フレーム、保存したプロファイル、「最適化…」の測定結果。フレームがグループ化の許容値でグループ分けされている間は、その許容値も保持されます。</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -36319,6 +36347,10 @@ Use [ and ] to decrease/increase brush size.</source>
       <source>Zoom Out</source>
       <translation>ズームアウト</translation>
     </message>
+    <message>
+      <source>Reset every setting in this tool to its factory default</source>
+      <translation>このツールのすべての設定を初期設定に戻す</translation>
+    </message>
   </context>
   <context>
     <name>CommonUtilities</name>
@@ -40840,6 +40872,18 @@ Drawn chart: a vector star chart (SVG / PDF / PNG / new image).</source>
       <source>💡 You can undo and redo edits all the way back to the original using the History stack.</source>
       <translation>💡 履歴スタックを使うと、元の画像まで遡って編集を元に戻したりやり直したりできます。</translation>
     </message>
+    <message>
+      <source>💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.</source>
+      <translation>💡 キーボードショートカットが気になりますか？「表示 → ショートカット」に完全なチートシートがあります。</translation>
+    </message>
+    <message>
+      <source>💡 Batch convert files from one format to another with Tools → Header Mods &amp; Misc → Batch Converter.</source>
+      <translation>💡 「ツール → ヘッダー修正とその他 → バッチコンバーター」で、ファイルをある形式から別の形式に一括変換できます。</translation>
+    </message>
+    <message>
+      <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
+      <translation>💡 「表示 → ショートカット」の「アイコン チートシート」で、すべてのツールバーアイコンとその機能を一覧できます。</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -41002,6 +41046,10 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
       <translation>サブフレームが完全に重ならなかった部分では、スタック画像の縁がぎざぎざになります。暗い縁やノイズの多い縁、ときには縞模様です。まずそこをトリミングしてください。ストレッチ、グラデーション除去、色較正はどれも画像全体を測定するため、こうした縁があると結果が狂います。
 
 トリミングは 機能 → 修復 &amp; レタッチ → トリミング にあります。枠をきれいな領域の内側にドラッグし、「適用」をクリックします。</translation>
+    </message>
+    <message>
+      <source>First Steps</source>
+      <translation>はじめの一歩</translation>
     </message>
   </context>
   <context>
@@ -52292,6 +52340,10 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>Zoom Out</source>
       <translation>ズームアウト</translation>
     </message>
+    <message>
+      <source>Set Q back to {0:.2f} for every filter</source>
+      <translation>すべてのフィルターの Q を {0:.2f} に戻す</translation>
+    </message>
   </context>
   <context>
     <name>QuadBuildWorker</name>
@@ -52851,6 +52903,10 @@ Masters and frames dropped on this window, or added with the lights, are sorted 
     <message>
       <source>✓ the only flat</source>
       <translation>✓ 唯一のフラット</translation>
+    </message>
+    <message>
+      <source>What Quick Stack will run on. A GPU is used when SASpro's hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.</source>
+      <translation>Quick Stack の実行環境です。SASpro のハードウェアアクセラレーションから GPU にアクセスできる場合は GPU を使用します（NVIDIA CUDA、AMD ROCm、Intel XPU、DirectML、Apple Metal）。スタッキング設定の「利用可能な場合はハードウェアアクセラレーションを使用」でオフにできます。</translation>
     </message>
   </context>
   <context>
@@ -56451,6 +56507,12 @@ Make sure the tool is registered in the SASpro toolbar.</source>
     <message>
       <source>🔄 Invert Masked Region</source>
       <translation>🔄 マスク領域を反転</translation>
+    </message>
+    <message>
+      <source>Set the palette preset back to this mode's default.
+The Mode is kept: changing it re-masks the active image.</source>
+      <translation>パレットプリセットをこのモードの既定値に戻します。
+モードは保持されます（変更するとアクティブな画像のマスクが作り直されます）。</translation>
     </message>
   </context>
   <context>
@@ -62809,6 +62871,78 @@ The aligned files remain in the output directory; you can import them manually.<
       <source>Open Image with Workflow Assistant</source>
       <translation>ワークフローアシスタントで画像を開く</translation>
     </message>
+    <message>
+      <source>Blink frames</source>
+      <translation>フレームをブリンク</translation>
+    </message>
+    <message>
+      <source>Customize…</source>
+      <translation>カスタマイズ…</translation>
+    </message>
+    <message>
+      <source>Add or remove tiles</source>
+      <translation>タイルの追加と削除</translation>
+    </message>
+    <message>
+      <source>Remove from Start Panel</source>
+      <translation>スタートパネルから削除</translation>
+    </message>
+    <message>
+      <source>Customize Start Panel</source>
+      <translation>スタートパネルのカスタマイズ</translation>
+    </message>
+    <message>
+      <source>Choose up to {0} tools for the Start Panel. Drag them into the order you want.</source>
+      <translation>スタートパネルに置くツールを最大 {0} 個選んでください。ドラッグして好きな順番に並べ替えられます。</translation>
+    </message>
+    <message>
+      <source>All tools</source>
+      <translation>すべてのツール</translation>
+    </message>
+    <message>
+      <source>Search</source>
+      <translation>検索</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>追加</translation>
+    </message>
+    <message>
+      <source>On the Start Panel</source>
+      <translation>スタートパネル上</translation>
+    </message>
+    <message>
+      <source>{0} of {1}</source>
+      <translation>{1} 中 {0}</translation>
+    </message>
+    <message>
+      <source>The Start Panel is full. Remove a tool to add another.</source>
+      <translation>スタートパネルがいっぱいです。別のツールを追加するには、どれかを削除してください。</translation>
+    </message>
+    <message>
+      <source>Move Up</source>
+      <translation>上へ移動</translation>
+    </message>
+    <message>
+      <source>Move Down</source>
+      <translation>下へ移動</translation>
+    </message>
+    <message>
+      <source>Remove</source>
+      <translation>削除</translation>
+    </message>
+    <message>
+      <source>Reset to Defaults</source>
+      <translation>デフォルトにリセット</translation>
+    </message>
+    <message>
+      <source>OK</source>
+      <translation>OK</translation>
+    </message>
+    <message>
+      <source>Cancel</source>
+      <translation>キャンセル</translation>
+    </message>
   </context>
   <context>
     <name>StatusLogDock</name>
@@ -66726,6 +66860,10 @@ binned points and the model, residuals underneath.</source>
     <message>
       <source>χ²_red (photometric errors) = {0:.2f} → errors × {1:.2f};  red-noise β = {2:.2f}</source>
       <translation>χ²_red (測光誤差) = {0:.2f} → 誤差 × {1:.2f}、赤色ノイズ β = {2:.2f}</translation>
+    </message>
+    <message>
+      <source>Reset the Fit options to their factory defaults</source>
+      <translation>フィットのオプションを初期設定に戻す</translation>
     </message>
   </context>
   <context>
@@ -72176,6 +72314,12 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
       <source>Writing temp image…</source>
       <translation>一時画像を書き込み中…</translation>
     </message>
+    <message>
+      <source>The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.
+{0}</source>
+      <translation>画像は SyQon Studio で開かれています。そこで処理し、結果をこのフォルダーに保存してください。SASpro がそこから取り込みます。キャンセルすると元の画像のままです。
+{0}</translation>
+    </message>
   </context>
   <context>
     <name>_SyQonStudioHubPage</name>
@@ -72454,6 +72598,10 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>✘  Could not validate: {0}</source>
       <translation>✘  検証できませんでした: {0}</translation>
+    </message>
+    <message>
+      <source>SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.</source>
+      <translation>SyQon Studio {0} にはコマンドラインツールがありません（1.2 で追加されました）。そのため SASpro は画像を Studio アプリで開きます。そこで処理して保存してください。保存した画像を SASpro が取り込みます。</translation>
     </message>
   </context>
   <context>

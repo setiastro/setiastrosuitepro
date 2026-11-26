@@ -65,9 +65,9 @@ SASPRO_TIPS = [
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 Automate your entire processing workflow with Function Bundles and View Bundles — save and replay your full process in one click."),
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 Did you know SASpro can project any galaxy to be viewed top-down? Check it out under the Functions menu."),
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 Easily convert a mono image to a 3-channel color image under the Edit menu."),
-    QT_TRANSLATE_NOOP("FirstRunDialog", "💡 Curious about keyboard shortcuts? There's a full cheat sheet under the Shortcuts menu."),
+    QT_TRANSLATE_NOOP("FirstRunDialog", "💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts."),
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 Bored? Check under the About menu. You're welcome. 🙂"),
-    QT_TRANSLATE_NOOP("FirstRunDialog", "💡 Batch convert files from one format to another using Batch File Conversion under Header Mods & Misc."),
+    QT_TRANSLATE_NOOP("FirstRunDialog", "💡 Batch convert files from one format to another with Tools → Header Mods & Misc → Batch Converter."),
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 Use Image Peeker to analyze your image and check if your sensor is too close to your reducer."),
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 The Dither Analysis tool visualizes your guiding drift and dither patterns after a stacking run."),
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 You can annotate your images with compass overlays, scale bars, and object labels directly from WIMI."),
@@ -82,7 +82,7 @@ SASPRO_TIPS = [
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 You can batch crop all your open views at the same time from the crop tool."),
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 The Header Viewer shows all FITS keywords for any open image."),
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 You can open multiple images at once — or drag and drop multiple files directly onto SASpro."),
-    QT_TRANSLATE_NOOP("FirstRunDialog", "💡 The Icon Cheat Sheet under Help shows every toolbar icon with its function at a glance."),
+    QT_TRANSLATE_NOOP("FirstRunDialog", "💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance."),
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 Press F1 (About → Documentation) to browse and search every SASpro help page."),
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 DarkStar separates stars from nebulosity — find it under Remove Stars."),
     QT_TRANSLATE_NOOP("FirstRunDialog", "💡 You can link zoom and pan between windows using the View Sync controls."),
@@ -174,14 +174,27 @@ def _show_tip_bar(main_window) -> None:
     s.setValue("tips/recently_seen", seen[-10:])
     s.sync()
 
-    # Build the bar
+    # Build the bar, in the theme's colours like SASpro's other panels.
+    from setiastro.saspro.widgets.theme_colors import theme_colors
+    c = theme_colors()
     bar = QWidget(main_window)
     bar.setObjectName("tip_bar")
-    bar.setStyleSheet("""
-        QWidget#tip_bar {
-            background-color: rgba(20, 20, 40, 230);
-            border-top: 1px solid #2a2a4a;
-        }
+    bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    bar.setStyleSheet(f"""
+        QWidget#tip_bar {{
+            background-color: {c.window.name()};
+            border-top: 1px solid {c.border.name()};
+        }}
+        QLabel#tip_text {{
+            color: {c.text.name()}; font-size: 13px; font-weight: 500; background: transparent; border: none;
+        }}
+        QPushButton#tip_off {{
+            background: transparent; color: {c.muted.name()}; border: none; font-size: 10px;
+            text-decoration: underline;
+        }}
+        QPushButton#tip_off:hover {{ color: {c.text.name()}; }}
+        QPushButton#tip_x {{ background: transparent; color: {c.muted.name()}; border: none; font-size: 11px; }}
+        QPushButton#tip_x:hover {{ color: {c.text.name()}; }}
     """)
 
     h = QHBoxLayout(bar)
@@ -189,35 +202,18 @@ def _show_tip_bar(main_window) -> None:
     h.setSpacing(10)
 
     lbl = QLabel(_tr(tip))
-    lbl.setStyleSheet("color: #cccccc; font-size: 13px; font-weight: 500; background: transparent; border: none;")
+    lbl.setObjectName("tip_text")
     lbl.setWordWrap(False)
     h.addWidget(lbl, 1)
 
     btn_dontshow = QPushButton(_tr("Don't show tips"))
-    btn_dontshow.setStyleSheet("""
-        QPushButton {
-            background: transparent;
-            color: #555588;
-            border: none;
-            font-size: 10px;
-            text-decoration: underline;
-        }
-        QPushButton:hover { color: #8888bb; }
-    """)
+    btn_dontshow.setObjectName("tip_off")
     btn_dontshow.setFixedHeight(20)
     btn_dontshow.setCursor(Qt.CursorShape.PointingHandCursor)
 
     btn_dismiss = QPushButton("✕")
+    btn_dismiss.setObjectName("tip_x")
     btn_dismiss.setFixedSize(20, 20)
-    btn_dismiss.setStyleSheet("""
-        QPushButton {
-            background: transparent;
-            color: #555577;
-            border: none;
-            font-size: 11px;
-        }
-        QPushButton:hover { color: #aaaacc; }
-    """)
     btn_dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
 
     h.addWidget(btn_dontshow)

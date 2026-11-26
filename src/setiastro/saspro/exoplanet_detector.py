@@ -44,6 +44,8 @@ import lightkurve as lk
 from setiastro.saspro.legacy.numba_utils import bin2x2_numba, apply_flat_division_numba
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 from setiastro.saspro.plate_solver import plate_solve_doc_inplace
 from setiastro.saspro.star_alignment import (
     StarRegistrationWorker,
@@ -1350,6 +1352,9 @@ class ExoPlanetWindow(QDialog):
             }
         """)
         self.wrench_button.clicked.connect(self.open_settings)
+        self.reset_btn = make_reset_button(self)
+        self.reset_btn.clicked.connect(self._reset_to_factory)
+        mode_layout.addWidget(self.reset_btn)
         mode_layout.addWidget(self.wrench_button)
         mode_layout.addWidget(make_help_button("exoplanet", self))
 
@@ -1608,6 +1613,44 @@ class ExoPlanetWindow(QDialog):
         self.threshold_slider.valueChanged.connect(self._on_threshold_changed)
         self.analyze_btn.setEnabled(False)
         self.calibrate_btn.hide()
+
+        # Factory = as built. Aligned/Raw is the input choice; the night
+        # shown and the plot style / units / bins are view state.
+        self._factory = snapshot_controls(self, exclude=(
+            self.aligned_mode_rb, self.raw_mode_rb, self.night_combo,
+            self.plot_style_combo, self.plot_units_combo, self.plot_bin_combo,
+            self.plot_stack))
+        self._factory_opts = {k: self.__dict__[k] for k in self._RESET_OPTS
+                              if k in self.__dict__}
+
+    # Settings… (wrench) options held as attributes / in QSettings.
+    _RESET_OPTS = ("sep_threshold", "border_fraction", "ensemble_k",
+                   "recenter_apertures", "aperture_mult", "camera_egain",
+                   "field_relative", "field_sigma", "ls_samples_per_peak",
+                   "bls_min_period", "bls_max_period", "bls_n_periods",
+                   "bls_duration_min_frac", "bls_duration_max_frac",
+                   "bls_n_durations")
+    _RESET_KEYS = ("Exoplanet/egain", "Exoplanet/bin_mode", "Exoplanet/gpu_detect",
+                   "Exoplanet/adc_bits", "Exoplanet/night_to_night")
+
+    def _reset_to_factory(self):
+        """Detection, screening and Settings… options back to their defaults.
+        Loaded frames, Aligned/Raw, the night shown, the plot style and the
+        SIMBAD / VizieR mirror choice are left alone."""
+        if self.progress_bar.isVisibleTo(self):
+            return                      # loading / measuring
+        restore_controls(self._factory)
+        for k in self._RESET_OPTS:
+            if k in self._factory_opts:
+                setattr(self, k, self._factory_opts[k])
+            else:
+                self.__dict__.pop(k, None)   # unset at open: its getattr default applies
+        s = self._plot_settings()
+        for key in self._RESET_KEYS:
+            s.remove(key)
+        self._gpu_ok = None                  # re-check the device next time
+        if getattr(self, "fluxes", None) is not None:
+            self._on_threshold_changed(self.threshold_slider.value())   # re-flag
 
     # ---------------- UI wiring ----------------
 

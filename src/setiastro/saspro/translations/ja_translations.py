@@ -17480,3 +17480,99 @@ _ADDITIONS_2026_11_25_BANDING = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
     TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_START_TILES = {
+    'StartPanel': {
+        'Workflow Assistant': 'ワークフローアシスタント',
+        'Blink frames': 'フレームをブリンク',
+        'Customize…': 'カスタマイズ…',
+        'Add or remove tiles': 'タイルの追加と削除',
+        'Remove from Start Panel': 'スタートパネルから削除',
+        'Customize Start Panel': 'スタートパネルのカスタマイズ',
+        'Choose up to {0} tools for the Start Panel. Drag them into the order you want.': 'スタートパネルに置くツールを最大 {0} 個選んでください。ドラッグして好きな順番に並べ替えられます。',
+        'All tools': 'すべてのツール',
+        'Search': '検索',
+        'Add': '追加',
+        'On the Start Panel': 'スタートパネル上',
+        '{0} of {1}': '{1} 中 {0}',
+        'The Start Panel is full. Remove a tool to add another.': 'スタートパネルがいっぱいです。別のツールを追加するには、どれかを削除してください。',
+        'Move Up': '上へ移動',
+        'Move Down': '下へ移動',
+        'Remove': '削除',
+        'Reset to Defaults': 'デフォルトにリセット',
+        'OK': 'OK',
+        'Cancel': 'キャンセル',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_STUDIO_APP = {
+    '_SyQonStudioHubPage': {
+        'SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.': 'SyQon Studio {0} にはコマンドラインツールがありません（1.2 で追加されました）。そのため SASpro は画像を Studio アプリで開きます。そこで処理して保存してください。保存した画像を SASpro が取り込みます。',
+    },
+    '_SyQonStudioCLIThread': {
+        'The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.\n{0}': '画像は SyQon Studio で開かれています。そこで処理し、結果をこのフォルダーに保存してください。SASpro がそこから取り込みます。キャンセルすると元の画像のままです。\n{0}',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_STUDIO_APP.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_QUICK_STACK_GPU = {
+    'QuickStackDialog': {
+        'What Quick Stack will run on. A GPU is used when SASpro\'s hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.': 'Quick Stack の実行環境です。SASpro のハードウェアアクセラレーションから GPU にアクセスできる場合は GPU を使用します（NVIDIA CUDA、AMD ROCm、Intel XPU、DirectML、Apple Metal）。スタッキング設定の「利用可能な場合はハードウェアアクセラレーションを使用」でオフにできます。',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_QUICK_STACK_GPU.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-26: fewer top-level menus (What's In My... into Analysis, Header Mods
+# & Misc into Tools, Shortcuts into View, Scripts into Workflows); tour restyle.
+_ADDITIONS_2026_11_26_MENUS = {
+    'AstroSuiteProMainWindow': {
+        'All Analysis Tools': 'すべての解析ツール',
+    },
+    'FirstStepsTour': {
+        'First Steps': 'はじめの一歩',
+    },
+    'FirstRunDialog': {
+        "💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.": '💡 キーボードショートカットが気になりますか？「表示 → ショートカット」に完全なチートシートがあります。',
+        '💡 Batch convert files from one format to another with Tools → Header Mods & Misc → Batch Converter.': '💡 「ツール → ヘッダー修正とその他 → バッチコンバーター」で、ファイルをある形式から別の形式に一括変換できます。',
+        '💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.': '💡 「表示 → ショートカット」の「アイコン チートシート」で、すべてのツールバーアイコンとその機能を一覧できます。',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_MENUS.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_FACTORY_RESET = {
+    'Common': {
+        'Reset every setting in this tool to its factory default': 'このツールのすべての設定を初期設定に戻す',
+    },
+    'StackingSuiteDialog': {
+        'Reset': 'リセット',
+        'A stacking run is in progress. Reset is available once it has finished.': 'スタッキングを実行中です。終了後にリセットできます。',
+        'Reset Stacking Settings': 'スタッキング設定をリセット',
+        "Reset every stacking setting to its factory default?\n\nThis covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.\n\nKept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.": 'すべてのスタッキング設定を初期設定に戻しますか？\n\n対象はこのウィンドウと Stacking Suite の各タブのオプション（キャリブレーション、ドリズル、MFDeconv、彗星、リジェクションなど）です。\n\n保持されるもの：スタッキングフォルダーとその他のパス、読み込んだフレーム、マスターとその Dark/Flat の選択、位置合わせセットと基準フレーム、保存したプロファイル、「最適化…」の測定結果。フレームがグループ化の許容値でグループ分けされている間は、その許容値も保持されます。',
+    },
+    'SLaPToolkitDialog': {
+        "Set the palette preset back to this mode's default.\nThe Mode is kept: changing it re-masks the active image.": 'パレットプリセットをこのモードの既定値に戻します。\nモードは保持されます（変更するとアクティブな画像のマスクが作り直されます）。',
+    },
+    'QPreviewDialog': {
+        'Set Q back to {0:.2f} for every filter': 'すべてのフィルターの Q を {0:.2f} に戻す',
+    },
+    'TransitFitDialog': {
+        'Reset the Fit options to their factory defaults': 'フィットのオプションを初期設定に戻す',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_FACTORY_RESET.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

@@ -457,22 +457,24 @@ def open_curves_with_preset(main_window, preset: Dict | None = None):
     if core.get("kind") == "curves_multi" or isinstance(core.get("modes"), dict):
         modes = _coerce_modes_dict(core.get("modes", {}))
 
-        # Fill dialog store for every key
-        for k in getattr(dlg, "_curves_store", {}).keys():
-            dlg._curves_store[k] = modes.get(k, [(0.0, 0.0), (1.0, 1.0)])
-
         # Choose active key
         active_key = str(core.get("active") or "K")
         if active_key not in dlg._curves_store:
             active_key = "K"
-        dlg._current_mode_key = active_key
 
-        # Set the radio to match active
+        # Set the radio to match active BEFORE filling the store: the dialog's
+        # _on_mode_toggled stashes the editor's points into the outgoing
+        # channel's slot, which would otherwise overwrite a preset curve.
         want_label = _MODE_KEY_TO_LABEL.get(active_key, "K (Brightness)")
         for b in dlg.mode_group.buttons():
             if b.text().lower() == want_label.lower():
                 b.setChecked(True)
                 break
+        dlg._current_mode_key = active_key
+
+        # Fill dialog store for every key
+        for k in getattr(dlg, "_curves_store", {}).keys():
+            dlg._curves_store[k] = modes.get(k, [(0.0, 0.0), (1.0, 1.0)])
 
         # Push active curve into editor
         dlg._editor_set_from_norm(dlg._curves_store.get(active_key, [(0.0, 0.0), (1.0, 1.0)]))

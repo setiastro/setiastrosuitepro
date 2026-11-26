@@ -45,6 +45,8 @@ from setiastro.saspro.imageops.starbasedwhitebalance import (
 from setiastro.saspro.legacy.numba_utils import apply_curves_numba
 from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 # At the top of continuum_subtract.py, with the other imports:
 try:
     from setiastro.saspro.cosmicclarity_headless import run_cosmicclarity_on_array as _cc_denoise
@@ -257,6 +259,11 @@ class QPreviewDialog(QDialog):
         self._btn_accept.clicked.connect(self._on_accept)
         btn_row.addWidget(self._btn_accept)
 
+        btn_reset = make_reset_button(self)
+        btn_reset.setToolTip(self.tr("Set Q back to {0:.2f} for every filter").format(DEFAULT_Q))
+        btn_reset.clicked.connect(self._reset_q)
+        btn_row.addWidget(btn_reset)
+
         btn_cancel = QPushButton(self.tr("Cancel"))
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
@@ -282,6 +289,11 @@ class QPreviewDialog(QDialog):
     def _on_stretch_toggled(self, checked: bool):
         self._autostretch = checked
         self._debounce.start()
+
+    def _reset_q(self):
+        """Reset: every filter's Q back to the default (Autostretch is view-only)."""
+        self._q_values = {name: DEFAULT_Q for name in self._q_values}
+        self._on_filter_changed(self._current)     # slider, label, preview
 
     def _on_accept(self):
         self.accepted_q.emit(dict(self._q_values))
@@ -1025,6 +1037,9 @@ class ContinuumSubtractTab(QWidget):
         self.doc_manager = doc_manager
         self._loading_settings = False
         self.initUI()
+        # Factory defaults for Reset, before the saved options load
+        self._factory = snapshot_controls(self)
+        self._factory_values = (self.denoise_strength, self.target_stars)
         self._load_settings()
         self._threads = []
         # — initialize every loadable image to None —
@@ -1329,7 +1344,11 @@ class ContinuumSubtractTab(QWidget):
         self.clear_button = QPushButton(self.tr("Clear Images"))
         self.clear_button.clicked.connect(self.clear_loaded_images)
 
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+
         bottom_row.addWidget(self.execute_button)
+        bottom_row.addWidget(self.btn_reset)
         bottom_row.addWidget(self.clear_button)
         bottom_row.addWidget(self.spinnerLabel)
         bottom_row.addWidget(self.statusLabel, 1)
@@ -1402,6 +1421,17 @@ class ContinuumSubtractTab(QWidget):
             pass
         finally:
             self._loading_settings = False
+
+    def _reset_to_factory(self):
+        """Every processing option back to its factory default. The loaded
+        NB images and Continuum images stay."""
+        if not self.execute_button.isEnabled():
+            return                      # a run is in progress
+        restore_controls(self._factory)   # the checkboxes save on toggle
+        self.denoise_strength, self.target_stars = self._factory_values
+        self.denoise_strength_btn.setText(f"{self.denoise_strength:.2f}")
+        self.threshold_btn.setText(str(self.target_stars))
+        self._save_settings()
 
     def _save_settings(self):
         if getattr(self, "_loading_settings", False):

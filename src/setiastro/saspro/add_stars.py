@@ -17,6 +17,8 @@ from setiastro.saspro.legacy.image_manager import load_image
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 try:
     import cv2
@@ -398,12 +400,22 @@ class AddStarsDialog(QDialog):
         self._settings = QSettings()
         self._persist_prefix = "add_stars"
         self._geom_restored = False
-        self._restoring_ui = True   # guards saves while we build/restore/populate        
+        self._restoring_ui = True   # guards saves while we build/restore/populate
         self._build_ui()
         self._populate_doc_combos()
+        # Factory defaults: saved settings only land on first show
+        # (_restore_ui_state). The image pickers are left alone.
+        self._factory = snapshot_controls(self, exclude=(self.cmb_starless, self.cmb_stars))
 
     def _k(self, key: str) -> str:
         return f"{self._persist_prefix}/{key}"
+
+    def _reset_to_factory(self):
+        """Blend type and ratio back to their defaults (saved on change, as
+        any edit is). Not while Apply computes."""
+        if thread_running(self._apply_thread):
+            return
+        restore_controls(self._factory)
 
     # UI -----------------------------------------------------------------------
     def _build_ui(self):
@@ -484,8 +496,9 @@ class AddStarsDialog(QDialog):
         brow.addStretch(1)
         btn_apply = QPushButton(self.tr("Apply")); btn_apply.clicked.connect(self._apply)
         self.btn_apply = btn_apply
+        self.btn_reset = make_reset_button(self); self.btn_reset.clicked.connect(self._reset_to_factory)
         btn_cancel= QPushButton(self.tr("Cancel")); btn_cancel.clicked.connect(self.reject)
-        brow.addWidget(btn_apply); brow.addWidget(btn_cancel)
+        brow.addWidget(btn_apply); brow.addWidget(self.btn_reset); brow.addWidget(btn_cancel)
         layout.addLayout(brow)
 
         self.setMinimumSize(900, 650)

@@ -178,6 +178,8 @@ from setiastro.saspro.gaia_downloader import GaiaDownloader, HAS_GAIAXPY
 from setiastro.saspro.gaia_downloader import GaiaSpectraDB
 from setiastro.saspro.gaia_database import get_library
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 from setiastro.saspro import cds_health
 
 # ── Re-use shared utilities from sfcc.py
@@ -1768,6 +1770,10 @@ class SSSCDialog(QDialog):
         self.orientation        = None
  
         self._build_ui()
+        # Factory state, before saved settings load. The Camera / Rig label
+        # names the session history (a text field: not captured), and the
+        # curve library is user data.
+        self._factory = snapshot_controls(self)
         self.load_settings()
         self._restore_geometry()
         self.finished.connect(lambda *_: self._cleanup())
@@ -2216,6 +2222,11 @@ class SSSCDialog(QDialog):
         self.clear_session_btn.clicked.connect(self._clear_session_history)
         row4.addWidget(self.clear_session_btn)
  
+        self.factory_reset_btn = make_reset_button(self)
+        self.factory_reset_btn.setStyleSheet(UTIL_STYLE)
+        self.factory_reset_btn.clicked.connect(self._reset_to_factory)
+        row4.addWidget(self.factory_reset_btn)
+
         self.close_btn = QPushButton(self.tr("Close"))
         self.close_btn.setStyleSheet(UTIL_STYLE)
         self.close_btn.clicked.connect(self.reject)
@@ -2333,6 +2344,10 @@ class SSSCDialog(QDialog):
         cam_label = s.value("SSSC/CameraLabel", "")
         if hasattr(self, "camera_label_edit"):
             self.camera_label_edit.setText(str(cam_label))
+
+    def _reset_to_factory(self):
+        # Every control saves itself on change, so the restore is also saved.
+        restore_controls(self._factory)
 
     def _camera_label(self) -> str:
         try:

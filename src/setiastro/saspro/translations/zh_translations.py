@@ -17555,3 +17555,99 @@ _ADDITIONS_2026_11_25_BANDING = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_BANDING.items():
     TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_START_TILES = {
+    'StartPanel': {
+        'Workflow Assistant': '工作流助手',
+        'Blink frames': '闪烁比对帧',
+        'Customize…': '自定义…',
+        'Add or remove tiles': '添加或移除磁贴',
+        'Remove from Start Panel': '从开始面板中移除',
+        'Customize Start Panel': '自定义开始面板',
+        'Choose up to {0} tools for the Start Panel. Drag them into the order you want.': '为开始面板选择最多 {0} 个工具。拖动它们以调整顺序。',
+        'All tools': '所有工具',
+        'Search': '搜索',
+        'Add': '添加',
+        'On the Start Panel': '开始面板上',
+        '{0} of {1}': '{0} / {1}',
+        'The Start Panel is full. Remove a tool to add another.': '开始面板已满。请先移除一个工具再添加。',
+        'Move Up': '上移',
+        'Move Down': '下移',
+        'Remove': '移除',
+        'Reset to Defaults': '重置为默认值',
+        'OK': '确定',
+        'Cancel': '取消',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_STUDIO_APP = {
+    '_SyQonStudioHubPage': {
+        'SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.': 'SyQon Studio {0} 没有命令行工具（1.2 版才提供），因此 SASpro 会在 Studio 应用中打开图像。请在其中处理并保存；SASpro 会导入您保存的结果。',
+    },
+    '_SyQonStudioCLIThread': {
+        'The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.\n{0}': '图像已在 SyQon Studio 中打开。请在其中处理，并将结果保存到此文件夹；SASpro 会从这里导入。取消则保留原始图像。\n{0}',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_STUDIO_APP.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_QUICK_STACK_GPU = {
+    'QuickStackDialog': {
+        'What Quick Stack will run on. A GPU is used when SASpro\'s hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.': 'Quick Stack 运行所用的硬件。当 SASpro 的硬件加速能访问 GPU 时会使用它（NVIDIA CUDA、AMD ROCm、Intel XPU、DirectML 或 Apple Metal）；叠加设置中的“如可用则使用硬件加速”可将其关闭。',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_QUICK_STACK_GPU.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-26: fewer top-level menus (What's In My... into Analysis, Header Mods
+# & Misc into Tools, Shortcuts into View, Scripts into Workflows); tour restyle.
+_ADDITIONS_2026_11_26_MENUS = {
+    'AstroSuiteProMainWindow': {
+        'All Analysis Tools': '所有分析工具',
+    },
+    'FirstStepsTour': {
+        'First Steps': '入门步骤',
+    },
+    'FirstRunDialog': {
+        "💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.": '💡 想了解键盘快捷键？“视图 → 快捷方式”下有完整的速查表。',
+        '💡 Batch convert files from one format to another with Tools → Header Mods & Misc → Batch Converter.': '💡 使用“工具 → 头信息修改和杂项 → 批量转换器”，可将文件从一种格式批量转换为另一种格式。',
+        '💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.': '💡 “视图 → 快捷方式”下的图标速查表可一目了然地显示每个工具栏图标及其功能。',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_MENUS.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_FACTORY_RESET = {
+    'Common': {
+        'Reset every setting in this tool to its factory default': '将此工具的所有设置恢复为出厂默认值',
+    },
+    'StackingSuiteDialog': {
+        'Reset': '重置',
+        'A stacking run is in progress. Reset is available once it has finished.': '叠加正在进行中。完成后即可重置。',
+        'Reset Stacking Settings': '重置叠加设置',
+        "Reset every stacking setting to its factory default?\n\nThis covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.\n\nKept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.": '将所有叠加设置恢复为出厂默认值？\n\n这包括此窗口以及 Stacking Suite 各选项卡上的选项：校准、Drizzle、MFDeconv、彗星、剔除等。\n\n保留：叠加文件夹及其他路径、已加载的帧、主帧及其 Dark/Flat 选择、配准组和参考帧、您保存的配置文件，以及“优化…”的测量结果。当帧按某个分组容差分组时，该容差会被保留。',
+    },
+    'SLaPToolkitDialog': {
+        "Set the palette preset back to this mode's default.\nThe Mode is kept: changing it re-masks the active image.": '将调色板预设恢复为此模式的默认值。\n模式保持不变：更改模式会为当前图像重新生成蒙版。',
+    },
+    'QPreviewDialog': {
+        'Set Q back to {0:.2f} for every filter': '将所有滤镜的 Q 恢复为 {0:.2f}',
+    },
+    'TransitFitDialog': {
+        'Reset the Fit options to their factory defaults': '将拟合选项恢复为出厂默认值',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_FACTORY_RESET.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

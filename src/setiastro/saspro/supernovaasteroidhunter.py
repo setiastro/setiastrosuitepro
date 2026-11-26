@@ -92,6 +92,8 @@ from setiastro.saspro import minorbodycatalog as mbc
 from setiastro.saspro.plate_solver import PlateSolverDialog as PlateSolver
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # Interactive 3D orbit viewer for catalogued minor bodies. Guarded so a
 # missing pyqtgraph.opengl / PyOpenGL (or any import-time hiccup) degrades
@@ -2788,7 +2790,26 @@ class SupernovaAsteroidHunterDialog(QDialog):
 
         self.setLayout(QVBoxLayout())
         self.initUI()
+        # Factory = as built, plus the minor-body catalog limits above.
+        self._factory = snapshot_controls(self)
+        self._factory_minor = {k: getattr(self, k) for k in self._MINOR_OPTS}
         self.resize(960, 760)
+
+    # Session options set by the minor-body search dialog. Its observing
+    # time / timezone / site entries are shared settings and are not reset.
+    _MINOR_OPTS = ("minor_H_ast_max", "minor_H_com_max", "minor_ast_max_count",
+                   "minor_com_max_count", "minor_use_midexposure")
+
+    def _reset_to_factory(self):
+        """Pipeline and detection options back to their defaults. The
+        reference / search lists and the last run's results stay; New
+        Instance clears those."""
+        if not self.process_button.isEnabled() or (
+                self._redetect_thread is not None and self._redetect_thread.isRunning()):
+            return                      # the pipeline or a re-detect is running
+        restore_controls(self._factory)
+        for k, v in self._factory_minor.items():
+            setattr(self, k, v)
 
     # ---- UI construction -------------------------------------------------
 
@@ -3036,6 +3057,9 @@ class SupernovaAsteroidHunterDialog(QDialog):
         # --- Reset / New Instance ---
         bottom_row = QHBoxLayout()
         bottom_row.addStretch(1)
+        self.reset_button = make_reset_button(self)
+        self.reset_button.clicked.connect(self._reset_to_factory)
+        bottom_row.addWidget(self.reset_button)
         self.new_instance_button = QPushButton(self.tr("New Instance"))
         self.new_instance_button.clicked.connect(self.newInstance)
         bottom_row.addWidget(self.new_instance_button)

@@ -24,6 +24,8 @@ from setiastro.saspro.ser_stack_config import SERStackConfig
 
 from setiastro.saspro.ser_stacker import stack_ser, analyze_ser, AnalyzeResult
 from setiastro.saspro.ser_stacker import _shift_image
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 # ── Platform-aware anchor gesture text (mirrors serviewer.py) ───────
 import platform as _platform
 _IS_MAC = (_platform.system() == "Darwin")
@@ -1040,6 +1042,20 @@ class SERStackerDialog(QDialog):
         self._append_log(f"ROI: {roi if roi is not None else '(full frame)'}")
         if track_mode == "surface":
             self._append_log(f"Surface anchor (ROI-space): {surface_anchor}")
+        # Taken after the viewer's Tracking / Keep % / Debayer were applied:
+        # those come with the clip, ROI and anchor, and Reset keeps them. The
+        # master flat (its "Apply" tick goes with the file) is left alone.
+        self._factory = snapshot_controls(self, exclude=(self.chk_flat_enabled,))
+
+    def _reset_to_factory(self):
+        for w in (self._worker_analyze, self._worker,
+                  getattr(self, "_worker_realign", None), getattr(self, "_worker_export", None)):
+            try:
+                if w is not None and w.isRunning():
+                    return
+            except RuntimeError:
+                pass
+        restore_controls(self._factory)
 
 
 
@@ -1518,6 +1534,9 @@ class SERStackerDialog(QDialog):
         row.addWidget(self.btn_export_aligned)
         row.addStretch(1)
         row.addWidget(self.btn_stack)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        row.addWidget(self.btn_reset)
         row.addWidget(self.btn_close)
 
         # Help button

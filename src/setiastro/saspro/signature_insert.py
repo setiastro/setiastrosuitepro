@@ -15,6 +15,8 @@ from PyQt6.QtWidgets import (
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _qcolor_to_rgba(c: QColor) -> str:
@@ -730,6 +732,15 @@ class SignatureInsertDialogPro(QDialog):
         self.tech_text_outline = QColor("black")
 
         self._build_ui()
+        # Factory state for Reset, before saved settings load. Not captured:
+        # the section fold buttons (view state) and the tech-card field
+        # pickers (rebuilt from the header); the font is kept as a QFont.
+        self._factory = snapshot_controls(
+            self, exclude=[self.font_box, self.cmb_tech_field, self.cmb_tech_order]
+            + [sec.btn for sec in self._collapsible_sections.values()])
+        self._factory_font = QFont(self.font_box.currentFont())
+        self._factory_box_color = QColor(self.bounding_box_pen.color())
+        self._factory_callout_color = QColor(self._callout_color)
         self._load_persistent_ui()
         self._wire_persistence_signals()
         
@@ -1051,12 +1062,15 @@ class SignatureInsertDialogPro(QDialog):
 
         b_affix = QPushButton(self.tr("Affix Inserts"))
         b_affix.clicked.connect(self._affix_inserts)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         b_clear_sel = QPushButton(self.tr("Clear Selected"))
         b_clear_sel.clicked.connect(self._clear_selected)
         b_clear = QPushButton(self.tr("Clear All"))
         b_clear.clicked.connect(self._clear_inserts)
 
         ag.addWidget(b_affix)
+        ag.addWidget(self.btn_reset)
         ag.addWidget(b_clear_sel)
         ag.addWidget(b_clear)
         ag.addStretch(1)
@@ -1945,6 +1959,28 @@ class SignatureInsertDialogPro(QDialog):
         self.cb_tech_hide_empty.setChecked(True)
         self._tech_init_catalog()
         self._tech_rebuild()
+
+    def _reset_to_factory(self):
+        """Every style and layout option back to its default: text style,
+        transform defaults, bounding box, callout, margins and the tech card
+        (including whether it is shown).
+
+        The overlays already placed -- text, inserts, logos, callouts -- are
+        the user's content. They are deselected first so the controls that
+        act on the selection restyle none of them; only the global styles
+        (bounding box, callout lines) redraw on them.
+        """
+        self.scene.clearSelection()
+        self._text_fill_color = QColor("white")      # same fallbacks as _load_persistent_ui
+        self._text_outline_color = QColor("black")
+        self.bounding_box_pen.setColor(QColor(self._factory_box_color))
+        self._callout_color = QColor(self._factory_callout_color)
+        self.font_box.setCurrentFont(self._factory_font)
+        restore_controls(self._factory)
+        self._tech_reset_defaults()          # card colours + field list, then rebuild
+        self._refresh_all_boxes()
+        self._refresh_all_callouts()
+        self._save_persistent_ui()           # the colours are not widgets: save them too
 
     def _tech_format_text(self) -> str:
         catalog = self._build_tech_field_catalog()

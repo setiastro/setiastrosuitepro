@@ -26,6 +26,8 @@ from pathlib import Path
 from setiastro.saspro.resources import get_data_path
 from setiastro.saspro.bright_stars import BRIGHT_STARS
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 if TYPE_CHECKING:
     from astropy.wcs import WCS as AstropyWCS
     from astropy.coordinates import SkyCoord as AstropySkyCoord
@@ -1569,6 +1571,31 @@ class _SkyChartHostMixin:
             except Exception:
                 pass
 
+    def _reset_to_factory(self):
+        """Survey-page settings back to what a new user gets (self._factory is
+        the survey page as built). The Drawn chart page has its own Reset, and
+        Style is which page is showing, so neither is touched here."""
+        import json as _json
+        if not self.btn_render.isEnabled():         # a render is in progress
+            return
+        # survey, field and size refetch the survey synchronously on every
+        # change: restore them quietly and render once at the end
+        quiet = [w for w in (self.cmb_survey, getattr(self, "cmb_fov", None),
+                             getattr(self, "cmb_size", None), self.sb_px) if w is not None]
+        for w in quiet:
+            w.blockSignals(True)
+        try:
+            restore_controls(self._factory)
+        finally:
+            for w in quiet:
+                w.blockSignals(False)
+        # sky chart overlay: off, default layers
+        self._skychart_layers = {}
+        self._settings.setValue(self._LAYERS_KEY, _json.dumps(self._skychart_layers))
+        self.chk_skychart.setChecked(False)         # saves via its toggle
+        # one render; it refetches only if survey / field / size changed
+        self._render_now(force_refetch=False)
+
 
 class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
     """
@@ -1748,14 +1775,17 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         brow.addWidget(self.lbl_status)
         brow.addStretch(1)
         self.btn_save  = QPushButton(self.tr("Save PNG…"))
+        self.btn_reset = make_reset_button(self)
         self.btn_close = QPushButton(self.tr("Close"))
         brow.addWidget(self.btn_save)
+        brow.addWidget(self.btn_reset)
         brow.addWidget(self.btn_close)
         root.addLayout(brow)
 
         # Wiring
         self.btn_render.clicked.connect(lambda: self._render_now(force_refetch=True))
         self.btn_save.clicked.connect(self._save_png)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_close.clicked.connect(self.close)
         self.cmb_survey.currentIndexChanged.connect(lambda _=0: self._render_now(force_refetch=True))
         self.cmb_fov.currentIndexChanged.connect(lambda _=0: self._render_now(force_refetch=True))
@@ -1775,6 +1805,9 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         self.sb_sensor_h.valueChanged.connect(lambda _=0: self._on_imaging_train_changed())
         self.sb_rotation.valueChanged.connect(lambda _=0: self._on_imaging_train_changed())
 
+        # focal length, pixel pitch and sensor size are the user's equipment
+        self._factory = snapshot_controls(self._survey_page, exclude=(
+            self.sb_focal, self.sb_pitch, self.sb_sensor_w, self.sb_sensor_h))
         self._load_imaging_settings()
         self._on_imaging_train_changed()  # update the FOV readout label
         self.lbl.setText(self.tr("Fetching survey background…"))
@@ -1797,6 +1830,24 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         p.preview()
 
     def _load_imaging_settings(self):
+        # Load quietly. A change signal renders (survey / FOV / size fetch the
+        # survey right away), and _render saves every control, so the saved
+        # values not loaded yet would be overwritten with the built-in
+        # defaults. __init__ renders once after the load.
+        quiet = (self.cmb_survey, self.cmb_fov, self.sb_px, self.chk_grid,
+                 self.chk_stars, self.sb_star_mag, self.chk_dso, self.cmb_dso,
+                 self.sb_dso_mag, self.chk_compass, self.chk_scale,
+                 self.chk_fov_box, self.sb_focal, self.sb_pitch,
+                 self.sb_sensor_w, self.sb_sensor_h, self.sb_rotation)
+        for w in quiet:
+            w.blockSignals(True)
+        try:
+            self._apply_imaging_settings()
+        finally:
+            for w in quiet:
+                w.blockSignals(False)
+
+    def _apply_imaging_settings(self):
         s = self._settings
         self.cmb_survey.setCurrentText(s.value("finder_coord/survey", "DSS2 (Color)", type=str))
         fov_txt = s.value("finder_coord/fov", "4°", type=str)
@@ -2195,15 +2246,18 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
 
         self.btn_send = QPushButton(self.tr("Send to New Document"))
         self.btn_save = QPushButton(self.tr("Save PNG…"))
+        self.btn_reset = make_reset_button(self)
         self.btn_close = QPushButton(self.tr("Close"))
         brow.addWidget(self.btn_send)
         brow.addWidget(self.btn_save)
+        brow.addWidget(self.btn_reset)
         brow.addWidget(self.btn_close)
         root.addLayout(brow)
 
         self.btn_render.clicked.connect(lambda: self._render_now(force_refetch=True))
         self.btn_save.clicked.connect(self._save_png)
         self.btn_send.clicked.connect(self._send_to_new_doc)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_close.clicked.connect(self.close)
 
         # grid: debounced (no refetch)
@@ -2241,6 +2295,7 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         self.chk_scale.toggled.connect(lambda _=False: self._schedule_render(force_refetch=False, delay_ms=150))
 
         self._set_overlay_controls_enabled()
+        self._factory = snapshot_controls(self._survey_page)     # before the saved overlay state
         self._install_sky_chart_host()
         # kick initial render AFTER the dialog has had a chance to show/paint
         QTimer.singleShot(0, self._initial_render)
