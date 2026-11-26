@@ -6038,8 +6038,11 @@ class PlateSolverDialog(QDialog):
         btn_row.addStretch(1)
         btn_row.addWidget(make_help_button("plate_solver", self))
         self.btn_go = QPushButton(self.tr("Start"), self)
+        from setiastro.saspro.widgets.factory_reset import make_reset_button
+        self.btn_reset = make_reset_button(self)
         self.btn_close = QPushButton(self.tr("Close"), self)
         btn_row.addWidget(self.btn_go)
+        btn_row.addWidget(self.btn_reset)
         btn_row.addWidget(self.btn_close)
         main.addLayout(btn_row)
 
@@ -6070,6 +6073,7 @@ class PlateSolverDialog(QDialog):
         b_in.clicked.connect(self._browse_in)
         b_out.clicked.connect(self._browse_out)
         self.btn_go.clicked.connect(self._run)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_close.clicked.connect(self.close)
         self.btn_apply_vbundle.clicked.connect(self._apply_to_view_bundle)
 
@@ -6205,6 +6209,16 @@ class PlateSolverDialog(QDialog):
         spec = self.current_preset()
         apply_plate_solve_preset(self.settings, spec)
         return spec
+
+    def _reset_to_factory(self):
+        """Solve options back to their defaults. The defaults of an empty
+        preset are the factory ones (normalize_plate_solve_preset). The
+        Mode page, file/folder paths, solver executables, API key and
+        catalogue locations are not touched."""
+        if not self.btn_go.isEnabled():
+            return                      # a solve is running
+        self.seed_from_preset({})
+        self._persist_ui_to_settings()  # settings are otherwise saved on Start only
 
     def _lookup_catalog_object(self):
         """

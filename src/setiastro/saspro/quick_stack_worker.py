@@ -32,9 +32,9 @@ and where the count per pixel changes (dithered edges) the bias would step.
 Accumulators live in shared memory and workers add to them in bands under a
 lock per band, so there is one set for the whole run, not one per worker.
 
-This module is the CPU engine, and the tasks both engines share. With an
-NVIDIA GPU the pixels go through quick_stack_gpu instead; loading frames and
-matching star lists stay on these CPU workers either way.
+This module is the CPU engine, and the tasks both engines share. With a GPU
+(any backend SASpro installs) the pixels go through quick_stack_gpu instead;
+loading frames and matching star lists stay on these CPU workers either way.
 
 0.0 (and non-finite) means no data, as everywhere else in SASpro: such
 samples are never added and never count.

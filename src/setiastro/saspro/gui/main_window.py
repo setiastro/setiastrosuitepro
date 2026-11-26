@@ -4406,6 +4406,22 @@ class AstroSuiteProMainWindow(
         )
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
+
+        # Reset: the slider defaults above, and the profile this dialog picks
+        # for the chosen source on open. The source and the Advanced fold stay.
+        from setiastro.saspro.widgets.factory_reset import (
+            make_reset_button, snapshot_controls, restore_controls)
+        _factory = snapshot_controls(dlg, exclude=(src_combo, profile_combo, adv_btn))
+
+        def _reset_to_factory():
+            restore_controls(_factory)
+            _user_override["value"] = False
+            _select_profile_key(_pick_default_for_source(candidates[src_combo.currentIndex()][1]))
+
+        btn_reset = make_reset_button(dlg)
+        btn_reset.clicked.connect(_reset_to_factory)
+        btns.addButton(btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
+
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_help = make_help_button("luminance_recombine", dlg)

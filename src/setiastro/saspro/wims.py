@@ -29,6 +29,8 @@ from PyQt6.QtWidgets import (
     QSplitter, QFrame, QTabWidget, QTextEdit, QMenu
 )
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 try:
     import pyqtgraph as pg
     _HAS_PG = True
@@ -2942,6 +2944,10 @@ class WhatsInMySkyDialog(QDialog):
         self._atlas_thread: AtlasCatalogThread | None = None
 
         self._build_ui(wrench_path)
+        # location, date and time are line edits (not captured); the time zone
+        # is the observer's own setting
+        self._factory = snapshot_controls(self, exclude=(self.timezone_combo,),
+                                          text_fields=(self.min_altitude_entry,))
         self._load_settings_into_ui()
         self._preload_type_filters()
 
@@ -3000,7 +3006,7 @@ class WhatsInMySkyDialog(QDialog):
         self.time_entry         = QLineEdit(); self.time_entry.setFixedWidth(fixed_w)
         self.timezone_combo     = QComboBox(); self.timezone_combo.addItems(pytz.all_timezones)
         self.timezone_combo.setFixedWidth(fixed_w)
-        self.min_altitude_entry = QLineEdit(); self.min_altitude_entry.setFixedWidth(fixed_w)
+        self.min_altitude_entry = QLineEdit("0.0"); self.min_altitude_entry.setFixedWidth(fixed_w)
 
         for lbl, w in [(self.tr("Latitude"), self.latitude_entry),
                         (self.tr("Longitude (E+, W−)"), self.longitude_entry),
@@ -3206,7 +3212,10 @@ class WhatsInMySkyDialog(QDialog):
         fieldrot_btn = QPushButton(self.tr("🔄 Alt/Az Field Rotation…"))
         fieldrot_btn.clicked.connect(self._open_field_rotation)
 
-        for b in (add_btn, save_btn, search_btn, horizon_btn, fieldrot_btn):
+        reset_btn = make_reset_button(self)
+        reset_btn.clicked.connect(self._reset_to_factory)
+
+        for b in (add_btn, save_btn, search_btn, horizon_btn, fieldrot_btn, reset_btn):
             b.setFixedHeight(28)
             b.setStyleSheet(_TOOLBAR_BTN_STYLE)
             toolbar.addWidget(b)
@@ -3734,6 +3743,21 @@ class WhatsInMySkyDialog(QDialog):
         for k, v in [("latitude", lat), ("longitude", lon), ("date", date),
                      ("time", time), ("timezone", tz), ("min_altitude", min_alt)]:
             self.settings.setValue(k, v)
+
+    def _reset_to_factory(self):
+        """Search, filter and display settings back to what a new user gets.
+        Location, date/time, time zone and the custom horizon are the
+        observer's own data and stay."""
+        if self.calc_thread is not None and self.calc_thread.isRunning():
+            return
+        restore_controls(self._factory)
+        self._set_all_type_filters(True)
+        self.settings.remove("wims/type_filters")   # nothing saved = every type
+        self.object_limit = 100                      # default of the object_limit reads
+        self.settings.setValue("object_limit", self.object_limit)
+        # these two are otherwise saved only by Calculate
+        self.settings.setValue("min_altitude", float(self.min_altitude_entry.text()))
+        self.settings.setValue("wims/sort_by_score", self.sort_score_rb.isChecked())
 
     # ── Calculation ───────────────────────────────────────────────────────
     def start_calculation(self):

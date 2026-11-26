@@ -39,6 +39,8 @@ import math
 import os
 from typing import Optional
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 import numpy as np
 from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtWidgets import (
@@ -1019,8 +1021,16 @@ class DitherAnalysisWindow(QWidget):
         self._d_dec_arcsec: Optional[np.ndarray] = None
         self._wcs_rotation_deg: Optional[float] = None        
         self._build_ui()
+        # Factory = as built; the Pixels / Arcsec / RA-Dec switch is a view.
+        self._factory = snapshot_controls(self, exclude=(
+            self._btn_show_px, self._btn_show_arcsec, self._btn_show_radec))
         self.status = self._lbl_status
         self._restore_geometry()
+
+    def _reset_to_factory(self):
+        if self._reg_thread is not None and self._reg_thread.isRunning():
+            return                      # registration is running
+        restore_controls(self._factory)
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
@@ -1167,7 +1177,13 @@ class DitherAnalysisWindow(QWidget):
             "QPushButton:hover{background:#ff6b81;}"
             "QPushButton:disabled{background:#444;color:#888;}"
         )
-        lv.addWidget(self._btn_run)
+        run_row = QHBoxLayout()
+        run_row.addWidget(self._btn_run, 1)
+        self._btn_reset = make_reset_button(self)
+        self._btn_reset.setFixedHeight(34)
+        self._btn_reset.clicked.connect(self._reset_to_factory)
+        run_row.addWidget(self._btn_reset)
+        lv.addLayout(run_row)
 
         self._btn_abort = QPushButton(self.tr("■  Abort"))
         self._btn_abort.setFixedHeight(28)

@@ -17618,3 +17618,71 @@ _ADDITIONS_2026_11_25_START_TILES = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
     TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_STUDIO_APP = {
+    '_SyQonStudioHubPage': {
+        'SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.': 'SyQon Studio {0} haina zana ya mstari wa amri (ilikuja na 1.2), kwa hivyo SASpro inafungua picha kwenye programu ya Studio. Ichakate hapo na uihifadhi; SASpro inaingiza unachohifadhi.',
+    },
+    '_SyQonStudioCLIThread': {
+        'The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.\n{0}': 'Picha imefunguliwa katika SyQon Studio. Ichakate hapo na uhifadhi matokeo kwenye folda hii; SASpro itayaingiza kutoka hapo. Ghairi huacha picha asili.\n{0}',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_STUDIO_APP.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_QUICK_STACK_GPU = {
+    'QuickStackDialog': {
+        'What Quick Stack will run on. A GPU is used when SASpro\'s hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.': 'Kile ambacho Quick Stack itaendeshwa nacho. GPU hutumika wakati uharakishaji wa vifaa wa SASpro unaweza kuifikia (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML au Apple Metal); "Tumia uharakishaji wa vifaa ikiwa unapatikana" katika Mipangilio ya Stacking huizima.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_QUICK_STACK_GPU.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-26: fewer top-level menus (What's In My... into Analysis, Header Mods
+# & Misc into Tools, Shortcuts into View, Scripts into Workflows); tour restyle.
+_ADDITIONS_2026_11_26_MENUS = {
+    'AstroSuiteProMainWindow': {
+        'All Analysis Tools': 'Zana Zote za Uchambuzi',
+    },
+    'FirstStepsTour': {
+        'First Steps': 'Hatua za Kwanza',
+    },
+    'FirstRunDialog': {
+        "💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.": '💡 Una hamu ya kujua njia za mkato za kibodi? Kuna cheat sheet kamili chini ya Angalia → Njia za Mkato.',
+        '💡 Batch convert files from one format to another with Tools → Header Mods & Misc → Batch Converter.': '💡 Badilisha faili kwa pamoja kutoka muundo mmoja hadi mwingine ukitumia Zana → Marekebisho ya Kichwa na Mengineyo → Kigeuzi cha Batch.',
+        '💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.': '💡 Icon Cheat Sheet chini ya Angalia → Njia za Mkato huonyesha kila ikoni ya upau wa zana na kazi yake kwa haraka.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_MENUS.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_FACTORY_RESET = {
+    'Common': {
+        'Reset every setting in this tool to its factory default': 'Rejesha kila mpangilio wa zana hii kwenye chaguo-msingi lake la kiwandani',
+    },
+    'StackingSuiteDialog': {
+        'Reset': 'Weka upya',
+        'A stacking run is in progress. Reset is available once it has finished.': 'Stacking inaendelea. Kuweka upya kutapatikana itakapomalizika.',
+        'Reset Stacking Settings': 'Weka upya mipangilio ya Stacking',
+        "Reset every stacking setting to its factory default?\n\nThis covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.\n\nKept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.": 'Weka upya kila mpangilio wa stacking kwenye chaguo-msingi lake la kiwandani?\n\nHii inahusu dirisha hili na chaguo kwenye vichupo vya Stacking Suite: calibration, drizzle, MFDeconv, kometi, rejection na vinginevyo.\n\nVinavyobaki: folda ya stacking na njia nyingine, fremu zilizopakiwa, masters na chaguo zao za Dark/Flat, seti za upatanishi na fremu za marejeleo, wasifu wako uliohifadhiwa, na kile ambacho Boresha… kilipima. Uvumilivu wa kupanga vikundi unabaki wakati fremu zimepangwa kwa huo.',
+    },
+    'SLaPToolkitDialog': {
+        "Set the palette preset back to this mode's default.\nThe Mode is kept: changing it re-masks the active image.": 'Rejesha preset ya palette kwenye chaguo-msingi la hali hii.\nHali inabaki: kuibadilisha huweka upya barakoa kwenye picha amilifu.',
+    },
+    'QPreviewDialog': {
+        'Set Q back to {0:.2f} for every filter': 'Rejesha Q kuwa {0:.2f} kwa kila kichujio',
+    },
+    'TransitFitDialog': {
+        'Reset the Fit options to their factory defaults': 'Rejesha chaguo za Ufaaji kwenye chaguo-msingi zao za kiwandani',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_FACTORY_RESET.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

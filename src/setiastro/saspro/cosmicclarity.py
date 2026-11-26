@@ -27,6 +27,8 @@ from setiastro.saspro.resources import get_icons
 
 from setiastro.saspro.cosmicclarity_engines.sharpen_engine import sharpen_rgb01
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 from setiastro.saspro.cosmicclarity_engines.denoise_engine import denoise_rgb01
 from setiastro.saspro.cosmicclarity_engines.superres_engine import superres_rgb01
 from setiastro.saspro.cosmicclarity_engines._backend_guard import EngineCancelled
@@ -1039,10 +1041,13 @@ class CosmicClarityDialogPro(QDialog):
         self.btn_run = b_run
         b_close = QPushButton(self.tr("Close"))
         b_close.clicked.connect(self.reject)
+        b_reset = make_reset_button(self)
+        b_reset.clicked.connect(self._reset_to_factory)
         row.addWidget(self.btn_clear_cache)
         row.addStretch(1)
         row.addWidget(make_help_button("cosmic_clarity", self))
         row.addWidget(b_run)
+        row.addWidget(b_reset)
         row.addWidget(b_close)
         outer.addLayout(row)
 
@@ -1069,6 +1074,10 @@ class CosmicClarityDialogPro(QDialog):
         except Exception:
             pass
  
+        # Factory state, before any saved setting loads. The correction model
+        # defaults to what is installed (Step 3), so it is recorded there.
+        self._factory = snapshot_controls(self, exclude=(self.cmb_correct_ver,))
+
         # ------------------------------------------------------------------
         # Step 1: load chunk/overlap (no save signals yet)
         # ------------------------------------------------------------------
@@ -1114,6 +1123,7 @@ class CosmicClarityDialogPro(QDialog):
             self.cmb_correct_ver.setCurrentText("V1")
         else:
             self.cmb_correct_ver.setCurrentText("V2 (latest)")
+        self._factory_correct_ver = self.cmb_correct_ver.currentText()
 
         # ------------------------------------------------------------------
         # Step 4: now that _correct_available is set, apply dependent UI state
@@ -1207,6 +1217,13 @@ class CosmicClarityDialogPro(QDialog):
                      self.cmb_sh_mode.currentTextChanged, self.cmb_dn_mode.currentTextChanged):
             _sig.connect(lambda *_: self._warm_timer.start())
         self._warm_timer.start()
+
+    def _reset_to_factory(self):
+        # Every control saves itself on change, so the restore is also saved.
+        if _cc_thread_running(getattr(self, "_engine_thread", None)):
+            return
+        restore_controls(self._factory)
+        self.cmb_correct_ver.setCurrentText(self._factory_correct_ver)
 
     def _start_warmup(self):
         try:
@@ -2287,7 +2304,15 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self._wait = None
 
         self._build_ui()
+        # Factory state, before saved settings load (folders are not widgets).
+        self._factory = snapshot_controls(self)
         self._load_satellite_settings()
+
+    def _reset_to_factory(self):
+        # Settings are saved on close, as for any change.
+        if self._sat_busy():
+            return
+        restore_controls(self._factory)
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -2364,8 +2389,11 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self.btn_single.clicked.connect(self._process_single_image)
         self.btn_batch = QPushButton(self.tr("Batch Process Input Folder"))
         self.btn_batch.clicked.connect(self._batch_process)
+        btn_reset = make_reset_button(self)
+        btn_reset.clicked.connect(self._reset_to_factory)
         row_proc.addWidget(self.btn_single)
         row_proc.addWidget(self.btn_batch)
+        row_proc.addWidget(btn_reset)
         left.addLayout(row_proc)
 
         self.btn_monitor = QPushButton(self.tr("Live Monitor Input Folder"))

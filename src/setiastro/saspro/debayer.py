@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDialogButtonBox,
     QGroupBox, QMessageBox, QProgressBar
 )
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _tr(text: str) -> str:
@@ -627,7 +629,19 @@ class DebayerDialog(QDialog):
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self._go)
         btns.rejected.connect(self.reject)
+        btn_reset = make_reset_button(self)
+        btn_reset.clicked.connect(self._reset_to_factory)
+        btns.addButton(btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
         v.addWidget(btns)
+        # CPU/GPU starts on what the optimizer measured here, so Reset re-reads
+        # that rather than storing it.
+        self._factory = snapshot_controls(self, exclude=(self.combo_backend,))
+
+    def _reset_to_factory(self):
+        if self.worker is not None and self.worker.isRunning():
+            return
+        restore_controls(self._factory)
+        self._reload_backend_pref()
 
 
     def _current_method_token(self) -> str:

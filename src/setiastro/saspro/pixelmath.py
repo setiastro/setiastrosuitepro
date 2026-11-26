@@ -20,6 +20,8 @@ from setiastro.saspro.widgets.image_utils import nearest_resize_2d as _nearest_r
 from setiastro.saspro.widgets.image_utils import float_to_qimage_rgb8 as _float_to_qimage_rgb8
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 # ---- Optional accelerators from setiastro.saspro.legacy.numba_utils -------------------------
 try:
     from setiastro.saspro.legacy.numba_utils import fast_mad as _fast_mad
@@ -1394,6 +1396,9 @@ class PixelMathDialogPro(QDialog):
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self._apply)
         btns.rejected.connect(self.reject)
+        self.btn_reset = make_reset_button(self)
+        btns.addButton(self.btn_reset, QDialogButtonBox.ButtonRole.ActionRole)   # OK | Reset | Cancel
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         b_help = btns.addButton(self.tr("Help"), QDialogButtonBox.ButtonRole.HelpRole)
         b_help.clicked.connect(self._help)
         
@@ -1417,6 +1422,15 @@ class PixelMathDialogPro(QDialog):
         # A little wider to favor the preview
         self.resize(940, 700)
         QTimer.singleShot(0, lambda: self._splitter.setSizes([320, max(620, self.width() - 320)]))
+
+        # Reset covers Output and expression Mode. Left alone: the typed
+        # expressions (user input), favourites, the example picker and the
+        # preview auto-stretch.
+        self._factory = snapshot_controls(
+            self, exclude=(self.btn_autostretch, self.cb_examples, self.cb_fav))
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
 
     # ─────────────── Auto-stretch prefs ───────────────
     def _as_settings(self):

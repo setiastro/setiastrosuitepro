@@ -34,6 +34,7 @@ from .curve_editor_pro import (
     StretchCurveView,
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.widgets.factory_reset import snapshot_controls, restore_controls
 
 # ---------------------------------------------------------------------------
 # Stretch function implementations
@@ -757,6 +758,13 @@ class GhsDialogPro(QDialog):
         # show/hide sliders for initial mode, then draw first curve
         self._update_slider_visibility()
         self._rebuild_from_params()
+
+        # Factory defaults for Reset. Left alone: the histogram's Log scale,
+        # Preview ON/OFF, display auto-stretch and which fine rows are open
+        # (view state); the fine sliders are re-centred by _reset itself.
+        self._factory = snapshot_controls(self, exclude=(
+            self.editor, self.btn_toggle_preview, self.chk_display_stretch,
+            *(sp[k] for sp in self._fine_specs for k in ("toggle", "fine"))))
 
         self.btn_toggle_preview.toggled.connect(self._on_toggle_preview)
 
@@ -1605,19 +1613,12 @@ class GhsDialogPro(QDialog):
     # -----------------------------------------------------------------------
 
     def _reset(self):
-        for s in self._all_sliders:
-            s.blockSignals(True)
-        try:
-            self.sA.setValue(50);  self.sB.setValue(50);  self.sG.setValue(100)
-            self.sS.setValue(50);  self.sP.setValue(100)
-            self.sLP.setValue(0);  self.sHP.setValue(0)
-            self.sD.setValue(0);   self.sBb.setValue(0)
-            self.sgLP.setValue(0); self.sgHP.setValue(10000); self.sBP.setValue(0)
-        finally:
-            for s in self._all_sliders:
-                s.blockSignals(False)
+        # function, channel, every slider and SP back to factory
+        restore_controls(self._factory)
 
         self._clear_fine_overrides()
+        for spec in self._fine_specs:
+            self._recenter_fine(spec["fine"])     # hidden rows too
         self._set_sym_u(0.5)
         self.editor.clearSymmetryLine()
         self._rebuild_from_params()

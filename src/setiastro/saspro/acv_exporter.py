@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QFileDialog, QComboBox,
     QMessageBox, QWidget
 )
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # If you have a canonical place for "global save_as", wire it here.
 # Example placeholders (change to your actual import):
@@ -107,18 +109,24 @@ class AstroCatalogueViewerExporterDialog(QDialog):
         self.cmb_fmt = QComboBox(self)
         # keep these lower-case as “extensions”
         self.cmb_fmt.addItems(["jpg", "png", "tif"])
+        self.cmb_fmt.setCurrentText("png")      # what a new user gets
 
         self.btn_export = QPushButton(_tr("Export"), self)
         self.btn_export.clicked.connect(self._on_export)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
 
         row.addWidget(QLabel(_tr("Image Name")), 0)
         row.addWidget(self.ed_name, 2)
         row.addWidget(QLabel(_tr("Type")), 0)
         row.addWidget(self.cmb_fmt, 0)
         row.addWidget(self.btn_export, 0)
+        row.addWidget(self.btn_reset, 0)
 
         root.addLayout(row)
 
+        # folders and the image name are line edits, so they are not captured
+        self._factory = snapshot_controls(self)
         # Load persisted settings
         self._load_settings()
 
@@ -129,6 +137,9 @@ class AstroCatalogueViewerExporterDialog(QDialog):
         self.ed_ic.textChanged.connect(self._save_settings)
         self.ed_c.textChanged.connect(self._save_settings)
         self.cmb_fmt.currentTextChanged.connect(self._save_settings)
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)     # the format saves itself on change
 
     # -------------------------
     # Settings

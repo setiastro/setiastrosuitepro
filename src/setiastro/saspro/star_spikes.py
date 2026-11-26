@@ -12,6 +12,8 @@ from PyQt6.QtGui import QPixmap, QImage, QPainter
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.thread_keeper import start_owned_thread
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 # deps
 try:
     import sep
@@ -132,6 +134,9 @@ class StarSpikesDialogPro(QDialog):
         }
 
         self._build_ui()
+        # Factory defaults, before the opener seeds a preset (apply_preset)
+        self._factory = snapshot_controls(self)
+        self._factory_advanced = dict(self.advanced)
         self._load_active_image()
         self._hook_active_doc_following()
 
@@ -231,8 +236,11 @@ class StarSpikesDialogPro(QDialog):
         self.btn_apply.setEnabled(False)
         self.btn_help = QPushButton(self.tr("Aperture Help"))
         self.btn_help.clicked.connect(self._show_help)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         row_actions.addWidget(self.btn_run)
         row_actions.addWidget(self.btn_apply)
+        row_actions.addWidget(self.btn_reset)
         row_actions.addWidget(self.btn_help)
         row_actions.addStretch(1)
         row_actions.addWidget(make_help_button("star_spikes", self))
@@ -484,6 +492,14 @@ class StarSpikesDialogPro(QDialog):
         self.color_boost.setValue(float(p.get("color_boost", self.color_boost.value())))
         self.blur_sigma.setValue(float(p.get("blur_sigma", self.blur_sigma.value())))
         self.pupil_jwst.setChecked(bool(p.get("jwst", self.pupil_jwst.isChecked())))
+
+    def _reset_to_factory(self):
+        """Every spike setting back to its factory default (also the
+        preset-only advanced values). The image and any result are kept."""
+        if self._busy:
+            return
+        self.advanced = dict(self._factory_advanced)
+        restore_controls(self._factory)
 
     # ---------- core ----------
     def _run(self):

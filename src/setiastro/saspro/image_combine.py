@@ -24,6 +24,8 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.luminancerecombine import recombine_luminance_linear_scale as _recombine_luma_into_rgb
 from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 _LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
@@ -349,6 +351,9 @@ class ImageCombineDialog(QDialog):
         # buttons
         btns = QDialogButtonBox()
         self.btnApply = btns.addButton(self.tr("Apply"), QDialogButtonBox.ButtonRole.AcceptRole)
+        self.btnReset = make_reset_button(self)
+        btns.addButton(self.btnReset, QDialogButtonBox.ButtonRole.ActionRole)
+        self.btnReset.clicked.connect(self._reset_to_factory)
         self.btnClose = btns.addButton(self.tr("Close"), QDialogButtonBox.ButtonRole.RejectRole)
         self.btnClose.clicked.connect(self.reject)
         self.btnApply.clicked.connect(self._commit)
@@ -374,10 +379,20 @@ class ImageCombineDialog(QDialog):
         self.chkInvert.toggled.connect(lambda *_: _save())
         self.slOverlay.sliderReleased.connect(_save)
         self._populate_docs()
+        # Factory defaults for Reset, before showEvent restores the saved
+        # state. Sources A/B and the mask overlay (view only) stay.
+        self._factory = snapshot_controls(self, exclude=(
+            self.cbA, self.cbB, self.chkOverlay, self.slOverlay))
         self._update_preview()
 
     def _k(self, key: str) -> str:
         return f"{self._persist_prefix}/{key}"
+
+    def _reset_to_factory(self):
+        if thread_running(self._apply_thread):
+            return
+        restore_controls(self._factory)
+        self._save_ui_state()       # the opacity slider saves only on release
 
     def _save_ui_state(self):
         # Don't save while we are initializing/restoring or before first show

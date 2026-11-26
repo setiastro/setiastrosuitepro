@@ -36,6 +36,8 @@ from PyQt6.QtWidgets import (
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # ===========================
 #  UI Helpers / Components
@@ -538,6 +540,9 @@ class IsophoteModelerDialog(QDialog):
         form.addRow(self.quick_preview)
         run_row = QWidget(self); _rl = QHBoxLayout(run_row); _rl.setContentsMargins(0, 0, 0, 0)
         _rl.addWidget(run_btn, 1)
+        reset_btn = make_reset_button(self)
+        reset_btn.clicked.connect(self._reset_to_factory)
+        _rl.addWidget(reset_btn)
         _rl.addWidget(make_help_button("glimr", self))
         form.addRow(run_row)
 
@@ -609,6 +614,20 @@ class IsophoteModelerDialog(QDialog):
         self.quick_preview.stateChanged.connect(lambda _=None: self._update_lowres_hints())
         self.normalize_input.stateChanged.connect(lambda _=None: self._recompute_input_view())
         self._update_wedge_overlay()
+
+        # Factory = as built; the fit centre is state too.
+        self._factory = snapshot_controls(self)
+        self._factory_center = (self._cx, self._cy)
+
+    def _reset_to_factory(self):
+        if getattr(self, "_busy", None) is not None:
+            return                                   # a fit is running
+        restore_controls(self._factory)              # FloatSlider.setValue is silent...
+        cx, cy = self._factory_center
+        if self._ellipse_item is not None:
+            self._ellipse_item.set_center_scene(QPointF(cx, cy))
+        self._set_center(cx, cy)                     # ...so redraw ellipses + wedge here
+        self._update_ring_estimate()
 
     # ---------- event/utility ----------
     def _compute_input01(self) -> np.ndarray:

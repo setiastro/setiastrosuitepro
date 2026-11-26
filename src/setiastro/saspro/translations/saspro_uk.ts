@@ -4998,6 +4998,10 @@ Tools you added are taken off, the ones you removed come back, and the order is 
       <source>Reduce row or column banding across the whole image</source>
       <translation>Зменшити смуги по рядках або стовпцях на всьому зображенні</translation>
     </message>
+    <message>
+      <source>All Analysis Tools</source>
+      <translation>Усі інструменти аналізу</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -29724,6 +29728,30 @@ Calibrate only the {2} new frame(s) and reuse the existing calibrated frames for
       <source>✓ same session</source>
       <translation>✓ та сама сесія</translation>
     </message>
+    <message>
+      <source>Reset</source>
+      <translation>Скинути</translation>
+    </message>
+    <message>
+      <source>A stacking run is in progress. Reset is available once it has finished.</source>
+      <translation>Триває складання. Скидання буде доступне, щойно воно завершиться.</translation>
+    </message>
+    <message>
+      <source>Reset Stacking Settings</source>
+      <translation>Скинути налаштування складання</translation>
+    </message>
+    <message>
+      <source>Reset every stacking setting to its factory default?
+
+This covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.
+
+Kept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.</source>
+      <translation>Скинути всі налаштування складання до заводських?
+
+Це стосується цього вікна та параметрів на вкладках Stacking Suite: калібрування, drizzle, MFDeconv, комета, відхилення та решта.
+
+Зберігаються: папка складання та інші шляхи, завантажені кадри, мастер-кадри та їхній вибір Dark/Flat, набори реєстрації та опорні кадри, ваші збережені профілі, а також те, що виміряла функція «Оптимізувати…». Допуск групування зберігається, доки кадри згруповано за ним.</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -37269,6 +37297,10 @@ Use [ and ] to decrease/increase brush size.</source>
       <source>Zoom Out</source>
       <translation>Зменшити</translation>
     </message>
+    <message>
+      <source>Reset every setting in this tool to its factory default</source>
+      <translation>Скинути всі налаштування цього інструмента до заводських</translation>
+    </message>
   </context>
   <context>
     <name>CommonUtilities</name>
@@ -41832,6 +41864,18 @@ Drawn chart: a vector star chart (SVG / PDF / PNG / new image).</source>
       <source>💡 You can undo and redo edits all the way back to the original using the History stack.</source>
       <translation>💡 За допомогою стеку історії можна скасовувати й повторювати зміни аж до оригіналу.</translation>
     </message>
+    <message>
+      <source>💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.</source>
+      <translation>💡 Цікавлять гарячі клавіші? У меню «Вигляд → Гарячі клавіші» є повна шпаргалка.</translation>
+    </message>
+    <message>
+      <source>💡 Batch convert files from one format to another with Tools → Header Mods &amp; Misc → Batch Converter.</source>
+      <translation>💡 Пакетно конвертуйте файли з одного формату в інший за допомогою «Інструменти → Модиф. заголовків та інше → Пакетний конвертер».</translation>
+    </message>
+    <message>
+      <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
+      <translation>💡 Шпаргалка іконок у меню «Вигляд → Гарячі клавіші» показує кожну іконку панелі інструментів з її функцією.</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -41994,6 +42038,10 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
       <translation>Там, де субкадри не повністю перекрилися, стек має рвані краї: темні або шумні облямівки, іноді смуги. Спершу обріжте їх. Розтягування, видалення градієнта й калібрування кольору вимірюють усе зображення, і ці краї їх спотворюють.
 
 Обрізка — у Функції → Виправлення &amp; ретуш → Обрізка. Перетягніть рамку всередину чистої області й натисніть «Застосувати».</translation>
+    </message>
+    <message>
+      <source>First Steps</source>
+      <translation>Перші кроки</translation>
     </message>
   </context>
   <context>
@@ -53326,6 +53374,10 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>Zoom Out</source>
       <translation>Зменшити</translation>
     </message>
+    <message>
+      <source>Set Q back to {0:.2f} for every filter</source>
+      <translation>Повернути Q до {0:.2f} для кожного фільтра</translation>
+    </message>
   </context>
   <context>
     <name>QuadBuildWorker</name>
@@ -53885,6 +53937,10 @@ Masters and frames dropped on this window, or added with the lights, are sorted 
     <message>
       <source>✓ the only flat</source>
       <translation>✓ єдиний flat</translation>
+    </message>
+    <message>
+      <source>What Quick Stack will run on. A GPU is used when SASpro's hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.</source>
+      <translation>На чому працюватиме Quick Stack. GPU використовується, коли апаратне прискорення SASpro має до нього доступ (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML або Apple Metal); параметр «Використовувати апаратне прискорення, якщо доступне» в налаштуваннях складання вимикає це.</translation>
     </message>
   </context>
   <context>
@@ -57485,6 +57541,12 @@ Make sure the tool is registered in the SASpro toolbar.</source>
     <message>
       <source>🔄 Invert Masked Region</source>
       <translation>🔄 Інвертувати замасковану область</translation>
+    </message>
+    <message>
+      <source>Set the palette preset back to this mode's default.
+The Mode is kept: changing it re-masks the active image.</source>
+      <translation>Повернути пресет палітри до типового для цього режиму.
+Режим зберігається: його зміна заново накладає маску на активне зображення.</translation>
     </message>
   </context>
   <context>
@@ -67944,6 +68006,10 @@ binned points and the model, residuals underneath.</source>
       <source>χ²_red (photometric errors) = {0:.2f} → errors × {1:.2f};  red-noise β = {2:.2f}</source>
       <translation>χ²_red (фотометричні похибки) = {0:.2f} → похибки × {1:.2f};  β червоного шуму = {2:.2f}</translation>
     </message>
+    <message>
+      <source>Reset the Fit options to their factory defaults</source>
+      <translation>Скинути параметри апроксимації до заводських</translation>
+    </message>
   </context>
   <context>
     <name>TypedTableModel</name>
@@ -73480,6 +73546,12 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
       <source>Writing temp image…</source>
       <translation>Запис тимчасового зображення…</translation>
     </message>
+    <message>
+      <source>The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.
+{0}</source>
+      <translation>Зображення відкрито в SyQon Studio. Обробіть його там і збережіть результат у цю теку; SASpro імпортує його звідти. «Скасувати» залишає оригінальне зображення.
+{0}</translation>
+    </message>
   </context>
   <context>
     <name>_SyQonStudioHubPage</name>
@@ -73758,6 +73830,10 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>✘  Could not validate: {0}</source>
       <translation>✘  Не вдалося перевірити: {0}</translation>
+    </message>
+    <message>
+      <source>SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.</source>
+      <translation>У SyQon Studio {0} немає інструмента командного рядка (він з'явився в 1.2), тому SASpro відкриває зображення в застосунку Studio. Обробіть його там і збережіть; SASpro імпортує збережене.</translation>
     </message>
   </context>
   <context>

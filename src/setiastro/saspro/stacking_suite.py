@@ -25,6 +25,7 @@ from typing import List
 from setiastro.saspro.legacy.numba_utils import *
 from setiastro.saspro.debayer import debayer_array
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import make_reset_button
 
 # Memory management utilities
 from setiastro.saspro.memory_utils import (
@@ -8515,6 +8516,62 @@ class StackCancelled(BaseException):
     """Cooperative cancel — raised at a checkpoint, unwinds to a phase boundary.
     Subclasses BaseException on purpose so `except Exception` blocks don't eat it."""
 
+class _TabScroll(QScrollArea):
+    """One Stacking Suite page in a scroll area. It asks for the page's own
+    minimum size, taller where wrapped text needs it at that width (the
+    scroll area lays the page out at that height), so a screen big enough
+    for the page shows it unscrolled."""
+
+    def sizeHint(self):
+        w = self.widget()
+        if w is None:
+            return super().sizeHint()
+        s = w.minimumSizeHint()
+        if w.hasHeightForWidth():
+            s.setHeight(max(s.height(), w.heightForWidth(s.width())))
+        return s
+
+
+class _ScrollingTabs(QTabWidget):
+    """The Stacking Suite's tabs, each page in a scroll area, so the suite
+    fits a laptop screen: its minimum size is no longer the biggest page's
+    (Image Integration, about 1335 x 830 at 9 pt). Callers still pass and get
+    back the pages themselves; the scroll areas stay out of sight."""
+
+    def addTab(self, page, *args):
+        sa = _TabScroll()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.Shape.NoFrame)
+        sa.setWidget(page)
+        # setWidget fills the page with the window colour; let the tab's
+        # own pane show through, as it did before the pages could scroll.
+        page.setAutoFillBackground(False)
+        sa.viewport().setAutoFillBackground(False)
+        return super().addTab(sa, *args)
+
+    @staticmethod
+    def _page(sa):
+        return sa.widget() if isinstance(sa, _TabScroll) else sa
+
+    def _host(self, page):
+        for i in range(self.count()):
+            if self._page(super().widget(i)) is page:
+                return super().widget(i)
+        return page
+
+    def widget(self, index):
+        return self._page(super().widget(index))
+
+    def currentWidget(self):
+        return self._page(super().currentWidget())
+
+    def indexOf(self, page):
+        return super().indexOf(self._host(page))
+
+    def setCurrentWidget(self, page):
+        super().setCurrentWidget(self._host(page))
+
+
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
     status_signal = pyqtSignal(str)
@@ -8538,6 +8595,8 @@ class StackingSuiteDialog(QDialog):
         self._light_exp_item = {}    # (filter_name, want_label) -> QTreeWidgetItem
 
         self.setWindowTitle(self.tr("Stacking Suite"))
+        # Maximize as well as resize: the pages scroll when the window is small.
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.resize(800, 720)
 
         self.per_group_drizzle = {}
@@ -8728,7 +8787,7 @@ class StackingSuiteDialog(QDialog):
 
         # Layout & tabs
         layout = QVBoxLayout(self)
-        self.tabs = QTabWidget()
+        self.tabs = _ScrollingTabs()
         layout.addWidget(self.tabs)
 
         self.dir_path_edit = QLineEdit(self.stacking_directory)
@@ -8898,6 +8957,15 @@ class StackingSuiteDialog(QDialog):
         self._refresh_quick_stack_summary_later()
 
         self._migrate_drizzle_keys_once()
+
+        # Factory values of the tab options that are never saved: each session
+        # opens them as built (used by Reset, see _factory_reload).
+        self._factory_session = {}
+        for _n in self._FACTORY_SESSION_CONTROLS:
+            _w = getattr(self, _n, None)
+            if _w is not None:
+                self._factory_session[_n] = (bool(_w.isChecked()) if isinstance(_w, QCheckBox)
+                                             else _w.value())
         QTimer.singleShot(0, self._restore_tab_file_lists)
 
     def _open_stacking_log_file(self):
@@ -10744,6 +10812,248 @@ class StackingSuiteDialog(QDialog):
             return False
         return True
 
+    # ── Factory Reset ─────────────────────────────────────────────────────
+    # A first-time user's stacking settings are _RECOMMENDED_STACKING (seeded
+    # before anything reads them) plus each control's own code default for
+    # whatever the table does not carry. Reset rebuilds exactly that in
+    # QSettings and puts the Suite's tabs back in place, without a restart
+    # (a restart drops the master picks and registration sets). It keeps
+    # what is not a processing choice, the same things the table leaves out:
+    # the stacking folder and other paths, profiles, what Optimize measured,
+    # bookkeeping keys, and everything about the loaded frames.
+
+    # Tab options the table does not carry: removed, so each one reads its
+    # builder's default again.
+    _FACTORY_EXTRA_KEYS = (
+        "pipeline_force_clean_slate", "bias_enabled", "gain_tolerance",
+        "comet/save_starless", "mfdeconv/sr_enabled", "mfdeconv/sr_factor",
+        "mfdeconv/save_intermediate", "mfdeconv/iters", "mfdeconv/min_iters",
+        "mfdeconv/color_mode", "mfdeconv/rho", "mfdeconv/use_star_masks",
+        "mfdeconv/use_noise_maps",
+    )
+
+    # The tab options their builders read from QSettings: (attribute, key,
+    # the default that builder's settings.value() call uses). Bias goes
+    # first: while it is ticked, the other correction boxes ask for a file.
+    _FACTORY_TAB_CHECKS = (
+        ("bias_checkbox", "stacking/bias_enabled", False),
+        ("pipeline_force_clean_slate_cb", "stacking/pipeline_force_clean_slate", False),
+        ("dark_recurse_cb", "stacking/recurse_dirs", True),
+        ("flat_recurse_cb", "stacking/recurse_dirs", True),
+        ("light_recurse_cb", "stacking/recurse_dirs", True),
+        ("dark_auto_session_cb", "stacking/auto_session", True),
+        ("flat_auto_session_cb", "stacking/auto_session", True),
+        ("light_auto_session_cb", "stacking/auto_session", True),
+        ("auto_register_after_calibration_cb", "stacking/auto_register_after_cal", False),
+        ("interactive_flat_strength_cb", "stacking/interactive_flat_strength", False),
+        ("cosmetic_checkbox", "stacking/cosmetic_enabled", True),
+        ("pedestal_checkbox", "stacking/pedestal_enabled", False),
+        ("cal_satellite_checkbox", "stacking/calibration_satellite_enabled", False),
+        ("trail_cb", "stacking/star_trail_mode", False),
+        ("comet_cb", "stacking/comet/enabled", False),
+        ("mf_enabled_cb", "stacking/mfdeconv/enabled", False),
+        ("drizzle_checkbox", "stacking/drizzle_enabled", False),
+        ("cfa_drizzle_cb", "stacking/cfa_drizzle", False),
+        ("autocrop_cb", "stacking/autocrop_enabled", True),
+        ("platesolve_master_cb", "stacking/platesolve_master_enabled", False),
+        ("adv_nb_split_cb", "stacking/adv_nb_split_enabled", False),
+        ("mf_sr_cb", "stacking/mfdeconv/sr_enabled", False),
+        ("mf_save_intermediate_cb", "stacking/mfdeconv/save_intermediate", False),
+        ("comet_blend_cb", "stacking/comet/blend", True),
+        ("comet_save_starless_cb", "stacking/comet/save_starless", False),
+        ("save_rejection_layers_cb", "stacking/save_rejection_layers", True),
+        ("reject_interactive_cb", "stacking/reject_outliers_interactive", False),
+    )
+    _FACTORY_TAB_VALUES = (
+        ("pedestal_spinbox", "stacking/pedestal_value", 50),
+        ("cal_satellite_workers_spin", "stacking/calibration_satellite_workers", 2),
+        ("autocrop_pct", "stacking/autocrop_pct", 95.0),
+        ("drizzle_gauss_sigma_spin", "stacking/drizzle_gauss_sigma", 0.325),
+        ("mf_sr_factor_spin", "stacking/mfdeconv/sr_factor", 2),
+        ("mf_iters_spin", "stacking/mfdeconv/iters", 20),
+        ("mf_min_iters_spin", "stacking/mfdeconv/min_iters", 3),
+        ("mf_kappa_spin", "stacking/mfdeconv/kappa", 2.0),
+        ("mf_Huber_spin", "stacking/mfdeconv/Huber_delta", -2.0),
+        ("mf_rejection_strength_spin", "stacking/mfdeconv/rejection_strength", 0.85),
+        ("comet_mix", "stacking/comet/mix", 1.0),
+    )
+    # Tab options that are never saved: every session opens them as built,
+    # and __init__ records that value in _factory_session.
+    _FACTORY_SESSION_CONTROLS = (
+        "exposure_tolerance_spinbox", "auto_select_dark_checkbox",
+        "exposure_tolerance_spin", "split_dualband_cb",
+        "mf_use_star_mask_cb", "mf_use_noise_map_cb",
+    )
+
+    def _stacking_job_running(self) -> bool:
+        """True while a calibration, registration or integration run is live."""
+        if getattr(self, "_registration_busy", False):
+            return True
+        try:
+            m = getattr(self, "_exec_monitor", None)
+            if m is not None and m.is_run_live():
+                return True
+        except Exception:
+            pass
+        for name in ("alignment_thread", "_mf_thread", "post_thread"):
+            try:
+                t = getattr(self, name, None)
+                if t is not None and t.isRunning():
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _factory_reset_suites(self) -> list:
+        """This Suite, plus the open one when Blink opened Settings on a
+        stand-in instance: they share QSettings, so both must follow."""
+        out = [self]
+        for cand in (getattr(self.parent(), "_stacking_suite", None),
+                     getattr(QApplication.instance(), "_stacking_suite_ref", None)):
+            try:
+                if (isinstance(cand, StackingSuiteDialog) and not sip.isdeleted(cand)
+                        and all(cand is not o for o in out)):
+                    out.append(cand)
+            except Exception:
+                pass
+        return out
+
+    def _factory_keep(self) -> set:
+        """Keys Reset must not move on this Suite right now: a grouping
+        tolerance while frames are grouped by it (a new value regroups the
+        tree, and the picks made on its groups), and Auto-accept while a
+        reference frame is picked by hand (turning it on unlocks that pick)."""
+        keep = set()
+        try:
+            if self.flat_files or self.flat_tree.topLevelItemCount():
+                keep.add("flat_exposure_tolerance")
+        except Exception:
+            pass
+        try:
+            if self.reg_tree.topLevelItemCount() or self._cal_scan_stop is not None:
+                keep.add("gain_tolerance")
+        except Exception:
+            pass
+        if getattr(self, "_user_ref_locked", False):
+            keep.add("auto_accept_ref")
+        return keep
+
+    def _confirm_factory_reset(self, parent) -> bool:
+        if any(st._stacking_job_running() for st in self._factory_reset_suites()):
+            QMessageBox.information(parent, self.tr("Reset"), self.tr(
+                "A stacking run is in progress. Reset is available once it has finished."))
+            return False
+        return QMessageBox.question(
+            parent, self.tr("Reset Stacking Settings"), self.tr(
+                "Reset every stacking setting to its factory default?\n\n"
+                "This covers this window and the options on the Stacking Suite's "
+                "tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.\n\n"
+                "Kept: the stacking folder and other paths, the loaded frames, "
+                "the masters and their Dark/Flat picks, registration sets and "
+                "reference frames, your saved profiles, and what Optimize… "
+                "measured. A grouping tolerance is kept while frames are "
+                "grouped by it."),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
+
+    def _reset_stacking_to_factory(self) -> None:
+        """Factory Reset (see above). The caller checks for a running job."""
+        suites = self._factory_reset_suites()
+        keep = set()
+        for st in suites:
+            keep |= st._factory_keep()
+        s = self.settings
+        for sub in self._FACTORY_EXTRA_KEYS:
+            if sub not in keep:
+                s.remove("stacking/" + sub)
+        for sub, val in _RECOMMENDED_STACKING.items():
+            if sub not in keep:
+                s.setValue("stacking/" + sub, val)
+        s.sync()
+        for st in suites:
+            try:
+                st._factory_reload(keep)
+            except Exception as e:
+                self.update_status(f"⚠️ Reset could not refresh the Stacking Suite tabs: {e}")
+        self.update_status("↺ Stacking settings reset to factory defaults.")
+
+    def _factory_reload(self, keep=()) -> None:
+        """Runtime copies and tab options back to what QSettings now holds."""
+        s = self.settings
+        # what __init__ loads, same keys and defaults
+        self.sigma_high = s.value("stacking/sigma_high", 3.0, type=float)
+        self.sigma_low = s.value("stacking/sigma_low", 3.0, type=float)
+        self.rejection_algorithm = _canon_rejection_algo(s.value(
+            "stacking/rejection_algorithm", "Weighted Winsorized Sigma Clipping", type=str))
+        self.kappa = s.value("stacking/kappa", 2.5, type=float)
+        self.iterations = s.value("stacking/iterations", 3, type=int)
+        self.esd_threshold = s.value("stacking/esd_threshold", _ESD_DEFAULT_THRESHOLD, type=float)
+        self.esd_bonferroni = s.value("stacking/esd_bonferroni", False, type=bool)
+        self.biweight_constant = s.value("stacking/biweight_constant", 6.0, type=float)
+        self.trim_fraction = s.value("stacking/trim_fraction", 0.1, type=float)
+        self.modz_threshold = s.value("stacking/modz_threshold", 3.5, type=float)
+        self.chunk_width = s.value("stacking/chunk_width", 0, type=int)
+        dtype_str = s.value("stacking/internal_dtype", "float64", type=str)
+        self.internal_dtype = np.float64 if dtype_str == "float64" else np.float32
+        self.star_trail_mode = s.value("stacking/star_trail_mode", False, type=bool)
+        self.align_refinement_passes = s.value("stacking/refinement_passes", 3, type=int)
+        self.use_gpu_integration = s.value("stacking/use_hardware_accel", True, type=bool)
+
+        # tab options, with their signals on so each one's own handler runs
+        for name, key, dflt in self._FACTORY_TAB_CHECKS:
+            w = getattr(self, name, None)
+            if w is not None:
+                w.setChecked(s.value(key, dflt, type=bool))
+        for name, key, dflt in self._FACTORY_TAB_VALUES:
+            w = getattr(self, name, None)
+            if w is not None:
+                w.setValue(s.value(key, dflt, type=type(dflt)))
+        i = self.debayer_method_combo.findData(str(s.value("stacking/debayer_method", "rcd")).lower())
+        self.debayer_method_combo.setCurrentIndex(max(0, i))
+        self.mf_color_combo.setCurrentText(s.value("stacking/mfdeconv/color_mode", "PerChannel", type=str))
+        self.mf_rho_combo.setCurrentText(s.value("stacking/mfdeconv/rho", "Huber", type=str))
+        self.reg_set_keyword_edit.setText(
+            s.value("stacking/reg_set_filename_keyword", "Panel", type=str))
+        if "auto_accept_ref" not in keep:
+            self.auto_accept_ref_cb.setChecked(s.value("stacking/auto_accept_ref", False, type=bool))
+        if "flat_exposure_tolerance" not in keep:
+            self.flat_exposure_tolerance_spinbox.setValue(
+                s.value("stacking/flat_exposure_tolerance", 0.5, type=float))
+        if "gain_tolerance" not in keep:
+            self.gain_tolerance_spin.setValue(s.value("stacking/gain_tolerance", 10, type=int))
+        for name, val in getattr(self, "_factory_session", {}).items():
+            if name == "exposure_tolerance_spin" and "gain_tolerance" in keep:
+                continue
+            w = getattr(self, name)
+            if isinstance(val, bool):
+                w.setChecked(val)
+            else:
+                w.setValue(val)
+
+        # Drizzle scale and drop shrink without their change handler, which
+        # writes them onto the selected groups only; then every group gets
+        # the factory drizzle, as that handler does with nothing selected.
+        for w, put in ((self.drizzle_scale_combo, lambda: self.drizzle_scale_combo.setCurrentText(
+                            f"{int(self._get_drizzle_scale_from_settings())}x")),
+                       (self.drizzle_drop_shrink_spin, lambda: self.drizzle_drop_shrink_spin.setValue(
+                            self._get_drizzle_pixfrac()))):
+            _b = w.blockSignals(True)
+            put()
+            w.blockSignals(_b)
+        self.per_group_drizzle.clear()
+        if self._reg_drizzle_seed is not None:      # first tree build still pending
+            self._reg_drizzle_seed = self._current_drizzle_defaults()
+        try:
+            self._set_drizzle_on_items(list(self._iter_group_items()),
+                                       *self._current_drizzle_defaults())
+        except Exception:
+            pass
+        for refresh in (self._sync_drizzle_kernel_row, self._refresh_comet_starless_enable):
+            try:
+                refresh()
+            except Exception:
+                pass
+
     def open_stacking_settings(self, origin: str = "stacking"):
         """Opens a 2-column Stacking Settings dialog."""
         # SASPRO_CLICK_TO_WHEEL: QComboBox / QSpinBox / QDoubleSpinBox are deliberately NOT
@@ -12295,10 +12605,36 @@ class StackingSuiteDialog(QDialog):
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(lambda: self.save_stacking_settings(dialog, origin=origin))
         btns.rejected.connect(dialog.reject)
+        # Factory Reset for every stacking setting, this window and the
+        # Suite's tabs. Like Load profile it writes QSettings at once; this
+        # window then reopens to show the defaults.
+        btn_factory_reset = make_reset_button(dialog)
+        btns.addButton(btn_factory_reset, QDialogButtonBox.ButtonRole.ResetRole)
+
+        def _on_factory_reset():
+            if not self._confirm_factory_reset(dialog):
+                return
+            self._reset_stacking_to_factory()
+            self._settings_reopen_state = {
+                "dir": dir_edit.text(),
+                "sound": self.completion_sound_edit.text(),
+                "geom": dialog.saveGeometry(),
+            }
+            dialog.reject()
+            QTimer.singleShot(0, lambda: self.open_stacking_settings(origin=origin))
+
+        btn_factory_reset.clicked.connect(_on_factory_reset)
         root.addWidget(btns)
         btn_export.clicked.connect(lambda: self._export_stacking_settings_file(dialog))
         btn_import.clicked.connect(lambda: self._import_stacking_settings_file(dialog))
         dialog.resize(900, 640)
+        # Reopened by a factory Reset: keep the unsaved paths and the size.
+        _reopen = getattr(self, "_settings_reopen_state", None)
+        if _reopen:
+            self._settings_reopen_state = None
+            dir_edit.setText(_reopen["dir"])
+            self.completion_sound_edit.setText(_reopen["sound"])
+            dialog.restoreGeometry(_reopen["geom"])
         dialog.exec()
 
         try:
@@ -12779,6 +13115,10 @@ class StackingSuiteDialog(QDialog):
             cb.blockSignals(False)
 
     def showEvent(self, e):
+        if not getattr(self, "_placed_once", False):
+            # The size the pages need, as before they could scroll;
+            # _place_on_screen then fits it to the screen.
+            self.resize(self.sizeHint().expandedTo(QSize(800, 720)))
         super().showEvent(e)
         # X11/KWin: defer one event-loop turn so real frame margins exist
         QTimer.singleShot(0, self._place_on_screen)
@@ -12811,7 +13151,8 @@ class StackingSuiteDialog(QDialog):
         if r.bottom() > avail.bottom(): r.moveBottom(avail.bottom())
 
         if r.topLeft() != frame.topLeft() or r.size() != frame.size():
-            self.resize(r.size())
+            # resize() sets the inside; the title bar and borders come on top.
+            self.resize(r.size() - (frame.size() - self.size()))
             self.move(r.topLeft())
 
     def closeEvent(self, e):

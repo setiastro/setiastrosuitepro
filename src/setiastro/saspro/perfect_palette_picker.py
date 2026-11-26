@@ -1,6 +1,7 @@
 #saspro/perfect_palette_picker.py
 from __future__ import annotations
 import os
+import re
 import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +25,8 @@ from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.thread_keeper import start_owned_thread
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +512,146 @@ def _ppp_push_job(img, needs_copy, compose, olin):
     return img, out, qimg, info, copied
 
 
+# ---------------------------------------------------------------------------
+# Metadata for the pushed palette: the loaded inputs' headers merged into one.
+#
+# Order = the full-size geometry reference of _ppp_synth_shapes / _ppp_match_sizes
+# (Ha, or OSC1 standing in for it; then OIII, or OSC2; then SII), so the first
+# header is the one whose pixel grid the output is on. A keyword the inputs
+# disagree on keeps the first input's value. The WCS is one input's block, never a
+# mix: the first input that has one and is the output's size (a resized channel's
+# WCS no longer fits the pixels).
+# ---------------------------------------------------------------------------
+_PPP_HEADER_ORDER = ("Ha", "OSC1", "OIII", "OSC2", "SII")
+_PPP_STRUCTURAL_KEYS = {"SIMPLE", "EXTEND", "XTENSION", "PCOUNT", "GCOUNT", "BITPIX",
+                        "NAXIS", "NAXIS1", "NAXIS2", "NAXIS3", "NAXIS4",
+                        "BSCALE", "BZERO", "END"}
+_PPP_COMMENTARY_KEYS = {"HISTORY", "COMMENT", ""}
+_PPP_WCS_KEY = re.compile(
+    r"^(WCSAXES|WCSNAME|CTYPE\d|CUNIT\d|CRPIX\d|CRVAL\d|CDELT\d|CROTA\d|CD\d_\d|PC\d_\d|"
+    r"PV\d_\d+|PS\d_\d+|LONPOLE|LATPOLE|(A|B|AP|BP)_(ORDER|DMAX|\d+_\d+)|SASWCSSY)$")
+
+
+def _ppp_as_header(hdr):
+    """Any header SASpro stores on a document (astropy Header or XISF-style dict) as a
+    Header, or None. A Header comes back as is: callers only read it."""
+    if hdr is None:
+        return None
+    from astropy.io import fits
+    if isinstance(hdr, fits.Header):
+        return hdr
+    if isinstance(hdr, dict):
+        out = fits.Header()
+        for k, v in hdr.items():
+            if not isinstance(k, str) or k.startswith("XISF:"):
+                continue
+            if isinstance(v, dict) and "value" in v:
+                v = v["value"]
+            try:
+                out[k] = v
+            except Exception:
+                continue
+        return out if len(out) else None
+    return None
+
+
+def _ppp_has_wcs(hdr) -> bool:
+    return all(k in hdr for k in ("CTYPE1", "CTYPE2", "CRVAL1", "CRVAL2"))
+
+
+def _ppp_merged_header(sources, out_hw, palette, linear_out=False):
+    """One header for the pushed palette. sources: {input name: (header, (h, w))} of the
+    loaded inputs; out_hw: the output's (h, w). FILTER becomes the palette name."""
+    import copy
+    from astropy.io import fits
+
+    h, w = int(out_hw[0]), int(out_hw[1])
+    merged = fits.Header()
+    merged["SIMPLE"] = True
+    merged["BITPIX"] = -32
+    merged["NAXIS"] = 3
+    merged["NAXIS1"] = w
+    merged["NAXIS2"] = h
+    merged["NAXIS3"] = 3
+
+    used = []                                   # (input name, Header or None)
+    for name in _PPP_HEADER_ORDER:
+        if name in sources:
+            hdr, _hw = sources[name]
+            used.append((name, _ppp_as_header(hdr)))
+    shapes = {name: tuple(sources[name][1]) for name, _h in used}
+    donor = next((name for name, hdr in used
+                  if hdr is not None and shapes[name] == (h, w) and _ppp_has_wcs(hdr)), None)
+
+    seen = set()                                # commentary lines of the earlier inputs
+    for name, hdr in used:
+        if hdr is None:
+            continue
+        cards = list(hdr.cards)
+        mine = set()
+        i = 0
+        while i < len(cards):
+            j = i + 1
+            try:
+                card = cards[i]
+                key = card.keyword
+                if key in _PPP_COMMENTARY_KEYS:
+                    # A long HISTORY/COMMENT is split over consecutive 72-character cards
+                    # (trailing spaces stripped on read): keep or drop the line whole, so
+                    # no input leaves a fragment. Only a line an earlier input had is dropped.
+                    while (j < len(cards) and cards[j].keyword == key
+                           and len(str(cards[j - 1].value)) >= 70):
+                        j += 1
+                    line = (key, tuple(str(c.value) for c in cards[i:j]))
+                    if line not in seen:
+                        mine.add(line)
+                        for c in cards[i:j]:
+                            merged.append(copy.copy(c))
+                elif key in _PPP_STRUCTURAL_KEYS:
+                    pass
+                elif _PPP_WCS_KEY.match(key) and name != donor:
+                    pass
+                elif key not in merged:
+                    merged.append(copy.copy(card))
+            except Exception:
+                pass
+            i = j
+        seen |= mine
+
+    inputs = []
+    for name, hdr in used:
+        filt = ""
+        if hdr is not None:
+            try:
+                filt = str(hdr.get("FILTER", "") or "").strip()
+            except Exception:
+                filt = ""
+        inputs.append(f"{name} ({filt})" if filt else name)
+    merged["FILTER"] = (str(palette), "Perfect Palette Picker palette")
+    note = f"Perfect Palette Picker: {palette} palette from {', '.join(inputs)}"
+    if linear_out:
+        note += ", linear output"
+    merged.add_history(note)
+    return merged
+
+
+def _ppp_push_metadata(sources, out_img, palette, linear_out=False):
+    """Metadata for the pushed document: the merged header plus the WCS built from it."""
+    meta = {"is_mono": False, "bit_depth": "32-bit floating point"}
+    try:
+        hdr = _ppp_merged_header(sources, out_img.shape[:2], palette, linear_out)
+    except Exception as e:
+        print(f"[PerfectPalettePicker] could not merge input headers: {e}")
+        return meta
+    meta["original_header"] = hdr
+    try:
+        from setiastro.saspro.legacy.image_manager import attach_wcs_to_metadata
+        meta = attach_wcs_to_metadata(meta, hdr)
+    except Exception as e:
+        print(f"[PerfectPalettePicker] could not attach WCS: {e}")
+    return meta
+
+
 class PaletteAdjustDialog(QDialog):
     adjusted_image = pyqtSignal(np.ndarray)
 
@@ -860,6 +1003,8 @@ class PerfectPalettePicker(QWidget):
         self.osc1 = None
         self.osc2 = None
         self._dim_mismatch_accepted = False
+        # input name -> (header as loaded, (h, w)): merged into the pushed view's metadata
+        self._src_meta: dict[str, tuple] = {}
 
         # stretched cache (per input name → stretched array)
         self._stretched: dict[str, np.ndarray] = {}
@@ -895,6 +1040,9 @@ class PerfectPalettePicker(QWidget):
         self._base_pm_src = None     # the array _base_pm shows
 
         self._build_ui()
+        # Factory defaults for Reset, before showEvent restores the saved
+        # settings. The gallery toggle is view state, not a setting.
+        self._factory = snapshot_controls(self, exclude=(self.btn_gallery,))
 
         # Ensure PPP (and its gallery) don't outlive the application.
         from PyQt6.QtWidgets import QApplication
@@ -1037,6 +1185,10 @@ class PerfectPalettePicker(QWidget):
         self.btn_gallery.toggled.connect(self._toggle_gallery)
         left.addWidget(self.btn_gallery)
 
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        left.addWidget(self.btn_reset)
+
         left.addStretch(1)
         root.addWidget(left_host, 0)
 
@@ -1123,6 +1275,13 @@ class PerfectPalettePicker(QWidget):
     def _resize_to(self, arr: np.ndarray | None, size: tuple[int, int]) -> np.ndarray | None:
         """Resize np array to (w,h). Keeps dtype/scale. Uses INTER_AREA for downsizing."""
         return _ppp_resize_to(arr, size)
+
+    def _reset_to_factory(self):
+        """Every option back to its factory default (each one saves on change).
+        Loaded channels and the picked palette stay."""
+        if self._busy() or self._thumbs_thread is not None:
+            return
+        restore_controls(self._factory)
 
     def _on_balance_on_push_toggled(self, on: bool):
         try:
@@ -1282,6 +1441,13 @@ class PerfectPalettePicker(QWidget):
 
         # store raw, normalized
         setattr(self, which.lower(), self._as_float01(img))
+        # a copy: the push edits FILTER, and a view's header must not change under it
+        try:
+            hdr = _ppp_as_header(header)
+            hdr = hdr.copy() if hdr is not None else None
+        except Exception:
+            hdr = None
+        self._src_meta[which] = (hdr, tuple(img.shape[:2]))
         self._set_status_label(which, label)
         self.status.setText(self.tr("{0} loaded ({1}) shape={2}").format(which, self.tr("mono") if img.ndim==2 else "RGB", img.shape))
 
@@ -1427,6 +1593,7 @@ class PerfectPalettePicker(QWidget):
         self._final_key = None
         self._base_pm_src = None
         self.ha = self.oiii = self.sii = self.osc1 = self.osc2 = None
+        self._src_meta = {}
         try:
             self._stretched.clear()
         except Exception:
@@ -2075,15 +2242,16 @@ class PerfectPalettePicker(QWidget):
     def _start_push(self, img, *, key, pm=None, compose=None):
         """Finish a push: build/copy/invert off the GUI thread when needed, then open the view."""
         olin = self._output_linear_request()
+        sources = dict(self._src_meta)       # the inputs this push is built from
         # two documents must never share one array
         needs_copy = img is not None and img is self.final and self._final_shared
         if compose is None and olin is None and not needs_copy:
-            self._finish_push(img, img, pm, None, key, False, False)
+            self._finish_push(img, img, pm, None, key, False, False, sources)
             return
         thr = _PPPJob(_ppp_push_job, img, needs_copy, compose, olin)
         thr.result.connect(self._on_push_done)
         self._push_thread = thr
-        self._push_req = (key, pm, olin is not None)
+        self._push_req = (key, pm, olin is not None, sources)
         self.status.setText(self.tr("Pushing palette to a new view\u2026"))
         start_owned_thread(thr)
 
@@ -2091,17 +2259,18 @@ class PerfectPalettePicker(QWidget):
         self._push_thread = None
         if getattr(self, "_memory_released", False):
             return
-        key, pm, olin_on = self._push_req
+        key, pm, olin_on, sources = self._push_req
         self._push_req = None
         kind, val = res
         if kind == "err":
             QMessageBox.critical(self, self.tr("Error"), self.tr("Failed to open new view:\n{0}").format(val))
         else:
             final, out, qimg, info, copied = val
-            self._finish_push(final, out, pm if pm is not None else qimg, info, key, olin_on, copied)
+            self._finish_push(final, out, pm if pm is not None else qimg, info, key, olin_on, copied,
+                              sources)
         self._drain_queue()
 
-    def _finish_push(self, final, output_img, preview, info, key, olin_on, copied):
+    def _finish_push(self, final, output_img, preview, info, key, olin_on, copied, sources=None):
         # Keep the stretched result as our on-screen "final" so the preview
         # stays visually meaningful; the linear invert (if requested) happens
         # only on the array we hand to the DocManager.
@@ -2147,11 +2316,14 @@ class PerfectPalettePicker(QWidget):
 
         # ---- normal SAS path: create a new document ----
         try:
+            # the inputs' headers merged, FILTER = palette name
+            meta = _ppp_push_metadata(sources or {}, output_img,
+                                      self.current_palette or "Palette", olin_on)
             if hasattr(dm, "open_array"):
                 # many of your tools already use this signature
-                doc = dm.open_array(output_img, metadata={"is_mono": False}, title=title)
+                doc = dm.open_array(output_img, metadata=meta, title=title)
             elif hasattr(dm, "create_document"):
-                doc = dm.create_document(image=output_img, metadata={"is_mono": False}, name=title)
+                doc = dm.create_document(image=output_img, metadata=meta, name=title)
             else:
                 raise RuntimeError("DocManager lacks open_array/create_document")
 
@@ -2180,6 +2352,7 @@ class PerfectPalettePicker(QWidget):
         self._final_shared = False
         self._base_pm_src = None
         self.ha = self.oiii = self.sii = self.osc1 = self.osc2 = None
+        self._src_meta = {}
         self._stretched.clear()
         self._dim_mismatch_accepted = False
         self.final = None

@@ -41,6 +41,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QIcon
 from setiastro.saspro.config import Config
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # Optional import (soft dep)
 try:
@@ -1056,7 +1058,8 @@ class AberrationAIDialog(QDialog):
         row5 = QHBoxLayout()
         self.btn_run = QPushButton(self.tr("Run")); self.btn_run.clicked.connect(self._run)
         btn_close = QPushButton(self.tr("Close")); btn_close.clicked.connect(self.reject)
-        row5.addStretch(1); row5.addWidget(self.btn_run); row5.addWidget(btn_close)
+        btn_reset = make_reset_button(self); btn_reset.clicked.connect(self._reset_to_factory)
+        row5.addStretch(1); row5.addWidget(self.btn_run); row5.addWidget(btn_reset); row5.addWidget(btn_close)
         v.addLayout(row5)
 
         # --- preset drag handle (grip), pinned lower-left ---
@@ -1095,6 +1098,9 @@ class AberrationAIDialog(QDialog):
 
         self._model_path = None
         self._refresh_providers()
+        # Factory: patch/overlap and the provider this machine defaults to.
+        # Which model file is used (downloaded vs custom) is left alone.
+        self._factory = snapshot_controls(self, exclude=(self.chk_use_custom,))
         self._load_last_model_from_settings()
         self._load_last_custom_model_from_settings()
         use_custom = QSettings().value("AberrationAI/use_custom_model", False, type=bool)
@@ -1102,6 +1108,15 @@ class AberrationAIDialog(QDialog):
         if IS_APPLE_ARM:
             self.chk_auto.setChecked(False)
             self.chk_auto.setEnabled(False)
+
+    def _reset_to_factory(self):
+        w = getattr(self, "_worker", None)
+        try:
+            if w is not None and w.isRunning():
+                return
+        except RuntimeError:
+            pass
+        restore_controls(self._factory)
 
     # ----- model helpers -----
     def _set_model_path(self, p: str | None):

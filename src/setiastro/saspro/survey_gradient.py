@@ -97,6 +97,8 @@ except Exception:  # pragma: no cover
     build_signal_mask = None
 from setiastro.saspro.autostretch import autostretch as hard_autostretch
 from PyQt6.QtCore import QCoreApplication, QT_TRANSLATE_NOOP
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _tr(text: str) -> str:
@@ -4582,6 +4584,8 @@ class SurveyGradientDialog(QDialog):
             "which all look the same from the main error.")
         )
         self.btn_close = QPushButton(self.tr("Close"))
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_apply.setEnabled(False)
         self.btn_fetch.clicked.connect(self._do_fetch_reference)
         self.btn_run.clicked.connect(self._do_run)
@@ -4597,6 +4601,7 @@ class SurveyGradientDialog(QDialog):
         rowb.addWidget(self.btn_fetch)
         rowb.addWidget(self.btn_run)
         rowb.addWidget(self.btn_apply)
+        rowb.addWidget(self.btn_reset)
         rowb.addStretch(1)
         rowb.addWidget(self.btn_close)
 
@@ -4668,6 +4673,16 @@ class SurveyGradientDialog(QDialog):
         main.addWidget(self.tabs, 1)
 
         self.resize(1000, 620)
+        # Factory state for Reset, before saved settings load. A first open
+        # shows DEFAULT_SURVEY (not the first list entry), so select it first.
+        # Left alone: the reference-image picker, the preview stretch / scale
+        # and Before toggle (display only), and the drawn exclusion zones.
+        self.cmb_survey.blockSignals(True)
+        self.cmb_survey.setCurrentText(DEFAULT_SURVEY)
+        self.cmb_survey.blockSignals(False)
+        self._factory = snapshot_controls(
+            self, exclude=[self.cmb_refdoc, self.cmb_stretch, self.chk_before]
+            + list(self._bg_combos))
         self._load_settings()
         self._survey_changed(self.cmb_survey.currentText())
         self._refresh_reference_docs()
@@ -4916,6 +4931,13 @@ class SurveyGradientDialog(QDialog):
         s.setValue("srgc/protect", float(self.sp_protect.value()))
         s.setValue("srgc/rbf", self.chk_rbf.isChecked())
         s.setValue("srgc/strength", self.sp_strength.value())
+
+    def _reset_to_factory(self):
+        """Every setting back to what a first open shows. Each control saves
+        on change, so the reset sticks without an explicit save."""
+        if not self.btn_run.isEnabled():
+            return          # a fetch or model run is in progress
+        restore_controls(self._factory)
 
     def _channels(self) -> list:
         """Channel spec for the selected survey (1 entry = mono, 3 = colour)."""

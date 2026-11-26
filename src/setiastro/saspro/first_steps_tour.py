@@ -28,9 +28,9 @@ import numpy as np
 from PyQt6.QtCore import (QCoreApplication, QEvent, QPoint, QRect, QSettings, Qt,
                           QTimer, QUrl, QT_TRANSLATE_NOOP)
 from PyQt6.QtGui import (QColor, QDesktopServices, QFont, QFontMetrics, QPainter,
-                         QPen, QRegion)
-from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QToolBar,
-                             QVBoxLayout, QWidget)
+                         QPalette, QPen, QRegion)
+from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushButton,
+                             QToolBar, QVBoxLayout, QWidget)
 
 DONE_KEY = "ui/first_steps_tour_done_v1"
 TUTORIAL_URL = "https://youtu.be/zBUOZl2OgaY"     # the welcome screen's beginner video
@@ -95,32 +95,36 @@ _OPEN_ON_PANEL = (
     "Any image works. A stacked, unstretched FITS, XISF or TIFF is ideal. "
     "Only have subs? Deep-Sky Stacking, also on the panel, turns them into one."))
 
-_STYLE = """
-#FirstStepsTour {
-    background-color: #1a1a2e;
-    border: 1px solid #3a3a6a;
-    border-radius: 10px;
-}
-#fst_counter { color: #7788cc; font-size: 9pt; font-weight: bold; letter-spacing: 1px; }
-#fst_title   { color: #ffffff; font-size: 12pt; font-weight: bold; }
-#fst_body    { color: #c8c8dc; font-size: 10pt; }
-#fst_close, #fst_skip {
-    background: transparent; border: none; color: #8888bb; font-size: 9pt;
-}
-#fst_close:hover, #fst_skip:hover { color: #ffffff; }
-#fst_sample, #fst_link {
-    background: transparent; border: none; color: #8fa0ff; font-size: 10pt;
-    text-align: left; padding: 0px;
-}
-#fst_sample:hover, #fst_link:hover { color: #ffffff; text-decoration: underline; }
-#fst_primary {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3344bb, stop:1 #5566dd);
-    color: #ffffff; border: none; border-radius: 7px; padding: 7px 14px;
-    font-weight: bold;
-}
-#fst_primary:hover {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4455cc, stop:1 #6677ee);
-}
+def _mix(a: QColor, b: QColor, t: float) -> QColor:
+    return QColor(round(a.red() + (b.red() - a.red()) * t),
+                  round(a.green() + (b.green() - a.green()) * t),
+                  round(a.blue() + (b.blue() - a.blue()) * t))
+
+
+def _card_colors():
+    """(card, border, text, muted, link, ring) from the current theme, so the
+    card looks like the rest of SASpro in Gray, Dark, Light or Custom: a panel
+    in the window colour, a thin border, the theme's own text and link colours,
+    and the selection colour for the spotlight."""
+    pal = QApplication.palette()
+    card = pal.color(QPalette.ColorRole.Window)
+    text = pal.color(QPalette.ColorRole.WindowText)
+    return (card, _mix(card, text, 0.25), text,
+            pal.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText),
+            pal.color(QPalette.ColorRole.Link), pal.color(QPalette.ColorRole.Highlight))
+
+
+def _style_sheet() -> str:
+    # Colours only: fonts and the buttons stay the application's own.
+    card, border, text, muted, link, _ring = _card_colors()
+    return f"""
+#FirstStepsTour {{ background-color: {card.name()}; border: 1px solid {border.name()}; border-radius: 4px; }}
+#fst_counter {{ color: {muted.name()}; }}
+#fst_title, #fst_body {{ color: {text.name()}; }}
+#fst_close {{ background: transparent; border: none; color: {muted.name()}; padding: 0px 4px; }}
+#fst_close:hover {{ color: {text.name()}; }}
+#fst_sample, #fst_link {{ background: transparent; border: none; color: {link.name()}; text-align: left; padding: 0px; }}
+#fst_sample:hover, #fst_link:hover {{ text-decoration: underline; }}
 """
 
 
@@ -132,7 +136,6 @@ _STEP_ACTION = {
     "already_stretched": "act_curves",
     "curves": "act_curves",
 }
-_RING = QColor(110, 130, 255)          # the card's blue
 
 
 def _menu_paths(menu, act, depth=0):
@@ -284,25 +287,28 @@ class _Spotlight(QWidget):
             return
         a = 0.5 + 0.5 * math.sin(self._phase)          # 0..1 pulse
         grow = 3 + int(round(4 * a))
+        card, _border, text, _muted, _link, ring_color = _card_colors()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         for ring, pill, label in self._shapes:
             r = ring.adjusted(self._PAD - grow, self._PAD - grow,
                               grow - self._PAD, grow - self._PAD)
-            glow = QColor(_RING)
+            glow = QColor(ring_color)
             glow.setAlpha(int(35 + 55 * a))
             p.setPen(QPen(glow, 7))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(r, 7, 7)
-            line = QColor(_RING)
+            p.drawRoundedRect(r, 4, 4)
+            line = QColor(ring_color)
             line.setAlpha(int(170 + 85 * a))
             p.setPen(QPen(line, 2.5))
-            p.drawRoundedRect(r, 7, 7)
+            p.drawRoundedRect(r, 4, 4)
             if pill is not None:
                 p.setPen(QPen(line, 1.5))
-                p.setBrush(QColor(26, 26, 46, 235))
-                p.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2)
-                p.setPen(QColor(255, 255, 255))
+                fill = QColor(card)
+                fill.setAlpha(240)
+                p.setBrush(fill)
+                p.drawRoundedRect(pill, 4, 4)
+                p.setPen(text)
                 p.setFont(self._font)
                 p.drawText(pill, Qt.AlignmentFlag.AlignCenter, label)
         p.end()
@@ -382,7 +388,8 @@ class FirstStepsTour(QFrame):
     def __init__(self, main_window):
         super().__init__(main_window)
         self.setObjectName("FirstStepsTour")
-        self.setStyleSheet(_STYLE)
+        self._sheet = _style_sheet()
+        self.setStyleSheet(self._sheet)
         self.setFixedWidth(380)
         self._mw = main_window
         self._dm = getattr(main_window, "docman", None) or getattr(main_window, "doc_manager", None)
@@ -407,6 +414,7 @@ class FirstStepsTour(QFrame):
         lay.addLayout(head)
         self._title = QLabel(objectName="fst_title")
         self._title.setWordWrap(True)
+        self._title_font()
         self._body = QLabel(objectName="fst_body")
         self._body.setWordWrap(True)
         lay.addWidget(self._title)
@@ -428,6 +436,7 @@ class FirstStepsTour(QFrame):
         self._skip.setCursor(Qt.CursorShape.PointingHandCursor)
         self._skip.clicked.connect(lambda: self.finish())
         self._primary = QPushButton(objectName="fst_primary")
+        self._primary.setDefault(True)          # the theme's own default-button look
         self._primary.setCursor(Qt.CursorShape.PointingHandCursor)
         self._primary.clicked.connect(self._on_primary)
         row.addWidget(self._skip)
@@ -463,7 +472,7 @@ class FirstStepsTour(QFrame):
     def _go(self, step: str):
         self._step = step
         counter, title, body, button, _action = _STEPS[step]
-        self._counter.setText(_t("FIRST STEPS") + "  ·  " + _t(counter))
+        self._counter.setText(_t("First Steps") + "  ·  " + _t(counter))
         self._title.setText(_t(title))
         if step == "open" and _start_panel(self._mw) is not None:
             body = _OPEN_ON_PANEL
@@ -494,9 +503,24 @@ class FirstStepsTour(QFrame):
         super().showEvent(ev)
         self._fit()
 
+    def _title_font(self):
+        f = QFont(self.font())
+        f.setBold(True)
+        f.setPointSizeF(max(1.0, f.pointSizeF()) * 1.15)
+        self._title.setFont(f)
+
     def changeEvent(self, ev):
         super().changeEvent(ev)
-        if ev.type() == QEvent.Type.FontChange and self._step:
+        kind = ev.type()
+        if kind in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange):
+            # The theme changed while the card is up. Compared first: applying a
+            # style sheet can itself send a PaletteChange.
+            sheet = _style_sheet()
+            if sheet != self._sheet:
+                self._sheet = sheet
+                self.setStyleSheet(sheet)
+        elif kind == QEvent.Type.FontChange and self._step:
+            self._title_font()
             QTimer.singleShot(0, lambda: _alive(self) and self._fit())
 
     # ---- the menu route ------------------------------------------------------

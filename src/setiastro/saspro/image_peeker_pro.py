@@ -33,6 +33,8 @@ import sep
 sep.set_extract_pixstack(20000000)
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # bring in your existing helpers/classes from the snippet you posted
 # (we assume they live next to this file or already in pro/)
@@ -2946,6 +2948,7 @@ def build_mosaic_numpy(
     If arr is 2D, result is 2D; if 3D (H×W×3), result is 3D.
     """
     h, w = arr.shape[:2]
+    panel = _fit_panel(h, w, panel)
     out_h = grid * panel + (grid - 1) * sep
     out_w = grid * panel + (grid - 1) * sep
     if arr.ndim == 2:
@@ -2964,6 +2967,11 @@ def build_mosaic_numpy(
             mosaic[dy:dy + panel, dx:dx + panel, ...] = patch
 
     return mosaic
+
+
+def _fit_panel(h: int, w: int, panel: int) -> int:
+    """The panel size actually used: never bigger than the image's short side."""
+    return max(1, min(int(panel), int(h), int(w)))
 
 
 def _panel_grid(h: int, w: int, grid: int, panel: int) -> Tuple[list, list]:
@@ -4934,10 +4942,9 @@ class ImagePeekerDialogPro(QDialog):
         self.focal_length_input = QDoubleSpinBox(); self.focal_length_input.setRange(1.0, 50000.0); self.focal_length_input.setDecimals(1); self.focal_length_input.setSingleStep(10.0)
         self.aperture_input = QDoubleSpinBox(); self.aperture_input.setRange(1.0, 10000.0); self.aperture_input.setDecimals(1); self.aperture_input.setSingleStep(1.0)
 
-        px = self.settings.value("pixel_size_um", 4.8, type=float)
-        fl = self.settings.value("focal_length_mm", 800.0, type=float)
-        ap = self.settings.value("aperture_mm", 100.0, type=float)
-        self.pixel_size_input.setValue(px); self.focal_length_input.setValue(fl); self.aperture_input.setValue(ap)
+        # Factory optics here; the remembered ones are applied after the
+        # factory snapshot, at the end of __init__.
+        self.pixel_size_input.setValue(4.8); self.focal_length_input.setValue(800.0); self.aperture_input.setValue(100.0)
 
         # The image's own pixel size / focal length / aperture win over the
         # remembered ones. They are not remembered in turn (_remember_optics):
@@ -4954,7 +4961,7 @@ class ImagePeekerDialogPro(QDialog):
         self.stats_chk = QCheckBox(self.tr("Show star statistics"))
         self.stats_chk.setToolTip(self.tr(
             "Median FWHM, star count and eccentricity of the stars in each panel"))
-        self.stats_chk.setChecked(bool(self.settings.value(self._k("show_stats"), True, type=bool)))
+        self.stats_chk.setChecked(True)
 
         row = 0
         gl.addWidget(QLabel(self.tr("Grid size:")), row, 0); gl.addWidget(self.grid_spin, row, 1); row += 1
@@ -4990,7 +4997,9 @@ class ImagePeekerDialogPro(QDialog):
 
         btns = QHBoxLayout(); btns.addStretch(1)
         ok_btn = QPushButton(self.tr("Save Settings && Exit")); cancel_btn = QPushButton(self.tr("Exit without Saving"))
-        btns.addWidget(ok_btn); btns.addWidget(cancel_btn)
+        self.reset_btn = make_reset_button(self)
+        self.reset_btn.clicked.connect(self._reset_to_factory)
+        btns.addWidget(ok_btn); btns.addWidget(self.reset_btn); btns.addWidget(cancel_btn)
 
         # One line under the mosaic comparing the panels (centre vs corners).
         self.stats_lbl = QLabel("")
@@ -5012,6 +5021,16 @@ class ImagePeekerDialogPro(QDialog):
         self._stats_timer.setSingleShot(True)
         self._stats_timer.setInterval(150)
         self._stats_timer.timeout.connect(self._start_stats_worker)
+
+        # Factory = as built (optics from the image header where it has
+        # them). Grid / panel / separation / analysis load in showEvent.
+        self._factory = snapshot_controls(self, exclude=(self.preview_pane,))
+        for skey, spin in (("pixel_size_um", self.pixel_size_input),
+                           ("focal_length_mm", self.focal_length_input),
+                           ("aperture_mm", self.aperture_input)):
+            if skey not in self._optics_from_image:      # the image's own optics win
+                spin.setValue(self.settings.value(skey, spin.value(), type=float))
+        self.stats_chk.setChecked(bool(self.settings.value(self._k("show_stats"), True, type=bool)))
         self._update_scale_label()
 
         # Signals
@@ -5111,6 +5130,23 @@ class ImagePeekerDialogPro(QDialog):
         self._update_scale_label()
         self._show_panel_stats()      # FWHM in arcsec follows the scale
 
+    def _reset_to_factory(self):
+        if self._analysis_worker is not None or not self.params.isEnabled():
+            return                    # an analysis is running (_set_busy)
+        # One mosaic rebuild rather than one per control, as _restore_ui_state.
+        mosaic = (self.grid_spin, self.panel_slider, self.sep_slider)
+        for w in mosaic:
+            w.blockSignals(True)
+        try:
+            restore_controls(self._factory)
+        finally:
+            for w in mosaic:
+                w.blockSignals(False)
+        self.panel_value_label.setText(str(self.panel_slider.value()))
+        self.sep_value_label.setText(str(self.sep_slider.value()))
+        self._save_ui_state()
+        self._refresh_mosaic()
+
     # ------------------------------------------------- panel statistics --
     def _on_stats_toggled(self, on: bool):
         try:
@@ -5128,6 +5164,7 @@ class ImagePeekerDialogPro(QDialog):
         ps = int(self.panel_slider.value())
         sep_px = int(self.sep_slider.value())
         h, w = arr.shape[:2]
+        ps = _fit_panel(h, w, ps)            # as build_mosaic_numpy, so the cells line up
         xs, ys = _panel_grid(h, w, n, ps)
         corners = [(x, y) for y in ys for x in xs]
         doc = self._coerce_doc(self.document)

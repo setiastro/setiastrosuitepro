@@ -64,6 +64,8 @@ from setiastro.saspro.imageops.stretch import stretch_color_image
 # We *intentionally* do NOT reuse SFCC pedestal-removal/clamp for photometry.
 
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 import socket
 
@@ -2597,8 +2599,14 @@ class MagnitudeToolDialog(QDialog):
         self._check_star = None            # (kname, kmag_V, star_dict) once chosen for this batch
  
         self._build_ui()
+        # Factory = as built; ROI overlay opacity / padding are preview only.
+        self._factory = snapshot_controls(
+            self, exclude=(self.roi_opacity, self.roi_pad))
         self._update_band_controls()
  
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
+
     def _build_ui(self):
         root = QVBoxLayout(self)
  
@@ -2819,6 +2827,9 @@ class MagnitudeToolDialog(QDialog):
         self.btn_clear_all = QPushButton(self.tr("Clear All"))
         self.btn_clear_all.clicked.connect(self.clear_all)
         bottom.addWidget(self.btn_clear_all)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        bottom.addWidget(self.btn_reset)
         self.btn_close = QPushButton(self.tr("Close"))
         self.btn_close.clicked.connect(self.reject)
         bottom.addWidget(self.btn_close)

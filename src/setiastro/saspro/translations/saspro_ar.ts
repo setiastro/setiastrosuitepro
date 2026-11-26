@@ -4705,6 +4705,10 @@ Tools you added are taken off, the ones you removed come back, and the order is 
       <source>Reduce row or column banding across the whole image</source>
       <translation>تقليل أشرطة الصفوف أو الأعمدة في الصورة بأكملها</translation>
     </message>
+    <message>
+      <source>All Analysis Tools</source>
+      <translation>جميع أدوات التحليل</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -29396,6 +29400,26 @@ Calibrate only the {2} new frame(s) and reuse the existing calibrated frames for
       <source>✓ same session</source>
       <translation>✓ الجلسة نفسها</translation>
     </message>
+    <message>
+      <source>A stacking run is in progress. Reset is available once it has finished.</source>
+      <translation>عملية تكديس قيد التشغيل. ستتاح إعادة التعيين بعد انتهائها.</translation>
+    </message>
+    <message>
+      <source>Reset Stacking Settings</source>
+      <translation>إعادة تعيين إعدادات التكديس</translation>
+    </message>
+    <message>
+      <source>Reset every stacking setting to its factory default?
+
+This covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.
+
+Kept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.</source>
+      <translation>هل تريد إعادة تعيين كل إعدادات التكديس إلى قيمها الافتراضية الأصلية؟
+
+يشمل ذلك هذه النافذة وخيارات علامات تبويب Stacking Suite: المعايرة وDrizzle وMFDeconv والمذنّب والرفض وغيرها.
+
+يُحتفظ بما يلي: مجلد التكديس والمسارات الأخرى، والإطارات المحمّلة، والإطارات الرئيسية واختيارات Dark/Flat الخاصة بها، ومجموعات المحاذاة والإطارات المرجعية، وملفاتك الشخصية المحفوظة، وما قاسه «تحسين…». ويُحتفظ بتفاوت التجميع ما دامت الإطارات مجمّعة وفقه.</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -37448,6 +37472,10 @@ Use [ and ] to decrease/increase brush size.</source>
       <source>Zoom Out</source>
       <translation>تصغير</translation>
     </message>
+    <message>
+      <source>Reset every setting in this tool to its factory default</source>
+      <translation>إعادة تعيين كل إعدادات هذه الأداة إلى قيمها الافتراضية الأصلية</translation>
+    </message>
   </context>
   <context>
     <name>CommonUtilities</name>
@@ -41935,6 +41963,18 @@ Drawn chart: a vector star chart (SVG / PDF / PNG / new image).</source>
       <source>💡 You can undo and redo edits all the way back to the original using the History stack.</source>
       <translation>💡 يمكنك التراجع عن التعديلات وإعادتها حتى الأصل باستخدام سجل المحفوظات.</translation>
     </message>
+    <message>
+      <source>💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.</source>
+      <translation>💡 هل تريد معرفة اختصارات لوحة المفاتيح؟ توجد ورقة مرجعية كاملة ضمن عرض → اختصارات.</translation>
+    </message>
+    <message>
+      <source>💡 Batch convert files from one format to another with Tools → Header Mods &amp; Misc → Batch Converter.</source>
+      <translation>💡 حوّل الملفات دفعةً واحدة من تنسيق إلى آخر باستخدام أدوات → تعديلات الرأس و متنوعات → محول الدفعة.</translation>
+    </message>
+    <message>
+      <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
+      <translation>💡 تعرض الورقة المرجعية للأيقونات ضمن عرض → اختصارات كل أيقونة في شريط الأدوات مع وظيفتها بلمحة.</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -42097,6 +42137,10 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
       <translation>حيث لا تتداخل الإطارات الفرعية تمامًا، تكون حواف التكديس غير منتظمة: حدود داكنة أو مشوشة، وأحيانًا خطوط. قصّها أولاً. فالتمديد وإزالة التدرج ومعايرة الألوان كلها تقيس الصورة كاملة، وتلك الحواف تفسد نتائجها.
 
 قص موجود في وظائف → الإصلاح &amp; التنقيح → قص. اسحب المربع داخل المنطقة النظيفة، ثم انقر تطبيق.</translation>
+    </message>
+    <message>
+      <source>First Steps</source>
+      <translation>الخطوات الأولى</translation>
     </message>
   </context>
   <context>
@@ -53359,6 +53403,10 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>Zoom Out</source>
       <translation>تصغير</translation>
     </message>
+    <message>
+      <source>Set Q back to {0:.2f} for every filter</source>
+      <translation>إعادة Q إلى {0:.2f} لكل المرشحات</translation>
+    </message>
   </context>
   <context>
     <name>QuadBuildWorker</name>
@@ -53914,6 +53962,10 @@ Masters and frames dropped on this window, or added with the lights, are sorted 
     <message>
       <source>✓ the only flat</source>
       <translation>✓ ملف Flat الوحيد</translation>
+    </message>
+    <message>
+      <source>What Quick Stack will run on. A GPU is used when SASpro's hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.</source>
+      <translation>ما سيعمل عليه Quick Stack. تُستخدم وحدة GPU عندما يتمكن التسريع العتادي في SASpro من الوصول إليها (NVIDIA CUDA أو AMD ROCm أو Intel XPU أو DirectML أو Apple Metal)؛ ويعطّلها الخيار "استخدام التسريع العتادي إن توفر" في إعدادات التكديس.</translation>
     </message>
   </context>
   <context>
@@ -57510,6 +57562,12 @@ Make sure the tool is registered in the SASpro toolbar.</source>
     <message>
       <source>🔄 Invert Masked Region</source>
       <translation>🔄 عكس المنطقة المقنّعة</translation>
+    </message>
+    <message>
+      <source>Set the palette preset back to this mode's default.
+The Mode is kept: changing it re-masks the active image.</source>
+      <translation>إعادة لوحة الألوان المسبقة إلى الافتراضي لهذا الوضع.
+يبقى الوضع كما هو: تغييره يعيد إنشاء القناع على الصورة النشطة.</translation>
     </message>
   </context>
   <context>
@@ -67840,6 +67898,10 @@ binned points and the model, residuals underneath.</source>
       <source>χ²_red (photometric errors) = {0:.2f} → errors × {1:.2f};  red-noise β = {2:.2f}</source>
       <translation>χ²_red (الأخطاء الضوئية) = {0:.2f} → الأخطاء × {1:.2f}؛  الضوضاء الحمراء β = {2:.2f}</translation>
     </message>
+    <message>
+      <source>Reset the Fit options to their factory defaults</source>
+      <translation>إعادة تعيين خيارات الملاءمة إلى قيمها الافتراضية الأصلية</translation>
+    </message>
   </context>
   <context>
     <name>TypedTableModel</name>
@@ -73289,6 +73351,12 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
       <source>Writing temp image…</source>
       <translation>جارٍ كتابة الصورة المؤقتة…</translation>
     </message>
+    <message>
+      <source>The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.
+{0}</source>
+      <translation>الصورة مفتوحة في SyQon Studio. عالجها هناك واحفظ النتيجة في هذا المجلد، وسيستوردها SASpro من هناك. الإلغاء يُبقي الصورة الأصلية.
+{0}</translation>
+    </message>
   </context>
   <context>
     <name>_SyQonStudioHubPage</name>
@@ -73567,6 +73635,10 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>✘  Could not validate: {0}</source>
       <translation>✘  تعذر التحقق: {0}</translation>
+    </message>
+    <message>
+      <source>SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.</source>
+      <translation>لا يتضمن SyQon Studio {0} أداة سطر أوامر (أُضيفت في 1.2)، لذا يفتح SASpro الصورة في تطبيق Studio. عالجها هناك واحفظها، وسيستورد SASpro ما تحفظه.</translation>
     </message>
   </context>
   <context>

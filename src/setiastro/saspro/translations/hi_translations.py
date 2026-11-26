@@ -17509,3 +17509,71 @@ _ADDITIONS_2026_11_25_START_TILES = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
     TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_STUDIO_APP = {
+    '_SyQonStudioHubPage': {
+        'SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.': 'SyQon Studio {0} में कमांड-लाइन टूल नहीं है (यह 1.2 में आया), इसलिए SASpro छवि को Studio ऐप में खोलता है। वहाँ उसे प्रोसेस करें और सहेजें; आप जो सहेजेंगे, SASpro उसे आयात कर लेगा।',
+    },
+    '_SyQonStudioCLIThread': {
+        'The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.\n{0}': 'छवि SyQon Studio में खुली है। वहाँ उसे प्रोसेस करें और परिणाम इसी फ़ोल्डर में सहेजें; SASpro उसे वहीं से आयात करेगा। रद्द करने पर मूल छवि बनी रहती है।\n{0}',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_STUDIO_APP.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_QUICK_STACK_GPU = {
+    'QuickStackDialog': {
+        'What Quick Stack will run on. A GPU is used when SASpro\'s hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.': 'Quick Stack किस पर चलेगा। SASpro के हार्डवेयर त्वरण की GPU तक पहुँच होने पर GPU उपयोग होता है (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML या Apple Metal); स्टैकिंग सेटिंग्स में "उपलब्ध होने पर हार्डवेयर त्वरण का उपयोग करें" इसे बंद करता है।',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_QUICK_STACK_GPU.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-26: fewer top-level menus (What's In My... into Analysis, Header Mods
+# & Misc into Tools, Shortcuts into View, Scripts into Workflows); tour restyle.
+_ADDITIONS_2026_11_26_MENUS = {
+    'AstroSuiteProMainWindow': {
+        'All Analysis Tools': 'सभी विश्लेषण उपकरण',
+    },
+    'FirstStepsTour': {
+        'First Steps': 'पहले कदम',
+    },
+    'FirstRunDialog': {
+        "💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.": '💡 कीबोर्ड शॉर्टकट के बारे में जानना चाहते हैं? दृश्य → शॉर्टकट के अंतर्गत पूरी चीट शीट है।',
+        '💡 Batch convert files from one format to another with Tools → Header Mods & Misc → Batch Converter.': '💡 उपकरण → हेडर मोड और विविध → बैच कनवर्टर से फ़ाइलों को एक प्रारूप से दूसरे में बैच में बदलें।',
+        '💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.': '💡 दृश्य → शॉर्टकट के अंतर्गत आइकन चीट शीट हर टूलबार आइकन को उसके फ़ंक्शन के साथ एक नज़र में दिखाती है।',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_MENUS.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_FACTORY_RESET = {
+    'Common': {
+        'Reset every setting in this tool to its factory default': 'इस टूल की हर सेटिंग को उसके फ़ैक्टरी डिफ़ॉल्ट पर रीसेट करें',
+    },
+    'StackingSuiteDialog': {
+        'Reset': 'रीसेट',
+        'A stacking run is in progress. Reset is available once it has finished.': 'स्टैकिंग चल रही है। इसके पूरा होने के बाद रीसेट उपलब्ध होगा।',
+        'Reset Stacking Settings': 'स्टैकिंग सेटिंग्स रीसेट करें',
+        "Reset every stacking setting to its factory default?\n\nThis covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.\n\nKept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.": 'हर स्टैकिंग सेटिंग को उसके फ़ैक्टरी डिफ़ॉल्ट पर रीसेट करें?\n\nइसमें यह विंडो और Stacking Suite के टैब के विकल्प शामिल हैं: कैलिब्रेशन, ड्रिज़ल, MFDeconv, धूमकेतु, अस्वीकृति और बाकी सब।\n\nबने रहते हैं: स्टैकिंग फ़ोल्डर और अन्य पथ, लोड किए गए फ़्रेम, मास्टर और उनके Dark/Flat चयन, संरेखण सेट और संदर्भ फ़्रेम, आपकी सहेजी गई प्रोफ़ाइलें, और "अनुकूलित करें…" द्वारा मापे गए मान। जब तक फ़्रेम किसी समूहन सहनशीलता के अनुसार समूहित हैं, वह सहनशीलता बनी रहती है।',
+    },
+    'SLaPToolkitDialog': {
+        "Set the palette preset back to this mode's default.\nThe Mode is kept: changing it re-masks the active image.": 'पैलेट प्रीसेट को इस मोड के डिफ़ॉल्ट पर वापस लाएँ।\nमोड वही रहता है: उसे बदलने से सक्रिय छवि पर मास्क फिर से लगता है।',
+    },
+    'QPreviewDialog': {
+        'Set Q back to {0:.2f} for every filter': 'हर फ़िल्टर के लिए Q को {0:.2f} पर वापस लाएँ',
+    },
+    'TransitFitDialog': {
+        'Reset the Fit options to their factory defaults': 'फ़िट विकल्पों को उनके फ़ैक्टरी डिफ़ॉल्ट पर रीसेट करें',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_FACTORY_RESET.items():
+    TRANSLATIONS_HI.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

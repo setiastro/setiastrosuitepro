@@ -17818,3 +17818,70 @@ _ADDITIONS_2026_11_25_START_TILES = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
     TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_STUDIO_APP = {
+    '_SyQonStudioHubPage': {
+        'SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.': 'لا يتضمن SyQon Studio {0} أداة سطر أوامر (أُضيفت في 1.2)، لذا يفتح SASpro الصورة في تطبيق Studio. عالجها هناك واحفظها، وسيستورد SASpro ما تحفظه.',
+    },
+    '_SyQonStudioCLIThread': {
+        'The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.\n{0}': 'الصورة مفتوحة في SyQon Studio. عالجها هناك واحفظ النتيجة في هذا المجلد، وسيستوردها SASpro من هناك. الإلغاء يُبقي الصورة الأصلية.\n{0}',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_STUDIO_APP.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_QUICK_STACK_GPU = {
+    'QuickStackDialog': {
+        'What Quick Stack will run on. A GPU is used when SASpro\'s hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.': 'ما سيعمل عليه Quick Stack. تُستخدم وحدة GPU عندما يتمكن التسريع العتادي في SASpro من الوصول إليها (NVIDIA CUDA أو AMD ROCm أو Intel XPU أو DirectML أو Apple Metal)؛ ويعطّلها الخيار "استخدام التسريع العتادي إن توفر" في إعدادات التكديس.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_QUICK_STACK_GPU.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-26: fewer top-level menus (What's In My... into Analysis, Header Mods
+# & Misc into Tools, Shortcuts into View, Scripts into Workflows); tour restyle.
+_ADDITIONS_2026_11_26_MENUS = {
+    'AstroSuiteProMainWindow': {
+        'All Analysis Tools': 'جميع أدوات التحليل',
+    },
+    'FirstStepsTour': {
+        'First Steps': 'الخطوات الأولى',
+    },
+    'FirstRunDialog': {
+        "💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.": '💡 هل تريد معرفة اختصارات لوحة المفاتيح؟ توجد ورقة مرجعية كاملة ضمن عرض → اختصارات.',
+        '💡 Batch convert files from one format to another with Tools → Header Mods & Misc → Batch Converter.': '💡 حوّل الملفات دفعةً واحدة من تنسيق إلى آخر باستخدام أدوات → تعديلات الرأس و متنوعات → محول الدفعة.',
+        '💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.': '💡 تعرض الورقة المرجعية للأيقونات ضمن عرض → اختصارات كل أيقونة في شريط الأدوات مع وظيفتها بلمحة.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_MENUS.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_FACTORY_RESET = {
+    'Common': {
+        'Reset every setting in this tool to its factory default': 'إعادة تعيين كل إعدادات هذه الأداة إلى قيمها الافتراضية الأصلية',
+    },
+    'StackingSuiteDialog': {
+        'A stacking run is in progress. Reset is available once it has finished.': 'عملية تكديس قيد التشغيل. ستتاح إعادة التعيين بعد انتهائها.',
+        'Reset Stacking Settings': 'إعادة تعيين إعدادات التكديس',
+        "Reset every stacking setting to its factory default?\n\nThis covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.\n\nKept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.": 'هل تريد إعادة تعيين كل إعدادات التكديس إلى قيمها الافتراضية الأصلية؟\n\nيشمل ذلك هذه النافذة وخيارات علامات تبويب Stacking Suite: المعايرة وDrizzle وMFDeconv والمذنّب والرفض وغيرها.\n\nيُحتفظ بما يلي: مجلد التكديس والمسارات الأخرى، والإطارات المحمّلة، والإطارات الرئيسية واختيارات Dark/Flat الخاصة بها، ومجموعات المحاذاة والإطارات المرجعية، وملفاتك الشخصية المحفوظة، وما قاسه «تحسين…». ويُحتفظ بتفاوت التجميع ما دامت الإطارات مجمّعة وفقه.',
+    },
+    'SLaPToolkitDialog': {
+        "Set the palette preset back to this mode's default.\nThe Mode is kept: changing it re-masks the active image.": 'إعادة لوحة الألوان المسبقة إلى الافتراضي لهذا الوضع.\nيبقى الوضع كما هو: تغييره يعيد إنشاء القناع على الصورة النشطة.',
+    },
+    'QPreviewDialog': {
+        'Set Q back to {0:.2f} for every filter': 'إعادة Q إلى {0:.2f} لكل المرشحات',
+    },
+    'TransitFitDialog': {
+        'Reset the Fit options to their factory defaults': 'إعادة تعيين خيارات الملاءمة إلى قيمها الافتراضية الأصلية',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_FACTORY_RESET.items():
+    TRANSLATIONS_AR.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

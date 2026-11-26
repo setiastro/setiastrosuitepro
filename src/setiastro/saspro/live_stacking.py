@@ -34,6 +34,7 @@ from setiastro.saspro.legacy.image_manager import load_image
 from setiastro.saspro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from setiastro.saspro.widgets.spinboxes import CustomSpinBox, CustomDoubleSpinBox
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import make_reset_button
 from collections import deque
 from setiastro.saspro import live_stack_worker as _lsw
 from setiastro.saspro.live_stack_worker import (   # also re-exported here
@@ -199,6 +200,9 @@ class LiveStackSettingsDialog(QDialog):
         )
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        btns.addButton(self.btn_reset, QDialogButtonBox.ButtonRole.ResetRole)
 
         # Assemble dialog layout
         layout = QVBoxLayout()
@@ -229,9 +233,45 @@ class LiveStackSettingsDialog(QDialog):
         return (bs, sigma, fwhm, ecc, stars, mapping, delay, star_target, fits_only,
                 weight_frames, snr_goal, debayer_method)
 
+    def _reset_to_factory(self):
+        """Every field back to its factory default. OK applies and saves them,
+        Cancel keeps the current settings, as for any edit here."""
+        D = LIVE_STACK_DEFAULTS
+        self.bs_spin.setValue(D["bootstrap_frames"])
+        self.sigma_spin.setValue(D["clip_threshold"])
+        self.fwhm_spin.setValue(D["max_fwhm"])
+        self.ecc_spin.setValue(D["max_ecc"])
+        self.star_spin.setValue(D["min_star_count"])
+        self.delay_spin.setValue(D["file_stable_secs"])
+        self.star_target_spin.setValue(D["star_target"])
+        self.fits_only_check.setChecked(D["fits_only"])
+        self.weight_check.setChecked(D["weight_frames"])
+        self.snr_goal_spin.setValue(D["snr_goal"])
+        self.mapping_combo.setCurrentIndex(max(0, self.mapping_combo.findText(D["narrowband_mapping"])))
+        # Debayer has no default of its own: it follows the Stacking Suite's choice
+        dm = str(QSettings().value("stacking/debayer_method", "rcd") or "rcd").lower()
+        i = self.debayer_combo.findData(dm)
+        self.debayer_combo.setCurrentIndex(i if i >= 0 else 0)
+
 # Debayer methods offered in Settings (the Stacking Suite's, minus Strict CFA)
 DEBAYER_METHODS = (("RCD", "rcd"), (QT_TRANSLATE_NOOP("LiveStacking", "Edge-aware"), "edge"), ("AHD", "ahd"),
                    ("VNG", "vng"), (QT_TRANSLATE_NOOP("LiveStacking", "Bilinear"), "bilinear"))
+
+# Factory defaults of the Settings dialog: LiveStackWindow falls back to them
+# when nothing is saved, and the dialog's Reset restores them.
+LIVE_STACK_DEFAULTS = {
+    "bootstrap_frames":   24,
+    "clip_threshold":     3.5,
+    "max_fwhm":           15.0,
+    "max_ecc":            0.9,
+    "min_star_count":     5,
+    "narrowband_mapping": "Natural",
+    "file_stable_secs":   3.0,
+    "star_target":        _lsw.STAR_TARGET,
+    "fits_only":          False,
+    "weight_frames":      True,
+    "snr_goal":           10.0,
+}
 
 
 def _qget(settings: QSettings, key: str, default, typ):
@@ -838,18 +878,19 @@ class LiveStackWindow(QDialog):
 
         # ── Load persisted settings ───────────────────────────────
         s = QSettings()
-        self.bootstrap_frames   = _qget(s, "LiveStack/bootstrap_frames",   24,    int)
-        self.clip_threshold     = _qget(s, "LiveStack/clip_threshold",     3.5,   float)
-        self.max_fwhm           = _qget(s, "LiveStack/max_fwhm",           15.0,  float)
-        self.max_ecc            = _qget(s, "LiveStack/max_ecc",            0.9,   float)
-        self.min_star_count     = _qget(s, "LiveStack/min_star_count",     5,     int)
-        self.narrowband_mapping = _qget(s, "LiveStack/narrowband_mapping", "Natural", str)
+        D = LIVE_STACK_DEFAULTS
+        self.bootstrap_frames   = _qget(s, "LiveStack/bootstrap_frames",   D["bootstrap_frames"],   int)
+        self.clip_threshold     = _qget(s, "LiveStack/clip_threshold",     D["clip_threshold"],     float)
+        self.max_fwhm           = _qget(s, "LiveStack/max_fwhm",           D["max_fwhm"],           float)
+        self.max_ecc            = _qget(s, "LiveStack/max_ecc",            D["max_ecc"],            float)
+        self.min_star_count     = _qget(s, "LiveStack/min_star_count",     D["min_star_count"],     int)
+        self.narrowband_mapping = _qget(s, "LiveStack/narrowband_mapping", D["narrowband_mapping"], str)
         self.star_trail_mode    = _qget(s, "LiveStack/star_trail_mode",    False, bool)
-        self.FILE_STABLE_SECS     = _qget(s, "LiveStack/file_stable_secs",     3.0,   float)
-        self.star_target        = _qget(s, "LiveStack/star_target", _lsw.STAR_TARGET, int)
-        self.fits_only          = _qget(s, "LiveStack/fits_only",         False, bool)
-        self.weight_frames      = _qget(s, "LiveStack/weight_frames",     True,  bool)
-        self.snr_goal           = _qget(s, "LiveStack/snr_goal",          10.0,  float)
+        self.FILE_STABLE_SECS     = _qget(s, "LiveStack/file_stable_secs", D["file_stable_secs"],   float)
+        self.star_target        = _qget(s, "LiveStack/star_target",        D["star_target"],        int)
+        self.fits_only          = _qget(s, "LiveStack/fits_only",          D["fits_only"],          bool)
+        self.weight_frames      = _qget(s, "LiveStack/weight_frames",      D["weight_frames"],      bool)
+        self.snr_goal           = _qget(s, "LiveStack/snr_goal",           D["snr_goal"],           float)
         self.auto_stretch       = _qget(s, "LiveStack/auto_stretch",      True,  bool)
         # Until set here, follow the Stacking Suite's Debayer choice (RCD default)
         _ss_dm = str(s.value("stacking/debayer_method", "rcd") or "rcd").lower()

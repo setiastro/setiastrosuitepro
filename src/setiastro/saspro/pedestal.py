@@ -15,6 +15,8 @@ from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
 from setiastro.saspro.shortcuts import PresetDragHandle
 from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # Icon is optional; fall back gracefully if resources doesn't expose one yet.
 try:
@@ -370,8 +372,10 @@ class RemovePedestalDialog(QDialog):
         rowb = QHBoxLayout()
         self.btn_preview = QPushButton(self.tr("Preview"))
         self.btn_apply = QPushButton(self.tr("Apply to Document"))
+        self.btn_reset = make_reset_button(self)
         rowb.addWidget(self.btn_preview)
         rowb.addWidget(self.btn_apply)
+        rowb.addWidget(self.btn_reset)
         left.addLayout(rowb)
 
         left.addStretch(1)
@@ -424,6 +428,10 @@ class RemovePedestalDialog(QDialog):
         # signals
         self.btn_preview.clicked.connect(self._start_preview_job)
         self.btn_apply.clicked.connect(self._apply_to_doc)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+
+        # Factory defaults for Reset (the display stretch is preview-only)
+        self._factory = snapshot_controls(self, exclude=(self.chk_autostretch,))
 
         # initial state (the first worker preview replaces this text)
         self._sync_pct_enabled()
@@ -444,6 +452,13 @@ class RemovePedestalDialog(QDialog):
         is_pct = (self._current_mode() == "percentile")
         self.lbl_pct.setEnabled(is_pct)
         self.spin_pct.setEnabled(is_pct)
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
+        # the percentile entry's text carries the value; refresh it
+        i = self.cmb_mode.findData("percentile")
+        if i >= 0:
+            self.cmb_mode.setItemText(i, self._mode_label("percentile"))
 
     # --- active document change -------------------------------------------
     def _on_active_doc_changed(self, doc):

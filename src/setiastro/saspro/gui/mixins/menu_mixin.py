@@ -218,50 +218,12 @@ class MenuMixin:
         m_masks.addSeparator()
         m_masks.addAction(self.act_invert_mask)
 
-        m_wim = mb.addMenu(self.tr("&What's In My..."))
-        m_wim.addAction(self.act_whats_in_my_sky)
-        m_wim.addAction(self.act_wimi)
-        m_wim.addAction(self.act_finder_chart) 
-        m_wim.addAction(self.act_atlas)
-
-        m_scripts = mb.addMenu(self.tr("&Scripts"))
-        self.menu_scripts = m_scripts
-        self.scriptman.rebuild_menu(m_scripts)
-
-
-        m_header = mb.addMenu(self.tr("&Header Mods && Misc"))
-        m_header.addAction(self.act_acv_exporter)        
-        m_header.addAction(self.act_astrobin_exporter)
-        m_header.addAction(self.act_batch_convert)
-        m_header.addAction(self.act_batch_renamer)
-        m_header.addAction(self.act_copy_astrometry)
-        m_header.addAction(self.act_fits_batch_modifier)
-        m_header.addAction(self.act_fits_modifier)
-
+        # Until 2.1 What's In My... and Header Mods & Misc were top-level
+        # menus: they are submenus of Analysis and Tools now (menu_spec), and
+        # Scripts and Shortcuts are submenus of Workflows and View below.
 
         m_hist = mb.addMenu(self.tr("&History"))
         m_hist.addAction(self.act_history_explorer)
-
-        m_short = mb.addMenu(self.tr("&Shortcuts"))
-
-        act_cheats = QAction(self.tr("Keyboard Shortcut Cheat Sheet..."), self)
-        act_cheats.triggered.connect(self._show_cheat_sheet)
-        m_short.addAction(act_cheats)
-        act_icon_sheet = QAction(self.tr("Icon Cheat Sheet..."), self)
-        act_icon_sheet.triggered.connect(self._show_icon_cheat_sheet)
-        m_short.addAction(act_icon_sheet)
-        # act_save_sc = QAction("Save Shortcuts Now", self, triggered=self.shortcuts.save_shortcuts)
-        # Keep it if you like, but add explicit export/import:
-        act_export_sc = QAction(self.tr("Export Shortcuts..."), self, triggered=self._export_shortcuts_dialog)
-        act_import_sc = QAction(self.tr("Import Shortcuts..."), self, triggered=self._import_shortcuts_dialog)
-        act_clear_sc  = QAction(self.tr("Clear All Shortcuts"), self, triggered=self.shortcuts.clear)
-
-        m_short.addAction(act_export_sc)
-        m_short.addAction(act_import_sc)
-        m_short.addSeparator()
-        # m_short.addAction(act_save_sc)   # optional: keep
-        m_short.addAction(act_clear_sc)
-        m_short.addAction(self.act_icon_table)
 
         m_view = mb.addMenu(self.tr("&View"))
         m_view.addAction(self.act_cascade)
@@ -309,6 +271,22 @@ class MenuMixin:
         if getattr(self, "_returning_user", False):
             m_layout.addAction(self.tr("Restore Layout From Before 2.0..."),
                                self._restore_old_layout_clicked)
+
+        m_short = m_view.addMenu(self.tr("&Shortcuts"))
+        act_cheats = QAction(self.tr("Keyboard Shortcut Cheat Sheet..."), self)
+        act_cheats.triggered.connect(self._show_cheat_sheet)
+        m_short.addAction(act_cheats)
+        act_icon_sheet = QAction(self.tr("Icon Cheat Sheet..."), self)
+        act_icon_sheet.triggered.connect(self._show_icon_cheat_sheet)
+        m_short.addAction(act_icon_sheet)
+        act_export_sc = QAction(self.tr("Export Shortcuts..."), self, triggered=self._export_shortcuts_dialog)
+        act_import_sc = QAction(self.tr("Import Shortcuts..."), self, triggered=self._import_shortcuts_dialog)
+        act_clear_sc  = QAction(self.tr("Clear All Shortcuts"), self, triggered=self.shortcuts.clear)
+        m_short.addAction(act_export_sc)
+        m_short.addAction(act_import_sc)
+        m_short.addSeparator()
+        m_short.addAction(act_clear_sc)
+        m_short.addAction(self.act_icon_table)
         m_view.addSeparator()
 
         # Native menus need ordinary actions for keyboard navigation and Help
@@ -387,6 +365,10 @@ class MenuMixin:
         m_workflow = mb.addMenu(self.tr("&Workflows"))
         m_workflow.addAction(self.act_workflows)
         m_workflow.addAction(self.act_mini_workflows)
+        m_workflow.addSeparator()
+        m_scripts = m_workflow.addMenu(self.tr("&Scripts"))
+        self.menu_scripts = m_scripts
+        self.scriptman.rebuild_menu(m_scripts)
 
         m_settings = mb.addMenu(self.tr("&Settings"))
         preferences = m_settings.addAction(
@@ -435,7 +417,7 @@ class MenuMixin:
         # Connect tool stats
         self._hook_tool_stats([
             m_fn, m_tools, mCosmic, m_geom, m_stack, m_analysis, m_masks,
-            m_header, m_scripts,
+            m_scripts,
         ])
 
         # initialize enabled state + names

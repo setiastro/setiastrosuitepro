@@ -2450,6 +2450,7 @@ class ABEDialog(QDialog):
         self.sp_grid_size.valueChanged.connect(
             lambda v: self.sp_grid_size.setSuffix(f"×{v}")
         )
+        self._grid_size_factory = self.sp_grid_size.value()   # for Reset to Defaults
         grid_row.addWidget(self.btn_place_grid)
         grid_row.addWidget(self.sp_grid_size)
         grid_row.addStretch(1)
@@ -2681,6 +2682,10 @@ class ABEDialog(QDialog):
         main.addWidget(self._main_splitter)
 
         self._load_settings()
+        # the toolbar was built before the settings load: show the real state
+        self.btn_autostr.setChecked(self._autostretch_on)
+        if self._autostretch_on:
+            self.btn_autostr.setToolTip(self.tr("Autostretch preview (On)"))
 
         self._base_pixmap = None  # clean, scaled image with no overlays
         self.preview_scroll.viewport().installEventFilter(self)
@@ -2748,7 +2753,14 @@ class ABEDialog(QDialog):
         Does NOT clear drawn exclusion polygons (that is Clear Exclusions'
         job) or touch window geometry, so a reset doesn't yank the dialog
         back to a tiny default size while the user is working.
+
+        Also left alone: manual sample points (user input -- with points
+        placed, Sample mode stays Manual, since switching to Auto discards
+        them), the preview autostretch and the sections' fold state (view
+        preferences, not processing settings).
         """
+        if self._job_kind == "apply" or self._pending_apply is not None:
+            return                      # an Apply is running on these settings
         reply = QMessageBox.question(
             self, self.tr("Reset ADBE to defaults?"),
             self.tr(
@@ -2771,9 +2783,13 @@ class ABEDialog(QDialog):
         # on the group prefix clears nested keys in one shot.
         s.beginGroup("abe")
         for k in s.allKeys():
-            s.remove(k)
+            if not k.startswith("collapse/"):   # fold state is a view preference
+                s.remove(k)
         s.endGroup()
         s.sync()
+        keep_stretch = getattr(self, "_autostretch_on", None)
+        keep_manual = self._manual_mode() and bool(self._manual_points)
+        manual_text = self.cmb_sample_mode.currentText()
 
         # Block the per-widget valueChanged/toggled signals during the
         # reload so we don't fire _save_settings 20 times (each write would
@@ -2804,6 +2820,11 @@ class ABEDialog(QDialog):
                 pass
         try:
             self._load_settings()
+            if keep_stretch is not None:
+                self._autostretch_on = keep_stretch
+            if keep_manual:
+                self.cmb_sample_mode.setCurrentText(manual_text)
+            self.sp_grid_size.setValue(self._grid_size_factory)   # not persisted
             # Re-apply the sample-mode-dependent UI gating (clears or
             # restores manual points vs auto, etc.) that
             # _sample_mode_changed normally runs on text-changed.
@@ -3512,6 +3533,7 @@ class ABEDialog(QDialog):
             applying = (self._job_kind == "apply") or (self._pending_apply is not None)
             self.btn_apply.setEnabled(not applying)
             self.btn_preview.setEnabled(not applying)
+            self.btn_reset.setEnabled(not applying)
         except RuntimeError:
             pass
 

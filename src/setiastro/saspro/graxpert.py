@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QIcon
 from setiastro.saspro.config import Config
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # Prefer the exact loader you used in SASv2
 try:
@@ -68,16 +70,10 @@ class GraXpertOperationDialog(QDialog):
         for v in ["3.0.2", "3.0.1", "3.0.0", "2.0.0", "1.1.0", "1.0.0"]:
             self.model_combo.addItem(v, v)
 
-        # GPU toggle (persists via QSettings if available)
+        # GPU toggle (persists via QSettings if available; the saved value is
+        # loaded at the end of __init__, after the factory snapshot)
         self.cb_gpu = QCheckBox(self.tr("Use GPU acceleration"))
-        use_gpu_default = True
-        try:
-            settings = getattr(parent, "settings", None)
-            if settings is not None:
-                use_gpu_default = settings.value("graxpert/use_gpu", True, type=bool)
-        except Exception:
-            pass
-        self.cb_gpu.setChecked(bool(use_gpu_default))
+        self.cb_gpu.setChecked(True)
 
 
         # layout
@@ -113,6 +109,9 @@ class GraXpertOperationDialog(QDialog):
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
+        self.btn_reset = make_reset_button(self)
+        btns.addButton(self.btn_reset, QDialogButtonBox.ButtonRole.ActionRole)   # OK | Reset | Cancel
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         root.addWidget(btns)
 
         # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
@@ -144,6 +143,26 @@ class GraXpertOperationDialog(QDialog):
         self.btn_help = make_help_button("graxpert", self)
         drag_row.addWidget(self.btn_help)
         root.addLayout(drag_row)
+
+        self._factory = snapshot_controls(self)   # before the saved GPU choice / a preset
+        try:
+            settings = getattr(parent, "settings", None)
+            if settings is not None:
+                self.cb_gpu.setChecked(bool(settings.value("graxpert/use_gpu", True, type=bool)))
+        except Exception:
+            pass
+
+    def _reset_to_factory(self):
+        """Operation, parameter, denoise model and GPU back to their defaults.
+        The GraXpert executable path is not a setting of this dialog."""
+        restore_controls(self._factory)
+        # the GPU choice is otherwise saved only when GraXpert runs
+        try:
+            settings = getattr(self.parent(), "settings", None)
+            if settings is not None:
+                settings.setValue("graxpert/use_gpu", bool(self.cb_gpu.isChecked()))
+        except Exception:
+            pass
 
     def seed_from_preset(self, preset: dict | None):
         """

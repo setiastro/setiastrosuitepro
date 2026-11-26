@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from setiastro.saspro.file_utils import sanitize_filename
+from setiastro.saspro.widgets.factory_reset import make_reset_button
 from setiastro.saspro.save_options import (
     KEEP_DOC_DEPTH, ExportOptionsPanel, _norm_ext as _norm_save_ext,
     bit_depth_from_state, export_opts_from_state, jpeg_quality_from_state,
@@ -1016,9 +1017,12 @@ class ExportFitsDialog(QDialog):
         self.btn_apply_vbundle.clicked.connect(self._apply_to_view_bundle)
         btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.close)
+        btn_reset = make_reset_button(self)
+        btn_reset.clicked.connect(self._reset_to_factory)
         btns.addWidget(btn_apply)
         btns.addWidget(self.btn_apply_vbundle)
         btns.addStretch(1)
+        btns.addWidget(btn_reset)
         btns.addWidget(btn_close)
         v.addLayout(btns)
 
@@ -1092,6 +1096,14 @@ class ExportFitsDialog(QDialog):
             self.fmt_section.load(spec["format_options"])
         self.fmt_section.set_format_choice(self.cmb_format.currentData())
         self._sync_enabled()
+
+    def _reset_to_factory(self):
+        """What a first-time user sees: the spec with nothing saved, and no
+        per-format options. The output folder is a path and is kept. The
+        spec is otherwise saved only on Apply, so save it here too."""
+        self.seed_from_preset(normalize_export_fits_preset(None))
+        self.fmt_section.load({})   # after the format switch, which stores the panel it leaves
+        _remember_spec(self._mw, self.current_preset())
 
     def _browse(self):
         start = self.edit_dir.text().strip() or os.path.expanduser("~")

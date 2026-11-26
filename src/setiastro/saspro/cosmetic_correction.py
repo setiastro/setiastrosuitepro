@@ -45,6 +45,8 @@ from setiastro.saspro.widgets.image_utils import (
     to_float01 as _to_float01,
     extract_mask_from_document as _active_mask_array_from_doc,
 )
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 try:
     from setiastro.saspro.imageops.stretch import (
         stretch_color_image, stretch_mono_image,
@@ -368,6 +370,29 @@ def cosmetic_correction_headless(
 # =====================================================================
 # Preview worker
 # =====================================================================
+# A QThread deleted while it runs is a Qt fatal error ("QThread: Destroyed
+# while thread is still running", exit 0xC0000409, nothing in the crash log).
+# Both workers are parentless, so closing a dialog, or the Stacking Suite or
+# main window that owns it, can never delete one; each is held here until its
+# own QThread.finished, after run() returns.
+_LIVE_WORKERS: set = set()
+
+
+def _release_worker(wid: int):
+    for w in list(_LIVE_WORKERS):
+        if id(w) == wid:
+            _LIVE_WORKERS.discard(w)
+
+
+def _start_worker(w: QThread):
+    _LIVE_WORKERS.add(w)
+    # Capture the id, not the thread: a slot holding the thread would form a
+    # cycle through PyQt's slot proxy and leak every preview tile.
+    wid = id(w)
+    w.finished.connect(lambda: _release_worker(wid))
+    w.start()
+
+
 class _CosmeticPreviewWorker(QThread):
     """Runs cosmetic correction on a tile so the preview stays responsive."""
     finished_ok = pyqtSignal(object)     # np.ndarray (corrected tile)
@@ -1091,12 +1116,14 @@ class CosmeticCorrectionDialog(QDialog):
         else:
             self.btn_apply = QPushButton(self.tr("Apply"))
         self.btn_apply.clicked.connect(self._apply)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_cancel = QPushButton(self.tr("Cancel"))
         self.btn_cancel.setToolTip(self.tr(
             "Close without touching the image."
         ))
         self.btn_cancel.clicked.connect(self.reject)
-        row.addStretch(1); row.addWidget(self.btn_apply); row.addWidget(self.btn_cancel)
+        row.addStretch(1); row.addWidget(self.btn_apply); row.addWidget(self.btn_reset); row.addWidget(self.btn_cancel)
         root.addLayout(row)
 
         # Preset drag handle (grip) — skipped in tuning mode (no doc target)
@@ -1132,6 +1159,8 @@ class CosmeticCorrectionDialog(QDialog):
         # signals, so seeding doesn't fire a preview refresh per widget.
         # An explicit preset still wins: the openers call seed_from_preset()
         # after construction.
+        # Factory defaults first; the preview region is view state.
+        self._factory = snapshot_controls(self, exclude=tuple(self._region_btns.values()))
         if not self._tuning_mode:
             self._load_persisted_settings()
 
@@ -1148,6 +1177,14 @@ class CosmeticCorrectionDialog(QDialog):
         self._sync_gate_enabled()
 
         self.resize(1050, 700)
+
+    def _reset_to_factory(self):
+        """Detection settings back to their factory defaults. Each control
+        queues the preview as for a user change (one pass runs, the rest
+        coalesce). Saved on close as usual; in tuning mode nothing reaches
+        the Stacking Suite until Save σ Settings."""
+        restore_controls(self._factory)
+        self._sync_gate_enabled()
 
     def _star_ratio(self) -> float:
         """Kernel evidence threshold for the current widget value.
@@ -1658,11 +1695,11 @@ class CosmeticCorrectionDialog(QDialog):
             hot_sigma=hs, cold_sigma=cs, bayer_pattern=bp,
             protect_sigma=float(self.sp_protect.value()),
             star_ratio=self._star_ratio(),
-            parent=self,
+            parent=None,
         )
         self._preview_worker.finished_ok.connect(self._on_preview_ok)
         self._preview_worker.failed.connect(self._on_preview_fail)
-        self._preview_worker.start()
+        _start_worker(self._preview_worker)
 
     def _on_preview_ok(self, corrected: np.ndarray):
         try:
@@ -2046,8 +2083,35 @@ class CosmeticCorrectionBatchDialog(QDialog):
         self._n_ok = 0
         self._n_fail = 0
 
-        self._build_ui(initial_preset or {})
+        # Built with the defaults so Reset has them, then seeded from the
+        # opener's preset (the interactive dialog's current settings).
+        self._build_ui({})
+        self._factory = snapshot_controls(self, text_fields=(self.ed_suffix,))
+        self._seed_from_preset(initial_preset or {})
         self.resize(760, 620)
+
+    def _seed_from_preset(self, preset: dict):
+        """The detection knobs from a preset; keys it lacks keep the default."""
+        self.sp_hot.setValue(float(preset.get("hot_sigma", self.sp_hot.value())))
+        self.sp_cold.setValue(float(preset.get("cold_sigma", self.sp_cold.value())))
+        self.sp_protect.setValue(float(preset.get("protect_sigma", self.sp_protect.value())))
+        if "star_ratio" in preset:
+            # preset stores the kernel ratio; the widget shows protection
+            self.sp_star.setValue(_ratio_to_protection(float(preset["star_ratio"])))
+        self.cb_hot.setChecked(bool(preset.get("correct_hot", self.cb_hot.isChecked())))
+        self.cb_cold.setChecked(bool(preset.get("correct_cold", self.cb_cold.isChecked())))
+        bp = str(preset.get("bayer_pattern", "") or "")
+        if bp == "__none__":
+            self.cmb_bayer.setCurrentIndex(1)
+        elif bp.upper() in ("RGGB", "BGGR", "GRBG", "GBRG"):
+            self.cmb_bayer.setCurrentIndex(max(0, self.cmb_bayer.findData(bp.upper())))
+
+    def _reset_to_factory(self):
+        """Detection knobs, output mode and suffix back to their defaults.
+        The file list and the output directory are kept."""
+        if self._worker is not None and self._worker.isRunning():
+            return
+        restore_controls(self._factory)
 
     def _build_ui(self, preset: dict):
         root = QVBoxLayout(self)
@@ -2240,9 +2304,12 @@ class CosmeticCorrectionBatchDialog(QDialog):
         self.btn_stop = QPushButton(self.tr("Cancel"))
         self.btn_stop.clicked.connect(self._on_cancel)
         self.btn_stop.setEnabled(False)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_close = QPushButton(self.tr("Close"))
         self.btn_close.clicked.connect(self.reject)
         btn_row.addWidget(self.btn_run)
+        btn_row.addWidget(self.btn_reset)
         btn_row.addWidget(self.btn_stop)
         btn_row.addWidget(self.btn_close)
         root.addLayout(btn_row)
@@ -2446,13 +2513,17 @@ class CosmeticCorrectionBatchDialog(QDialog):
             out_mode=out_mode, out_dir=out_dir, suffix=suffix,
             protect_sigma=float(self.sp_protect.value()),
             star_ratio=_protection_to_ratio(self.sp_star.value()),
-            parent=self,
+            parent=None,
         )
         self._worker.file_started.connect(self._on_file_started)
         self._worker.file_done.connect(self._on_file_done)
         self._worker.file_failed.connect(self._on_file_failed)
         self._worker.all_done.connect(self._on_all_done)
-        self._worker.start()
+        # Opened from the interactive dialog, this window is that dialog's
+        # child and is deleted with it; stop after the current file then
+        # rather than carry on with no window.
+        self.destroyed.connect(self._worker.cancel)
+        _start_worker(self._worker)
 
     def _on_cancel(self):
         if self._worker is not None and self._worker.isRunning():
@@ -2467,7 +2538,7 @@ class CosmeticCorrectionBatchDialog(QDialog):
                   self.cmb_bayer, self.btn_push_stacking,
                   self.rb_overwrite, self.rb_suffix, self.rb_dir,
                   self.ed_suffix, self.ed_dir, self.btn_pick_dir, self.btn_run,
-                  self.btn_close):
+                  self.btn_reset, self.btn_close):
             w.setEnabled(enabled)
         self.btn_stop.setEnabled(not enabled)
 
@@ -2538,6 +2609,13 @@ class CosmeticCorrectionBatchDialog(QDialog):
             self._worker.cancel()
             self._worker.wait(3000)
         super().closeEvent(ev)
+
+    def done(self, r):
+        # Esc never reaches closeEvent: cancel here too (after the current
+        # file). The worker is parentless, so nothing waits for it.
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.cancel()
+        super().done(r)
 
 
 # =====================================================================

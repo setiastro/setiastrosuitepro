@@ -10,6 +10,8 @@ from PyQt6.QtWidgets import (
 )
 
 from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image, save_image as legacy_save_image
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 # --- helpers ---------------------------------------------------------------
@@ -241,9 +243,11 @@ class BatchConvertDialog(QDialog):
         self.start_btn = QPushButton(self.tr("Start"))
         self.cancel_btn = QPushButton(self.tr("Cancel"))
         self.cancel_btn.setEnabled(False)
+        self.reset_btn = make_reset_button(self)
         btns = QHBoxLayout()
         btns.addStretch(1)
         btns.addWidget(self.start_btn)
+        btns.addWidget(self.reset_btn)
         btns.addWidget(self.cancel_btn)
 
         lay.addSpacing(8)
@@ -253,9 +257,17 @@ class BatchConvertDialog(QDialog):
 
         self.start_btn.clicked.connect(self._start)
         self.cancel_btn.clicked.connect(self._cancel)
+        self.reset_btn.clicked.connect(self._reset_to_factory)
 
         # initialize bit-depth choices
         self._refresh_depth_choices()
+        # folders are line edits, so they are not captured
+        self._factory = snapshot_controls(self)
+
+    def _reset_to_factory(self):
+        if self.worker is not None and self.worker.isRunning():
+            return
+        restore_controls(self._factory)
 
     def _row(self, label: str, line: QLineEdit, browse_fn):
         hb = QHBoxLayout()

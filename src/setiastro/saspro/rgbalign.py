@@ -15,6 +15,8 @@ from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
 
 from setiastro.saspro import astroalign
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 from setiastro.saspro.sep_tiled import (
     ensure_pixstack, extract_small_first, waterfall_extract, STAR_LADDER,
@@ -1023,9 +1025,11 @@ class RGBAlignDialog(QDialog):
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.setToolTip(self.tr("Stop the running alignment or trial detect. Nothing is applied."))
         self.btn_close = QPushButton(self.tr("Close"))
+        self.btn_reset = make_reset_button(self)
         btns.addWidget(self.btn_run)
         btns.addWidget(self.btn_cancel)
         btns.addWidget(self.btn_manual)
+        btns.addWidget(self.btn_reset)
         btns.addWidget(self.btn_close)
         btns.addStretch(1)
         btns.addWidget(make_help_button("rgb_align", self))
@@ -1034,12 +1038,19 @@ class RGBAlignDialog(QDialog):
         self.btn_run.clicked.connect(self._start_align)
         self.btn_cancel.clicked.connect(self._cancel_align)
         self.btn_close.clicked.connect(self.close)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.model_combo.currentIndexChanged.connect(self._update_mode_ui)
         self._update_mode_ui()   # set initial state
 
         self.worker: RGBAlignWorker | None = None
         self._closing_after_cancel = False
         self._cancel_requested = False
+        self._factory = snapshot_controls(self)
+
+    def _reset_to_factory(self):
+        if self._busy():
+            return
+        restore_controls(self._factory)
 
     def _open_manual(self):
         if self.image is None or self.image.ndim != 3 or self.image.shape[2] < 3:

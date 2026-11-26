@@ -56,6 +56,8 @@ from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
 from setiastro.saspro.legacy.numba_utils import debayer_raw_fast, debayer_fits_fast
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 from setiastro.saspro.star_metrics import measure_stars_sep
 from setiastro.saspro.blink_fast_read import (
@@ -2092,11 +2094,10 @@ class BlinkTab(QWidget):
         except Exception:
             self.aggressive_stretch_enabled = False
 
-        try:
-            _fps = float(_s.value("blink/play_fps", 1.0, type=float))
-        except Exception:
-            _fps = 1.0
-        self.play_fps = max(0.1, min(10.0, _fps))
+        # Factory playback speed; the saved one (like the saved load scale,
+        # Frames mode, CFA colour and Sat mode) is applied after the factory
+        # snapshot, in _load_saved_options().
+        self.play_fps = 1.0
 
         try:
             self._auto_fit = bool(_s.value("blink/auto_fit", False, type=bool))
@@ -2119,14 +2120,16 @@ class BlinkTab(QWidget):
         # pixels live in this cache, keyed by file path. None in PreLoad mode.
         self._stream_cache: Optional[FrameCache] = None
         self._stream_dir = 1            # +1 forward, -1 back; drives prefetch
-        try:
-            self._stream_mode = bool(
-                _s.value("blink/stream", False, type=bool))
-        except Exception:
-            self._stream_mode = False
+        self._stream_mode = False       # factory; saved choice in _load_saved_options
 
         self.initUI()
         self.init_shortcuts()
+        # Factory = as built. The preview stretch, zoom panel, zoom-panel
+        # controls and the Show filter are view state.
+        self._factory = snapshot_controls(self, exclude=(
+            self.aggressive_button, self.zoom_panel_btn, self._zoom_panel,
+            self.tree_filter_combo))
+        self._load_saved_options(_s)
 
         # Sync the aggressive-stretch button to the restored flag so the
         # UI matches what we'll actually render.
@@ -2138,6 +2141,57 @@ class BlinkTab(QWidget):
             pass
 
         self._geom_restored = False  # <- NEW
+
+    def _load_saved_options(self, s):
+        """Saved options, applied after the factory snapshot. Each default
+        is the control's factory value as built."""
+        try:
+            fps = float(s.value("blink/play_fps", self.play_fps, type=float))
+            self.speed_spin.setValue(max(0.1, min(10.0, fps)))
+        except Exception:
+            pass
+        try:
+            saved_scale = int(s.value("blink/load_scale", self._load_scale, type=int))
+            self._load_scale = saved_scale
+            for btn in self._res_group.buttons():
+                if btn.property("scale") == saved_scale:
+                    btn.setChecked(True)
+                    break
+        except Exception:
+            pass
+        try:
+            self.rb_stream.setChecked(
+                bool(s.value("blink/stream", self._stream_mode, type=bool)))
+        except Exception:
+            pass
+        try:
+            self.chk_cfa_color.setChecked(bool(s.value(
+                "blink/cfa_color", self.chk_cfa_color.isChecked(), type=bool)))
+        except Exception:
+            pass
+        try:
+            _mi = self.sat_mode_combo.findData(s.value(
+                "blink/sat_detect_mode", self.sat_mode_combo.currentData(), type=str))
+            if _mi >= 0:
+                self.sat_mode_combo.setCurrentIndex(_mi)
+        except Exception:
+            pass
+
+    def _reset_to_factory(self):
+        """Loading, playback and satellite-detection options back to their
+        defaults. Loaded frames, flags and the view are left alone."""
+        if not self.sat_detect_btn.isEnabled():
+            return                      # satellite detection is running
+        restore_controls(self._factory)
+        # The load-scale radios only report user clicks (buttonClicked).
+        btn = self._res_group.checkedButton()
+        if btn is not None:
+            self._load_scale = btn.property("scale")
+            QSettings().setValue("blink/load_scale", self._load_scale)
+        # The wrench dialog's settings (edge exclusion, workers).
+        s = QSettings()
+        s.remove("blink/sat_edge_exclusion_px")
+        s.remove("blink/sat_detect_workers")
 
     # ------------------------------------------------------------------
     # Stream mode: demand loading
@@ -2713,13 +2767,7 @@ class BlinkTab(QWidget):
             self._res_group.addButton(rb)
             res_layout.addWidget(rb)
 
-        saved_scale = int(QSettings().value("blink/load_scale", 1, type=int))
-        self._load_scale = saved_scale
-        for btn in self._res_group.buttons():
-            if btn.property("scale") == saved_scale:
-                btn.setChecked(True)
-                break
-
+        # The saved scale is applied in _load_saved_options.
         # NOW connect — lambda only fires on user clicks, not setChecked
         self._res_group.buttonClicked.connect(
             lambda btn: (
@@ -2781,11 +2829,7 @@ class BlinkTab(QWidget):
             "\n"
             "Mono frames are unaffected either way. Takes effect on the next\n"
             "load, like the resolution buttons above."))
-        try:
-            self.chk_cfa_color.setChecked(
-                bool(QSettings().value("blink/cfa_color", True, type=bool)))
-        except Exception:
-            self.chk_cfa_color.setChecked(True)
+        self.chk_cfa_color.setChecked(True)     # saved choice: _load_saved_options
         self.chk_cfa_color.toggled.connect(
             lambda on: QSettings().setValue("blink/cfa_color", bool(on)))
         left_layout.addWidget(self.chk_cfa_color)
@@ -2817,14 +2861,7 @@ class BlinkTab(QWidget):
             "in the preview so you can see exactly where it is. Significantly slower, especially on frames\n"
             "that actually contain trails."
         ))
-        try:
-            saved_mode = QSettings().value("blink/sat_detect_mode", "fast", type=str) or "fast"
-        except Exception:
-            saved_mode = "fast"
-        _mi = self.sat_mode_combo.findData(saved_mode)
-        if _mi < 0:
-            _mi = 0
-        self.sat_mode_combo.setCurrentIndex(_mi)
+        # Factory = Fast (index 0); the saved mode: _load_saved_options.
         self.sat_mode_combo.currentIndexChanged.connect(self._on_sat_mode_changed)
         sat_row.addWidget(self.sat_mode_combo)
 
@@ -3103,6 +3140,9 @@ class BlinkTab(QWidget):
         self.zoom_panel_btn.setFixedWidth(110)
         self.zoom_panel_btn.clicked.connect(self._toggle_zoom_panel)
         zoom_controls_layout.addWidget(self.zoom_panel_btn)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        zoom_controls_layout.addWidget(self.btn_reset)
         self.btn_doc_help = make_help_button("blink", self)
         zoom_controls_layout.addWidget(self.btn_doc_help)
         self.scroll_area = QScrollArea(self)

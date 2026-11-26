@@ -15,6 +15,8 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QCheckBox,
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import QWidget
@@ -473,8 +475,10 @@ class PSFViewer(QDialog):
         # quality-filtered stars are in hand, so a 53k-source frame doesn't
         # spend seconds fitting shape moments we would just throw away.
         self._settings = QSettings()
-        self.auto_detect = bool(self._settings.value(
+        # The saved choice is applied after the factory snapshot (below).
+        saved_auto = bool(self._settings.value(
             "psf_viewer/auto_detect", True, type=bool))
+        self.auto_detect = True
         self._target_stars = int(self._settings.value(
             "psf_viewer/target_stars", 1000, type=int))
 
@@ -496,6 +500,11 @@ class PSFViewer(QDialog):
 
         self.finished.connect(self._cleanup)
         self._build_ui()
+        # Factory = as built; zoom and the X-axis scale are view state.
+        self._factory = snapshot_controls(
+            self, exclude=(self.zoom_slider, self.log_toggle_button))
+        self.chk_auto.setChecked(saved_auto)
+        self.threshold_timer.stop()          # the first detection below covers it
         QTimer.singleShot(0, self._applyThreshold)
 
     def _grab_image(self):
@@ -631,15 +640,25 @@ class PSFViewer(QDialog):
 
         main_layout.addLayout(thresh_layout)
 
-        # ── Close ───────────────────────────────────────────────────────
+        # ── Reset | Close ───────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_reset = make_reset_button(self)
+        btn_reset.clicked.connect(self._reset_to_factory)
+        btn_row.addWidget(btn_reset)
         close_btn = QPushButton(self.tr("Close"), self)
         close_btn.clicked.connect(self.close)
-        main_layout.addWidget(close_btn)
+        btn_row.addWidget(close_btn)
+        main_layout.addLayout(btn_row)
 
         self.setLayout(main_layout)
         self.drawHistogram()
 
     # ------------------------------------------------------------------
+    def _reset_to_factory(self):
+        # Safe while a detection runs: a change then queues one re-run
+        # with the new values (_psf_pending), as for a user change.
+        restore_controls(self._factory)
+
     def onThresholdChange(self, value: int):
         self.detection_threshold = int(value)
         self.threshold_value_label.setText(str(value))

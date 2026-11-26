@@ -4707,6 +4707,10 @@ Tools you added are taken off, the ones you removed come back, and the order is 
       <source>Reduce row or column banding across the whole image</source>
       <translation>减少整幅图像中的行条纹或列条纹</translation>
     </message>
+    <message>
+      <source>All Analysis Tools</source>
+      <translation>所有分析工具</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -28432,6 +28436,30 @@ Calibrate only the {2} new frame(s) and reuse the existing calibrated frames for
       <source>✓ same session</source>
       <translation>✓ 同一会话</translation>
     </message>
+    <message>
+      <source>Reset</source>
+      <translation>重置</translation>
+    </message>
+    <message>
+      <source>A stacking run is in progress. Reset is available once it has finished.</source>
+      <translation>叠加正在进行中。完成后即可重置。</translation>
+    </message>
+    <message>
+      <source>Reset Stacking Settings</source>
+      <translation>重置叠加设置</translation>
+    </message>
+    <message>
+      <source>Reset every stacking setting to its factory default?
+
+This covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.
+
+Kept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.</source>
+      <translation>将所有叠加设置恢复为出厂默认值？
+
+这包括此窗口以及 Stacking Suite 各选项卡上的选项：校准、Drizzle、MFDeconv、彗星、剔除等。
+
+保留：叠加文件夹及其他路径、已加载的帧、主帧及其 Dark/Flat 选择、配准组和参考帧、您保存的配置文件，以及“优化…”的测量结果。当帧按某个分组容差分组时，该容差会被保留。</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -36504,6 +36532,10 @@ Use [ and ] to decrease/increase brush size.</source>
       <source>Zoom Out</source>
       <translation>缩小</translation>
     </message>
+    <message>
+      <source>Reset every setting in this tool to its factory default</source>
+      <translation>将此工具的所有设置恢复为出厂默认值</translation>
+    </message>
   </context>
   <context>
     <name>CommonUtilities</name>
@@ -41025,6 +41057,18 @@ Drawn chart: a vector star chart (SVG / PDF / PNG / new image).</source>
       <source>💡 You can undo and redo edits all the way back to the original using the History stack.</source>
       <translation>💡 您可以使用历史记录撤销和重做编辑，一直回到原始图像。</translation>
     </message>
+    <message>
+      <source>💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.</source>
+      <translation>💡 想了解键盘快捷键？“视图 → 快捷方式”下有完整的速查表。</translation>
+    </message>
+    <message>
+      <source>💡 Batch convert files from one format to another with Tools → Header Mods &amp; Misc → Batch Converter.</source>
+      <translation>💡 使用“工具 → 头信息修改和杂项 → 批量转换器”，可将文件从一种格式批量转换为另一种格式。</translation>
+    </message>
+    <message>
+      <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
+      <translation>💡 “视图 → 快捷方式”下的图标速查表可一目了然地显示每个工具栏图标及其功能。</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -41187,6 +41231,10 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
       <translation>子帧没有完全重叠的地方，叠加结果会留下参差不齐的边缘：暗的或噪声很大的边框，有时还有条纹。请先把它们裁掉。拉伸、去除梯度和颜色校准都会测量整幅图像，这些边缘会让结果出错。
 
 裁剪位于 功能 → 修复与修饰 → 裁剪。把框拖到干净区域内，然后单击“应用”。</translation>
+    </message>
+    <message>
+      <source>First Steps</source>
+      <translation>入门步骤</translation>
     </message>
   </context>
   <context>
@@ -52477,6 +52525,10 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>Zoom Out</source>
       <translation>缩小</translation>
     </message>
+    <message>
+      <source>Set Q back to {0:.2f} for every filter</source>
+      <translation>将所有滤镜的 Q 恢复为 {0:.2f}</translation>
+    </message>
   </context>
   <context>
     <name>QuadBuildWorker</name>
@@ -53036,6 +53088,10 @@ Masters and frames dropped on this window, or added with the lights, are sorted 
     <message>
       <source>✓ the only flat</source>
       <translation>✓ 唯一的平场</translation>
+    </message>
+    <message>
+      <source>What Quick Stack will run on. A GPU is used when SASpro's hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.</source>
+      <translation>Quick Stack 运行所用的硬件。当 SASpro 的硬件加速能访问 GPU 时会使用它（NVIDIA CUDA、AMD ROCm、Intel XPU、DirectML 或 Apple Metal）；叠加设置中的“如可用则使用硬件加速”可将其关闭。</translation>
     </message>
   </context>
   <context>
@@ -56636,6 +56692,12 @@ Make sure the tool is registered in the SASpro toolbar.</source>
     <message>
       <source>🔄 Invert Masked Region</source>
       <translation>🔄 反转蒙版区域</translation>
+    </message>
+    <message>
+      <source>Set the palette preset back to this mode's default.
+The Mode is kept: changing it re-masks the active image.</source>
+      <translation>将调色板预设恢复为此模式的默认值。
+模式保持不变：更改模式会为当前图像重新生成蒙版。</translation>
     </message>
   </context>
   <context>
@@ -66984,6 +67046,10 @@ binned points and the model, residuals underneath.</source>
       <source>χ²_red (photometric errors) = {0:.2f} → errors × {1:.2f};  red-noise β = {2:.2f}</source>
       <translation>χ²_red（测光误差）= {0:.2f} → 误差 × {1:.2f}；  红噪声 β = {2:.2f}</translation>
     </message>
+    <message>
+      <source>Reset the Fit options to their factory defaults</source>
+      <translation>将拟合选项恢复为出厂默认值</translation>
+    </message>
   </context>
   <context>
     <name>TypedTableModel</name>
@@ -72433,6 +72499,12 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
       <source>Writing temp image…</source>
       <translation>正在写入临时图像…</translation>
     </message>
+    <message>
+      <source>The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.
+{0}</source>
+      <translation>图像已在 SyQon Studio 中打开。请在其中处理，并将结果保存到此文件夹；SASpro 会从这里导入。取消则保留原始图像。
+{0}</translation>
+    </message>
   </context>
   <context>
     <name>_SyQonStudioHubPage</name>
@@ -72711,6 +72783,10 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>✘  Could not validate: {0}</source>
       <translation>✘  无法验证：{0}</translation>
+    </message>
+    <message>
+      <source>SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.</source>
+      <translation>SyQon Studio {0} 没有命令行工具（1.2 版才提供），因此 SASpro 会在 Studio 应用中打开图像。请在其中处理并保存；SASpro 会导入您保存的结果。</translation>
     </message>
   </context>
   <context>

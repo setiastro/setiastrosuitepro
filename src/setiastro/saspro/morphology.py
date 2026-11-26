@@ -472,6 +472,7 @@ class MorphologyDialogPro(QDialog):
             b = self._base_u8 = (self.orig, _morph_base_u8(self.orig))
         self._show_u8(b[1])
         self.view.fit_to_item(self.pix)
+        self._debounce()    # preview the defaults even when no control changed
 
     def closeEvent(self, ev):
         self._close_teardown()

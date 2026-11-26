@@ -14,8 +14,10 @@ from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_
 from dataclasses import dataclass
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
-from setiastro.saspro.clone_stamp import _circle_mask
+from setiastro.saspro.clone_stamp import _circle_mask, _reset_eraser_fill
 from setiastro.saspro.eraser_brush import EraserFillPicker, StrokeTiles, fill_dab_inplace, display_fill
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 @dataclass
 class BlemishOp:
@@ -784,6 +786,7 @@ class BlemishBlasterDialogPro(QDialog):
         self.btn_undo  = QPushButton(self.tr("Undo"))
         self.btn_redo  = QPushButton(self.tr("Redo"))
         self.btn_apply = QPushButton(self.tr("Apply to Document"))
+        self.btn_reset = make_reset_button(self)
         self.btn_close = QPushButton(self.tr("Close"))
 
         self.btn_undo.setEnabled(False)
@@ -796,6 +799,7 @@ class BlemishBlasterDialogPro(QDialog):
         bb.addWidget(self.btn_redo)
         bb.addSpacing(12)
         bb.addWidget(self.btn_apply)
+        bb.addWidget(self.btn_reset)
         bb.addWidget(self.btn_close)
 
         # ─────────────────────────────────────────────────────────────
@@ -885,6 +889,7 @@ class BlemishBlasterDialogPro(QDialog):
         self.btn_zoom_fit.clicked.connect(self._fit_view)
 
         self.btn_apply.clicked.connect(self._commit_to_doc)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_close.clicked.connect(self.reject)
         self.btn_undo.clicked.connect(self._undo_step)
         self.btn_redo.clicked.connect(self._redo_step)
@@ -911,6 +916,19 @@ class BlemishBlasterDialogPro(QDialog):
 
         self.addAction(a_radius_down)
         self.addAction(a_radius_up)
+        # Factory settings (brush, Linear and Banding options). Left alone: the
+        # mode (the active tool), the preview stretch, and the eraser fill
+        # (reset explicitly). Banding defaults match banding_blaster.DEFAULTS.
+        self._factory = snapshot_controls(self, exclude=(
+            self.rb_blemish, self.rb_linear, self.rb_banding, self.rb_eraser,
+            self.eraser_fill, self.cb_autostretch, self.s_target_median, self.cb_linked))
+
+    def _reset_to_factory(self):
+        # A heal / blast worker disables the whole dialog, Reset with it.
+        if self._erasing:
+            return
+        restore_controls(self._factory)
+        _reset_eraser_fill(self.eraser_fill)
 
     # # === SASpro Blaster shortcut fix v1 ===
     def event(self, e):

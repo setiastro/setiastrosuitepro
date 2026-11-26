@@ -36,6 +36,8 @@ from setiastro.saspro.color_space_manager import (
     set_softproof_black_point_compensation_to_settings,
     set_softproof_rendering_intent_to_settings,
 )
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 def _icc_search_dirs() -> list[Path]:
@@ -147,15 +149,13 @@ class SoftProofDialog(QDialog):
         self.combo_intent = QComboBox(self)
         self.combo_intent.addItem(self.tr("Relative Colorimetric"), RENDERING_INTENT_RELATIVE)
         self.combo_intent.addItem(self.tr("Perceptual"), RENDERING_INTENT_PERCEPTUAL)
-        intent_idx = self.combo_intent.findData(get_softproof_rendering_intent_from_settings())
-        if intent_idx < 0:
-            intent_idx = self.combo_intent.findData(DEFAULT_RENDERING_INTENT)
+        intent_idx = self.combo_intent.findData(DEFAULT_RENDERING_INTENT)
         if intent_idx >= 0:
             self.combo_intent.setCurrentIndex(intent_idx)
         form.addRow(self.tr("Rendering intent:"), self.combo_intent)
 
         self.chk_bpc = QCheckBox(self.tr("Black-point compensation"), self)
-        self.chk_bpc.setChecked(get_softproof_black_point_compensation_from_settings())
+        self.chk_bpc.setChecked(True)   # the settings default; the saved choice is applied below
         form.addRow("", self.chk_bpc)
 
         controls = QHBoxLayout()
@@ -167,6 +167,9 @@ class SoftProofDialog(QDialog):
         controls.addWidget(self.chk_display_gamut)
         controls.addWidget(self.chk_proof_gamut)
         controls.addStretch(1)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        controls.addWidget(self.btn_reset)
         root.addLayout(controls)
 
         self.lbl_status = QLabel(self)
@@ -179,6 +182,15 @@ class SoftProofDialog(QDialog):
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll.setWidget(self.preview)
         root.addWidget(self.scroll, 1)
+
+        # Factory state, before the saved intent / BPC are applied. The display
+        # profile is the app's display setting; the proof profile is a file pick.
+        self._factory = snapshot_controls(self, exclude=(self.combo_proof,))
+        self._restoring = False
+        intent_idx = self.combo_intent.findData(get_softproof_rendering_intent_from_settings())
+        if intent_idx >= 0:
+            self.combo_intent.setCurrentIndex(intent_idx)
+        self.chk_bpc.setChecked(get_softproof_black_point_compensation_from_settings())
 
         for widget in (self.combo_display, self.combo_proof, self.combo_intent):
             widget.currentIndexChanged.connect(self._render)
@@ -281,7 +293,18 @@ class SoftProofDialog(QDialog):
         after = _qimage_to_array(roundtrip).astype(np.int16)
         return np.max(np.abs(before - after), axis=2) > 3
 
+    def _reset_to_factory(self):
+        # One render at the end instead of one per control.
+        self._restoring = True
+        try:
+            restore_controls(self._factory)
+        finally:
+            self._restoring = False
+        self._render()
+
     def _render(self):
+        if getattr(self, "_restoring", False):
+            return
         display_key = self.combo_display.currentData()
         display_cs = get_color_space_from_key(display_key)
         proof_path = self.combo_proof.currentData()

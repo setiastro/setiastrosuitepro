@@ -4707,6 +4707,10 @@ Tools you added are taken off, the ones you removed come back, and the order is 
       <source>Reduce row or column banding across the whole image</source>
       <translation>पूरी छवि में पंक्ति या स्तंभ बैंडिंग कम करें</translation>
     </message>
+    <message>
+      <source>All Analysis Tools</source>
+      <translation>सभी विश्लेषण उपकरण</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -28162,6 +28166,30 @@ Calibrate only the {2} new frame(s) and reuse the existing calibrated frames for
       <source>✓ same session</source>
       <translation>✓ वही सत्र</translation>
     </message>
+    <message>
+      <source>Reset</source>
+      <translation>रीसेट</translation>
+    </message>
+    <message>
+      <source>A stacking run is in progress. Reset is available once it has finished.</source>
+      <translation>स्टैकिंग चल रही है। इसके पूरा होने के बाद रीसेट उपलब्ध होगा।</translation>
+    </message>
+    <message>
+      <source>Reset Stacking Settings</source>
+      <translation>स्टैकिंग सेटिंग्स रीसेट करें</translation>
+    </message>
+    <message>
+      <source>Reset every stacking setting to its factory default?
+
+This covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.
+
+Kept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.</source>
+      <translation>हर स्टैकिंग सेटिंग को उसके फ़ैक्टरी डिफ़ॉल्ट पर रीसेट करें?
+
+इसमें यह विंडो और Stacking Suite के टैब के विकल्प शामिल हैं: कैलिब्रेशन, ड्रिज़ल, MFDeconv, धूमकेतु, अस्वीकृति और बाकी सब।
+
+बने रहते हैं: स्टैकिंग फ़ोल्डर और अन्य पथ, लोड किए गए फ़्रेम, मास्टर और उनके Dark/Flat चयन, संरेखण सेट और संदर्भ फ़्रेम, आपकी सहेजी गई प्रोफ़ाइलें, और "अनुकूलित करें…" द्वारा मापे गए मान। जब तक फ़्रेम किसी समूहन सहनशीलता के अनुसार समूहित हैं, वह सहनशीलता बनी रहती है।</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -36234,6 +36262,10 @@ Use [ and ] to decrease/increase brush size.</source>
       <source>Zoom Out</source>
       <translation>ज़ूम आउट</translation>
     </message>
+    <message>
+      <source>Reset every setting in this tool to its factory default</source>
+      <translation>इस टूल की हर सेटिंग को उसके फ़ैक्टरी डिफ़ॉल्ट पर रीसेट करें</translation>
+    </message>
   </context>
   <context>
     <name>CommonUtilities</name>
@@ -40755,6 +40787,18 @@ Drawn chart: a vector star chart (SVG / PDF / PNG / new image).</source>
       <source>💡 You can undo and redo edits all the way back to the original using the History stack.</source>
       <translation>💡 आप इतिहास स्टैक का उपयोग करके मूल छवि तक सभी संपादन पूर्ववत और फिर से कर सकते हैं।</translation>
     </message>
+    <message>
+      <source>💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.</source>
+      <translation>💡 कीबोर्ड शॉर्टकट के बारे में जानना चाहते हैं? दृश्य → शॉर्टकट के अंतर्गत पूरी चीट शीट है।</translation>
+    </message>
+    <message>
+      <source>💡 Batch convert files from one format to another with Tools → Header Mods &amp; Misc → Batch Converter.</source>
+      <translation>💡 उपकरण → हेडर मोड और विविध → बैच कनवर्टर से फ़ाइलों को एक प्रारूप से दूसरे में बैच में बदलें।</translation>
+    </message>
+    <message>
+      <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
+      <translation>💡 दृश्य → शॉर्टकट के अंतर्गत आइकन चीट शीट हर टूलबार आइकन को उसके फ़ंक्शन के साथ एक नज़र में दिखाती है।</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -40917,6 +40961,10 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
       <translation>जहाँ सब-फ़्रेम पूरी तरह ओवरलैप नहीं हुए, वहाँ स्टैक के किनारे उबड़-खाबड़ होते हैं: गहरे या शोर वाले किनारे, कभी-कभी धारियाँ। पहले उन्हें काट दें। स्ट्रेचिंग, ग्रेडिएंट हटाना और रंग कैलिब्रेशन सभी पूरी छवि को मापते हैं, और ये किनारे उन्हें बिगाड़ देते हैं।
 
 क्रॉप कार्य → मरम्मत &amp; सुधार → क्रॉप में है। बॉक्स को साफ़ हिस्से के अंदर खींचें, फिर लागू करें पर क्लिक करें।</translation>
+    </message>
+    <message>
+      <source>First Steps</source>
+      <translation>पहले कदम</translation>
     </message>
   </context>
   <context>
@@ -52207,6 +52255,10 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>Zoom Out</source>
       <translation>ज़ूम आउट</translation>
     </message>
+    <message>
+      <source>Set Q back to {0:.2f} for every filter</source>
+      <translation>हर फ़िल्टर के लिए Q को {0:.2f} पर वापस लाएँ</translation>
+    </message>
   </context>
   <context>
     <name>QuadBuildWorker</name>
@@ -52766,6 +52818,10 @@ Masters and frames dropped on this window, or added with the lights, are sorted 
     <message>
       <source>✓ the only flat</source>
       <translation>✓ एकमात्र फ्लैट</translation>
+    </message>
+    <message>
+      <source>What Quick Stack will run on. A GPU is used when SASpro's hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.</source>
+      <translation>Quick Stack किस पर चलेगा। SASpro के हार्डवेयर त्वरण की GPU तक पहुँच होने पर GPU उपयोग होता है (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML या Apple Metal); स्टैकिंग सेटिंग्स में "उपलब्ध होने पर हार्डवेयर त्वरण का उपयोग करें" इसे बंद करता है।</translation>
     </message>
   </context>
   <context>
@@ -56366,6 +56422,12 @@ Make sure the tool is registered in the SASpro toolbar.</source>
     <message>
       <source>🔄 Invert Masked Region</source>
       <translation>🔄 मास्क किए गए क्षेत्र को उल्टा करें</translation>
+    </message>
+    <message>
+      <source>Set the palette preset back to this mode's default.
+The Mode is kept: changing it re-masks the active image.</source>
+      <translation>पैलेट प्रीसेट को इस मोड के डिफ़ॉल्ट पर वापस लाएँ।
+मोड वही रहता है: उसे बदलने से सक्रिय छवि पर मास्क फिर से लगता है।</translation>
     </message>
   </context>
   <context>
@@ -66714,6 +66776,10 @@ binned points and the model, residuals underneath.</source>
       <source>χ²_red (photometric errors) = {0:.2f} → errors × {1:.2f};  red-noise β = {2:.2f}</source>
       <translation>χ²_red (फोटोमेट्रिक त्रुटियाँ) = {0:.2f} → त्रुटियाँ × {1:.2f};  red-noise β = {2:.2f}</translation>
     </message>
+    <message>
+      <source>Reset the Fit options to their factory defaults</source>
+      <translation>फ़िट विकल्पों को उनके फ़ैक्टरी डिफ़ॉल्ट पर रीसेट करें</translation>
+    </message>
   </context>
   <context>
     <name>TypedTableModel</name>
@@ -72163,6 +72229,12 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
       <source>Writing temp image…</source>
       <translation>अस्थायी छवि लिखी जा रही है…</translation>
     </message>
+    <message>
+      <source>The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.
+{0}</source>
+      <translation>छवि SyQon Studio में खुली है। वहाँ उसे प्रोसेस करें और परिणाम इसी फ़ोल्डर में सहेजें; SASpro उसे वहीं से आयात करेगा। रद्द करने पर मूल छवि बनी रहती है।
+{0}</translation>
+    </message>
   </context>
   <context>
     <name>_SyQonStudioHubPage</name>
@@ -72441,6 +72513,10 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>✘  Could not validate: {0}</source>
       <translation>✘  सत्यापित नहीं किया जा सका: {0}</translation>
+    </message>
+    <message>
+      <source>SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.</source>
+      <translation>SyQon Studio {0} में कमांड-लाइन टूल नहीं है (यह 1.2 में आया), इसलिए SASpro छवि को Studio ऐप में खोलता है। वहाँ उसे प्रोसेस करें और सहेजें; आप जो सहेजेंगे, SASpro उसे आयात कर लेगा।</translation>
     </message>
   </context>
   <context>

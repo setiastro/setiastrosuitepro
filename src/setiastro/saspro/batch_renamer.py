@@ -19,6 +19,8 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QComboBox, QSpinBox, QCheckBox, QFileDialog, QListWidget, QMessageBox
 )
 from PyQt6.QtCore import QSettings
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 
 class BatchRenamerDialog(QDialog):
@@ -55,7 +57,15 @@ class BatchRenamerDialog(QDialog):
         self.setSizeGripEnabled(True)
 
         self._build_ui()
+        # the token picker inserts text, it is not a setting; the template,
+        # source and destination are line edits, so they are not captured
+        self._factory = snapshot_controls(self, exclude=(self.token_combo,))
         self._load_settings()
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
+        self._refresh_preview()     # "append .{ext}" has no preview hook of its own
+        self._save_settings()       # settings are saved only by the actions
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -94,6 +104,7 @@ class BatchRenamerDialog(QDialog):
 
         self.lower_cb = QCheckBox(self.tr("lowercase"), self);     self.lower_cb.toggled.connect(self._refresh_preview)
         self.slug_cb  = QCheckBox(self.tr("spaces→_"), self);      self.slug_cb.toggled.connect(self._refresh_preview)
+        self.slug_cb.setChecked(True)
         self.keep_ext_cb = QCheckBox(self.tr("append .{ext} if missing"), self); self.keep_ext_cb.setChecked(True)
         self.index_start = QSpinBox(self); self.index_start.setRange(0, 999999); self.index_start.setValue(1)
         self.index_start.valueChanged.connect(self._refresh_preview)
@@ -158,7 +169,10 @@ class BatchRenamerDialog(QDialog):
         btns = QDialogButtonBox(self)
         self.btn_preview = btns.addButton(self.tr("Preview"), QDialogButtonBox.ButtonRole.ActionRole)
         self.btn_rename  = btns.addButton(self.tr("Rename"), QDialogButtonBox.ButtonRole.AcceptRole)
+        self.btn_reset   = make_reset_button(self)
+        btns.addButton(self.btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
         self.btn_close   = btns.addButton(QDialogButtonBox.StandardButton.Close)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_preview.clicked.connect(self._refresh_preview)
         self.btn_rename.clicked.connect(self._do_rename)
         self.btn_close.clicked.connect(self.close)

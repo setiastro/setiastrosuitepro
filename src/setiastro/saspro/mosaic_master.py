@@ -60,6 +60,7 @@ from setiastro.saspro.abe import (
     _generate_sample_points as abe_generate_sample_points,
 )
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import make_reset_button
 from setiastro.saspro.mosaic_master_ui import coverage_polygon
 try:
     from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
@@ -2457,6 +2458,9 @@ class MosaicMasterDialog(QDialog):
                                          "match and blend all panels into the mosaic."))
         self.buildBtn.clicked.connect(self._on_build)
         bar.addWidget(self.buildBtn)
+        self.resetBtn = make_reset_button(self)
+        self.resetBtn.clicked.connect(self._reset_to_factory)
+        bar.addWidget(self.resetBtn)
         root.addLayout(bar)
 
         self._result_display = None
@@ -2503,6 +2507,37 @@ class MosaicMasterDialog(QDialog):
     def _on_blend_changed(self, v):
         self.blendSharpValue.setText(f"{v / 10:.1f}")
         self._persist("mosaic/blend_sharp", v / 10.0)
+
+    def _reset_to_factory(self):
+        """Every build option back to the default initUI uses when nothing is
+        saved (old keys such as mosaic/advanced_match are not consulted). The
+        panels, the reference panel, the mode card, the preview stretch and
+        the panel map are left alone. Each control saves itself on change."""
+        if getattr(self, "_building", False):
+            return
+        self._set_combo_data(self.brightnessCombo, "standard")
+        self._set_combo_data(self.reprojectModeCombo, "Exact — SIP-aware remap (recommended)")
+        self._set_combo_data(self.starRefineCombo, "Affine Transform")
+        self._starrefine_user_touched = False     # SIP panels default it to Off again
+        self.blendSharpSlider.setValue(20)
+        self.seestarRejectCheck.setChecked(True)
+        self.cropEachCheckBox.setChecked(False)
+        for sp in (self.cropLeftSpin, self.cropRightSpin, self.cropTopSpin, self.cropBottomSpin):
+            sp.setValue(0)
+        self.srgcEachCheckBox.setChecked(False)
+        try:                                      # follows the SRGC tool's survey, as on open
+            from setiastro.saspro.survey_gradient import DEFAULT_SURVEY
+            i = self.srgcSurveyCombo.findText(
+                str(self.settings.value("srgc/survey", DEFAULT_SURVEY) or DEFAULT_SURVEY))
+        except Exception:
+            i = 0
+        self.srgcSurveyCombo.setCurrentIndex(i if i >= 0 else 0)
+        self.forceBlindCheckBox.setChecked(False)
+        self.starTargetSpin.setValue(MOSAIC_STAR_TARGET)
+        self.polyDegreeSpin.setValue(3)
+        self.gaiaSolveCheckBox.setChecked(True)
+        self._refresh_sip_autodisable()
+        self._refresh_panels()
 
     def _on_source_changed(self, *_):
         seestar = self._opt_seestar()

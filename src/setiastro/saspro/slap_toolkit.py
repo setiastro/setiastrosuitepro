@@ -20,6 +20,7 @@ from typing import Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QSettings, QTimer, QCoreApplication, QT_TRANSLATE_NOOP
 from PyQt6.QtGui import QIcon
+from setiastro.saspro.widgets.factory_reset import make_reset_button
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -576,6 +577,15 @@ class SLaPToolkitDialog(QDialog):
     presets, and one-click access to every relevant SASpro tool.
     """
 
+    # The palette preset each mode starts with (mode change and Reset)
+    _PALETTE_DEFAULTS = {
+        "Solar — Surface":              "White Light Solar (warm yellow)",
+        "Solar — Surface + Prominence": "Hα Solar (deep red)",
+        "Solar — Prominence Only":      "Hα Solar (deep red)",
+        "Lunar":                        "Lunar (natural grey)",
+        "Planetary":                    "Planetary (natural)",
+    }
+
     def __init__(self, main, parent=None):
         super().__init__(parent or main)
         self.main = main
@@ -596,7 +606,8 @@ class SLaPToolkitDialog(QDialog):
         self._status_timer.timeout.connect(self._clear_status)
         self._build_ui()
         self._restore_geometry()
-        self._on_mode_changed(0)
+        # tips, palette and mask for the restored mode, once
+        self._on_mode_changed(self.combo_mode.currentIndex())
 
     # ─────────────────────────────────────────────────────────
     # UI
@@ -813,7 +824,15 @@ class SLaPToolkitDialog(QDialog):
         """)
         btn_close.clicked.connect(self.close)
 
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.setToolTip(self.tr(
+            "Set the palette preset back to this mode's default.\n"
+            "The Mode is kept: changing it re-masks the active image."))
+        self.btn_reset.setStyleSheet(btn_close.styleSheet())
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+
         bot.addWidget(self.lbl_status, 1)
+        bot.addWidget(self.btn_reset)
         bot.addWidget(btn_close)
         root.addWidget(bot_widget)
 
@@ -1505,14 +1524,7 @@ class SLaPToolkitDialog(QDialog):
         )
 
         # Auto-select a sensible palette default for the mode
-        palette_defaults = {
-            "Solar — Surface":              "White Light Solar (warm yellow)",
-            "Solar — Surface + Prominence": "Hα Solar (deep red)",
-            "Solar — Prominence Only":      "Hα Solar (deep red)",
-            "Lunar":                        "Lunar (natural grey)",
-            "Planetary":                    "Planetary (natural)",
-        }
-        default_pal = palette_defaults.get(mode)
+        default_pal = self._PALETTE_DEFAULTS.get(mode)
         if default_pal and default_pal in SLAP_PALETTES:
             self.combo_palette.blockSignals(True)
             self.combo_palette.setCurrentText(default_pal)
@@ -1554,6 +1566,13 @@ class SLaPToolkitDialog(QDialog):
     def _on_palette_changed(self, name: str):
         pal = SLAP_PALETTES.get(name, {})
         self.lbl_palette_desc.setText(_tr(pal.get("description", "")))
+
+    def _reset_to_factory(self):
+        """Reset: the palette preset back to the current mode's default. The
+        Mode (target type) stays: changing it applies a mask to the active image."""
+        pal = self._PALETTE_DEFAULTS.get(self.combo_mode.currentText())
+        if pal in SLAP_PALETTES:
+            self.combo_palette.setCurrentText(pal)      # updates the description
 
     # ─────────────────────────────────────────────────────────
     # Tool triggering
@@ -1662,7 +1681,11 @@ class SLaPToolkitDialog(QDialog):
                 self.restoreGeometry(g)
             mode = self.settings.value("slap_toolkit/mode", "")
             if mode in SLAP_MODES:
+                # quietly: __init__ runs _on_mode_changed once afterwards
+                # (it applies the mode's mask when an image is open)
+                self.combo_mode.blockSignals(True)
                 self.combo_mode.setCurrentText(mode)
+                self.combo_mode.blockSignals(False)
         except Exception:
             pass
 

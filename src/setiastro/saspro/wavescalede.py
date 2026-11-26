@@ -695,6 +695,7 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
     # --- threaded preview ---
     def _start_preview(self):
         self.btn_preview.setEnabled(False); self.btn_apply.setEnabled(False)
+        self.btn_reset.setEnabled(False)    # the running preview owns these settings
         n_scales = int(self.s_scales.value())
         boost    = float(self.s_boost.value()) / 100.0
         mgamma   = float(self.s_gamma.value()) / 100.0
@@ -724,6 +725,7 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         if getattr(self, "_memory_released", False):
             return              # dialog closed while the worker ran
         self.btn_preview.setEnabled(True)
+        self.btn_reset.setEnabled(True)
         if payload is None:
             QMessageBox.critical(self, self.tr("WaveScale Dark Enhancer"), self.tr("Processing failed."))
             return

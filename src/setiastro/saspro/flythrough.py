@@ -33,6 +33,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QImage, QPixmap
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 try:
     import cv2
     HAS_CV2 = True
@@ -1039,7 +1041,7 @@ class _FlythroughWorker(QThread):
                     invert=bool(sl_fx.get("depth_invert", False)))
 
             st_depth_map = None
-            if st_fx.get("depth_warp", 0.0) > 1e-4:
+            if stars_np is not None and st_fx.get("depth_warp", 0.0) > 1e-4:
                 st_depth_map = _build_depth_map(
                     stars_np,
                     blur_sigma=float(st_fx.get("depth_blur_sigma", 8.0)),
@@ -1775,7 +1777,24 @@ class FlythroughDialog(QDialog):
 
         self._build_ui()
         self._populate_combos()
+        # Factory defaults for Reset, before the saved settings load. Left
+        # alone: the source pickers, the preview scrub / play / working res,
+        # and the click-to-pick toggles.
+        panels = (self.panel_sl, self.panel_mid, self.panel_st)
+        self._factory = snapshot_controls(self, exclude=(
+            self.cmb_starless, self.cmb_stars, self.panel_mid.cmb_source,
+            self.sld_scrub, self.btn_play, self.cmb_working_res,
+            *[p.btn_pick_start for p in panels], *[p.btn_pick_end for p in panels]))
         self._load_settings()
+
+    def _reset_to_factory(self):
+        if self._worker is not None:
+            return                      # an export is rendering
+        restore_controls(self._factory)
+        # Export size follows the loaded starless image, as when it was picked
+        if self._starless_arr is not None:
+            h, w = self._starless_arr.shape[:2]
+            self.sp_out_w.setValue(w); self.sp_out_h.setValue(h)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -1909,6 +1928,9 @@ class FlythroughDialog(QDialog):
         close_row = QHBoxLayout()
         btn_close = QPushButton(self.tr("Close"))
         btn_close.clicked.connect(self.close)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        close_row.addWidget(self.btn_reset)
         close_row.addWidget(btn_close)
         close_row.addStretch(1)
         close_row.addWidget(make_help_button("flythrough", self))
@@ -2113,7 +2135,9 @@ class FlythroughDialog(QDialog):
                                       blur_sigma=float(sl_fx.get("depth_blur_sigma", 8.0)),
                                       invert=bool(sl_fx.get("depth_invert", False)))
         st_dm = None
-        if st_fx.get("depth_warp", 0.0) > 1e-4:
+        # The stars layer is optional: with depth warp ticked and no stars
+        # image, _build_depth_map(None) raised outside the try below.
+        if self._stars_arr is not None and st_fx.get("depth_warp", 0.0) > 1e-4:
             st_dm = _build_depth_map(self._stars_arr,
                                       blur_sigma=float(st_fx.get("depth_blur_sigma", 8.0)),
                                       invert=bool(st_fx.get("depth_invert", False)))

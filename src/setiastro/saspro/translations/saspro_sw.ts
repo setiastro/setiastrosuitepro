@@ -4707,6 +4707,10 @@ Zana ulizoongeza zitaondolewa, ulizoondoa zitarudi, na mpangilio utakuwa wa chag
       <source>Reduce row or column banding across the whole image</source>
       <translation>Punguza banding ya mistari au safu wima kwenye picha nzima</translation>
     </message>
+    <message>
+      <source>All Analysis Tools</source>
+      <translation>Zana Zote za Uchambuzi</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -28464,6 +28468,30 @@ Calibrate fremu {2} mpya pekee na utumie tena fremu zilizocalibratiwa zilizopo k
       <source>✓ same session</source>
       <translation>✓ session ileile</translation>
     </message>
+    <message>
+      <source>Reset</source>
+      <translation>Weka upya</translation>
+    </message>
+    <message>
+      <source>A stacking run is in progress. Reset is available once it has finished.</source>
+      <translation>Stacking inaendelea. Kuweka upya kutapatikana itakapomalizika.</translation>
+    </message>
+    <message>
+      <source>Reset Stacking Settings</source>
+      <translation>Weka upya mipangilio ya Stacking</translation>
+    </message>
+    <message>
+      <source>Reset every stacking setting to its factory default?
+
+This covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.
+
+Kept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.</source>
+      <translation>Weka upya kila mpangilio wa stacking kwenye chaguo-msingi lake la kiwandani?
+
+Hii inahusu dirisha hili na chaguo kwenye vichupo vya Stacking Suite: calibration, drizzle, MFDeconv, kometi, rejection na vinginevyo.
+
+Vinavyobaki: folda ya stacking na njia nyingine, fremu zilizopakiwa, masters na chaguo zao za Dark/Flat, seti za upatanishi na fremu za marejeleo, wasifu wako uliohifadhiwa, na kile ambacho Boresha… kilipima. Uvumilivu wa kupanga vikundi unabaki wakati fremu zimepangwa kwa huo.</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -36536,6 +36564,10 @@ Tumia [ na ] kupunguza/kuongeza ukubwa wa brashi.</translation>
       <source>Zoom Out</source>
       <translation>Punguza</translation>
     </message>
+    <message>
+      <source>Reset every setting in this tool to its factory default</source>
+      <translation>Rejesha kila mpangilio wa zana hii kwenye chaguo-msingi lake la kiwandani</translation>
+    </message>
   </context>
   <context>
     <name>CommonUtilities</name>
@@ -41099,6 +41131,18 @@ Ramani iliyochorwa: ramani ya nyota ya vekta (SVG / PDF / PNG / picha mpya).</tr
       <source>💡 You can undo and redo edits all the way back to the original using the History stack.</source>
       <translation>💡 Unaweza kutendua na kurudia uhariri hadi kwenye asili ukitumia History stack.</translation>
     </message>
+    <message>
+      <source>💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.</source>
+      <translation>💡 Una hamu ya kujua njia za mkato za kibodi? Kuna cheat sheet kamili chini ya Angalia → Njia za Mkato.</translation>
+    </message>
+    <message>
+      <source>💡 Batch convert files from one format to another with Tools → Header Mods &amp; Misc → Batch Converter.</source>
+      <translation>💡 Badilisha faili kwa pamoja kutoka muundo mmoja hadi mwingine ukitumia Zana → Marekebisho ya Kichwa na Mengineyo → Kigeuzi cha Batch.</translation>
+    </message>
+    <message>
+      <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
+      <translation>💡 Icon Cheat Sheet chini ya Angalia → Njia za Mkato huonyesha kila ikoni ya upau wa zana na kazi yake kwa haraka.</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -41261,6 +41305,10 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
       <translation>Pale ambapo picha ndogo hazikupishana kikamilifu, stack huwa na kingo zisizo sawa: kingo nyeusi au zenye kelele, wakati mwingine mistari. Zikate kwanza. Kunyoosha, kuondoa gradient na kusawazisha rangi zote hupima picha nzima, na kingo hizo huziharibu.
 
 Kata iko chini ya Kazi (Functions) → Ukarabati &amp; Urekebishaji → Kata. Buruta kisanduku ndani ya eneo safi, kisha bofya Tumia.</translation>
+    </message>
+    <message>
+      <source>First Steps</source>
+      <translation>Hatua za Kwanza</translation>
     </message>
   </context>
   <context>
@@ -52593,6 +52641,10 @@ Dokezo: Mbili huipa nebula "ujazo" hata pale ambapo mwangaza ni bapa zaidi.</tra
       <source>Zoom Out</source>
       <translation>Punguza</translation>
     </message>
+    <message>
+      <source>Set Q back to {0:.2f} for every filter</source>
+      <translation>Rejesha Q kuwa {0:.2f} kwa kila kichujio</translation>
+    </message>
   </context>
   <context>
     <name>QuadBuildWorker</name>
@@ -53152,6 +53204,10 @@ Masters na fremu zinazodondoshwa kwenye dirisha hili, au kuongezwa pamoja na lig
     <message>
       <source>✓ the only flat</source>
       <translation>✓ flat pekee</translation>
+    </message>
+    <message>
+      <source>What Quick Stack will run on. A GPU is used when SASpro's hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.</source>
+      <translation>Kile ambacho Quick Stack itaendeshwa nacho. GPU hutumika wakati uharakishaji wa vifaa wa SASpro unaweza kuifikia (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML au Apple Metal); "Tumia uharakishaji wa vifaa ikiwa unapatikana" katika Mipangilio ya Stacking huizima.</translation>
     </message>
   </context>
   <context>
@@ -56752,6 +56808,12 @@ Hakikisha zana imesajiliwa kwenye upau wa zana wa SASpro.</translation>
     <message>
       <source>🔄 Invert Masked Region</source>
       <translation>🔄 Geuza Eneo lenye Maski</translation>
+    </message>
+    <message>
+      <source>Set the palette preset back to this mode's default.
+The Mode is kept: changing it re-masks the active image.</source>
+      <translation>Rejesha preset ya palette kwenye chaguo-msingi la hali hii.
+Hali inabaki: kuibadilisha huweka upya barakoa kwenye picha amilifu.</translation>
     </message>
   </context>
   <context>
@@ -67176,6 +67238,10 @@ pointi za bins na modeli, mabaki chini yake.</translation>
       <source>χ²_red (photometric errors) = {0:.2f} → errors × {1:.2f};  red-noise β = {2:.2f}</source>
       <translation>χ²_red (hitilafu za photometric) = {0:.2f} → hitilafu × {1:.2f};  red-noise β = {2:.2f}</translation>
     </message>
+    <message>
+      <source>Reset the Fit options to their factory defaults</source>
+      <translation>Rejesha chaguo za Ufaaji kwenye chaguo-msingi zao za kiwandani</translation>
+    </message>
   </context>
   <context>
     <name>TypedTableModel</name>
@@ -72712,6 +72778,12 @@ Ighairi na ufunge? (Inaweza kuchukua muda kidogo kumaliza kigae cha sasa.)</tran
       <source>Writing temp image…</source>
       <translation>Inaandika picha ya muda…</translation>
     </message>
+    <message>
+      <source>The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.
+{0}</source>
+      <translation>Picha imefunguliwa katika SyQon Studio. Ichakate hapo na uhifadhi matokeo kwenye folda hii; SASpro itayaingiza kutoka hapo. Ghairi huacha picha asili.
+{0}</translation>
+    </message>
   </context>
   <context>
     <name>_SyQonStudioHubPage</name>
@@ -72990,6 +73062,10 @@ Ighairi na ufunge? (Inaweza kuchukua muda kidogo kumaliza kigae cha sasa.)</tran
     <message>
       <source>✘  Could not validate: {0}</source>
       <translation>✘  Haikuweza kuthibitisha: {0}</translation>
+    </message>
+    <message>
+      <source>SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.</source>
+      <translation>SyQon Studio {0} haina zana ya mstari wa amri (ilikuja na 1.2), kwa hivyo SASpro inafungua picha kwenye programu ya Studio. Ichakate hapo na uihifadhi; SASpro inaingiza unachohifadhi.</translation>
     </message>
   </context>
   <context>

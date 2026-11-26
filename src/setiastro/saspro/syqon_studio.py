@@ -46,6 +46,12 @@ Design notes / invariants (per the published developer contract):
       - exit code carries the failure class (0..7, 20 = GUI cancel, 130)
       - SIGINT/terminate cancels; no partial output is published
 
+  * Studio before 1.2 has no command-line tool (Linux is still on 1.1.9):
+    the selected file is the Studio app, which opens every argument as an
+    image. `--version` tells the two apart (probe_studio). Before 1.2 the
+    image is opened in the app alone, the user processes and saves it there,
+    and the saved file is picked up from the run's folder (_run_in_app).
+
   * SASpro documents are in-memory float arrays, so we round-trip through a
     32-bit-float temp file (the same idiom the legacy standalone Starless path
     uses) and let the CLI own all preprocessing / tiling / reconstruction. No
@@ -207,22 +213,69 @@ def studio_cli_candidates() -> list[str]:
     return uniq
 
 
-def validate_studio_cli(path: str, timeout: float = 20.0) -> tuple[bool, str]:
-    """Run `<cli> --version`. Returns (ok, version_or_error_text)."""
+# The first Studio whose syqon-cli takes the contract above. Before it there
+# is no command-line tool (Linux is still on 1.1.9): the Studio app opens every
+# argument as an image, so it tried to open SASpro's output path, and
+# `--version` printed "[INFO] Loading file from path: <cwd>/--version".
+CLI_SINCE = (1, 2)
+_VERSION = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+_PROBES: dict = {}
+
+
+def probe_studio(path: str, timeout: float = 20.0) -> dict:
+    """
+    What `path` is, from one `--version` run, cached per file (path, size,
+    modified time) so the Studio app is not asked again on every run:
+
+      ok       it exited 0
+      cli      it printed a version of CLI_SINCE or later: drive the CLI
+               contract. Otherwise (no version line, or an older one) the
+               image is opened in the app instead (_run_in_app).
+      version  the printed version ("1.2.0"), else the one in the file name
+               (SyQon_Studio-1.1.9-x86_64.AppImage), else ""
+      text     the version line as printed, or the error, for the status line
+
+    Log lines ("[INFO] ...", "[ONNX] ...") are never taken for the version.
+    """
     path = _resolve_bundle((path or "").strip())
     if not path or not os.path.isfile(path):
-        return False, _tr("No such file")
+        return {"ok": False, "cli": False, "version": "", "text": _tr("No such file")}
+    try:
+        st = os.stat(path)
+        key = (os.path.normcase(os.path.abspath(path)), st.st_size, st.st_mtime_ns)
+    except OSError:
+        key = None
+    if key in _PROBES:
+        return dict(_PROBES[key])
     try:
         r = subprocess.run(
             [path, "--version"],
             capture_output=True, text=True, timeout=timeout,
             **({"creationflags": 0x08000000} if os.name == "nt" else {}),  # CREATE_NO_WINDOW
         )
-        text = (r.stdout or r.stderr or "").strip().splitlines()
-        ver = text[0].strip() if text else ""
-        return (r.returncode == 0), (ver or f"exit {r.returncode}")
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        return {"ok": False, "cli": False, "version": "", "text": f"{type(e).__name__}: {e}"}
+    lines = [ln.strip() for ln in f"{r.stdout or ''}\n{r.stderr or ''}".splitlines() if ln.strip()]
+    line = next((ln for ln in lines if not ln.startswith("[") and _VERSION.search(ln)), "")
+    m = _VERSION.search(line) if line else None
+    cli = r.returncode == 0 and m is not None and (int(m.group(1)), int(m.group(2))) >= CLI_SINCE
+    if m is None:
+        m = _VERSION.search(os.path.basename(path))
+    res = {
+        "ok": r.returncode == 0,
+        "cli": cli,
+        "version": m.group(0) if m else "",
+        "text": line or (lines[0] if lines else f"exit {r.returncode}"),
+    }
+    if key is not None and res["ok"]:
+        _PROBES[key] = res
+    return dict(res)
+
+
+def validate_studio_cli(path: str, timeout: float = 20.0) -> tuple[bool, str]:
+    """Run `<cli> --version`. Returns (ok, version_or_error_text)."""
+    probe = probe_studio(path, timeout)
+    return probe["ok"], probe["text"]
 
 
 def list_studio_models(path: str, timeout: float = 20.0) -> set[str]:
@@ -655,8 +708,17 @@ class _SyQonStudioCLIThread(QThread):
     def _load_result(path: str):
         """SyQon's output read back as it wrote it: (H, W) or (H, W, 3) float32,
         values untouched. Row order follows the same rule load_image applies:
-        flipped only for an explicit ROWORDER = BOTTOM-UP."""
+        flipped only for an explicit ROWORDER = BOTTOM-UP. A result saved from
+        the Studio app (before 1.2) may be TIFF or XISF: SASpro's loader."""
         from astropy.io import fits as _fits
+        if os.path.splitext(path)[1].lower() not in (".fit", ".fits", ".fts"):
+            img = load_image(path)[0]
+            if img is None:
+                return None
+            img = np.asarray(img, dtype=np.float32)
+            if img.ndim == 3:
+                img = img[:, :, 0] if img.shape[2] == 1 else img[:, :, :3]
+            return np.ascontiguousarray(img)
         with _fits.open(path, memmap=False) as hdul:
             hdu = next((h for h in hdul if getattr(h, "data", None) is not None), None)
             if hdu is None:
@@ -679,15 +741,111 @@ class _SyQonStudioCLIThread(QThread):
         except Exception:
             return None
 
+    # What the Studio app (before 1.2) may save that SASpro can take back at
+    # full depth. PNG / JPEG are left alone.
+    _APP_SAVE_EXTS = (".fit", ".fits", ".fts", ".tif", ".tiff", ".xisf")
+
+    @staticmethod
+    def _is_star_layer(path: str) -> bool:
+        if os.path.splitext(os.path.basename(path))[0].lower().endswith("_stars"):
+            return True
+        try:
+            from astropy.io import fits as _fits
+            return "SYQON_STAR_LAYER_FORMAT" in _fits.getheader(path)
+        except Exception:
+            return False
+
+    def _run_in_app(self, exe, info, reader, stdout_lines, stderr_lines) -> str:
+        """
+        Studio before 1.2 has no command-line tool: the app opens every
+        argument as an image. So it is given the input alone, the user
+        processes and saves it there, and the result is the image that turns
+        up in this run's folder (the one the input was opened from), or the
+        input itself if Studio saves over it. A file counts once its size and
+        time have held for one look and it loads; one that does not load yet
+        (a write that paused) is looked at again when it changes. The app may
+        hand the image to a Studio that is already open and exit at once, so
+        its exit ends nothing: the wait ends with a result or Cancel. Returns
+        the result's path.
+        """
+        run_dir = self._run_dir
+        before = set(os.listdir(run_dir))
+        st = os.stat(self._tmp_in)
+        in_sig = (st.st_size, st.st_mtime_ns)
+
+        argv = [exe, self._tmp_in]
+        info["command"] = argv
+        print("\n[SyQon Studio launch: app, no CLI before 1.2]\nCMD:", " ".join(argv), flush=True)
+        self._p = subprocess.Popen(
+            argv,
+            cwd=run_dir,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+            text=True, bufsize=1, universal_newlines=True,
+            **({"creationflags": 0x08000000} if os.name == "nt" else {}),  # CREATE_NO_WINDOW
+        )
+        for pipe, sink, is_err in ((self._p.stdout, stdout_lines, False),
+                                   (self._p.stderr, stderr_lines, True)):
+            threading.Thread(target=reader, args=(pipe, sink, is_err), daemon=True).start()
+        self._emit(10, self.tr("The image is open in SyQon Studio. Process it there and save "
+                               "the result into this folder; SASpro imports it from there. "
+                               "Cancel keeps the original image.\n{0}").format(run_dir))
+
+        last: dict = {}
+        bad: dict = {}
+        while True:
+            if self._cancel:
+                raise RuntimeError("__cancelled__")
+            names = [n for n in os.listdir(run_dir)
+                     if n not in before and not n.startswith(".")
+                     and os.path.splitext(n)[1].lower() in self._APP_SAVE_EXTS]
+            ready = []
+            for path in [os.path.join(run_dir, n) for n in sorted(names)] + [self._tmp_in]:
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                sig = (st.st_size, st.st_mtime_ns)
+                if path == self._tmp_in and sig == in_sig:
+                    continue
+                if sig[0] > 0 and last.get(path) == sig and bad.get(path) != sig:
+                    ready.append(path)
+                last[path] = sig
+            primary = None
+            for path in ready:
+                if self._is_star_layer(path):
+                    continue
+                try:
+                    loads = self._load_result(path) is not None
+                except Exception:
+                    loads = False
+                if loads:
+                    primary = path
+                    break
+                bad[path] = last[path]
+            if primary:
+                info["returncode"] = self._p.poll()
+                info["saved_in_app"] = os.path.basename(primary)
+                print(f"[SyQon Studio] saved in the app: {primary}", flush=True)
+                # Studio stays open: the user closes it.
+                self._p = None
+                return primary
+            time.sleep(0.5)
+
     def run(self):
-        fam = studio_family_for(self.model_id)
+        # Studio before 1.2 has no command-line tool, so the image is opened
+        # in the app (_run_in_app) and the run is treated as an editor run:
+        # what happens to it is chosen in Studio, not by the model picked here.
+        probe = probe_studio(self.exe)
+        in_app = probe["ok"] and not probe["cli"]
+        fam = "gui" if in_app else studio_family_for(self.model_id)
         is_gui = (fam == "gui")
 
         info: dict = {
             "engine": "syqon_studio_cli",
             "model": self.model_id,
             "exe": self.exe,
-            "mode": "gui" if is_gui else "headless",
+            "mode": "app" if in_app else ("gui" if is_gui else "headless"),
+            "studio_version": probe["version"],
         }
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
@@ -738,66 +896,72 @@ class _SyQonStudioCLIThread(QThread):
             if self._cancel:
                 raise RuntimeError("__cancelled__")
 
-            opts = dict(self.argv_opts)
-            if self.want_secondary and self.secondary_flag == "--stars-output":
-                opts["stars_output"] = self._tmp_sec
-            elif self.want_secondary and self.secondary_flag == "--gradient-output":
-                opts["gradient_output"] = self._tmp_sec
-
-            argv = build_studio_argv(exe, self.model_id, self._tmp_in, self._tmp_out, **opts)
-            info["command"] = argv
-            print("\n[SyQon Studio launch]\nCMD:", " ".join(argv), flush=True)
-            if is_gui:
-                # Nudge the UI to switch the bar to indeterminate; the status
-                # text tells the user what to do.
-                self._emit(10, self.tr("Opening SyQon Studio editor — click Done when finished."))
+            if in_app:
+                primary_path = self._run_in_app(exe, info, _reader, stdout_lines, stderr_lines)
             else:
-                self._emit(5, self.tr("Launching SyQon CLI…"))
+                opts = dict(self.argv_opts)
+                if self.want_secondary and self.secondary_flag == "--stars-output":
+                    opts["stars_output"] = self._tmp_sec
+                elif self.want_secondary and self.secondary_flag == "--gradient-output":
+                    opts["gradient_output"] = self._tmp_sec
 
-            self._p = subprocess.Popen(
-                argv,
-                cwd=str(Path(exe).parent),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
-                text=True, bufsize=1, universal_newlines=True,
-                **({"creationflags": 0x08000000} if os.name == "nt" else {}),  # CREATE_NO_WINDOW
-            )
+                argv = build_studio_argv(exe, self.model_id, self._tmp_in, self._tmp_out, **opts)
+                info["command"] = argv
+                print("\n[SyQon Studio launch]\nCMD:", " ".join(argv), flush=True)
+                if is_gui:
+                    # Nudge the UI to switch the bar to indeterminate; the status
+                    # text tells the user what to do.
+                    self._emit(10, self.tr("Opening SyQon Studio editor — click Done when finished."))
+                else:
+                    self._emit(5, self.tr("Launching SyQon CLI…"))
 
-            t_out = threading.Thread(target=_reader, args=(self._p.stdout, stdout_lines, False), daemon=True)
-            t_err = threading.Thread(target=_reader, args=(self._p.stderr, stderr_lines, True), daemon=True)
-            t_out.start(); t_err.start()
+                self._p = subprocess.Popen(
+                    argv,
+                    cwd=str(Path(exe).parent),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                    text=True, bufsize=1, universal_newlines=True,
+                    **({"creationflags": 0x08000000} if os.name == "nt" else {}),  # CREATE_NO_WINDOW
+                )
 
-            self._p.wait()
-            t_out.join(timeout=2.0)
-            t_err.join(timeout=2.0)
+                t_out = threading.Thread(target=_reader, args=(self._p.stdout, stdout_lines, False), daemon=True)
+                t_err = threading.Thread(target=_reader, args=(self._p.stderr, stderr_lines, True), daemon=True)
+                t_out.start(); t_err.start()
 
-            rc = self._p.returncode
-            info["returncode"] = rc
-            info["stdout_tail"] = "\n".join(stdout_lines[-100:])
-            info["stderr_tail"] = "\n".join(stderr_lines[-200:])
+                self._p.wait()
+                t_out.join(timeout=2.0)
+                t_err.join(timeout=2.0)
 
-            # Cancellation paths: SASpro-side cancel, SIGINT (130), or
-            # the GUI editor's Cancel button (20).
-            if self._cancel or rc == 130 or (is_gui and rc == 20):
-                raise RuntimeError("__cancelled__")
+                rc = self._p.returncode
+                info["returncode"] = rc
+                info["stdout_tail"] = "\n".join(stdout_lines[-100:])
+                info["stderr_tail"] = "\n".join(stderr_lines[-200:])
 
-            if rc != 0:
-                msg = _EXIT_MESSAGES.get(rc, f"SyQon CLI exited with code {rc}.")
-                tail = "\n".join(stderr_lines[-6:]).strip()
-                if tail:
-                    msg = f"{msg}\n\n{tail}"
-                raise RuntimeError(msg)
+                # Cancellation paths: SASpro-side cancel, SIGINT (130), or
+                # the GUI editor's Cancel button (20).
+                if self._cancel or rc == 130 or (is_gui and rc == 20):
+                    raise RuntimeError("__cancelled__")
 
-            # stdout on exit 0 is the saved-output path. Only ever import the
-            # file SASpro asked for: a different path (an image saved elsewhere
-            # from the editor, say) is refused, as the Siril bridge does.
-            declared = (stdout_lines[-1].strip() if stdout_lines else "")
-            if declared and not _same_file(declared, self._tmp_out):
-                raise RuntimeError(
-                    "SyQon Studio reported a different output file than the one SASpro "
-                    f"asked for, so nothing was applied.  Reported: {declared}")
-            primary_path = self._tmp_out
-            if not os.path.exists(primary_path):
-                raise RuntimeError("SyQon CLI reported success but no output file was found.")
+                if rc != 0:
+                    msg = _EXIT_MESSAGES.get(rc, f"SyQon CLI exited with code {rc}.")
+                    tail = "\n".join(stderr_lines[-6:]).strip()
+                    if tail:
+                        msg = f"{msg}\n\n{tail}"
+                    raise RuntimeError(msg)
+
+                # stdout on exit 0 is the saved-output path. Only ever import the
+                # file SASpro asked for: a different path (an image saved elsewhere
+                # from the editor, say) is refused, as the Siril bridge does.
+                # Log lines ("[INFO] ...") are not the path, should Studio
+                # ever print them there.
+                declared = next((ln.strip() for ln in reversed(stdout_lines)
+                                 if ln.strip() and not ln.strip().startswith("[")), "")
+                if declared and not _same_file(declared, self._tmp_out):
+                    raise RuntimeError(
+                        "SyQon Studio reported a different output file than the one SASpro "
+                        f"asked for, so nothing was applied.  Reported: {declared}")
+                primary_path = self._tmp_out
+                if not os.path.exists(primary_path):
+                    raise RuntimeError("SyQon CLI reported success but no output file was found.")
 
             self._emit(96, self.tr("Loading result…"))
             primary = self._load_result(primary_path)
@@ -813,7 +977,7 @@ class _SyQonStudioCLIThread(QThread):
                     sec_path = self._tmp_sec
                 elif is_gui:
                     sec_path = _find_editor_star_layer(
-                        self._run_dir, exclude=(self._tmp_in, self._tmp_out))
+                        self._run_dir, exclude=(self._tmp_in, self._tmp_out, primary_path))
                 if sec_path:
                     try:
                         secondary = self._load_result(sec_path)
@@ -1238,7 +1402,10 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             self.lbl_cli_status.setText(self.tr("No executable selected."))
             return
         ok, text = validate_studio_cli(path)
-        if ok:
+        if ok and not probe_studio(path)["cli"]:        # cached: not run again
+            self.settings.setValue("syqon/studio/cli_path", path)
+            self._show_app_status(path)
+        elif ok:
             self.settings.setValue("syqon/studio/cli_path", path)
             avail = list_studio_models(path)
             extra = ""
@@ -1261,12 +1428,23 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             return
         if initial:
             ok, text = validate_studio_cli(path)
-            if ok:
+            if ok and not probe_studio(path)["cli"]:
+                self._show_app_status(path)
+            elif ok:
                 self.lbl_cli_status.setStyleSheet("color:#2ed573;")
                 self.lbl_cli_status.setText(f"✔  {text}")
             else:
                 self.lbl_cli_status.setStyleSheet("color:#8e8e93;")
                 self.lbl_cli_status.setText(self.tr("Executable set — click Validate to confirm."))
+
+    def _show_app_status(self, path: str):
+        """Studio before 1.2 (probe_studio): usable, in the app."""
+        ver = probe_studio(path)["version"] or "< 1.2"
+        self.lbl_cli_status.setStyleSheet("color:#f0b429;")
+        self.lbl_cli_status.setText("✔  " + self.tr(
+            "SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro "
+            "opens the image in the Studio app. Process it there and save it; SASpro "
+            "imports what you save.").format(ver))
 
     # ---- model change ------------------------------------------------------
     def current_model(self) -> str:
@@ -1434,7 +1612,11 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             return
 
         mid = self.current_model()
-        fam = studio_family_for(mid)
+        # Studio before 1.2 opens the image in the app: an editor run, whatever
+        # model is picked here (the worker decides the same way).
+        probe = probe_studio(exe)
+        fam = "gui" if (probe["ok"] and not probe["cli"]) else studio_family_for(mid)
+        self._run_fam = fam
 
         # Parallax needs at least one stage. GUI editor skips this check — the
         # user picks what to run inside the editor window.
@@ -1528,7 +1710,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         if busy:
             # GUI editor doesn't emit percent progress — show an indeterminate
             # busy bar so the user doesn't stare at a stuck 10%.
-            if studio_family_for(self.current_model()) == "gui":
+            if self._busy_family() == "gui":
                 self.pbar.setRange(0, 0)
             else:
                 self.pbar.setRange(0, 100)
@@ -1537,9 +1719,13 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             self.pbar.setRange(0, 100)
             self.pbar.setValue(0)
 
+    def _busy_family(self) -> str:
+        """The running job's family ("gui" for Studio before 1.2)."""
+        return getattr(self, "_run_fam", None) or studio_family_for(self.current_model())
+
     def _on_worker_progress(self, pct: int, stage: str):
         # Keep the bar indeterminate for GUI mode; otherwise reflect percent.
-        if studio_family_for(self.current_model()) != "gui":
+        if self._busy_family() != "gui":
             if self.pbar.maximum() == 0:
                 self.pbar.setRange(0, 100)
             self.pbar.setValue(int(pct))
@@ -1564,7 +1750,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             return
 
         mid = self.current_model()
-        fam = studio_family_for(mid)
+        fam = "gui" if info.get("mode") == "app" else studio_family_for(mid)
         orig_was_mono = self._orig_was_mono
 
         primary = np.asarray(primary, dtype=np.float32)

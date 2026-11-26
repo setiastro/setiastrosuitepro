@@ -18,6 +18,7 @@ from PyQt6.QtGui import (QImage, QPixmap, QPainter, QColor, QPalette, QLinearGra
 # DATA TYPES
 # =============================================================================
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.widgets.factory_reset import snapshot_controls, restore_controls
 @dataclass
 class Color:
     r: float
@@ -1091,7 +1092,10 @@ class AstroSpikeWindow(QDialog):
         self.ctx = ctx
         self.image_data = image_data_255  # uint8 for detection
         self.image_data_float = image_data_float  # float for output
-        self.config = DEFAULT_CONFIG
+        # A fresh config per window: the controls change it in place, so the
+        # shared module-level DEFAULT_CONFIG carried one window's values into
+        # the next (and linked two open windows).
+        self.config = SpikeConfig()
         self.thread = None
         
         # Tool state
@@ -1116,6 +1120,10 @@ class AstroSpikeWindow(QDialog):
         
         self._init_ui()
         self._apply_dark_theme()
+        # Factory brush sizes (Star Size / Eraser) for "↺ Reset"; the spike
+        # parameters reset from SpikeConfig(), the active tool is left alone.
+        self._factory_tools = snapshot_controls(
+            self, exclude=(self.controls, self.btn_pan, self.btn_brush_add, self.btn_eraser))
 
         # Auto-detect stars on open
         QTimer.singleShot(100, self.detect_stars)
@@ -1361,6 +1369,7 @@ class AstroSpikeWindow(QDialog):
         self.config = SpikeConfig()
         self.controls.set_config(self.config)
         self.canvas.set_config(self.config)
+        restore_controls(self._factory_tools)
         self.detect_stars()
     
     def set_tool_mode(self, mode: ToolMode):

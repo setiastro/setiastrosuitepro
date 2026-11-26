@@ -23,6 +23,8 @@ from setiastro.saspro.legacy.image_manager import (
     save_image as legacy_save_image,
     _drop_invalid_cards,    # ← new
 )
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 class FITSModifier(QDialog):
     def __init__(self, file_path: Optional[str], header,
@@ -95,12 +97,15 @@ class FITSModifier(QDialog):
         self.add_btn = QPushButton(self.tr("Add/Update"))
         self.del_btn = QPushButton(self.tr("Delete Selected"))
         self.all_hdus_chk = QCheckBox(self.tr("Apply add/update/delete to all HDUs"))
+        # shown with the checkbox: it is the only setting here
+        self.btn_reset = make_reset_button(self)
         bottom.addWidget(self.add_key_edit)
         bottom.addWidget(self.add_val_edit)
         bottom.addWidget(self.add_com_edit)
         bottom.addWidget(self.all_hdus_chk)
         bottom.addWidget(self.add_btn)
         bottom.addWidget(self.del_btn)
+        bottom.addWidget(self.btn_reset)
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
@@ -117,6 +122,10 @@ class FITSModifier(QDialog):
         # self.apply_to_slot_btn.clicked.connect(self._apply_to_slot_metadata)
         self.add_btn.clicked.connect(self._add_or_update_keyword)
         self.del_btn.clicked.connect(self._delete_selected)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+
+        # the HDU picker chooses what is shown; the keyword fields are input
+        self._factory = snapshot_controls(self, exclude=(self.hdu_combo,))
 
         # Initial content
         if self.file_path:
@@ -157,6 +166,10 @@ class FITSModifier(QDialog):
     def _update_multi_hdu_ui(self):
         n = len(self.hdul) if self.hdul else 0
         self.all_hdus_chk.setVisible(n > 1)
+        self.btn_reset.setVisible(n > 1)
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
 
     def _on_row_selected(self, curr, prev):
         if not curr:
@@ -641,13 +654,16 @@ class BatchFITSHeaderDialog(QDialog):
 
         row4 = QHBoxLayout()
         self.run_btn = QPushButton(self.tr("Run"))
+        self.reset_btn = make_reset_button(self)
         self.close_btn = QPushButton(self.tr("Close"))
-        row4.addStretch(); row4.addWidget(self.run_btn); row4.addWidget(self.close_btn)
+        row4.addStretch(); row4.addWidget(self.run_btn); row4.addWidget(self.reset_btn); row4.addWidget(self.close_btn)
 
         v.addLayout(row1)
         v.addLayout(row2)
         v.addLayout(row3)
         v.addLayout(row4)
+        # files and the keyword / value / comment are line edits (input), not captured
+        self._factory = snapshot_controls(self)
 
         if preset_keyword:
             self.key_edit.setText(preset_keyword)
@@ -658,9 +674,13 @@ class BatchFITSHeaderDialog(QDialog):
 
         self.pick_btn.clicked.connect(self._pick_files)
         self.run_btn.clicked.connect(self._run)
+        self.reset_btn.clicked.connect(self._reset_to_factory)
         self.close_btn.clicked.connect(self.close)
 
         self.files = []
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)
 
     def _settings(self):
         return self.parent().settings if (self.parent() and hasattr(self.parent(), "settings")) else QSettings()

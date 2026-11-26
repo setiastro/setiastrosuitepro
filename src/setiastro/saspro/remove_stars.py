@@ -36,6 +36,8 @@ except Exception:
 
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 from setiastro.saspro.resources import get_resources, starnet_path, get_icons, rcastro_path, syqon_path
 
 
@@ -945,6 +947,15 @@ class SyQonStarlessDialog(QDialog):
         self.cmb_stars_extract.addItems(["unscreen", "subtract"])
         self.cmb_stars_extract.setCurrentText("unscreen")
 
+        # Factory defaults (also the fallbacks of the reads below), then the
+        # snapshot Reset restores, then the saved settings on top.
+        self.spin_tile.setValue(512)
+        self.spin_overlap.setValue(128)
+        self.spin_shadow.setValue(2.8)
+        self.chk_pad.setChecked(True)
+        self.spin_pad.setValue(256)
+        self._factory = snapshot_controls(self)
+
         s = getattr(main, "settings", None)
         if s:
             self.spin_tile.setValue(int(s.value("syqon/tile_size", 512)))
@@ -967,13 +978,6 @@ class SyQonStarlessDialog(QDialog):
             idx = self.cmb_engine.findData(saved_engine)
             if idx >= 0:
                 self.cmb_engine.setCurrentIndex(idx)
-        else:
-            self.spin_tile.setValue(512)
-            self.spin_overlap.setValue(128)
-            self.spin_shadow.setValue(2.8)
-            self.chk_pad.setChecked(True)
-            self.spin_pad.setValue(256)
-            self.cmb_stars_extract.setCurrentText("unscreen")
 
         form.addRow(self.tr("Tile size:"), self.spin_tile)
         form.addRow(self.tr("Overlap:"),   self.spin_overlap)
@@ -999,10 +1003,13 @@ class SyQonStarlessDialog(QDialog):
 
         btns = QHBoxLayout()
         self.btn_process = QPushButton(self.tr("Process"), self)
+        self.btn_reset   = make_reset_button(self)
         self.btn_close   = QPushButton(self.tr("Close"), self)
         self.btn_process.clicked.connect(self._process)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_close.clicked.connect(self.close)
         btns.addWidget(self.btn_process)
+        btns.addWidget(self.btn_reset)
         btns.addStretch(1)
         btns.addWidget(self.btn_close)
         lay.addLayout(btns)
@@ -1229,6 +1236,7 @@ class SyQonStarlessDialog(QDialog):
 
     def _set_busy(self, busy: bool):
         self.btn_process.setEnabled(not busy)
+        self.btn_reset.setEnabled(not busy)
         self.btn_close.setEnabled(not busy)
         self.btn_buy.setEnabled(not busy)
         self.btn_install.setEnabled(not busy)
@@ -1586,13 +1594,19 @@ class SyQonStarlessDialog(QDialog):
 
         self._refresh_state()
 
-    def _process(self):
-        import numpy as np
+    def _reset_to_factory(self):
+        """Every setting back to its factory default (the engine and model
+        choice too); the standalone executable path and installed models are
+        left alone. Saved at once: the other settings are saved on Process."""
+        if self.proc_thr is not None and self.proc_thr.isRunning():
+            return
+        restore_controls(self._factory)
+        self._save_settings()
 
-        engine_mode = self._engine_mode()
-
+    def _save_settings(self):
+        """Remember the current settings (Process and Reset)."""
         s = getattr(self.main, "settings", None) or QSettings()
-        s.setValue("syqon/engine_mode",         engine_mode)
+        s.setValue("syqon/engine_mode",         self._engine_mode())
         s.setValue("syqon/tile_size",            int(self.spin_tile.value()))
         s.setValue("syqon/overlap",              int(self.spin_overlap.value()))
         s.setValue("syqon/shadow_clip",          float(self.spin_shadow.value()))
@@ -1606,6 +1620,12 @@ class SyQonStarlessDialog(QDialog):
         s.setValue("syqon/rgb_perchan_mode",     bool(self.chk_rgb_perchan.isChecked()))
         s.setValue("syqon/model_kind",           self._model_kind())
         s.setValue("syqon/standalone_cli_path",  self.edt_cli_path.text().strip())
+
+    def _process(self):
+        import numpy as np
+
+        engine_mode = self._engine_mode()
+        self._save_settings()
 
         tile    = int(self.spin_tile.value())
         overlap = int(self.spin_overlap.value())
@@ -3336,6 +3356,9 @@ class DarkStarConfigDialog(QDialog):
         )
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
+        self.btn_reset = make_reset_button(self)
+        self.btn_reset.clicked.connect(self._reset_to_factory)
+        btns.addButton(self.btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
 
         layout = QVBoxLayout(self)
         self.lbl_logo = QLabel(self)
@@ -3379,6 +3402,24 @@ class DarkStarConfigDialog(QDialog):
             layout.addLayout(drag_row)
         except Exception:
             pass
+
+    def _reset_to_factory(self):
+        """Every setting back to its factory default. Each control reads its
+        saved value while it is built, so these are the defaults those
+        QSettings reads fall back to. Saved at once (the tool saves on OK)."""
+        def _pick(cmb, data):
+            i = cmb.findData(data)
+            if i >= 0:
+                cmb.setCurrentIndex(i)
+        self.cmb_mode.setCurrentText("unscreen")
+        _pick(self.cmb_processing, "hybrid_luma_color")
+        _pick(self.cmb_chunk_size, 512)
+        _pick(self.cmb_overlap, 0.125)
+        _pick(self.cmb_padding, 64)
+        self.chk_show_stars.setChecked(True)
+        self.chk_compatibility.setChecked(False)
+        self.chk_disable_gpu.setChecked(False)
+        self.get_values()          # saves them
 
     def get_preset(self) -> dict:
         """Limited schema by design (matches RemoveStarsPresetDialog.result_dict darkstar

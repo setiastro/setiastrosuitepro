@@ -27,6 +27,8 @@ from PyQt6.QtWidgets import (
     QSpacerItem, QSizePolicy, QStyledItemDelegate, QToolButton, QMessageBox, QCompleter
 )
 from PyQt6.QtGui import QGuiApplication
+from setiastro.saspro.widgets.factory_reset import (
+    make_reset_button, snapshot_controls, restore_controls)
 
 # Optional XISF support (skip .xisf if not importable)
 try:
@@ -623,7 +625,14 @@ class AstrobinExportTab(QWidget):
         self._offline_csv_default = offline_filters_csv 
 
         self._build_ui()
+        # The global inputs (f/number, calibration counts, Bortle, SQM, FWHM)
+        # describe the user's own session; as line edits they are not captured.
+        # Filter IDs and profiles are user data and stay too.
+        self._factory = snapshot_controls(self)
         self._load_defaults()
+
+    def _reset_to_factory(self):
+        restore_controls(self._factory)     # noon->noon recomputes and saves on toggle
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -706,7 +715,7 @@ class AstrobinExportTab(QWidget):
 
         self.noon_cb = QCheckBox(self.tr("Group nights noon → noon (local time)"))
         self.noon_cb.setToolTip(self.tr("Prevents splitting a single observing night at midnight."))
-        self.noon_cb.setChecked(self.settings.value("astrobin_exporter/noon_to_noon", True, type=bool))
+        self.noon_cb.setChecked(True)       # the saved value is applied by _load_defaults
         self.noon_cb.toggled.connect(self._recompute)
         grid.addWidget(self.noon_cb, 2, 4, 1, 2)
 
@@ -767,6 +776,21 @@ class AstrobinExportTab(QWidget):
 
     # ---------- settings ----------
     def _load_defaults(self):
+        # Loading never saves: each field's change signal runs _recompute ->
+        # _save_defaults, which would write while this group is still open
+        # (stray astrobin_exporter/astrobin_exporter/* keys).
+        quiet = (self.fnum_edit, self.darks_edit, self.flats_edit, self.flatdarks_edit,
+                 self.bias_edit, self.bortle_edit, self.mean_sqm_edit, self.mean_fwhm_edit,
+                 self.noon_cb)
+        for w in quiet:
+            w.blockSignals(True)
+        try:
+            self._apply_defaults()
+        finally:
+            for w in quiet:
+                w.blockSignals(False)
+
+    def _apply_defaults(self):
         self.settings.beginGroup("astrobin_exporter")
         self.fnum_edit.setText(str(self.settings.value("fnumber", "")))
         self.darks_edit.setText(str(self.settings.value("darks", "")))
@@ -1316,6 +1340,9 @@ class AstrobinExporterDialog(QDialog):
         self.tab = AstrobinExportTab(self, offline_filters_csv=offline_filters_csv)
         v.addWidget(self.tab, 1)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self)
+        btn_reset = make_reset_button(self)
+        btns.addButton(btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
+        btn_reset.clicked.connect(self.tab._reset_to_factory)
         btns.rejected.connect(self.reject)
         btns.accepted.connect(self.accept)
         v.addWidget(btns)

@@ -4705,6 +4705,10 @@ Tools you added are taken off, the ones you removed come back, and the order is 
       <source>Reduce row or column banding across the whole image</source>
       <translation>Подавить полосы по строкам или столбцам во всём изображении</translation>
     </message>
+    <message>
+      <source>All Analysis Tools</source>
+      <translation>Все инструменты анализа</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -25959,6 +25963,26 @@ Typical: 1.05–1.5 for conservative, ~2 for punchier updates.</source>
       <source>✓ same session</source>
       <translation>✓ та же сессия</translation>
     </message>
+    <message>
+      <source>A stacking run is in progress. Reset is available once it has finished.</source>
+      <translation>Идёт сложение. Сброс будет доступен после его завершения.</translation>
+    </message>
+    <message>
+      <source>Reset Stacking Settings</source>
+      <translation>Сбросить настройки сложения</translation>
+    </message>
+    <message>
+      <source>Reset every stacking setting to its factory default?
+
+This covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.
+
+Kept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.</source>
+      <translation>Сбросить все настройки сложения до заводских?
+
+Это касается этого окна и параметров на вкладках Stacking Suite: калибровка, drizzle, MFDeconv, комета, реджекция и всё остальное.
+
+Сохраняются: папка сложения и другие пути, загруженные кадры, мастер-кадры и их выбор Dark/Flat, наборы регистрации и референсные кадры, ваши сохранённые профили и то, что измерила функция «Оптимизировать…». Допуск группировки сохраняется, пока кадры сгруппированы по нему.</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -35124,6 +35148,10 @@ Use [ and ] to decrease/increase brush size.</source>
       <source>Zoom Out</source>
       <translation>Уменьшить</translation>
     </message>
+    <message>
+      <source>Reset every setting in this tool to its factory default</source>
+      <translation>Сбросить все настройки этого инструмента до заводских</translation>
+    </message>
   </context>
   <context>
     <name>CommonUtilities</name>
@@ -39687,6 +39715,18 @@ Drawn chart: a vector star chart (SVG / PDF / PNG / new image).</source>
       <source>💡 You can undo and redo edits all the way back to the original using the History stack.</source>
       <translation>💡 С помощью стека истории правки можно отменять и повторять вплоть до оригинала.</translation>
     </message>
+    <message>
+      <source>💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.</source>
+      <translation>💡 Интересуют горячие клавиши? Полная шпаргалка — в меню «Вид → Горячие клавиши».</translation>
+    </message>
+    <message>
+      <source>💡 Batch convert files from one format to another with Tools → Header Mods &amp; Misc → Batch Converter.</source>
+      <translation>💡 Пакетно конвертируйте файлы из одного формата в другой через «Инструменты → Заголовки и прочее → Пакетный конвертер».</translation>
+    </message>
+    <message>
+      <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
+      <translation>💡 Шпаргалка по иконкам в меню «Вид → Горячие клавиши» показывает каждую иконку панели инструментов с ее функцией.</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -39849,6 +39889,10 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
       <translation>Там, где субкадры не полностью перекрылись, у стека рваные края: темные или шумные кромки, иногда полосы. Сначала обрежьте их. Растяжка, удаление градиента и калибровка цвета измеряют все изображение, и эти края их искажают.
 
 Обрезка находится в Функции → Исправление &amp; ретушь → Обрезка. Перетащите рамку внутрь чистой области и нажмите «Применить».</translation>
+    </message>
+    <message>
+      <source>First Steps</source>
+      <translation>Первые шаги</translation>
     </message>
   </context>
   <context>
@@ -51200,6 +51244,10 @@ Tip: Dual gives nebulae "bulk" even where brightness is flatter.</source>
       <source>Zoom Out</source>
       <translation>Уменьшить</translation>
     </message>
+    <message>
+      <source>Set Q back to {0:.2f} for every filter</source>
+      <translation>Вернуть Q к {0:.2f} для каждого фильтра</translation>
+    </message>
   </context>
   <context>
     <name>QuadBuildWorker</name>
@@ -51759,6 +51807,10 @@ Masters and frames dropped on this window, or added with the lights, are sorted 
     <message>
       <source>✓ the only flat</source>
       <translation>✓ единственный флэт</translation>
+    </message>
+    <message>
+      <source>What Quick Stack will run on. A GPU is used when SASpro's hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.</source>
+      <translation>На чем будет работать Quick Stack. GPU используется, когда аппаратное ускорение SASpro имеет к нему доступ (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML или Apple Metal); «Использовать аппаратное ускорение, если доступно» в настройках сложения отключает его.</translation>
     </message>
   </context>
   <context>
@@ -55457,6 +55509,12 @@ Make sure the tool is registered in the SASpro toolbar.</source>
     <message>
       <source>🔄 Invert Masked Region</source>
       <translation>🔄 Инвертировать область маски</translation>
+    </message>
+    <message>
+      <source>Set the palette preset back to this mode's default.
+The Mode is kept: changing it re-masks the active image.</source>
+      <translation>Вернуть пресет палитры к значению по умолчанию для этого режима.
+Режим сохраняется: его смена заново накладывает маску на активное изображение.</translation>
     </message>
   </context>
   <context>
@@ -65881,6 +65939,10 @@ binned points and the model, residuals underneath.</source>
       <source>χ²_red (photometric errors) = {0:.2f} → errors × {1:.2f};  red-noise β = {2:.2f}</source>
       <translation>χ²_red (фотометрические ошибки) = {0:.2f} → ошибки × {1:.2f};  β красного шума = {2:.2f}</translation>
     </message>
+    <message>
+      <source>Reset the Fit options to their factory defaults</source>
+      <translation>Сбросить параметры аппроксимации до заводских</translation>
+    </message>
   </context>
   <context>
     <name>TypedTableModel</name>
@@ -71417,6 +71479,12 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
       <source>Writing temp image…</source>
       <translation>Запись временного изображения…</translation>
     </message>
+    <message>
+      <source>The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.
+{0}</source>
+      <translation>Изображение открыто в SyQon Studio. Обработайте его там и сохраните результат в эту папку; SASpro импортирует его оттуда. «Отмена» оставляет исходное изображение.
+{0}</translation>
+    </message>
   </context>
   <context>
     <name>_SyQonStudioHubPage</name>
@@ -71695,6 +71763,10 @@ Cancel it and close? (May take a moment to finish the current tile.)</source>
     <message>
       <source>✘  Could not validate: {0}</source>
       <translation>✘  Не удалось проверить: {0}</translation>
+    </message>
+    <message>
+      <source>SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.</source>
+      <translation>В SyQon Studio {0} нет инструмента командной строки (он появился в 1.2), поэтому SASpro открывает изображение в приложении Studio. Обработайте его там и сохраните; SASpro импортирует сохранённое.</translation>
     </message>
   </context>
   <context>

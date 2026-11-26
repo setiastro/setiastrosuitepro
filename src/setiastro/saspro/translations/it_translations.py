@@ -18401,3 +18401,71 @@ _ADDITIONS_2026_11_25_START_TILES = {
 for _ctx, _msgs in _ADDITIONS_2026_11_25_START_TILES.items():
     TRANSLATIONS_IT.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+_ADDITIONS_2026_11_25_STUDIO_APP = {
+    '_SyQonStudioHubPage': {
+        'SyQon Studio {0} has no command-line tool (it arrived in 1.2), so SASpro opens the image in the Studio app. Process it there and save it; SASpro imports what you save.': "SyQon Studio {0} non ha uno strumento da riga di comando (è arrivato con la 1.2), quindi SASpro apre l'immagine nell'app Studio. Elaborala lì e salvala; SASpro importa ciò che salvi.",
+    },
+    '_SyQonStudioCLIThread': {
+        'The image is open in SyQon Studio. Process it there and save the result into this folder; SASpro imports it from there. Cancel keeps the original image.\n{0}': "L'immagine è aperta in SyQon Studio. Elaborala lì e salva il risultato in questa cartella; SASpro lo importa da lì. Annulla mantiene l'immagine originale.\n{0}",
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_25_STUDIO_APP.items():
+    TRANSLATIONS_IT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_QUICK_STACK_GPU = {
+    'QuickStackDialog': {
+        'What Quick Stack will run on. A GPU is used when SASpro\'s hardware acceleration can reach it (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML or Apple Metal); "Use hardware acceleration if available" in Stacking Settings turns it off.': 'Su cosa verrà eseguito Quick Stack. Viene usata una GPU quando l\'accelerazione hardware di SASpro può accedervi (NVIDIA CUDA, AMD ROCm, Intel XPU, DirectML o Apple Metal); "Usa accelerazione hardware se disponibile" nelle Impostazioni di stacking la disattiva.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_QUICK_STACK_GPU.items():
+    TRANSLATIONS_IT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-26: fewer top-level menus (What's In My... into Analysis, Header Mods
+# & Misc into Tools, Shortcuts into View, Scripts into Workflows); tour restyle.
+_ADDITIONS_2026_11_26_MENUS = {
+    'AstroSuiteProMainWindow': {
+        'All Analysis Tools': 'Tutti gli strumenti di analisi',
+    },
+    'FirstStepsTour': {
+        'First Steps': 'Primi passi',
+    },
+    'FirstRunDialog': {
+        "💡 Curious about keyboard shortcuts? There's a full cheat sheet under View → Shortcuts.": "💡 Curioso delle scorciatoie da tastiera? C'è un riepilogo completo in Vista → Scorciatoie.",
+        '💡 Batch convert files from one format to another with Tools → Header Mods & Misc → Batch Converter.': "💡 Converti in batch i file da un formato all'altro con Strumenti → Modifica Header e Varie → Convertitore batch.",
+        '💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.': "💡 Il riepilogo icone in Vista → Scorciatoie mostra a colpo d'occhio ogni icona della barra strumenti con la sua funzione.",
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_MENUS.items():
+    TRANSLATIONS_IT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_26_FACTORY_RESET = {
+    'Common': {
+        'Reset every setting in this tool to its factory default': 'Ripristina tutte le impostazioni di questo strumento ai valori di fabbrica',
+    },
+    'StackingSuiteDialog': {
+        'Reset': 'Ripristina',
+        'A stacking run is in progress. Reset is available once it has finished.': 'È in corso uno stacking. Il ripristino sarà disponibile al termine.',
+        'Reset Stacking Settings': 'Ripristina impostazioni Stacking',
+        "Reset every stacking setting to its factory default?\n\nThis covers this window and the options on the Stacking Suite's tabs: calibration, drizzle, MFDeconv, comet, rejection and the rest.\n\nKept: the stacking folder and other paths, the loaded frames, the masters and their Dark/Flat picks, registration sets and reference frames, your saved profiles, and what Optimize… measured. A grouping tolerance is kept while frames are grouped by it.": 'Ripristinare tutte le impostazioni di stacking ai valori di fabbrica?\n\nRiguarda questa finestra e le opzioni nelle schede di Stacking Suite: calibrazione, drizzle, MFDeconv, cometa, reiezione e tutto il resto.\n\nVengono mantenuti: la cartella di stacking e gli altri percorsi, i frame caricati, i master e le relative scelte Dark/Flat, i set di registrazione e i frame di riferimento, i profili salvati e ciò che Ottimizza… ha misurato. Una tolleranza di raggruppamento viene mantenuta finché i frame sono raggruppati in base a essa.',
+    },
+    'SLaPToolkitDialog': {
+        "Set the palette preset back to this mode's default.\nThe Mode is kept: changing it re-masks the active image.": "Riporta il preset della palette al valore predefinito di questa modalità.\nLa modalità resta invariata: cambiarla rigenera la maschera sull'immagine attiva.",
+    },
+    'QPreviewDialog': {
+        'Set Q back to {0:.2f} for every filter': 'Riporta Q a {0:.2f} per tutti i filtri',
+    },
+    'TransitFitDialog': {
+        'Reset the Fit options to their factory defaults': 'Ripristina le opzioni di fit ai valori di fabbrica',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_FACTORY_RESET.items():
+    TRANSLATIONS_IT.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

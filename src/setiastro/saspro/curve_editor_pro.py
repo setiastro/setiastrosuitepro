@@ -20,6 +20,7 @@ from PyQt6.QtGui import (
     QIcon, QKeyEvent, QCursor, QFont, QLinearGradient
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.widgets.factory_reset import snapshot_controls, restore_controls
 
 from setiastro.saspro.widgets.image_utils import float_to_qimage_rgb8 as _float_to_qimage_rgb8
 
@@ -1983,6 +1984,13 @@ class CurvesDialogPro(QDialog):
 
         self._rebuild_presets_menu()
 
+        # Factory defaults for Reset (the curves themselves are reset by
+        # _reset_curve). Left alone: Toggle Preview, the histogram's Log scale
+        # and the selected-point X/Y readout. chk_full_bg is built from a
+        # saved setting, so Reset sets it to its default (off) explicitly.
+        self._factory = snapshot_controls(self, exclude=(
+            self.btn_preview, self.hist, self.pt_x, self.pt_y, self.chk_full_bg))
+
     # ── all methods below are identical to the original ──────────────────────
     # (only the CurveEditor widget changed; dialog logic is untouched)
 
@@ -3608,6 +3616,8 @@ class CurvesDialogPro(QDialog):
         return super().eventFilter(obj, ev)
 
     def _reset_curve(self):
+        restore_controls(self._factory)        # channel selection back to K
+        self.chk_full_bg.setChecked(False)     # opt-in precompute: factory is off
         self.editor.initCurve()
         for k in list(self._curves_store.keys()):
             self._curves_store[k] = [(0.0,0.0),(1.0,1.0)]
@@ -3629,20 +3639,23 @@ class CurvesDialogPro(QDialog):
         preset = preset or {}
         if preset.get("kind")=="curves_multi" or ("modes" in preset and isinstance(preset.get("modes"),dict)):
             modes = preset.get("modes",{}) or {}
+            active = str(preset.get("active") or "K")
+            if active not in self._curves_store: active = "K"
+            # Switch channel BEFORE filling the store: _on_mode_toggled stashes
+            # the editor's points into the outgoing channel's slot, which would
+            # otherwise overwrite one of the preset's curves.
+            key_to_label = {v:k for k,v in self._mode_key_map.items()}
+            want_label = key_to_label.get(active,"K (Brightness)")
+            for b in self.mode_group.buttons():
+                if b.text()==want_label:
+                    b.setChecked(True); break
+            self._current_mode_key = active
             for k in self._curves_store.keys():
                 pts = modes.get(k)
                 if isinstance(pts,(list,tuple)) and len(pts)>=2:
                     self._curves_store[k] = [(float(x),float(y)) for (x,y) in pts]
                 else:
                     self._curves_store[k] = [(0.0,0.0),(1.0,1.0)]
-            active = str(preset.get("active") or "K")
-            if active not in self._curves_store: active = "K"
-            self._current_mode_key = active
-            key_to_label = {v:k for k,v in self._mode_key_map.items()}
-            want_label = key_to_label.get(active,"K (Brightness)")
-            for b in self.mode_group.buttons():
-                if b.text()==want_label:
-                    b.setChecked(True); break
             self._editor_set_from_norm(self._curves_store[active])
             self._refresh_overlays(); self._quick_preview()
             self._set_status(self.tr("Preset: {0}  [multi]").format(preset.get("name",self.tr("(built-in)"))))

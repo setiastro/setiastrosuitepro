@@ -20,6 +20,7 @@ submenu label must be written '&&' (same convention already used for
 """
 from __future__ import annotations
 
+import re
 from typing import Iterable, List, Sequence, Tuple
 
 from PyQt6.QtCore import QT_TRANSLATE_NOOP
@@ -77,6 +78,10 @@ MENU_CONTENTS: dict[str, List[str]] = {
         "act_selective_color", "act_selective_lum", "act_slap_toolkit",
         "act_view_bundles", "act_function_bundles",
         "act_planet_projection", "act_flythrough",
+        # Header Mods & Misc was a top-level menu until 2.1.
+        "act_acv_exporter", "act_astrobin_exporter", "act_batch_convert",
+        "act_batch_renamer", "act_copy_astrometry", "act_fits_batch_modifier",
+        "act_fits_modifier",
     ],
     "geometry": [
         "act_geom_invert", "act_geom_flip_h", "act_geom_flip_v",
@@ -94,22 +99,18 @@ MENU_CONTENTS: dict[str, List[str]] = {
         "act_plate_solve", "act_unwarp", "act_blink", "act_psf_viewer",
         "act_image_peeker", "act_dither_analysis", "act_magnitude", "act_snr",
         "act_isophote", "act_exo_detector", "act_supernova_hunter",
+        # What's In My... was a top-level menu until 2.1.
+        "act_whats_in_my_sky", "act_wimi", "act_finder_chart", "act_atlas",
     ],
     "masks": [
         "act_create_mask", "act_apply_mask", "act_remove_mask",
         "act_show_mask", "act_hide_mask", "act_invert_mask",
     ],
-    "whats_in_my": [
-        "act_whats_in_my_sky", "act_wimi", "act_finder_chart", "act_atlas",
-    ],
-    "header_misc": [
-        "act_acv_exporter", "act_astrobin_exporter", "act_batch_convert",
-        "act_batch_renamer", "act_copy_astrometry", "act_fits_batch_modifier",
-        "act_fits_modifier",
-    ],
     "history": [
         "act_history_explorer",
     ],
+    # A submenu of View since 2.1 (built in menu_mixin); kept as its own
+    # Icon Cheat Sheet group.
     "shortcuts": [
         "act_icon_table",
     ],
@@ -130,6 +131,12 @@ MENU_CONTENTS: dict[str, List[str]] = {
         "act_welcome", "act_bored",
     ],
 }
+
+
+# Submenus that were top-level menus until 2.1 keep their old menu titles,
+# mnemonic included, so the existing translations still apply.
+HEADER_MISC_LABEL = QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "&Header Mods && Misc")
+WHATS_IN_MY_LABEL = QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "&What's In My...")
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +203,11 @@ SUBMENUS: dict[str, List[Tuple[str, List[str]]]] = {
         (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Bundles"), [
             "act_view_bundles", "act_function_bundles",
         ]),
+        (HEADER_MISC_LABEL, [
+            "act_acv_exporter", "act_astrobin_exporter", "act_batch_convert",
+            "act_batch_renamer", "act_copy_astrometry", "act_fits_batch_modifier",
+            "act_fits_modifier",
+        ]),
     ],
     "stacking": [
         (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Stacking"), [
@@ -222,6 +234,9 @@ SUBMENUS: dict[str, List[Tuple[str, List[str]]]] = {
         (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Discovery"), [
             "act_exo_detector", "act_supernova_hunter",
         ]),
+        (WHATS_IN_MY_LABEL, [
+            "act_whats_in_my_sky", "act_wimi", "act_finder_chart", "act_atlas",
+        ]),
     ],
 }
 
@@ -229,10 +244,18 @@ SUBMENUS: dict[str, List[Tuple[str, List[str]]]] = {
 # list): with about ten tools each, every one stays a single click away.
 SECTIONED_MENUS: frozenset[str] = frozenset({"stacking", "analysis"})
 
-# Label used for the flat "everything" submenu at the bottom of a grouped menu.
+# Groups a sectioned menu shows as a submenu after all: former top-level menus
+# folded in. A menu with one also gets an "All ..." list, so those tools are
+# in a flat list too.
+NESTED_GROUPS: dict[str, frozenset[str]] = {
+    "analysis": frozenset({WHATS_IN_MY_LABEL}),
+}
+
+# Label used for the flat "everything" submenu at the top of a grouped menu.
 ALL_LABELS: dict[str, str] = {
     "functions": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "All Functions"),
     "tools": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "All Tools"),
+    "analysis": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "All Analysis Tools"),
 }
 
 # Human-readable names for cheat-sheet group headers.
@@ -247,8 +270,6 @@ MENU_TITLES: dict[str, str] = {
     "stacking": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Stacking"),
     "analysis": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Analysis"),
     "masks": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Masks"),
-    "whats_in_my": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "What's In My…"),
-    "header_misc": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Header & Misc"),
     "history": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "History"),
     "shortcuts": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Shortcuts"),
     "view": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "View"),
@@ -260,7 +281,7 @@ MENU_TITLES: dict[str, str] = {
 # Order the Icon Cheat Sheet walks the menus in.
 CHEAT_SHEET_ORDER: List[str] = [
     "file", "edit", "display", "functions", "smart_tools", "tools",
-    "geometry", "stacking", "analysis", "masks", "whats_in_my", "header_misc",
+    "geometry", "stacking", "analysis", "masks",
     "workflows", "view", "history", "shortcuts", "settings", "about",
 ]
 
@@ -295,6 +316,12 @@ def _tr(window, text: str) -> str:
         return window.tr(text)
     except Exception:
         return text
+
+
+def _plain(label: str) -> str:
+    """A menu label as text: mnemonics out ("&What's", CJK "(&W)"), "&&" -> "&"."""
+    label = re.sub(r"\(&[^&)]\)", "", label).replace("&&", "\0")
+    return label.replace("&", "").replace("\0", "&").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -370,20 +397,36 @@ def build_sectioned_menu(window, menu, key: str) -> None:
     group with a separator between blocks, for menus short enough that a
     submenu would only hide the tools. Anything in MENU_CONTENTS that no group
     lists goes in a last block, so nothing can be lost.
+
+    A group in NESTED_GROUPS is a submenu instead, and then the menu starts
+    with the "All ..." flat list as well, so its tools are in a flat list too.
     """
     groups = SUBMENUS.get(key, [])
-    blocks = [_resolve(window, attrs) for _label, attrs in groups]
+    nested = NESTED_GROUPS.get(key, frozenset())
     filed = {a for _label, attrs in groups for a in attrs}
-    blocks.append(_resolve(window, [a for a in MENU_CONTENTS.get(key, []) if a not in filed]))
+
+    if nested:
+        every = _sorted_actions(_resolve(window, MENU_CONTENTS.get(key, [])))
+        if every:
+            sub = menu.addMenu(_tr(window, ALL_LABELS.get(key, "All")))
+            for act in every:
+                sub.addAction(act)
+            menu.addSeparator()
+
+    blocks = [(label if label in nested else None, _resolve(window, attrs))
+              for label, attrs in groups]
+    blocks.append((None, _resolve(window, [a for a in MENU_CONTENTS.get(key, [])
+                                           if a not in filed])))
 
     first = True
-    for acts in blocks:
+    for label, acts in blocks:
         if not acts:
             continue
         if not first:
             menu.addSeparator()
+        target = menu if label is None else menu.addMenu(_tr(window, label))
         for act in acts:
-            menu.addAction(act)
+            target.addAction(act)
         first = False
 
 
@@ -417,7 +460,7 @@ def cheat_sheet_groups(window) -> List[Tuple[str, List]]:
             acts = _resolve(window, attrs)
             categorized.update(attrs)
             if acts:
-                groups.append((f"{title} — {_tr(window, label).replace('&&', '&')}", acts))
+                groups.append((f"{title} — {_plain(_tr(window, label))}", acts))
 
         leftovers = [a for a in MENU_CONTENTS.get(key, []) if a not in categorized]
         leftover_acts = _resolve(window, leftovers)

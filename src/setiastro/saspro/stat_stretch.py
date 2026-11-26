@@ -1181,6 +1181,10 @@ class StatisticalStretchDialog(QDialog):
         self._suggest_hdr_knee_from_target()
         self._save_settings()
         self._populate_initial_preview()
+        # That shows the unstretched source (near black for linear data); with
+        # auto-refresh on, stretch it at the defaults as __init__ does.
+        if self.chk_auto_refresh.isChecked():
+            self._full_timer.start()
 
     # ── Source image ──────────────────────────────────────────────────────────
 
