@@ -1,10 +1,10 @@
 {
-  "version": "2.0.0",
+  "version": "2.0.1",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V2.0.0/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V2.0.0/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V2.0.0/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V2.0.0/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V2.0.1/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V2.0.1/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V2.0.1/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V2.0.1/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro\n\nV2.0.0\nA fresh start for new and returning users: a Welcome and Setup window that installs acceleration, AI models and Gaia catalogs for you, a Start Panel, a two-row Essentials toolbar (All Tools is one click away, and your 1.x layout comes back from the welcome window or View > Layout), and linear images that open display-stretched. New Quick Stack stacks lights, darks and flats with one button on an NVIDIA GPU or the CPU, with nothing written to disk. Also new: Banding Blaster, an Eraser in Clone Stamp and Blemish Blaster, per-group Dark and Flat picks in the Stacking Suite, a plate-solution check before SPCC, SSSC and NBExtract, star statistics in Image Peeker, faster Cosmic Clarity on NVIDIA, a fix for black Cosmic Clarity and Dark Star results on AMD RX 9000 cards, and about 16,000 translated strings per language. Full release notes: https://github.com/setiastro/setiastrosuitepro/releases"
+  "notes": "Seti Astro Suite Pro\n\nV2.0.1\nQuick Stack now runs on any GPU SASpro's hardware acceleration installs (NVIDIA, AMD, Intel, DirectML and Apple Silicon) and no longer needs the CUDA Toolkit on NVIDIA. The Stacking Suite fits a laptop screen, about 90 tools have a Reset button, the menu bar is shorter, the Start Panel can be customized, SASpro's own panels follow your theme, SyQon Studio before 1.2 is supported, and Windows builds are signed. Full release notes: https://github.com/setiastro/setiastrosuitepro/releases"
 }
