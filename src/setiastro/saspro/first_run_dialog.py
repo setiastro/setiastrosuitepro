@@ -174,14 +174,27 @@ def _show_tip_bar(main_window) -> None:
     s.setValue("tips/recently_seen", seen[-10:])
     s.sync()
 
-    # Build the bar
+    # Build the bar, in the theme's colours like SASpro's other panels.
+    from setiastro.saspro.widgets.theme_colors import theme_colors
+    c = theme_colors()
     bar = QWidget(main_window)
     bar.setObjectName("tip_bar")
-    bar.setStyleSheet("""
-        QWidget#tip_bar {
-            background-color: rgba(20, 20, 40, 230);
-            border-top: 1px solid #2a2a4a;
-        }
+    bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    bar.setStyleSheet(f"""
+        QWidget#tip_bar {{
+            background-color: {c.window.name()};
+            border-top: 1px solid {c.border.name()};
+        }}
+        QLabel#tip_text {{
+            color: {c.text.name()}; font-size: 13px; font-weight: 500; background: transparent; border: none;
+        }}
+        QPushButton#tip_off {{
+            background: transparent; color: {c.muted.name()}; border: none; font-size: 10px;
+            text-decoration: underline;
+        }}
+        QPushButton#tip_off:hover {{ color: {c.text.name()}; }}
+        QPushButton#tip_x {{ background: transparent; color: {c.muted.name()}; border: none; font-size: 11px; }}
+        QPushButton#tip_x:hover {{ color: {c.text.name()}; }}
     """)
 
     h = QHBoxLayout(bar)
@@ -189,35 +202,18 @@ def _show_tip_bar(main_window) -> None:
     h.setSpacing(10)
 
     lbl = QLabel(_tr(tip))
-    lbl.setStyleSheet("color: #cccccc; font-size: 13px; font-weight: 500; background: transparent; border: none;")
+    lbl.setObjectName("tip_text")
     lbl.setWordWrap(False)
     h.addWidget(lbl, 1)
 
     btn_dontshow = QPushButton(_tr("Don't show tips"))
-    btn_dontshow.setStyleSheet("""
-        QPushButton {
-            background: transparent;
-            color: #555588;
-            border: none;
-            font-size: 10px;
-            text-decoration: underline;
-        }
-        QPushButton:hover { color: #8888bb; }
-    """)
+    btn_dontshow.setObjectName("tip_off")
     btn_dontshow.setFixedHeight(20)
     btn_dontshow.setCursor(Qt.CursorShape.PointingHandCursor)
 
     btn_dismiss = QPushButton("✕")
+    btn_dismiss.setObjectName("tip_x")
     btn_dismiss.setFixedSize(20, 20)
-    btn_dismiss.setStyleSheet("""
-        QPushButton {
-            background: transparent;
-            color: #555577;
-            border: none;
-            font-size: 11px;
-        }
-        QPushButton:hover { color: #aaaacc; }
-    """)
     btn_dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
 
     h.addWidget(btn_dontshow)

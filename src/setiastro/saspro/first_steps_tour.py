@@ -28,9 +28,11 @@ import numpy as np
 from PyQt6.QtCore import (QCoreApplication, QEvent, QPoint, QRect, QSettings, Qt,
                           QTimer, QUrl, QT_TRANSLATE_NOOP)
 from PyQt6.QtGui import (QColor, QDesktopServices, QFont, QFontMetrics, QPainter,
-                         QPalette, QPen, QRegion)
-from PyQt6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushButton,
+                         QPen, QRegion)
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
                              QToolBar, QVBoxLayout, QWidget)
+
+from setiastro.saspro.widgets.theme_colors import CARD_RADIUS, theme_colors
 
 DONE_KEY = "ui/first_steps_tour_done_v1"
 TUTORIAL_URL = "https://youtu.be/zBUOZl2OgaY"     # the welcome screen's beginner video
@@ -95,30 +97,19 @@ _OPEN_ON_PANEL = (
     "Any image works. A stacked, unstretched FITS, XISF or TIFF is ideal. "
     "Only have subs? Deep-Sky Stacking, also on the panel, turns them into one."))
 
-def _mix(a: QColor, b: QColor, t: float) -> QColor:
-    return QColor(round(a.red() + (b.red() - a.red()) * t),
-                  round(a.green() + (b.green() - a.green()) * t),
-                  round(a.blue() + (b.blue() - a.blue()) * t))
-
-
 def _card_colors():
-    """(card, border, text, muted, link, ring) from the current theme, so the
-    card looks like the rest of SASpro in Gray, Dark, Light or Custom: a panel
-    in the window colour, a thin border, the theme's own text and link colours,
-    and the selection colour for the spotlight."""
-    pal = QApplication.palette()
-    card = pal.color(QPalette.ColorRole.Window)
-    text = pal.color(QPalette.ColorRole.WindowText)
-    return (card, _mix(card, text, 0.25), text,
-            pal.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText),
-            pal.color(QPalette.ColorRole.Link), pal.color(QPalette.ColorRole.Highlight))
+    """(card, border, text, muted, link, ring) from the current theme: the
+    card is drawn like SASpro's other panels (widgets/theme_colors.py), with
+    the selection colour for the spotlight."""
+    c = theme_colors()
+    return c.window, c.border, c.text, c.muted, c.link, c.accent
 
 
 def _style_sheet() -> str:
     # Colours only: fonts and the buttons stay the application's own.
     card, border, text, muted, link, _ring = _card_colors()
     return f"""
-#FirstStepsTour {{ background-color: {card.name()}; border: 1px solid {border.name()}; border-radius: 4px; }}
+#FirstStepsTour {{ background-color: {card.name()}; border: 1px solid {border.name()}; border-radius: {CARD_RADIUS}px; }}
 #fst_counter {{ color: {muted.name()}; }}
 #fst_title, #fst_body {{ color: {text.name()}; }}
 #fst_close {{ background: transparent; border: none; color: {muted.name()}; padding: 0px 4px; }}

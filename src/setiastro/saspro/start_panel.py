@@ -47,7 +47,10 @@ from PyQt6.QtGui import (QColor, QDesktopServices, QFontMetrics, QIcon, QImage,
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog,
                              QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
                              QLineEdit, QListWidget, QListWidgetItem, QMenu, QPushButton,
-                             QScrollArea, QStyle, QStyleOptionButton, QVBoxLayout, QWidget)
+                             QScrollArea, QVBoxLayout, QWidget)
+
+from setiastro.saspro.widgets.theme_colors import (CARD_RADIUS, CONTROL_RADIUS, PALETTE_EVENTS,
+                                                   restyle, theme_colors)
 
 STARTUP_KEY = "ui/start_panel"                   # show on startup
 RELEASES_URL = "https://github.com/setiastro/setiastrosuitepro/releases/latest"
@@ -73,53 +76,56 @@ def _t(text: str) -> str:
     return QCoreApplication.translate("StartPanel", text)
 
 
-_STYLE = """
-#StartPanel { background-color: rgba(15, 15, 27, 232); border: 1px solid #34345c; border-radius: 14px; }
-#sp_h { color: #ffffff; font-size: 20px; font-weight: 700; background: transparent; }
-#sp_k { color: #8f9be0; font-size: 11px; font-weight: 700; background: transparent; }
-#sp_s { color: #9a9abf; font-size: 12px; background: transparent; }
-#sp_tile_t { color: #e8e8f6; font-size: 13px; font-weight: 600; background: transparent; }
-#sp_tile_s { color: #9a9abf; font-size: 11px; background: transparent; }
-#sp_tile_more { color: #8f9be0; font-size: 12px; background: transparent; }
-QPushButton#sp_tile { background-color: #1b1b34; border: 1px solid #32325a; border-radius: 9px; }
-QPushButton#sp_tile:hover, QPushButton#sp_tile:focus { background-color: #25254a; border-color: #5f6fd8; }
-QPushButton#sp_tile[main="true"] { border: none;
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3344bb, stop:1 #5566dd); }
-QPushButton#sp_tile[main="true"]:hover, QPushButton#sp_tile[main="true"]:focus {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4455cc, stop:1 #6677ee); }
-QPushButton#sp_tile[main="true"] #sp_tile_s { color: #cfd6ff; }
-QPushButton#sp_tile:disabled { background-color: #161628; border-color: #262644; }
-#sp_tile_t:disabled, #sp_tile_s:disabled { color: #5c5c80; }
-QPushButton#sp_tile_add { background: transparent; border: none; border-radius: 9px; }
-QPushButton#sp_tile_add:hover, QPushButton#sp_tile_add:focus { background-color: #1b1b34; }
-QPushButton#sp_tile_add #sp_tile_t { color: #aab4f0; }
-QPushButton#sp_proj { background: transparent; border: none; border-radius: 7px; }
-QPushButton#sp_proj:hover, QPushButton#sp_proj:focus { background-color: #25254a; }
-#sp_proj_more { color: #8fa0ff; font-size: 13px; background: transparent; }
-#sp_rule { background-color: #32325a; border: none; }
-QScrollArea#sp_strip { background: transparent; border: none; }
-#sp_strip_row { background: transparent; }
-QScrollArea#sp_strip QScrollBar:horizontal { height: 10px; margin: 4px 6px 0 6px;
-    background: transparent; border: none; }
-QScrollArea#sp_strip QScrollBar::handle:horizontal { background: #34345c; border-radius: 3px;
-    min-width: 40px; }
-QScrollArea#sp_strip QScrollBar::handle:horizontal:hover { background: #5f6fd8; }
-QScrollArea#sp_strip QScrollBar::add-line:horizontal, QScrollArea#sp_strip QScrollBar::sub-line:horizontal {
-    width: 0; height: 0; border: none; background: none; }
-QScrollArea#sp_strip QScrollBar::add-page:horizontal, QScrollArea#sp_strip QScrollBar::sub-page:horizontal {
-    background: transparent; }
-QPushButton#sp_recent { background: transparent; border: none; border-radius: 9px; }
-QPushButton#sp_recent:hover, QPushButton#sp_recent:focus { background-color: #25254a; }
-QPushButton#sp_link { background: transparent; border: none; color: #8fa0ff; font-size: 12px; padding: 2px; }
-QPushButton#sp_link:hover, QPushButton#sp_link:focus { color: #ffffff; text-decoration: underline; }
-QPushButton#sp_x { background: transparent; border: none; border-radius: 6px; color: #8888bb; font-size: 14px; }
-QPushButton#sp_x:hover, QPushButton#sp_x:focus { color: #ffffff; background-color: #25254a; }
-QCheckBox#sp_startup { color: #9a9abf; font-size: 12px; background: transparent; spacing: 6px; }
-QCheckBox#sp_startup:hover, QCheckBox#sp_startup:focus { color: #ffffff; }
-QCheckBox#sp_startup::indicator { width: 13px; height: 13px; border: 1px solid #6c6ca0;
-    border-radius: 4px; background-color: #1b1b34; }
-QCheckBox#sp_startup::indicator:hover { border-color: #8f9be0; }
-QCheckBox#sp_startup::indicator:checked { border-color: #5566dd; background-color: #4455cc; }
+def _style() -> str:
+    """The panel and its popups. Sizes here, colours from the theme
+    (widgets/theme_colors.py), so it is built again when the theme changes.
+    The first tile, the one to start with, is in the selection colour. The
+    check box has no background rule: one blanks Fusion's box, leaving a bare tick."""
+    c = {k: v.name() for k, v in vars(theme_colors()).items() if isinstance(v, QColor)}
+    r = CONTROL_RADIUS
+    return f"""
+#StartPanel {{ background-color: {c['window']}; border: 1px solid {c['border']}; border-radius: {CARD_RADIUS}px; }}
+#sp_h {{ color: {c['text']}; font-size: 20px; font-weight: 700; background: transparent; }}
+#sp_k {{ color: {c['soft']}; font-size: 11px; font-weight: 700; background: transparent; }}
+#sp_s {{ color: {c['soft']}; font-size: 12px; background: transparent; }}
+#sp_tile_t {{ color: {c['text']}; font-size: 13px; font-weight: 600; background: transparent; }}
+#sp_tile_s {{ color: {c['soft']}; font-size: 11px; background: transparent; }}
+#sp_tile_more {{ color: {c['soft']}; font-size: 12px; background: transparent; }}
+QPushButton#sp_tile {{ background-color: {c['raised']}; border: 1px solid {c['line']}; border-radius: {r}px; }}
+QPushButton#sp_tile:hover, QPushButton#sp_tile:focus {{ background-color: {c['hover']}; border-color: {c['accent']}; }}
+QPushButton#sp_tile[main="true"] {{ background-color: {c['accent']}; border-color: {c['accent']}; }}
+QPushButton#sp_tile[main="true"]:hover, QPushButton#sp_tile[main="true"]:focus {{
+    background-color: {c['accent_hover']}; border-color: {c['on_accent_soft']}; }}
+QPushButton#sp_tile[main="true"] #sp_tile_t {{ color: {c['on_accent']}; }}
+QPushButton#sp_tile[main="true"] #sp_tile_s {{ color: {c['on_accent_soft']}; }}
+QPushButton#sp_tile:disabled {{ background-color: {c['window']}; border-color: {c['line']}; }}
+#sp_tile_t:disabled, #sp_tile_s:disabled {{ color: {c['muted']}; }}
+QPushButton#sp_tile_add {{ background: transparent; border: none; border-radius: {r}px; }}
+QPushButton#sp_tile_add:hover, QPushButton#sp_tile_add:focus {{ background-color: {c['raised']}; }}
+QPushButton#sp_tile_add #sp_tile_t {{ color: {c['soft']}; }}
+QPushButton#sp_proj {{ background: transparent; border: none; border-radius: {r}px; }}
+QPushButton#sp_proj:hover, QPushButton#sp_proj:focus {{ background-color: {c['hover']}; }}
+#sp_proj_more {{ color: {c['link']}; font-size: 13px; background: transparent; }}
+#sp_rule {{ background-color: {c['line']}; border: none; }}
+QScrollArea#sp_strip {{ background: transparent; border: none; }}
+#sp_strip_row {{ background: transparent; }}
+QScrollArea#sp_strip QScrollBar:horizontal {{ height: 10px; margin: 4px 6px 0 6px;
+    background: transparent; border: none; }}
+QScrollArea#sp_strip QScrollBar::handle:horizontal {{ background: {c['border']}; border-radius: 3px;
+    min-width: 40px; }}
+QScrollArea#sp_strip QScrollBar::handle:horizontal:hover {{ background: {c['soft']}; }}
+QScrollArea#sp_strip QScrollBar::add-line:horizontal, QScrollArea#sp_strip QScrollBar::sub-line:horizontal {{
+    width: 0; height: 0; border: none; background: none; }}
+QScrollArea#sp_strip QScrollBar::add-page:horizontal, QScrollArea#sp_strip QScrollBar::sub-page:horizontal {{
+    background: transparent; }}
+QPushButton#sp_recent {{ background: transparent; border: none; border-radius: {r}px; }}
+QPushButton#sp_recent:hover, QPushButton#sp_recent:focus {{ background-color: {c['hover']}; }}
+QPushButton#sp_link {{ background: transparent; border: none; color: {c['link']}; font-size: 12px; padding: 2px; }}
+QPushButton#sp_link:hover, QPushButton#sp_link:focus {{ text-decoration: underline; }}
+QPushButton#sp_x {{ background: transparent; border: none; border-radius: {r}px; color: {c['muted']}; font-size: 14px; }}
+QPushButton#sp_x:hover, QPushButton#sp_x:focus {{ color: {c['text']}; background-color: {c['hover']}; }}
+QCheckBox#sp_startup {{ color: {c['soft']}; font-size: 12px; spacing: 6px; }}
+QCheckBox#sp_startup:hover, QCheckBox#sp_startup:focus {{ color: {c['text']}; }}
 """
 
 
@@ -374,37 +380,17 @@ def _plus_icon() -> QIcon:
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setPen(QPen(QColor("#8f9be0"), 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    p.setPen(QPen(theme_colors().soft, 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
     p.drawLine(56, 24, 56, 88)
     p.drawLine(24, 56, 88, 56)
     p.end()
     return QIcon(pm)
 
 
-class _Check(QCheckBox):
-    """The theme's own box all but vanishes on the panel, which is dark in every
-    theme. The style sheet draws this one, except the tick: that takes a file."""
-
-    def paintEvent(self, ev):
-        super().paintEvent(ev)
-        if not self.isChecked():
-            return
-        opt = QStyleOptionButton()
-        self.initStyleOption(opt)
-        r = QRectF(self.style().subElementRect(
-            QStyle.SubElement.SE_CheckBoxIndicator, opt, self))
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor("#ffffff"), 1.8, Qt.PenStyle.SolidLine,
-                      Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        p.drawPolyline([r.topLeft() + QPointF(x * r.width(), y * r.height())
-                        for x, y in ((0.27, 0.53), (0.44, 0.69), (0.74, 0.33))])
-        p.end()
-
-
 def _card_icon(path) -> QIcon:
     """The picture on one of Mosaic Master's mode cards, with a light edge:
-    its outlines (and the robotic one's tripod) are near black, and so is a tile."""
+    its outlines (and the robotic one's tripod) are near black, and so is a
+    tile in the Gray and Dark themes. On a light tile the edge doesn't show."""
     pic = QPixmap(path)
     if pic.isNull():
         return QIcon()
@@ -414,7 +400,7 @@ def _card_icon(path) -> QIcon:
     shape = QPixmap(pic)
     p = QPainter(shape)
     p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    p.fillRect(shape.rect(), QColor("#dfe3ff"))
+    p.fillRect(shape.rect(), QColor("#e4e4e4"))
     p.end()
     out = QPixmap(size, size)
     out.fill(Qt.GlobalColor.transparent)
@@ -512,11 +498,13 @@ class _AddTile(_Tile):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         lit = self.underMouse() or self.hasFocus()
-        pen = QPen(QColor("#5f6fd8" if lit else "#4a4a86"), 1.3)
+        c = theme_colors()
+        pen = QPen(c.accent if lit else c.border, 1.3)
         pen.setDashPattern([4.0, 3.0])
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.65, 0.65, -0.65, -0.65), 9, 9)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.65, 0.65, -0.65, -0.65),
+                          CONTROL_RADIUS, CONTROL_RADIUS)
         p.end()
 
 
@@ -530,7 +518,7 @@ class _Popup(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)   # round corners
         # The click that closes it stops there: on the tile, it would reopen.
         self.setAttribute(Qt.WidgetAttribute.WA_NoMouseReplay, True)
-        self.setStyleSheet(_STYLE)
+        self.setStyleSheet(_style())
         self.lay = QVBoxLayout(self)
         self.lay.setContentsMargins(8, 8, 8, 8)
         self.lay.setSpacing(8)
@@ -560,11 +548,13 @@ class _Popup(QFrame):
     def paintEvent(self, _ev):
         # Not in the style sheet: Qt leaves the background of a translucent
         # window out, and the choices would float over the panel's text.
+        c = theme_colors()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QColor("#5f6fd8"))
-        p.setBrush(QColor("#14142a"))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 11, 11)
+        p.setPen(c.border)
+        p.setBrush(c.window)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+                          CARD_RADIUS, CARD_RADIUS)
         p.end()
 
     def showEvent(self, ev):
@@ -691,6 +681,8 @@ class _Recent(QPushButton):
         self.clicked.connect(lambda: slot(path))
 
     def set_picture(self, pixmap: QPixmap):
+        self._source = pixmap                    # drawn again on a theme change
+        c = theme_colors()
         dpr = self.devicePixelRatioF()
         pm = QPixmap(round(THUMB.width() * dpr), round(THUMB.height() * dpr))
         pm.setDevicePixelRatio(dpr)
@@ -703,8 +695,8 @@ class _Recent(QPushButton):
         path.addRoundedRect(box, 8, 8)
         p.setClipPath(path)
         if pixmap.isNull():
-            p.fillRect(box, QColor("#1b1b34"))
-            p.setPen(QColor("#6c6ca0"))
+            p.fillRect(box, c.raised)
+            p.setPen(c.muted)
             font = p.font()
             font.setPointSize(13)
             font.setBold(True)
@@ -713,9 +705,11 @@ class _Recent(QPushButton):
             p.drawText(box, Qt.AlignmentFlag.AlignCenter, ext or "?")
         else:
             p.drawPixmap(box, pixmap, QRectF(pixmap.rect()))
-        # A dark sky would otherwise run into the panel.
+        # A dark sky would otherwise run into a dark panel.
         p.setClipping(False)
-        p.setPen(QColor(255, 255, 255, 34))
+        edge = QColor(c.text)
+        edge.setAlpha(40)
+        p.setPen(edge)
         p.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
         p.end()
         self._pic.setPixmap(pm)
@@ -948,7 +942,7 @@ class StartPanel(QFrame):
         super().__init__(self._vp)
         self.setObjectName("StartPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(_STYLE)
+        self.setStyleSheet(_style())
         self.setAcceptDrops(True)                # handed to the workspace below
         self.hide()
         self._placed_for = None
@@ -976,6 +970,14 @@ class StartPanel(QFrame):
         self._capture.timeout.connect(self._capture_open_images)
         self._settle.start()
 
+    def changeEvent(self, ev):
+        # The theme changed: its colours, and the pictures drawn in them.
+        if ev.type() in PALETTE_EVENTS and restyle(self, _style()) and hasattr(self, "_tiles"):
+            self._build_tiles()
+            for b in self._recent_buttons:
+                b.set_picture(b._source)
+        super().changeEvent(ev)
+
     # ---- contents -----------------------------------------------------------
     def _build(self):
         mw = self._mw
@@ -985,7 +987,7 @@ class StartPanel(QFrame):
         head = QHBoxLayout()
         head.addWidget(_label(_t("What would you like to do?"), "sp_h"))
         head.addStretch(1)
-        self._startup = _Check(_t("Show on startup"))
+        self._startup = QCheckBox(_t("Show on startup"))
         self._startup.setObjectName("sp_startup")
         self._startup.setCursor(Qt.CursorShape.PointingHandCursor)
         self._startup.setFocusPolicy(Qt.FocusPolicy.TabFocus)
