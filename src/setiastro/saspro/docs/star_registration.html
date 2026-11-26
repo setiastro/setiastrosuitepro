@@ -329,7 +329,8 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 </ul>
 
 <h3>6.9 Output options</h3>
-<p><b>Save rejection layers with master lights</b> &mdash; when on (default), master light FITS files are saved as multi-extension FITS (MEF) with extra HDUs containing the rejection any-mask, fraction map, and count map &mdash; useful for post-mortem analysis and for feeding back into MFDeconv. Off = smaller single-HDU FITS.</p>
+<p><b>Save rejection layers with master lights</b> &mdash; off in the recommended settings that new installs and Factory Reset use. When on, master light FITS files are saved as multi-extension FITS (MEF) with extra HDUs containing the rejection any-mask, fraction map, and count map &mdash; useful for post-mortem analysis and for feeding back into MFDeconv. Off = smaller single-HDU FITS.</p>
+<p><b>Save per-frame rejection masks</b> &mdash; off by default. When on, the integration also writes one small FITS mask per frame to <code>Rejection_Masks/&lt;group&gt;/</code> in the stacking directory, on the registered grid: white (255) = rejected by the rejection algorithm (in any channel), grey (128) = no data in that frame (alignment borders, trails already removed at calibration), black (0) = used. Use it to check what rejection removed from individual frames, for example by blinking the masks against the master. While integrating it holds one byte per pixel per frame in memory (100 frames of 26 MP: about 2.6 GB), as drizzle already does. Applies to normal stacking; comet stacks don't write them.</p>
 
 <h3>6.10 Backend row</h3>
 <ul>

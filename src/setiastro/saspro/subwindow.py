@@ -136,6 +136,7 @@ declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Mouse wheel"), QT_TRANSLATE_NOO
 declare_gesture(QT_TRANSLATE_NOOP("CheatSheet", "Space+click or Space+drag"), QT_TRANSLATE_NOOP("CheatSheet", "Image view"),
                 QT_TRANSLATE_NOOP("CheatSheet", "Read pixel values (and WCS) under the cursor"))
 from setiastro.saspro.widgets.image_utils import ensure_contiguous
+from setiastro.saspro.widgets.theme_colors import MASK_ACTIVE
 from setiastro.saspro.imageops.viewport_render import resize_for_display, to_uint8_rgb
 from setiastro.saspro.imageops.viewport_canvas import ViewportImageCanvas
 from setiastro.saspro.imageops.tiled_canvas import TiledImageCanvas
@@ -247,6 +248,13 @@ DECORATION_PREFIXES = (
 )
 
 _GLYPH_RE = re.compile(f"[{re.escape(GLYPHS)}]")
+
+# A maximized view has no title bar: its title shows in its toolbar instead,
+# burgundy while the image has a mask, like a masked view's title bar.
+_INLINE_TITLE_QSS = ("QLabel { padding-left: 8px; padding-right: 6px; font-size: 11px;"
+                     " color: rgba(255,255,255,0.80); }")
+_INLINE_TITLE_MASKED_QSS = ("QLabel { padding: 1px 6px 1px 8px; font-size: 11px; color: #ffffff;"
+                            f" background-color: {MASK_ACTIVE}; border-radius: 3px; }}")
 
 def _strip_ui_decorations(title: str) -> str:
     if not title:
@@ -964,14 +972,8 @@ class ImageSubWindow(QWidget):
         self._inline_title.setToolTip(self.tr("Active view"))
         self._inline_title.setVisible(False)
         self._inline_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._inline_title.setStyleSheet("""
-            QLabel {
-                padding-left: 8px;
-                padding-right: 6px;
-                font-size: 11px;
-                color: rgba(255,255,255,0.80);
-            }
-        """)
+        self._inline_title.setStyleSheet(_INLINE_TITLE_QSS)
+        self._inline_title_masked = False
         self._inline_title.setSizePolicy(
             self._inline_title.sizePolicy().horizontalPolicy(),
             self._inline_title.sizePolicy().verticalPolicy(),
@@ -1451,6 +1453,10 @@ class ImageSubWindow(QWidget):
             self._inline_title.setVisible(maximized)
             if maximized:
                 self._inline_title.setText(self._current_view_title_for_inline() or "Untitled")
+            masked = bool(getattr(self, "_mask_dot_enabled", False))
+            if masked != self._inline_title_masked:
+                self._inline_title_masked = masked
+                self._inline_title.setStyleSheet(_INLINE_TITLE_MASKED_QSS if masked else _INLINE_TITLE_QSS)
         except Exception:
             pass
 
@@ -2565,6 +2571,7 @@ class ImageSubWindow(QWidget):
     def _set_mask_highlight(self, on: bool):
         self._mask_dot_enabled = bool(on)
         self._rebuild_title()
+        self._update_inline_title_and_buttons()   # a maximized view's title shows the mask too
 
     def _sync_host_title(self):
         # document renamed → rebuild from flags + new base

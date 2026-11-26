@@ -3404,7 +3404,10 @@ _DEFAULT_BAND_ROWS = 16
 #   0 -> 1  re-homes the pre-band chunk_height (a TILE height like 256/512/
 #           2048) onto a safe band height.
 #   1 -> 2  re-homes esd_threshold after esd_critical_values was recalibrated.
-_STACKING_SCHEMA_VERSION = 2
+#   2 -> 3  re-homes kappa: the recommended table seeded 1.0, at which
+#           Kappa-Sigma rejected 75-94% of every pixel stack.
+_STACKING_SCHEMA_VERSION = 3
+_KAPPA_RECOMMENDED = 3.0
 
 # Frank's recommended stacking configuration. ONE table, two consumers:
 #   * the built-in "Frank's Settings (Recommended)" profile, and
@@ -3422,7 +3425,7 @@ _STACKING_SCHEMA_VERSION = 2
 # Bump _RECOMMENDED_STACKING_VERSION whenever this table changes, or installs
 # that already have the profile keep the old one.
 _RECOMMENDED_STACKING_PROFILE = "Frank's Settings (Recommended)"
-_RECOMMENDED_STACKING_VERSION = 3
+_RECOMMENDED_STACKING_VERSION = 4
 _RECOMMENDED_STACKING_VERSION_KEY = "stacking/profiles/_builtin_version"
 _RECOMMENDED_STACKING = {
     # General / performance
@@ -3514,7 +3517,7 @@ _RECOMMENDED_STACKING = {
     "esd_bonferroni": False,
     "sigma_high": 3.0,
     "sigma_low": 3.0,
-    "kappa": 1.0,
+    "kappa": _KAPPA_RECOMMENDED,
     "iterations": 3,
     "biweight_constant": 6.0,
     "trim_fraction": 0.1,
@@ -3757,6 +3760,76 @@ def _frame_out_bytes(h, w, channels, itemsize=4) -> int:
 
 
 _DIM_RE = re.compile(r"\s*\(\d+\s*x\s*\d+\)\s*")
+
+
+def _rej_code_np(ts, union):
+    """CPU twin of torch_rejection._finalize's collapsed map.
+
+    ts is the (N, th, tw[, C]) tile, union the reducer's per-frame "left out"
+    map (rejected or no data). Returns uint8 (N, th, tw): 0 used, 1 rejected,
+    2 no data (0.0 or non-finite in any channel).
+    """
+    t = np.asarray(ts)
+    ok = np.isfinite(t) & (t != 0.0)
+    nod = ~ok.all(axis=-1) if t.ndim == 4 else ~ok
+    u = np.asarray(union, dtype=bool)
+    if u.ndim == 4:
+        u = u.any(axis=-1)
+    return (u & ~nod).astype(np.uint8) + nod.astype(np.uint8) * 2
+
+
+def _accumulate_tile_rejections(tile_rej_map, rej_any, rej_count, nod_count,
+                                y0, y1, x0, x1):
+    """Fold one tile's rejection map into the group maps (REJ_COMB/CNT/FRAC).
+
+    Accepts the GPU's reduced (rejected-any, rejected-count, no-data-count),
+    the 0/1/2 uint8 per-frame code, or a plain bool map. Only real rejections
+    are counted; samples with no data (alignment borders, trails blanked at
+    calibration) go to nod_count, so REJ_FRAC can be a fraction of the frames
+    that had data. Returns the per-frame map for drizzle/MFDeconv (nonzero =
+    left out of that frame), or None when the GPU already reduced it.
+    """
+    if isinstance(tile_rej_map, tuple):
+        rej_any[y0:y1, x0:x1] |= tile_rej_map[0]
+        rej_count[y0:y1, x0:x1] += np.asarray(tile_rej_map[1]).astype(np.uint16)
+        if len(tile_rej_map) > 2:
+            nod_count[y0:y1, x0:x1] += np.asarray(tile_rej_map[2]).astype(np.uint16)
+        return None
+    trm = np.asarray(tile_rej_map)
+    if trm.dtype == np.uint8:
+        alg = trm == 1
+        nod_count[y0:y1, x0:x1] += (trm == 2).sum(axis=0, dtype=np.uint16)
+    else:
+        trm = trm.astype(bool, copy=False)
+        if trm.ndim == 4:
+            trm = np.any(trm, axis=-1)
+        alg = trm
+    rej_any[y0:y1, x0:x1] |= np.any(alg, axis=0)
+    rej_count[y0:y1, x0:x1] += alg.sum(axis=0, dtype=np.uint16)
+    return trm
+
+
+def _keep_tile_rejections(per_file, frame_bufs, file_list, trm, y0, x0, frame_shape):
+    """Store one tile's per-frame rejection masks: trm is (N, th, tw) bool.
+
+    Each tile is kept as a view into one full-frame buffer per frame, not as a
+    copy per tile. Thousands of medium-sized copies fragment the Windows heap
+    while the reader threads churn AFN temporaries of a similar size, and each
+    band then takes longer than the last: 581 frames with AFN on went from 29 s
+    to 225 s. Tiles never overlap, and every consumer only reads the masks, so
+    the stored (x0, y0, mask) entries are the same as before.
+    """
+    for i, fpath in enumerate(file_list):
+        m = trm[i]
+        if np.any(m):
+            fb = frame_bufs[i]
+            if fb is None:
+                # uint8 when trm is the 0/1/2 code, so the per-frame masks
+                # keep "rejected" and "no data" apart; consumers test != 0.
+                fb = frame_bufs[i] = np.zeros(frame_shape, dtype=trm.dtype)
+            v = fb[y0:y0 + m.shape[0], x0:x0 + m.shape[1]]
+            v[...] = m
+            per_file[fpath].append((x0, y0, v))
 
 
 def build_rejection_layers(
@@ -8767,6 +8840,13 @@ class StackingSuiteDialog(QDialog):
                 self.settings.setValue("stacking/esd_threshold",
                                        _ESD_DEFAULT_THRESHOLD)
                 self.esd_threshold = _ESD_DEFAULT_THRESHOLD
+        if _schema_now < 3:
+            # The recommended table seeded kappa = 1.0: a 1-sigma clip that
+            # threw out 75-94% of every pixel stack. Re-home that seeded value
+            # only; a kappa someone dialled in themselves stays.
+            if abs(float(self.settings.value("stacking/kappa", 2.5, type=float)) - 1.0) < 1e-9:
+                self.settings.setValue("stacking/kappa", _KAPPA_RECOMMENDED)
+                self.kappa = _KAPPA_RECOMMENDED
         if _schema_now < _STACKING_SCHEMA_VERSION:
             self.settings.setValue("stacking/settings_schema_version", _STACKING_SCHEMA_VERSION)
             try: self.settings.sync()
@@ -10829,7 +10909,7 @@ class StackingSuiteDialog(QDialog):
         "comet/save_starless", "mfdeconv/sr_enabled", "mfdeconv/sr_factor",
         "mfdeconv/save_intermediate", "mfdeconv/iters", "mfdeconv/min_iters",
         "mfdeconv/color_mode", "mfdeconv/rho", "mfdeconv/use_star_masks",
-        "mfdeconv/use_noise_maps",
+        "mfdeconv/use_noise_maps", "save_rejection_frames",
     )
 
     # The tab options their builders read from QSettings: (attribute, key,
@@ -10862,6 +10942,7 @@ class StackingSuiteDialog(QDialog):
         ("comet_blend_cb", "stacking/comet/blend", True),
         ("comet_save_starless_cb", "stacking/comet/save_starless", False),
         ("save_rejection_layers_cb", "stacking/save_rejection_layers", True),
+        ("save_rejection_frames_cb", "stacking/save_rejection_frames", False),
         ("reject_interactive_cb", "stacking/reject_outliers_interactive", False),
     )
     _FACTORY_TAB_VALUES = (
@@ -16962,6 +17043,27 @@ class StackingSuiteDialog(QDialog):
         )
         output_opts_row.addWidget(self.save_rejection_layers_cb)
 
+        # Debug output: one mask per frame (see _write_rejection_frame_masks).
+        self.save_rejection_frames_cb = QCheckBox(self.tr("Save per-frame rejection masks"))
+        self.save_rejection_frames_cb.setToolTip(self.tr(
+            "Writes one small FITS mask per frame to Rejection_Masks in the stacking "
+            "directory, on the registered grid:\n"
+            "white (255) = rejected by the rejection algorithm, grey (128) = no data in "
+            "that frame (alignment borders, trails removed at calibration), black = used.\n"
+            "For checking what rejection removed from individual frames. Integration "
+            "runs a little slower while this is on."
+        ))
+        self.save_rejection_frames_cb.setChecked(
+            self.settings.value("stacking/save_rejection_frames", False, type=bool)
+        )
+        self.save_rejection_frames_cb.toggled.connect(
+            lambda v: (
+                self.settings.setValue("stacking/save_rejection_frames", bool(v)),
+                self.settings.sync()
+            )
+        )
+        output_opts_row.addWidget(self.save_rejection_frames_cb)
+
         # ─────────────────────────────────────────────────────────────
         # Interactive sub rejection (per-run toggle; initial state comes
         # from the sticky "default to interactive" setting, mirroring the
@@ -19085,6 +19187,7 @@ class StackingSuiteDialog(QDialog):
         "master_lights",
         "master_light",
         "normalized_images",
+        "rejection_masks",
     })
 
     def _collect_fits_paths(self, root: str, recursive: bool = True) -> list[str]:
@@ -32322,7 +32425,9 @@ class StackingSuiteDialog(QDialog):
         # Preserve the same storage drizzle currently relies on.
         if not hasattr(self, "_rej_maps") or not isinstance(getattr(self, "_rej_maps"), dict):
             self._rej_maps = {}
-        need_per_file_rejections = bool(self._mf_enabled() or self._get_drizzle_enabled())
+        keep_per_file_rejections = bool(self._mf_enabled() or self._get_drizzle_enabled())
+        save_rej_frames = bool(self.settings.value("stacking/save_rejection_frames", False, type=bool))
+        need_per_file_rejections = keep_per_file_rejections or save_rej_frames
         for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
             t0 = perf_counter()
             if not file_list:
@@ -32341,6 +32446,19 @@ class StackingSuiteDialog(QDialog):
 
             if integrated_image is None:
                 raise RuntimeError(f"normal_integration_with_rejection returned no image for group '{group_key}'")
+
+            if save_rej_frames and rejection_map:
+                try:
+                    self._write_rejection_frame_masks(
+                        group_key, file_list, rejection_map,
+                        self.rejection_algorithm, integrated_image.shape[:2],
+                        status_cb=log)
+                except Exception as e:
+                    log(f"⚠️ Could not write per-frame rejection masks for '{group_key}': {e}")
+                if not keep_per_file_rejections:
+                    # Only the masks wanted them: don't carry a full-frame
+                    # mask per frame through the rest of the run.
+                    rejection_map = None
 
             group_rej_maps = {}
             try:
@@ -32684,15 +32802,6 @@ class StackingSuiteDialog(QDialog):
                 )
                 log(f"✂️ Saved auto-cropped image for '{group_key}': {out_path_crop}")
                 autocrop_outputs.append((group_key, out_path_crop))
-
-            if drizzle_enabled_global:
-                try:
-                    sasr_path = os.path.join(self.stacking_directory, f"{group_key}_rejections.sasr")
-                    maps = group_prepass.get("rej_maps") or getattr(self, "_rej_maps", {}).get(group_key)
-                    self.save_rejection_map_sasr(maps, sasr_path)
-                    log(f"✅ Saved rejection map to {sasr_path}")
-                except Exception as e:
-                    log(f"⚠️ Failed saving rejection map for '{group_key}': {e}")
 
             group_integration_data[group_key] = {
                 "integrated_image": integrated_image,
@@ -34068,339 +34177,128 @@ class StackingSuiteDialog(QDialog):
                 self._reg_queue_abort("a set failed during integration")
 
 
-    def save_rejection_map_sasr(self, rejection_map: dict, out_path: str):
+    _REJ_MASK_DIRNAME = "Rejection_Masks"   # also in _PIPELINE_OUTPUT_DIRS
+    _REJ_MASK_REJECTED = 255
+    _REJ_MASK_NODATA = 128
+
+    def _write_rejection_frame_masks(self, group_key, file_list, rejection_map,
+                                     algo, frame_shape, status_cb=None):
         """
-        Save rejection information to .sasr (JSON).
+        Debug output: one FITS mask per frame showing which of that frame's
+        samples the integration left out, on the registered (reference) grid.
 
-        Supports ALL formats:
+            0   = used
+            255 = rejected by the rejection algorithm (in any channel)
+            128 = no data in this frame (0.0 / non-finite: alignment borders,
+                  trails already removed at calibration)
 
-        1) Old per-file XY:
-        rejection_map[file] = [(x, y), ...]
+        Built from the integration's per-frame tile masks, which carry the
+        0/1/2 code (_rej_code_np / torch _finalize). uint8, RICE-compressed:
+        ~1 MB for a 47 MP frame. 255/128 rather than 1/2 so the masks are
+        visible as loaded: SASpro scales 8-bit FITS by 1/255.
 
-        2) Per-file tile masks:
-        rejection_map[file] = [(x0, y0, mask_bool_thx_tw), ...]
-
-        3) Group-accumulated maps:
-        rejection_map = {
-            "any":   bool[H,W],
-            "frac":  float32[H,W],
-            "count": uint16/int[H,W],
-            "n":     int
-        }
-
-        For masks/maps we bit-pack booleans where appropriate to keep files smaller.
+        Returns the output folder, or None when nothing was written.
         """
-        import os
-        import json
-        import base64
-        import numpy as np
+        import re
+        from concurrent.futures import ThreadPoolExecutor
+        from astropy.io import fits
 
-        def _is_tile_item(it) -> bool:
-            return isinstance(it, (tuple, list)) and len(it) == 3
+        log = status_cb or (lambda *_: None)
+        if not rejection_map or not file_list:
+            return None
 
-        def _is_xy_item(it) -> bool:
-            return isinstance(it, (tuple, list)) and len(it) == 2
-
-        def _pack_bool_2d(mm: np.ndarray) -> dict:
-            mm = np.asarray(mm, dtype=np.bool_)
-            if mm.ndim != 2:
-                mm = np.squeeze(mm)
-                if mm.ndim != 2:
-                    raise ValueError(f"Expected 2D boolean array, got shape {mm.shape}")
-            h, w = mm.shape
-            packed = np.packbits(mm.reshape(-1).astype(np.uint8))
-            b64 = base64.b64encode(packed.tobytes()).decode("ascii")
-            return {
-                "h": int(h),
-                "w": int(w),
-                "bits": b64
-            }
-
-        def _encode_numeric_2d(arr: np.ndarray) -> dict:
-            """
-            Store numeric 2D arrays compactly as base64 raw bytes + dtype + shape.
-            """
-            aa = np.asarray(arr)
-            if aa.ndim != 2:
-                aa = np.squeeze(aa)
-                if aa.ndim != 2:
-                    raise ValueError(f"Expected 2D numeric array, got shape {aa.shape}")
-            aa = np.ascontiguousarray(aa)
-            b64 = base64.b64encode(aa.tobytes()).decode("ascii")
-            return {
-                "h": int(aa.shape[0]),
-                "w": int(aa.shape[1]),
-                "dtype": str(aa.dtype),
-                "bytes": b64
-            }
-
-        payload = {
-            "version": 3,
-            "kind": None
-        }
-
-        rm = rejection_map or {}
-
-        # ------------------------------------------------------------------
-        # Case 1: group-level accumulated maps
-        # ------------------------------------------------------------------
-        if isinstance(rm, dict) and ("any" in rm or "frac" in rm or "count" in rm):
-            rej_any = rm.get("any", None)
-            rej_frac = rm.get("frac", None)
-            rej_count = rm.get("count", None)
-            n = int(rm.get("n", 0) or 0)
-
-            payload["kind"] = "group_maps"
-            payload["n"] = n
-            payload["maps"] = {}
-
-            if rej_any is not None:
-                payload["maps"]["any"] = _pack_bool_2d(rej_any)
-
-            if rej_frac is not None:
-                payload["maps"]["frac"] = _encode_numeric_2d(np.asarray(rej_frac, dtype=np.float32))
-
-            if rej_count is not None:
-                # preserve integer map
-                rc = np.asarray(rej_count)
-                if rc.dtype.kind not in ("u", "i"):
-                    rc = rc.astype(np.uint16, copy=False)
-                payload["maps"]["count"] = _encode_numeric_2d(rc)
-
-            os.makedirs(os.path.dirname(out_path), exist_ok=True)
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2)
-            return
-
-        # ------------------------------------------------------------------
-        # Case 2: per-file formats (old + tilemask)
-        # ------------------------------------------------------------------
-        payload["kind"] = "per_file"
-        payload["files"] = {}
-
-        for fpath, items in rm.items():
-            if not items:
-                continue
-
-            first = items[0]
-
-            if _is_tile_item(first):
-                out_items = []
-                for it in items:
-                    try:
-                        x0, y0, m = it
-                    except Exception:
-                        continue
-                    if m is None:
-                        continue
-
-                    mm = np.asarray(m, dtype=np.bool_)
-                    if mm.ndim != 2:
-                        mm = np.squeeze(mm)
-                        if mm.ndim != 2:
-                            continue
-
-                    th, tw = mm.shape
-                    if th <= 0 or tw <= 0:
-                        continue
-
-                    packed = np.packbits(mm.reshape(-1).astype(np.uint8))
-                    b64 = base64.b64encode(packed.tobytes()).decode("ascii")
-
-                    out_items.append({
-                        "x0": int(x0),
-                        "y0": int(y0),
-                        "h": int(th),
-                        "w": int(tw),
-                        "bits": b64
-                    })
-
-                payload["files"][os.path.normpath(fpath)] = {
-                    "format": "tilemask",
-                    "tiles": out_items
-                }
-
-            elif _is_xy_item(first):
-                xy = []
-                for it in items:
-                    try:
-                        x, y = it
-                    except Exception:
-                        continue
-                    xy.append([int(x), int(y)])
-
-                payload["files"][os.path.normpath(fpath)] = {
-                    "format": "xy",
-                    "coords": xy
-                }
-
-            else:
-                # salvage mixed junk
-                xy = []
-                tiles = []
-                for it in items:
-                    if _is_xy_item(it):
-                        x, y = it
-                        xy.append([int(x), int(y)])
-                    elif _is_tile_item(it):
-                        x0, y0, m = it
-                        mm = np.asarray(m, dtype=np.bool_)
-                        if mm.ndim != 2:
-                            mm = np.squeeze(mm)
-                            if mm.ndim != 2:
-                                continue
-                        th, tw = mm.shape
-                        if th <= 0 or tw <= 0:
-                            continue
-                        packed = np.packbits(mm.reshape(-1).astype(np.uint8))
-                        b64 = base64.b64encode(packed.tobytes()).decode("ascii")
-                        tiles.append({
-                            "x0": int(x0),
-                            "y0": int(y0),
-                            "h": int(th),
-                            "w": int(tw),
-                            "bits": b64
-                        })
-
-                if tiles:
-                    payload["files"][os.path.normpath(fpath)] = {
-                        "format": "tilemask",
-                        "tiles": tiles
-                    }
-                elif xy:
-                    payload["files"][os.path.normpath(fpath)] = {
-                        "format": "xy",
-                        "coords": xy
-                    }
-
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
-
-
-    def load_rejection_map_sasr(self, in_file):
-        """
-        Load a .sasr rejection map.
-
-        Supports:
-        - V1 legacy text format:
-            FILE: <path>
-            x, y
-            x, y
-
-            Returns: { fpath: [(x, y), ...] }
-
-        - V2 JSON format (tile masks, bit-packed):
-            Returns: { fpath: [(x0, y0, mask_bool_2d), ...] }
-
-        Notes:
-        - This function returns whatever the file contains (xy or tilemask).
-        - Your drizzle path expects tilemask format keyed by *aligned path*.
-        """
-        import os, re, json, base64
-        import numpy as np
-
-        # Read file
-        with open(in_file, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        s = content.lstrip()
-
-        # -----------------------
-        # V2: JSON tilemask format
-        # -----------------------
-        if s.startswith("{") or s.startswith("["):
+        folder = re.sub(r"[^\w.\-]+", "_", str(group_key)).strip("._") or "group"
+        if getattr(self, "_reg_current_set", "Default") not in (None, "Default"):
+            set_slug = (getattr(self, "_reg_current_set_slug", None)
+                        or self._slugify_set(self._reg_current_set))
+            if set_slug:
+                folder = f"{set_slug}_{folder}"
+        out_dir = os.path.join(self.stacking_directory, self._REJ_MASK_DIRNAME, folder)
+        os.makedirs(out_dir, exist_ok=True)
+        # Masks left by an earlier run of this group would sit beside the new
+        # ones and pass for frames of this stack.
+        for old in glob.glob(os.path.join(out_dir, "*_rejmask.fit")):
             try:
-                obj = json.loads(content)
-            except Exception:
-                obj = None
+                os.remove(old)
+            except OSError:
+                pass
 
-            if isinstance(obj, dict) and "files" in obj:
-                files = obj.get("files") or {}
-                rejections = {}
+        n = len(file_list)
+        rej_v, nod_v = self._REJ_MASK_REJECTED, self._REJ_MASK_NODATA
+        log(f"🧾 Writing per-frame rejection masks for '{group_key}' ({n} frame(s))…")
 
-                for raw_path, entry in files.items():
-                    if not isinstance(entry, dict):
-                        continue
-                    fmt = (entry.get("format") or "").lower()
+        H, W = int(frame_shape[0]), int(frame_shape[1])
 
-                    if fmt == "xy":
-                        coords = []
-                        for xy in entry.get("coords") or []:
-                            try:
-                                x, y = xy
-                                coords.append((int(x), int(y)))
-                            except Exception:
-                                continue
-                        if coords:
-                            rejections[os.path.normpath(raw_path)] = coords
+        def _one(path):
+            if self._cancelled():
+                return None
+            c = np.zeros((H, W), dtype=np.uint8)      # 0 used / 1 rejected / 2 no data
+            for item in rejection_map.get(path) or ():
+                try:
+                    x0, y0, m = item
+                except Exception:
+                    continue
+                if m is None:
+                    continue
+                mm = np.asarray(m)
+                if mm.dtype != np.uint8:               # plain bool: rejected, no no-data info
+                    mm = mm.astype(bool).astype(np.uint8)
+                x0, y0 = int(x0), int(y0)
+                y1 = min(H, y0 + mm.shape[0])
+                x1 = min(W, x0 + mm.shape[1])
+                if y1 > y0 and x1 > x0:
+                    c[y0:y1, x0:x1] = mm[:y1 - y0, :x1 - x0]
+            rej, nodata = (c == 1), (c == 2)
+            code = np.zeros((H, W), dtype=np.uint8)
+            code[rej] = rej_v
+            code[nodata] = nod_v
+            n_rej = int(np.count_nonzero(rej))
+            n_nod = int(np.count_nonzero(nodata))
 
-                    elif fmt == "tilemask":
-                        tiles_out = []
-                        for t in entry.get("tiles") or []:
-                            try:
-                                x0 = int(t["x0"])
-                                y0 = int(t["y0"])
-                                h  = int(t["h"])
-                                w  = int(t["w"])
-                                b64 = t["bits"]
-                            except Exception:
-                                continue
+            hdr = fits.Header()
+            hdr["IMAGETYP"] = ("REJMASK", "Per-frame rejection mask")
+            hdr["SRCFILE"] = (os.path.basename(path), "Registered frame this mask is for")
+            hdr["REJALGO"] = (str(algo), "Rejection algorithm")
+            hdr["NFRAMES"] = (n, "Frames in the integration")
+            hdr["REJVAL"] = (rej_v, "Value: rejected by the algorithm")
+            hdr["NODATVAL"] = (nod_v, "Value: no data in this frame (0.0/NaN)")
+            hdr["NREJ"] = (n_rej, "Rejected samples")
+            hdr["NNODATA"] = (n_nod, "No-data samples")
+            hdr["CREATOR"] = "SetiAstroSuite"
+            hdr.add_comment("Registered (reference) grid. Channels combined: a pixel "
+                            "counts as rejected if any channel was.")
+            hdr.add_comment(f"Group: {group_key}")
+            stem = os.path.splitext(os.path.basename(path))[0]
+            fits.HDUList([
+                fits.PrimaryHDU(),
+                fits.CompImageHDU(data=code, header=hdr, compression_type="RICE_1"),
+            ]).writeto(os.path.join(out_dir, f"{stem}_rejmask.fit"), overwrite=True)
+            return n_rej, n_nod, H * W
 
-                            try:
-                                packed = np.frombuffer(base64.b64decode(b64.encode("ascii")), dtype=np.uint8)
-                                bits = np.unpackbits(packed)  # 1D, length >= h*w
-                                bits = bits[: (h * w)]
-                                mask = (bits.reshape(h, w).astype(bool))
-                            except Exception:
-                                continue
-
-                            tiles_out.append((x0, y0, mask))
-
-                        if tiles_out:
-                            rejections[os.path.normpath(raw_path)] = tiles_out
-
-                    else:
-                        # Unknown entry type; ignore
-                        continue
-
-                return rejections
-
-            # If JSON but not our format, fall through to legacy parse attempt
-            # (some people may have old text that starts with '{' accidentally)
-
-        # -----------------------
-        # V1: legacy text format
-        # -----------------------
-        rejections = {}
-        content = content.strip()
-        if not content:
-            return rejections
-
-        # Split on blank lines
-        blocks = re.split(r"\n\s*\n", content)
-        for block in blocks:
-            lines = [line.strip() for line in block.splitlines() if line.strip()]
-            if not lines:
-                continue
-
-            if lines[0].startswith("FILE:"):
-                raw_path = lines[0].replace("FILE:", "").strip()
-                coords = []
-                for line in lines[1:]:
-                    parts = line.split(",")
-                    if len(parts) == 2:
-                        x_str, y_str = parts
-                        try:
-                            x = int(x_str.strip())
-                            y = int(y_str.strip())
-                        except Exception:
-                            continue
-                        coords.append((x, y))
-                if coords:
-                    rejections[os.path.normpath(raw_path)] = coords
-
-        return rejections
+        written, tot_rej, tot_nod, tot_px, errors = 0, 0, 0, 0, []
+        # Compression and the file writes overlap across a few workers.
+        with ThreadPoolExecutor(max_workers=max(1, min(4, n))) as pool:
+            futs = [(p, pool.submit(_one, p)) for p in file_list]
+            for p, f in futs:
+                try:
+                    r = f.result()
+                except Exception as e:
+                    errors.append(f"{os.path.basename(p)}: {e}")
+                    continue
+                if r is None:
+                    continue
+                written += 1
+                tot_rej += r[0]
+                tot_nod += r[1]
+                tot_px += r[2]
+        for msg in errors[:3]:
+            log(f"⚠️ Rejection mask failed: {msg}")
+        if not written:
+            return None
+        log(f"🧾 Rejection masks for '{group_key}': {written}/{n} frame(s) → {out_dir} "
+            f"({100.0 * tot_rej / max(1, tot_px):.3f}% rejected, "
+            f"{100.0 * tot_nod / max(1, tot_px):.2f}% no data)")
+        return out_dir
 
     @pyqtSlot(list, dict, result=object)   # (files: list[str], initial_xy: dict[str, (x,y)]) -> dict|None
     def show_comet_preview(self, files, initial_xy):
@@ -35291,19 +35189,12 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
 
-                sasr_path = os.path.join(self.stacking_directory, f"{group_key}_rejections.sasr")
-                maps = getattr(self, "_rej_maps", {}).get(group_key)
-                self.save_rejection_map_sasr(maps, sasr_path)
-                log(f"✅ Saved rejection map to {sasr_path}")
-
             group_integration_data[group_key] = {
                 "integrated_image": integrated_image,
                 "rejection_map": rejection_map if drizzle_enabled_global else None,
                 "n_frames": n_frames_group,
                 "drizzled": False,  # <-- ALWAYS false here
             }
-            if not drizzle_enabled_global:
-                log(f"ℹ️ Skipping rejection map save for '{group_key}' (drizzle disabled).")
 
         QApplication.processEvents()
         # Build ORIGINALS list for each group (needed for true drizzle)
@@ -35496,6 +35387,7 @@ class StackingSuiteDialog(QDialog):
         DTYPE = self._dtype()
         integrated_image = np.zeros((H, W, C), dtype=DTYPE)
         per_file_rejections = {p: [] for p in file_list}
+        _rej_frame_bufs = [None] * len(file_list)
 
         # --- Chunking ---
         pref_h, pref_w = self.chunk_height, self.chunk_width
@@ -35560,6 +35452,7 @@ class StackingSuiteDialog(QDialog):
 
         rej_any   = np.zeros((H, W), dtype=np.bool_)
         rej_count = np.zeros((H, W), dtype=np.uint16)
+        nod_count = np.zeros((H, W), dtype=np.uint16)   # frames with no data here
 
         # --- Per-frame pure-translation affines (into comet space) ---
         affines = {}
@@ -35580,6 +35473,11 @@ class StackingSuiteDialog(QDialog):
 
         # --- CPU fallback reducer (comet-aware) ---
         def _comet_cpu_reduce(ts, th, tw):
+            # 0 used / 1 rejected / 2 no data, like the GPU's collapsed map.
+            res, union = _comet_cpu_reduce_union(ts, th, tw)
+            return res, _rej_code_np(ts, union)
+
+        def _comet_cpu_reduce_union(ts, th, tw):
             if algo in ("Comet Median", "Simple Median (No Rejection)"):
                 return np.median(ts, axis=0), np.zeros((len(file_list), th, tw), dtype=bool)
             elif algo == "Comet High-Clip Percentile":
@@ -35957,6 +35855,7 @@ class StackingSuiteDialog(QDialog):
                             modz_threshold=float(self.modz_threshold),
                             comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
                             comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                            collapse_rej_channels=True,
                         )
                         if hasattr(tile_result, "detach"):
                             tile_result = tile_result.detach().cpu().numpy()
@@ -35972,24 +35871,11 @@ class StackingSuiteDialog(QDialog):
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
                 if not DEBUG_INTEGRATION_ONLY:
-                    if isinstance(tile_rej_map, tuple):
-                        # GPU already reduced to (any-rejected, reject-count);
-                        # copy the two small (th,tw) maps straight in.
-                        tr_any, tr_cnt = tile_rej_map
-                        rej_any[y0:y1, x0:x1]   |= tr_any
-                        rej_count[y0:y1, x0:x1] += tr_cnt.astype(np.uint16)
-                    else:
-                        trm = np.asarray(tile_rej_map, dtype=bool)
-                        if trm.ndim == 4:
-                            trm = np.any(trm, axis=-1)
-                        rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
-                        rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
-
-                        if collect_per_file:
-                            for i, fpath in enumerate(file_list):
-                                m = trm[i]
-                                if np.any(m):
-                                    per_file_rejections[fpath].append((x0, y0, m.copy()))
+                    trm = _accumulate_tile_rejections(
+                        tile_rej_map, rej_any, rej_count, nod_count, y0, y1, x0, x1)
+                    if collect_per_file and trm is not None:
+                        _keep_tile_rejections(per_file_rejections, _rej_frame_bufs,
+                                              file_list, trm, y0, x0, (H, W))
 
                 dt = _time.perf_counter() - t0_tile
                 work_px = th * tw * len(file_list) * C
@@ -36026,11 +35912,14 @@ class StackingSuiteDialog(QDialog):
 
         if not hasattr(self, "_rej_maps"):
             self._rej_maps = {}
-        rej_frac = (rej_count.astype(np.float32) / float(max(1, len(file_list))))
+        # Fraction of the frames that HAD data here (borders are not rejections).
+        rej_frac = rej_count.astype(np.float32) / np.maximum(
+            len(file_list) - nod_count.astype(np.int32), 1).astype(np.float32)
         self._rej_maps[group_key + " (COMET)"] = {
             "any":   rej_any,
             "frac":  rej_frac,
             "count": rej_count,
+            "nodata": nod_count,
             "n":     len(file_list),
         }
 
@@ -40279,6 +40168,7 @@ class StackingSuiteDialog(QDialog):
 
         collect_per_file = bool(collect_per_file_rejections)
         per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
+        _rej_frame_bufs = [None] * len(file_list)
         log = status_cb or (lambda *_: None)
 
         # Aperture Flux Normalization: the phase between registration and
@@ -40487,6 +40377,7 @@ class StackingSuiteDialog(QDialog):
 
         rej_any   = np.zeros((height, width), dtype=np.bool_)
         rej_count = np.zeros((height, width), dtype=np.uint16)
+        nod_count = np.zeros((height, width), dtype=np.uint16)   # frames with no data here
 
         # ── per-frame reads run in parallel ──────────────────────────
         # Reading one band means one seek + read in each of N frames. Serially
@@ -40614,6 +40505,11 @@ class StackingSuiteDialog(QDialog):
                 tiles.append((y0, y1, x0, x1))
 
         def _cpu_reduce_tile(ts, forced_reject_2d, th, tw):
+            # 0 used / 1 rejected / 2 no data, like the GPU's collapsed map.
+            res, union = _cpu_reduce_tile_union(ts, forced_reject_2d, th, tw)
+            return res, _rej_code_np(ts, union)
+
+        def _cpu_reduce_tile_union(ts, forced_reject_2d, th, tw):
             ts = np.asarray(ts, dtype=np.float32)
             forced_reject = (np.bool_(False) if forced_reject_2d is None else
                              np.asarray(forced_reject_2d, dtype=bool)[..., None])
@@ -40802,24 +40698,11 @@ class StackingSuiteDialog(QDialog):
                     integrated_image[y0:y1, x0:x1, :] = tile_result
 
                     if not DEBUG_INTEGRATION_ONLY:
-                        if isinstance(tile_rej_map, tuple):
-                            # GPU already reduced to (any-rejected, reject-count);
-                            # copy the two small (th,tw) maps straight in.
-                            tr_any, tr_cnt = tile_rej_map
-                            rej_any[y0:y1, x0:x1]   |= tr_any
-                            rej_count[y0:y1, x0:x1] += tr_cnt.astype(np.uint16)
-                        else:
-                            trm = np.asarray(tile_rej_map, dtype=bool)
-                            if trm.ndim == 4:
-                                trm = np.any(trm, axis=-1)
-                            rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
-                            rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
-
-                            if collect_per_file:
-                                for i, fpath in enumerate(file_list):
-                                    m = trm[i]
-                                    if np.any(m):
-                                        per_file_rejections[fpath].append((x0, y0, m.copy()))
+                        trm = _accumulate_tile_rejections(
+                            tile_rej_map, rej_any, rej_count, nod_count, y0, y1, x0, x1)
+                        if collect_per_file and trm is not None:
+                            _keep_tile_rejections(per_file_rejections, _rej_frame_bufs,
+                                                  file_list, trm, y0, x0, (height, width))
 
                     dt = time.perf_counter() - t0
                     work_px = th * tw * N * channels
@@ -40925,8 +40808,11 @@ class StackingSuiteDialog(QDialog):
         else:
             if not hasattr(self, "_rej_maps"):
                 self._rej_maps = {}
-            rej_frac = rej_count.astype(np.float32) / float(max(1, N))
-            self._rej_maps[group_key] = {"any": rej_any, "frac": rej_frac, "count": rej_count, "n": N}
+            # Fraction of the frames that HAD data here (borders are not rejections).
+            rej_frac = rej_count.astype(np.float32) / np.maximum(
+                N - nod_count.astype(np.int32), 1).astype(np.float32)
+            self._rej_maps[group_key] = {"any": rej_any, "frac": rej_frac, "count": rej_count,
+                                         "nodata": nod_count, "n": N}
 
         if NAN_PROBE:
             try:
@@ -40985,6 +40871,7 @@ class StackingSuiteDialog(QDialog):
 
         collect_per_file = bool(collect_per_file_rejections)
         per_file_rejections = {f: [] for f in file_list} if collect_per_file else None
+        _rej_frame_bufs = [None] * len(file_list)
         log = status_cb or (lambda *_: None)
 
         ref_file = file_list[0]
@@ -41134,6 +41021,7 @@ class StackingSuiteDialog(QDialog):
         # ── Rejection maps ─────────────────────────────────────────────────────
         rej_any   = np.zeros((height, width), dtype=np.bool_)
         rej_count = np.zeros((height, width), dtype=np.uint16)
+        nod_count = np.zeros((height, width), dtype=np.uint16)   # frames with no data here
 
         # ── Numba warmup ───────────────────────────────────────────────────────
         _NUMBA_CPU_ALGOS = {
@@ -41170,6 +41058,11 @@ class StackingSuiteDialog(QDialog):
 
         # ── CPU tile reducer ───────────────────────────────────────────────────
         def _cpu_reduce_tile(ts, forced_reject_2d, th, tw):
+            # 0 used / 1 rejected / 2 no data, like the GPU's collapsed map.
+            res, union = _cpu_reduce_tile_union(ts, forced_reject_2d, th, tw)
+            return res, _rej_code_np(ts, union)
+
+        def _cpu_reduce_tile_union(ts, forced_reject_2d, th, tw):
             ts = np.asarray(ts, dtype=np.float32)
             forced_reject = (np.bool_(False) if forced_reject_2d is None else
                              np.asarray(forced_reject_2d, dtype=bool)[..., None])
@@ -41323,24 +41216,11 @@ class StackingSuiteDialog(QDialog):
                     integrated_image[y0:y1, x0:x1, :] = tile_result
 
                     if not DEBUG_INTEGRATION_ONLY:
-                        if isinstance(tile_rej_map, tuple):
-                            # GPU already reduced to (any-rejected, reject-count);
-                            # copy the two small (th,tw) maps straight in.
-                            tr_any, tr_cnt = tile_rej_map
-                            rej_any[y0:y1, x0:x1]   |= tr_any
-                            rej_count[y0:y1, x0:x1] += tr_cnt.astype(np.uint16)
-                        else:
-                            trm = np.asarray(tile_rej_map, dtype=bool)
-                            if trm.ndim == 4:
-                                trm = np.any(trm, axis=-1)
-                            rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
-                            rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
-
-                            if collect_per_file:
-                                for i, fpath in enumerate(file_list):
-                                    m = trm[i]
-                                    if np.any(m):
-                                        per_file_rejections[fpath].append((x0, y0, m.copy()))
+                        trm = _accumulate_tile_rejections(
+                            tile_rej_map, rej_any, rej_count, nod_count, y0, y1, x0, x1)
+                        if collect_per_file and trm is not None:
+                            _keep_tile_rejections(per_file_rejections, _rej_frame_bufs,
+                                                  file_list, trm, y0, x0, (height, width))
 
                     dt = time.perf_counter() - t0
                     work_px = th * tw * N * channels
@@ -41392,9 +41272,12 @@ class StackingSuiteDialog(QDialog):
         else:
             if not hasattr(self, "_rej_maps"):
                 self._rej_maps = {}
-            rej_frac = rej_count.astype(np.float32) / float(max(1, N))
+            # Fraction of the frames that HAD data here (borders are not rejections).
+            rej_frac = rej_count.astype(np.float32) / np.maximum(
+                N - nod_count.astype(np.int32), 1).astype(np.float32)
             self._rej_maps[group_key] = {
-                "any": rej_any, "frac": rej_frac, "count": rej_count, "n": N
+                "any": rej_any, "frac": rej_frac, "count": rej_count,
+                "nodata": nod_count, "n": N
             }
 
         log(f"✅ [LowRAM] Integration complete for group '{group_key}'.")

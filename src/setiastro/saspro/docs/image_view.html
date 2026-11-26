@@ -97,7 +97,7 @@ Everything in the view is <b>already there</b> &mdash; no mode switch, no prefer
 <tr><td><i>(none)</i></td><td><b>Duplicate</b>. Dropping onto the MDI background opens a new window with a duplicate of this image &mdash; a fully independent copy with its own undo history. Great for keeping an untouched reference while you process a second copy.</td></tr>
 <tr><td><b>Alt</b></td><td><b>Link views</b>. Dropping onto another image's view links the two for live pan and zoom sync. You can link any number of views into a group &mdash; a third drop joins all three, a fourth makes it four, and so on. Unlink from the right-click menu (see &sect;9).</td></tr>
 <tr><td><b>Ctrl</b></td><td><b>Copy astrometric solution</b>. Dropping onto another image's view copies this image's WCS onto that one. Useful if you've plate-solved one frame and want to seed the solution onto a crop, a re-processed version, or a frame that lost its solve.</td></tr>
-<tr><td><b>Shift</b></td><td><b>Apply as mask</b>. Dropping onto another image's view sets this image as that image's active mask. A <span class="glyph">■</span> badge appears in the target's title; <code>Ctrl+K</code> toggles the mask overlay visualisation, <code>Ctrl+Shift+I</code> inverts it.</td></tr>
+<tr><td><b>Shift</b></td><td><b>Apply as mask</b>. Dropping onto another image's view sets this image as that image's active mask. The target's title bar turns burgundy and a <span class="glyph">■</span> badge appears in its title; <code>Ctrl+K</code> toggles the mask overlay visualisation, <code>Ctrl+Shift+I</code> inverts it.</td></tr>
 </table>
 <div class="tip"><b>The self-mask trick.</b> Shift+drag the <span class="glyph">⧉</span> handle back <i>onto its own view</i>. The image becomes a mask of itself &mdash; which is exactly a lightness mask. Bright regions are selected, dim regions are protected. Combine with <code>Ctrl+Shift+I</code> to flip it: now the dim regions are selected and the brights are protected. Any subsequent operation (curves, denoise, saturation) will respect the mask. This is the fastest way to a lightness mask in SASpro, with no mask-creation dialog in the way.</div>
 
@@ -173,7 +173,7 @@ Everything in the view is <b>already there</b> &mdash; no mode switch, no prefer
 <h2 id="s10">10. Masks</h2>
 <p>Any image can be a mask of any other. The mechanics:</p>
 <ul>
-<li><b>Shift+drag the <span class="glyph">⧉</span> handle</b> from one view onto another &rarr; the dragged image becomes the target's active mask. A <span class="glyph">■</span> badge appears in the target's title bar.</li>
+<li><b>Shift+drag the <span class="glyph">⧉</span> handle</b> from one view onto another &rarr; the dragged image becomes the target's active mask. The target's title bar turns burgundy and shows a <span class="glyph">■</span> badge (on a maximized view, the title in its toolbar turns burgundy).</li>
 <li><b>Shift+drag onto the <i>same</i> view</b> &rarr; self-mask (instant lightness mask). See &sect;2.</li>
 <li><b>Ctrl+K</b> &rarr; toggle the mask overlay visualisation (red tint on protected areas). This is a <i>display</i> toggle; the mask is still active either way.</li>
 <li><b>Ctrl+Shift+I</b> &rarr; invert the mask. Protected and selected areas swap.</li>

@@ -12,13 +12,27 @@ from PyQt6.QtCore import Qt, QPointF, QTimer, QRectF
 from PyQt6.QtGui import QBrush, QColor, QFont, QPalette, QPainter, QPen, QPixmap, QIcon, QTextOption
 from PyQt6.QtWidgets import QApplication, QProxyStyle, QStyle, QStyleOptionTitleBar
 
+from setiastro.saspro.widgets.theme_colors import MASK_ACTIVE, mix
+
 if TYPE_CHECKING:
     pass
 
 
+def _shows_masked_view(widget) -> bool:
+    """The MDI window holds a view whose image has an active mask: the flag
+    that also puts the mask glyph in its title (ImageSubWindow._rebuild_title),
+    so the colour and the glyph always agree."""
+    try:
+        inner = widget.widget() if widget is not None else None
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    return getattr(inner, "_mask_dot_enabled", False) is True
+
+
 class _SinglePassTitleStyle(QProxyStyle):
     """Keep Fusion decorations, but draw MDI title text without its emboss pass,
-    and a toolbar's overflow arrow in the text color."""
+    a masked view's title bar in burgundy, and a toolbar's overflow arrow in
+    the text color."""
 
     def __init__(self):
         super().__init__("Fusion")
@@ -68,6 +82,16 @@ class _SinglePassTitleStyle(QProxyStyle):
         # Clear only the copied text so it still draws the frame and buttons.
         decoration = QStyleOptionTitleBar(option)
         decoration.text = ""
+        active = bool(option.titleBarState & QStyle.StateFlag.State_Active.value)
+        if _shows_masked_view(widget):
+            # Fusion fills an active title bar from Highlight, an inactive one from Window.
+            pal = QPalette(decoration.palette)
+            if active:
+                pal.setColor(QPalette.ColorRole.Highlight, QColor(MASK_ACTIVE))
+            else:
+                pal.setColor(QPalette.ColorRole.Window,
+                             mix(pal.color(QPalette.ColorRole.Window), QColor(MASK_ACTIVE), 0.55))
+            decoration.palette = pal
         super().drawComplexControl(control, decoration, painter, widget)
 
         if not option.subControls & QStyle.SubControl.SC_TitleBarLabel:
@@ -75,7 +99,6 @@ class _SinglePassTitleStyle(QProxyStyle):
 
         text_rect = self.subControlRect(control, option, QStyle.SubControl.SC_TitleBarLabel, widget)
         title = painter.fontMetrics().elidedText(option.text, Qt.TextElideMode.ElideRight, max(0, text_rect.width() - 14))
-        active = bool(option.titleBarState & QStyle.StateFlag.State_Active.value)
         painter.save()
         try:
             painter.setPen(QColor(Qt.GlobalColor.white) if active else option.palette.color(QPalette.ColorRole.Text))

@@ -1,6 +1,7 @@
 # src/setiastro/saspro/torch_rejection.py
 from __future__ import annotations
 import contextlib
+import functools
 import math
 import os
 import sys
@@ -1651,13 +1652,32 @@ def release_esd_graphs():
 # Public GPU reducer – lazy-loads Torch, never decorates at import time
 # ---------------------------------------------------------------------------
 def _finalize(torch, out, rej, reduce_rej_maps, *, return_device=False,
-              collapse_rej_channels=False):
-    """Reduce maps before downloading; optionally leave transfers to a session."""
+              collapse_rej_channels=False, nodata=None):
+    """Reduce maps before downloading; optionally leave transfers to a session.
+
+    With `nodata` (samples with no data: 0.0 / non-finite) and collapsed or
+    reduced maps, a missing sample is told apart from a rejected one:
+      reduced   -> (rejected-any, rejected-count, no-data-count), no data
+                   left out of the first two
+      collapsed -> uint8 per frame: 0 used, 1 rejected, 2 no data, so
+                   `!= 0` is exactly the old "left out of the stack" mask
+    Without it (self-test, uncollapsed callers) the maps are as before.
+    """
     out = out.to(dtype=torch.float32).contiguous()
-    if reduce_rej_maps or collapse_rej_channels:
+    if nodata is not None and (reduce_rej_maps or collapse_rej_channels):
+        nod = nodata.any(dim=-1) if nodata.dim() == 4 else nodata
+        r = rej.any(dim=-1) if rej.dim() == 4 else rej
+        alg = r & ~nod
+        if reduce_rej_maps:
+            maps = (alg.any(dim=0), alg.sum(dim=0).to(torch.int32),
+                    nod.sum(dim=0).to(torch.int32))
+        else:
+            maps = alg.to(torch.uint8) + nod.to(torch.uint8) * 2
+    elif reduce_rej_maps:
         rej = rej.any(dim=-1) if rej.dim() == 4 else rej
-    if reduce_rej_maps:
         maps = (rej.any(dim=0), rej.sum(dim=0).to(torch.int32))
+    elif collapse_rej_channels:
+        maps = rej.any(dim=-1) if rej.dim() == 4 else rej
     else:
         maps = rej
     if return_device:
@@ -1699,12 +1719,11 @@ def torch_reduce_tile(*args, **kwargs):
             def zero_map(m):
                 return m.new_zeros(m.shape) if hasattr(m, "new_zeros") else _np.zeros_like(m)
             if isinstance(rej, tuple):
-                _ra, _rc = rej
-                rej = (zero_map(_ra), zero_map(_rc))
+                rej = tuple(zero_map(m) for m in rej)
             elif hasattr(rej, "new_zeros"):
                 rej = zero_map(rej)
             else:
-                rej = _np.zeros_like(_np.asarray(rej), dtype=bool)
+                rej = _np.zeros_like(_np.asarray(rej))
     return out, rej
 
 
@@ -1952,18 +1971,22 @@ def _torch_reduce_tile_impl(
     valid = torch.isfinite(ts)
     if ignore_zero_pixels:
         valid = valid & (ts != 0.0)
+    # No data here (0.0 / non-finite) is not a rejection: _finalize keeps the
+    # two apart for the REJ_* counts and the per-frame masks.
+    nodata_map = ~valid
     if forced_reject is not None:
         valid = valid & (~forced_reject)
 
     # Base forced rejection bookkeeping
-    forced_rej_map = (~valid)
+    forced_rej_map = nodata_map if forced_reject is None else (~valid)
+    _fin = functools.partial(_finalize, nodata=nodata_map)
 
     with _safe_inference_ctx(torch), _no_amp_ctx(torch, dev):
         if algo in ("Comet Median", "Simple Median (No Rejection)"):
             x = ts.masked_fill(~valid, float("nan"))
             out = _nanmedian(torch, x, dim=0)
             rej = forced_rej_map
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -1971,7 +1994,7 @@ def _torch_reduce_tile_impl(
             x = ts.masked_fill(~valid, float("nan"))
             out = _nanquantile(torch, x, 0.40, dim=0)
             rej = forced_rej_map
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -1990,7 +2013,7 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, ones_w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -2023,7 +2046,7 @@ def _torch_reduce_tile_impl(
             keep_orig = torch.zeros_like(keep_sorted)
             keep_orig.scatter_(0, idx, keep_sorted)
             rej = ~keep_orig
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -2036,7 +2059,7 @@ def _torch_reduce_tile_impl(
                                   _scalar_like(torch, ts, float("nan")))
             out = _nanquantile(torch, clipped, float(comet_hclip_p) / 100.0, dim=0)
             rej = forced_rej_map
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -2056,7 +2079,7 @@ def _torch_reduce_tile_impl(
             out = torch.where(den > 0, num / den.clamp_min(1e-20), fallback)
 
             rej = forced_rej_map
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -2065,7 +2088,7 @@ def _torch_reduce_tile_impl(
             out = x.max(dim=0).values
             out = torch.where(torch.isfinite(out), out, torch.zeros_like(out))
             rej = forced_rej_map
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -2093,7 +2116,7 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -2182,7 +2205,7 @@ def _torch_reduce_tile_impl(
                 x = ts.masked_fill(~valid, float("nan"))
                 fallback = _nan_to_num(torch, _nanmedian(torch, x, dim=0), nan=0.0)
                 out = _weighted_mean_or(torch, ts, keep, w, fallback)
-                return _finalize(torch, out, ~keep, reduce_rej_maps,
+                return _fin(torch, out, ~keep, reduce_rej_maps,
                                  return_device=return_device,
                                  collapse_rej_channels=collapse_rej_channels)
 
@@ -2251,7 +2274,7 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -2305,7 +2328,7 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -2360,7 +2383,7 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -2383,7 +2406,7 @@ def _torch_reduce_tile_impl(
             out = _nan_to_num(torch, out, nan=0.0)
 
             rej = ~mask
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 
@@ -2403,7 +2426,7 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps,
+            return _fin(torch, out, rej, reduce_rej_maps,
                              return_device=return_device,
                              collapse_rej_channels=collapse_rej_channels)
 

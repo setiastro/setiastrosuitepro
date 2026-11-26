@@ -29,6 +29,11 @@ CONTROL_RADIUS = 4        # a tile, button or row on one
 
 PALETTE_EVENTS = (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange)
 
+# A view whose image has an active mask: its title bar (or, maximized, the
+# title in its toolbar) is this burgundy in every theme, so a forgotten mask
+# is seen before a tool seems to do nothing. Not from the palette on purpose.
+MASK_ACTIVE = "#881630"
+
 
 def mix(a: QColor, b: QColor, t: float) -> QColor:
     """`a` moved `t` of the way to `b`."""
