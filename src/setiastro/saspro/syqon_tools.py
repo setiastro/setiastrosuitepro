@@ -78,7 +78,7 @@ class _WorkerCloseGuardMixin:
 
 
 _SYQON_BUY_URL_PRISM_MINI = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/prism_mini"   # replace with exact URL when you have it
-_SYQON_BUY_URL_PRISM_DEEP = "https://syqon.it/prism"   # replace with exact URL when you have it
+_SYQON_BUY_URL_PRISM_DEEP = "https://syqon.eu/prism"   # replace with exact URL when you have it
 
 def _syqon_prism_buy_url_for(model_kind: str) -> str:
     mk = (model_kind or "prism_mini").lower().strip()
@@ -1237,7 +1237,7 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
         super().closeEvent(ev)
 
 
-_SYQON_PARALLAX_BUY_URL = "https://syqon.it/parallax"
+_SYQON_PARALLAX_BUY_URL = "https://syqon.eu/parallax"
  
 
 class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):

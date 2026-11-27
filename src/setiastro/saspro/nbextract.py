@@ -713,6 +713,7 @@ class NBExtractDialog(SFCCDialog):
             "neutralize_chk", "open_sasp_btn",
             "add_curve_btn", "remove_curve_btn", "star_combo",
             "btn_help",
+            "shortcut_grip",        # SFCC's grip; NBExtract has its own
             "factory_reset_btn",    # SPCC's Reset; NBExtract has its own (nb_reset_btn)
         ]
         for attr in _sfcc_only:
@@ -1054,6 +1055,8 @@ class NBExtractDialog(SFCCDialog):
         # Create the NB help button and insert it just after the Reset button
         self.btn_help = make_help_button("nbextract", self)
         layout.insertWidget(idx + 1, self.btn_help)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        layout.insertWidget(idx + 1, ShortcutGrip("nbextract", self))   # just before the help button
 
     def _hide_sfcc_filter_labels(self):
         layout = self.layout()

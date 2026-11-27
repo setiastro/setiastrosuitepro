@@ -447,6 +447,8 @@ class AtlasDialog(QDialog):
         layout.addWidget(self._no_wcs_label)
         # Buttons
         btn_row = QHBoxLayout()
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        btn_row.addWidget(ShortcutGrip("atlas", self))
         self._atlas_btn = QPushButton(self.tr("View Atlas"))
         self._atlas_btn.setStyleSheet(
             "QPushButton { background: #1a2a4a; color: #7a9fff; padding: 6px 18px; "

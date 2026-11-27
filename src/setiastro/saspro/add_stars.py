@@ -492,6 +492,8 @@ class AddStarsDialog(QDialog):
         # Buttons
         brow = QHBoxLayout()
         self.btn_help = make_help_button("add_stars", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        brow.addWidget(ShortcutGrip("add_stars", self))
         brow.addWidget(self.btn_help)
         brow.addStretch(1)
         btn_apply = QPushButton(self.tr("Apply")); btn_apply.clicked.connect(self._apply)

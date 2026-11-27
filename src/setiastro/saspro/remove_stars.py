@@ -449,8 +449,8 @@ def _syqon_data_dir() -> Path:
 
 _SYQON_BUY_URL         = "https://donate.stripe.com/14AdR9fZFbw85Rb4Wq2B204"
 _SYQON_BUY_URL_NADIR   = "https://donate.stripe.com/14AdR9fZFbw85Rb4Wq2B204"
-_SYQON_BUY_URL_AXIOMV2 = "https://syqon.it/starless/"
-_SYQON_BUY_URL_AXIOMV3 = "https://syqon.it/starless/"   # update when SyQon supplies a V3 link
+_SYQON_BUY_URL_AXIOMV2 = "https://syqon.eu/neural-model/starless"
+_SYQON_BUY_URL_AXIOMV3 = "https://syqon.eu/neural-model/starless"   # update when SyQon supplies a V3 link
 
 def _syqon_buy_url_for(model_kind: str) -> str:
     mk = _syqon_norm_kind(model_kind)

@@ -486,6 +486,8 @@ class FunctionBundleDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(self.btn_new); row.addWidget(self.btn_dup); row.addWidget(self.btn_del)
         row.addStretch(1)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        row.addWidget(ShortcutGrip("function_bundles", self))
         row.addWidget(make_help_button("function_bundles", self))
         left.addLayout(row)
 
@@ -720,13 +722,18 @@ class FunctionBundleDialog(QDialog):
         except Exception:
             pass
 
-    def _progress_set_step(self, idx: int, total: int, label: str):
-        """Determinate update for normal steps."""
+    def _progress_set_step(self, step_no: int, total: int, label: str, done: int | None = None):
+        """Determinate update for normal steps.
+
+        step_no is the 1-based number of the step shown in the label; done is
+        how many steps have finished (the bar), defaulting to step_no - 1.
+        """
         try:
-            idx = max(0, idx)
             total = max(1, total)
-            pct = int(100 * idx / total)
-            self.run_status.setText(self.tr("Running step {0}/{1}: {2}").format(idx, total, label))
+            step_no = min(max(1, step_no), total)
+            done = step_no - 1 if done is None else min(max(0, done), total)
+            pct = int(100 * done / total)
+            self.run_status.setText(self.tr("Running step {0}/{1}: {2}").format(step_no, total, label))
             self.run_progress.setRange(0, 100)
             self.run_progress.setValue(pct)
             QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
@@ -1438,7 +1445,7 @@ class FunctionBundleDialog(QDialog):
             _activate_target_sw(mw, sw)
 
             label = self._step_label(st)
-            self._progress_set_step(i - 1, total, label)
+            self._progress_set_step(i, total, label)
 
             if not isinstance(st, dict) or not st.get("command_id"):
                 _fb(f"  skip step[{i}]: invalid payload={repr(st)}")
@@ -1477,7 +1484,7 @@ class FunctionBundleDialog(QDialog):
                 else:
                     _fb(f"  END   step[{i}/{total}] cid={cid} ERROR: {e!r}")
 
-            self._progress_set_step(i, total, label)
+            self._progress_set_step(i, total, label, done=i)
             self._pump_events(0)
 
         try:

@@ -1933,6 +1933,8 @@ class FlythroughDialog(QDialog):
         close_row.addWidget(self.btn_reset)
         close_row.addWidget(btn_close)
         close_row.addStretch(1)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        close_row.addWidget(ShortcutGrip("flythrough", self))
         close_row.addWidget(make_help_button("flythrough", self))
         right.addLayout(close_row)
         right.addStretch(1)

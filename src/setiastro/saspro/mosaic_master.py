@@ -2425,6 +2425,8 @@ class MosaicMasterDialog(QDialog):
 
         # ══ bottom bar ════════════════════════════════════════════════════
         bar = QHBoxLayout()
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        bar.addWidget(ShortcutGrip("mosaic_master", self))
         bar.addWidget(make_help_button("mosaic_master", self))
         self.status_label = QLabel(self.tr("Add panels to begin."))
         # plate_solver's _set_status_ui looks for a child QLabel with exactly

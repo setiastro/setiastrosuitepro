@@ -208,6 +208,8 @@ class HistogramDialog(QDialog):
 
         # in-app documentation button, trailing the control row (far right)
         self.btn_help = make_help_button("histogram", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        ctl.addWidget(ShortcutGrip("histogram", self))
         ctl.addWidget(self.btn_help)
 
         main_layout.addLayout(ctl)

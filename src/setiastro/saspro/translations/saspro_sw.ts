@@ -74256,4 +74256,13 @@ Idondoshe moja kwa moja kwenye picha ili kuitumia bila dirisha.</translation>
       <translation>Fungua picha kwanza.</translation>
     </message>
   </context>
+  <context>
+    <name>ShortcutGrip</name>
+    <message>
+      <source>Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.
+Drop it on an image to open {0} for that image.</source>
+      <translation>Vuta hadi kwenye turubai ili kuunda njia ya mkato ya {0}, au kwenye Zana Muhimu ili kuiongeza.
+Idondoshe kwenye picha ili kufungua {0} kwa picha hiyo.</translation>
+    </message>
+  </context>
 </TS>

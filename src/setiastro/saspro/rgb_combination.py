@@ -315,6 +315,8 @@ class RGBCombinationDialogPro(QDialog):
 
         btns = QHBoxLayout()
         self.btn_help = make_help_button("rgb_combination", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        btns.addWidget(ShortcutGrip("rgb_combine", self))
         btns.addWidget(self.btn_help)
         btns.addStretch(); btns.addWidget(self.btn_combine); btns.addWidget(self.btn_reset); btns.addWidget(self.btn_cancel)
 

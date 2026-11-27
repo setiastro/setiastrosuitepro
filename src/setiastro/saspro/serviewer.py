@@ -466,6 +466,8 @@ class SERViewer(QDialog):
         self.btn_reset = make_reset_button(self)
         self.btn_reset.clicked.connect(self._reset_to_factory)
         help_row.addWidget(self.btn_reset)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        help_row.addWidget(ShortcutGrip("planetary_stacker", self))
         help_row.addWidget(make_help_button("planetary_viewer", self))
         right.addLayout(help_row, 0)
 

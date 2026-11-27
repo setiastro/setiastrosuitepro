@@ -243,6 +243,8 @@ class StarSpikesDialogPro(QDialog):
         row_actions.addWidget(self.btn_reset)
         row_actions.addWidget(self.btn_help)
         row_actions.addStretch(1)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        row_actions.addWidget(ShortcutGrip("star_spikes", self))
         row_actions.addWidget(make_help_button("star_spikes", self))
 
         # --- Status ---

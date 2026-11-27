@@ -4007,6 +4007,8 @@ class WIMIDialog(QDialog):
         self.copy_button.clicked.connect(self.copy_ra_dec_to_clipboard)
         button_layout.addWidget(self.copy_button)
 
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        button_layout.addWidget(ShortcutGrip("whats_in_my_image", self))
         button_layout.addWidget(make_help_button("whats_in_my_image", self))
 
         # Settings button (wrench icon)

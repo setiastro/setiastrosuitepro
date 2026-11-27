@@ -77878,4 +77878,13 @@ Rilascia direttamente su un'immagine per applicarle senza GUI.</translation>
       <translation>Apri prima un'immagine.</translation>
     </message>
   </context>
+  <context>
+    <name>ShortcutGrip</name>
+    <message>
+      <source>Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.
+Drop it on an image to open {0} for that image.</source>
+      <translation>Trascina sull'area di lavoro per creare una scorciatoia {0}, o su Essenziali per aggiungerlo.
+Rilascia su un'immagine per aprire {0} per quell'immagine.</translation>
+    </message>
+  </context>
 </TS>

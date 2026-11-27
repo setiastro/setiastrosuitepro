@@ -73792,4 +73792,13 @@ Drop directly on an image to apply them headlessly.</source>
       <translation>最初に画像を開いてください。</translation>
     </message>
   </context>
+  <context>
+    <name>ShortcutGrip</name>
+    <message>
+      <source>Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.
+Drop it on an image to open {0} for that image.</source>
+      <translation>キャンバスにドラッグすると {0} のショートカットを作成し、基本ツールにドラッグするとツールを追加します。
+画像にドロップすると、その画像で {0} を開きます。</translation>
+    </message>
+  </context>
 </TS>

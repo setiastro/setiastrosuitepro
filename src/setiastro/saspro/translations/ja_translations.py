@@ -17576,3 +17576,14 @@ _ADDITIONS_2026_11_26_FACTORY_RESET = {
 for _ctx, _msgs in _ADDITIONS_2026_11_26_FACTORY_RESET.items():
     TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+# 2026-11-26: the grip on tool windows that only makes a shortcut.
+_ADDITIONS_2026_11_26_SHORTCUT_GRIP = {
+    'ShortcutGrip': {
+        'Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.\nDrop it on an image to open {0} for that image.': 'キャンバスにドラッグすると {0} のショートカットを作成し、基本ツールにドラッグするとツールを追加します。\n画像にドロップすると、その画像で {0} を開きます。',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_SHORTCUT_GRIP.items():
+    TRANSLATIONS_JA.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

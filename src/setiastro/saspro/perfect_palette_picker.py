@@ -1212,6 +1212,8 @@ class PerfectPalettePicker(QWidget):
         tools.addWidget(self.btn_fit)
         tools.addStretch(1)
         self.btn_doc_help = make_help_button("perfect_palette_picker", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        tools.addWidget(ShortcutGrip("ppp", self))
         tools.addWidget(self.btn_doc_help)
         right.addLayout(tools)
 

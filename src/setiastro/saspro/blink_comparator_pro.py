@@ -3144,6 +3144,8 @@ class BlinkTab(QWidget):
         self.btn_reset.clicked.connect(self._reset_to_factory)
         zoom_controls_layout.addWidget(self.btn_reset)
         self.btn_doc_help = make_help_button("blink", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        zoom_controls_layout.addWidget(ShortcutGrip("blink", self))
         zoom_controls_layout.addWidget(self.btn_doc_help)
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)

@@ -332,6 +332,8 @@ class CloneStampDialogPro(QDialog):
         self.btn_redo.setEnabled(False)
 
         self.btn_help = make_help_button("clone_stamp", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        bb.addWidget(ShortcutGrip("clone_stamp", self))
         bb.addWidget(self.btn_help)
         bb.addStretch()
         bb.addWidget(self.btn_undo)

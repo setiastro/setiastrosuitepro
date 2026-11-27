@@ -121,10 +121,11 @@ KEYBINDS_KEY = "Keybinds/v1"   # JSON dict: {command_id: "Ctrl+Alt+S"}
 
 
 def _pack_cmd_payload(command_id: str, preset: dict | None = None,
-                      name: str | None = None) -> bytes:
+                      name: str | None = None, **extra) -> bytes:
     payload = {"command_id": command_id, "preset": preset or {}}
     if name:
         payload["name"] = str(name)
+    payload.update(extra)        # e.g. a ShortcutGrip's open_tool
     return json.dumps(payload).encode("utf-8")
 
 def _unpack_cmd_payload(b: bytes) -> dict:
@@ -1225,6 +1226,8 @@ class PresetDragHandle(QToolButton):
     Dropped on empty canvas → ShortcutCanvas creates a shortcut carrying those
     live settings; dropped on an image view → runs the tool headlessly with them.
     """
+    _payload_extra: dict = {}        # more keys for the drag payload (ShortcutGrip)
+
     def __init__(self, command_id: str, get_preset, *, icon: QIcon | None = None,
                  tooltip: str | None = None, parent: QWidget | None = None):
         super().__init__(parent)
@@ -1270,7 +1273,7 @@ class PresetDragHandle(QToolButton):
     def _start_drag(self):
         preset = self._build_preset()
         try:
-            packed = _pack_cmd_payload(self._command_id, preset)
+            packed = _pack_cmd_payload(self._command_id, preset, **self._payload_extra)
         except Exception as ex:
             import traceback
             print(f"[GRIP] _pack_cmd_payload RAISED: {type(ex).__name__}: {ex}", flush=True)
@@ -1287,6 +1290,41 @@ class PresetDragHandle(QToolButton):
         drag.setPixmap(pm)
         drag.setHotSpot(pm.rect().center())
         drag.exec(Qt.DropAction.CopyAction)
+
+
+def _registered_action(command_id: str) -> QAction | None:
+    """The main window's QAction for a command id, or None."""
+    for w in QApplication.topLevelWidgets():
+        reg = getattr(getattr(w, "shortcuts", None), "registry", None)
+        if isinstance(reg, dict) and command_id in reg:
+            return reg[command_id]
+    return None
+
+
+class ShortcutGrip(PresetDragHandle):
+    """The grip for a tool window whose settings a drop cannot carry: it asks
+    for images to pick, names to type or several steps, so it cannot run from
+    a drop. This grip makes a plain shortcut instead. Onto the canvas: a
+    desktop shortcut that opens the tool. Onto Essentials: the tool added
+    there. Onto an image: the tool opened for that image (the QAction fallback
+    in the main window's _handle_command_drop). It shows the tool's own icon
+    and name, from its toolbar action.
+
+        row.insertWidget(0, ShortcutGrip("selective_color", self))
+    """
+    _payload_extra = {"open_tool": True}   # on an image: open the tool, never run it
+
+    def __init__(self, command_id: str, parent: QWidget | None = None):
+        act = _registered_action(str(command_id))
+        icon = act.icon() if act is not None else None
+        super().__init__(command_id, dict, icon=icon, tooltip=" ", parent=parent)
+        name = str(command_id)
+        if act is not None:
+            t = (act.text() or "").replace("&&", "\0").replace("&", "").replace("\0", "&").strip()
+            name = t.rstrip(".\u2026").strip() or t or name
+        self.setToolTip(self.tr(
+            "Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.\n"
+            "Drop it on an image to open {0} for that image.").format(name))
 
 # ---------- the button that sits on the MDI desktop ----------
 class ShortcutButton(QToolButton):

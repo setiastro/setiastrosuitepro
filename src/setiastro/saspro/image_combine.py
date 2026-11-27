@@ -344,6 +344,8 @@ class ImageCombineDialog(QDialog):
         # In-tool documentation button, flush right of the zoom controls
         zrow.addStretch(1)
         self.btn_help = make_help_button("image_combine", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        zrow.addWidget(ShortcutGrip("image_combine", self))
         zrow.addWidget(self.btn_help)
 
         root.addLayout(zrow)

@@ -855,6 +855,8 @@ class SelectiveColorCorrection(QDialog):
         zoom_row.addWidget(self.btn_fit)
         zoom_row.addStretch(1)
         self.btn_doc_help = make_help_button("selective_color", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        zoom_row.addWidget(ShortcutGrip("selective_color", self))
         zoom_row.addWidget(self.btn_doc_help)
         right.addLayout(zoom_row)
 
@@ -946,6 +948,7 @@ class SelectiveColorCorrection(QDialog):
         self.btn_zoom_in.clicked.connect(lambda: self._apply_zoom(self._zoom * 1.25, None))
         self.btn_zoom_out.clicked.connect(lambda: self._apply_zoom(self._zoom / 1.25, None))
         self.btn_zoom_1.clicked.connect(lambda: self._apply_zoom(1.0, None))
+        self.btn_fit.clicked.connect(self._fit_to_preview)
 
         # Preview interactions
         self.lbl_preview.setMouseTracking(True)
@@ -1123,13 +1126,16 @@ class SelectiveColorCorrection(QDialog):
         self._set_scroll(nx, ny)
 
     def _fit_to_preview(self):
-        if not hasattr(self, "_base_pm") or self._base_pm is None:
+        base = getattr(self, "_last_base", None)
+        if base is None:
             return
-        vp = self.scroll.viewport().size()
-        pm = self._base_pm.size()
-        if pm.width() <= 0 or pm.height() <= 0:
+        h, w = base.shape[:2]
+        if w <= 0 or h <= 0:
             return
-        k = min(vp.width() / pm.width(), vp.height() / pm.height())
+        # The viewport once the fitted image needs no scroll bars (the current
+        # one is short by the bars whenever the image is zoomed in).
+        vp = self.scroll.maximumViewportSize()
+        k = min(vp.width() / w, vp.height() / h)
         self._apply_zoom(k, anchor_label_pos=None)
 
     # --- Pan helpers -----------------------------------------------------

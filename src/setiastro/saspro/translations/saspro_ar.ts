@@ -74829,4 +74829,13 @@ Drop directly on an image to apply them headlessly.</source>
       <translation>افتح صورة أولا.</translation>
     </message>
   </context>
+  <context>
+    <name>ShortcutGrip</name>
+    <message>
+      <source>Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.
+Drop it on an image to open {0} for that image.</source>
+      <translation>اسحب إلى مساحة العمل لإنشاء اختصار لـ {0}، أو إلى الأساسيات لإضافته.
+أفلته على صورة لفتح {0} لتلك الصورة.</translation>
+    </message>
+  </context>
 </TS>

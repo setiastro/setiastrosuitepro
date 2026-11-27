@@ -237,6 +237,8 @@ class NarrowbandNormalization(QWidget):
         tools.addWidget(self.btn_fit)
         tools.addStretch(1)
         self.btn_doc_help = make_help_button("nb_normalization", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        tools.addWidget(ShortcutGrip("narrowband_normalization", self))
         tools.addWidget(self.btn_doc_help)
         right.addLayout(tools)
 

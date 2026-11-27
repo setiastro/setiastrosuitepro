@@ -74093,4 +74093,13 @@ Solte diretamente sobre uma imagem para aplicá-las sem abrir o diálogo.</trans
       <translation>Abra uma imagem primeiro.</translation>
     </message>
   </context>
+  <context>
+    <name>ShortcutGrip</name>
+    <message>
+      <source>Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.
+Drop it on an image to open {0} for that image.</source>
+      <translation>Arraste para a área de trabalho para criar um atalho do {0}, ou para Essenciais para adicioná-lo.
+Solte sobre uma imagem para abrir {0} para essa imagem.</translation>
+    </message>
+  </context>
 </TS>

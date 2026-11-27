@@ -1092,6 +1092,8 @@ class SignatureInsertDialogPro(QDialog):
         add_sec("zoom", self.tr("Zoom"), self.grp_zoom, False)
         add_sec("apply", self.tr("Apply / Clear"), self.grp_apply, True)
         self.btn_doc_help = make_help_button("signature_insert", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        col.addWidget(ShortcutGrip("signature_insert", self))
         col.addWidget(self.btn_doc_help)
         col.addStretch(1)
 

@@ -1415,6 +1415,9 @@ class SFCCDialog(QDialog):
         self.curve_mgr_btn.clicked.connect(self.open_curve_manager); row4.addWidget(self.curve_mgr_btn)
         row4.addStretch()
         self.btn_help = make_help_button("sfcc", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.shortcut_grip = ShortcutGrip("sfcc", self)
+        row4.addWidget(self.shortcut_grip)
         row4.addWidget(self.btn_help)
         self.factory_reset_btn = make_reset_button(self)
         self.factory_reset_btn.clicked.connect(self._reset_to_factory)

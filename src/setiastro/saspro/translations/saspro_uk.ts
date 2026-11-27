@@ -75024,4 +75024,13 @@ Drop directly on an image to apply them headlessly.</source>
       <translation>Спочатку відкрийте зображення.</translation>
     </message>
   </context>
+  <context>
+    <name>ShortcutGrip</name>
+    <message>
+      <source>Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.
+Drop it on an image to open {0} for that image.</source>
+      <translation>Перетягніть на робочий стіл, щоб створити ярлик {0}, або на панель основних інструментів, щоб додати його.
+Перетягніть на зображення, щоб відкрити {0} для цього зображення.</translation>
+    </message>
+  </context>
 </TS>

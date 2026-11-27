@@ -1931,6 +1931,8 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         top.addWidget(self._make_view_switch())
         top.addSpacing(12)
         top.addWidget(self.btn_run_mini)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        top.addWidget(ShortcutGrip("workflows", self))
         top.addWidget(make_help_button("workflow_assistant", self))
         root.addLayout(top)
 

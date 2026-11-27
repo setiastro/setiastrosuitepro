@@ -1014,6 +1014,8 @@ class LiveStackWindow(QDialog):
 
         # In-tool documentation button, left of the Settings wrench
         self.btn_help = make_help_button("live_stacking", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        tb.addWidget(ShortcutGrip("live_stacking", self))
         tb.addWidget(self.btn_help)
 
         # — Replace the QAction “wrench” with a styled QToolButton —

@@ -1032,6 +1032,8 @@ class RGBAlignDialog(QDialog):
         btns.addWidget(self.btn_reset)
         btns.addWidget(self.btn_close)
         btns.addStretch(1)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        btns.addWidget(ShortcutGrip("rgb_align", self))
         btns.addWidget(make_help_button("rgb_align", self))
         lay.addLayout(btns)
 

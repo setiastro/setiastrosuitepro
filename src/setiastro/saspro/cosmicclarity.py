@@ -31,7 +31,7 @@ from setiastro.saspro.widgets.factory_reset import (
     make_reset_button, snapshot_controls, restore_controls)
 from setiastro.saspro.cosmicclarity_engines.denoise_engine import denoise_rgb01
 from setiastro.saspro.cosmicclarity_engines.superres_engine import superres_rgb01
-from setiastro.saspro.cosmicclarity_engines._backend_guard import EngineCancelled
+from setiastro.saspro.cosmicclarity_engines._backend_guard import EngineCancelled, native_error_text
 from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
     get_satellite_models,
     satellite_remove_image,
@@ -658,7 +658,14 @@ class CosmicClarityEngineWorker(QThread):
                 # An engine path that surfaced the cancel as a plain error.
                 self.cancelled.emit()
             else:
-                self.error.emit(str(e))
+                try:
+                    import traceback
+                    print("[CosmicClarity] engine error:\n" + traceback.format_exc(), flush=True)
+                except Exception:
+                    pass
+                # A driver message in the Windows code page arrives as a bare
+                # UnicodeDecodeError; show the message it was hiding.
+                self.error.emit(native_error_text(e) or str(e))
 
 
 # =============================================================================
@@ -2342,6 +2349,8 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self.btn_out = QPushButton(self.tr("Select Output Folder")); self.btn_out.clicked.connect(self._choose_output)
         row_io.addWidget(self.btn_in)
         row_io.addWidget(self.btn_out)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        row_io.addWidget(ShortcutGrip("cosmicclaritysat", self))
         row_io.addWidget(make_help_button("cosmic_clarity_satellite", self))
         left.addLayout(row_io)
 

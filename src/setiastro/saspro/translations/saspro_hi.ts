@@ -73707,4 +73707,13 @@ Drop directly on an image to apply them headlessly.</source>
       <translation>पहले एक छवि खोलें।</translation>
     </message>
   </context>
+  <context>
+    <name>ShortcutGrip</name>
+    <message>
+      <source>Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.
+Drop it on an image to open {0} for that image.</source>
+      <translation>{0} शॉर्टकट बनाने के लिए कैनवास पर खींचें, या इसे जोड़ने के लिए आवश्यक उपकरण पर खींचें।
+उस छवि के लिए {0} खोलने के लिए इसे किसी छवि पर छोड़ें।</translation>
+    </message>
+  </context>
 </TS>

@@ -74075,4 +74075,13 @@ Direkt auf ein Bild ziehen, um sie ohne Dialog anzuwenden.</translation>
       <translation>Zuerst ein Bild öffnen.</translation>
     </message>
   </context>
+  <context>
+    <name>ShortcutGrip</name>
+    <message>
+      <source>Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.
+Drop it on an image to open {0} for that image.</source>
+      <translation>Auf die Arbeitsfläche ziehen, um eine Verknüpfung für {0} zu erstellen, oder auf die Basiswerkzeuge, um das Werkzeug hinzuzufügen.
+Auf ein Bild ziehen, um {0} für dieses Bild zu öffnen.</translation>
+    </message>
+  </context>
 </TS>

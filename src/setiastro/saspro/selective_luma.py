@@ -801,6 +801,8 @@ class SelectiveLuminanceCorrection(QDialog):
             zoom_row.addWidget(b)
         zoom_row.addStretch(1)
         self.btn_doc_help = make_help_button("selective_luma", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        zoom_row.addWidget(ShortcutGrip("selective_lum", self))
         zoom_row.addWidget(self.btn_doc_help)
         right.addLayout(zoom_row)
 
@@ -1170,7 +1172,9 @@ class SelectiveLuminanceCorrection(QDialog):
         base = getattr(self, "_last_base", None)
         if base is None: return
         h, w = base.shape[:2]
-        vp = self.scroll.viewport().size()
+        # The viewport once the fitted image needs no scroll bars (the current
+        # one is short by the bars whenever the image is zoomed in).
+        vp = self.scroll.maximumViewportSize()
         if w <= 0 or h <= 0: return
         k = min(vp.width() / w, vp.height() / h)
         self._apply_zoom(k)

@@ -1358,6 +1358,8 @@ class ContinuumSubtractTab(QWidget):
         self.wb_diag_button.setEnabled(False)  # enabled after first result
         bottom_row.addWidget(self.wb_diag_button)
         self.btn_help = make_help_button("continuum_subtract", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        bottom_row.addWidget(ShortcutGrip("contsub", self))
         bottom_row.addWidget(self.btn_help)        
         main_layout.addLayout(top_cols)
         main_layout.addLayout(bottom_row)

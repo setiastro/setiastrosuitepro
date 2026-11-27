@@ -17651,3 +17651,14 @@ _ADDITIONS_2026_11_26_FACTORY_RESET = {
 for _ctx, _msgs in _ADDITIONS_2026_11_26_FACTORY_RESET.items():
     TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+# 2026-11-26: the grip on tool windows that only makes a shortcut.
+_ADDITIONS_2026_11_26_SHORTCUT_GRIP = {
+    'ShortcutGrip': {
+        'Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.\nDrop it on an image to open {0} for that image.': '拖到画布上以创建 {0} 快捷方式，或拖到基本工具以添加该工具。\n拖放到图像上即可为该图像打开 {0}。',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_26_SHORTCUT_GRIP.items():
+    TRANSLATIONS_ZH.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

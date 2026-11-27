@@ -1406,6 +1406,8 @@ class PixelMathDialogPro(QDialog):
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
         self.btn_doc_help = make_help_button("pixel_math", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        btn_row.addWidget(ShortcutGrip("pixel_math", self))
         btn_row.addWidget(self.btn_doc_help)
         btn_row.addWidget(btns, 1)
         left_col.addLayout(btn_row)

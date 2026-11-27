@@ -75079,4 +75079,13 @@ Suéltelo directamente sobre una imagen para aplicarla sin interfaz.</translatio
       <translation>Abra una imagen primero.</translation>
     </message>
   </context>
+  <context>
+    <name>ShortcutGrip</name>
+    <message>
+      <source>Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.
+Drop it on an image to open {0} for that image.</source>
+      <translation>Arrastre al lienzo para crear un acceso directo de {0}, o a Esenciales para añadirlo.
+Suéltelo sobre una imagen para abrir {0} con esa imagen.</translation>
+    </message>
+  </context>
 </TS>

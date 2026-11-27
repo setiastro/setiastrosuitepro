@@ -7912,6 +7912,18 @@ class AstroSuiteProMainWindow(
 
         cid = _cid_norm(cid_raw)
 
+        # A ShortcutGrip (the grip of a tool window whose settings a drop can't
+        # carry) dropped on an image opens the tool for that image. It never
+        # runs the tool with default settings, as a headless branch below would.
+        if payload.get("open_tool") and target_sw is not None:
+            act = self._find_action_by_cid(cid)
+            if act is not None:
+                from PyQt6.QtWidgets import QApplication as _QApp   # see the note at the QAction fallback
+                self.mdi.setActiveSubWindow(target_sw)
+                _QApp.processEvents()
+                act.trigger()
+                return
+
         # ----- Scripts: "script:<script_id>" -----
         if isinstance(cid, str) and cid.startswith("script:"):
             sid = cid.split(":", 1)[1]
@@ -10050,6 +10062,7 @@ class AstroSuiteProMainWindow(
         popup.setMinimumWidth(420)
         popup.setIconSize(QSize(18, 18))
         self._cmd_completer.setPopup(popup)
+        self._install_command_result_menu(popup)
 
         self._cmd_edit.setCompleter(self._cmd_completer)
         self._cmd_completer.activated[QModelIndex].connect(self._run_selected_completion)
@@ -10099,6 +10112,7 @@ class AstroSuiteProMainWindow(
         popup.setMinimumWidth(420)
         popup.setIconSize(QSize(18, 18))
         comp.setPopup(popup)
+        self._install_command_result_menu(popup)
         comp.setCompletionColumn(0)
         popup.setModelColumn(0)
         edit.setCompleter(comp)
@@ -10135,6 +10149,60 @@ class AstroSuiteProMainWindow(
     def _run_selected_completion(self, index: QModelIndex):
         from setiastro.saspro.gui.command_search import run_command
         run_command(index, _ROLE_ACTION)
+
+    # ---- right-click on a search result ------------------------------------
+    def _install_command_result_menu(self, view):
+        """Right-click on a result in Command Search, the Essentials search
+        box or the centred palette: the same Create Desktop Shortcut and Add
+        to Essentials as a tool's icon in All Tools. So a tool with no window
+        to drag a grip from (Invert Mask, Remove Active Mask...) can still be
+        put on Essentials from a search."""
+        view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        view.customContextMenuRequested.connect(
+            lambda pos, v=view: self._show_command_result_menu(v, pos))
+
+    def _show_command_result_menu(self, view, pos):
+        from setiastro.saspro.gui.command_search import command_action
+        act = command_action(view.indexAt(pos), _ROLE_ACTION)
+        menu = self._command_result_menu(act, view) if act is not None else None
+        if menu is not None:
+            menu.exec(view.viewport().mapToGlobal(pos))
+
+    def _command_result_menu(self, act, parent):
+        """The menu for one search result, or None for a result that is not a
+        tool (a recent file, a script, a window). Its two entries are the ones
+        a tool's icon has in All Tools, in the toolbar's words, so they come
+        translated (DraggableToolBar._show_toolbutton_context_menu)."""
+        def tr(text):
+            return QCoreApplication.translate("DraggableToolBar", text)
+        reg = getattr(getattr(self, "shortcuts", None), "registry", None) or {}
+        cid = act.property("command_id") or act.objectName()
+        if not cid or reg.get(str(cid)) is not act:
+            return None
+        cid = str(cid)
+        m = QMenu(parent)
+        m.addAction(tr("Create Desktop Shortcut"), lambda: self._desktop_shortcut_for(cid))
+        bars = self._essentials_bars() if self._essentials_candidate(cid) is act else []
+        if bars:
+            sub = m.addMenu(tr("Add to Essentials"))
+            for tb, _key, _items in bars:
+                a = sub.addAction(tb.windowTitle(), lambda t=tb: self._add_to_essentials(act, t))
+                a.setEnabled(act not in tb.actions())
+        return m
+
+    def _desktop_shortcut_for(self, cid: str):
+        """A desktop shortcut for a tool, under the mouse if it is over the
+        workspace, else in the middle of it (as from a toolbar icon)."""
+        from PyQt6.QtGui import QCursor
+        mgr = getattr(self, "shortcuts", None)
+        mdi = getattr(self, "mdi", None)
+        if mgr is None or mdi is None:
+            return
+        vp = mdi.viewport()
+        pos = vp.mapFromGlobal(QCursor.pos())
+        if not vp.rect().contains(pos):
+            pos = vp.rect().center()
+        mgr.add_shortcut(cid, pos)
 
     def _trigger_first_visible_completion(self, edit=None, completer=None):
         """Run exact edit-text match, else highlighted popup row, else first filter hit.
@@ -10187,6 +10255,7 @@ class AstroSuiteProMainWindow(
         if pal is None:
             from setiastro.saspro.gui.command_palette import CommandPalette
             pal = CommandPalette(self, self._cmd_model, self._run_selected_completion)
+            self._install_command_result_menu(pal.list)
             self._cmd_palette = pal
         if pal.isVisible():
             pal.hide()

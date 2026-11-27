@@ -74771,4 +74771,13 @@ Déposer directement sur une image pour les appliquer sans ouvrir l'outil.</tran
       <translation>Ouvrez d'abord une image.</translation>
     </message>
   </context>
+  <context>
+    <name>ShortcutGrip</name>
+    <message>
+      <source>Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.
+Drop it on an image to open {0} for that image.</source>
+      <translation>Glisser sur le canevas pour créer un raccourci {0}, ou sur les Essentiels pour l'y ajouter.
+Déposer sur une image pour ouvrir {0} pour cette image.</translation>
+    </message>
+  </context>
 </TS>

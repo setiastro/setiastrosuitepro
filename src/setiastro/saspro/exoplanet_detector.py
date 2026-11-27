@@ -1356,6 +1356,8 @@ class ExoPlanetWindow(QDialog):
         self.reset_btn.clicked.connect(self._reset_to_factory)
         mode_layout.addWidget(self.reset_btn)
         mode_layout.addWidget(self.wrench_button)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        mode_layout.addWidget(ShortcutGrip("exo_detector", self))
         mode_layout.addWidget(make_help_button("exoplanet", self))
 
         # — Calibration controls (hidden in Aligned) —

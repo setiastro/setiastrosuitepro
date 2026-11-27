@@ -3220,6 +3220,8 @@ class WhatsInMySkyDialog(QDialog):
             b.setStyleSheet(_TOOLBAR_BTN_STYLE)
             toolbar.addWidget(b)
 
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        toolbar.addWidget(ShortcutGrip("whats_in_my_sky", self))
         toolbar.addWidget(make_help_button("whats_in_my_sky", self))
 
         settings_btn.setFixedHeight(28)

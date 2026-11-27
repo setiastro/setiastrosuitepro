@@ -37,16 +37,24 @@ def command_item(action, title, role):
     return item
 
 
-def run_command(index, role):
-    """Trigger a live, enabled target; stale completions safely do nothing."""
+def command_action(index, role):
+    """The live QAction a result row stands for, or None when the row is
+    stale or its action has been deleted."""
     if not index.isValid():
-        return False
+        return None
     target = index.data(role)
     if not isinstance(target, _CommandTarget):
-        return False
+        return None
     action = target.action
-    if (not isinstance(action, QAction) or sip.isdeleted(action)
-            or not action.isEnabled()):
+    if not isinstance(action, QAction) or sip.isdeleted(action):
+        return None
+    return action
+
+
+def run_command(index, role):
+    """Trigger a live, enabled target; stale completions safely do nothing."""
+    action = command_action(index, role)
+    if action is None or not action.isEnabled():
         return False
     action.trigger()
     return True

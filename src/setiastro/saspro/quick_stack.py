@@ -235,6 +235,8 @@ class QuickStackDialog(QDialog):
             "Colour cameras are debayered (bilinear)."))
         blurb.setWordWrap(True)
         top.addWidget(blurb, 1)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        top.addWidget(ShortcutGrip("quick_stack", self), 0, Qt.AlignmentFlag.AlignTop)
         top.addWidget(make_help_button("quick_stack", self), 0, Qt.AlignmentFlag.AlignTop)
         root.addLayout(top)
 

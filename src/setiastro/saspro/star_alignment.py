@@ -8038,6 +8038,8 @@ class StarRegistrationWindow(QWidget):
         self.btn_reset = make_reset_button(self)
         self.btn_reset.clicked.connect(self._reset_to_factory)
         start_row.addWidget(self.btn_reset)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        start_row.addWidget(ShortcutGrip("star_register", self))
         start_row.addWidget(make_help_button("star_registration", self))
         main_layout.addWidget(self.progress_label)
         main_layout.addLayout(start_row)

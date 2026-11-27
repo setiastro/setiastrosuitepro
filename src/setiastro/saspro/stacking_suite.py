@@ -8986,6 +8986,8 @@ class StackingSuiteDialog(QDialog):
 
         # In-tool documentation button, flush right of Open Log
         self.btn_help = make_help_button("stacking_suite", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        header_row.addWidget(ShortcutGrip("stacking_suite", self))
         header_row.addWidget(self.btn_help)
 
         self.tabs.currentChanged.connect(self.on_tab_changed)

@@ -1279,6 +1279,8 @@ class DitherAnalysisWindow(QWidget):
         ctrl_row.addWidget(self._btn_show_arcsec)
         ctrl_row.addWidget(self._btn_show_radec)
         ctrl_row.addStretch(1)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        ctrl_row.addWidget(ShortcutGrip("dither_analysis", self))
         ctrl_row.addWidget(make_help_button("dither_analysis", self))
 
         rv.addLayout(ctrl_row)

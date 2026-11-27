@@ -793,6 +793,8 @@ class BlemishBlasterDialogPro(QDialog):
         self.btn_redo.setEnabled(False)
 
         self.btn_help = make_help_button("blemish_blaster", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        bb.addWidget(ShortcutGrip("blemish_blaster", self))
         bb.addWidget(self.btn_help)
         bb.addStretch()
         bb.addWidget(self.btn_undo)

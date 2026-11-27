@@ -73977,4 +73977,13 @@ Drop directly on an image to apply them headlessly.</source>
       <translation>请先打开一张图像。</translation>
     </message>
   </context>
+  <context>
+    <name>ShortcutGrip</name>
+    <message>
+      <source>Drag to the canvas to create a shortcut to {0}, or onto Essentials to add it.
+Drop it on an image to open {0} for that image.</source>
+      <translation>拖到画布上以创建 {0} 快捷方式，或拖到基本工具以添加该工具。
+拖放到图像上即可为该图像打开 {0}。</translation>
+    </message>
+  </context>
 </TS>

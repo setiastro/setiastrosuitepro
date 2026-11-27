@@ -543,6 +543,8 @@ class IsophoteModelerDialog(QDialog):
         reset_btn = make_reset_button(self)
         reset_btn.clicked.connect(self._reset_to_factory)
         _rl.addWidget(reset_btn)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        _rl.addWidget(ShortcutGrip("isophote", self))
         _rl.addWidget(make_help_button("glimr", self))
         form.addRow(run_row)
 

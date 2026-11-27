@@ -4993,6 +4993,8 @@ class ImagePeekerDialogPro(QDialog):
         self.analyze_btn = QPushButton(self.tr("Analyze"))
         analysis_row.addWidget(self.analyze_btn)
         analysis_row.addStretch(1)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        analysis_row.addWidget(ShortcutGrip("image_peeker", self))
         analysis_row.addWidget(make_help_button("image_peeker", self))
 
         btns = QHBoxLayout(); btns.addStretch(1)

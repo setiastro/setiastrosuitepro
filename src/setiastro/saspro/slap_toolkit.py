@@ -831,6 +831,8 @@ class SLaPToolkitDialog(QDialog):
         self.btn_reset.setStyleSheet(btn_close.styleSheet())
         self.btn_reset.clicked.connect(self._reset_to_factory)
 
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        bot.addWidget(ShortcutGrip("slap", self))
         bot.addWidget(self.lbl_status, 1)
         bot.addWidget(self.btn_reset)
         bot.addWidget(btn_close)

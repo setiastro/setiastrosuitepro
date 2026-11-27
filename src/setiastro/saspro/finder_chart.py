@@ -2160,6 +2160,8 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         self.lbl_opacity.setFixedWidth(40)
         row1.addWidget(self.lbl_opacity)
         row1.addStretch(1)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        row1.addWidget(ShortcutGrip("finder_chart", self))
         row1.addWidget(make_help_button("finder_chart", self))
         self.btn_render = QPushButton(self.tr("Render"))
         row1.addWidget(self.btn_render)

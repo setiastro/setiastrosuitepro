@@ -951,6 +951,8 @@ class FrequencySeperationTab(QWidget):
         top_row.addWidget(self.btn_fit)
 
         self.btn_doc_help = make_help_button("frequency_separation", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        top_row.addWidget(ShortcutGrip("freqsep", self))
         top_row.addWidget(self.btn_doc_help)
 
         right.addLayout(top_row)

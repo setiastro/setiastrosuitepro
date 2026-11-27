@@ -225,6 +225,8 @@ class SNRToolDialog(QDialog):
         row.addWidget(self.btn_copy)
         row.addStretch(1)
         self.btn_help = make_help_button("snr_tool", self)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        row.addWidget(ShortcutGrip("snr_tool", self))
         row.addWidget(self.btn_help)
         v.addLayout(row)
 

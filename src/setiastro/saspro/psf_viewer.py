@@ -607,6 +607,8 @@ class PSFViewer(QDialog):
         self.mode_toggle_button.clicked.connect(self.toggleHistogramMode)
         controls_layout.addWidget(self.mode_toggle_button)
         controls_layout.addStretch(1)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        controls_layout.addWidget(ShortcutGrip("psf_viewer", self))
         controls_layout.addWidget(make_help_button("psf_viewer", self))
         main_layout.addLayout(controls_layout)
 

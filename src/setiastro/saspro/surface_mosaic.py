@@ -2328,6 +2328,8 @@ if _HAVE_QT:
             self.btn_advanced.clicked.connect(self._open_advanced)
             run_row.addWidget(self.btn_advanced)
             run_row.addStretch(1)
+            from setiastro.saspro.shortcuts import ShortcutGrip
+            run_row.addWidget(ShortcutGrip("surface_mosaic", self))
             run_row.addWidget(make_help_button("surface_mosaic", self))
             self.btn_run = QPushButton(self.tr("Build Mosaic"))
             self.btn_run.clicked.connect(self._on_run)

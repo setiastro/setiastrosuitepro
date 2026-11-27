@@ -2834,6 +2834,8 @@ class MagnitudeToolDialog(QDialog):
         self.btn_close.clicked.connect(self.reject)
         bottom.addWidget(self.btn_close)
         bottom.addStretch(1)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        bottom.addWidget(ShortcutGrip("magnitude_tool", self))
         bottom.addWidget(make_help_button("magnitude_tool", self))
         root.addLayout(bottom)
  

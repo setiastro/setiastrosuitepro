@@ -14,7 +14,7 @@ import os
 
 __all__ = [
     "DeviceLostError", "EngineCancelled", "NonFiniteOutputError",
-    "safe_exception_str", "forward_finite",
+    "safe_exception_str", "native_error_text", "forward_finite",
     "is_device_lost_error", "is_backend_unusable_error", "is_recoverable_batch_error",
     "device_type", "dml_disabled", "disable_dml", "reset_dml_disabled",
     "prefer_ort_dml", "tick", "evict_models", "iter_batch_sizes",
@@ -76,9 +76,36 @@ def forward_finite(torch, model, x, amp_ctx, *, label: str):
         f"{label}: the model returned NaN/inf on {x.device} in fp16 and in fp32")
 
 
+def native_error_text(err: BaseException) -> str | None:
+    """The real message behind a native error that arrived as a bare
+    UnicodeDecodeError, else None.
+
+    ONNX Runtime and torch hand a C++ error's what() to Python, which decodes
+    it as UTF-8. On a non-English Windows the driver's part of that text is in
+    the ANSI code page: Spanish "La GPU no responderá a más comandos" (887A0006)
+    fails on the 'á' (0xe1), and the user sees only "'utf-8' codec can't decode
+    byte 0xe1 ...". The original bytes are still on the error; decode them as
+    the code page they were written in."""
+    if not isinstance(err, UnicodeDecodeError):
+        return None
+    raw = getattr(err, "object", None)
+    enc = str(getattr(err, "encoding", "")).lower().replace("-", "").replace("_", "")
+    if not isinstance(raw, (bytes, bytearray)) or enc != "utf8" or len(raw) > 16384:
+        return None                   # not a message (a large file read, another codec)
+    for codec in (("mbcs",) if os.name == "nt" else ()) + ("utf-8",):
+        try:
+            return bytes(raw).decode(codec, errors="replace").strip() or None
+        except LookupError:
+            continue
+    return None
+
+
 def safe_exception_str(err: BaseException) -> str:
     """str() an exception without dying on non-UTF-8 driver text.
     Japanese and Dutch Windows both emit these."""
+    native = native_error_text(err)
+    if native:
+        return f"{type(err).__name__}: {native}"
     try:
         return f"{type(err).__name__}: {err}"
     except Exception:

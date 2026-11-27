@@ -3029,6 +3029,8 @@ class SupernovaAsteroidHunterDialog(QDialog):
         ))
         self.redetect_button.clicked.connect(self._on_redetect_from_main)
         run_row.addWidget(self.redetect_button)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        run_row.addWidget(ShortcutGrip("supernova_hunter", self))
         run_row.addWidget(make_help_button("supernova_asteroid_hunter", self))
         layout.addLayout(run_row)
 

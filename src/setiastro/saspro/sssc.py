@@ -2100,6 +2100,8 @@ class SSSCDialog(QDialog):
         # ── Row 4: Step 2 + options + session controls ────────────────────────
         row4 = QHBoxLayout()
         row4.setSpacing(8)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        row4.addWidget(ShortcutGrip("sssc", self))
  
         self.run_btn = QPushButton(self.tr("🔬  Step 2: Run SSSC Calibration"))
         self.run_btn.setStyleSheet(STEP2_STYLE)

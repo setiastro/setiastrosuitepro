@@ -1551,6 +1551,8 @@ class PlanetProjectionDialog(QDialog):
         prev_row.addWidget(self.btn_save_still)
         prev_row.addWidget(self.btn_save_wiggle)
         prev_row.addStretch(1)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        prev_row.addWidget(ShortcutGrip("planet_projection", self))
         prev_row.addWidget(make_help_button("planet_projection", self))
         outer.addLayout(prev_row)
 
